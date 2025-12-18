@@ -2,21 +2,14 @@
 
 # Project variables
 BINARY_NAME=holon
-ADAPTER_NAME=holon-adapter
 BIN_DIR=bin
 GO_FILES=$(shell find . -type f -name '*.go')
 
 # Default target
 all: build
 
-## build: Build both host and adapter binaries
-build: build-adapter build-host
-
-## build-adapter: Cross-compile adapter for Linux x86_64 (Standard for containers)
-build-adapter:
-	@echo "Building adapter for Linux/amd64..."
-	@mkdir -p $(BIN_DIR)
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o $(BIN_DIR)/$(ADAPTER_NAME) ./cmd/holon-adapter
+## build: Build the holon host CLI
+build: build-host
 
 ## build-host: Build host CLI for current OS/Arch
 build-host:
