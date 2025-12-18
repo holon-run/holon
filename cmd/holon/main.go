@@ -112,6 +112,9 @@ output:
 			envVars["GH_TOKEN"] = token
 		}
 
+		fmt.Printf("DEBUG: Found Anthropic Key: %v, Base URL: %s, GitHub Token: %v\n",
+			anthropicKey != "", anthropicURL, os.Getenv("GITHUB_TOKEN") != "" || os.Getenv("GH_TOKEN") != "")
+
 		// 2. Custom Env Vars from CLI (--env K=V)
 		for _, pair := range envVarsList {
 			parts := strings.SplitN(pair, "=", 2)

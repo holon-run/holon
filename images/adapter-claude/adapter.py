@@ -142,9 +142,14 @@ async def run_adapter():
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
         
-        # Diff Patch
+        # Diff Patch: Ensure we see new files
+        subprocess.run(["git", "add", "-N", "."], capture_output=True)
         diff_proc = subprocess.run(["git", "diff", "--patch"], capture_output=True, text=True)
         patch_content = diff_proc.stdout
+        
+        print(f"Generated patch: size={len(patch_content)} characters")
+        if len(patch_content) > 0:
+            print(f"Patch preview: {patch_content[:200]}")
         
         # Manifest
         manifest = {
