@@ -7,7 +7,7 @@ on:
 jobs:
   resolve-issue:
     # Trigger if label is 'holon' OR if someone is assigned to it (you can customize the bot name logic here)
-    if: "${{ github.event.label.name == 'holon' || github.event.assignee.type == 'Bot' }}"
+    if: github.event.label.name == 'holon' || github.event.assignee.type == 'Bot'
     runs-on: ubuntu-latest
     permissions: write-all
     steps:
