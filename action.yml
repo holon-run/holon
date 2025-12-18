@@ -35,10 +35,11 @@ runs:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
-        # Build holon if not present (or we could download a release in the future)
+        # Build holon and adapter if not present
         if [ ! -f bin/holon ]; then
           make build
         fi
+        make build-adapter-image
         
         # Extract issue info from event
         if [ -f "$GITHUB_EVENT_PATH" ]; then
