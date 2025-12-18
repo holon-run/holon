@@ -1,0 +1,23 @@
+# Binaries
+bin/
+holon
+holon-adapter
+
+# Holon execution outputs
+holon-out/
+holon-out-*/
+holon-out-fix/
+
+# Go artifacts
+vendor/
+*.test
+*.out
+
+# OS/IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Env
+.env
+.env.local

@@ -1,0 +1,12 @@
+version: "v1"
+kind: Holon
+metadata:
+  name: "hello-world"
+context:
+  workspace: "/workspace"
+goal:
+  description: "Verify that Holon can run a dummy adapter inside a container."
+output:
+  artifacts:
+    - path: "manifest.json"
+      required: true

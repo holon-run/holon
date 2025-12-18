@@ -1,0 +1,16 @@
+version: "v1"
+kind: Holon
+metadata:
+  name: "fix-go-bug"
+context:
+  workspace: "/workspace"
+  files:
+    - "examples/buggy.go"
+goal:
+  description: "There is a division by zero error in examples/buggy.go. Please fix it so that it handles the zero case safely."
+output:
+  artifacts:
+    - path: "manifest.json"
+      required: true
+    - path: "examples/buggy.go"
+      required: true
