@@ -1,4 +1,4 @@
-.PHONY: build build-adapter build-host test clean run-example help
+.PHONY: build build-adapter build-host test clean run-example ensure-adapter-image help
 
 # Project variables
 BINARY_NAME=holon
@@ -22,6 +22,16 @@ build-adapter-image:
 	@echo "Building Claude adapter image..."
 	docker build -t holon-adapter-claude ./images/adapter-claude
 
+## ensure-adapter-image: Ensure the Claude adapter Docker image exists
+ensure-adapter-image:
+	@echo "Checking for holon-adapter-claude image..."
+	@if ! docker image inspect holon-adapter-claude >/dev/null 2>&1; then \
+		echo "Image not found, building holon-adapter-claude..."; \
+		$(MAKE) build-adapter-image; \
+	else \
+		echo "holon-adapter-claude image found."; \
+	fi
+
 ## test: Run all project tests
 test:
 	@echo "Running tests..."
@@ -34,7 +44,7 @@ clean:
 	rm -rf holon-out*
 
 ## run-example: Run the fix-bug example (requires ANTHROPIC_API_KEY)
-run-example: build
+run-example: build ensure-adapter-image
 	@echo "Running fix-bug example..."
 	./$(BIN_DIR)/$(BINARY_NAME) run --spec examples/fix-bug.yaml --image golang:1.22 --workspace . --out ./holon-out-fix
 
