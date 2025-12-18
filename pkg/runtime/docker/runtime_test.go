@@ -2,6 +2,9 @@ package docker
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -27,4 +30,86 @@ func TestRunHolon_DryRun(t *testing.T) {
 	// We only verify that context is handled correctly in the client
 	_ = rt
 	_ = ctx
+}
+
+// TestComposedImageTagGeneration verifies that the tag generation is stable and valid
+func TestComposedImageTagGeneration(t *testing.T) {
+	// Test data
+	testCases := []struct {
+		name        string
+		baseImage   string
+		adapterImage string
+	}{
+		{
+			name:        "standard images",
+			baseImage:   "golang:1.22",
+			adapterImage: "holon-adapter-claude",
+		},
+		{
+			name:        "same images should produce same tag",
+			baseImage:   "golang:1.22",
+			adapterImage: "holon-adapter-claude",
+		},
+		{
+			name:        "different base image",
+			baseImage:   "python:3.11",
+			adapterImage: "holon-adapter-claude",
+		},
+		{
+			name:        "different adapter image",
+			baseImage:   "golang:1.22",
+			adapterImage: "holon-adapter-custom",
+		},
+	}
+
+	// Generate tags for each test case
+	tags := make(map[string]string)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Generate tag using the same logic as buildComposedImage
+			hashInput := tc.baseImage + ":" + tc.adapterImage
+			hash := sha256.Sum256([]byte(hashInput))
+			tag := fmt.Sprintf("holon-composed-%x", hash[:12]) // Use first 12 bytes of hash
+
+			t.Logf("Generated tag for %s + %s: %s", tc.baseImage, tc.adapterImage, tag)
+
+			// Verify tag format
+			if !strings.HasPrefix(tag, "holon-composed-") {
+				t.Errorf("Tag should start with 'holon-composed-', got: %s", tag)
+			}
+
+			// Verify tag contains valid hex characters only after prefix
+			hashPart := strings.TrimPrefix(tag, "holon-composed-")
+			if len(hashPart) != 24 { // 12 bytes = 24 hex characters
+				t.Errorf("Hash part should be 24 characters, got: %d", len(hashPart))
+			}
+
+			// Store for consistency check
+			key := tc.baseImage + ":" + tc.adapterImage
+			if existingTag, exists := tags[key]; exists {
+				if existingTag != tag {
+					t.Errorf("Inconsistent tag generation: same inputs produced different tags: %s vs %s", existingTag, tag)
+				}
+			} else {
+				tags[key] = tag
+			}
+
+			// Verify tag doesn't contain invalid characters
+			for _, r := range tag {
+				if !((r >= 'a' && r <= 'f') || (r >= '0' && r <= '9') || r == '-') {
+					t.Errorf("Tag contains invalid character '%c': %s", r, tag)
+				}
+			}
+		})
+	}
+
+	// Verify that different inputs produce different tags
+	uniqueTags := make(map[string]bool)
+	for _, tag := range tags {
+		uniqueTags[tag] = true
+	}
+
+	if len(uniqueTags) != len(tags) {
+		t.Errorf("Different inputs should produce different tags. Got %d unique tags for %d input combinations", len(uniqueTags), len(tags))
+	}
 }

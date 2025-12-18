@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -200,7 +201,10 @@ RUN npm install -g @anthropic-ai/claude-code@2.0.72 && \
 		return "", err
 	}
 
-	tag := fmt.Sprintf("holon-composed-%x", baseImage+adapterImage)
+	// Generate stable hash for composed image tag
+	hashInput := baseImage + ":" + adapterImage
+	hash := sha256.Sum256([]byte(hashInput))
+	tag := fmt.Sprintf("holon-composed-%x", hash[:12]) // Use first 12 bytes of hash
 	cmd := exec.Command("docker", "build", "-t", tag, tmpDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("composition build failed: %v, output: %s", err, string(out))
