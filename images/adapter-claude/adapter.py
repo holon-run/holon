@@ -57,11 +57,8 @@ async def run_adapter():
     workspace_path = "/workspace"
     os.chdir(workspace_path)
     
-    # Fix dubious ownership error for git
+    # Fix dubious ownership error for git in container (host mounted dir)
     subprocess.run(["git", "config", "--global", "--add", "safe.directory", "/workspace"], check=False)
-    
-    print("--- BEFORE: Files in /workspace ---")
-    subprocess.run(["ls", "-la", workspace_path], check=False)
     
     has_git = os.path.exists(os.path.join(workspace_path, ".git"))
     if not has_git:
@@ -84,8 +81,6 @@ async def run_adapter():
             env_section = settings.get("env", {})
             auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
             base_url = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_API_URL")
-            
-            print(f"Syncing environment: has_token={bool(auth_token)}, has_base_url={bool(base_url)}")
             
             if auth_token:
                 env_section["ANTHROPIC_AUTH_TOKEN"] = auth_token
@@ -129,16 +124,12 @@ async def run_adapter():
             
             final_output = ""
             async for msg in client.receive_response():
-                print(f"RECEIVED MESSAGE: {type(msg).__name__}")
                 log_file.write(f"Message: {msg}\n")
                 
                 if isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, TextBlock):
                             final_output += block.text
-                            print(f"  TEXT: {block.text[:100]}...")
-                        else:
-                            print(f"  BLOCK: {type(block).__name__}")
                 elif isinstance(msg, ResultMessage):
                     print(f"Task result: {msg.subtype}, is_error: {msg.is_error}")
                     if msg.is_error:
@@ -150,17 +141,6 @@ async def run_adapter():
 
         print(f"Claude Code execution finished. Success: {success}")
         
-        print("--- AFTER: Files in /workspace ---")
-        subprocess.run(["ls", "-la", workspace_path], check=False)
-        # Specifically check for the expected file
-        if os.path.exists(os.path.join(workspace_path, "holon-intro.txt")):
-            print("FOUND expected file holon-intro.txt!")
-        else:
-            print("NOT FOUND holon-intro.txt in /workspace")
-            # Try to search everywhere
-            print("Searching for holon-intro.txt in entire container...")
-            subprocess.run(["find", "/", "-name", "holon-intro.txt"], check=False)
-
         # 5. Generate Artifacts
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -171,8 +151,6 @@ async def run_adapter():
         patch_content = diff_proc.stdout
         
         print(f"Generated patch: size={len(patch_content)} characters")
-        if len(patch_content) > 0:
-            print(f"Patch preview:\n{patch_content[:1000]}")
         
         # Manifest
         manifest = {
@@ -201,11 +179,6 @@ async def run_adapter():
             summary_text = f"# Task Summary\n\nGoal: {goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
             f.write(summary_text)
 
-        print("--- GIT STATUS ---")
-        st_proc = subprocess.run(["git", "status"], capture_output=True, text=True)
-        print(st_proc.stdout)
-        print(st_proc.stderr)
-        print("------------------")
         print(f"Artifacts written to {output_dir}")
         
     except Exception as e:
