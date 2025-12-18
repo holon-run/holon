@@ -9,11 +9,9 @@ jobs:
     # Trigger if label is 'holon' OR if someone is assigned to it
     if: github.event.label.name == 'holon' || github.event.assignee.type == 'Bot'
     runs-on: ubuntu-latest
-    permissions:
       contents: write
       issues: write
       pull-requests: write
-      workflows: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -33,7 +31,7 @@ jobs:
       - name: Create Pull Request
         if: success()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
           if [ -s holon-out/diff.patch ]; then
             ISSUE_NUMBER="${{ github.event.issue.number }}"
