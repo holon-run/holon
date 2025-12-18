@@ -172,10 +172,15 @@ func (r *Runtime) buildComposedImage(ctx context.Context, baseImage, adapterImag
 
 	dockerfile := fmt.Sprintf(`
 FROM %s
-# Install Node and Python if missing
+# Install Node, Python and GitHub CLI if missing
 RUN apt-get update && apt-get install -y curl git python3 python3-pip || true
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs || true
+# Try to install GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+    apt-get update && apt-get install -y gh || true
 # Layer the adapter from the adapter image
 COPY --from=%s /app /app
 COPY --from=%s /root/.claude /root/.claude

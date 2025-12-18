@@ -12,6 +12,8 @@ import (
 )
 
 var specPath string
+var goalStr string
+var taskName string
 var adapterImage string
 var workspacePath string
 var contextPath string
@@ -22,9 +24,42 @@ var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run a Holon execution unit",
 	Run: func(cmd *cobra.Command, args []string) {
-		if specPath == "" {
-			fmt.Println("Error: --spec is required")
+		if specPath == "" && goalStr == "" {
+			fmt.Println("Error: either --spec or --goal is required")
 			os.Exit(1)
+		}
+
+		if goalStr != "" {
+			if taskName == "" {
+				taskName = fmt.Sprintf("adhoc-%d", os.Getpid())
+			}
+			// Create a temporary spec file
+			tempDir, err := os.MkdirTemp("", "holon-spec-*")
+			if err != nil {
+				fmt.Printf("Failed to create temp dir for spec: %v\n", err)
+				os.Exit(1)
+			}
+			specPath = filepath.Join(tempDir, "spec.yaml")
+			specContent := fmt.Sprintf(`version: "v1"
+kind: Holon
+metadata:
+  name: %q
+goal:
+  description: %q
+output:
+  artifacts:
+    - path: "manifest.json"
+      required: true
+    - path: "diff.patch"
+      required: true
+    - path: "summary.md"
+      required: true
+`, taskName, goalStr)
+			if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+				fmt.Printf("Failed to write temporary spec: %v\n", err)
+				os.Exit(1)
+			}
+			defer os.RemoveAll(tempDir)
 		}
 
 		ctx := context.Background()
@@ -49,15 +84,32 @@ var runCmd = &cobra.Command{
 		envVars := make(map[string]string)
 
 		// 1. Automatic Secret Injection (v0.1: Anthropic Key & URL)
-		if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-			envVars["ANTHROPIC_API_KEY"] = key
-			envVars["ANTHROPIC_AUTH_TOKEN"] = key
+		anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+		if anthropicKey == "" {
+			anthropicKey = os.Getenv("ANTHROPIC_AUTH_TOKEN")
 		}
+		if anthropicKey != "" {
+			envVars["ANTHROPIC_API_KEY"] = anthropicKey
+			envVars["ANTHROPIC_AUTH_TOKEN"] = anthropicKey
+		}
+
 		// Support both ANTHROPIC_BASE_URL (new) and ANTHROPIC_API_URL (alias for convenience)
-		if url := os.Getenv("ANTHROPIC_BASE_URL"); url != "" {
-			envVars["ANTHROPIC_BASE_URL"] = url
-		} else if url := os.Getenv("ANTHROPIC_API_URL"); url != "" {
-			envVars["ANTHROPIC_BASE_URL"] = url
+		anthropicURL := os.Getenv("ANTHROPIC_BASE_URL")
+		if anthropicURL == "" {
+			anthropicURL = os.Getenv("ANTHROPIC_API_URL")
+		}
+		if anthropicURL != "" {
+			envVars["ANTHROPIC_BASE_URL"] = anthropicURL
+			envVars["ANTHROPIC_API_URL"] = anthropicURL
+		}
+
+		// 1.5. Automatic GitHub Secret Injection
+		if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+			envVars["GITHUB_TOKEN"] = token
+			envVars["GH_TOKEN"] = token
+		} else if token := os.Getenv("GH_TOKEN"); token != "" {
+			envVars["GITHUB_TOKEN"] = token
+			envVars["GH_TOKEN"] = token
 		}
 
 		// 2. Custom Env Vars from CLI (--env K=V)
@@ -94,6 +146,8 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	runCmd.Flags().StringVarP(&specPath, "spec", "s", "", "Path to holon spec file")
+	runCmd.Flags().StringVarP(&goalStr, "goal", "g", "", "Goal description (alternative to --spec)")
+	runCmd.Flags().StringVarP(&taskName, "name", "n", "", "Task name (optional, defaults to auto-generated)")
 	runCmd.Flags().StringVarP(&adapterImage, "image", "i", "golang:1.22", "Docker image for execution (Base toolchain)")
 	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")

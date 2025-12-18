@@ -1,0 +1,58 @@
+name: 'Holon Runtime'
+description: 'Run a Holon execution unit to resolve an issue'
+inputs:
+  image:
+    description: 'The base toolchain image to use'
+    required: false
+    default: 'golang:1.22'
+  anthropic_api_key:
+    description: 'Anthropic API Key (or ANTHROPIC_AUTH_TOKEN)'
+    required: true
+  anthropic_base_url:
+    description: 'Anthropic Base URL'
+    required: false
+    default: 'https://api.anthropic.com'
+  github_token:
+    description: 'GitHub Token'
+    required: false
+    default: ${{ github.token }}
+  workspace:
+    description: 'Path to workspace'
+    required: false
+    default: '.'
+  out_dir:
+    description: 'Path to output directory'
+    required: false
+    default: './holon-out'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Holon
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        # Build holon if not present (or we could download a release in the future)
+        if [ ! -f bin/holon ]; then
+          make build
+        fi
+        
+        # Extract issue info from event
+        if [ -f "$GITHUB_EVENT_PATH" ]; then
+          TITLE=$(jq -r '.issue.title // empty' "$GITHUB_EVENT_PATH")
+          BODY=$(jq -r '.issue.body // empty' "$GITHUB_EVENT_PATH")
+          
+          if [ -n "$TITLE" ]; then
+            GOAL="Issue Title: $TITLE\n\nIssue Description:\n$BODY"
+            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}"
+          else
+            echo "Not an issue event or title is empty."
+            exit 1
+          fi
+        else
+          echo "GITHUB_EVENT_PATH not found."
+          exit 1
+        fi
