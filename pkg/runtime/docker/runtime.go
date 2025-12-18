@@ -186,7 +186,7 @@ COPY --from=%s /app /app
 COPY --from=%s /root/.claude /root/.claude
 COPY --from=%s /root/.claude.json /root/.claude.json
 # Install Claude Code and dependencies
-RUN npm install -g @anthropic-ai/claude-code && \
+RUN npm install -g @anthropic-ai/claude-code@2.0.72 && \
     if [ -f /app/requirements.txt ]; then pip3 install --no-cache-dir -r /app/requirements.txt --break-system-packages || pip3 install --no-cache-dir -r /app/requirements.txt; fi
 # Ensure environment
 ENV IS_SANDBOX=1
