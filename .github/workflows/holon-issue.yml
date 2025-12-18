@@ -9,7 +9,11 @@ jobs:
     # Trigger if label is 'holon' OR if someone is assigned to it
     if: github.event.label.name == 'holon' || github.event.assignee.type == 'Bot'
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      workflows: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
