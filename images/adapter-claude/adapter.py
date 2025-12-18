@@ -137,18 +137,12 @@ async def run_adapter():
             
             final_output = ""
             async for msg in client.receive_response():
-                print(f"RECEIVED MESSAGE: {type(msg).__name__}")
                 log_file.write(f"Message: {msg}\n")
                 
                 if isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, TextBlock):
                             final_output += block.text
-                            print(f"  TEXT: {block.text[:100]}...")
-                        elif isinstance(block, ToolUseBlock):
-                            print(f"  TOOL USE: {block.name}({block.input})")
-                            # If the SDK doesn't auto-execute, we might need a loop here.
-                            # But usually SDK's query() + receive_response handles it if configured.
                 elif isinstance(msg, ResultMessage):
                     print(f"Task result: {msg.subtype}, is_error: {msg.is_error}")
                     if msg.is_error:
@@ -164,26 +158,17 @@ async def run_adapter():
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
         
-        print("--- FS STATE CHECK ---")
-        subprocess.run(["ls", "-la", workspace_path], check=False)
-        
         # Diff Patch: Ensure we see new files
-        # We use 'git add -A' to actually stage changes, then 'git diff --cached' might be safer
-        # or just 'git add -N .' and 'git diff'. 
-        # But 'git add .' followed by 'git diff --staged' is most reliable for new files.
         subprocess.run(["git", "add", "."], capture_output=True)
         diff_proc = subprocess.run(["git", "diff", "--staged", "--patch"], capture_output=True, text=True)
         patch_content = diff_proc.stdout
         
         # Check if patch is empty
         if not patch_content.strip():
-            # Try non-staged diff just in case
             diff_proc = subprocess.run(["git", "diff", "--patch"], capture_output=True, text=True)
             patch_content = diff_proc.stdout
             
         print(f"Generated patch: size={len(patch_content)} characters")
-        if len(patch_content) > 0:
-            print(f"Patch preview:\n{patch_content[:1000]}")
         
         # Manifest
         manifest = {

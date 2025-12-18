@@ -73,6 +73,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: holon-output-${{ github.event.issue.number }}
+          name: holon-output
           path: holon-out/
           retention-days: 5
