@@ -57,6 +57,9 @@ async def run_adapter():
     workspace_path = "/workspace"
     os.chdir(workspace_path)
     
+    print("--- BEFORE: Files in /workspace ---")
+    subprocess.run(["ls", "-la", workspace_path], check=False)
+    
     has_git = os.path.exists(os.path.join(workspace_path, ".git"))
     if not has_git:
         print("No git repo found in workspace. Initializing temporary baseline...")
@@ -138,15 +141,23 @@ async def run_adapter():
                     if msg.is_error:
                         success = False
                     break
-                else:
-                    # Log other message types for debugging
-                    pass
             
             result = final_output
             log_file.write(f"--- FINAL OUTPUT ---\n{result}\n")
 
         print(f"Claude Code execution finished. Success: {success}")
         
+        print("--- AFTER: Files in /workspace ---")
+        subprocess.run(["ls", "-la", workspace_path], check=False)
+        # Specifically check for the expected file
+        if os.path.exists(os.path.join(workspace_path, "holon-intro.txt")):
+            print("FOUND expected file holon-intro.txt!")
+        else:
+            print("NOT FOUND holon-intro.txt in /workspace")
+            # Try to search everywhere
+            print("Searching for holon-intro.txt in entire container...")
+            subprocess.run(["find", "/", "-name", "holon-intro.txt"], check=False)
+
         # 5. Generate Artifacts
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -158,7 +169,7 @@ async def run_adapter():
         
         print(f"Generated patch: size={len(patch_content)} characters")
         if len(patch_content) > 0:
-            print(f"Patch preview:\n{patch_content[:500]}")
+            print(f"Patch preview:\n{patch_content[:1000]}")
         
         # Manifest
         manifest = {
