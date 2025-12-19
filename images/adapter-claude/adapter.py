@@ -56,6 +56,7 @@ async def run_adapter():
         "2. All your changes MUST be made inside the current directory /workspace.\n"
         "3. Do not use absolute paths starting with '/'.\n"
         "4. Your goal is as follows:\n\n"
+        "Finally, create a 'summary.md' file with a concise summary of your changes and the outcome.\n"
     )
     
     # Goal might have escaped newlines
@@ -200,8 +201,17 @@ async def run_adapter():
         with open(os.path.join(output_dir, "diff.patch"), 'w') as f:
             f.write(patch_content)
             
-        with open(os.path.join(output_dir, "summary.md"), 'w') as f:
+        # Check for summary.md in workspace
+        summary_source = os.path.join(workspace_path, "summary.md")
+        if os.path.exists(summary_source):
+            print("Found user-generated summary.md in workspace.")
+            with open(summary_source, 'r') as f:
+                summary_text = f.read()
+        else:
+            print("No summary.md found. Falling back to execution log.")
             summary_text = f"# Task Summary\n\nGoal: {clean_goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
+
+        with open(os.path.join(output_dir, "summary.md"), 'w') as f:
             f.write(summary_text)
 
         print(f"Artifacts written to {output_dir}")

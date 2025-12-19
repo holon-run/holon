@@ -1,4 +1,4 @@
-.PHONY: build build-adapter build-host test clean run-example ensure-adapter-image help
+.PHONY: build build-adapter build-host test test-all clean run-example ensure-adapter-image check-adapter help
 
 # Project variables
 BINARY_NAME=holon
@@ -32,8 +32,13 @@ ensure-adapter-image:
 		echo "holon-adapter-claude image found."; \
 	fi
 
+## check-adapter: Check the adapter code for syntax errors
+check-adapter:
+	@echo "Checking Claude adapter code..."
+	python3 -m py_compile images/adapter-claude/adapter.py
+
 ## test: Run all project tests
-test:
+test: check-adapter
 	@echo "Running tests..."
 	go test ./... -v
 
