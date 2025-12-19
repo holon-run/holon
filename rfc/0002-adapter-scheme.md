@@ -47,7 +47,7 @@ graph TD
 ### 2.2 Responsibilities
 
 1.  **Holon CLI (Host)**:
-    *   Prepare input volumes (`/holon/input`, `/workspace`).
+    *   Prepare input volumes (`/holon/input`, `/holon/workspace`).
     *   Inject credentials (Env Vars).
     *   Run the Adapter Image.
     *   Collect outputs from `/holon/output`.
@@ -65,14 +65,16 @@ To ensure **polymorphism**, every adapter MUST implement the same minimum contra
 **Inputs**
 * `/holon/input/spec.yaml` (read-only): Holon Spec.
 * `/holon/input/context/` (read-only, optional): injected context files (issue.md, pr.md, etc).
-* `/workspace/` (read-write): a *sandbox workspace snapshot* prepared by the Host (see 2.5).
+* `/holon/workspace/` (read-write): a *sandbox workspace snapshot* prepared by the Host (see 2.5).
 * Secrets via environment variables (e.g., `ANTHROPIC_API_KEY`).
 
-**Outputs** (write-only under `/holon/output/`)
+**Outputs** (read-write under `/holon/output/`)
 * `manifest.json` (required): status/outcome/duration/artifacts + tool/runtime metadata.
 * `diff.patch` (required when Spec requests it): a patch representing the workspace changes.
 * `summary.md` (required when Spec requests it): human-readable report.
 * `evidence/` (optional): logs and verification output.
+
+Adapters MAY read files they created under `/holon/output/` during the same run (e.g., incremental plans, temporary notes). The Host SHOULD ensure `/holon/output/` starts empty for each run to avoid cross-run contamination.
 
 **Exit Codes**
 * `0`: success
@@ -95,7 +97,7 @@ Implementation options (Host-side):
 
 ### 2.5 Workspace Isolation (Atomicity)
 
-Adapters and underlying tools may modify `/workspace`. To preserve atomic execution:
+Adapters and underlying tools may modify `/holon/workspace`. To preserve atomic execution:
 * The Host MUST mount a **workspace snapshot** into the container (copy/worktree/clone).
 * The original user workspace MUST NOT be modified in-place by default.
 * Code changes are communicated back via artifacts (especially `diff.patch`), and any application of changes to the original repo is an explicit host-side step (e.g., `--apply`).
@@ -149,7 +151,7 @@ For v0.1, the adapter MUST be non-interactive:
 The adapter MUST be able to output a patch even when the underlying tool only edits files.
 
 Recommended approach:
-* If `/workspace/.git` exists: output `git diff` as `diff.patch`.
+* If `/holon/workspace/.git` exists: output `git diff` as `diff.patch`.
 * Otherwise: initialize a temporary git repo inside the sandbox workspace snapshot:
   1. `git init`
   2. `git add -A && git commit -m baseline`

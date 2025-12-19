@@ -86,7 +86,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		{
 			Type:   mount.TypeBind,
 			Source: snapshotDir,
-			Target: "/workspace",
+			Target: "/holon/workspace",
 		},
 		{
 			Type:   mount.TypeBind,
@@ -112,7 +112,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		Image:      finalImage,
 		Cmd:        cfg.Cmd,
 		Env:        env,
-		WorkingDir: "/workspace",
+		WorkingDir: "/holon/workspace",
 		Tty:        false,
 	}, &container.HostConfig{
 		Mounts:     mounts,
@@ -192,7 +192,7 @@ RUN npm install -g @anthropic-ai/claude-code@2.0.72 && \
 	# Ensure environment
 	ENV IS_SANDBOX=1
 	ENV PYTHONDONTWRITEBYTECODE=1
-	WORKDIR /workspace
+	WORKDIR /holon/workspace
 	ENTRYPOINT ["python3", "/app/adapter.py"]
 `, baseImage, adapterImage, adapterImage, adapterImage)
 

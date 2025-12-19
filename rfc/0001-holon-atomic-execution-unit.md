@@ -76,7 +76,7 @@ metadata:
 
 # INPUT: The context provided to the Agent
 context:
-  workspace: "/workspace"  # Root inside container (default)
+  workspace: "/holon/workspace"  # Workspace root inside container (default)
   files:                   # Priority files to focus on
     - "src/main.go"
     - "README.md"
@@ -115,12 +115,12 @@ sequenceDiagram
 
     User->>CLI: holon run --spec task.yaml --adapter claude
     CLI->>CLI: Parse Spec & Resolve Interpreter
-    CLI->>Docker: Start Container (Volume Mounts: /workspace, /spec, /out)
+    CLI->>Docker: Start Container (Volume Mounts: /holon/workspace, /holon/input, /holon/output)
     CLI->>Docker: Inject/Exec Adapter Binary
     Docker->>Adapter: Start Process
     
     loop Execution Loop
-        Adapter->>Docker: Read /workspace
+        Adapter->>Docker: Read /holon/workspace
         Adapter->>Adapter: Think (LLM Call)
         Adapter->>Docker: Act (Shell Command / File Write)
     end
@@ -139,14 +139,16 @@ Adapters MUST adhere to this **File-System Interface** within the container.
 *   `/holon/input/spec.yaml`: The task definition.
 *   `/holon/input/context/`: Additional injected context files (e.g., issue description).
 *   `/holon/secrets/`: (Mounted volume or Env Vars) API Keys.
-*   `/workspace/`: The target source code (Read-Write).
+*   `/holon/workspace/`: The target source code workspace (Read-Write, repo root).
 
-### 8.2 Outputs (Write-Only)
-Adapters MUST write results to `/holon/output/`.
+### 8.2 Outputs (Read-Write)
+Adapters MUST write results to `/holon/output/`. Adapters MAY also read files they created under `/holon/output/` during the same run (e.g., incremental plans, temporary notes, cached analysis).
 *   `manifest.json`: Metadata about the run (status, cost, duration).
 *   `diff.patch`: The code changes (if any).
 *   `summary.md`: Human-readable report.
 *   `evidence/`: Logs, test results, screenshots.
+
+**Host behavior**: The Host SHOULD treat `/holon/output/` as the output boundary for integration purposes, and SHOULD ensure it starts empty for each run (e.g., create a fresh output directory or clear the target directory before execution) to avoid cross-run contamination.
 
 ### 8.3 Lifecycle
 *   **Single-Shot**: The process starts, performs the task, writes outputs, and terminates.
