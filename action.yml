@@ -59,7 +59,8 @@ runs:
               exit 0
             else
               ERROR=$(echo $RESPONSE | jq -r '.error // "Unknown error"')
-              echo "::warning title=Holonbot Auth::Token exchange failed: $ERROR. Falling back to providing github.token."
+              MSG=$(echo $RESPONSE | jq -r '.message // "No message provided"')
+              echo "::warning title=Holonbot Auth::Token exchange failed: $ERROR ($MSG). Falling back to providing github.token."
             fi
           else
             echo "::warning title=Holonbot Auth::Failed to fetch OIDC token. Ensure 'permissions: id-token: write' is set if you want to use Holonbot identity."

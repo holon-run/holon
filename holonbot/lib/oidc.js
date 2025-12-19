@@ -16,6 +16,7 @@ export async function verifyOIDCToken(token) {
     try {
         const { payload } = await jwtVerify(token, JWKS, {
             issuer: GITHUB_ISSUER,
+            audience: () => true, // Accept any audience for now to debug
             // We don't mandate a specific audience here because usually it's the URL of the repo or org.
             // If we want to be strict, we can check 'aud' matches our bot's intended audience URL 
             // if the user configured it in the workflow. But usually validation of claims is more important.
