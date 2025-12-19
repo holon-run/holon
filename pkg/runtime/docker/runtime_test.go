@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -113,4 +115,95 @@ func TestComposedImageTagGeneration(t *testing.T) {
 	if len(uniqueTags) != len(tags) {
 		t.Errorf("Different inputs should produce different tags. Got %d unique tags for %d input combinations", len(uniqueTags), len(tags))
 	}
+}
+
+func TestCopyDir(t *testing.T) {
+	// Setup source directory
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "src")
+	if err := os.Mkdir(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a file in src
+	testFile := filepath.Join(src, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a subdir in src
+	subDir := filepath.Join(src, "subdir")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "sub.txt"), []byte("world"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a symlink in src (absolute)
+	if err := os.Symlink(testFile, filepath.Join(src, "link_to_test")); err != nil {
+		// On some systems/environments symlinks might fail (e.g. Windows without dev mode)
+		t.Logf("Warning: symlink creation failed: %v", err)
+	} else {
+		t.Log("Symlink created successfully")
+	}
+
+	t.Run("Normal Copy", func(t *testing.T) {
+		dst := filepath.Join(tmpDir, "dst")
+		if err := copyDir(src, dst); err != nil {
+			t.Fatalf("copyDir failed: %v", err)
+		}
+
+		// Verify contents
+		content, err := os.ReadFile(filepath.Join(dst, "test.txt"))
+		if err != nil || string(content) != "hello" {
+			t.Errorf("test.txt copy failed, got: %q, err: %v", string(content), err)
+		}
+
+		content, err = os.ReadFile(filepath.Join(dst, "subdir", "sub.txt"))
+		if err != nil || string(content) != "world" {
+			t.Errorf("subdir/sub.txt copy failed, got: %q, err: %v", string(content), err)
+		}
+
+		// Verify symlink
+		linkTarget, err := os.Readlink(filepath.Join(dst, "link_to_test"))
+		if err == nil {
+			if !filepath.IsAbs(linkTarget) {
+				t.Errorf("Expected absolute link target in copy, got: %s", linkTarget)
+			}
+		}
+	})
+
+	t.Run("Destination Inside Source (Recursion Prevention)", func(t *testing.T) {
+		dstInSrc := filepath.Join(src, "output")
+		// The function should skip this directory to prevent infinite recursion
+		if err := copyDir(src, dstInSrc); err != nil {
+			t.Fatalf("copyDir with dst inside src failed: %v", err)
+		}
+
+		// Verify it didn't copy output into itself
+		// If it succeeded, output/test.txt should exist
+		if _, err := os.Stat(filepath.Join(dstInSrc, "test.txt")); err != nil {
+			t.Errorf("Expected test.txt to be copied into output, got error: %v", err)
+		}
+
+		// Check that output/output does NOT exist (which would indicate recursion)
+		if _, err := os.Stat(filepath.Join(dstInSrc, "output")); err == nil {
+			t.Errorf("Recursion detected: output/output should not exist")
+		}
+	})
+
+	t.Run("Empty Dir", func(t *testing.T) {
+		emptySrc := filepath.Join(tmpDir, "empty")
+		if err := os.Mkdir(emptySrc, 0755); err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(tmpDir, "empty_dst")
+		if err := copyDir(emptySrc, dst); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Stat(dst); err != nil || !info.IsDir() {
+			t.Error("Empty destination directory was not created")
+		}
+	})
 }
