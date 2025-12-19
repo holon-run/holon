@@ -7,19 +7,33 @@
     "start": "probot run ./lib/bot-handler.js",
     "dev": "probot run ./lib/bot-handler.js",
     "build": "echo 'Build complete'",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "deploy": "vercel --prod"
   },
-  "keywords": ["github", "bot", "probot", "serverless", "vercel"],
+  "keywords": [
+    "github",
+    "bot",
+    "probot",
+    "serverless",
+    "vercel"
+  ],
   "author": "Holon Team",
   "license": "MIT",
   "description": "Serverless GitHub App bot for Holon repository management",
   "dependencies": {
     "@octokit/rest": "^22.0.1",
     "dotenv": "^17.2.3",
+    "jose": "^5.9.6",
     "probot": "^14.2.4"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "jest": {
+    "transform": {},
+    "testEnvironment": "node"
   }
 }

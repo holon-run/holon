@@ -26,3 +26,5 @@ __pycache__/
 .env
 .env.local
 thirdparty/
+
+.tmp
