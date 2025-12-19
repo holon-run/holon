@@ -53,3 +53,22 @@ defaults:
 		}
 	})
 }
+
+func TestEmbeddedAssets(t *testing.T) {
+	// This test uses the REAL embedded assets
+	compiler := NewCompiler("")
+
+	// We expect basic compilation to work if paths are correct (e.g. manifest.yaml vs assets/manifest.yaml)
+	prompt, err := compiler.CompileSystemPrompt(Config{
+		WorkingDir: "/real/ws",
+	})
+
+	if err != nil {
+		t.Fatalf("Embedded assets compilation failed: %v. \nCheck if go:embed path and fs.Sub logic handles 'assets' prefix correctly.", err)
+	}
+
+	// Verify some known content from our real assets
+	if !strings.Contains(prompt, "HOLON CONTRACT") {
+		t.Errorf("Expected 'HOLON CONTRACT' in compiled prompt, got: %s", prompt[:100])
+	}
+}
