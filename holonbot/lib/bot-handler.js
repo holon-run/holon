@@ -121,7 +121,7 @@ The Holon team will take a look. Please provide as much detail as possible to he
 
   // Handle repository events
   app.on(['repository.created'], async (context) => {
-    const { payload, repository } = context;
+    const { repository } = context;
 
     app.log.info(`New repository created: ${repository.full_name}`);
 
@@ -166,6 +166,22 @@ build/
       };
 
       // Create initial files (this would require appropriate permissions)
+      const repo = context.payload.repository;
+      const owner =
+        repo.owner && (repo.owner.login || repo.owner.name)
+          ? (repo.owner.login || repo.owner.name)
+          : repo.owner;
+      const repoName = repo.name;
+
+      for (const [path, content] of Object.entries(files)) {
+        await context.octokit.repos.createOrUpdateFileContents({
+          owner,
+          repo: repoName,
+          path,
+          message: `chore: add initial ${path}`,
+          content: Buffer.from(content, 'utf8').toString('base64'),
+        });
+      }
       app.log.info('Repository structure setup complete');
     } catch (error) {
       app.log.error('Error setting up repository:', error);

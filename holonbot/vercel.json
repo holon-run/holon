@@ -3,7 +3,7 @@
   "name": "holonbot",
   "functions": {
     "api/github-webhook.js": {
-      "runtime": "nodejs18.x",
+      "runtime": "nodejs20.x",
       "memory": 512,
       "maxDuration": 30
     }
@@ -33,7 +33,7 @@
   ],
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/github-webhook",
       "destination": "/api/github-webhook"
     }
   ]

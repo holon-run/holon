@@ -28,23 +28,9 @@ export default async function handler(req, res) {
     // Log incoming request for debugging
     console.log(`${req.method} ${req.url} - ${req.headers['x-github-event'] || 'No event'}`);
 
-    // Handle CORS preflight requests
-    if (req.method === 'OPTIONS') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-GitHub-Event, X-GitHub-Delivery, X-Hub-Signature-256');
-      res.status(200).end();
-      return;
-    }
-
-    // Set CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-GitHub-Event, X-GitHub-Delivery, X-Hub-Signature-256');
-
     // Only accept POST requests for webhook events
     if (req.method !== 'POST') {
-      res.setHeader('Allow', 'POST, OPTIONS');
+      res.setHeader('Allow', 'POST');
       return res.status(405).json({ error: 'Method not allowed' });
     }
 
@@ -79,9 +65,10 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('Error handling webhook:', error);
+    const isProduction = process.env.NODE_ENV === 'production';
     return res.status(500).json({
       error: 'Internal server error',
-      message: error.message
+      message: isProduction ? 'An unexpected error occurred.' : error.message
     });
   }
 }
