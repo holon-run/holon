@@ -32,7 +32,7 @@ export default async function handler(req, res) {
         // https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#get-a-repository-installation-for-the-authenticated-app
         let installation;
         try {
-            const response = await appOctokit.apps.getRepoInstallation({
+            const response = await appOctokit.rest.apps.getRepoInstallation({
                 owner,
                 repo: repository.split('/')[1] // 'owner/repo' -> 'repo'
             });
@@ -50,7 +50,7 @@ export default async function handler(req, res) {
         // Issue #27 suggests implementing scoping logic, but for this first pass, we return a standard token.
 
         const installationId = installation.id;
-        const installationTokenResponse = await appOctokit.apps.createInstallationAccessToken({
+        const installationTokenResponse = await appOctokit.rest.apps.createInstallationAccessToken({
             installation_id: installationId,
             // permissions: { contents: 'write' } // Example: restriction
         });
