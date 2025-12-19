@@ -9,6 +9,34 @@ from datetime import datetime
 from pathlib import Path
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
+def fix_permissions(directory):
+    """
+    Recursively change ownership of the directory and its contents
+    to the HOST_UID and HOST_GID provided in environment variables.
+    """
+    uid_str = os.environ.get("HOST_UID")
+    gid_str = os.environ.get("HOST_GID")
+    
+    if not uid_str or not gid_str:
+        return
+        
+    try:
+        uid = int(uid_str)
+        gid = int(gid_str)
+        print(f"Fixing permissions for {directory} to {uid}:{gid}")
+        
+        # Change ownership of the directory itself
+        os.chown(directory, uid, gid)
+        
+        # Recursively change ownership of contents
+        for root, dirs, files in os.walk(directory):
+            for d in dirs:
+                os.chown(os.path.join(root, d), uid, gid)
+            for f in files:
+                os.chown(os.path.join(root, f), uid, gid)
+    except Exception as e:
+        print(f"Warning: Failed to fix permissions: {e}")
+
 async def run_adapter():
     print("Holon Claude Adapter Starting...")
     
@@ -224,6 +252,7 @@ async def run_adapter():
             f.write(summary_text)
 
         print(f"Artifacts written to {output_dir}")
+        fix_permissions(output_dir)
         
     except Exception as e:
         print(f"Execution failed: {e}")
@@ -235,6 +264,7 @@ async def run_adapter():
         }
         with open(os.path.join(output_dir, "manifest.json"), 'w') as f:
             json.dump(manifest, f, indent=2)
+        fix_permissions(output_dir)
         sys.exit(1)
 
 if __name__ == "__main__":

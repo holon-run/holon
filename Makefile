@@ -46,12 +46,12 @@ test: check-adapter
 clean:
 	@echo "Cleaning up..."
 	rm -rf $(BIN_DIR)
-	rm -rf holon-out*
+	rm -rf holon-output*
 
 ## run-example: Run the fix-bug example (requires ANTHROPIC_API_KEY)
 run-example: build ensure-adapter-image
 	@echo "Running fix-bug example..."
-	./$(BIN_DIR)/$(BINARY_NAME) run --spec examples/fix-bug.yaml --image golang:1.22 --workspace . --out ./holon-out-fix
+	./$(BIN_DIR)/$(BINARY_NAME) run --spec examples/fix-bug.yaml --image golang:1.22 --workspace . --out ./holon-output-fix
 
 ## help: Display help information
 help:

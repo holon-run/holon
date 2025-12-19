@@ -81,6 +81,8 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	for k, v := range cfg.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
+	env = append(env, fmt.Sprintf("HOST_UID=%d", os.Getuid()))
+	env = append(env, fmt.Sprintf("HOST_GID=%d", os.Getgid()))
 
 	mounts := []mount.Mount{
 		{

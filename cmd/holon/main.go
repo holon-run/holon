@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jolestar/holon/pkg/api/v1"
+	v1 "github.com/jolestar/holon/pkg/api/v1"
 	"github.com/jolestar/holon/pkg/runtime/docker"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -173,7 +173,7 @@ func init() {
 	runCmd.Flags().StringVarP(&adapterImage, "image", "i", "golang:1.22", "Docker image for execution (Base toolchain)")
 	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
-	runCmd.Flags().StringVarP(&outDir, "out", "o", "./holon-out", "Path to output directory")
+	runCmd.Flags().StringVarP(&outDir, "out", "o", "./holon-output", "Path to output directory")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	rootCmd.AddCommand(runCmd)
 }

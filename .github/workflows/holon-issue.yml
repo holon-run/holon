@@ -34,7 +34,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
-          if [ -s holon-out/diff.patch ]; then
+          if [ -s holon-output/diff.patch ]; then
             ISSUE_NUMBER="${{ github.event.issue.number }}"
             BRANCH_NAME="holon/fix-issue-${ISSUE_NUMBER}"
             
@@ -45,7 +45,7 @@ jobs:
             git checkout -b "$BRANCH_NAME"
             
             # Apply the patch (using --3way for more robustness)
-            git apply --3way holon-out/diff.patch
+            git apply --3way holon-output/diff.patch
             
             # Commit and push
             git add .
@@ -57,8 +57,8 @@ jobs:
             echo "Resolves #${ISSUE_NUMBER}" >> pr_body.txt
             echo "" >> pr_body.txt
             echo "---" >> pr_body.txt
-            if [ -f holon-out/summary.md ]; then
-              cat holon-out/summary.md >> pr_body.txt
+            if [ -f holon-output/summary.md ]; then
+              cat holon-output/summary.md >> pr_body.txt
             fi
             
             # Create PR using gh CLI
@@ -72,14 +72,14 @@ jobs:
       - name: Post Summary
         if: always()
         run: |
-          if [ -f holon-out/summary.md ]; then
-            cat holon-out/summary.md >> $GITHUB_STEP_SUMMARY
+          if [ -f holon-output/summary.md ]; then
+            cat holon-output/summary.md >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Upload Holon Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: holon-output
-          path: holon-out/
+          name: holon-outputput
+          path: holon-output/
           retention-days: 5

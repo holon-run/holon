@@ -4,9 +4,9 @@ bin/
 /holon-adapter
 
 # Holon execution outputs
-holon-out/
-holon-out-*/
-holon-out-fix/
+holon-output/
+holon-output-*/
+holon-output-fix/
 
 # Go artifacts
 vendor/

@@ -23,7 +23,7 @@ inputs:
   out_dir:
     description: 'Path to output directory'
     required: false
-    default: './holon-out'
+    default: './holon-output'
 
 runs:
   using: 'composite'
