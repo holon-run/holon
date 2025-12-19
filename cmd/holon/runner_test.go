@@ -186,10 +186,8 @@ func TestRunner_Run_EnvVariablePrecedence(t *testing.T) {
 	})
 
 	// Set environment variables for auto-injection
-	os.Setenv("ANTHROPIC_API_KEY", "test-key")
-	os.Setenv("GITHUB_TOKEN", "test-token")
-	defer os.Unsetenv("ANTHROPIC_API_KEY")
-	defer os.Unsetenv("GITHUB_TOKEN")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("GITHUB_TOKEN", "test-token")
 
 	cfg := RunnerConfig{
 		SpecPath:      specPath,
