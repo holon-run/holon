@@ -5,22 +5,12 @@
  * It's designed to work with Vercel's serverless function environment.
  */
 
-import { createNodeMiddleware, createProbot } from 'probot';
-import app from '../lib/bot-handler.js';
-
-// Configure environment variables for Probot
-const probotOptions = {
-  appId: process.env.APP_ID,
-  privateKey: process.env.PRIVATE_KEY,
-  webhookSecret: process.env.WEBHOOK_SECRET,
-  logLevel: process.env.LOG_LEVEL || 'info',
-};
-
-// Create Probot instance
-const probot = createProbot(probotOptions);
+import { createNodeMiddleware } from 'probot';
+import botHandler from '../lib/bot-handler.js';
+import { probot } from '../lib/probot-client.js';
 
 // Create middleware to handle webhooks
-const middleware = createNodeMiddleware(app, { probot });
+const middleware = createNodeMiddleware(botHandler, { probot });
 
 // Export as default handler for Vercel
 export default async function handler(req, res) {

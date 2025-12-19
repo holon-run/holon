@@ -16,12 +16,15 @@ A scalable, serverless GitHub App bot built with Probot and deployed on Vercel. 
 ```
 holonbot/
 ├── api/
-│   └── github-webhook.js    # Vercel serverless function (webhook handler)
+│   ├── github-webhook.js    # Vercel serverless function (webhook handler)
+│   └── exchange-token.js    # Vercel serverless function (OIDC token exchange)
 ├── lib/
-│   └── bot-handler.js       # Core bot logic and event handlers
+│   ├── bot-handler.js       # Core bot logic
+│   ├── oidc.js              # OIDC token verification
+│   └── probot-client.js     # Shared Probot instance
 ├── package.json             # Dependencies and scripts
-├── vercel.json             # Vercel configuration
-└── README.md               # This file
+├── vercel.json              # Vercel configuration
+└── README.md                # This file
 ```
 
 ## Prerequisites
