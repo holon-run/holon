@@ -24,16 +24,57 @@ inputs:
     description: 'Path to output directory'
     required: false
     default: './holon-output'
+  holonbot_broker_url:
+    description: 'URL of the Holonbot Token Broker'
+    required: false
+    default: 'https://holon-one.vercel.app/api/exchange-token'
+
+outputs:
+  token:
+    description: 'The GitHub token used (either Holonbot token or input github_token)'
+    value: ${{ steps.get_token.outputs.token }}
 
 runs:
   using: 'composite'
   steps:
+    - name: Get Holonbot Token
+      id: get_token
+      shell: bash
+      run: |
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          echo "Fetching OIDC token from GitHub Actions runtime..."
+          OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r '.value')
+          
+          if [ -n "$OIDC_TOKEN" ] && [ "$OIDC_TOKEN" != "null" ]; then
+            echo "Exchanging OIDC token for Holonbot installation token..."
+            RESPONSE=$(curl -s -X POST "${{ inputs.holonbot_broker_url }}" \
+              -H "Authorization: Bearer $OIDC_TOKEN" \
+              -H "Content-Type: application/json")
+            
+            BOT_TOKEN=$(echo $RESPONSE | jq -r '.token // empty')
+            
+            if [ -n "$BOT_TOKEN" ]; then
+              echo "Successfully obtained Holonbot token."
+              echo "token=$BOT_TOKEN" >> $GITHUB_OUTPUT
+              exit 0
+            else
+              ERROR=$(echo $RESPONSE | jq -r '.error // "Unknown error"')
+              echo "::warning title=Holonbot Auth::Token exchange failed: $ERROR. Falling back to providing github.token."
+            fi
+          else
+            echo "::warning title=Holonbot Auth::Failed to fetch OIDC token. Ensure 'permissions: id-token: write' is set if you want to use Holonbot identity."
+          fi
+        else
+          echo "Skipping token exchange: id-token permission not granted or holonbot_broker_url is empty."
+        fi
+        echo "token=${{ inputs.github_token }}" >> $GITHUB_OUTPUT
+
     - name: Run Holon
       shell: bash
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
-        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GITHUB_TOKEN: ${{ steps.get_token.outputs.token }}
       run: |
         # Build holon and adapter if not present
         if [ ! -f bin/holon ]; then
