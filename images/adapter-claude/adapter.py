@@ -129,7 +129,9 @@ def fix_permissions(directory, logger=None):
         if logger:
             logger.info(f"Warning: Failed to fix permissions: {e}")
         else:
-            print(f"Warning: Failed to fix permissions: {e}")
+            # Fallback when no logger is available
+            import sys
+            print(f"Warning: Failed to fix permissions: {e}", file=sys.stderr)
 
 async def run_adapter():
     # Get log level from environment, default to progress
@@ -162,45 +164,27 @@ async def run_adapter():
         goal = str(goal_val)
     logger.info(f"Task Goal: {goal}")
 
-    # 2. Context Injection
-    logger.log_phase("Loading context files")
-    context_dir = "/holon/input/context"
-    context_header = "\n\n### ADDITIONAL CONTEXT\n"
-    context_content = ""
-    context_files = []
-    if os.path.exists(context_dir):
-        files = glob.glob(os.path.join(context_dir, "*"))
-        logger.info(f"Found {len(files)} context files")
-        for file_path in files:
-            if os.path.isfile(file_path):
-                file_name = os.path.basename(file_path)
-                context_files.append(file_name)
-                with open(file_path, 'r') as f:
-                    content = f.read()
-                    context_content += f"\nFile: {file_name}\n---\n{content}\n---\n"
-        logger.log_tool_use("ContextLoader", files_touched=context_files)
-    
-    # Context Processing Removed: handled by Host-side User Prompt compilation
+    # Context Processing: handled by Host-side User Prompt compilation
 
     # CRITICAL: Instruct the agent to stay in /holon/workspace and use relative paths
     
     # Load System Prompt from Host (compiled)
     prompt_path = "/holon/input/prompts/system.md"
     if not os.path.exists(prompt_path):
-        print(f"Error: Compiled system prompt not found at {prompt_path}")
+        logger.minimal(f"Error: Compiled system prompt not found at {prompt_path}")
         sys.exit(1)
-        
-    print(f"Loading compiled system prompt from {prompt_path}")
+
+    logger.info(f"Loading compiled system prompt from {prompt_path}")
     with open(prompt_path, 'r') as f:
         system_instruction = f.read()
 
     # Load User Prompt from Host (compiled)
     user_prompt_path = "/holon/input/prompts/user.md"
     if not os.path.exists(user_prompt_path):
-        print(f"Error: Compiled user prompt not found at {user_prompt_path}")
+        logger.minimal(f"Error: Compiled user prompt not found at {user_prompt_path}")
         sys.exit(1)
-        
-    print(f"Loading compiled user prompt from {user_prompt_path}")
+
+    logger.info(f"Loading compiled user prompt from {user_prompt_path}")
     with open(user_prompt_path, 'r') as f:
         user_msg = f.read()
 
@@ -288,8 +272,8 @@ async def run_adapter():
 
         # Simple wrapper to capture everything to evidence
         with open(log_file_path, 'w') as log_file:
-            # Run the query
-            await client.query(full_prompt)
+            # Run the query with user message only (system prompt is set via options)
+            await client.query(user_msg)
             final_output = ""
             async for msg in client.receive_response():
                 log_file.write(f"Message: {msg}\n")
