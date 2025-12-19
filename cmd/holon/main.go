@@ -74,12 +74,28 @@ output:
 			os.Exit(1)
 		}
 
-		absWorkspace, _ := filepath.Abs(workspacePath)
-		absSpec, _ := filepath.Abs(specPath)
-		absOut, _ := filepath.Abs(outDir)
+		absWorkspace, err := filepath.Abs(workspacePath)
+		if err != nil {
+			fmt.Printf("Failed to resolve workspace path: %v\n", err)
+			os.Exit(1)
+		}
+		absSpec, err := filepath.Abs(specPath)
+		if err != nil {
+			fmt.Printf("Failed to resolve spec path: %v\n", err)
+			os.Exit(1)
+		}
+		absOut, err := filepath.Abs(outDir)
+		if err != nil {
+			fmt.Printf("Failed to resolve output path: %v\n", err)
+			os.Exit(1)
+		}
 		var absContext string
 		if contextPath != "" {
-			absContext, _ = filepath.Abs(contextPath)
+			absContext, err = filepath.Abs(contextPath)
+			if err != nil {
+				fmt.Printf("Failed to resolve context path: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 		// Ensure out dir exists
@@ -140,10 +156,16 @@ output:
 		// 1.6 Populate Goal from Spec if not provided via flag
 		if goalStr == "" && specPath != "" {
 			// We already unmarshaled context.env, let's fully unmarshal or re-read
-			specData, _ := os.ReadFile(absSpec)
-			var spec v1.HolonSpec
-			if err := yaml.Unmarshal(specData, &spec); err == nil {
-				goalStr = spec.Goal.Description
+			specData, err := os.ReadFile(absSpec)
+			if err != nil {
+				fmt.Printf("Warning: Failed to read spec for goal extraction: %v\n", err)
+			} else {
+				var spec v1.HolonSpec
+				if err := yaml.Unmarshal(specData, &spec); err != nil {
+					fmt.Printf("Warning: Failed to parse spec for goal extraction: %v\n", err)
+				} else {
+					goalStr = spec.Goal.Description
+				}
 			}
 		}
 
@@ -171,9 +193,13 @@ output:
 		// Extract context files for template
 		contextFiles := []string{}
 		if contextPath != "" {
-			files, _ := os.ReadDir(absContext)
-			for _, f := range files {
-				contextFiles = append(contextFiles, f.Name())
+			files, err := os.ReadDir(absContext)
+			if err != nil {
+				fmt.Printf("Warning: Failed to read context directory: %v\n", err)
+			} else {
+				for _, f := range files {
+					contextFiles = append(contextFiles, f.Name())
+				}
 			}
 		}
 
@@ -208,10 +234,17 @@ output:
 		// We need to read context files content for the user prompt
 		var contextContents []string
 		if contextPath != "" {
-			files, _ := os.ReadDir(absContext)
-			for _, f := range files {
-				filepath := filepath.Join(absContext, f.Name())
-				if content, err := os.ReadFile(filepath); err == nil {
+			files, err := os.ReadDir(absContext)
+			if err != nil {
+				fmt.Printf("Warning: Failed to read context directory for user prompt: %v\n", err)
+			} else {
+				for _, f := range files {
+					filepath := filepath.Join(absContext, f.Name())
+					content, err := os.ReadFile(filepath)
+					if err != nil {
+						fmt.Printf("Warning: Failed to read context file %s: %v\n", f.Name(), err)
+						continue
+					}
 					formatted := fmt.Sprintf("File: %s\n---\n%s\n---\n", f.Name(), string(content))
 					contextContents = append(contextContents, formatted)
 				}
@@ -232,8 +265,12 @@ output:
 		}
 
 		// Debug Outputs (as requested in Issue #40)
-		os.WriteFile(filepath.Join(absOut, "prompt.compiled.system.md"), []byte(sysPrompt), 0644)
-		os.WriteFile(filepath.Join(absOut, "prompt.compiled.user.md"), []byte(userPrompt), 0644)
+		if err := os.WriteFile(filepath.Join(absOut, "prompt.compiled.system.md"), []byte(sysPrompt), 0644); err != nil {
+			fmt.Printf("Warning: Failed to write debug system prompt: %v\n", err)
+		}
+		if err := os.WriteFile(filepath.Join(absOut, "prompt.compiled.user.md"), []byte(userPrompt), 0644); err != nil {
+			fmt.Printf("Warning: Failed to write debug user prompt: %v\n", err)
+		}
 
 		cfg := &docker.ContainerConfig{
 			BaseImage:      adapterImage,
