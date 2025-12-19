@@ -28,6 +28,10 @@ inputs:
     description: 'URL of the Holonbot Token Broker'
     required: false
     default: 'https://holon-one.vercel.app/api/exchange-token'
+  log_level:
+    description: 'Log level for visibility'
+    required: false
+    default: 'progress'
 
 outputs:
   token:
@@ -83,15 +87,15 @@ runs:
           make build
         fi
         make build-adapter-image
-        
+
         # Extract issue info from event
         if [ -f "$GITHUB_EVENT_PATH" ]; then
           TITLE=$(jq -r '.issue.title // empty' "$GITHUB_EVENT_PATH")
           BODY=$(jq -r '.issue.body // empty' "$GITHUB_EVENT_PATH")
-          
+
           if [ -n "$TITLE" ]; then
             GOAL="Issue Title: $TITLE\n\nIssue Description:\n$BODY"
-            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}"
+            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}" --log-level "${{ inputs.log_level }}"
           else
             echo "Not an issue event or title is empty."
             exit 1
