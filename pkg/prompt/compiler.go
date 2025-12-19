@@ -5,8 +5,6 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"text/template"
 
 	"gopkg.in/yaml.v3"
@@ -148,16 +146,4 @@ func (c *Compiler) CompileUserPrompt(goal string, contextFiles []string) (string
 	}
 
 	return sb.String(), nil
-}
-
-// ReadProjectContext looks for CLAUDE.md or AGENTS.md in the workspace root
-func ReadProjectContext(workspaceRoot string) (string, error) {
-	candidates := []string{"CLAUDE.md", "AGENTS.md"}
-	for _, name := range candidates {
-		path := filepath.Join(workspaceRoot, name)
-		if content, err := os.ReadFile(path); err == nil {
-			return fmt.Sprintf("\n\n### PROJECT INSTRUCTIONS (%s)\n%s", name, string(content)), nil
-		}
-	}
-	return "", nil
 }
