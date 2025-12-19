@@ -122,7 +122,7 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 	return buf.String(), nil
 }
 
-// CompileUserPrompt assembles the user's task prompt (Goal + Context)
+// CompileUserPrompt assembles the user's task prompt (Goal + Context Filenames)
 func (c *Compiler) CompileUserPrompt(goal string, contextFiles []string) (string, error) {
 	var sb bytes.Buffer
 
@@ -131,17 +131,12 @@ func (c *Compiler) CompileUserPrompt(goal string, contextFiles []string) (string
 	sb.WriteString(goal)
 	sb.WriteString("\n")
 
-	// 2. Context Files
+	// 2. Context Files (Filenames only to keep prompt size manageable)
 	if len(contextFiles) > 0 {
-		sb.WriteString("\n\n### ADDITIONAL CONTEXT\n")
-		for _, content := range contextFiles {
-			// We expect contextFiles to be formatted content here?
-			// Or filenames? The signature in Main passed filenames to CompileSystemPrompt.
-			// But for UserPrompt, we need the CONTENT.
-			// Let's change the signature to map[string]string or similar?
-			// Or let the caller read them.
-			sb.WriteString(content) // simplified for now, assuming pre-formatted
-			sb.WriteString("\n")
+		sb.WriteString("\n\n### ADDITIONAL CONTEXT FILES\n")
+		sb.WriteString("The following files provide additional context and are available at /holon/input/context/:\n")
+		for _, name := range contextFiles {
+			sb.WriteString(fmt.Sprintf("- %s\n", name))
 		}
 	}
 

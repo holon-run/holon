@@ -231,27 +231,22 @@ output:
 		}
 
 		// X+1. Compile User Prompt
-		// We need to read context files content for the user prompt
-		var contextContents []string
+		// Only collect filenames for the user prompt to keep it concise
+		var contextFileNames []string
 		if contextPath != "" {
 			files, err := os.ReadDir(absContext)
 			if err != nil {
 				fmt.Printf("Warning: Failed to read context directory for user prompt: %v\n", err)
 			} else {
 				for _, f := range files {
-					filepath := filepath.Join(absContext, f.Name())
-					content, err := os.ReadFile(filepath)
-					if err != nil {
-						fmt.Printf("Warning: Failed to read context file %s: %v\n", f.Name(), err)
-						continue
+					if !f.IsDir() {
+						contextFileNames = append(contextFileNames, f.Name())
 					}
-					formatted := fmt.Sprintf("File: %s\n---\n%s\n---\n", f.Name(), string(content))
-					contextContents = append(contextContents, formatted)
 				}
 			}
 		}
 
-		userPrompt, err := compiler.CompileUserPrompt(goalStr, contextContents)
+		userPrompt, err := compiler.CompileUserPrompt(goalStr, contextFileNames)
 		if err != nil {
 			fmt.Printf("Failed to compile user prompt: %v\n", err)
 			os.Exit(1)
