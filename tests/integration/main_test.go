@@ -57,6 +57,12 @@ func TestScript(t *testing.T) {
 		Setup: func(env *testscript.Env) error {
 			// Add bin dir to PATH
 			env.Vars = append(env.Vars, fmt.Sprintf("PATH=%s%c%s", binDir, filepath.ListSeparator, os.Getenv("PATH")))
+			// Set a valid HOME for docker and other tools
+			homeDir := filepath.Join(env.WorkDir, "home")
+			if err := os.MkdirAll(homeDir, 0755); err != nil {
+				return err
+			}
+			env.Vars = append(env.Vars, "HOME="+homeDir)
 			return nil
 		},
 	})
