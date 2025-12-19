@@ -29,7 +29,7 @@ inputs:
     required: false
     default: 'https://holon-one.vercel.app/api/exchange-token'
   log_level:
-    description: 'Log level for visibility'
+    description: 'Log level for CI visibility (debug, info, progress, minimal)'
     required: false
     default: 'progress'
 

@@ -20,7 +20,6 @@ class ProgressLogger:
     def __init__(self, log_level="progress"):
         self.log_level = LogLevel(log_level.lower())
         self.tool_use_count = 0
-        self.file_operations = []
 
     def _should_log(self, level):
         level_priority = {
@@ -81,7 +80,7 @@ class ProgressLogger:
         outcome = "SUCCESS" if success else "FAILURE"
         self.minimal(f"Outcome: {outcome} (duration: {duration:.1f}s)")
         if error and self._should_log(LogLevel.INFO):
-            print(f"[ERROR] {error}")
+            self.info(f"[ERROR] {error}")
 
     def log_summary_excerpt(self, summary_path, lines=5):
         """Print first N lines of summary to workflow logs"""
@@ -89,36 +88,37 @@ class ProgressLogger:
             if os.path.exists(summary_path):
                 with open(summary_path, 'r') as f:
                     summary_lines = f.readlines()
-                    print("\n=== SUMMARY EXCERPT ===")
+                    self.minimal("=== SUMMARY EXCERPT ===")
                     for i, line in enumerate(summary_lines[:lines]):
-                        print(f"{i+1:2d}: {line.rstrip()}")
+                        self.minimal(f"{i+1:2d}: {line.rstrip()}")
                     if len(summary_lines) > lines:
-                        print(f"... and {len(summary_lines) - lines} more lines")
-                    print("=== END SUMMARY ===\n")
+                        self.minimal(f"... and {len(summary_lines) - lines} more lines")
+                    self.minimal("=== END SUMMARY ===")
             else:
-                print("[WARNING] Summary file not found")
+                self.info("[WARNING] Summary file not found")
         except Exception as e:
-            print(f"[WARNING] Failed to read summary: {e}")
+            self.info(f"[WARNING] Failed to read summary: {e}")
 
-def fix_permissions(directory):
+def fix_permissions(directory, logger=None):
     """
     Recursively change ownership of the directory and its contents
     to the HOST_UID and HOST_GID provided in environment variables.
     """
     uid_str = os.environ.get("HOST_UID")
     gid_str = os.environ.get("HOST_GID")
-    
+
     if not uid_str or not gid_str:
         return
-        
+
     try:
         uid = int(uid_str)
         gid = int(gid_str)
-        print(f"Fixing permissions for {directory} to {uid}:{gid}")
-        
+        if logger:
+            logger.debug(f"Fixing permissions for {directory} to {uid}:{gid}")
+
         # Change ownership of the directory itself
         os.chown(directory, uid, gid)
-        
+
         # Recursively change ownership of contents
         for root, dirs, files in os.walk(directory):
             for d in dirs:
@@ -126,7 +126,10 @@ def fix_permissions(directory):
             for f in files:
                 os.chown(os.path.join(root, f), uid, gid)
     except Exception as e:
-        print(f"Warning: Failed to fix permissions: {e}")
+        if logger:
+            logger.info(f"Warning: Failed to fix permissions: {e}")
+        else:
+            print(f"Warning: Failed to fix permissions: {e}")
 
 async def run_adapter():
     # Get log level from environment, default to progress
@@ -145,7 +148,7 @@ async def run_adapter():
     logger.log_phase("Loading specification")
     spec_path = "/holon/input/spec.yaml"
     if not os.path.exists(spec_path):
-        print(f"Error: Spec not found at {spec_path}")
+        logger.minimal(f"Error: Spec not found at {spec_path}")
         sys.exit(1)
 
     with open(spec_path, 'r') as f:
@@ -358,20 +361,18 @@ async def run_adapter():
         summary_out = os.path.join(output_dir, "summary.md")
         
         if os.path.exists(summary_out):
-            print("Found user-generated summary.md in /holon/output.")
+            logger.info("Found user-generated summary.md in /holon/output.")
             with open(summary_out, 'r') as f:
                 summary_text = f.read()
         else:
-            print("No summary.md found. Falling back to execution log.")
-            # Use 'goal' variable from spec parsing, ensuring newlines are handled for display
-            display_goal = str(goal).replace('\n', ' ')
-            summary_text = f"# Task Summary\n\nGoal: {display_goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
+            logger.info("No summary.md found. Falling back to execution log.")
+            summary_text = f"# Task Summary\n\nGoal: {clean_goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
 
         with open(os.path.join(output_dir, "summary.md"), 'w') as f:
             f.write(summary_text)
 
         logger.progress(f"Artifacts written to {output_dir}")
-        fix_permissions(output_dir)
+        fix_permissions(output_dir, logger)
 
         # Log summary excerpt for CI visibility
         summary_path = os.path.join(output_dir, "summary.md")
@@ -397,7 +398,7 @@ async def run_adapter():
         }
         with open(os.path.join(output_dir, "manifest.json"), 'w') as f:
             json.dump(manifest, f, indent=2)
-        fix_permissions(output_dir)
+        fix_permissions(output_dir, logger)
         sys.exit(1)
 
 if __name__ == "__main__":
