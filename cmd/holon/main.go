@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jolestar/holon/pkg/api/v1"
 	"github.com/jolestar/holon/pkg/runtime/docker"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var specPath string
@@ -83,6 +85,26 @@ output:
 		// Collect Env Vars
 		envVars := make(map[string]string)
 
+		// 0. Parse spec file to extract context.env
+		if specPath != "" {
+			specData, err := os.ReadFile(absSpec)
+			if err != nil {
+				fmt.Printf("Failed to read spec file: %v\n", err)
+				os.Exit(1)
+			}
+
+			var spec v1.HolonSpec
+			if err := yaml.Unmarshal(specData, &spec); err != nil {
+				fmt.Printf("Failed to parse spec file: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Add context.env variables (lowest priority)
+			for k, v := range spec.Context.Env {
+				envVars[k] = v
+			}
+		}
+
 		// 1. Automatic Secret Injection (v0.1: Anthropic Key & URL)
 		anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 		if anthropicKey == "" {
@@ -112,7 +134,7 @@ output:
 			envVars["GH_TOKEN"] = token
 		}
 
-		// 2. Custom Env Vars from CLI (--env K=V)
+		// 2. Custom Env Vars from CLI (--env K=V) - highest priority
 		for _, pair := range envVarsList {
 			parts := strings.SplitN(pair, "=", 2)
 			if len(parts) == 2 {

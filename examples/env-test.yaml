@@ -1,0 +1,19 @@
+version: "v1"
+kind: Holon
+metadata:
+  name: "env-test"
+context:
+  workspace: "/workspace"
+  env:
+    TEST_VAR: "from_spec"
+    ANOTHER_VAR: "hello_world"
+    DB_HOST: "localhost"
+    DB_PORT: "5432"
+goal:
+  description: "Print all environment variables that start with TEST_, ANOTHER_, or DB_ to verify spec.context.env is working"
+output:
+  artifacts:
+    - path: "manifest.json"
+      required: true
+    - path: "env_output.txt"
+      required: true
