@@ -350,7 +350,7 @@ async def run_adapter():
                 summary_text = f.read()
         else:
             logger.info("No summary.md found. Falling back to execution log.")
-            summary_text = f"# Task Summary\n\nGoal: {clean_goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
+            summary_text = f"# Task Summary\n\nGoal: {goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
 
         with open(os.path.join(output_dir, "summary.md"), 'w') as f:
             f.write(summary_text)

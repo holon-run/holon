@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -235,10 +236,88 @@ RUN npm install -g @anthropic-ai/claude-code@2.0.72 && \
 
 // copyDir is a helper to snapshot the workspace
 func copyDir(src string, dst string) error {
-	// Using cp -a for recursive copy on Darwin/Linux
-	cmd := exec.Command("cp", "-a", src+"/.", dst+"/")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("cp failed: %v, output: %s", err, string(out))
-	}
-	return nil
+	src = filepath.Clean(src)
+	dst = filepath.Clean(dst)
+
+	// Check if dst is inside src
+	// If so, we must skip it during copy
+	rel, err := filepath.Rel(src, dst)
+	dstIsInsideSrc := err == nil && !strings.HasPrefix(rel, "..")
+
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// If dst is inside src, skip the dst directory itself
+		if dstIsInsideSrc {
+			if path == dst {
+				return filepath.SkipDir
+			}
+			// Also skip if path is a child of dst (just in case WalkDir goes there)
+			if strings.HasPrefix(path, dst+string(os.PathSeparator)) {
+				return filepath.SkipDir
+			}
+		}
+
+		// Skip the root src dir itself, but create root dst
+		if path == src {
+			return os.MkdirAll(dst, 0755)
+		}
+
+		// Determine destination path
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		destPath := filepath.Join(dst, relPath)
+
+		// Handle Directories
+		if d.IsDir() {
+			return os.MkdirAll(destPath, 0755)
+		}
+
+		// Handle Symlinks
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if (info.Mode() & os.ModeSymlink) != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(linkTarget, destPath)
+		}
+
+		// Handle Regular Files
+		if !d.Type().IsRegular() {
+			// Skip sockets, devices, etc. for now to be safe
+			return nil
+		}
+
+		// Copy File Content
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+
+		out, err := os.Create(destPath)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+
+		if _, err := io.Copy(out, in); err != nil {
+			return err
+		}
+
+		// Preserve permissions
+		if err := out.Chmod(info.Mode()); err != nil {
+			return err
+		}
+
+		return nil
+	})
 }

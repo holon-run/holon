@@ -1,0 +1,9 @@
+# Test holon help command
+exec holon help
+stdout 'Usage:'
+stdout 'Available Commands:'
+! stderr .
+
+# Test holon run without arguments (should fail)
+! exec holon run
+stdout 'Error: either --spec or --goal is required'

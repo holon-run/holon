@@ -42,6 +42,11 @@ test: check-adapter
 	@echo "Running tests..."
 	go test ./... -v
 
+## test-integration: Run integration tests
+test-integration: build-adapter-image
+	@echo "Running integration tests..."
+	go test ./tests/integration/... -v
+
 ## clean: Remove build artifacts
 clean:
 	@echo "Cleaning up..."

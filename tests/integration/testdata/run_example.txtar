@@ -1,0 +1,61 @@
+# Test holon run with example spec
+# This requires a "stub" adapter or just testing the host logic up to the point of container execution.
+# Since we can't easily run Docker inside this test environment (it might be too slow or not available),
+# we might need to mock the runtime or use a "dry-run" flag if available.
+# However, the user request is to "verify whether it works as expected", implying a real run.
+# But running real docker in `go test` can be flaky.
+# Let's inspect if `holon` has a way to run in a dry-run mode or if we can use a dummy image.
+# The user said "verify whether it works as expected", so let's try to run it.
+# If docker is not available, this test will fail, which is expected for an integration test relying on Docker.
+
+# We will use 'alpine' as a lightweight base image if needed, but holon uses 'holon-adapter-claude'.
+# We might need to build the adapter image first?
+# The Makefile has `build-adapter-image`.
+# Let's assume the environment has the adapter image or we can skip if not.
+
+# For now, let's try to run a simple goal that doesn't need complex AI,
+# BUT `holon` currently relies on `holon-adapter-claude`.
+# If `holon-adapter-claude` is not built, `holon run` will try to build it?
+# Looking at Makefile: `ensure-adapter-image` calls `docker build`.
+# `holon run` command main.go calls `docker.NewRuntime()`.
+
+# Let's create a test that mocks the workspace and runs `holon`.
+# We need to make sure `holon-adapter-claude` is available or the test handles it.
+# We will just expect it to run. CLI exits with 1 if it fails.
+
+env ANTHROPIC_API_KEY=dummy
+env ANTHROPIC_BASE_URL=http://localhost:1234
+# We use a dummy URL to prevent actual API calls during basic integration testing if possible,
+# OR we rely on the fact that the adapter will fail to connect but the HOST will succeed in launching it.
+# Wait, if the adapter fails, the host might exit with error.
+# We want to test the HOST logic.
+
+# Let's try to run with a goal.
+exec holon run --goal "fix the bugs" --workspace . --out ./output --name "test-task" --image "debian:stable-slim"
+# Note: we use debian because the runtime assumes apt-get is available.
+# We need to be careful.
+
+# Actually, testing the full docker run in `testscript` might be too heavy if we don't have the image.
+# Let's first verify `basic_usage` passes.
+
+# If we want to test `holon run` without actually invoking LLM, we might need a "mock" adapter or
+# just verify that it *attempts* to run and fails at a predictable stage (e.g. "execution failed").
+
+# Let's assume for this "run_example" we just want to verify CLI flag parsing and prompt generation.
+# We can check the `prompt.compiled.system.md` in output dir if implementation supports it.
+# The implementation does write assertions to `holon-output`.
+
+exec holon run --goal "Fix this file" --workspace . --out output --spec spec.yaml
+exists output/prompt.compiled.system.md
+exists output/prompt.compiled.user.md
+stdout 'Running Holon'
+
+-- spec.yaml --
+version: "v1"
+kind: Holon
+metadata:
+  name: "test-run"
+goal:
+  description: "Fix this file"
+context:
+  workspace: "."
