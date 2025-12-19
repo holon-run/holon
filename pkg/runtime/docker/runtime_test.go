@@ -36,28 +36,28 @@ func TestRunHolon_DryRun(t *testing.T) {
 func TestComposedImageTagGeneration(t *testing.T) {
 	// Test data
 	testCases := []struct {
-		name        string
-		baseImage   string
+		name         string
+		baseImage    string
 		adapterImage string
 	}{
 		{
-			name:        "standard images",
-			baseImage:   "golang:1.22",
+			name:         "standard images",
+			baseImage:    "golang:1.22",
 			adapterImage: "holon-adapter-claude",
 		},
 		{
-			name:        "same images should produce same tag",
-			baseImage:   "golang:1.22",
+			name:         "same images should produce same tag",
+			baseImage:    "golang:1.22",
 			adapterImage: "holon-adapter-claude",
 		},
 		{
-			name:        "different base image",
-			baseImage:   "python:3.11",
+			name:         "different base image",
+			baseImage:    "python:3.11",
 			adapterImage: "holon-adapter-claude",
 		},
 		{
-			name:        "different adapter image",
-			baseImage:   "golang:1.22",
+			name:         "different adapter image",
+			baseImage:    "golang:1.22",
 			adapterImage: "holon-adapter-custom",
 		},
 	}
@@ -95,7 +95,7 @@ func TestComposedImageTagGeneration(t *testing.T) {
 			}
 
 			// Verify tag doesn't contain invalid characters (only check the hash part)
-			hashPart := strings.TrimPrefix(tag, "holon-composed-")
+			hashPart = strings.TrimPrefix(tag, "holon-composed-")
 			for _, r := range hashPart {
 				if !((r >= 'a' && r <= 'f') || (r >= '0' && r <= '9')) {
 					t.Errorf("Tag hash part contains invalid character '%c': %s", r, tag)
