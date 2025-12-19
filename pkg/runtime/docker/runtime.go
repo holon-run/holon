@@ -28,14 +28,16 @@ func NewRuntime() (*Runtime, error) {
 }
 
 type ContainerConfig struct {
-	BaseImage    string // e.g., golang:1.22 (The toolchain)
-	AdapterImage string // e.g., holon-adapter-claude (The adapter logic)
-	Workspace    string
-	SpecPath     string
-	ContextPath  string // Optional: path to context files
-	OutDir       string
-	Env          map[string]string
-	Cmd          []string // Optional command override
+	BaseImage      string // e.g., golang:1.22 (The toolchain)
+	AdapterImage   string // e.g., holon-adapter-claude (The adapter logic)
+	Workspace      string
+	SpecPath       string
+	ContextPath    string // Optional: path to context files
+	OutDir         string
+	Env            map[string]string
+	PromptPath     string   // Path to compiled system.md
+	UserPromptPath string   // Path to compiled user.md
+	Cmd            []string // Optional command override
 }
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
@@ -107,6 +109,22 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 			Type:   mount.TypeBind,
 			Source: cfg.ContextPath,
 			Target: "/holon/input/context",
+		})
+	}
+
+	if cfg.PromptPath != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: cfg.PromptPath,
+			Target: "/holon/input/prompts/system.md",
+		})
+	}
+
+	if cfg.UserPromptPath != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: cfg.UserPromptPath,
+			Target: "/holon/input/prompts/user.md",
 		})
 	}
 

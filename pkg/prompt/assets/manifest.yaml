@@ -1,0 +1,4 @@
+version: 1.0.0
+defaults:
+  role: coder
+  contract: v1

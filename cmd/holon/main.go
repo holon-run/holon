@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	v1 "github.com/jolestar/holon/pkg/api/v1"
+	"github.com/jolestar/holon/pkg/prompt"
 	"github.com/jolestar/holon/pkg/runtime/docker"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -20,6 +21,7 @@ var adapterImage string
 var workspacePath string
 var contextPath string
 var outDir string
+var roleName string
 var envVarsList []string
 
 var runCmd = &cobra.Command{
@@ -142,14 +144,91 @@ output:
 			}
 		}
 
+		// X. Compile System Prompt
+		compiler := prompt.NewCompiler("")
+		projectContext, _ := prompt.ReadProjectContext(absWorkspace)
+
+		// Extract context files for template
+		contextFiles := []string{}
+		if contextPath != "" {
+			files, _ := os.ReadDir(absContext)
+			for _, f := range files {
+				contextFiles = append(contextFiles, f.Name())
+			}
+		}
+
+		sysPrompt, err := compiler.CompileSystemPrompt(prompt.Config{
+			Role:         roleName,
+			Language:     "en", // TODO: Detect or flag
+			WorkingDir:   "/holon/workspace",
+			ContextFiles: contextFiles,
+		})
+		if err != nil {
+			fmt.Printf("Failed to compile system prompt: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Append project context if any
+		if projectContext != "" {
+			sysPrompt += "\n" + projectContext
+		}
+
+		// Write to temp file
+		promptTempDir, err := os.MkdirTemp("", "holon-prompt-*")
+		if err != nil {
+			fmt.Printf("Failed to create temporary prompt dir: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.RemoveAll(promptTempDir)
+
+		// Write System Prompt
+		sysPromptPath := filepath.Join(promptTempDir, "system.md")
+		if err := os.WriteFile(sysPromptPath, []byte(sysPrompt), 0644); err != nil {
+			fmt.Printf("Failed to write system prompt: %v\n", err)
+			os.Exit(1)
+		}
+
+		// X+1. Compile User Prompt
+		// We need to read context files content for the user prompt
+		var contextContents []string
+		if contextPath != "" {
+			files, _ := os.ReadDir(absContext)
+			for _, f := range files {
+				filepath := filepath.Join(absContext, f.Name())
+				if content, err := os.ReadFile(filepath); err == nil {
+					formatted := fmt.Sprintf("File: %s\n---\n%s\n---\n", f.Name(), string(content))
+					contextContents = append(contextContents, formatted)
+				}
+			}
+		}
+
+		userPrompt, err := compiler.CompileUserPrompt(goalStr, contextContents)
+		if err != nil {
+			fmt.Printf("Failed to compile user prompt: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Write User Prompt
+		userPromptPath := filepath.Join(promptTempDir, "user.md")
+		if err := os.WriteFile(userPromptPath, []byte(userPrompt), 0644); err != nil {
+			fmt.Printf("Failed to write user prompt: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Debug Outputs (as requested in Issue #40)
+		os.WriteFile(filepath.Join(absOut, "prompt.compiled.system.md"), []byte(sysPrompt), 0644)
+		os.WriteFile(filepath.Join(absOut, "prompt.compiled.user.md"), []byte(userPrompt), 0644)
+
 		cfg := &docker.ContainerConfig{
-			BaseImage:    adapterImage,
-			AdapterImage: "holon-adapter-claude",
-			Workspace:    absWorkspace,
-			SpecPath:     absSpec,
-			ContextPath:  absContext,
-			OutDir:       absOut,
-			Env:          envVars,
+			BaseImage:      adapterImage,
+			AdapterImage:   "holon-adapter-claude",
+			Workspace:      absWorkspace,
+			SpecPath:       absSpec,
+			ContextPath:    absContext,
+			PromptPath:     sysPromptPath,
+			UserPromptPath: userPromptPath,
+			OutDir:         absOut,
+			Env:            envVars,
 		}
 
 		fmt.Printf("Running Holon: %s with base image %s\n", specPath, adapterImage)
@@ -174,6 +253,7 @@ func init() {
 	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVarP(&outDir, "out", "o", "./holon-output", "Path to output directory")
+	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. coder, architect)")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	rootCmd.AddCommand(runCmd)
 }
