@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	v1 "github.com/jolestar/holon/pkg/api/v1"
+	"github.com/jolestar/holon/pkg/prompt"
 	"github.com/jolestar/holon/pkg/runtime/docker"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -20,12 +21,14 @@ var adapterImage string
 var workspacePath string
 var contextPath string
 var outDir string
+var roleName string
 var envVarsList []string
 
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run a Holon execution unit",
 	Run: func(cmd *cobra.Command, args []string) {
+		// Validation deferred to allow goal extraction from Spec
 		if specPath == "" && goalStr == "" {
 			fmt.Println("Error: either --spec or --goal is required")
 			os.Exit(1)
@@ -71,12 +74,28 @@ output:
 			os.Exit(1)
 		}
 
-		absWorkspace, _ := filepath.Abs(workspacePath)
-		absSpec, _ := filepath.Abs(specPath)
-		absOut, _ := filepath.Abs(outDir)
+		absWorkspace, err := filepath.Abs(workspacePath)
+		if err != nil {
+			fmt.Printf("Failed to resolve workspace path: %v\n", err)
+			os.Exit(1)
+		}
+		absSpec, err := filepath.Abs(specPath)
+		if err != nil {
+			fmt.Printf("Failed to resolve spec path: %v\n", err)
+			os.Exit(1)
+		}
+		absOut, err := filepath.Abs(outDir)
+		if err != nil {
+			fmt.Printf("Failed to resolve output path: %v\n", err)
+			os.Exit(1)
+		}
 		var absContext string
 		if contextPath != "" {
-			absContext, _ = filepath.Abs(contextPath)
+			absContext, err = filepath.Abs(contextPath)
+			if err != nil {
+				fmt.Printf("Failed to resolve context path: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 		// Ensure out dir exists
@@ -134,6 +153,28 @@ output:
 			envVars["GH_TOKEN"] = token
 		}
 
+		// 1.6 Populate Goal from Spec if not provided via flag
+		if goalStr == "" && specPath != "" {
+			// We already unmarshaled context.env, let's fully unmarshal or re-read
+			specData, err := os.ReadFile(absSpec)
+			if err != nil {
+				fmt.Printf("Warning: Failed to read spec for goal extraction: %v\n", err)
+			} else {
+				var spec v1.HolonSpec
+				if err := yaml.Unmarshal(specData, &spec); err != nil {
+					fmt.Printf("Warning: Failed to parse spec for goal extraction: %v\n", err)
+				} else {
+					goalStr = spec.Goal.Description
+				}
+			}
+		}
+
+		// Validation: must have goal by now
+		if goalStr == "" {
+			fmt.Println("Error: goal description is missing in spec or flags")
+			os.Exit(1)
+		}
+
 		// 2. Custom Env Vars from CLI (--env K=V) - highest priority
 		for _, pair := range envVarsList {
 			parts := strings.SplitN(pair, "=", 2)
@@ -142,14 +183,100 @@ output:
 			}
 		}
 
+		// X. Compile System Prompt
+		compiler := prompt.NewCompiler("")
+		// NOTE: We do NOT inject project context (CLAUDE.md) into system prompt here.
+		// It should be handled by the Agent itself (e.g. Claude Code reads it from workspace),
+		// or by the Adapter if explicitly requested.
+		// Mixing it into the compiled system prompt causes duplication.
+
+		// Extract context files for template
+		contextFiles := []string{}
+		if contextPath != "" {
+			files, err := os.ReadDir(absContext)
+			if err != nil {
+				fmt.Printf("Warning: Failed to read context directory: %v\n", err)
+			} else {
+				for _, f := range files {
+					contextFiles = append(contextFiles, f.Name())
+				}
+			}
+		}
+
+		sysPrompt, err := compiler.CompileSystemPrompt(prompt.Config{
+			Role:         roleName,
+			Language:     "en", // TODO: Detect or flag
+			WorkingDir:   "/holon/workspace",
+			ContextFiles: contextFiles,
+		})
+		if err != nil {
+			fmt.Printf("Failed to compile system prompt: %v\n", err)
+			os.Exit(1)
+		}
+		// Project Context append removed
+
+		// Write to temp file
+		promptTempDir, err := os.MkdirTemp("", "holon-prompt-*")
+		if err != nil {
+			fmt.Printf("Failed to create temporary prompt dir: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.RemoveAll(promptTempDir)
+
+		// Write System Prompt
+		sysPromptPath := filepath.Join(promptTempDir, "system.md")
+		if err := os.WriteFile(sysPromptPath, []byte(sysPrompt), 0644); err != nil {
+			fmt.Printf("Failed to write system prompt: %v\n", err)
+			os.Exit(1)
+		}
+
+		// X+1. Compile User Prompt
+		// Only collect filenames for the user prompt to keep it concise
+		var contextFileNames []string
+		if contextPath != "" {
+			files, err := os.ReadDir(absContext)
+			if err != nil {
+				fmt.Printf("Warning: Failed to read context directory for user prompt: %v\n", err)
+			} else {
+				for _, f := range files {
+					if !f.IsDir() {
+						contextFileNames = append(contextFileNames, f.Name())
+					}
+				}
+			}
+		}
+
+		userPrompt, err := compiler.CompileUserPrompt(goalStr, contextFileNames)
+		if err != nil {
+			fmt.Printf("Failed to compile user prompt: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Write User Prompt
+		userPromptPath := filepath.Join(promptTempDir, "user.md")
+		if err := os.WriteFile(userPromptPath, []byte(userPrompt), 0644); err != nil {
+			fmt.Printf("Failed to write user prompt: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Debug Outputs (as requested in Issue #40)
+		if err := os.WriteFile(filepath.Join(absOut, "prompt.compiled.system.md"), []byte(sysPrompt), 0644); err != nil {
+			fmt.Printf("Warning: Failed to write debug system prompt: %v\n", err)
+		}
+		if err := os.WriteFile(filepath.Join(absOut, "prompt.compiled.user.md"), []byte(userPrompt), 0644); err != nil {
+			fmt.Printf("Warning: Failed to write debug user prompt: %v\n", err)
+		}
+
 		cfg := &docker.ContainerConfig{
-			BaseImage:    adapterImage,
-			AdapterImage: "holon-adapter-claude",
-			Workspace:    absWorkspace,
-			SpecPath:     absSpec,
-			ContextPath:  absContext,
-			OutDir:       absOut,
-			Env:          envVars,
+			BaseImage:      adapterImage,
+			AdapterImage:   "holon-adapter-claude",
+			Workspace:      absWorkspace,
+			SpecPath:       absSpec,
+			ContextPath:    absContext,
+			PromptPath:     sysPromptPath,
+			UserPromptPath: userPromptPath,
+			OutDir:         absOut,
+			Env:            envVars,
 		}
 
 		fmt.Printf("Running Holon: %s with base image %s\n", specPath, adapterImage)
@@ -174,6 +301,7 @@ func init() {
 	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVarP(&outDir, "out", "o", "./holon-output", "Path to output directory")
+	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. coder, architect)")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	rootCmd.AddCommand(runCmd)
 }

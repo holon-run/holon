@@ -63,43 +63,30 @@ async def run_adapter():
         goal = str(goal_val)
         
     print(f"Task Goal: {goal}")
-
-    # 2. Context Injection
-    context_dir = "/holon/input/context"
-    context_header = "\n\n### ADDITIONAL CONTEXT\n"
-    context_content = ""
-    if os.path.exists(context_dir):
-        files = glob.glob(os.path.join(context_dir, "*"))
-        for file_path in files:
-            if os.path.isfile(file_path):
-                file_name = os.path.basename(file_path)
-                with open(file_path, 'r') as f:
-                    content = f.read()
-                    context_content += f"\nFile: {file_name}\n---\n{content}\n---\n"
     
+    # Context Processing Removed: handled by Host-side User Prompt compilation
+
     # CRITICAL: Instruct the agent to stay in /holon/workspace and use relative paths
-    system_instruction = (
-        "### SYSTEM INSTRUCTIONS\n"
-        "You are running in a sandbox environment at /holon/workspace.\n"
-        "1. Always use relative paths for files (e.g., 'file.txt' instead of '/file.txt').\n"
-        "2. All your changes MUST be made inside the current directory /holon/workspace or the output directory /holon/output.\n"
-        "3. Do not use absolute paths starting with '/'.\n"
-    )
     
-    # Goal might have escaped newlines
-    clean_goal = str(goal).replace('\\n', '\n')
-    
-    full_prompt = system_instruction
-    full_prompt += f"\n### TASK GOAL\n{clean_goal}\n"
+    # Load System Prompt from Host (compiled)
+    prompt_path = "/holon/input/prompts/system.md"
+    if not os.path.exists(prompt_path):
+        print(f"Error: Compiled system prompt not found at {prompt_path}")
+        sys.exit(1)
+        
+    print(f"Loading compiled system prompt from {prompt_path}")
+    with open(prompt_path, 'r') as f:
+        system_instruction = f.read()
 
-    if context_content:
-        full_prompt += context_header + context_content
-
-    # Separate reporting requirement to avoid interference with goal
-    full_prompt += (
-        "\n### REPORTING REQUIREMENT\n"
-        "Finally, create a 'summary.md' file in the '/holon/output' directory with a concise summary of your changes and the outcome.\n"
-    )
+    # Load User Prompt from Host (compiled)
+    user_prompt_path = "/holon/input/prompts/user.md"
+    if not os.path.exists(user_prompt_path):
+        print(f"Error: Compiled user prompt not found at {user_prompt_path}")
+        sys.exit(1)
+        
+    print(f"Loading compiled user prompt from {user_prompt_path}")
+    with open(user_prompt_path, 'r') as f:
+        user_msg = f.read()
 
     # 3. Preflight: Git Baseline
     workspace_path = "/holon/workspace"
@@ -155,10 +142,16 @@ async def run_adapter():
 
     from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage, ToolUseBlock
     
-    # Options for headless behavior
+    # Append system instructions to Claude Code's default system prompt
+    # Using preset="claude_code" preserves Claude's internal tools and instructions
+    # append adds our custom rules on top
     options = ClaudeAgentOptions(
         permission_mode="bypassPermissions",
-        cwd=workspace_path
+        cwd=workspace_path,
+        system_prompt={
+            "preset": "claude_code",
+            "append": system_instruction
+        }
     )
     client = ClaudeSDKClient(options=options)
     
@@ -174,8 +167,8 @@ async def run_adapter():
         
         # Simple wrapper to capture everything to evidence
         with open(log_file_path, 'w') as log_file:
-            # Run the query
-            await client.query(full_prompt)
+            # Run the query with user message only (system prompt is set via options)
+            await client.query(user_msg)
             
             final_output = ""
             async for msg in client.receive_response():
@@ -246,7 +239,9 @@ async def run_adapter():
                 summary_text = f.read()
         else:
             print("No summary.md found. Falling back to execution log.")
-            summary_text = f"# Task Summary\n\nGoal: {clean_goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
+            # Use 'goal' variable from spec parsing, ensuring newlines are handled for display
+            display_goal = str(goal).replace('\n', ' ')
+            summary_text = f"# Task Summary\n\nGoal: {display_goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
 
         with open(os.path.join(output_dir, "summary.md"), 'w') as f:
             f.write(summary_text)
