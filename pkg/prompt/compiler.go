@@ -49,15 +49,23 @@ func NewCompiler(assetsPath string) *Compiler {
 	// Simplification: We will assume assets are embedded in THIS package for now,
 	// or we use os.DirFS if running locally and the path exists.
 
+	// Fix: fs.Sub to strip 'assets' prefix so ReadFile("manifest.yaml") works
+	sub, err := fs.Sub(promptAssets, "assets")
+	if err != nil {
+		// Should not happen with embedded assets unless structure is wrong
+		panic(fmt.Errorf("failed to subtree assets: %w", err))
+	}
+
 	return &Compiler{
-		assets: promptAssets,
+		assets: sub,
 	}
 }
 
-// NOTE: Since we cannot easily embed `../../misc/prompts` from here without `go` directive changes or symlinks which embed doesn't like,
-// We will construct the FS from the caller or expect `misc/prompts` contents to be available.
-// For this implementaton, let's accept an fs.FS.
+// Global variable to allow setting assets from outside (e.g. tests or custom locations)
+// Not thread safe, but acceptable for CLI entry.
+// A better pattern would be NewCompiler accepting options.
 
+// NewCompilerFromFS creates a compiler from a given FS (useful for testing or external loading)
 func NewCompilerFromFS(assets fs.FS) *Compiler {
 	return &Compiler{assets: assets}
 }

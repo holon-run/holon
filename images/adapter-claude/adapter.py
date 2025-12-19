@@ -63,20 +63,9 @@ async def run_adapter():
         goal = str(goal_val)
         
     print(f"Task Goal: {goal}")
-
-    # 2. Context Injection
-    context_dir = "/holon/input/context"
-    context_header = "\n\n### ADDITIONAL CONTEXT\n"
-    context_content = ""
-    if os.path.exists(context_dir):
-        files = glob.glob(os.path.join(context_dir, "*"))
-        for file_path in files:
-            if os.path.isfile(file_path):
-                file_name = os.path.basename(file_path)
-                with open(file_path, 'r') as f:
-                    content = f.read()
-                    context_content += f"\nFile: {file_name}\n---\n{content}\n---\n"
     
+    # Context Processing Removed: handled by Host-side User Prompt compilation
+
     # CRITICAL: Instruct the agent to stay in /holon/workspace and use relative paths
     
     # Load System Prompt from Host (compiled)
@@ -250,7 +239,9 @@ async def run_adapter():
                 summary_text = f.read()
         else:
             print("No summary.md found. Falling back to execution log.")
-            summary_text = f"# Task Summary\n\nGoal: {clean_goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
+            # Use 'goal' variable from spec parsing, ensuring newlines are handled for display
+            display_goal = str(goal).replace('\n', ' ')
+            summary_text = f"# Task Summary\n\nGoal: {display_goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
 
         with open(os.path.join(output_dir, "summary.md"), 'w') as f:
             f.write(summary_text)

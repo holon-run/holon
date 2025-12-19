@@ -28,6 +28,7 @@ var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run a Holon execution unit",
 	Run: func(cmd *cobra.Command, args []string) {
+		// Validation deferred to allow goal extraction from Spec
 		if specPath == "" && goalStr == "" {
 			fmt.Println("Error: either --spec or --goal is required")
 			os.Exit(1)
@@ -136,6 +137,22 @@ output:
 			envVars["GH_TOKEN"] = token
 		}
 
+		// 1.6 Populate Goal from Spec if not provided via flag
+		if goalStr == "" && specPath != "" {
+			// We already unmarshaled context.env, let's fully unmarshal or re-read
+			specData, _ := os.ReadFile(absSpec)
+			var spec v1.HolonSpec
+			if err := yaml.Unmarshal(specData, &spec); err == nil {
+				goalStr = spec.Goal.Description
+			}
+		}
+
+		// Validation: must have goal by now
+		if goalStr == "" {
+			fmt.Println("Error: goal description is missing in spec or flags")
+			os.Exit(1)
+		}
+
 		// 2. Custom Env Vars from CLI (--env K=V) - highest priority
 		for _, pair := range envVarsList {
 			parts := strings.SplitN(pair, "=", 2)
@@ -146,7 +163,10 @@ output:
 
 		// X. Compile System Prompt
 		compiler := prompt.NewCompiler("")
-		projectContext, _ := prompt.ReadProjectContext(absWorkspace)
+		// NOTE: We do NOT inject project context (CLAUDE.md) into system prompt here.
+		// It should be handled by the Agent itself (e.g. Claude Code reads it from workspace),
+		// or by the Adapter if explicitly requested.
+		// Mixing it into the compiled system prompt causes duplication.
 
 		// Extract context files for template
 		contextFiles := []string{}
@@ -167,11 +187,7 @@ output:
 			fmt.Printf("Failed to compile system prompt: %v\n", err)
 			os.Exit(1)
 		}
-
-		// Append project context if any
-		if projectContext != "" {
-			sysPrompt += "\n" + projectContext
-		}
+		// Project Context append removed
 
 		// Write to temp file
 		promptTempDir, err := os.MkdirTemp("", "holon-prompt-*")
