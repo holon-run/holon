@@ -6,7 +6,6 @@
   "scripts": {
     "start": "probot run ./lib/bot-handler.js",
     "dev": "probot run ./lib/bot-handler.js",
-    "build": "echo 'Build complete'",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "deploy": "vercel --prod"
   },

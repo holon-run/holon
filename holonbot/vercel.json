@@ -2,8 +2,7 @@
   "version": 2,
   "name": "holonbot",
   "functions": {
-    "api/github-webhook.js": {
-      "runtime": "nodejs20.x",
+    "api/*.js": {
       "memory": 512,
       "maxDuration": 30
     }
