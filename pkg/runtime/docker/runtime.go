@@ -60,6 +60,27 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		adapterImage = "holon-adapter-claude"
 	}
 
+	// Pull base image if provided
+	if cfg.BaseImage != "" {
+		fmt.Printf("Pulling base image %s...\n", cfg.BaseImage)
+		reader, err := r.cli.ImagePull(ctx, cfg.BaseImage, image.PullOptions{})
+		if err != nil {
+			fmt.Printf("Warning: failed to pull base image %s: %v\n", cfg.BaseImage, err)
+		} else {
+			io.Copy(io.Discard, reader)
+			reader.Close()
+		}
+	}
+
+	// Pull (or ensure) adapter image
+	// We don't strictly pull it here if we expect it to be local, but doing so helps resolve metadata
+	fmt.Printf("Ensuring adapter image %s...\n", adapterImage)
+	reader, err := r.cli.ImagePull(ctx, adapterImage, image.PullOptions{})
+	if err == nil {
+		io.Copy(io.Discard, reader)
+		reader.Close()
+	}
+
 	finalImage := adapterImage
 	if cfg.BaseImage != "" && cfg.BaseImage != adapterImage {
 		fmt.Printf("Composing runtime image for %s + %s...\n", cfg.BaseImage, adapterImage)
@@ -68,15 +89,6 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 			return fmt.Errorf("failed to compose image: %w", err)
 		}
 		finalImage = composedImage
-	}
-
-	// Pull final image if not present
-	reader, err := r.cli.ImagePull(ctx, finalImage, image.PullOptions{})
-	if err != nil {
-		fmt.Printf("Warning: failed to pull image %s (might be local): %v\n", finalImage, err)
-	} else {
-		defer reader.Close()
-		io.Copy(os.Stdout, reader)
 	}
 
 	// 3. Create Container
