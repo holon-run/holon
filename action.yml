@@ -46,10 +46,11 @@ runs:
           OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r '.value')
           
           if [ -n "$OIDC_TOKEN" ] && [ "$OIDC_TOKEN" != "null" ]; then
-            echo "Exchanging OIDC token for Holonbot installation token..."
+            echo "Sending OIDC token to broker: ${{ inputs.holonbot_broker_url }}"
             RESPONSE=$(curl -s -X POST "${{ inputs.holonbot_broker_url }}" \
               -H "Authorization: Bearer $OIDC_TOKEN" \
               -H "Content-Type: application/json")
+            echo "Broker response: $RESPONSE"
             
             BOT_TOKEN=$(echo $RESPONSE | jq -r '.token // empty')
             
