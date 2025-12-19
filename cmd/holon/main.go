@@ -23,6 +23,7 @@ var contextPath string
 var outDir string
 var roleName string
 var envVarsList []string
+var logLevel string
 
 var runCmd = &cobra.Command{
 	Use:   "run",
@@ -183,6 +184,13 @@ output:
 			}
 		}
 
+		// Add log_level to environment variables
+		if logLevel != "" {
+			envVars["LOG_LEVEL"] = logLevel
+		} else {
+			envVars["LOG_LEVEL"] = "progress" // Default to progress mode
+		}
+
 		// X. Compile System Prompt
 		compiler := prompt.NewCompiler("")
 		// NOTE: We do NOT inject project context (CLAUDE.md) into system prompt here.
@@ -303,6 +311,7 @@ func init() {
 	runCmd.Flags().StringVarP(&outDir, "out", "o", "./holon-output", "Path to output directory")
 	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. coder, architect)")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
+	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	rootCmd.AddCommand(runCmd)
 }
 
