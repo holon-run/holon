@@ -94,10 +94,11 @@ func TestComposedImageTagGeneration(t *testing.T) {
 				tags[key] = tag
 			}
 
-			// Verify tag doesn't contain invalid characters
-			for _, r := range tag {
-				if !((r >= 'a' && r <= 'f') || (r >= '0' && r <= '9') || r == '-') {
-					t.Errorf("Tag contains invalid character '%c': %s", r, tag)
+			// Verify tag doesn't contain invalid characters (only check the hash part)
+			hashPart := strings.TrimPrefix(tag, "holon-composed-")
+			for _, r := range hashPart {
+				if !((r >= 'a' && r <= 'f') || (r >= '0' && r <= '9')) {
+					t.Errorf("Tag hash part contains invalid character '%c': %s", r, tag)
 				}
 			}
 		})
