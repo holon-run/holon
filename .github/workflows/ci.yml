@@ -22,8 +22,8 @@ jobs:
       with:
         python-version: '3.x'
 
-    - name: Check Adapter
-      run: make check-adapter
+    - name: Test Adapter
+      run: make test-adapter
       
     - name: Test
       run: make test
