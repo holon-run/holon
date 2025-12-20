@@ -235,6 +235,11 @@ async def run_adapter():
     
     # 3.5 Sync Environment to Claude Settings (Wegent style)
     logger.log_phase("Configuring Claude environment")
+    
+    # Extract environment variables once for reuse
+    auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
+    base_url = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_API_URL") or "https://api.anthropic.com"
+    
     claude_settings_path = os.path.expanduser("~/.claude/settings.json")
     if os.path.exists(claude_settings_path):
         try:
@@ -242,8 +247,6 @@ async def run_adapter():
                 settings = json.load(f)
 
             env_section = settings.get("env", {})
-            auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
-            base_url = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_API_URL")
 
             if auth_token:
                 env_section["ANTHROPIC_AUTH_TOKEN"] = auth_token
@@ -261,19 +264,26 @@ async def run_adapter():
             logger.debug("Synced environment to Claude settings")
         except Exception as e:
             logger.debug(f"Failed to sync Claude settings: {e}")
+    
+    # Diagnostics: Check environment and connectivity early
+    logger.minimal(f"Checking environment: ANTHROPIC_API_KEY present: {bool(auth_token)}")
+    logger.minimal(f"Testing connectivity to {base_url}...")
+    try:
+        import urllib.request
+        # Simple heartbeat check to base URL
+        with urllib.request.urlopen(base_url, timeout=10) as response:
+            logger.minimal(f"Connectivity test: HTTP {response.status} (OK)")
+    except Exception as net_err:
+        logger.minimal(f"Warning: Connectivity test failed/timed out: {net_err}")
 
     from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage, ToolUseBlock
     
-    # Set execution timeout (max 10 minutes/600,000ms for this SDK version)
-    timeout = min(int(os.environ.get("CLAUDE_TIMEOUT_MS", 600000)), 600000)
-
     # Append system instructions to Claude Code's default system prompt
     # Using preset="claude_code" preserves Claude's internal tools and instructions
     # append adds our custom rules on top
     options = ClaudeAgentOptions(
         permission_mode="bypassPermissions",
         cwd=workspace_path,
-        timeout=timeout,
         system_prompt={
             "preset": "claude_code",
             "append": system_instruction
@@ -288,21 +298,6 @@ async def run_adapter():
     result = ""
     try:
         logger.log_phase("Running AI execution")
-        
-        # Diagnostics: Check environment and connectivity
-        auth_token = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-        logger.minimal(f"Checking environment: ANTHROPIC_API_KEY present: {bool(auth_token)}")
-        
-        base_url = os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
-        logger.minimal(f"Testing connectivity to {base_url}...")
-        try:
-            import urllib.request
-            # Simple heartbeat check to base URL
-            with urllib.request.urlopen(base_url, timeout=10) as response:
-                logger.minimal(f"Connectivity test: HTTP {response.status} (OK)")
-        except Exception as net_err:
-            logger.minimal(f"Warning: Connectivity test failed/timed out: {net_err}")
-
         logger.minimal("Connecting to Claude Code...")
         await client.connect()
         logger.minimal("Session established. Running query...")
@@ -314,6 +309,7 @@ async def run_adapter():
             await client.query(user_msg)
             logger.minimal("Query sent. Waiting for response stream...")
 
+            final_output = ""
             msg_count = 0
             async for msg in client.receive_response():
                 msg_count += 1
