@@ -99,6 +99,15 @@ class ProgressLogger:
         except Exception as e:
             self.info(f"[WARNING] Failed to read summary: {e}")
 
+def generate_fallback_summary(goal: str, success: bool, result: str) -> str:
+    """
+    Generate a fallback summary when the agent fails to produce one.
+    Wraps the execution log in a collapsible details block.
+    """
+    outcome = 'Success' if success else 'Failure'
+    return f"# Task Summary\n\nGoal: {goal}\n\nOutcome: {outcome}\n\n## Actions\n<details><summary>Click to see full execution log</summary>\n\n{result}\n</details>\n"
+
+
 def fix_permissions(directory, logger=None):
     """
     Recursively change ownership of the directory and its contents
@@ -350,7 +359,7 @@ async def run_adapter():
                 summary_text = f.read()
         else:
             logger.info("No summary.md found. Falling back to execution log.")
-            summary_text = f"# Task Summary\n\nGoal: {goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
+            summary_text = generate_fallback_summary(goal, success, result)
 
         with open(os.path.join(output_dir, "summary.md"), 'w') as f:
             f.write(summary_text)

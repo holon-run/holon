@@ -11,7 +11,7 @@ from pathlib import Path
 # Add the adapter directory to the path so we can import the module
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from adapter import ProgressLogger, LogLevel, fix_permissions
+from adapter import ProgressLogger, LogLevel, fix_permissions, generate_fallback_summary
 
 
 class TestProgressLogger:
@@ -395,7 +395,7 @@ class TestArtifactGeneration:
             assert not os.path.exists(summary_path)
 
             # Generate fallback summary (logic from adapter)
-            summary_text = f"# Task Summary\n\nGoal: {goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
+            summary_text = generate_fallback_summary(goal, success, result)
 
             # Write fallback summary
             with open(summary_path, 'w') as f:
@@ -420,8 +420,8 @@ class TestArtifactGeneration:
             success = False
             result = "Task failed but fallback works"
 
-            # Generate fallback summary using the exact logic from line 353 of adapter.py
-            summary_text = f"# Task Summary\n\nGoal: {goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
+            # Generate fallback summary (logic from adapter)
+            summary_text = generate_fallback_summary(goal, success, result)
 
             summary_path = os.path.join(output_dir, "summary.md")
             with open(summary_path, 'w') as f:
@@ -432,6 +432,7 @@ class TestArtifactGeneration:
                 content = f.read()
                 assert f"Goal: {goal}" in content
                 assert "Outcome: Failure" in content
+
 
             # Verify it doesn't reference undefined 'clean_goal'
             assert "clean_goal" not in content

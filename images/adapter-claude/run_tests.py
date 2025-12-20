@@ -15,7 +15,7 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import the adapter module
-from adapter import ProgressLogger, LogLevel, fix_permissions
+from adapter import ProgressLogger, LogLevel, fix_permissions, generate_fallback_summary
 
 
 def test_logger_initialization():
@@ -168,8 +168,8 @@ def test_summary_fallback():
         success = False
         result = "Task failed but fallback works"
 
-        # Generate fallback summary using exact logic from adapter.py line 353
-        summary_text = f"# Task Summary\n\nGoal: {goal}\n\nOutcome: {'Success' if success else 'Failure'}\n\n## Actions\n{result}\n"
+        # Generate fallback summary using exact logic from adapter.py
+        summary_text = generate_fallback_summary(goal, success, result)
 
         summary_path = os.path.join(temp_dir, "summary.md")
         with open(summary_path, 'w') as f:
@@ -180,6 +180,7 @@ def test_summary_fallback():
             content = f.read()
             assert f"Goal: {goal}" in content, f"Should contain goal: {goal}"
             assert "Outcome: Failure" in content, "Should contain failure outcome"
+            assert "<details><summary>Click to see full execution log</summary>" in content, "Should contain details block"
             # Verify it doesn't reference undefined 'clean_goal'
             assert "clean_goal" not in content, "Should not reference clean_goal"
 
