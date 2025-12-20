@@ -30,7 +30,6 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	defer os.RemoveAll(binDir)
 
 	holonBin = filepath.Join(binDir, "holon")
 	if runtime.GOOS == "windows" {
@@ -42,10 +41,13 @@ func TestMain(m *testing.M) {
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to build holon: %v\n%s\n", err, string(out))
+		_ = os.RemoveAll(binDir)
 		os.Exit(2)
 	}
 
-	os.Exit(m.Run())
+	exitCode := m.Run()
+	_ = os.RemoveAll(binDir)
+	os.Exit(exitCode)
 }
 
 func TestIntegration(t *testing.T) {

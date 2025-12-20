@@ -21,17 +21,17 @@ type Runtime interface {
 
 // RunnerConfig holds the configuration for the Run function
 type RunnerConfig struct {
-	SpecPath            string
-	GoalStr             string
-	TaskName            string
-	AdapterImage        string
-	AdapterRuntimeImage string
-	WorkspacePath       string
-	ContextPath         string
-	OutDir              string
-	RoleName            string
-	EnvVarsList         []string
-	LogLevel            string
+	SpecPath      string
+	GoalStr       string
+	TaskName      string
+	BaseImage     string
+	AdapterImage  string
+	WorkspacePath string
+	ContextPath   string
+	OutDir        string
+	RoleName      string
+	EnvVarsList   []string
+	LogLevel      string
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -169,14 +169,14 @@ output:
 		fmt.Printf("Warning: Failed to write debug prompts: %v\n", err)
 	}
 
-	adapterRuntimeImage := cfg.AdapterRuntimeImage
-	if adapterRuntimeImage == "" {
-		adapterRuntimeImage = "holon-adapter-claude"
+	adapterImage := cfg.AdapterImage
+	if adapterImage == "" {
+		adapterImage = "holon-adapter-claude"
 	}
 
 	containerCfg := &docker.ContainerConfig{
-		BaseImage:      cfg.AdapterImage,
-		AdapterImage:   adapterRuntimeImage,
+		BaseImage:      cfg.BaseImage,
+		AdapterImage:   adapterImage,
 		Workspace:      absWorkspace,
 		SpecPath:       absSpec,
 		ContextPath:    absContext,
@@ -186,7 +186,7 @@ output:
 		Env:            envVars,
 	}
 
-	fmt.Printf("Running Holon: %s with base image %s (adapter: %s)\n", cfg.SpecPath, cfg.AdapterImage, containerCfg.AdapterImage)
+	fmt.Printf("Running Holon: %s with base image %s (adapter: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AdapterImage)
 	if err := r.runtime.RunHolon(ctx, containerCfg); err != nil {
 		return fmt.Errorf("execution failed: %w", err)
 	}

@@ -126,7 +126,7 @@ func TestRunner_Run_WithGoalOnly(t *testing.T) {
 		TaskName:      "test-task",
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
-		AdapterImage:  "test-image",
+		BaseImage:     "test-image",
 	}
 
 	err := runner.Run(context.Background(), cfg)
@@ -156,7 +156,7 @@ func TestRunner_Run_WithSpecOnly(t *testing.T) {
 		SpecPath:      specPath,
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
-		AdapterImage:  "test-image",
+		BaseImage:     "test-image",
 	}
 
 	err := runner.Run(context.Background(), cfg)
@@ -193,7 +193,7 @@ func TestRunner_Run_EnvVariablePrecedence(t *testing.T) {
 		SpecPath:      specPath,
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
-		AdapterImage:  "test-image",
+		BaseImage:     "test-image",
 		EnvVarsList:   []string{"TEST_VAR=from-cli", "CLI_VAR=cli-value"},
 	}
 
@@ -244,7 +244,7 @@ func TestRunner_Run_GoalExtractionFromSpec(t *testing.T) {
 		SpecPath:      specPath, // No goal string provided, should extract from spec
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
-		AdapterImage:  "test-image",
+		BaseImage:     "test-image",
 	}
 
 	err := runner.Run(context.Background(), cfg)
@@ -273,7 +273,7 @@ func TestRunner_Run_DebugPromptOutputs(t *testing.T) {
 		TaskName:      "test-debug",
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
-		AdapterImage:  "test-image",
+		BaseImage:     "test-image",
 		RoleName:      "coder",
 	}
 
@@ -330,7 +330,7 @@ func TestRunner_Run_LogLevelDefaults(t *testing.T) {
 		TaskName:      "test-log-1",
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
-		AdapterImage:  "test-image",
+		BaseImage:     "test-image",
 	}
 
 	err := runner.Run(context.Background(), cfg1)
@@ -353,7 +353,7 @@ func TestRunner_Run_LogLevelDefaults(t *testing.T) {
 		TaskName:      "test-log-2",
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
-		AdapterImage:  "test-image",
+		BaseImage:     "test-image",
 		LogLevel:      "debug",
 	}
 
@@ -429,7 +429,7 @@ func TestRunner_compilePrompts(t *testing.T) {
 
 	// Test without context directory
 	cfg := RunnerConfig{
-		GoalStr:   "Test goal",
+		GoalStr:  "Test goal",
 		RoleName: "coder",
 	}
 
@@ -527,7 +527,7 @@ func TestRunner_Integration(t *testing.T) {
 		WorkspacePath: workspaceDir,
 		ContextPath:   contextDir,
 		OutDir:        outDir,
-		AdapterImage:  "golang:1.22",
+		BaseImage:     "golang:1.22",
 		RoleName:      "coder",
 		EnvVarsList:   []string{"CLI_VAR=cli-value"},
 		LogLevel:      "debug",
