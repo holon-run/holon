@@ -70,13 +70,19 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		finalImage = composedImage
 	}
 
-	// Pull final image if not present
-	reader, err := r.cli.ImagePull(ctx, finalImage, image.PullOptions{})
+	// Pull final image if not present locally
+	_, err = r.cli.ImageInspect(ctx, finalImage)
 	if err != nil {
-		fmt.Printf("Warning: failed to pull image %s (might be local): %v\n", finalImage, err)
+		fmt.Printf("Image %s not found locally, attempting to pull...\n", finalImage)
+		reader, err := r.cli.ImagePull(ctx, finalImage, image.PullOptions{})
+		if err != nil {
+			fmt.Printf("Warning: failed to pull image %s: %v\n", finalImage, err)
+		} else {
+			defer reader.Close()
+			io.Copy(io.Discard, reader)
+		}
 	} else {
-		defer reader.Close()
-		io.Copy(os.Stdout, reader)
+		fmt.Printf("Image %s found locally.\n", finalImage)
 	}
 
 	// 3. Create Container
@@ -96,6 +102,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	}
 	mounts := BuildContainerMounts(mountConfig)
 
+	fmt.Printf("Creating container from image %s...\n", finalImage)
 	resp, err := r.cli.ContainerCreate(ctx, &container.Config{
 		Image:      finalImage,
 		Cmd:        cfg.Cmd,
@@ -111,11 +118,13 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	}
 
 	// 4. Start Container
+	fmt.Printf("Starting container %s...\n", resp.ID[:12])
 	if err := r.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		return fmt.Errorf("failed to start container: %w", err)
 	}
 
 	// 4.5 Stream Logs
+	fmt.Println("Streaming container logs...")
 	out, err := r.cli.ContainerLogs(ctx, resp.ID, container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -127,6 +136,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	}
 
 	// 5. Wait for completion
+	fmt.Println("Waiting for container completion...")
 	statusCh, errCh := r.cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
 	select {
 	case err := <-errCh:
@@ -161,23 +171,24 @@ func (r *Runtime) buildComposedImage(ctx context.Context, baseImage, adapterImag
 	dockerfile := fmt.Sprintf(`
 FROM %s
 # Install Node, Python and GitHub CLI if missing
-RUN apt-get update && apt-get install -y curl git python3 python3-pip || true
+RUN apt-get update && apt-get install -y curl git python3 python3-pip
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs || true
+    apt-get install -y nodejs
 # Try to install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
     chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
-    apt-get update && apt-get install -y gh || true
+    apt-get update && apt-get install -y gh
 # Layer the adapter from the adapter image
 COPY --from=%s /app /app
 COPY --from=%s /root/.claude /root/.claude
 COPY --from=%s /root/.claude.json /root/.claude.json
 # Install Claude Code and dependencies
 RUN npm install -g @anthropic-ai/claude-code@2.0.72 && \
-    if [ -f /app/requirements.txt ]; then pip3 install --no-cache-dir -r /app/requirements.txt --break-system-packages || pip3 install --no-cache-dir -r /app/requirements.txt; fi
+    if [ -f /app/requirements.txt ]; then pip3 install --no-cache-dir -r /app/requirements.txt --break-system-packages; fi
 	# Ensure environment
 	ENV IS_SANDBOX=1
+	ENV PYTHONUNBUFFERED=1
 	ENV PYTHONDONTWRITEBYTECODE=1
 	WORKDIR /holon/workspace
 	ENTRYPOINT ["python3", "/app/adapter.py"]

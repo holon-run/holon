@@ -151,6 +151,8 @@ async def run_adapter():
     if log_level.lower() == "debug":
         os.environ["ANTHROPIC_LOG"] = "debug"
 
+    # Early heartbeat to confirm container started
+    print("Holon Claude Adapter process started...", flush=True)
     logger.minimal("Holon Claude Adapter Starting...")
 
     # Define output_dir early
