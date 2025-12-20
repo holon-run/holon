@@ -1,5 +1,10 @@
 import os
 import sys
+
+# Set debug logging early so the SDK picks it up upon import
+if os.environ.get("LOG_LEVEL", "").lower() == "debug":
+    os.environ["ANTHROPIC_LOG"] = "debug"
+
 import yaml
 import json
 import asyncio
@@ -147,9 +152,7 @@ async def run_adapter():
     log_level = os.environ.get("LOG_LEVEL", "progress")
     logger = ProgressLogger(log_level)
 
-    # Propagate debug level to Anthropic SDK for deeper visibility
-    if log_level.lower() == "debug":
-        os.environ["ANTHROPIC_LOG"] = "debug"
+    # Note: ANTHROPIC_LOG set at top of file
 
     # Early heartbeat to confirm container started
     print("Holon Claude Adapter process started...", flush=True)
@@ -287,11 +290,18 @@ async def run_adapter():
 
         # Simple wrapper to capture everything to evidence
         with open(log_file_path, 'w') as log_file:
+            logger.info("Executing query...")
             # Run the query with user message only (system prompt is set via options)
             await client.query(user_msg)
+            logger.info("Query sent. Waiting for response stream...")
+
             final_output = ""
             async for msg in client.receive_response():
+                # Always log the message type for progress visibility
+                msg_type = type(msg).__name__
+                logger.debug(f"Received message: {msg_type}")
                 log_file.write(f"Message: {msg}\n")
+                log_file.flush() # Ensure we don't lose logs on hang
 
                 if isinstance(msg, AssistantMessage):
                     for block in msg.content:
@@ -302,7 +312,7 @@ async def run_adapter():
                             tool_name = getattr(block, 'name', 'UnknownTool')
                             logger.log_tool_use(tool_name)
                 elif isinstance(msg, ResultMessage):
-                    logger.info(f"Task result: {msg.subtype}, is_error: {msg.is_error}")
+                    logger.info(f"Task result received: {msg.subtype}, is_error: {msg.is_error}")
                     if msg.is_error:
                         success = False
                     break
