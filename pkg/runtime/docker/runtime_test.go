@@ -1,9 +1,10 @@
 package docker
 
 import (
-	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -18,18 +19,153 @@ func TestNewRuntime(t *testing.T) {
 	}
 }
 
-// TestRunHolon_DryRun verifies the container creation logic (partially)
-// In a full test, it would pull image and run, but here we just check if NewRuntime works.
-func TestRunHolon_DryRun(t *testing.T) {
-	ctx := context.Background()
-	rt, err := NewRuntime()
+// TestRunHolon_ConfigAssembly tests the pure configuration assembly logic
+// without requiring Docker daemon by using the extracted functions
+func TestRunHolon_ConfigAssembly(t *testing.T) {
+	// Create temporary test files
+	tmpDir, err := os.MkdirTemp("", "holon-config-test-*")
 	if err != nil {
-		t.Skip("Skipping: Docker not available")
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	specFile := filepath.Join(tmpDir, "spec.yaml")
+	if err := os.WriteFile(specFile, []byte("test: spec"), 0644); err != nil {
+		t.Fatalf("Failed to create test spec file: %v", err)
 	}
 
-	// We only verify that context is handled correctly in the client
-	_ = rt
-	_ = ctx
+	outDir := filepath.Join(tmpDir, "output")
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatalf("Failed to create output dir: %v", err)
+	}
+
+	contextDir := filepath.Join(tmpDir, "context")
+	if err := os.MkdirAll(contextDir, 0755); err != nil {
+		t.Fatalf("Failed to create context dir: %v", err)
+	}
+
+	promptFile := filepath.Join(tmpDir, "system.md")
+	if err := os.WriteFile(promptFile, []byte("# System Prompt"), 0644); err != nil {
+		t.Fatalf("Failed to create test prompt file: %v", err)
+	}
+
+	userPromptFile := filepath.Join(tmpDir, "user.md")
+	if err := os.WriteFile(userPromptFile, []byte("# User Prompt"), 0644); err != nil {
+		t.Fatalf("Failed to create test user prompt file: %v", err)
+	}
+
+	// Test mount configuration assembly
+	t.Run("mount assembly", func(t *testing.T) {
+		cfg := &MountConfig{
+			SnapshotDir:    "/tmp/workspace-snapshot",
+			SpecPath:       specFile,
+			ContextPath:    contextDir,
+			OutDir:         outDir,
+			PromptPath:     promptFile,
+			UserPromptPath: userPromptFile,
+		}
+
+		mounts := BuildContainerMounts(cfg)
+
+		// Verify we get expected number of mounts
+		expectedMountCount := 6 // workspace, spec, output, context, system.md, user.md
+		if len(mounts) != expectedMountCount {
+			t.Errorf("Expected %d mounts, got %d", expectedMountCount, len(mounts))
+		}
+
+		// Verify mount targets are correct
+		targets := make(map[string]string)
+		for _, m := range mounts {
+			targets[m.Target] = m.Source
+		}
+
+		expectedTargets := map[string]string{
+			"/holon/workspace":             "/tmp/workspace-snapshot",
+			"/holon/input/spec.yaml":       specFile,
+			"/holon/output":                outDir,
+			"/holon/input/context":         contextDir,
+			"/holon/input/prompts/system.md":  promptFile,
+			"/holon/input/prompts/user.md":    userPromptFile,
+		}
+
+		for target, expectedSource := range expectedTargets {
+			actualSource, exists := targets[target]
+			if !exists {
+				t.Errorf("Missing mount for target: %s", target)
+			} else if actualSource != expectedSource {
+				t.Errorf("Mount target %s: expected source %s, got %s", target, expectedSource, actualSource)
+			}
+		}
+	})
+
+	// Test environment variable assembly
+	t.Run("env assembly", func(t *testing.T) {
+		cfg := &EnvConfig{
+			UserEnv: map[string]string{
+				"ANTHROPIC_API_KEY": "test-key-123",
+				"DEBUG":              "true",
+				"CUSTOM_VAR":         "custom-value",
+			},
+			HostUID: 1000,
+			HostGID: 1000,
+		}
+
+		env := BuildContainerEnv(cfg)
+
+		// Verify we get expected number of env vars
+		expectedEnvCount := 5 // 3 user vars + HOST_UID + HOST_GID
+		if len(env) != expectedEnvCount {
+			t.Errorf("Expected %d env vars, got %d", expectedEnvCount, len(env))
+		}
+
+		// Verify specific env vars
+		envSet := make(map[string]bool)
+		for _, e := range env {
+			envSet[e] = true
+		}
+
+		expectedEnv := []string{
+			"ANTHROPIC_API_KEY=test-key-123",
+			"DEBUG=true",
+			"CUSTOM_VAR=custom-value",
+			"HOST_UID=1000",
+			"HOST_GID=1000",
+		}
+
+		for _, expectedVar := range expectedEnv {
+			if !envSet[expectedVar] {
+				t.Errorf("Missing expected env var: %s", expectedVar)
+			}
+		}
+	})
+
+	// Test mount target validation
+	t.Run("mount target validation", func(t *testing.T) {
+		cfg := &MountConfig{
+			SnapshotDir:    "/tmp/snapshot-test",
+			SpecPath:       specFile,
+			ContextPath:    contextDir,
+			OutDir:         outDir,
+			PromptPath:     promptFile,
+			UserPromptPath: userPromptFile,
+		}
+
+		// Should pass validation
+		if err := ValidateMountTargets(cfg); err != nil {
+			t.Errorf("Expected no validation error, got: %v", err)
+		}
+
+		// Test invalid configuration
+		invalidCfg := &MountConfig{
+			SnapshotDir: "", // Empty snapshot dir should fail
+			SpecPath:    specFile,
+			OutDir:      outDir,
+		}
+
+		if err := ValidateMountTargets(invalidCfg); err == nil {
+			t.Error("Expected validation error for empty snapshot dir")
+		}
+	})
 }
 
 // TestComposedImageTagGeneration verifies that the tag generation is stable and valid

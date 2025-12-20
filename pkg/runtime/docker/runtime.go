@@ -11,7 +11,6 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 )
 
@@ -79,54 +78,21 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	}
 
 	// 3. Create Container
-	env := []string{}
-	for k, v := range cfg.Env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-	env = append(env, fmt.Sprintf("HOST_UID=%d", os.Getuid()))
-	env = append(env, fmt.Sprintf("HOST_GID=%d", os.Getgid()))
+	env := BuildContainerEnv(&EnvConfig{
+		UserEnv: cfg.Env,
+		HostUID: os.Getuid(),
+		HostGID: os.Getgid(),
+	})
 
-	mounts := []mount.Mount{
-		{
-			Type:   mount.TypeBind,
-			Source: snapshotDir,
-			Target: "/holon/workspace",
-		},
-		{
-			Type:   mount.TypeBind,
-			Source: cfg.SpecPath,
-			Target: "/holon/input/spec.yaml",
-		},
-		{
-			Type:   mount.TypeBind,
-			Source: cfg.OutDir,
-			Target: "/holon/output",
-		},
+	mountConfig := &MountConfig{
+		SnapshotDir:    snapshotDir,
+		SpecPath:       cfg.SpecPath,
+		ContextPath:    cfg.ContextPath,
+		OutDir:         cfg.OutDir,
+		PromptPath:     cfg.PromptPath,
+		UserPromptPath: cfg.UserPromptPath,
 	}
-
-	if cfg.ContextPath != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: cfg.ContextPath,
-			Target: "/holon/input/context",
-		})
-	}
-
-	if cfg.PromptPath != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: cfg.PromptPath,
-			Target: "/holon/input/prompts/system.md",
-		})
-	}
-
-	if cfg.UserPromptPath != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: cfg.UserPromptPath,
-			Target: "/holon/input/prompts/user.md",
-		})
-	}
+	mounts := BuildContainerMounts(mountConfig)
 
 	resp, err := r.cli.ContainerCreate(ctx, &container.Config{
 		Image:      finalImage,
@@ -172,11 +138,10 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	}
 
 	// 6. Artifact Validation (RFC-0002)
-	// We should read the manifest and/or spec to verify required artifacts.
-	// For now, let's just check for the basic required manifest.json.
-	manifestPath := filepath.Join(cfg.OutDir, "manifest.json")
-	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-		return fmt.Errorf("missing required artifact: manifest.json")
+	// Read the spec to verify required artifacts, plus manifest.json
+	// For now, validate basic manifest.json requirement
+	if err := ValidateRequiredArtifacts(cfg.OutDir, nil); err != nil {
+		return err
 	}
 
 	return nil
