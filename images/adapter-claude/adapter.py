@@ -264,8 +264,8 @@ async def run_adapter():
 
     from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage, ToolUseBlock
     
-    # Set execution timeout (default 30 minutes, override via CLAUDE_TIMEOUT_MS)
-    timeout_ms = int(os.environ.get("CLAUDE_TIMEOUT_MS", 1800000))
+    # Set execution timeout (max 10 minutes/600,000ms for this SDK version)
+    timeout = min(int(os.environ.get("CLAUDE_TIMEOUT_MS", 600000)), 600000)
 
     # Append system instructions to Claude Code's default system prompt
     # Using preset="claude_code" preserves Claude's internal tools and instructions
@@ -273,7 +273,7 @@ async def run_adapter():
     options = ClaudeAgentOptions(
         permission_mode="bypassPermissions",
         cwd=workspace_path,
-        timeout_ms=timeout_ms,
+        timeout=timeout,
         system_prompt={
             "preset": "claude_code",
             "append": system_instruction
@@ -303,9 +303,9 @@ async def run_adapter():
         except Exception as net_err:
             logger.minimal(f"Warning: Connectivity test failed/timed out: {net_err}")
 
-        logger.info("Connecting to Claude Code...")
+        logger.minimal("Connecting to Claude Code...")
         await client.connect()
-        logger.info("Session established. Running query...")
+        logger.minimal("Session established. Running query...")
 
         # Simple wrapper to capture everything to evidence
         with open(log_file_path, 'w') as log_file:
