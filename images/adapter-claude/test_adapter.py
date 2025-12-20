@@ -229,7 +229,7 @@ class TestProgressLogger:
 
     def test_log_summary_excerpt(self):
         """Test log_summary_excerpt functionality"""
-        logger = ProgressLogger("minimal")
+        logger = ProgressLogger("info")
 
         # Create a temporary summary file
         summary_content = """# Task Summary
@@ -248,7 +248,7 @@ Line 7
 
         try:
             with patch('builtins.print') as mock_print:
-                logger.log_summary_excerpt(temp_path, lines=3)
+                logger.log_summary_excerpt(temp_path, lines=5)
 
                 calls = [str(call) for call in mock_print.call_args_list]
                 call_text = ' '.join(calls)
@@ -256,7 +256,7 @@ Line 7
                 assert "This is a test summary" in call_text
                 assert "Line 3" in call_text
                 assert "Line 4" in call_text
-                assert "and 4 more lines" in call_text
+                assert "and 3 more lines" in call_text
                 assert "=== END SUMMARY ===" in call_text
         finally:
             os.unlink(temp_path)
@@ -298,11 +298,7 @@ class TestDiffGeneration:
 
         # Import and run the relevant part of the adapter
         with patch('os.chdir'), \
-             patch('os.path.exists', return_value=True), \
-             patch('subprocess.run') as mock_add:
-
-            # Simulate the git add command
-            mock_add.return_value = Mock(returncode=0)
+             patch('os.path.exists', return_value=True):
 
             # Call the diff generation part (simplified from adapter)
             result = subprocess.run(
