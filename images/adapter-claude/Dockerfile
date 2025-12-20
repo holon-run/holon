@@ -37,6 +37,7 @@ COPY .claude.json /root/.claude.json
 ENV IS_SANDBOX=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV TERM=xterm-256color
 
 # Run the adapter
 ENTRYPOINT ["python3", "adapter.py"]

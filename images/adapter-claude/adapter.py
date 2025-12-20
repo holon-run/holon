@@ -147,6 +147,10 @@ async def run_adapter():
     log_level = os.environ.get("LOG_LEVEL", "progress")
     logger = ProgressLogger(log_level)
 
+    # Propagate debug level to Anthropic SDK for deeper visibility
+    if log_level.lower() == "debug":
+        os.environ["ANTHROPIC_LOG"] = "debug"
+
     logger.minimal("Holon Claude Adapter Starting...")
 
     # Define output_dir early

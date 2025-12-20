@@ -14,6 +14,10 @@ import json
 # Add the adapter directory to the path so we can import the module
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Mock claude_agent_sdk before importing adapter
+sys.modules["claude_agent_sdk"] = MagicMock()
+sys.modules["claude_agent_sdk.types"] = MagicMock()
+
 # Import the adapter module
 from adapter import ProgressLogger, LogLevel, fix_permissions, generate_fallback_summary
 
