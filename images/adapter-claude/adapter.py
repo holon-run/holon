@@ -37,19 +37,19 @@ class ProgressLogger:
 
     def debug(self, message):
         if self._should_log(LogLevel.DEBUG):
-            print(f"[DEBUG] {message}")
+            print(f"[DEBUG] {message}", flush=True)
 
     def info(self, message):
         if self._should_log(LogLevel.INFO):
-            print(f"[INFO] {message}")
+            print(f"[INFO] {message}", flush=True)
 
     def progress(self, message):
         if self._should_log(LogLevel.PROGRESS):
-            print(f"[PROGRESS] {message}")
+            print(f"[PROGRESS] {message}", flush=True)
 
     def minimal(self, message):
         if self._should_log(LogLevel.MINIMAL):
-            print(f"[PHASE] {message}")
+            print(f"[PHASE] {message}", flush=True)
 
     def log_tool_use(self, tool_name, files_touched=None, file_count=None):
         """Safely log tool use without exposing content"""
@@ -264,12 +264,16 @@ async def run_adapter():
 
     from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage, ToolUseBlock
     
+    # Set execution timeout (default 30 minutes, override via CLAUDE_TIMEOUT_MS)
+    timeout_ms = int(os.environ.get("CLAUDE_TIMEOUT_MS", 1800000))
+
     # Append system instructions to Claude Code's default system prompt
     # Using preset="claude_code" preserves Claude's internal tools and instructions
     # append adds our custom rules on top
     options = ClaudeAgentOptions(
         permission_mode="bypassPermissions",
         cwd=workspace_path,
+        timeout_ms=timeout_ms,
         system_prompt={
             "preset": "claude_code",
             "append": system_instruction
@@ -284,22 +288,40 @@ async def run_adapter():
     result = ""
     try:
         logger.log_phase("Running AI execution")
+        
+        # Diagnostics: Check environment and connectivity
+        auth_token = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        logger.minimal(f"Checking environment: ANTHROPIC_API_KEY present: {bool(auth_token)}")
+        
+        base_url = os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+        logger.minimal(f"Testing connectivity to {base_url}...")
+        try:
+            import urllib.request
+            # Simple heartbeat check to base URL
+            with urllib.request.urlopen(base_url, timeout=10) as response:
+                logger.minimal(f"Connectivity test: HTTP {response.status} (OK)")
+        except Exception as net_err:
+            logger.minimal(f"Warning: Connectivity test failed/timed out: {net_err}")
+
         logger.info("Connecting to Claude Code...")
         await client.connect()
         logger.info("Session established. Running query...")
 
         # Simple wrapper to capture everything to evidence
         with open(log_file_path, 'w') as log_file:
-            logger.info("Executing query...")
+            logger.minimal("Executing query...")
             # Run the query with user message only (system prompt is set via options)
             await client.query(user_msg)
-            logger.info("Query sent. Waiting for response stream...")
+            logger.minimal("Query sent. Waiting for response stream...")
 
-            final_output = ""
+            msg_count = 0
             async for msg in client.receive_response():
+                msg_count += 1
                 # Always log the message type for progress visibility
                 msg_type = type(msg).__name__
-                logger.debug(f"Received message: {msg_type}")
+                if msg_count % 5 == 0 or msg_type == "ResultMessage":
+                    logger.debug(f"Received message #{msg_count}: {msg_type}")
+                
                 log_file.write(f"Message: {msg}\n")
                 log_file.flush() # Ensure we don't lose logs on hang
 
