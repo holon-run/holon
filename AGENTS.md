@@ -13,8 +13,8 @@
 ## Build, Test, and Development Commands
 
 - `make build`: Build the Go CLI to `bin/holon`.
-- `make test`: Run Go tests (`go test ./...`) and a fast adapter syntax check (`py_compile`).
-- `make check-adapter`: Only checks `images/adapter-claude/adapter.py` for syntax errors.
+- `make test`: Run full adapter tests (`make test-adapter`, via `pytest`) followed by Go tests (`go test ./...`).
+- `make test-adapter`: Only checks `images/adapter-claude/adapter.py` for syntax errors.
 - `make build-adapter-image`: Build the Docker image `holon-adapter-claude`.
 - `make test-integration`: Run integration tests (requires Docker).
 - `make run-example`: Run an example spec (requires Docker and Anthropic credentials).

@@ -153,7 +153,7 @@ pytest test_adapter.py -v
 ### Development Prerequisites
 - Docker installed and running
 - Go 1.22+
-- Python 3.8+ (for adapter development)
+- Python 3 (for adapter development)
 - Node.js (for holonbot development)
 
 ## Key Implementation Details
