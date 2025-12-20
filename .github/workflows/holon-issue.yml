@@ -29,6 +29,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
+          log_level: 'debug'
           image: 'golang:1.22'
           
       - name: Create Pull Request
