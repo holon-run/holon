@@ -8,13 +8,18 @@ if os.environ.get("LOG_LEVEL", "").lower() == "debug":
 import yaml
 import json
 import asyncio
-import subprocess
 import glob
 import time
 from datetime import datetime
 from pathlib import Path
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from enum import Enum
+
+# Import testable helper modules
+from config import HolonConfig
+from subprocess_helpers import subprocess_runner
+from fs_helpers import fs_operations, permission_fixer
+from network_helpers import network_client
 
 class LogLevel(Enum):
     DEBUG = "debug"
@@ -158,8 +163,12 @@ def _int_env(name, default):
         return default
 
 async def run_adapter():
-    # Get log level from environment, default to progress
-    log_level = os.environ.get("LOG_LEVEL", "progress")
+    # Initialize configuration
+    config = HolonConfig()
+    config.ensure_directories()
+
+    # Get log level from configuration
+    log_level = config.get_env_log_level()
     logger = ProgressLogger(log_level)
 
     # Note: ANTHROPIC_LOG set at top of file
@@ -167,22 +176,14 @@ async def run_adapter():
     # Early heartbeat to confirm container started
     print("Holon Claude Adapter process started...", flush=True)
     logger.minimal("Holon Claude Adapter Starting...")
-
-    # Define output_dir early
-    output_dir = "/holon/output"
-    os.makedirs(output_dir, exist_ok=True)
-    evidence_dir = os.path.join(output_dir, "evidence")
-    os.makedirs(evidence_dir, exist_ok=True)
     
     # 1. Load Spec
     logger.log_phase("Loading specification")
-    spec_path = "/holon/input/spec.yaml"
-    if not os.path.exists(spec_path):
-        logger.minimal(f"Error: Spec not found at {spec_path}")
+    if not fs_operations.exists(config.spec_path):
+        logger.minimal(f"Error: Spec not found at {config.spec_path}")
         sys.exit(1)
 
-    with open(spec_path, 'r') as f:
-        spec = yaml.safe_load(f)
+    spec = fs_operations.read_yaml(config.spec_path)
 
     # Handle goal
     goal_val = spec.get('goal', '')
@@ -197,48 +198,41 @@ async def run_adapter():
     # CRITICAL: Instruct the agent to stay in /holon/workspace and use relative paths
     
     # Load System Prompt from Host (compiled)
-    prompt_path = "/holon/input/prompts/system.md"
-    if not os.path.exists(prompt_path):
-        logger.minimal(f"Error: Compiled system prompt not found at {prompt_path}")
+    if not fs_operations.exists(config.system_prompt_path):
+        logger.minimal(f"Error: Compiled system prompt not found at {config.system_prompt_path}")
         sys.exit(1)
 
-    logger.info(f"Loading compiled system prompt from {prompt_path}")
-    with open(prompt_path, 'r') as f:
-        system_instruction = f.read()
+    logger.info(f"Loading compiled system prompt from {config.system_prompt_path}")
+    system_instruction = fs_operations.read_text(config.system_prompt_path)
 
     # Load User Prompt from Host (compiled)
-    user_prompt_path = "/holon/input/prompts/user.md"
-    if not os.path.exists(user_prompt_path):
-        logger.minimal(f"Error: Compiled user prompt not found at {user_prompt_path}")
+    if not fs_operations.exists(config.user_prompt_path):
+        logger.minimal(f"Error: Compiled user prompt not found at {config.user_prompt_path}")
         sys.exit(1)
 
-    logger.info(f"Loading compiled user prompt from {user_prompt_path}")
-    with open(user_prompt_path, 'r') as f:
-        user_msg = f.read()
+    logger.info(f"Loading compiled user prompt from {config.user_prompt_path}")
+    user_msg = fs_operations.read_text(config.user_prompt_path)
 
     # 3. Preflight: Git Baseline
     logger.log_phase("Setting up git workspace")
-    workspace_path = "/holon/workspace"
-    os.chdir(workspace_path)
+    workspace_path = str(config.workspace_dir)
+    fs_operations.chdir(workspace_path)
 
     # Force IS_SANDBOX for Claude Code
     os.environ["IS_SANDBOX"] = "1"
 
     # Fix dubious ownership and set global user for git
     logger.debug("Configuring git")
-    subprocess.run(["git", "config", "--global", "--add", "safe.directory", "/holon/workspace"], check=False)
-    subprocess.run(["git", "config", "--global", "user.name", "holon-adapter"], check=False)
-    subprocess.run(["git", "config", "--global", "user.email", "adapter@holon.local"], check=False)
+    subprocess_runner.run_git_config(workspace_path)
 
-    has_git = os.path.exists(os.path.join(workspace_path, ".git"))
+    has_git = fs_operations.exists(config.workspace_dir / ".git")
     if not has_git:
         logger.info("No git repo found in workspace. Initializing temporary baseline...")
-        subprocess.run(["git", "init"], check=True, capture_output=True)
+        subprocess_runner.run_git_init()
         # Add basic ignores to avoid bloating patches
-        with open(".gitignore", "a") as f:
-            f.write("\n__pycache__/\n*.pyc\n*.pyo\n.DS_Store\n")
-        subprocess.run(["git", "add", "-A"], check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "holon-baseline"], check=True, capture_output=True)
+        fs_operations.append_text(Path(".gitignore"), "\n__pycache__/\n*.pyc\n*.pyo\n.DS_Store\n")
+        subprocess_runner.run_git_add()
+        subprocess_runner.run_git_commit("holon-baseline")
         logger.log_tool_use("GitInit")
     else:
         logger.info("Existing git repo found. Baseline established.")
