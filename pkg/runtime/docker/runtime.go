@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -41,7 +43,7 @@ type ContainerConfig struct {
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	// 1. Snapshot Workspace (Isolation)
-	snapshotDir, err := os.MkdirTemp("", "holon-workspace-*")
+	snapshotDir, err := mkdirTempOutsideWorkspace(cfg.Workspace, "holon-workspace-*")
 	if err != nil {
 		return fmt.Errorf("failed to create snapshot dir: %w", err)
 	}
@@ -206,4 +208,81 @@ func copyDir(src string, dst string) error {
 		return fmt.Errorf("cp failed: %v, output: %s", err, string(out))
 	}
 	return nil
+}
+
+func mkdirTempOutsideWorkspace(workspace, pattern string) (string, error) {
+	absWorkspace, err := cleanAbs(workspace)
+	if err != nil {
+		return "", err
+	}
+
+	var baseCandidates []string
+	if v := strings.TrimSpace(os.Getenv("HOLON_SNAPSHOT_BASE")); v != "" {
+		baseCandidates = append(baseCandidates, v)
+	}
+	baseCandidates = append(baseCandidates, os.TempDir())
+
+	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+		baseCandidates = append(baseCandidates, filepath.Join(cacheDir, "holon"))
+	}
+
+	// Parent directory is a good, usually writable, fallback.
+	baseCandidates = append(baseCandidates, filepath.Dir(absWorkspace))
+
+	if runtime.GOOS != "windows" {
+		baseCandidates = append(baseCandidates, "/tmp")
+	}
+
+	var lastErr error
+	for _, base := range baseCandidates {
+		if strings.TrimSpace(base) == "" {
+			continue
+		}
+		absBase, err := cleanAbs(base)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if isSubpath(absBase, absWorkspace) {
+			continue
+		}
+		if err := os.MkdirAll(absBase, 0o755); err != nil {
+			lastErr = err
+			continue
+		}
+		dir, err := os.MkdirTemp(absBase, pattern)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return dir, nil
+	}
+
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("unable to create temp dir outside workspace %q", absWorkspace)
+}
+
+func cleanAbs(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
+}
+
+func isSubpath(candidate, parent string) bool {
+	rel, err := filepath.Rel(parent, candidate)
+	if err != nil {
+		return false
+	}
+	rel = filepath.Clean(rel)
+	if rel == "." {
+		return true
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
 }

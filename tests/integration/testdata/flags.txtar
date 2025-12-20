@@ -1,0 +1,4 @@
+# Flag / validation behavior
+! exec holon run
+stdout 'either --spec or --goal is required'
+

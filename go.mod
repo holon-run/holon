@@ -6,6 +6,7 @@ toolchain go1.24.11
 
 require (
 	github.com/docker/docker v28.5.2+incompatible
+	github.com/rogpeppe/go-internal v1.14.1
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -40,5 +41,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
+	golang.org/x/tools v0.26.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )

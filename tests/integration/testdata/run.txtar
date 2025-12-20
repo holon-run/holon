@@ -1,0 +1,19 @@
+[!docker] skip 'docker not available'
+
+mkdir work
+mkdir out
+
+# Force TMPDIR to be inside the workspace to exercise snapshot recursion protection.
+mkdir work/tmp
+env TMPDIR=work/tmp
+
+exec docker build -t holon-adapter-stub ./adapter
+exec holon run --goal 'integration test' --name it --workspace work --out out --image holon-adapter-stub --adapter-image holon-adapter-stub --log-level minimal
+
+exists out/manifest.json
+exists out/diff.patch
+exists out/summary.md
+
+-- adapter/Dockerfile --
+FROM busybox:1.36
+ENTRYPOINT ["sh", "-c", "set -eu; mkdir -p /holon/output; echo '{\"version\":\"v1\"}' > /holon/output/manifest.json; echo 'diff' > /holon/output/diff.patch; echo '# summary' > /holon/output/summary.md"]

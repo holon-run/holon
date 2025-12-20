@@ -250,3 +250,30 @@ func TestComposedImageTagGeneration(t *testing.T) {
 		t.Errorf("Different inputs should produce different tags. Got %d unique tags for %d input combinations", len(uniqueTags), len(tags))
 	}
 }
+
+func TestMkdirTempOutsideWorkspace_DoesNotNest(t *testing.T) {
+	workspace := t.TempDir()
+	tmpInside := filepath.Join(workspace, "tmp")
+	if err := os.MkdirAll(tmpInside, 0o755); err != nil {
+		t.Fatalf("mkdir tmp: %v", err)
+	}
+	t.Setenv("TMPDIR", tmpInside)
+
+	dir, err := mkdirTempOutsideWorkspace(workspace, "holon-test-*")
+	if err != nil {
+		t.Fatalf("mkdirTempOutsideWorkspace: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	absWorkspace, err := cleanAbs(workspace)
+	if err != nil {
+		t.Fatalf("cleanAbs workspace: %v", err)
+	}
+	absDir, err := cleanAbs(dir)
+	if err != nil {
+		t.Fatalf("cleanAbs dir: %v", err)
+	}
+	if isSubpath(absDir, absWorkspace) {
+		t.Fatalf("expected snapshot dir to be outside workspace:\nworkspace=%s\ndir=%s", absWorkspace, absDir)
+	}
+}

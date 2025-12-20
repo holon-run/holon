@@ -28,6 +28,8 @@ make build
 make test
 ```
 
+Integration tests live in `tests/integration` and are implemented with `testscript`. They require a working Docker daemon; the Docker-dependent cases will be skipped if Docker is unavailable.
+
 ### Run an Example
 ```bash
 export ANTHROPIC_API_KEY=your_key_here
