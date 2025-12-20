@@ -63,6 +63,11 @@ clean:
 	rm -rf $(BIN_DIR)
 	rm -rf holon-output*
 
+## test-integration: Run integration tests (requires Docker)
+test-integration: build ensure-adapter-image
+	@echo "Running integration tests..."
+	go test ./tests/integration/... -v
+
 ## run-example: Run the fix-bug example (requires ANTHROPIC_API_KEY)
 run-example: build ensure-adapter-image
 	@echo "Running fix-bug example..."
