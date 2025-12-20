@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code@2.0.72
+RUN npm install -g @anthropic-ai/claude-code@2.0.74
 
 # Set up workspace
 WORKDIR /app
