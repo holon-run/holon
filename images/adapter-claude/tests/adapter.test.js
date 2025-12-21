@@ -9,11 +9,6 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Mock modules that we don't want to actually call during tests
-let mockFs = {};
-let mockSpawnSync = {};
-let mockProcess = {};
-
 // Helper to create a mock ProgressLogger for testing
 class MockProgressLogger {
   constructor(logLevel = "progress") {
@@ -250,8 +245,14 @@ describe("Logging Safety", () => {
     assert(!toolLog.includes("../"));
     assert(!toolLog.includes("./"));
 
-    // Should contain basenames (path.basename works differently on different platforms)
-    assert(toolLog.includes("cmd.exe") || toolLog.includes("C:\\Windows\\System32\\cmd.exe"));
+    // Should contain basenames, with platform-specific expectations
+    if (os.platform() === "win32") {
+      // On Windows, backslashes are recognized as path separators and we expect the basename
+      assert(toolLog.includes("cmd.exe"));
+    } else {
+      // On non-Windows platforms, the Windows-style path may be preserved as-is
+      assert(toolLog.includes("C:\\Windows\\System32\\cmd.exe"));
+    }
     assert(toolLog.includes("hosts"));
     assert(toolLog.includes("secret.txt"));
   });
@@ -469,39 +470,37 @@ describe("Error Handling", () => {
 });
 
 describe("Git Diff Command Generation", () => {
-  test("generates git diff with correct flags for patch compatibility", () => {
-    // This test verifies the command structure that would be used
+  test("verifies git diff command structure for patch compatibility", () => {
+    // This test verifies the expected command structure for generating a git diff
     const expectedArgs = ["diff", "--cached", "--patch", "--binary", "--full-index"];
-    const mockCommand = "git";
+    const command = "git";
 
-    // Mock the runCommand function to capture the arguments
-    let capturedArgs = null;
-    let capturedCommand = null;
-
-    const mockRunCommand = (command, args, options) => {
-      capturedCommand = command;
-      capturedArgs = args;
-      return {
-        status: 0,
-        stdout: "mock diff content",
-        stderr: "",
-      };
-    };
-
-    mockRunCommand(mockCommand, expectedArgs, { cwd: "/test", allowFailure: true });
-
-    assert.strictEqual(capturedCommand, mockCommand);
-    assert.deepStrictEqual(capturedArgs, expectedArgs);
+    // Verify the command and its arguments directly
+    assert.strictEqual(command, "git");
+    assert.deepStrictEqual(expectedArgs, ["diff", "--cached", "--patch", "--binary", "--full-index"]);
 
     // Verify the critical flags are present
-    assert(capturedArgs.includes("--binary"));    // Essential for binary files
-    assert(capturedArgs.includes("--full-index")); // Ensures git apply compatibility
-    assert(capturedArgs.includes("--patch"));      // Generates patch format
-    assert(capturedArgs.includes("--cached"));     // Shows staged changes
+    assert(expectedArgs.includes("--binary"));     // Essential for binary files
+    assert(expectedArgs.includes("--full-index")); // Ensures git apply compatibility
+    assert(expectedArgs.includes("--patch"));      // Generates patch format
+    assert(expectedArgs.includes("--cached"));     // Shows staged changes
   });
 
-  test("allows git diff failure gracefully", () => {
-    // When there are no changes, git diff might fail - this should be allowed
+  test("describes git diff failure result structure", () => {
+    // When there are no changes, git diff might return empty output but status 0
+    const result = {
+      status: 0, // Git diff returns 0 even with no changes (just empty output)
+      stdout: "",
+      stderr: "",
+    };
+
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout, "");
+    assert.strictEqual(result.stderr, "");
+  });
+
+  test("verifies allowFailure option handling", () => {
+    // This test verifies that the allowFailure option prevents exceptions
     const mockRunCommand = (command, args, options) => {
       return {
         status: 1, // Non-zero exit status

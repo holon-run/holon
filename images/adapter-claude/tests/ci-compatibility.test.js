@@ -4,18 +4,6 @@ import fs from "fs";
 import path from "path";
 
 describe("CI Compatibility", () => {
-  test("tests can run without Docker daemon", () => {
-    // Verify Docker is not required for our tests
-    // This test passes if we can reach this point, meaning no Docker calls were made
-    assert.ok(true, "Tests run without Docker daemon");
-  });
-
-  test("tests can run without network access", () => {
-    // Verify network access is not required for our tests
-    // This test passes if we can reach this point without making network calls
-    assert.ok(true, "Tests run without network access");
-  });
-
   test("all test files are present and accessible", () => {
     const testDir = path.dirname(new URL(import.meta.url).pathname);
     const testFiles = [
