@@ -409,12 +409,12 @@ async function runClaude(
   return { success, result: finalResult };
 }
 
-async function runAdapter(): Promise<void> {
+async function runAgent(): Promise<void> {
   const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress");
   const isProbe = process.argv.slice(2).includes("--probe");
 
-  console.log("Holon Claude Adapter process started...");
-  logger.minimal("Holon Claude Adapter Starting...");
+  console.log("Holon Claude Agent process started...");
+  logger.minimal("Holon Claude Agent Starting...");
 
   const outputDir = "/holon/output";
   const evidenceDir = path.join(outputDir, "evidence");
@@ -597,7 +597,7 @@ async function runAdapter(): Promise<void> {
   }
 }
 
-runAdapter().catch((error) => {
+runAgent().catch((error) => {
   console.error(error);
   process.exit(1);
 });

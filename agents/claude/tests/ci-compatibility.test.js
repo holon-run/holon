@@ -19,7 +19,7 @@ describe("CI Compatibility", () => {
   });
 
   test("agent source file exists for type checking", () => {
-    const srcPath = path.join(path.dirname(path.dirname(new URL(import.meta.url).pathname)), "src", "adapter.ts");
+    const srcPath = path.join(path.dirname(path.dirname(new URL(import.meta.url).pathname)), "src", "agent.ts");
     assert.ok(fs.existsSync(srcPath), "Agent source file exists");
     assert.ok(fs.statSync(srcPath).isFile(), "Agent source is a regular file");
   });

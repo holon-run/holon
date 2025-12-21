@@ -72,7 +72,7 @@ constraints:
 
 在 GitHub Actions 中，推荐拆成两个 workflow/job，通过 label/comment 作为“人工确认门”。
 
-## Adapter 兼容性
+## Agent 兼容性
 
 不同 agent 对“原生 plan/review 能力”支持可能不一致（例如 Claude Agent SDK 支持 `permission_mode="plan"`，但其他 agent 可能没有）。mode/profile 机制应允许：
 - **优先使用原生能力**（如 SDK 的 plan 模式）

@@ -3,7 +3,7 @@
 This document is **non-normative** and describes the current Claude agent implementation. The **normative agent contract** is defined in `rfc/0002-adapter-scheme.md`.
 
 ## Implementation location
-- Agent sources: `agents/claude/src/adapter.ts`
+- Agent sources: `agents/claude/src/agent.ts`
 - Agent bundle: `agents/claude/dist/agent-bundles/*.tar.gz`
 - Entrypoint (inside composed image): `/holon/agent/bin/agent`
 
