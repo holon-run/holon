@@ -9,6 +9,7 @@ type HolonSpec struct {
 	Goal        Goal             `yaml:"goal" json:"goal"`
 	Output      Output           `yaml:"output" json:"output"`
 	Constraints Constraints      `yaml:"constraints" json:"constraints"`
+	Mode        string           `yaml:"mode,omitempty" json:"mode,omitempty"`
 }
 
 type Metadata struct {
@@ -48,4 +49,5 @@ type HolonManifest struct {
 	Duration  string            `json:"duration"`
 	Artifacts []string          `json:"artifacts"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
+	Mode      string            `json:"mode,omitempty"`
 }

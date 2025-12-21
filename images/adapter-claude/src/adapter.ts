@@ -518,6 +518,7 @@ async function runAdapter(): Promise<void> {
       status: "completed",
       outcome: success ? "success" : "failure",
       duration: durationSeconds,
+      mode: process.env.HOLON_MODE || "execute",
       artifacts: [
         { name: "diff.patch", path: "diff.patch" },
         { name: "summary.md", path: "summary.md" },
@@ -554,6 +555,8 @@ async function runAdapter(): Promise<void> {
     const manifest = {
       status: "completed",
       outcome: "failure",
+      duration: durationSeconds,
+      mode: process.env.HOLON_MODE || "execute",
       error: String(error),
     };
     fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
