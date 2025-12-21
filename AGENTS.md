@@ -4,7 +4,7 @@
 
 - `cmd/holon/`: Go CLI entrypoint (`holon`).
 - `pkg/`: Go libraries used by the CLI (API spec, prompt compilation, runtime).
-- `images/adapter-claude/`: Python-based adapter image (Claude Agent SDK/Claude Code runtime integration).
+- `images/adapter-claude-ts/`: TypeScript-based adapter image (Claude Code runtime integration).
 - `tests/integration/`: Go `testscript` integration tests (`*.txtar`).
 - `holonbot/`: Node-based GitHub App/bot (separate CI workflow).
 - `rfc/`: Design notes and proposals.
@@ -13,16 +13,15 @@
 ## Build, Test, and Development Commands
 
 - `make build`: Build the Go CLI to `bin/holon`.
-- `make test`: Run full adapter tests (`make test-adapter`, via `pytest`) followed by Go tests (`go test ./...`).
-- `make test-adapter`: Only checks `images/adapter-claude/adapter.py` for syntax errors.
-- `make build-adapter-image`: Build the Docker image `holon-adapter-claude`.
+- `make test`: Run Go tests (`go test ./...`).
+- `make build-adapter-image`: Build the Docker image `holon-adapter-claude-ts`.
 - `make test-integration`: Run integration tests (requires Docker).
 - `make run-example`: Run an example spec (requires Docker and Anthropic credentials).
 
 ## Coding Style & Naming Conventions
 
 - Go: run `gofmt` on all `.go` files; keep exported identifiers and package names idiomatic.
-- Python adapter: keep changes minimal and deterministic; avoid committing `__pycache__/` and `*.pyc` (maintain `.gitignore`).
+- TypeScript adapter: keep changes minimal and deterministic; avoid committing `node_modules/` and `dist/` (maintain `.gitignore`).
 - Files/paths: prefer explicit, stable artifact names in `holon-output/` (e.g., `diff.patch`, `summary.md`).
 
 ## Testing Guidelines
