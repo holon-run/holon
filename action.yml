@@ -82,16 +82,15 @@ runs:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         GITHUB_TOKEN: ${{ steps.get_token.outputs.token }}
       run: |
-        ADAPTER_IMAGE="${HOLON_ADAPTER_IMAGE:-holon-adapter-claude}"
-        # Build holon and adapter if not present
+        AGENT_BUNDLE="${HOLON_AGENT_BUNDLE:-}"
+        # Build holon and bundle if not present
         if [ ! -f bin/holon ]; then
           make build
         fi
-        if [ "$ADAPTER_IMAGE" = "holon-adapter-claude" ]; then
-          echo "Building adapter image..."
-          docker build -t "$ADAPTER_IMAGE" ./images/adapter-claude
-        else
-          echo "Using custom adapter image '$ADAPTER_IMAGE' (no local build performed)."
+        if [ -z "$AGENT_BUNDLE" ]; then
+          echo "Building agent bundle..."
+          (cd images/adapter-claude && npm run bundle)
+          AGENT_BUNDLE=$(ls -t images/adapter-claude/dist/agent-bundles/*.tar.gz | head -n 1)
         fi
 
         # Extract issue info from event
@@ -101,7 +100,7 @@ runs:
 
           if [ -n "$TITLE" ]; then
             GOAL="Issue Title: $TITLE\n\nIssue Description:\n$BODY"
-            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --adapter-image "$ADAPTER_IMAGE" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}" --log-level "${{ inputs.log_level }}"
+            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --agent-bundle "$AGENT_BUNDLE" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}" --log-level "${{ inputs.log_level }}"
           else
             echo "Not an issue event or title is empty."
             exit 1

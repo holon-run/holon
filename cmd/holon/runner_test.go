@@ -85,6 +85,16 @@ context:
 	}
 }
 
+func createDummyBundle(t *testing.T, dir string) string {
+	t.Helper()
+
+	bundlePath := filepath.Join(dir, "agent-bundle.tar.gz")
+	if err := os.WriteFile(bundlePath, []byte("bundle"), 0644); err != nil {
+		t.Fatalf("Failed to create bundle file: %v", err)
+	}
+	return bundlePath
+}
+
 func TestRunner_Run_RequiresSpecOrGoal(t *testing.T) {
 	mockRuntime := &MockRuntime{}
 	runner := NewRunner(mockRuntime)
@@ -120,7 +130,8 @@ func TestRunner_Run_WithGoalOnly(t *testing.T) {
 	}
 	runner := NewRunner(mockRuntime)
 
-	_, workspaceDir, outDir := setupTestEnv(t)
+	tempDir, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, tempDir)
 
 	cfg := RunnerConfig{
 		GoalStr:       "Test goal",
@@ -128,6 +139,7 @@ func TestRunner_Run_WithGoalOnly(t *testing.T) {
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
 		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
 	}
 
 	err := runner.Run(context.Background(), cfg)
@@ -152,12 +164,14 @@ func TestRunner_Run_WithSpecOnly(t *testing.T) {
 	createTestSpec(t, specPath, "test-spec", "Test goal from spec", map[string]string{
 		"SPEC_ENV": "spec-value",
 	})
+	bundlePath := createDummyBundle(t, tempDir)
 
 	cfg := RunnerConfig{
 		SpecPath:      specPath,
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
 		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
 	}
 
 	err := runner.Run(context.Background(), cfg)
@@ -185,6 +199,7 @@ func TestRunner_Run_EnvVariablePrecedence(t *testing.T) {
 	createTestSpec(t, specPath, "test-spec", "Test goal", map[string]string{
 		"SPEC_ENV": "spec-value",
 	})
+	bundlePath := createDummyBundle(t, tempDir)
 
 	// Set environment variables for auto-injection
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
@@ -195,6 +210,7 @@ func TestRunner_Run_EnvVariablePrecedence(t *testing.T) {
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
 		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
 		EnvVarsList:   []string{"TEST_VAR=from-cli", "CLI_VAR=cli-value"},
 	}
 
@@ -240,12 +256,14 @@ func TestRunner_Run_GoalExtractionFromSpec(t *testing.T) {
 	tempDir, workspaceDir, outDir := setupTestEnv(t)
 	specPath := filepath.Join(tempDir, "spec.yaml")
 	createTestSpec(t, specPath, "test-spec", "Goal from spec file", nil)
+	bundlePath := createDummyBundle(t, tempDir)
 
 	cfg := RunnerConfig{
 		SpecPath:      specPath, // No goal string provided, should extract from spec
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
 		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
 	}
 
 	err := runner.Run(context.Background(), cfg)
@@ -267,7 +285,8 @@ func TestRunner_Run_DebugPromptOutputs(t *testing.T) {
 	mockRuntime := &MockRuntime{}
 	runner := NewRunner(mockRuntime)
 
-	_, workspaceDir, outDir := setupTestEnv(t)
+	tempDir, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, tempDir)
 
 	cfg := RunnerConfig{
 		GoalStr:       "Test goal for debug prompts",
@@ -275,6 +294,7 @@ func TestRunner_Run_DebugPromptOutputs(t *testing.T) {
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
 		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
 		RoleName:      "coder",
 	}
 
@@ -323,7 +343,8 @@ func TestRunner_Run_LogLevelDefaults(t *testing.T) {
 	mockRuntime := &MockRuntime{}
 	runner := NewRunner(mockRuntime)
 
-	_, workspaceDir, outDir := setupTestEnv(t)
+	tempDir, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, tempDir)
 
 	// Test without explicit log level
 	cfg1 := RunnerConfig{
@@ -332,6 +353,7 @@ func TestRunner_Run_LogLevelDefaults(t *testing.T) {
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
 		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
 	}
 
 	err := runner.Run(context.Background(), cfg1)
@@ -355,6 +377,7 @@ func TestRunner_Run_LogLevelDefaults(t *testing.T) {
 		WorkspacePath: workspaceDir,
 		OutDir:        outDir,
 		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
 		LogLevel:      "debug",
 	}
 
@@ -498,8 +521,8 @@ func TestRunner_Integration(t *testing.T) {
 			if cfg.BaseImage != "golang:1.22" {
 				t.Errorf("Expected BaseImage to be 'golang:1.22', got %q", cfg.BaseImage)
 			}
-			if cfg.AdapterImage != "holon-adapter-claude" {
-				t.Errorf("Expected AdapterImage to be 'holon-adapter-claude', got %q", cfg.AdapterImage)
+			if cfg.AgentBundle == "" {
+				t.Errorf("Expected AgentBundle to be set")
 			}
 			// WorkingDir is hardcoded to "/holon/workspace" in the docker runtime
 			return nil
@@ -523,12 +546,18 @@ func TestRunner_Integration(t *testing.T) {
 		t.Fatalf("Failed to create test context file: %v", err)
 	}
 
+	bundlePath := filepath.Join(tempDir, "agent-bundle.tar.gz")
+	if err := os.WriteFile(bundlePath, []byte("bundle"), 0644); err != nil {
+		t.Fatalf("Failed to create bundle file: %v", err)
+	}
+
 	cfg := RunnerConfig{
 		SpecPath:      specPath,
 		WorkspacePath: workspaceDir,
 		ContextPath:   contextDir,
 		OutDir:        outDir,
 		BaseImage:     "golang:1.22",
+		AgentBundle:   bundlePath,
 		RoleName:      "coder",
 		EnvVarsList:   []string{"CLI_VAR=cli-value"},
 		LogLevel:      "debug",

@@ -2,18 +2,40 @@
 
 mkdir work
 mkdir out
+mkdir bundle-src
+mkdir bundle-src/bin
 
 # Force TMPDIR to be inside the workspace to exercise snapshot recursion protection.
 mkdir work/tmp
 env TMPDIR=work/tmp
 
-exec docker build -t holon-adapter-stub ./adapter
-exec holon run --goal 'integration test' --name it --workspace work --out out --image holon-adapter-stub --adapter-image holon-adapter-stub --log-level minimal
+exec chmod +x bundle-src/bin/agent
+exec tar -czf agent-bundle.tar.gz -C bundle-src .
+exec holon run --goal 'integration test' --name it --workspace work --out out --image debian:bookworm-slim --agent-bundle agent-bundle.tar.gz --log-level minimal
 
 exists out/manifest.json
 exists out/diff.patch
 exists out/summary.md
 
--- adapter/Dockerfile --
-FROM busybox:1.36
-ENTRYPOINT ["sh", "-c", "set -eu; mkdir -p /holon/output; echo '{\"version\":\"v1\"}' > /holon/output/manifest.json; echo 'diff' > /holon/output/diff.patch; echo '# summary' > /holon/output/summary.md"]
+-- bundle-src/manifest.json --
+{
+  "bundleVersion": "1",
+  "name": "agent-stub",
+  "version": "0.0.0",
+  "entry": "bin/agent",
+  "platform": "linux",
+  "arch": "amd64",
+  "libc": "glibc",
+  "runtime": {
+    "type": "node",
+    "version": "20"
+  }
+}
+
+-- bundle-src/bin/agent --
+#!/bin/sh
+set -eu
+mkdir -p /holon/output
+echo '{"version":"v1"}' > /holon/output/manifest.json
+echo 'diff' > /holon/output/diff.patch
+echo '# summary' > /holon/output/summary.md

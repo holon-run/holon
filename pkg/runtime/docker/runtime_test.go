@@ -78,12 +78,12 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 		}
 
 		expectedTargets := map[string]string{
-			"/holon/workspace":             "/tmp/workspace-snapshot",
-			"/holon/input/spec.yaml":       specFile,
-			"/holon/output":                outDir,
-			"/holon/input/context":         contextDir,
-			"/holon/input/prompts/system.md":  promptFile,
-			"/holon/input/prompts/user.md":    userPromptFile,
+			"/holon/workspace":               "/tmp/workspace-snapshot",
+			"/holon/input/spec.yaml":         specFile,
+			"/holon/output":                  outDir,
+			"/holon/input/context":           contextDir,
+			"/holon/input/prompts/system.md": promptFile,
+			"/holon/input/prompts/user.md":   userPromptFile,
 		}
 
 		for target, expectedSource := range expectedTargets {
@@ -101,8 +101,8 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 		cfg := &EnvConfig{
 			UserEnv: map[string]string{
 				"ANTHROPIC_API_KEY": "test-key-123",
-				"DEBUG":              "true",
-				"CUSTOM_VAR":         "custom-value",
+				"DEBUG":             "true",
+				"CUSTOM_VAR":        "custom-value",
 			},
 			HostUID: 1000,
 			HostGID: 1000,
@@ -172,27 +172,27 @@ func TestComposedImageTagGeneration(t *testing.T) {
 	testCases := []struct {
 		name         string
 		baseImage    string
-		adapterImage string
+		bundleDigest string
 	}{
 		{
-			name:         "standard images",
+			name:         "standard bundle",
 			baseImage:    "golang:1.22",
-			adapterImage: "holon-adapter-claude",
+			bundleDigest: "bundle-a",
 		},
 		{
-			name:         "same images should produce same tag",
+			name:         "same bundle should produce same tag",
 			baseImage:    "golang:1.22",
-			adapterImage: "holon-adapter-claude",
+			bundleDigest: "bundle-a",
 		},
 		{
 			name:         "different base image",
 			baseImage:    "python:3.11",
-			adapterImage: "holon-adapter-claude",
+			bundleDigest: "bundle-a",
 		},
 		{
-			name:         "different adapter image",
+			name:         "different bundle digest",
 			baseImage:    "golang:1.22",
-			adapterImage: "holon-adapter-custom",
+			bundleDigest: "bundle-b",
 		},
 	}
 
@@ -201,9 +201,9 @@ func TestComposedImageTagGeneration(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Generate tag using the same logic as buildComposedImage
-			tag := composeImageTag(tc.baseImage, tc.adapterImage, "")
+			tag := composeImageTag(tc.baseImage, tc.bundleDigest)
 
-			t.Logf("Generated tag for %s + %s: %s", tc.baseImage, tc.adapterImage, tag)
+			t.Logf("Generated tag for %s + %s: %s", tc.baseImage, tc.bundleDigest, tag)
 
 			// Verify tag format
 			if !strings.HasPrefix(tag, "holon-composed-") {
@@ -217,7 +217,7 @@ func TestComposedImageTagGeneration(t *testing.T) {
 			}
 
 			// Store for consistency check
-			key := tc.baseImage + ":" + tc.adapterImage
+			key := tc.baseImage + ":" + tc.bundleDigest
 			if existingTag, exists := tags[key]; exists {
 				if existingTag != tag {
 					t.Errorf("Inconsistent tag generation: same inputs produced different tags: %s vs %s", existingTag, tag)
@@ -244,16 +244,6 @@ func TestComposedImageTagGeneration(t *testing.T) {
 
 	if len(uniqueTags) != len(tags) {
 		t.Errorf("Different inputs should produce different tags. Got %d unique tags for %d input combinations", len(uniqueTags), len(tags))
-	}
-}
-
-func TestComposedImageTagGeneration_WithBundleDigest(t *testing.T) {
-	baseImage := "golang:1.22"
-	tagA := composeImageTag(baseImage, "", "bundle-digest-a")
-	tagB := composeImageTag(baseImage, "", "bundle-digest-b")
-
-	if tagA == tagB {
-		t.Errorf("Expected different tags for different bundle digests: %s vs %s", tagA, tagB)
 	}
 }
 

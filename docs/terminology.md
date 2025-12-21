@@ -83,7 +83,7 @@ Automation that consumes outputs and applies them to external systems (e.g. appl
 
 Some internal code/docs may still use older names:
 - “adapter” → Holon Agent
-- “adapter image” → Agent Bundle (docker image in current implementation)
+- “adapter image” → Agent Bundle (archive in current implementation)
 - “runtime/host” → Runner
 
 Implementation plan:

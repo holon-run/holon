@@ -4,8 +4,8 @@ This document is **non-normative** and describes the current Claude adapter impl
 
 ## Implementation location
 - Adapter sources: `images/adapter-claude/src/adapter.ts`
-- Adapter image: `holon-adapter-claude`
-- Entrypoint (inside image): `node /app/dist/adapter.js`
+- Agent bundle: `images/adapter-claude/dist/agent-bundles/*.tar.gz`
+- Entrypoint (inside composed image): `/holon/agent/bin/agent`
 
 ## Underlying runtime
 The adapter drives Claude Code behavior headlessly via the Claude Agent SDK:
@@ -15,9 +15,9 @@ The adapter drives Claude Code behavior headlessly via the Claude Agent SDK:
 ## Runtime image composition
 Holon composes a final runtime image (at run time) from:
 - **Base toolchain image** (`--image`, e.g. `golang:1.22`)
-- **Adapter image** (`--adapter-image`, default `holon-adapter-claude`)
+- **Agent bundle** (`--agent-bundle`, a `.tar.gz` archive)
 
-The composed image installs required tooling (Node, git, `gh`) and the Claude Code runtime, then uses the adapter entrypoint.
+The composed image installs required tooling (Node, git, `gh`) and the Claude Code runtime, then uses the agent bundle entrypoint.
 
 ## Container filesystem layout
 The adapter expects the standard Holon layout:
@@ -51,4 +51,3 @@ Common environment variables:
 - Timeouts/health: `HOLON_QUERY_TIMEOUT_SECONDS`, `HOLON_HEARTBEAT_SECONDS`, `HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS`, `HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS`
 
 See `images/adapter-claude/README.md` for the full list.
-

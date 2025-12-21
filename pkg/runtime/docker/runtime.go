@@ -34,7 +34,6 @@ func NewRuntime() (*Runtime, error) {
 
 type ContainerConfig struct {
 	BaseImage      string // e.g., golang:1.22 (The toolchain)
-	AdapterImage   string // e.g., holon-adapter-claude (The adapter logic)
 	AgentBundle    string // Optional path to agent bundle archive (.tar.gz)
 	Workspace      string
 	SpecPath       string
@@ -60,32 +59,19 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	}
 
 	// 2. Prepare Image (Build-on-Run composition)
-	adapterImage := cfg.AdapterImage
-	finalImage := adapterImage
-	if cfg.AgentBundle != "" {
-		if cfg.BaseImage == "" {
-			return fmt.Errorf("base image is required when using an agent bundle")
-		}
-		fmt.Printf("Composing runtime image for %s + bundle %s...\n", cfg.BaseImage, cfg.AgentBundle)
-		composedImage, err := r.buildComposedImageFromBundle(ctx, cfg.BaseImage, cfg.AgentBundle)
-		if err != nil {
-			return fmt.Errorf("failed to compose image: %w", err)
-		}
-		finalImage = composedImage
-	} else {
-		if adapterImage == "" {
-			adapterImage = "holon-adapter-claude"
-		}
-		finalImage = adapterImage
-		if cfg.BaseImage != "" && cfg.BaseImage != adapterImage {
-			fmt.Printf("Composing runtime image for %s + %s...\n", cfg.BaseImage, adapterImage)
-			composedImage, err := r.buildComposedImage(ctx, cfg.BaseImage, adapterImage)
-			if err != nil {
-				return fmt.Errorf("failed to compose image: %w", err)
-			}
-			finalImage = composedImage
-		}
+	if cfg.AgentBundle == "" {
+		return fmt.Errorf("agent bundle is required")
 	}
+	if cfg.BaseImage == "" {
+		return fmt.Errorf("base image is required when using an agent bundle")
+	}
+
+	fmt.Printf("Composing runtime image for %s + bundle %s...\n", cfg.BaseImage, cfg.AgentBundle)
+	composedImage, err := r.buildComposedImageFromBundle(ctx, cfg.BaseImage, cfg.AgentBundle)
+	if err != nil {
+		return fmt.Errorf("failed to compose image: %w", err)
+	}
+	finalImage := composedImage
 
 	// Pull final image if not present locally
 	_, err = r.cli.ImageInspect(ctx, finalImage)
@@ -176,53 +162,6 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	return nil
 }
 
-func (r *Runtime) buildComposedImage(ctx context.Context, baseImage, adapterImage string) (string, error) {
-	// Implementation follows RFC-0002: Create a transient Dockerfile
-	// and run docker build.
-	tmpDir, err := os.MkdirTemp("", "holon-build-*")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(tmpDir)
-
-	dockerfile := fmt.Sprintf(`
-FROM %s
-# Install Node and GitHub CLI if missing
-RUN apt-get update && apt-get install -y curl git
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs
-# Try to install GitHub CLI
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
-    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
-    apt-get update && apt-get install -y gh
-# Layer the adapter from the adapter image
-COPY --from=%s /app /app
-COPY --from=%s /root/.claude /root/.claude
-COPY --from=%s /root/.claude.json /root/.claude.json
-# Install Claude Code
-RUN npm install -g @anthropic-ai/claude-code@2.0.74
-# Ensure environment
-ENV IS_SANDBOX=1
-WORKDIR /holon/workspace
-ENTRYPOINT ["node", "/app/dist/adapter.js"]
-`, baseImage, adapterImage, adapterImage, adapterImage)
-
-	dfPath := filepath.Join(tmpDir, "Dockerfile")
-	if err := os.WriteFile(dfPath, []byte(dockerfile), 0644); err != nil {
-		return "", err
-	}
-
-	// Generate stable hash for composed image tag
-	tag := composeImageTag(baseImage, adapterImage, "")
-	cmd := exec.Command("docker", "build", "-t", tag, tmpDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("composition build failed: %v, output: %s", err, string(out))
-	}
-
-	return tag, nil
-}
-
 func (r *Runtime) buildComposedImageFromBundle(ctx context.Context, baseImage, bundlePath string) (string, error) {
 	tmpDir, err := os.MkdirTemp("", "holon-build-*")
 	if err != nil {
@@ -301,7 +240,7 @@ ENTRYPOINT ["/holon/agent/bin/agent"]
 		return "", err
 	}
 
-	tag := composeImageTag(baseImage, "", bundleDigest)
+	tag := composeImageTag(baseImage, bundleDigest)
 	cmd := exec.Command("docker", "build", "-t", tag, tmpDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("composition build failed: %v, output: %s", err, string(out))
@@ -310,11 +249,8 @@ ENTRYPOINT ["/holon/agent/bin/agent"]
 	return tag, nil
 }
 
-func composeImageTag(baseImage, adapterImage, bundleDigest string) string {
-	hashInput := baseImage + ":" + adapterImage
-	if bundleDigest != "" {
-		hashInput = baseImage + ":" + bundleDigest
-	}
+func composeImageTag(baseImage, bundleDigest string) string {
+	hashInput := baseImage + ":" + bundleDigest
 	hash := sha256.Sum256([]byte(hashInput))
 	return fmt.Sprintf("holon-composed-%x", hash[:12])
 }

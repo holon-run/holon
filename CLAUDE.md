@@ -28,8 +28,8 @@ make test
 # Run only Go tests
 go test ./... -v
 
-# Build adapter Docker image (required before first run)
-make build-adapter-image
+# Build agent bundle (required before first run)
+cd images/adapter-claude && npm run bundle
 
 # Run example with ANTHROPIC_API_KEY set
 export ANTHROPIC_API_KEY=your_key_here
@@ -55,7 +55,7 @@ make clean
 - `--spec` / `-s`: Path to holon spec file
 - `--goal` / `-g`: Goal description (alternative to spec)
 - `--image` / `-i`: Docker base image (default: golang:1.22)
-- `--adapter-image`: Adapter Docker image (default: holon-adapter-claude)
+- `--agent-bundle`: Agent bundle archive (.tar.gz)
 - `--workspace` / `-w`: Workspace path (default: .)
 - `--out` / `-o`: Output directory (default: ./holon-output)
 - `--env` / `-e`: Environment variables (K=V format)
@@ -73,7 +73,7 @@ make clean
 **Docker Runtime**: `pkg/runtime/docker/runtime.go`
 - `NewRuntime()`: Initialize Docker client
 - `RunHolon()`: Main execution orchestrator
-- `buildComposedImage()`: Dynamically combines base + adapter images
+- `buildComposedImageFromBundle()`: Dynamically combines base image + agent bundle
 
 **Holon Specification**: `pkg/api/v1/spec.go`
 ```yaml
@@ -97,13 +97,13 @@ output:
 ```
 
 **TypeScript Adapter**: `images/adapter-claude/`
-- Entry point: `/app/dist/adapter.js`
-- Pre-installed Claude Code runtime (for Agent SDK) and GitHub CLI
+- Entry point inside composed image: `/holon/agent/bin/agent`
+- Claude Code runtime installed during composition
 - Standardized I/O paths: `/holon/input/`, `/holon/workspace/`, `/holon/output/`
 
 ### Execution Flow
 1. **Workspace Snapshot**: Copy workspace to isolated location
-2. **Image Composition**: Build composed image from base + adapter
+2. **Image Composition**: Build composed image from base + agent bundle
 3. **Container Creation**: Start container with mounted volumes
 4. **Agent Execution**: Run Claude Agent SDK adapter with injected prompts
 5. **Artifact Validation**: Verify required outputs exist
@@ -115,7 +115,7 @@ pkg/                # Core Go libraries
   ├── api/v1/       # HolonSpec and HolonManifest types
   ├── runtime/docker/ # Docker runtime implementation
   └── prompt/       # Prompt compilation system
-images/adapter-claude/ # TypeScript Claude adapter Docker image
+images/adapter-claude/ # TypeScript Claude adapter (bundle source)
 tests/integration/  # testscript integration tests
 examples/          # Example specification files
 rfc/              # RFC documentation
@@ -157,7 +157,7 @@ Each execution produces standardized outputs:
 - Additional artifacts as specified in the spec
 
 ### Dynamic Image Composition
-The runtime dynamically combines base images with the adapter image at runtime, enabling any standard Docker image to become a Holon execution environment without modification.
+The runtime dynamically combines base images with the agent bundle at runtime, enabling any standard Docker image to become a Holon execution environment without modification.
 
 ### Spec vs Goal Execution
 - **Spec mode**: Use `--spec` for structured, reproducible task definitions
@@ -166,7 +166,7 @@ The runtime dynamically combines base images with the adapter image at runtime, 
 ### Adapter Pattern
 While v0.1 focuses on Claude Code, the architecture supports future adapters through:
 - Standardized I/O interface (`/holon/input/`, `/holon/workspace/`, `/holon/output/`)
-- Pluggable adapter images via `--adapter-image` flag
+- Pluggable agent bundles via `--agent-bundle` flag
 - Common prompt compilation system in `pkg/prompt/`
 
 ## Common Development Patterns

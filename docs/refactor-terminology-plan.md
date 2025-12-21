@@ -13,7 +13,7 @@ Related:
 - [ ] Confirm role set (MVP): `developer`, `reviewer`
 - [ ] Confirm mapping & deprecations:
   - “adapter” → “agent”
-  - “adapter image” → “agent bundle” (current implementation: docker image)
+  - “adapter image” → “agent bundle” (current implementation: `.tar.gz` bundle)
   - “host/runtime” → “runner”
 
 **Acceptance**
@@ -30,12 +30,9 @@ Related:
 ## Phase 2 — CLI & Action Compatibility Layer (public-facing API)
 
 ### CLI (`holon run`)
-- [ ] Add `--agent` flag:
-  - default: current docker image (`holon-adapter-claude`)
-  - help text uses “agent bundle (currently: docker image)”
-- [ ] Keep `--adapter-image` as an alias:
-  - still works
-  - hidden from help or marked “deprecated”
+- [ ] Add `--agent-bundle` flag:
+  - default: local agent bundle (built from `images/adapter-claude` when available)
+  - help text uses “agent bundle”
 - [ ] Update log output and errors to use the new terms:
   - “agent” instead of “adapter”
   - “runner” instead of “host/runtime”
@@ -46,8 +43,7 @@ Related:
 - tests: `cmd/holon/runner_test.go`
 
 **Acceptance**
-- `holon run --agent holon-adapter-claude ...` works.
-- Existing commands (`--adapter-image`) keep working unchanged.
+- `holon run --agent-bundle <bundle.tar.gz> ...` works.
 
 ### Environment variables
 - [ ] Add new env var name(s) to mirror `--agent` (e.g. `HOLON_AGENT`).
@@ -98,4 +94,3 @@ Related:
 
 **Acceptance**
 - Clear boundary: agents generate outputs; publishers apply them to GitHub.
-

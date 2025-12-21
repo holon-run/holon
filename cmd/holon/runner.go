@@ -27,7 +27,6 @@ type RunnerConfig struct {
 	GoalStr       string
 	TaskName      string
 	BaseImage     string
-	AdapterImage  string
 	AgentBundle   string
 	WorkspacePath string
 	ContextPath   string
@@ -172,14 +171,13 @@ output:
 		fmt.Printf("Warning: Failed to write debug prompts: %v\n", err)
 	}
 
-	agentBundlePath, adapterImage, err := r.resolveAgentBundle(cfg, absWorkspace)
+	agentBundlePath, err := r.resolveAgentBundle(cfg, absWorkspace)
 	if err != nil {
 		return err
 	}
 
 	containerCfg := &docker.ContainerConfig{
 		BaseImage:      cfg.BaseImage,
-		AdapterImage:   adapterImage,
 		AgentBundle:    agentBundlePath,
 		Workspace:      absWorkspace,
 		SpecPath:       absSpec,
@@ -190,11 +188,7 @@ output:
 		Env:            envVars,
 	}
 
-	if containerCfg.AgentBundle != "" {
-		fmt.Printf("Running Holon: %s with base image %s (agent bundle: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AgentBundle)
-	} else {
-		fmt.Printf("Running Holon: %s with base image %s (adapter: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AdapterImage)
-	}
+	fmt.Printf("Running Holon: %s with base image %s (agent bundle: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AgentBundle)
 	if err := r.runtime.RunHolon(ctx, containerCfg); err != nil {
 		return fmt.Errorf("execution failed: %w", err)
 	}
@@ -203,68 +197,47 @@ output:
 	return nil
 }
 
-func (r *Runner) resolveAgentBundle(cfg RunnerConfig, workspace string) (string, string, error) {
-	const defaultAdapterImage = "holon-adapter-claude"
-
-	adapterImage := cfg.AdapterImage
-	if adapterImage == "" {
-		adapterImage = defaultAdapterImage
-	}
-
+func (r *Runner) resolveAgentBundle(cfg RunnerConfig, workspace string) (string, error) {
 	if cfg.AgentBundle != "" {
 		absBundle, err := filepath.Abs(cfg.AgentBundle)
 		if err != nil {
-			return "", "", fmt.Errorf("failed to resolve agent bundle path: %w", err)
+			return "", fmt.Errorf("failed to resolve agent bundle path: %w", err)
 		}
 		info, err := os.Stat(absBundle)
 		if err != nil {
-			return "", "", fmt.Errorf("agent bundle not found: %w", err)
+			return "", fmt.Errorf("agent bundle not found: %w", err)
 		}
 		if info.IsDir() {
-			return "", "", fmt.Errorf("agent bundle path is a directory: %s", absBundle)
+			return "", fmt.Errorf("agent bundle path is a directory: %s", absBundle)
 		}
-		return absBundle, "", nil
-	}
-
-	if adapterImage != "" {
-		if info, err := os.Stat(adapterImage); err == nil && !info.IsDir() {
-			absBundle, err := filepath.Abs(adapterImage)
-			if err != nil {
-				return "", "", fmt.Errorf("failed to resolve adapter bundle path: %w", err)
-			}
-			return absBundle, "", nil
-		}
-	}
-
-	if adapterImage != defaultAdapterImage {
-		return "", adapterImage, nil
+		return absBundle, nil
 	}
 
 	scriptPath := filepath.Join(workspace, "images", "adapter-claude", "scripts", "build-bundle.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
-		return "", adapterImage, nil
+		return "", fmt.Errorf("agent bundle not found; set --agent-bundle to a bundle archive")
 	}
 
 	bundleDir := filepath.Join(workspace, "images", "adapter-claude", "dist", "agent-bundles")
 	bundlePath, err := findLatestBundle(bundleDir)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	if bundlePath == "" {
 		fmt.Println("Agent bundle not found. Building local bundle...")
 		if err := buildAgentBundle(scriptPath, workspace); err != nil {
-			return "", "", err
+			return "", err
 		}
 		bundlePath, err = findLatestBundle(bundleDir)
 		if err != nil {
-			return "", "", err
+			return "", err
 		}
 		if bundlePath == "" {
-			return "", "", fmt.Errorf("agent bundle build completed but no bundle found in %s", bundleDir)
+			return "", fmt.Errorf("agent bundle build completed but no bundle found in %s", bundleDir)
 		}
 	}
 
-	return bundlePath, "", nil
+	return bundlePath, nil
 }
 
 func findLatestBundle(dir string) (string, error) {

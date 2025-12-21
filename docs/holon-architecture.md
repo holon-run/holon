@@ -16,7 +16,7 @@ Holon is split into:
 
 Typical flow:
 1) Host prepares `/holon/input` and a workspace snapshot mounted at `/holon/workspace`.
-2) Host runs the adapter image (or a composed image).
+2) Host runs a composed image that includes the agent bundle.
 3) Adapter reads inputs, drives the underlying tool, and writes artifacts to `/holon/output`.
 4) Host uploads/publishes artifacts (e.g. apply patch, open PR) via workflows.
 
@@ -35,7 +35,7 @@ Holon does not fetch issue/PR context itself. The caller (workflow/local script)
 ## Image composition (Build-on-Run)
 Many tasks need a project toolchain (Go/Node/Java/etc.). Holon supports composing a runtime image at execution time:
 - **Base image**: toolchain (e.g. `golang:1.22`, `node:20`)
-- **Adapter layer**: adapter bridge + underlying agent runtime
+- **Agent bundle**: adapter bridge + dependencies
 
 This avoids maintaining a large prebuilt adapter×toolchain matrix.
 

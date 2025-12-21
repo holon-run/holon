@@ -29,17 +29,17 @@ graph TD
 - **Host**:
   - prepares `/holon/input/*` and a workspace snapshot at `/holon/workspace`
   - injects credentials via environment variables
-  - runs the adapter image and validates required artifacts
+  - runs the agent bundle in a composed image and validates required artifacts
   - publishes results (apply patch, create/update PR) outside the adapter
 - **Adapter**:
   - reads `spec.yaml` and context
   - drives the tool/runtime headlessly
   - writes standard artifacts to `/holon/output`
 
-## Image composition: base + adapter layer
+## Image composition: base + agent bundle
 Real tasks need language/toolchain images (Go/Node/Java/etc.). To avoid maintaining a prebuilt adapter×toolchain matrix, Holon can compose a final image at run time:
 - **Base image**: project toolchain (`golang:1.22`, `node:20`, ...)
-- **Adapter layer**: adapter entrypoint + underlying agent runtime
+- **Agent bundle**: agent entrypoint + dependencies
 
 This is an implementation strategy (host-side) and can evolve without changing the contract.
 
@@ -51,4 +51,3 @@ Holon prefers a “patch-first” integration boundary:
 
 ## Reference implementations
 - Claude adapter: `docs/adapter-claude.md`
-

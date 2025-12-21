@@ -26,14 +26,15 @@ Prereqs:
 - Go toolchain (this repo uses Go 1.24; see `go.mod`)
 - Anthropic API key: `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`)
 
-Pick a base toolchain image that matches your repo (via `--image`). Holon composes it with the adapter image at runtime.
+Pick a base toolchain image that matches your repo (via `--image`). Holon composes it with the agent bundle at runtime.
 
 Run the included example:
 ```bash
 export ANTHROPIC_API_KEY=...
 make build
-make ensure-adapter-image
-./bin/holon run --spec examples/fix-bug.yaml --image golang:1.22 --workspace . --out ./holon-output
+(cd images/adapter-claude && npm run bundle)
+BUNDLE_PATH=$(ls -t images/adapter-claude/dist/agent-bundles/*.tar.gz | head -n 1)
+./bin/holon run --spec examples/fix-bug.yaml --image golang:1.22 --agent-bundle "$BUNDLE_PATH" --workspace . --out ./holon-output
 ```
 
 Apply the patch to your working tree (explicit, outside the sandbox):
@@ -65,7 +66,7 @@ Minimal usage:
 CLI flags (most used):
 - `--goal` / `--spec`: task input
 - `--image`: base toolchain image (e.g. `golang:1.22`, `node:20`, ...)
-- `--adapter-image`: adapter image (default `holon-adapter-claude`)
+- `--agent-bundle`: agent bundle archive (`.tar.gz`)
 - `--workspace`: repo/workspace path (default `.`)
 - `--context`: extra context dir mounted at `/holon/input/context`
 - `--role`: prompt persona (`default`, `coder`)
