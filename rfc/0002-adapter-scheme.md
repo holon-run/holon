@@ -9,11 +9,11 @@
 
 ## 1. Summary
 
-This RFC details the **Adapter Encapsulation Scheme**. The goal is to standardize the integration of *existing* AI coding tools (e.g., `claude` CLI, `gh copilot`) into the Holon ecosystem by wrapping them in self-contained **Adapter Containers**.
+This RFC details the **Adapter Encapsulation Scheme**. The goal is to standardize the integration of *existing* AI coding tools (e.g., Claude Agent SDK, `gh copilot`) into the Holon ecosystem by wrapping them in self-contained **Adapter Containers**.
 
 For **v0.1**, this RFC focuses on a **Claude Code Adapter** that:
 * Uses **Claude Code behavior** (tooling + heuristics) while avoiding interactive UX.
-* Is driven via the **Claude Code CLI** to run headlessly.
+* Is driven via the **Claude Agent SDK** (Claude Code runtime) to run headlessly.
 * Produces **standard Holon artifacts** (`manifest.json`, `diff.patch`, `summary.md`, `evidence/`).
 
 ## 2. The Adapter Pattern
@@ -31,8 +31,8 @@ graph TD
 
     subgraph Container [Adapter Container]
         Entry[entrypoint /app/dist/adapter.js]
-        SDK[Tool Control Layer]
-        Tool[Underlying Tool CLI / Bin]
+        SDK[Claude Agent SDK]
+        Tool[Claude Code Runtime]
     end
 
     CLI -->|Runs| Container
@@ -54,8 +54,8 @@ graph TD
 
 2.  **Adapter Bridge (Container Internal)**:
     *   **EntryPoint**: A script (Node/Go/etc.) that runs on container start.
-    *   **Translation**: Reads `spec.yaml` and translates it into the tool's native commands (e.g., `claude` prompt, `gh` args).
-    *   **Execution**: Manages the tool process.
+    *   **Translation**: Reads `spec.yaml` and translates it into the SDK prompt/options.
+    *   **Execution**: Manages the SDK query stream.
     *   **Result**: Captures tool output and writes standard Holon Artifacts.
 
 ### 2.3 Adapter Contract (v0.1)
@@ -106,16 +106,16 @@ Adapters and underlying tools may modify `/holon/workspace`. To preserve atomic 
 
 We will reference `thirdparty/wegent` which successfully containerizes `claude-code`.
 
-*   **Underlying Tool**: `@anthropic-ai/claude-code` (Node.js CLI).
-*   **Bridge Script**: A TypeScript adapter compiled to `adapter.js` that drives Claude Code **headlessly**, derived from `spec.yaml`.
+*   **Underlying Tool**: Claude Code runtime (installed via `@anthropic-ai/claude-code`).
+*   **Bridge Script**: A TypeScript adapter compiled to `adapter.js` that drives Claude Code **headlessly** via the Agent SDK, derived from `spec.yaml`.
 
-### 3.1 Why CLI-driven (Non-interactive)
+### 3.1 Why SDK-driven (Non-interactive)
 
-Directly executing `claude` CLI can be interactive (onboarding, permission confirmations, TUI prompts).
+The Agent SDK still relies on Claude Code runtime behaviors that can be interactive (onboarding, permission confirmations, TUI prompts).
 For v0.1, the adapter MUST be non-interactive:
 * Pre-seed Claude Code configuration files to mark onboarding complete.
 * Force an explicit permission mode (e.g., `bypassPermissions`) suitable for sandboxed execution.
-* Use `--output-format stream-json` to parse results deterministically.
+* Stream SDK messages and parse results deterministically.
 
 ### 3.2 Container Layout
 
@@ -137,9 +137,9 @@ For v0.1, the adapter MUST be non-interactive:
     * Ensure non-interactive Claude Code setup (`~/.claude/*` seeded).
     * Set sandbox-related env (e.g., `IS_SANDBOX=1`).
     * Prepare diff baseline (see 3.4).
-3.  **Init**: Prepare CLI flags (cwd, permission mode, model/env overrides when needed).
-4.  **Execute**: Translate `spec.yaml` into a prompt and call `claude` with `--print`.
-5.  **Wait/Collect**: Stream/capture logs to `evidence/` and wait for completion.
+3.  **Init**: Prepare SDK options (cwd, permission mode, model/env overrides when needed).
+4.  **Execute**: Translate `spec.yaml` into a prompt and call `query()` with the Agent SDK.
+5.  **Wait/Collect**: Stream/capture SDK messages to `evidence/` and wait for completion.
 6.  **Artifacts**:
     * Write `/holon/output/diff.patch`
     * Write `/holon/output/summary.md`
@@ -172,7 +172,7 @@ Adapters MUST avoid prompting for input:
 images/
   adapter-claude/
     Dockerfile          # Adapter layer (TypeScript bridge + Claude Code dependencies)
-    dist/adapter.js     # Bridge implementation (spec -> prompt -> CLI -> artifacts)
+    dist/adapter.js     # Bridge implementation (spec -> prompt -> SDK -> artifacts)
     package.json        # Node deps
 cmd/
   holon-adapter/        # Deprecated: legacy self-implemented agent (kept for local dev experiments)
