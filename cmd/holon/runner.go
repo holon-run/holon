@@ -34,6 +34,7 @@ type RunnerConfig struct {
 	RoleName      string
 	EnvVarsList   []string
 	LogLevel      string
+	Mode          string
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -153,6 +154,13 @@ output:
 		envVars["LOG_LEVEL"] = cfg.LogLevel
 	} else {
 		envVars["LOG_LEVEL"] = "progress" // Default to progress mode
+	}
+
+	// Add mode to environment variables
+	if cfg.Mode != "" {
+		envVars["HOLON_MODE"] = cfg.Mode
+	} else {
+		envVars["HOLON_MODE"] = "execute" // Default to execute mode
 	}
 
 	// Compile prompts

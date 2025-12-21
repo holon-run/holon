@@ -20,6 +20,7 @@ var outDir string
 var roleName string
 var envVarsList []string
 var logLevel string
+var mode string
 
 var runCmd = &cobra.Command{
 	Use:   "run",
@@ -44,6 +45,7 @@ var runCmd = &cobra.Command{
 			RoleName:      roleName,
 			EnvVarsList:   envVarsList,
 			LogLevel:      logLevel,
+			Mode:          mode,
 		})
 	},
 }
@@ -65,6 +67,7 @@ func init() {
 	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. coder, architect)")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
+	runCmd.Flags().StringVar(&mode, "mode", "execute", "Execution mode: execute, plan, review")
 	rootCmd.AddCommand(runCmd)
 }
 

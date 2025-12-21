@@ -412,6 +412,7 @@ async function runClaude(
 async function runAdapter(): Promise<void> {
   const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress");
   const isProbe = process.argv.slice(2).includes("--probe");
+  const mode = process.env.HOLON_MODE ?? "execute";
 
   console.log("Holon Claude Adapter process started...");
   logger.minimal("Holon Claude Adapter Starting...");
@@ -447,7 +448,7 @@ async function runAdapter(): Promise<void> {
     const manifest = {
       status: "completed",
       outcome: "success",
-      mode: "probe",
+      mode: mode,
       artifacts: [{ name: "manifest.json", path: "manifest.json" }],
     };
     fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
@@ -549,6 +550,7 @@ async function runAdapter(): Promise<void> {
       },
       status: "completed",
       outcome: success ? "success" : "failure",
+      mode: mode,
       duration: durationSeconds,
       artifacts: [
         { name: "diff.patch", path: "diff.patch" },
@@ -586,6 +588,7 @@ async function runAdapter(): Promise<void> {
     const manifest = {
       status: "completed",
       outcome: "failure",
+      mode: mode,
       error: String(error),
     };
     fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));

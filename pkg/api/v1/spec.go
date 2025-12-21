@@ -45,6 +45,7 @@ type Constraints struct {
 type HolonManifest struct {
 	Status    string            `json:"status"`
 	Outcome   string            `json:"outcome"` // success, failure, needs_human
+	Mode      string            `json:"mode,omitempty"`
 	Duration  string            `json:"duration"`
 	Artifacts []string          `json:"artifacts"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
