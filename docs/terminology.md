@@ -4,10 +4,16 @@ This page defines the **public terms** used across Holon docs. It is written to 
 
 ## Core
 
+Conceptual flow:
+
+```
+Runner → Agent → Engine → Outputs → Publisher
+```
+
 ### Holon Run
 A single, headless execution that:
 - reads inputs (spec + context + sandbox workspace)
-- invokes an agent runtime
+- invokes an agent
 - writes standardized outputs under `/holon/output`
 
 ### Holon Runner
@@ -32,7 +38,7 @@ The **execution unit** that implements the Holon I/O contract inside the contain
 
 ### Agent Bundle (Distribution)
 How a Holon Agent is shipped/installed.
-- Today: a Docker image (current implementation)
+- Today: a `.tar.gz` bundle archive (current implementation)
 - Future: an npm package (install-at-run), or a single binary
 
 The key idea: **the contract is stable**, the distribution format can evolve.

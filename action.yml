@@ -1,10 +1,13 @@
-name: 'Holon Runtime'
-description: 'Run a Holon execution unit to resolve an issue'
+name: 'Holon Runner'
+description: 'Run a Holon agent execution to resolve an issue'
 inputs:
   image:
     description: 'The base toolchain image to use'
     required: false
     default: 'golang:1.22'
+  agent:
+    description: 'Agent bundle reference (path to .tar.gz)'
+    required: false
   anthropic_api_key:
     description: 'Anthropic API Key (or ANTHROPIC_AUTH_TOKEN)'
     required: true
@@ -82,15 +85,18 @@ runs:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         GITHUB_TOKEN: ${{ steps.get_token.outputs.token }}
       run: |
-        AGENT_BUNDLE="${HOLON_AGENT_BUNDLE:-}"
+        AGENT_REF="${{ inputs.agent }}"
+        if [ -z "$AGENT_REF" ]; then
+          AGENT_REF="${HOLON_AGENT:-${HOLON_AGENT_BUNDLE:-}}"
+        fi
         # Build holon and bundle if not present
         if [ ! -f bin/holon ]; then
           make build
         fi
-        if [ -z "$AGENT_BUNDLE" ]; then
+        if [ -z "$AGENT_REF" ]; then
           echo "Building agent bundle..."
           (cd agents/claude && npm run bundle)
-          AGENT_BUNDLE=$(ls -t agents/claude/dist/agent-bundles/*.tar.gz | head -n 1)
+          AGENT_REF=$(ls -t agents/claude/dist/agent-bundles/*.tar.gz | head -n 1)
         fi
 
         # Extract issue info from event
@@ -100,7 +106,7 @@ runs:
 
           if [ -n "$TITLE" ]; then
             GOAL="Issue Title: $TITLE\n\nIssue Description:\n$BODY"
-            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --agent-bundle "$AGENT_BUNDLE" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}" --log-level "${{ inputs.log_level }}"
+            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --agent "$AGENT_REF" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}" --log-level "${{ inputs.log_level }}"
           else
             echo "Not an issue event or title is empty."
             exit 1

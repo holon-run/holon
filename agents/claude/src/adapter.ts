@@ -271,7 +271,7 @@ async function runClaude(
     env.CLAUDE_CODE_API_URL = baseUrl;
   }
   env.IS_SANDBOX = "1";
-  env.CLAUDE_CODE_ENTRYPOINT = "holon-adapter-ts";
+  env.CLAUDE_CODE_ENTRYPOINT = "holon-agent-ts";
 
   const model = env.HOLON_MODEL;
   const fallbackModel = env.HOLON_FALLBACK_MODEL;
@@ -486,8 +486,8 @@ async function runAdapter(): Promise<void> {
 
   logger.debug("Configuring git");
   runCommand("git", ["config", "--global", "--add", "safe.directory", workspacePath], { allowFailure: true });
-  runCommand("git", ["config", "--global", "user.name", "holon-adapter"], { allowFailure: true });
-  runCommand("git", ["config", "--global", "user.email", "adapter@holon.local"], { allowFailure: true });
+  runCommand("git", ["config", "--global", "user.name", "holon-agent"], { allowFailure: true });
+  runCommand("git", ["config", "--global", "user.email", "agent@holon.local"], { allowFailure: true });
 
   const hasGit = fs.existsSync(path.join(workspacePath, ".git"));
   if (!hasGit) {
@@ -544,7 +544,7 @@ async function runAdapter(): Promise<void> {
 
     const manifest = {
       metadata: {
-        adapter: "claude-code-ts",
+        agent: "claude-code-ts",
         version: "0.1.0",
       },
       status: "completed",

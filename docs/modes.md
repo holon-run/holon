@@ -17,7 +17,7 @@
 2) **Execution Semantics**（硬语义）：workspace 挂载权限（RO/RW）、工具许可策略（例如 `permission_mode=plan`）、以及是否允许写文件/运行命令。  
 3) **I/O Contract**：该模式要求生成的输出工件及其格式（例如 `diff.patch`、`plan.md`、`review.json`、`summary.md`）。
 
-> 关键原则：**硬语义由 Host 强制**（例如 RO/RW bind mount），而不是“相信提示词”。
+> 关键原则：**硬语义由 Runner 强制**（例如 RO/RW bind mount），而不是“相信提示词”。
 
 ## 默认模式与工件契约（建议）
 
@@ -74,7 +74,7 @@ constraints:
 
 ## Adapter 兼容性
 
-不同 adapter 对“原生 plan/review 能力”支持可能不一致（例如 Claude Agent SDK 支持 `permission_mode="plan"`，但其他 adapter 可能没有）。mode/profile 机制应允许：
+不同 agent 对“原生 plan/review 能力”支持可能不一致（例如 Claude Agent SDK 支持 `permission_mode="plan"`，但其他 agent 可能没有）。mode/profile 机制应允许：
 - **优先使用原生能力**（如 SDK 的 plan 模式）
 - 不支持时使用 **提示词约束 + 工具策略收紧** 做 best-effort
 - 但仍依赖 **workspace RO 挂载** 作为最终硬保证
@@ -86,10 +86,9 @@ constraints:
 
 ## 与 GitHub 的衔接（发布器）
 
-Holon/adapter 只负责产出标准工件；把结果写回 GitHub（发评论、发 review、更新 PR）由外层（workflow）完成：
+Holon/agent 只负责产出标准工件；把结果写回 GitHub（发评论、发 review、更新 PR）由外层（workflow）完成：
 - `plan.md` → comment / step summary
 - `review.json` → PR review（总评 + 可选 inline）
 - `diff.patch` → `git apply` → commit/push → create/update PR
 
-这样 adapter 保持通用，GitHub 逻辑保持可测试、可控且可替换（同一套工件也能用于本地、CI、其他平台）。
-
+这样 agent 保持通用，GitHub 逻辑保持可测试、可控且可替换（同一套工件也能用于本地、CI、其他平台）。

@@ -363,7 +363,7 @@ describe("Artifact Generation", () => {
 
     const manifest = {
       metadata: {
-        adapter: "claude-code-ts",
+        agent: "claude-code-ts",
         version: "0.1.0",
       },
       status: "completed",
@@ -381,7 +381,7 @@ describe("Artifact Generation", () => {
 
     assert(fs.existsSync(manifestPath));
     const content = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-    assert.strictEqual(content.metadata.adapter, "claude-code-ts");
+    assert.strictEqual(content.metadata.agent, "claude-code-ts");
     assert.strictEqual(content.status, "completed");
     assert.strictEqual(content.outcome, "success");
     assert.strictEqual(content.artifacts.length, 3);
@@ -426,7 +426,7 @@ describe("Error Handling", () => {
     const nonExistentPath = "/non/existent/spec.yaml";
     assert(!fs.existsSync(nonExistentPath));
 
-    // This simulates the error handling in the adapter
+    // This simulates the error handling in the agent
     try {
       if (!fs.existsSync(nonExistentPath)) {
         throw new Error(`Spec not found at ${nonExistentPath}`);

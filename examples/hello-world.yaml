@@ -5,7 +5,7 @@ metadata:
 context:
   workspace: "/workspace"
 goal:
-  description: "Verify that Holon can run a dummy adapter inside a container."
+  description: "Verify that Holon can run a dummy agent inside a container."
 output:
   artifacts:
     - path: "manifest.json"
