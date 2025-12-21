@@ -1,9 +1,10 @@
-.PHONY: build build-adapter build-host test test-all clean run-example ensure-adapter-image help
+.PHONY: build build-adapter build-host test test-all clean run-example ensure-adapter-image test-adapter help
 
 # Project variables
 BINARY_NAME=holon
 BIN_DIR=bin
 GO_FILES=$(shell find . -type f -name '*.go')
+ADAPTER_TS_DIR=images/adapter-claude-ts
 
 # Default target
 all: build
@@ -33,9 +34,14 @@ ensure-adapter-image:
 	fi
 
 ## test: Run all project tests
-test:
+test: test-adapter
 	@echo "Running Go tests..."
 	go test ./... -v
+
+## test-adapter: Run adapter TypeScript checks
+test-adapter:
+	@echo "Running TypeScript adapter checks..."
+	cd $(ADAPTER_TS_DIR) && npm install && npm run build
 
 ## clean: Remove build artifacts
 clean:

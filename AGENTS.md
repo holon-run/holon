@@ -13,7 +13,8 @@
 ## Build, Test, and Development Commands
 
 - `make build`: Build the Go CLI to `bin/holon`.
-- `make test`: Run Go tests (`go test ./...`).
+- `make test`: Run adapter checks (`make test-adapter`) followed by Go tests (`go test ./...`).
+- `make test-adapter`: Build/check the TypeScript adapter under `images/adapter-claude-ts/`.
 - `make build-adapter-image`: Build the Docker image `holon-adapter-claude-ts`.
 - `make test-integration`: Run integration tests (requires Docker).
 - `make run-example`: Run an example spec (requires Docker and Anthropic credentials).

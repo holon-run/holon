@@ -22,7 +22,7 @@ Holon is a standardized, atomic execution unit for AI-driven software engineerin
 # Build main CLI binary
 make build
 
-# Run all tests (Go)
+# Run all tests (TypeScript adapter + Go)
 make test
 
 # Run only Go tests
@@ -131,7 +131,10 @@ holonbot/         # Node.js GitHub App
 - Run with: `go test ./tests/integration/... -v`
 
 ### Adapter Tests
-The TypeScript adapter currently relies on integration coverage via Holon runs.
+```bash
+# Build/check the TypeScript adapter
+make test-adapter
+```
 
 ## Environment Setup
 
