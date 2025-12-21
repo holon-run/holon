@@ -27,3 +27,5 @@ thirdparty/
 
 .tmp
 .vercel
+
+dist
