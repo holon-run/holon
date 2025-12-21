@@ -1,5 +1,4 @@
 # Basic CLI behavior
 exec holon --help
-stdout 'Holon is a standardized execution unit'
-stdout 'Run a Holon execution unit'
-
+stdout 'Holon is a standardized runner'
+stdout 'Run a Holon agent execution'
