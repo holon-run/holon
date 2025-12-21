@@ -497,8 +497,8 @@ func TestRunner_Integration(t *testing.T) {
 			if cfg.BaseImage != "golang:1.22" {
 				t.Errorf("Expected BaseImage to be 'golang:1.22', got %q", cfg.BaseImage)
 			}
-			if cfg.AdapterImage != "holon-adapter-claude-ts" {
-				t.Errorf("Expected AdapterImage to be 'holon-adapter-claude-ts', got %q", cfg.AdapterImage)
+			if cfg.AdapterImage != "holon-adapter-claude" {
+				t.Errorf("Expected AdapterImage to be 'holon-adapter-claude', got %q", cfg.AdapterImage)
 			}
 			// WorkingDir is hardcoded to "/holon/workspace" in the docker runtime
 			return nil

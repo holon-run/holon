@@ -82,14 +82,14 @@ runs:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         GITHUB_TOKEN: ${{ steps.get_token.outputs.token }}
       run: |
-        ADAPTER_IMAGE="${HOLON_ADAPTER_IMAGE:-holon-adapter-claude-ts}"
+        ADAPTER_IMAGE="${HOLON_ADAPTER_IMAGE:-holon-adapter-claude}"
         # Build holon and adapter if not present
         if [ ! -f bin/holon ]; then
           make build
         fi
-        if [ "$ADAPTER_IMAGE" = "holon-adapter-claude-ts" ]; then
-          echo "Building TypeScript adapter image..."
-          docker build -t "$ADAPTER_IMAGE" ./images/adapter-claude-ts
+        if [ "$ADAPTER_IMAGE" = "holon-adapter-claude" ]; then
+          echo "Building adapter image..."
+          docker build -t "$ADAPTER_IMAGE" ./images/adapter-claude
         else
           echo "Using custom adapter image '$ADAPTER_IMAGE' (no local build performed)."
         fi

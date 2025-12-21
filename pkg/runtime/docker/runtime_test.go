@@ -179,17 +179,17 @@ func TestComposedImageTagGeneration(t *testing.T) {
 		{
 			name:         "standard images",
 			baseImage:    "golang:1.22",
-			adapterImage: "holon-adapter-claude-ts",
+			adapterImage: "holon-adapter-claude",
 		},
 		{
 			name:         "same images should produce same tag",
 			baseImage:    "golang:1.22",
-			adapterImage: "holon-adapter-claude-ts",
+			adapterImage: "holon-adapter-claude",
 		},
 		{
 			name:         "different base image",
 			baseImage:    "python:3.11",
-			adapterImage: "holon-adapter-claude-ts",
+			adapterImage: "holon-adapter-claude",
 		},
 		{
 			name:         "different adapter image",

@@ -170,7 +170,7 @@ Adapters MUST avoid prompting for input:
 
 ```
 images/
-  adapter-claude-ts/
+  adapter-claude/
     Dockerfile          # Adapter layer (TypeScript bridge + Claude Code dependencies)
     dist/adapter.js     # Bridge implementation (spec -> prompt -> CLI -> artifacts)
     package.json        # Node deps
