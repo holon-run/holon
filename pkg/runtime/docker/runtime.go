@@ -63,7 +63,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		return fmt.Errorf("agent bundle is required")
 	}
 	if cfg.BaseImage == "" {
-		return fmt.Errorf("base image is required when using an agent bundle")
+		return fmt.Errorf("base image is required")
 	}
 
 	fmt.Printf("Composing runtime image for %s + bundle %s...\n", cfg.BaseImage, cfg.AgentBundle)
