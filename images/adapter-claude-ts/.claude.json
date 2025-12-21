@@ -1,0 +1,9 @@
+{
+    "version": "1.0",
+    "autoUpdate": false,
+    "telemetry": false,
+    "hasCompletedOnboarding": true,
+    "lastOnboardingVersion": "2.0.14",
+    "bypassPermissionsModeAccepted": true,
+    "sonnet45MigrationComplete": true
+}

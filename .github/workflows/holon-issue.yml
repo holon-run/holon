@@ -28,6 +28,7 @@ jobs:
         uses: ./
         env:
           HOLON_MODEL: ${{ vars.HOLON_MODEL || 'claude-sonnet-4-5-20250929' }}
+          HOLON_ADAPTER_IMAGE: holon-adapter-claude-ts
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}

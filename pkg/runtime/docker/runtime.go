@@ -191,7 +191,7 @@ RUN npm install -g @anthropic-ai/claude-code@2.0.74 && \
 	ENV PYTHONUNBUFFERED=1
 	ENV PYTHONDONTWRITEBYTECODE=1
 	WORKDIR /holon/workspace
-	ENTRYPOINT ["python3", "/app/adapter.py"]
+	ENTRYPOINT ["sh", "-c", "if [ -f /app/dist/adapter.js ]; then exec node /app/dist/adapter.js; elif [ -f /app/adapter.py ]; then exec python3 /app/adapter.py; else echo 'adapter entrypoint not found' >&2; exit 1; fi"]
 `, baseImage, adapterImage, adapterImage, adapterImage)
 
 	dfPath := filepath.Join(tmpDir, "Dockerfile")
