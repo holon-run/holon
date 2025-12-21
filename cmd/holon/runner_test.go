@@ -848,13 +848,13 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		tempDir := t.TempDir()
 
 		// Create bundle directory structure
-		bundleDir := filepath.Join(tempDir, "images", "adapter-claude", "dist", "agent-bundles")
+		bundleDir := filepath.Join(tempDir, "agents", "claude", "dist", "agent-bundles")
 		if err := os.MkdirAll(bundleDir, 0755); err != nil {
 			t.Fatalf("Failed to create bundle directory: %v", err)
 		}
 
 		// Create build script directory (required for bundle discovery)
-		scriptDir := filepath.Join(tempDir, "images", "adapter-claude", "scripts")
+		scriptDir := filepath.Join(tempDir, "agents", "claude", "scripts")
 		if err := os.MkdirAll(scriptDir, 0755); err != nil {
 			t.Fatalf("Failed to create script directory: %v", err)
 		}
@@ -887,18 +887,18 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		tempDir := t.TempDir()
 
 		// Create bundle directory structure but no bundle file
-		bundleDir := filepath.Join(tempDir, "images", "adapter-claude", "dist", "agent-bundles")
+		bundleDir := filepath.Join(tempDir, "agents", "claude", "dist", "agent-bundles")
 		if err := os.MkdirAll(bundleDir, 0755); err != nil {
 			t.Fatalf("Failed to create bundle directory: %v", err)
 		}
 
 		// Create build script directory and script
-		scriptDir := filepath.Join(tempDir, "images", "adapter-claude", "scripts")
+		scriptDir := filepath.Join(tempDir, "agents", "claude", "scripts")
 		if err := os.MkdirAll(scriptDir, 0755); err != nil {
 			t.Fatalf("Failed to create script directory: %v", err)
 		}
 		scriptPath := filepath.Join(scriptDir, "build-bundle.sh")
-		scriptContent := "#!/bin/bash\n# Create a bundle file\nmkdir -p images/adapter-claude/dist/agent-bundles\ntouch images/adapter-claude/dist/agent-bundles/auto-built.tar.gz\nexit 0"
+		scriptContent := "#!/bin/bash\n# Create a bundle file\nmkdir -p agents/claude/dist/agent-bundles\ntouch agents/claude/dist/agent-bundles/auto-built.tar.gz\nexit 0"
 		if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
 			t.Fatalf("Failed to create build script: %v", err)
 		}
@@ -927,13 +927,13 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		tempDir := t.TempDir()
 
 		// Create bundle directory structure but no bundle file
-		bundleDir := filepath.Join(tempDir, "images", "adapter-claude", "dist", "agent-bundles")
+		bundleDir := filepath.Join(tempDir, "agents", "claude", "dist", "agent-bundles")
 		if err := os.MkdirAll(bundleDir, 0755); err != nil {
 			t.Fatalf("Failed to create bundle directory: %v", err)
 		}
 
 		// Create a failing build script
-		scriptDir := filepath.Join(tempDir, "images", "adapter-claude", "scripts")
+		scriptDir := filepath.Join(tempDir, "agents", "claude", "scripts")
 		if err := os.MkdirAll(scriptDir, 0755); err != nil {
 			t.Fatalf("Failed to create script directory: %v", err)
 		}
@@ -981,13 +981,13 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		tempDir := t.TempDir()
 
 		// Create bundle directory structure
-		bundleDir := filepath.Join(tempDir, "images", "adapter-claude", "dist", "agent-bundles")
+		bundleDir := filepath.Join(tempDir, "agents", "claude", "dist", "agent-bundles")
 		if err := os.MkdirAll(bundleDir, 0755); err != nil {
 			t.Fatalf("Failed to create bundle directory: %v", err)
 		}
 
 		// Create build script directory (required for bundle discovery)
-		scriptDir := filepath.Join(tempDir, "images", "adapter-claude", "scripts")
+		scriptDir := filepath.Join(tempDir, "agents", "claude", "scripts")
 		if err := os.MkdirAll(scriptDir, 0755); err != nil {
 			t.Fatalf("Failed to create script directory: %v", err)
 		}

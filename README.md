@@ -32,8 +32,8 @@ Run the included example:
 ```bash
 export ANTHROPIC_API_KEY=...
 make build
-(cd images/adapter-claude && npm run bundle)
-BUNDLE_PATH=$(ls -t images/adapter-claude/dist/agent-bundles/*.tar.gz | head -n 1)
+(cd agents/claude && npm run bundle)
+BUNDLE_PATH=$(ls -t agents/claude/dist/agent-bundles/*.tar.gz | head -n 1)
 ./bin/holon run --spec examples/fix-bug.yaml --image golang:1.22 --agent-bundle "$BUNDLE_PATH" --workspace . --out ./holon-output
 ```
 
@@ -75,7 +75,7 @@ CLI flags (most used):
 
 Claude adapter env (optional):
 - `HOLON_MODEL`, `HOLON_FALLBACK_MODEL`
-- `HOLON_QUERY_TIMEOUT_SECONDS`, `HOLON_HEARTBEAT_SECONDS`, `HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS`, `HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS` (see `images/adapter-claude/README.md`)
+- `HOLON_QUERY_TIMEOUT_SECONDS`, `HOLON_HEARTBEAT_SECONDS`, `HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS`, `HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS` (see `agents/claude/README.md`)
 
 ## Spec format (v1)
 Tasks can be defined via `--spec` using `spec.yaml` (see `examples/*.yaml`). At minimum you declare:
@@ -102,6 +102,6 @@ make test-integration  # integration tests (requires Docker)
 Repo layout:
 - `cmd/holon/`: host CLI
 - `pkg/`: spec parsing, prompt compilation, docker runtime
-- `images/adapter-claude/`: Claude adapter (TypeScript, Claude Agent SDK)
+- `agents/claude/`: Claude adapter (TypeScript, Claude Agent SDK)
 - `examples/`: runnable specs
 - `rfc/`: design docs / contracts

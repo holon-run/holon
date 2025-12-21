@@ -27,12 +27,12 @@ jobs:
 
     - name: Build Adapter Bundle
       run: |
-        cd images/adapter-claude
+        cd agents/claude
         npm run bundle
 
     - name: Verify Adapter Bundle
       run: |
-        cd images/adapter-claude
+        cd agents/claude
         npm ci
         npm run verify-bundle
       

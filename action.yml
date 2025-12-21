@@ -89,8 +89,8 @@ runs:
         fi
         if [ -z "$AGENT_BUNDLE" ]; then
           echo "Building agent bundle..."
-          (cd images/adapter-claude && npm run bundle)
-          AGENT_BUNDLE=$(ls -t images/adapter-claude/dist/agent-bundles/*.tar.gz | head -n 1)
+          (cd agents/claude && npm run bundle)
+          AGENT_BUNDLE=$(ls -t agents/claude/dist/agent-bundles/*.tar.gz | head -n 1)
         fi
 
         # Extract issue info from event

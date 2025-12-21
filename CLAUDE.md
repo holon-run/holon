@@ -29,7 +29,7 @@ make test
 go test ./... -v
 
 # Build agent bundle (required before first run)
-cd images/adapter-claude && npm run bundle
+cd agents/claude && npm run bundle
 
 # Run example with ANTHROPIC_API_KEY set
 export ANTHROPIC_API_KEY=your_key_here
@@ -96,7 +96,7 @@ output:
       required: true
 ```
 
-**TypeScript Adapter**: `images/adapter-claude/`
+**TypeScript Adapter**: `agents/claude/`
 - Entry point inside composed image: `/holon/agent/bin/agent`
 - Claude Code runtime installed during composition
 - Standardized I/O paths: `/holon/input/`, `/holon/workspace/`, `/holon/output/`
@@ -115,7 +115,7 @@ pkg/                # Core Go libraries
   ├── api/v1/       # HolonSpec and HolonManifest types
   ├── runtime/docker/ # Docker runtime implementation
   └── prompt/       # Prompt compilation system
-images/adapter-claude/ # TypeScript Claude adapter (bundle source)
+agents/claude/ # TypeScript Claude adapter (bundle source)
 tests/integration/  # testscript integration tests
 examples/          # Example specification files
 rfc/              # RFC documentation

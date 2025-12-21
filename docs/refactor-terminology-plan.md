@@ -31,7 +31,7 @@ Related:
 
 ### CLI (`holon run`)
 - [ ] Add `--agent-bundle` flag:
-  - default: local agent bundle (built from `images/adapter-claude` when available)
+  - default: local agent bundle (built from `agents/claude` when available)
   - help text uses “agent bundle”
 - [ ] Update log output and errors to use the new terms:
   - “agent” instead of “adapter”
