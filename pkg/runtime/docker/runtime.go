@@ -30,7 +30,7 @@ func NewRuntime() (*Runtime, error) {
 
 type ContainerConfig struct {
 	BaseImage      string // e.g., golang:1.22 (The toolchain)
-	AdapterImage   string // e.g., holon-adapter-claude (The adapter logic)
+	AdapterImage   string // e.g., holon-adapter-claude-ts (The adapter logic)
 	Workspace      string
 	SpecPath       string
 	ContextPath    string // Optional: path to context files
@@ -57,7 +57,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	// 2. Prepare Image (Build-on-Run composition)
 	adapterImage := cfg.AdapterImage
 	if adapterImage == "" {
-		adapterImage = "holon-adapter-claude"
+		adapterImage = "holon-adapter-claude-ts"
 	}
 
 	finalImage := adapterImage
@@ -170,8 +170,8 @@ func (r *Runtime) buildComposedImage(ctx context.Context, baseImage, adapterImag
 
 	dockerfile := fmt.Sprintf(`
 FROM %s
-# Install Node, Python and GitHub CLI if missing
-RUN apt-get update && apt-get install -y curl git python3 python3-pip
+# Install Node and GitHub CLI if missing
+RUN apt-get update && apt-get install -y curl git
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
 # Try to install GitHub CLI
@@ -183,15 +183,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 COPY --from=%s /app /app
 COPY --from=%s /root/.claude /root/.claude
 COPY --from=%s /root/.claude.json /root/.claude.json
-# Install Claude Code and dependencies
-RUN npm install -g @anthropic-ai/claude-code@2.0.74 && \
-    if [ -f /app/requirements.txt ]; then pip3 install --no-cache-dir -r /app/requirements.txt --break-system-packages; fi
-	# Ensure environment
-	ENV IS_SANDBOX=1
-	ENV PYTHONUNBUFFERED=1
-	ENV PYTHONDONTWRITEBYTECODE=1
-	WORKDIR /holon/workspace
-	ENTRYPOINT ["sh", "-c", "if [ -f /app/dist/adapter.js ]; then echo 'Starting Node adapter: /app/dist/adapter.js' >&2; node /app/dist/adapter.js; status=$?; echo \"Node adapter exited with status $status\" >&2; if [ $status -ne 0 ] && [ -f /app/adapter.py ]; then echo 'Falling back to Python adapter: /app/adapter.py' >&2; exec python3 /app/adapter.py; else exit $status; fi; elif [ -f /app/adapter.py ]; then echo 'Starting Python adapter: /app/adapter.py' >&2; exec python3 /app/adapter.py; else echo 'adapter entrypoint not found' >&2; exit 1; fi"]
+# Install Claude Code
+RUN npm install -g @anthropic-ai/claude-code@2.0.74
+# Ensure environment
+ENV IS_SANDBOX=1
+WORKDIR /holon/workspace
+ENTRYPOINT ["node", "/app/dist/adapter.js"]
 `, baseImage, adapterImage, adapterImage, adapterImage)
 
 	dfPath := filepath.Join(tmpDir, "Dockerfile")
