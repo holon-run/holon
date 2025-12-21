@@ -34,7 +34,7 @@ func NewRuntime() (*Runtime, error) {
 
 type ContainerConfig struct {
 	BaseImage      string // e.g., golang:1.22 (The toolchain)
-	AgentBundle    string // Optional path to agent bundle archive (.tar.gz)
+	AgentBundle    string // Required path to agent bundle archive (.tar.gz)
 	Workspace      string
 	SpecPath       string
 	ContextPath    string // Optional: path to context files
