@@ -1,8 +1,6 @@
 package docker
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,9 +201,7 @@ func TestComposedImageTagGeneration(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Generate tag using the same logic as buildComposedImage
-			hashInput := tc.baseImage + ":" + tc.adapterImage
-			hash := sha256.Sum256([]byte(hashInput))
-			tag := fmt.Sprintf("holon-composed-%x", hash[:12]) // Use first 12 bytes of hash
+			tag := composeImageTag(tc.baseImage, tc.adapterImage, "")
 
 			t.Logf("Generated tag for %s + %s: %s", tc.baseImage, tc.adapterImage, tag)
 
@@ -248,6 +244,16 @@ func TestComposedImageTagGeneration(t *testing.T) {
 
 	if len(uniqueTags) != len(tags) {
 		t.Errorf("Different inputs should produce different tags. Got %d unique tags for %d input combinations", len(uniqueTags), len(tags))
+	}
+}
+
+func TestComposedImageTagGeneration_WithBundleDigest(t *testing.T) {
+	baseImage := "golang:1.22"
+	tagA := composeImageTag(baseImage, "", "bundle-digest-a")
+	tagB := composeImageTag(baseImage, "", "bundle-digest-b")
+
+	if tagA == tagB {
+		t.Errorf("Expected different tags for different bundle digests: %s vs %s", tagA, tagB)
 	}
 }
 
