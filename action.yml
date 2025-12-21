@@ -82,7 +82,7 @@ runs:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         GITHUB_TOKEN: ${{ steps.get_token.outputs.token }}
       run: |
-        ADAPTER_IMAGE="${HOLON_ADAPTER_IMAGE:-holon-adapter-claude}"
+        ADAPTER_IMAGE="${HOLON_ADAPTER_IMAGE:-holon-adapter-claude-ts}"
         # Build holon and adapter if not present
         if [ ! -f bin/holon ]; then
           make build
@@ -90,9 +90,9 @@ runs:
         if [ "$ADAPTER_IMAGE" = "holon-adapter-claude-ts" ]; then
           echo "Building TypeScript adapter image..."
           docker build -t "$ADAPTER_IMAGE" ./images/adapter-claude-ts
-        elif [ -z "${HOLON_ADAPTER_IMAGE:-}" ] || [ "$ADAPTER_IMAGE" = "holon-adapter-claude" ]; then
-          echo "Building default adapter image..."
-          make build-adapter-image
+        elif [ "$ADAPTER_IMAGE" = "holon-adapter-claude" ]; then
+          echo "::warning title=Holon Adapter::Python adapter is deprecated. Use holon-adapter-claude-ts instead."
+          docker build -t "$ADAPTER_IMAGE" ./images/adapter-claude
         else
           echo "Using custom adapter image '$ADAPTER_IMAGE' (no local build performed)."
         fi
