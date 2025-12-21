@@ -363,7 +363,7 @@ describe("Artifact Generation", () => {
 
     const manifest = {
       metadata: {
-        agent: "claude-code-ts",
+        agent: "claude-code",
         version: "0.1.0",
       },
       status: "completed",
@@ -381,7 +381,7 @@ describe("Artifact Generation", () => {
 
     assert(fs.existsSync(manifestPath));
     const content = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-    assert.strictEqual(content.metadata.agent, "claude-code-ts");
+    assert.strictEqual(content.metadata.agent, "claude-code");
     assert.strictEqual(content.status, "completed");
     assert.strictEqual(content.outcome, "success");
     assert.strictEqual(content.artifacts.length, 3);
