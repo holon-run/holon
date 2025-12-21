@@ -1,4 +1,4 @@
-# RFC-0002: Adapter Encapsulation Scheme
+# RFC-0002: Adapter Contract (v0.1)
 
 | Metadata | Value |
 | :--- | :--- |
@@ -9,184 +9,80 @@
 
 ## 1. Summary
 
-This RFC details the **Adapter Encapsulation Scheme**. The goal is to standardize the integration of *existing* AI coding tools (e.g., Claude Agent SDK, `gh copilot`) into the Holon ecosystem by wrapping them in self-contained **Adapter Containers**.
+This RFC defines the **Holon Adapter Contract** for v0.1: a stable, tool-agnostic interface that allows different agent runtimes to be plugged into Holon while producing consistent, automatable outputs.
 
-For **v0.1**, this RFC focuses on a **Claude Code Adapter** that:
-* Uses **Claude Code behavior** (tooling + heuristics) while avoiding interactive UX.
-* Is driven via the **Claude Agent SDK** (Claude Code runtime) to run headlessly.
-* Produces **standard Holon artifacts** (`manifest.json`, `diff.patch`, `summary.md`, `evidence/`).
+This document is intended to be **normative** (what adapters/hosts MUST do). Reference implementations and composition details live under `docs/` (non-normative).
 
-## 2. The Adapter Pattern
+## 2. Scope & Terms
 
-An **Adapter** is a Docker container that bridges the **Holon Protocol** (Spec + Context) to the specific runtime requirements of an **Underlying Tool**.
+- **Host**: the Holon runtime (typically the `holon` CLI) that prepares inputs, runs the adapter container, and consumes outputs.
+- **Adapter**: the container entrypoint that reads Holon inputs and drives an underlying tool/runtime headlessly.
+- **Underlying tool**: the AI coding runtime controlled by the adapter (Claude Code, Codex, etc.).
 
-### 2.1 Architecture
+This RFC builds on `rfc/0001-holon-atomic-execution-unit.md`.
 
-```mermaid
-graph TD
-    subgraph Host [Holon Runtime Host]
-        CLI[holon-cli]
-        Spec[spec.yaml]
-    end
+## 3. Adapter Contract (Normative)
 
-    subgraph Container [Adapter Container]
-        Entry[entrypoint /app/dist/adapter.js]
-        SDK[Claude Agent SDK]
-        Tool[Claude Code Runtime]
-    end
+Every adapter MUST implement the following minimum contract.
 
-    CLI -->|Runs| Container
-    CLI -->|Mounts| Spec
-    Entry -->|Reads| Spec
-    Entry -->|Calls| SDK
-    SDK -->|Controls| Tool
-    Tool -->|Modifies| Workspace
-    Entry -->|Writes| Manifest
-```
+### 3.1 Inputs
 
-### 2.2 Responsibilities
+Adapters MUST treat these paths as **read-only**:
+- `/holon/input/spec.yaml`: the Holon spec.
+- `/holon/input/context/` (optional): caller-provided context files (issue text, PR diff, logs, etc.).
+- `/holon/input/prompts/system.md` (optional): compiled system prompt (host-provided).
+- `/holon/input/prompts/user.md` (optional): compiled user prompt (host-provided).
 
-1.  **Holon CLI (Host)**:
-    *   Prepare input volumes (`/holon/input`, `/holon/workspace`).
-    *   Inject credentials (Env Vars).
-    *   Run the Adapter Image.
-    *   Collect outputs from `/holon/output`.
+Adapters MUST treat the workspace as the codebase root:
+- `/holon/workspace`: a workspace **snapshot** prepared by the Host.
 
-2.  **Adapter Bridge (Container Internal)**:
-    *   **EntryPoint**: A script (Node/Go/etc.) that runs on container start.
-    *   **Translation**: Reads `spec.yaml` and translates it into the SDK prompt/options.
-    *   **Execution**: Manages the SDK query stream.
-    *   **Result**: Captures tool output and writes standard Holon Artifacts.
+Secrets are provided via environment variables (e.g., `ANTHROPIC_API_KEY`) and MUST NOT be embedded in the spec.
 
-### 2.3 Adapter Contract (v0.1)
+### 3.2 Outputs
 
-To ensure **polymorphism**, every adapter MUST implement the same minimum contract.
+Adapters MUST write all produced artifacts under `/holon/output/` (read-write).
 
-**Inputs**
-* `/holon/input/spec.yaml` (read-only): Holon Spec.
-* `/holon/input/context/` (read-only, optional): injected context files (issue.md, pr.md, etc).
-* `/holon/workspace/` (read-write): a *sandbox workspace snapshot* prepared by the Host (see 2.5).
-* Secrets via environment variables (e.g., `ANTHROPIC_API_KEY`).
+Adapters MAY read files they created under `/holon/output/` during the same run (e.g., incremental notes), but MUST NOT write outputs outside `/holon/output/`.
 
-**Outputs** (read-write under `/holon/output/`)
-* `manifest.json` (required): status/outcome/duration/artifacts + tool/runtime metadata.
-* `diff.patch` (required when Spec requests it): a patch representing the workspace changes.
-* `summary.md` (required when Spec requests it): human-readable report.
-* `evidence/` (optional): logs and verification output.
+At minimum, adapters MUST support these artifact names:
+- `manifest.json` (required): machine-readable metadata about the run (status/outcome/duration/artifacts + tool/runtime metadata).
+- `diff.patch` (required when requested by spec): a patch representing workspace changes.
+- `summary.md` (required when requested by spec): a human-readable report.
+- `evidence/` (optional): logs and verification output.
 
-Adapters MAY read files they created under `/holon/output/` during the same run (e.g., incremental plans, temporary notes). The Host SHOULD ensure `/holon/output/` starts empty for each run to avoid cross-run contamination.
+### 3.3 Exit codes
 
-**Exit Codes**
-* `0`: success
-* `1`: failure
-* `2`: needs human review (when supported; otherwise report via `manifest.json` outcome)
+Adapters MUST use the following exit codes:
+- `0`: success
+- `1`: failure
+- `2`: needs human review (optional; if unsupported, report via `manifest.json` and exit `1`)
 
-The Host validates `spec.output.artifacts[].required` and fails the run if required outputs are missing.
+### 3.4 Headless requirement
 
-### 2.4 Execution Environment: Base Image + Adapter Layer
+Adapters MUST run **headlessly**:
+- MUST NOT require a TTY.
+- MUST NOT block on interactive onboarding, permission prompts, or update prompts.
+- MUST fail fast when required credentials/config are missing, and record a clear error in `manifest.json`.
 
-Real engineering tasks require a toolchain (Go/Node/Java/etc). The adapter should not be forced to embed every toolchain.
+### 3.5 Patch requirements
 
-v0.1 supports composing the final runtime image as:
-* **Base Image**: user-selected toolchain image (`golang:1.22`, `node:20`, etc).
-* **Adapter Layer**: installs the underlying tool (e.g., `claude-code`) and the bridge (`adapter.js`).
+When `diff.patch` is required by the spec, the adapter MUST produce a patch that is compatible with `git apply` workflows.
 
-Implementation options (Host-side):
-1. **Build-on-Run (recommended)**: generate a small Dockerfile `FROM <base-image>` and install the adapter layer; cache by `(base-image digest, adapter version)`.
-2. **Prebuilt Matrix**: maintain `adapter-claude-go`, `adapter-claude-node`, ... (not recommended due to maintenance cost).
+For binary-file compatibility, adapters SHOULD generate patches using `git diff --binary --full-index` (or equivalent).
 
-### 2.5 Workspace Isolation (Atomicity)
+## 4. Host Responsibilities (Normative)
 
-Adapters and underlying tools may modify `/holon/workspace`. To preserve atomic execution:
-* The Host MUST mount a **workspace snapshot** into the container (copy/worktree/clone).
-* The original user workspace MUST NOT be modified in-place by default.
-* Code changes are communicated back via artifacts (especially `diff.patch`), and any application of changes to the original repo is an explicit host-side step (e.g., `--apply`).
+To preserve atomicity and enable deterministic automation, the Host MUST:
+- mount a **workspace snapshot** at `/holon/workspace` (not the original workspace, by default),
+- ensure `/holon/output/` starts empty (fresh dir or cleared) to avoid cross-run contamination,
+- validate required artifacts listed in `spec.output.artifacts[]` (and treat missing required artifacts as a run failure).
 
-## 3. Reference Implementation: Claude Code Adapter
+Applying changes back to the original repo (e.g., `git apply` + commit + PR) is an explicit caller/workflow step and MUST NOT be implicit side effects of the adapter.
 
-We will reference `thirdparty/wegent` which successfully containerizes `claude-code`.
+## 5. Non-normative references
 
-*   **Underlying Tool**: Claude Code runtime (installed via `@anthropic-ai/claude-code`).
-*   **Bridge Script**: A TypeScript adapter compiled to `adapter.js` that drives Claude Code **headlessly** via the Agent SDK, derived from `spec.yaml`.
-
-### 3.1 Why SDK-driven (Non-interactive)
-
-The Agent SDK still relies on Claude Code runtime behaviors that can be interactive (onboarding, permission confirmations, TUI prompts).
-For v0.1, the adapter MUST be non-interactive:
-* Pre-seed Claude Code configuration files to mark onboarding complete.
-* Force an explicit permission mode (e.g., `bypassPermissions`) suitable for sandboxed execution.
-* Stream SDK messages and parse results deterministically.
-
-### 3.2 Container Layout
-
-```
-/
-  app/
-    dist/adapter.js     # The Bridge (compiled)
-    package.json        # Node.js dependencies
-  root/
-    .claude/
-      settings.json
-    .claude.json
-```
-
-### 3.3 Interaction Flow (Headless)
-
-1.  **Start**: Container starts `node /app/dist/adapter.js` (no TTY required).
-2.  **Preflight**:
-    * Ensure non-interactive Claude Code setup (`~/.claude/*` seeded).
-    * Set sandbox-related env (e.g., `IS_SANDBOX=1`).
-    * Prepare diff baseline (see 3.4).
-3.  **Init**: Prepare SDK options (cwd, permission mode, model/env overrides when needed).
-4.  **Execute**: Translate `spec.yaml` into a prompt and call `query()` with the Agent SDK.
-5.  **Wait/Collect**: Stream/capture SDK messages to `evidence/` and wait for completion.
-6.  **Artifacts**:
-    * Write `/holon/output/diff.patch`
-    * Write `/holon/output/summary.md`
-    * Write `/holon/output/manifest.json`
-
-### 3.4 Patch Generation Strategy (diff.patch)
-
-The adapter MUST be able to output a patch even when the underlying tool only edits files.
-
-Recommended approach:
-* If `/holon/workspace/.git` exists: output `git diff` as `diff.patch`.
-* Otherwise: initialize a temporary git repo inside the sandbox workspace snapshot:
-  1. `git init`
-  2. `git add -A && git commit -m baseline`
-  3. After execution: `git diff --patch` to `diff.patch`
-
-This keeps patch generation deterministic and easy to apply by the Host.
-
-### 3.5 Non-interactive Requirements
-
-Adapters MUST avoid prompting for input:
-* No onboarding prompts (seed config files and/or set appropriate flags).
-* No permission confirmation prompts (force permission mode for sandbox execution).
-* No auto-update prompts (disable where possible).
-* Always run without TTY and treat missing secrets as a fast failure with a clear `manifest.json`.
-
-## 4. directory Structure
-
-```
-images/
-  adapter-claude/
-    Dockerfile          # Adapter layer (TypeScript bridge + Claude Code dependencies)
-    dist/adapter.js     # Bridge implementation (spec -> prompt -> SDK -> artifacts)
-    package.json        # Node deps
-cmd/
-  holon-adapter/        # Deprecated: legacy self-implemented agent (kept for local dev experiments)
-```
-
-## 5. Security & Network
-
-*   The container requires network access to call LLM APIs (Anthropic).
-*   Credentials (`ANTHROPIC_API_KEY`) are passed as environment variables.
-*   Adapters SHOULD redact secrets from logs written under `evidence/`.
-*   Adapters SHOULD support reducing non-essential traffic (when the underlying tool supports it).
-
-## 6. Future Work
-
-*   **Dynamic Injection**: For tools without a complex environment, we might inject the bridge binary into a user's image. For complex tools like `claude-code` (requiring Node), the **Static Adapter Image** approach is preferred.
-*   **Host Apply Mode**: Add `holon run --apply` to apply `diff.patch` back to the original workspace explicitly.
-*   **Contract Tests**: Provide a conformance test suite to validate adapter images against the contract in 2.3.
+Implementation details and examples:
+- Adapter encapsulation scheme: `docs/adapter-encapsulation.md`
+- Claude adapter reference notes: `docs/adapter-claude.md`
+- High-level architecture and composition notes: `docs/holon-architecture.md`
+- `mode` design (execute/plan/review): `docs/modes.md`
