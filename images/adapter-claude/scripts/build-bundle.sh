@@ -134,7 +134,7 @@ create_archive() {
   local compress_flag=$2
   local tmp_archive="${archive_path}.tmp"
   rm -f "${tmp_archive}"
-  if ! tar -C "${BUNDLE_DIR}" -cf "${tmp_archive}" ${compress_flag} .; then
+  if ! tar -C "${BUNDLE_DIR}" -cf "${tmp_archive}" "${compress_flag}" .; then
     rm -f "${tmp_archive}"
     return 1
   fi

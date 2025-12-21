@@ -31,4 +31,5 @@ Run a smoke test that builds a bundle and runs the adapter in probe mode using a
 npm run verify-bundle
 ```
 
-The verification uses a dummy API endpoint to avoid real Claude requests and checks that\n`/holon/output/manifest.json` is written.
+The verification uses a dummy API endpoint to avoid real Claude requests and checks that
+`/holon/output/manifest.json` is written.

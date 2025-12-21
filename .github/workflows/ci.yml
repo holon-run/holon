@@ -33,6 +33,7 @@ jobs:
     - name: Verify Adapter Bundle
       run: |
         cd images/adapter-claude
+        npm ci
         npm run verify-bundle
       
     - name: Test

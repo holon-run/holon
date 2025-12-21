@@ -91,7 +91,10 @@ if [ ! -f "${OUTPUT_DIR}/manifest.json" ]; then
 fi
 
 if [ "${EXIT_CODE}" -ne 0 ]; then
-  echo "Bundle verification: adapter exited with code ${EXIT_CODE}."
+  echo "Bundle verification failed: adapter exited with code ${EXIT_CODE}." >&2
+  echo "Adapter output:" >&2
+  echo "${DOCKER_OUTPUT}" >&2
+  exit "${EXIT_CODE}"
+else
+  echo "Bundle verification complete."
 fi
-
-echo "Bundle verification complete."

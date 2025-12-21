@@ -75,10 +75,10 @@ The runner treats the bundle as a black box:
 The runner should not assume language, package manager, or build system.
 
 ## Bundle naming (recommended)
-`agent-bundle-{name}-{version}-{platform}-{arch}-{libc}.tar.zst`
+`agent-bundle-{name}-{version}-{platform}-{arch}-{libc}.tar.gz`
 
 Example:
-`agent-bundle-agent-claude-0.1.0-linux-amd64-glibc.tar.zst`
+`agent-bundle-agent-claude-0.1.0-linux-amd64-glibc.tar.gz`
 
 ## Local build inside the Holon repo
 If the agent source tree is available (e.g. `images/agent-claude/` or
