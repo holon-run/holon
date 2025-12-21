@@ -1,6 +1,6 @@
 # Agent Encapsulation Scheme (Design Notes)
 
-This document is **non-normative**. The normative agent/runner contract is in `rfc/0002-adapter-scheme.md`.
+This document is **non-normative**. The normative agent/runner contract is in `rfc/0002-agent-scheme.md`.
 
 ## The agent pattern
 An **agent** is a container entrypoint that bridges the Holon filesystem contract (`/holon/input`, `/holon/workspace`, `/holon/output`) to an underlying AI engine/runtime.
@@ -50,4 +50,4 @@ Holon prefers a “patch-first” integration boundary:
 - callers/workflows explicitly apply changes back to a branch/PR.
 
 ## Reference implementations
-- Claude agent: `docs/adapter-claude.md`
+- Claude agent: `docs/agent-claude.md`

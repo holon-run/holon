@@ -18,7 +18,7 @@ Holon writes to the directory specified by `--out` (default `./holon-output`). C
 | `prompt.compiled.system.md` | compiled system prompt (debug) | written by runner |
 | `prompt.compiled.user.md` | compiled user prompt (debug) | written by runner |
 
-See `rfc/0002-adapter-scheme.md` for the agent artifact contract.
+See `rfc/0002-agent-scheme.md` for the agent artifact contract.
 
 ## Quickstart (local)
 Prereqs:

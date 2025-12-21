@@ -1,6 +1,6 @@
 # Claude Agent (Reference Implementation)
 
-This document is **non-normative** and describes the current Claude agent implementation. The **normative agent contract** is defined in `rfc/0002-adapter-scheme.md`.
+This document is **non-normative** and describes the current Claude agent implementation. The **normative agent contract** is defined in `rfc/0002-agent-scheme.md`.
 
 ## Implementation location
 - Agent sources: `agents/claude/src/agent.ts`

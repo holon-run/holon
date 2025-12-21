@@ -99,7 +99,7 @@ A Holon execution is **single-shot**:
 - the agent process starts, performs the task, writes artifacts, and terminates,
 - the agent MUST NOT require inbound ports or run as a daemon.
 
-Exit codes and artifact requirements are defined in `rfc/0002-adapter-scheme.md`.
+Exit codes and artifact requirements are defined in `rfc/0002-agent-scheme.md`.
 
 ## 6. Security & network (v0.1)
 
@@ -109,5 +109,5 @@ v0.1 assumes network access is available for calling LLM APIs. Future versions m
 
 Design notes and examples (non-normative):
 - Architecture/design: `docs/holon-architecture.md`
-- Agent pattern (non-normative): `docs/adapter-encapsulation.md`
+- Agent pattern (non-normative): `docs/agent-encapsulation.md`
 - `mode` design (execute/plan/review): `docs/modes.md`

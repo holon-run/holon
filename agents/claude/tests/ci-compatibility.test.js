@@ -7,7 +7,7 @@ describe("CI Compatibility", () => {
   test("all test files are present and accessible", () => {
     const testDir = path.dirname(new URL(import.meta.url).pathname);
     const testFiles = [
-      "adapter.test.js",
+      "agent.test.js",
       "ci-compatibility.test.js"
     ];
 

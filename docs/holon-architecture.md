@@ -2,7 +2,7 @@
 
 This document is **non-normative**. It explains *why* Holon is structured the way it is and how the pieces fit together. For the normative protocol/contract, see:
 - `rfc/0001-holon-atomic-execution-unit.md`
-- `rfc/0002-adapter-scheme.md` (agent contract)
+- `rfc/0002-agent-scheme.md` (agent contract)
 
 ## Goals (design intent)
 - Treat an AI agent run like a **batch job** with explicit inputs/outputs.
@@ -41,5 +41,5 @@ This avoids maintaining a large prebuilt agent×toolchain matrix.
 
 ## Related docs
 - `docs/modes.md`: design for `mode` as the single user-facing selector (execute/plan/review).
-- `docs/adapter-encapsulation.md`: non-normative description of the agent pattern and image composition approach.
-- `docs/adapter-claude.md`: reference implementation notes for the Claude agent.
+- `docs/agent-encapsulation.md`: non-normative description of the agent pattern and image composition approach.
+- `docs/agent-claude.md`: reference implementation notes for the Claude agent.
