@@ -90,9 +90,6 @@ runs:
         if [ "$ADAPTER_IMAGE" = "holon-adapter-claude-ts" ]; then
           echo "Building TypeScript adapter image..."
           docker build -t "$ADAPTER_IMAGE" ./images/adapter-claude-ts
-        elif [ "$ADAPTER_IMAGE" = "holon-adapter-claude" ]; then
-          echo "::warning title=Holon Adapter::Python adapter is deprecated. Use holon-adapter-claude-ts instead."
-          docker build -t "$ADAPTER_IMAGE" ./images/adapter-claude
         else
           echo "Using custom adapter image '$ADAPTER_IMAGE' (no local build performed)."
         fi

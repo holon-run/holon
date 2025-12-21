@@ -13,7 +13,7 @@ This RFC details the **Adapter Encapsulation Scheme**. The goal is to standardiz
 
 For **v0.1**, this RFC focuses on a **Claude Code Adapter** that:
 * Uses **Claude Code behavior** (tooling + heuristics) while avoiding interactive UX.
-* Is driven via **Claude Agent SDK** (`ClaudeSDKClient`) to run headlessly.
+* Is driven via the **Claude Code CLI** to run headlessly.
 * Produces **standard Holon artifacts** (`manifest.json`, `diff.patch`, `summary.md`, `evidence/`).
 
 ## 2. The Adapter Pattern
@@ -30,8 +30,8 @@ graph TD
     end
 
     subgraph Container [Adapter Container]
-        Entry[entrypoint / adapter.py]
-        SDK[Tool SDK / Control Layer]
+        Entry[entrypoint /app/dist/adapter.js]
+        SDK[Tool Control Layer]
         Tool[Underlying Tool CLI / Bin]
     end
 
@@ -53,7 +53,7 @@ graph TD
     *   Collect outputs from `/holon/output`.
 
 2.  **Adapter Bridge (Container Internal)**:
-    *   **EntryPoint**: A script (Python/Go/Node) that runs on container start.
+    *   **EntryPoint**: A script (Node/Go/etc.) that runs on container start.
     *   **Translation**: Reads `spec.yaml` and translates it into the tool's native commands (e.g., `claude` prompt, `gh` args).
     *   **Execution**: Manages the tool process.
     *   **Result**: Captures tool output and writes standard Holon Artifacts.
@@ -89,7 +89,7 @@ Real engineering tasks require a toolchain (Go/Node/Java/etc). The adapter shoul
 
 v0.1 supports composing the final runtime image as:
 * **Base Image**: user-selected toolchain image (`golang:1.22`, `node:20`, etc).
-* **Adapter Layer**: installs the underlying tool (e.g., `claude-code`) and the bridge (`adapter.py`).
+* **Adapter Layer**: installs the underlying tool (e.g., `claude-code`) and the bridge (`adapter.js`).
 
 Implementation options (Host-side):
 1. **Build-on-Run (recommended)**: generate a small Dockerfile `FROM <base-image>` and install the adapter layer; cache by `(base-image digest, adapter version)`.
@@ -107,24 +107,23 @@ Adapters and underlying tools may modify `/holon/workspace`. To preserve atomic 
 We will reference `thirdparty/wegent` which successfully containerizes `claude-code`.
 
 *   **Underlying Tool**: `@anthropic-ai/claude-code` (Node.js CLI).
-*   **Control Layer**: `claude-agent-sdk` (Python Library).
-*   **Bridge Script**: A Python script `adapter.py` that utilizes `claude-agent-sdk` / `ClaudeSDKClient` to drive Claude Code **headlessly**, derived from `spec.yaml`.
+*   **Bridge Script**: A TypeScript adapter compiled to `adapter.js` that drives Claude Code **headlessly**, derived from `spec.yaml`.
 
-### 3.1 Why SDK-driven (Not Shelling Out to CLI)
+### 3.1 Why CLI-driven (Non-interactive)
 
-Directly executing `claude` CLI tends to be interactive (onboarding, permission confirmations, TUI prompts).
+Directly executing `claude` CLI can be interactive (onboarding, permission confirmations, TUI prompts).
 For v0.1, the adapter MUST be non-interactive:
-* Prefer `ClaudeSDKClient.connect()` + `client.query(...)` execution.
 * Pre-seed Claude Code configuration files to mark onboarding complete.
 * Force an explicit permission mode (e.g., `bypassPermissions`) suitable for sandboxed execution.
+* Use `--output-format stream-json` to parse results deterministically.
 
 ### 3.2 Container Layout
 
 ```
 /
   app/
-    adapter.py          # The Bridge
-    requirements.txt    # Dependencies (claude-agent-sdk)
+    dist/adapter.js     # The Bridge (compiled)
+    package.json        # Node.js dependencies
   root/
     .claude/
       settings.json
@@ -133,13 +132,13 @@ For v0.1, the adapter MUST be non-interactive:
 
 ### 3.3 Interaction Flow (Headless)
 
-1.  **Start**: Container starts `python adapter.py` (no TTY required).
+1.  **Start**: Container starts `node /app/dist/adapter.js` (no TTY required).
 2.  **Preflight**:
     * Ensure non-interactive Claude Code setup (`~/.claude/*` seeded).
     * Set sandbox-related env (e.g., `IS_SANDBOX=1`).
     * Prepare diff baseline (see 3.4).
-3.  **Init**: Create `ClaudeSDKClient` with explicit options (cwd, permission mode, model/env overrides when needed).
-4.  **Execute**: Translate `spec.yaml` into a prompt and call `await client.query(prompt, session_id=...)`.
+3.  **Init**: Prepare CLI flags (cwd, permission mode, model/env overrides when needed).
+4.  **Execute**: Translate `spec.yaml` into a prompt and call `claude` with `--print`.
 5.  **Wait/Collect**: Stream/capture logs to `evidence/` and wait for completion.
 6.  **Artifacts**:
     * Write `/holon/output/diff.patch`
@@ -171,10 +170,10 @@ Adapters MUST avoid prompting for input:
 
 ```
 images/
-  adapter-claude/
-    Dockerfile          # Adapter layer (Python bridge + Claude Code dependencies)
-    adapter.py          # Bridge implementation (spec -> prompt -> SDK -> artifacts)
-    requirements.txt    # Python deps (claude-agent-sdk, etc)
+  adapter-claude-ts/
+    Dockerfile          # Adapter layer (TypeScript bridge + Claude Code dependencies)
+    dist/adapter.js     # Bridge implementation (spec -> prompt -> CLI -> artifacts)
+    package.json        # Node deps
 cmd/
   holon-adapter/        # Deprecated: legacy self-implemented agent (kept for local dev experiments)
 ```
@@ -188,6 +187,6 @@ cmd/
 
 ## 6. Future Work
 
-*   **Dynamic Injection**: For tools without a complex environment, we might inject the bridge binary into a user's image. For complex tools like `claude-code` (requiring Node+Python), the **Static Adapter Image** approach is preferred.
+*   **Dynamic Injection**: For tools without a complex environment, we might inject the bridge binary into a user's image. For complex tools like `claude-code` (requiring Node), the **Static Adapter Image** approach is preferred.
 *   **Host Apply Mode**: Add `holon run --apply` to apply `diff.patch` back to the original workspace explicitly.
 *   **Contract Tests**: Provide a conformance test suite to validate adapter images against the contract in 2.3.

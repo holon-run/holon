@@ -12,7 +12,7 @@ Holon is a standardized, atomic execution unit for AI-driven software engineerin
 
 - **Go Framework**: Main CLI and orchestration logic in Go 1.24+
 - **Docker Runtime**: Container-based execution environment
-- **Python Adapter**: Claude Code integration via Python adapter
+- **TypeScript Adapter**: Claude Code integration via TypeScript adapter
 - **Spec-Driven Execution**: Declarative YAML task definitions
 
 ## Development Commands
@@ -22,7 +22,7 @@ Holon is a standardized, atomic execution unit for AI-driven software engineerin
 # Build main CLI binary
 make build
 
-# Run all tests (Go + Python adapter)
+# Run all tests (Go)
 make test
 
 # Run only Go tests
@@ -55,7 +55,7 @@ make clean
 - `--spec` / `-s`: Path to holon spec file
 - `--goal` / `-g`: Goal description (alternative to spec)
 - `--image` / `-i`: Docker base image (default: golang:1.22)
-- `--adapter-image`: Adapter Docker image (default: holon-adapter-claude)
+- `--adapter-image`: Adapter Docker image (default: holon-adapter-claude-ts)
 - `--workspace` / `-w`: Workspace path (default: .)
 - `--out` / `-o`: Output directory (default: ./holon-output)
 - `--env` / `-e`: Environment variables (K=V format)
@@ -96,8 +96,8 @@ output:
       required: true
 ```
 
-**Python Adapter**: `images/adapter-claude/`
-- Entry point: `/app/adapter.py`
+**TypeScript Adapter**: `images/adapter-claude-ts/`
+- Entry point: `/app/dist/adapter.js`
 - Pre-installed Claude Code CLI and GitHub CLI
 - Standardized I/O paths: `/holon/input/`, `/holon/workspace/`, `/holon/output/`
 
@@ -115,7 +115,7 @@ pkg/                # Core Go libraries
   ├── api/v1/       # HolonSpec and HolonManifest types
   ├── runtime/docker/ # Docker runtime implementation
   └── prompt/       # Prompt compilation system
-images/adapter-claude/ # Python Claude adapter Docker image
+images/adapter-claude-ts/ # TypeScript Claude adapter Docker image
 tests/integration/  # testscript integration tests
 examples/          # Example specification files
 rfc/              # RFC documentation
@@ -130,19 +130,8 @@ holonbot/         # Node.js GitHub App
 - Docker-dependent tests skip automatically if Docker unavailable
 - Run with: `go test ./tests/integration/... -v`
 
-### Python Adapter Tests
-```bash
-# Set up virtual environment and run tests
-make test-adapter
-
-# Or manually:
-cd images/adapter-claude
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
-python run_tests.py
-pytest test_adapter.py -v
-```
+### Adapter Tests
+The TypeScript adapter currently relies on integration coverage via Holon runs.
 
 ## Environment Setup
 
@@ -153,7 +142,6 @@ pytest test_adapter.py -v
 ### Development Prerequisites
 - Docker installed and running
 - Go 1.22+
-- Python 3 (for adapter development)
 - Node.js (for holonbot development)
 
 ## Key Implementation Details

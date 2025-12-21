@@ -1,4 +1,4 @@
-.PHONY: build build-adapter build-host test test-all clean run-example ensure-adapter-image test-adapter venv-adapter help
+.PHONY: build build-adapter build-host test test-all clean run-example ensure-adapter-image help
 
 # Project variables
 BINARY_NAME=holon
@@ -32,28 +32,8 @@ ensure-adapter-image:
 		echo "holon-adapter-claude-ts image found."; \
 	fi
 
-# Adapter variables
-ADAPTER_DIR=images/adapter-claude
-ADAPTER_VENV=$(ADAPTER_DIR)/venv
-ADAPTER_PYTHON=$(ADAPTER_VENV)/bin/python3
-ADAPTER_PIP=$(ADAPTER_VENV)/bin/pip
-
-## venv-adapter: Create Python virtual environment for adapter tests
-venv-adapter:
-	@echo "Setting up Python virtual environment for adapter..."
-	@if [ ! -d "$(ADAPTER_VENV)" ]; then \
-		python3 -m venv $(ADAPTER_VENV); \
-	fi
-	@$(ADAPTER_PIP) install -q -r $(ADAPTER_DIR)/requirements.txt
-
-## test-adapter: Run adapter Python tests
-test-adapter: venv-adapter
-	@echo "Running Claude adapter tests..."
-	@$(ADAPTER_PYTHON) $(ADAPTER_DIR)/run_tests.py
-	@$(ADAPTER_PYTHON) -m pytest $(ADAPTER_DIR)/test_adapter.py -v
-
 ## test: Run all project tests
-test: test-adapter
+test:
 	@echo "Running Go tests..."
 	go test ./... -v
 
