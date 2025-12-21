@@ -4,6 +4,7 @@ import os from "os";
 import { spawnSync } from "child_process";
 import { parse as parseYaml } from "yaml";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 
 enum LogLevel {
   DEBUG = "debug",
@@ -275,7 +276,7 @@ async function runClaude(
   const model = env.HOLON_MODEL;
   const fallbackModel = env.HOLON_FALLBACK_MODEL;
   const abortController = new AbortController();
-  const options: any = {
+  const options: Options = {
     cwd: workspacePath,
     env,
     abortController,
@@ -388,6 +389,9 @@ async function runClaude(
   }
 
   if (timeoutError) {
+    if (queryError) {
+      logger.debug(`SDK query error before timeout: ${String(queryError)}`);
+    }
     throw timeoutError;
   }
 
