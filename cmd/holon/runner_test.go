@@ -579,17 +579,26 @@ func Test_findLatestBundle(t *testing.T) {
 		if err := os.WriteFile(bundle1, []byte("bundle1"), 0644); err != nil {
 			t.Fatalf("Failed to create bundle1: %v", err)
 		}
-		time.Sleep(10 * time.Millisecond) // Ensure different timestamps
 
 		if err := os.WriteFile(bundle2, []byte("bundle2"), 0644); err != nil {
 			t.Fatalf("Failed to create bundle2: %v", err)
 		}
-		time.Sleep(10 * time.Millisecond) // Ensure different timestamps
 
 		if err := os.WriteFile(bundle3, []byte("bundle3"), 0644); err != nil {
 			t.Fatalf("Failed to create bundle3: %v", err)
 		}
 
+		// Explicitly set different modification times to avoid relying on time.Sleep
+		now := time.Now()
+		if err := os.Chtimes(bundle1, now.Add(-2*time.Second), now.Add(-2*time.Second)); err != nil {
+			t.Fatalf("Failed to set mtime for bundle1: %v", err)
+		}
+		if err := os.Chtimes(bundle2, now.Add(-1*time.Second), now.Add(-1*time.Second)); err != nil {
+			t.Fatalf("Failed to set mtime for bundle2: %v", err)
+		}
+		if err := os.Chtimes(bundle3, now, now); err != nil {
+			t.Fatalf("Failed to set mtime for bundle3: %v", err)
+		}
 		// Test finding the latest bundle
 		latest, err := findLatestBundle(tempDir)
 		if err != nil {
@@ -665,13 +674,16 @@ func Test_findLatestBundle(t *testing.T) {
 
 		// Create only valid bundle files
 		bundles := []string{"app.tar.gz", "service.tar.gz", "tool.tar.gz"}
+		baseTime := time.Now()
 		for i, name := range bundles {
 			bundlePath := filepath.Join(tempDir, name)
 			if err := os.WriteFile(bundlePath, []byte(name), 0644); err != nil {
 				t.Fatalf("Failed to create %s: %v", name, err)
 			}
-			if i < len(bundles)-1 {
-				time.Sleep(10 * time.Millisecond) // Ensure different timestamps
+			// Explicitly set different modification times for deterministic behavior
+			ts := baseTime.Add(time.Duration(i) * time.Second)
+			if err := os.Chtimes(bundlePath, ts, ts); err != nil {
+				t.Fatalf("Failed to set times for %s: %v", name, err)
 			}
 		}
 
@@ -1025,13 +1037,21 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		bundle1 := filepath.Join(bundleDir, "bundle1.tar.gz")
 		bundle2 := filepath.Join(bundleDir, "bundle2.tar.gz")
 
+		baseTime := time.Now()
+
 		if err := os.WriteFile(bundle1, []byte("bundle1"), 0644); err != nil {
 			t.Fatalf("Failed to create bundle1: %v", err)
 		}
-		time.Sleep(10 * time.Millisecond)
+		if err := os.Chtimes(bundle1, baseTime, baseTime); err != nil {
+			t.Fatalf("Failed to set times for bundle1: %v", err)
+		}
 
 		if err := os.WriteFile(bundle2, []byte("bundle2"), 0644); err != nil {
 			t.Fatalf("Failed to create bundle2: %v", err)
+		}
+		newerTime := baseTime.Add(time.Second)
+		if err := os.Chtimes(bundle2, newerTime, newerTime); err != nil {
+			t.Fatalf("Failed to set times for bundle2: %v", err)
 		}
 
 		cfg := RunnerConfig{
