@@ -15,7 +15,7 @@ Build a bundle that follows `docs/agent-bundle.md`:
 npm run bundle
 ```
 
-Defaults to writing the bundle under `images/adapter-claude/dist/agent-bundles`.
+Defaults to writing the bundle under `agents/claude/dist/agent-bundles`.
 
 Environment variables:
 - `BUNDLE_OUTPUT_DIR`: override output directory.

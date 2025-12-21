@@ -213,12 +213,12 @@ func (r *Runner) resolveAgentBundle(cfg RunnerConfig, workspace string) (string,
 		return absBundle, nil
 	}
 
-	scriptPath := filepath.Join(workspace, "images", "adapter-claude", "scripts", "build-bundle.sh")
+	scriptPath := filepath.Join(workspace, "agents", "claude", "scripts", "build-bundle.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
 		return "", fmt.Errorf("agent bundle not found; set --agent-bundle to a bundle archive")
 	}
 
-	bundleDir := filepath.Join(workspace, "images", "adapter-claude", "dist", "agent-bundles")
+	bundleDir := filepath.Join(workspace, "agents", "claude", "dist", "agent-bundles")
 	bundlePath, err := findLatestBundle(bundleDir)
 	if err != nil {
 		return "", err

@@ -81,8 +81,7 @@ Example:
 `agent-bundle-agent-claude-0.1.0-linux-amd64-glibc.tar.gz`
 
 ## Local build inside the Holon repo
-If the agent source tree is available (e.g. `images/agent-claude/` or
-`images/adapter-claude/`), the runner may build a bundle locally instead of
+If the agent source tree is available (e.g. `agents/claude/`), the runner may build a bundle locally instead of
 fetching a prebuilt artifact. Recommended behavior:
 - Compute a cache key from source + lockfile + runtime version.
 - If cached bundle exists, reuse it.

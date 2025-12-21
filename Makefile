@@ -4,7 +4,7 @@
 BINARY_NAME=holon
 BIN_DIR=bin
 GO_FILES=$(shell find . -type f -name '*.go')
-ADAPTER_DIR=images/adapter-claude
+ADAPTER_DIR=agents/claude
 
 # Default target
 all: build

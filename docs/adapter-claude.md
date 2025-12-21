@@ -3,8 +3,8 @@
 This document is **non-normative** and describes the current Claude adapter implementation. The **normative adapter contract** is defined in `rfc/0002-adapter-scheme.md`.
 
 ## Implementation location
-- Adapter sources: `images/adapter-claude/src/adapter.ts`
-- Agent bundle: `images/adapter-claude/dist/agent-bundles/*.tar.gz`
+- Adapter sources: `agents/claude/src/adapter.ts`
+- Agent bundle: `agents/claude/dist/agent-bundles/*.tar.gz`
 - Entrypoint (inside composed image): `/holon/agent/bin/agent`
 
 ## Underlying runtime
@@ -50,4 +50,4 @@ Common environment variables:
 - Model: `HOLON_MODEL`, `HOLON_FALLBACK_MODEL`
 - Timeouts/health: `HOLON_QUERY_TIMEOUT_SECONDS`, `HOLON_HEARTBEAT_SECONDS`, `HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS`, `HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS`
 
-See `images/adapter-claude/README.md` for the full list.
+See `agents/claude/README.md` for the full list.
