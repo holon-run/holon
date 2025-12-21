@@ -1,5 +1,5 @@
 {
-  "name": "holon-adapter-claude-ts",
+  "name": "holon-adapter-claude",
   "private": true,
   "type": "commonjs",
   "scripts": {

@@ -4,7 +4,7 @@
 BINARY_NAME=holon
 BIN_DIR=bin
 GO_FILES=$(shell find . -type f -name '*.go')
-ADAPTER_TS_DIR=images/adapter-claude-ts
+ADAPTER_DIR=images/adapter-claude
 
 # Default target
 all: build
@@ -21,16 +21,16 @@ build-host:
 ## build-adapter-image: Build the Claude adapter Docker image
 build-adapter-image:
 	@echo "Building Claude adapter image (TypeScript)..."
-	docker build -t holon-adapter-claude-ts ./images/adapter-claude-ts
+	docker build -t holon-adapter-claude ./images/adapter-claude
 
 ## ensure-adapter-image: Ensure the Claude adapter Docker image exists
 ensure-adapter-image:
-	@echo "Checking for holon-adapter-claude-ts image..."
-	@if ! docker image inspect holon-adapter-claude-ts >/dev/null 2>&1; then \
-		echo "Image not found, building holon-adapter-claude-ts..."; \
+	@echo "Checking for holon-adapter-claude image..."
+	@if ! docker image inspect holon-adapter-claude >/dev/null 2>&1; then \
+		echo "Image not found, building holon-adapter-claude..."; \
 		$(MAKE) build-adapter-image; \
 	else \
-		echo "holon-adapter-claude-ts image found."; \
+		echo "holon-adapter-claude image found."; \
 	fi
 
 ## test: Run all project tests
@@ -41,7 +41,7 @@ test: test-adapter
 ## test-adapter: Run adapter TypeScript checks
 test-adapter:
 	@echo "Running TypeScript adapter checks..."
-	cd $(ADAPTER_TS_DIR) && npm install && npm run build
+	cd $(ADAPTER_DIR) && npm install && npm run build
 
 ## clean: Remove build artifacts
 clean:

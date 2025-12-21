@@ -55,7 +55,7 @@ make clean
 - `--spec` / `-s`: Path to holon spec file
 - `--goal` / `-g`: Goal description (alternative to spec)
 - `--image` / `-i`: Docker base image (default: golang:1.22)
-- `--adapter-image`: Adapter Docker image (default: holon-adapter-claude-ts)
+- `--adapter-image`: Adapter Docker image (default: holon-adapter-claude)
 - `--workspace` / `-w`: Workspace path (default: .)
 - `--out` / `-o`: Output directory (default: ./holon-output)
 - `--env` / `-e`: Environment variables (K=V format)
@@ -96,7 +96,7 @@ output:
       required: true
 ```
 
-**TypeScript Adapter**: `images/adapter-claude-ts/`
+**TypeScript Adapter**: `images/adapter-claude/`
 - Entry point: `/app/dist/adapter.js`
 - Pre-installed Claude Code CLI and GitHub CLI
 - Standardized I/O paths: `/holon/input/`, `/holon/workspace/`, `/holon/output/`
@@ -115,7 +115,7 @@ pkg/                # Core Go libraries
   ├── api/v1/       # HolonSpec and HolonManifest types
   ├── runtime/docker/ # Docker runtime implementation
   └── prompt/       # Prompt compilation system
-images/adapter-claude-ts/ # TypeScript Claude adapter Docker image
+images/adapter-claude/ # TypeScript Claude adapter Docker image
 tests/integration/  # testscript integration tests
 examples/          # Example specification files
 rfc/              # RFC documentation

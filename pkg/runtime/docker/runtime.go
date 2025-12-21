@@ -30,7 +30,7 @@ func NewRuntime() (*Runtime, error) {
 
 type ContainerConfig struct {
 	BaseImage      string // e.g., golang:1.22 (The toolchain)
-	AdapterImage   string // e.g., holon-adapter-claude-ts (The adapter logic)
+	AdapterImage   string // e.g., holon-adapter-claude (The adapter logic)
 	Workspace      string
 	SpecPath       string
 	ContextPath    string // Optional: path to context files
@@ -57,7 +57,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	// 2. Prepare Image (Build-on-Run composition)
 	adapterImage := cfg.AdapterImage
 	if adapterImage == "" {
-		adapterImage = "holon-adapter-claude-ts"
+		adapterImage = "holon-adapter-claude"
 	}
 
 	finalImage := adapterImage

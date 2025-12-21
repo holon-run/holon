@@ -4,7 +4,7 @@
 
 - `cmd/holon/`: Go CLI entrypoint (`holon`).
 - `pkg/`: Go libraries used by the CLI (API spec, prompt compilation, runtime).
-- `images/adapter-claude-ts/`: TypeScript-based adapter image (Claude Code runtime integration).
+- `images/adapter-claude/`: TypeScript-based adapter image (Claude Code runtime integration).
 - `tests/integration/`: Go `testscript` integration tests (`*.txtar`).
 - `holonbot/`: Node-based GitHub App/bot (separate CI workflow).
 - `rfc/`: Design notes and proposals.
@@ -14,8 +14,8 @@
 
 - `make build`: Build the Go CLI to `bin/holon`.
 - `make test`: Run adapter checks (`make test-adapter`) followed by Go tests (`go test ./...`).
-- `make test-adapter`: Build/check the TypeScript adapter under `images/adapter-claude-ts/`.
-- `make build-adapter-image`: Build the Docker image `holon-adapter-claude-ts`.
+- `make test-adapter`: Build/check the TypeScript adapter under `images/adapter-claude/`.
+- `make build-adapter-image`: Build the Docker image `holon-adapter-claude`.
 - `make test-integration`: Run integration tests (requires Docker).
 - `make run-example`: Run an example spec (requires Docker and Anthropic credentials).
 
