@@ -19,17 +19,17 @@ build-host:
 
 ## build-adapter-image: Build the Claude adapter Docker image
 build-adapter-image:
-	@echo "Building Claude adapter image..."
-	docker build -t holon-adapter-claude ./images/adapter-claude
+	@echo "Building Claude adapter image (TypeScript)..."
+	docker build -t holon-adapter-claude-ts ./images/adapter-claude-ts
 
 ## ensure-adapter-image: Ensure the Claude adapter Docker image exists
 ensure-adapter-image:
-	@echo "Checking for holon-adapter-claude image..."
-	@if ! docker image inspect holon-adapter-claude >/dev/null 2>&1; then \
-		echo "Image not found, building holon-adapter-claude..."; \
+	@echo "Checking for holon-adapter-claude-ts image..."
+	@if ! docker image inspect holon-adapter-claude-ts >/dev/null 2>&1; then \
+		echo "Image not found, building holon-adapter-claude-ts..."; \
 		$(MAKE) build-adapter-image; \
 	else \
-		echo "holon-adapter-claude image found."; \
+		echo "holon-adapter-claude-ts image found."; \
 	fi
 
 # Adapter variables

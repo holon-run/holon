@@ -58,7 +58,7 @@ func init() {
 	runCmd.Flags().StringVarP(&goalStr, "goal", "g", "", "Goal description (alternative to --spec)")
 	runCmd.Flags().StringVarP(&taskName, "name", "n", "", "Task name (optional, defaults to auto-generated)")
 	runCmd.Flags().StringVarP(&baseImage, "image", "i", "golang:1.22", "Docker image for execution (Base toolchain)")
-	runCmd.Flags().StringVar(&adapterImage, "adapter-image", "holon-adapter-claude", "Docker image containing the Holon adapter (e.g. holon-adapter-claude)")
+	runCmd.Flags().StringVar(&adapterImage, "adapter-image", "holon-adapter-claude-ts", "Docker image containing the Holon adapter (e.g. holon-adapter-claude-ts)")
 	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVarP(&outDir, "out", "o", "./holon-output", "Path to output directory")

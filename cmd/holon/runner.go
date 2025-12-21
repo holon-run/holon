@@ -171,7 +171,7 @@ output:
 
 	adapterImage := cfg.AdapterImage
 	if adapterImage == "" {
-		adapterImage = "holon-adapter-claude"
+		adapterImage = "holon-adapter-claude-ts"
 	}
 
 	containerCfg := &docker.ContainerConfig{
