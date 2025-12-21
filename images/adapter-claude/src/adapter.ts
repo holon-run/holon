@@ -1,9 +1,9 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { spawn, spawnSync } from "child_process";
-import readline from "readline";
+import { spawnSync } from "child_process";
 import { parse as parseYaml } from "yaml";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 
 enum LogLevel {
   DEBUG = "debug",
@@ -272,42 +272,37 @@ async function runClaude(
   env.IS_SANDBOX = "1";
   env.CLAUDE_CODE_ENTRYPOINT = "holon-adapter-ts";
 
-  const args: string[] = [
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--permission-mode",
-    "bypassPermissions",
-    "--append-system-prompt",
-    systemInstruction,
-  ];
-
   const model = env.HOLON_MODEL;
   const fallbackModel = env.HOLON_FALLBACK_MODEL;
-  if (model) {
-    args.push("--model", model);
-  }
-  if (fallbackModel) {
-    args.push("--fallback-model", fallbackModel);
-  }
-
-  args.push("--print", "--", userPrompt);
-
-  const proc = spawn("claude", args, {
+  const abortController = new AbortController();
+  const options: any = {
     cwd: workspacePath,
     env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+    abortController,
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+    systemPrompt: { type: "preset", preset: "claude_code", append: systemInstruction },
+    settingSources: ["user", "project"],
+    tools: { type: "preset", preset: "claude_code" },
+    stderr: (data: string) => {
+      logFile.write(`[stderr] ${data}`);
+      logger.debug(data.trim());
+    },
+  };
+
+  if (model) {
+    options.model = model;
+  }
+  if (fallbackModel) {
+    options.fallbackModel = fallbackModel;
+  }
 
   let success = true;
   let finalOutput = "";
   let resultReceived = false;
+  let resultText = "";
   let timeoutError: Error | null = null;
-  let spawnError: Error | null = null;
-
-  proc.on("error", (error) => {
-    spawnError = error;
-  });
+  let queryError: Error | null = null;
 
   const heartbeatSeconds = intEnv("HOLON_HEARTBEAT_SECONDS", 60);
   const idleTimeoutSeconds = intEnv("HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS", 1800);
@@ -342,78 +337,66 @@ async function runClaude(
           timeoutError = new Error(`Response stream exceeded ${totalTimeoutSeconds}s total timeout`);
         }
 
-        if (timeoutError) {
-          proc.kill("SIGTERM");
-          setTimeout(() => proc.kill("SIGKILL"), 5_000);
+        if (timeoutError && !abortController.signal.aborted) {
+          abortController.abort();
         }
       }, heartbeatSeconds * 1000)
     : null;
 
-  proc.stderr?.on("data", (chunk: Buffer) => {
-    const text = chunk.toString("utf8");
-    logFile.write(`[stderr] ${text}`);
-    logger.debug(text.trim());
-  });
+  const queryStream = query({ prompt: userPrompt, options });
 
-  const rl = readline.createInterface({ input: proc.stdout ?? process.stdin });
-  for await (const line of rl) {
-    if (!line) {
-      continue;
-    }
-    lastMsgTime = Date.now();
-    msgCount += 1;
+  try {
+    for await (const message of queryStream) {
+      lastMsgTime = Date.now();
+      msgCount += 1;
+      logFile.write(`${JSON.stringify(message)}\n`);
 
-    logFile.write(`${line}\n`);
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(line);
-    } catch (error) {
-      logger.debug(`Non-JSON output: ${line}`);
-      continue;
-    }
-
-    if (parsed.type === "assistant" && parsed.message && Array.isArray(parsed.message.content)) {
-      for (const block of parsed.message.content) {
-        if (block.type === "text" && typeof block.text === "string") {
-          finalOutput += block.text;
-        } else if (block.type === "tool_use") {
-          const toolName = typeof block.name === "string" ? block.name : "UnknownTool";
-          logger.logToolUse(toolName);
+      if (message?.type === "assistant" && message.message && Array.isArray(message.message.content)) {
+        for (const block of message.message.content) {
+          if (block.type === "text" && typeof block.text === "string") {
+            finalOutput += block.text;
+          } else if (block.type === "tool_use") {
+            const toolName = typeof block.name === "string" ? block.name : "UnknownTool";
+            logger.logToolUse(toolName);
+          }
         }
+      } else if (message?.type === "result") {
+        logger.info(`Task result received: ${message.subtype}, is_error: ${message.is_error}`);
+        if (message.is_error) {
+          success = false;
+        }
+        if ("result" in message && typeof message.result === "string") {
+          resultText = message.result;
+        } else if ("errors" in message && Array.isArray(message.errors)) {
+          resultText = message.errors.join("\n");
+        }
+        resultReceived = true;
       }
-    } else if (parsed.type === "result") {
-      logger.info(`Task result received: ${parsed.subtype}, is_error: ${parsed.is_error}`);
-      if (parsed.is_error) {
-        success = false;
-      }
-      resultReceived = true;
     }
-  }
-
-  const exitCode: number | null = await new Promise((resolve) => {
-    proc.on("close", (code) => resolve(code));
-  });
-
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
+  } catch (error) {
+    queryError = error instanceof Error ? error : new Error(String(error));
+  } finally {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+    }
   }
 
   if (timeoutError) {
     throw timeoutError;
   }
 
-  if (spawnError) {
-    throw spawnError;
+  if (queryError) {
+    throw queryError;
   }
 
-  if (exitCode !== 0 && !resultReceived) {
-    throw new Error(`Claude Code exited with status ${exitCode}`);
+  if (!resultReceived) {
+    throw new Error("Claude Agent SDK finished without a result message");
   }
 
-  logFile.write(`--- FINAL OUTPUT ---\n${finalOutput}\n`);
+  const finalResult = resultText || finalOutput;
+  logFile.write(`--- FINAL OUTPUT ---\n${finalResult}\n`);
 
-  return { success, result: finalOutput };
+  return { success, result: finalResult };
 }
 
 async function runAdapter(): Promise<void> {
