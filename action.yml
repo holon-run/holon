@@ -90,8 +90,11 @@ runs:
         if [ "$ADAPTER_IMAGE" = "holon-adapter-claude-ts" ]; then
           echo "Building TypeScript adapter image..."
           docker build -t "$ADAPTER_IMAGE" ./images/adapter-claude-ts
-        else
+        elif [ -z "${HOLON_ADAPTER_IMAGE:-}" ] || [ "$ADAPTER_IMAGE" = "holon-adapter-claude" ]; then
+          echo "Building default adapter image..."
           make build-adapter-image
+        else
+          echo "Using custom adapter image '$ADAPTER_IMAGE' (no local build performed)."
         fi
 
         # Extract issue info from event

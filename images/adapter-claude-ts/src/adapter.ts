@@ -207,9 +207,9 @@ async function syncClaudeSettings(logger: ProgressLogger, authToken: string | un
     const raw = fs.readFileSync(settingsPath, "utf8");
     const settings = JSON.parse(raw) as Record<string, unknown>;
     const envSection: Record<string, string> =
-      (typeof settings.env === "object" && settings.env !== null
+      typeof settings.env === "object" && settings.env !== null
         ? (settings.env as Record<string, string>)
-        : {}) ?? {};
+        : {};
 
     if (authToken) {
       envSection.ANTHROPIC_AUTH_TOKEN = authToken;
@@ -330,7 +330,7 @@ async function runClaude(
         const idleFor = (now - lastMsgTime) / 1000;
         const totalFor = (now - startTime) / 1000;
 
-        if (heartbeatSeconds > 0 && idleFor >= heartbeatSeconds) {
+        if (idleFor >= heartbeatSeconds) {
           logger.minimal(`No response yet (idle ${Math.floor(idleFor)}s, total ${Math.floor(totalFor)}s)...`);
         }
 
@@ -486,7 +486,7 @@ async function runAdapter(): Promise<void> {
   const logFile = fs.createWriteStream(logFilePath, { flags: "w" });
 
   const startTime = Date.now();
-  let success = true;
+  let success: boolean;
   let result = "";
 
   try {
