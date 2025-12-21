@@ -25,6 +25,11 @@ jobs:
     - name: Test Adapter
       run: make test-adapter
 
+    - name: Build Adapter Bundle
+      run: |
+        cd images/adapter-claude
+        npm run bundle
+
     - name: Verify Adapter Bundle
       run: |
         cd images/adapter-claude
