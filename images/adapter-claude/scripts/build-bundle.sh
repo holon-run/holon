@@ -19,9 +19,8 @@ LIBC="${BUNDLE_LIBC:-glibc}"
 
 NODE_VERSION="${BUNDLE_NODE_VERSION:-}"
 if [ -z "${NODE_VERSION}" ]; then
-  NODE_VERSION=$(node -v 2>/dev/null | sed 's/^v//')
+  NODE_VERSION="unknown"
 fi
-NODE_VERSION="${NODE_VERSION:-unknown}"
 
 ENGINE_NAME="${BUNDLE_ENGINE_NAME:-claude-code}"
 ENGINE_SDK="${BUNDLE_ENGINE_SDK:-@anthropic-ai/claude-agent-sdk}"
@@ -53,85 +52,11 @@ NODE
 )
 fi
 
-EMBED_RUNTIME="${BUNDLE_EMBED_RUNTIME:-false}"
-RUNTIME_EMBEDDED=false
-RUNTIME_DIR="${BUNDLE_RUNTIME_DIR:-}"
-
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT
 STAGE_DIR="${WORK_DIR}/stage"
 BUNDLE_DIR="${WORK_DIR}/bundle"
 mkdir -p "${STAGE_DIR}" "${BUNDLE_DIR}"
-
-download_node_runtime() {
-  local version=$1
-  local platform=$2
-  local arch=$3
-  local libc=$4
-  local node_arch=""
-
-  if [ "${platform}" != "linux" ] || [ "${libc}" != "glibc" ]; then
-    echo "Embedded runtime download only supports linux glibc bundles." >&2
-    exit 1
-  fi
-
-  case "${arch}" in
-    amd64)
-      node_arch="x64"
-      ;;
-    arm64)
-      node_arch="arm64"
-      ;;
-    *)
-      echo "Unsupported BUNDLE_ARCH for runtime download: ${arch}" >&2
-      exit 1
-      ;;
-  esac
-
-  if [ -z "${version}" ] || [ "${version}" = "unknown" ]; then
-    echo "BUNDLE_NODE_VERSION is required for runtime download." >&2
-    exit 1
-  fi
-
-  local base_url="${BUNDLE_NODE_DIST_BASE:-https://nodejs.org/dist}"
-  local filename="node-v${version}-${platform}-${node_arch}.tar.xz"
-  local url="${base_url}/v${version}/${filename}"
-  local download_dir="${WORK_DIR}/runtime-download"
-
-  mkdir -p "${download_dir}"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${url}" -o "${download_dir}/${filename}"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "${download_dir}/${filename}" "${url}"
-  else
-    echo "curl or wget is required to download the Node runtime." >&2
-    exit 1
-  fi
-
-  if tar --help 2>/dev/null | grep -q -- '-J'; then
-    tar -C "${download_dir}" -xJf "${download_dir}/${filename}"
-  else
-    echo "tar does not support -J; cannot extract .tar.xz runtime." >&2
-    exit 1
-  fi
-
-  RUNTIME_DIR="${download_dir}/node-v${version}-${platform}-${node_arch}"
-  if [ ! -d "${RUNTIME_DIR}" ]; then
-    echo "Downloaded runtime directory not found: ${RUNTIME_DIR}" >&2
-    exit 1
-  fi
-}
-
-if [ "${EMBED_RUNTIME}" = "true" ] || [ "${EMBED_RUNTIME}" = "1" ]; then
-  if [ -z "${RUNTIME_DIR}" ]; then
-    download_node_runtime "${NODE_VERSION}" "${PLATFORM}" "${ARCH}" "${LIBC}"
-  fi
-  if [ ! -x "${RUNTIME_DIR}/bin/node" ]; then
-    echo "Node runtime missing bin/node in ${RUNTIME_DIR}" >&2
-    exit 1
-  fi
-  RUNTIME_EMBEDDED=true
-fi
 
 # Copy sources to a staging directory for a clean build.
 tar -C "${ROOT_DIR}" -cf - \
@@ -160,21 +85,12 @@ mkdir -p "${BUNDLE_DIR}/bin"
 cp -R "${STAGE_DIR}/dist" "${BUNDLE_DIR}/dist"
 cp -R "${STAGE_DIR}/node_modules" "${BUNDLE_DIR}/node_modules"
 
-if [ "${RUNTIME_EMBEDDED}" = "true" ]; then
-  mkdir -p "${BUNDLE_DIR}/runtime"
-  cp -R "${RUNTIME_DIR}/." "${BUNDLE_DIR}/runtime/"
-fi
-
 cat > "${BUNDLE_DIR}/bin/agent" <<'ENTRYPOINT'
 #!/usr/bin/env sh
 set -eu
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
-if [ -x "${ROOT_DIR}/runtime/bin/node" ]; then
-  NODE_BIN="${ROOT_DIR}/runtime/bin/node"
-else
-  NODE_BIN="${NODE_BIN:-node}"
-fi
+NODE_BIN="${NODE_BIN:-node}"
 
 exec "${NODE_BIN}" "${ROOT_DIR}/dist/adapter.js" "$@"
 ENTRYPOINT
@@ -196,8 +112,7 @@ cat > "${BUNDLE_DIR}/manifest.json" <<MANIFEST_EOF
   },
   "runtime": {
     "type": "node",
-    "version": "${NODE_VERSION}",
-    "embedded": ${RUNTIME_EMBEDDED}
+    "version": "${NODE_VERSION}"
   },
   "env": {
     "NODE_ENV": "production"

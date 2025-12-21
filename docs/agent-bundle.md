@@ -24,7 +24,6 @@ and how the runner consumes it.
   - `bin/agent` (entrypoint executable or script)
   - `dist/` (agent code)
   - `node_modules/` (production dependencies, if applicable)
-  - `runtime/` (embedded runtime, optional)
   - `assets/` (optional)
 
 ## Manifest schema (v1)
@@ -46,8 +45,7 @@ and how the runner consumes it.
   },
   "runtime": {
     "type": "node",
-    "version": "20.15.1",
-    "embedded": true
+    "version": "20.15.1"
   },
   "env": {
     "NODE_ENV": "production"
@@ -64,8 +62,7 @@ and how the runner consumes it.
 - `entry`: relative path to the executable that will be invoked as the container
   entrypoint.
 - `engine`: underlying agent runtime metadata (implementation-specific).
-- `runtime.embedded`: when `true`, the bundle contains its own runtime (e.g. Node)
-  and does not rely on OS-level package installs.
+- `runtime`: runtime metadata describing the required runtime provided by the base image.
 - `libc`: used to select compatible bundles (`glibc` vs `musl`).
 
 ## Runner contract
@@ -92,9 +89,7 @@ fetching a prebuilt artifact. Recommended behavior:
 - Otherwise run a local build script that produces a bundle matching this spec.
 
 ## Compatibility rules
-- Bundles must be self-contained if `runtime.embedded` is `true`.
-- If `runtime.embedded` is `false`, the runner must ensure the base image provides
-  the declared runtime and version.
+- The runner must ensure the base image provides the declared runtime and version.
 - `platform`, `arch`, and `libc` must match the composed image environment.
 
 ## Open questions

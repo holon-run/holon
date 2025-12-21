@@ -14,11 +14,7 @@ ARCH="${BUNDLE_ARCH:-amd64}"
 LIBC="${BUNDLE_LIBC:-glibc}"
 NODE_VERSION="${BUNDLE_NODE_VERSION:-}"
 if [ -z "${NODE_VERSION}" ]; then
-  NODE_VERSION=$(node -v 2>/dev/null | sed 's/^v//')
-fi
-if [ -z "${NODE_VERSION}" ] || [ "${NODE_VERSION}" = "unknown" ]; then
-  echo "BUNDLE_NODE_VERSION is required to download a runtime." >&2
-  exit 1
+  NODE_VERSION="20"
 fi
 
 WORK_DIR=$(mktemp -d)
@@ -27,7 +23,6 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 BUNDLE_OUTPUT_DIR="${WORK_DIR}/bundles"
 BUNDLE_ARCHIVE="${BUNDLE_OUTPUT_DIR}/agent-bundle-${NAME}-${VERSION}-${PLATFORM}-${ARCH}-${LIBC}.tar.gz"
 
-BUNDLE_EMBED_RUNTIME=true \
 BUNDLE_OUTPUT_DIR="${BUNDLE_OUTPUT_DIR}" \
 BUNDLE_NODE_VERSION="${NODE_VERSION}" \
 BUNDLE_PLATFORM="${PLATFORM}" \
@@ -43,11 +38,6 @@ fi
 BUNDLE_EXTRACT="${WORK_DIR}/bundle"
 mkdir -p "${BUNDLE_EXTRACT}"
 tar -xzf "${BUNDLE_ARCHIVE}" -C "${BUNDLE_EXTRACT}"
-
-if [ ! -x "${BUNDLE_EXTRACT}/runtime/bin/node" ]; then
-  echo "Embedded Node runtime missing: ${BUNDLE_EXTRACT}/runtime/bin/node" >&2
-  exit 1
-fi
 
 HOLON_DIR="${WORK_DIR}/holon"
 INPUT_DIR="${HOLON_DIR}/input"
@@ -79,7 +69,8 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
-IMAGE="${BUNDLE_VERIFY_IMAGE:-debian:bookworm-slim}"
+IMAGE="${BUNDLE_VERIFY_IMAGE:-node:${NODE_VERSION}-bookworm-slim}"
+RUN_SCRIPT="${BUNDLE_VERIFY_RUN_SCRIPT:-/holon/agent/bin/agent --probe}"
 
 set +e
 DOCKER_OUTPUT=$(docker run --rm \
@@ -87,8 +78,8 @@ DOCKER_OUTPUT=$(docker run --rm \
   -v "${WORKSPACE_DIR}:/holon/workspace" \
   -v "${OUTPUT_DIR}:/holon/output" \
   -v "${BUNDLE_EXTRACT}:/holon/agent" \
-  --entrypoint /holon/agent/bin/agent \
-  "${IMAGE}" --probe 2>&1)
+  --entrypoint /bin/sh \
+  "${IMAGE}" -c "${RUN_SCRIPT}" 2>&1)
 EXIT_CODE=$?
 set -e
 
