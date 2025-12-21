@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jolestar/holon/pkg/runtime/docker"
 )
@@ -563,4 +564,491 @@ func TestRunner_Integration(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outDir, "prompt.compiled.user.md")); os.IsNotExist(err) {
 		t.Error("Expected user prompt debug file")
 	}
+}
+
+// Test for findLatestBundle function
+func Test_findLatestBundle(t *testing.T) {
+	t.Run("Directory with multiple bundles", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create test bundles with different modification times
+		bundle1 := filepath.Join(tempDir, "bundle1.tar.gz")
+		bundle2 := filepath.Join(tempDir, "bundle2.tar.gz")
+		bundle3 := filepath.Join(tempDir, "bundle3.tar.gz")
+
+		if err := os.WriteFile(bundle1, []byte("bundle1"), 0644); err != nil {
+			t.Fatalf("Failed to create bundle1: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond) // Ensure different timestamps
+
+		if err := os.WriteFile(bundle2, []byte("bundle2"), 0644); err != nil {
+			t.Fatalf("Failed to create bundle2: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond) // Ensure different timestamps
+
+		if err := os.WriteFile(bundle3, []byte("bundle3"), 0644); err != nil {
+			t.Fatalf("Failed to create bundle3: %v", err)
+		}
+
+		// Test finding the latest bundle
+		latest, err := findLatestBundle(tempDir)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := bundle3
+
+		if latest != expected {
+			t.Errorf("Expected latest bundle to be %q, got %q", expected, latest)
+		}
+	})
+
+	t.Run("Directory with no bundles", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create some non-bundle files
+		if err := os.WriteFile(filepath.Join(tempDir, "readme.txt"), []byte("readme"), 0644); err != nil {
+			t.Fatalf("Failed to create readme: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(tempDir, "config.json"), []byte("{}"), 0644); err != nil {
+			t.Fatalf("Failed to create config: %v", err)
+		}
+
+		latest, err := findLatestBundle(tempDir)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if latest != "" {
+			t.Errorf("Expected empty string when no bundles found, got %q", latest)
+		}
+	})
+
+	t.Run("Non-existent directory", func(t *testing.T) {
+		latest, err := findLatestBundle("/nonexistent/directory")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if latest != "" {
+			t.Errorf("Expected empty string for non-existent directory, got %q", latest)
+		}
+	})
+
+	t.Run("Directory with mixed files", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create mix of files
+		if err := os.WriteFile(filepath.Join(tempDir, "bundle.tar.gz"), []byte("bundle"), 0644); err != nil {
+			t.Fatalf("Failed to create bundle: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(tempDir, "readme.txt"), []byte("readme"), 0644); err != nil {
+			t.Fatalf("Failed to create readme: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(tempDir, "data.tar"), []byte("data"), 0644); err != nil {
+			t.Fatalf("Failed to create data: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(tempDir, "backup.tar.gz.bak"), []byte("backup"), 0644); err != nil {
+			t.Fatalf("Failed to create backup: %v", err)
+		}
+
+		latest, err := findLatestBundle(tempDir)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := filepath.Join(tempDir, "bundle.tar.gz")
+
+		if latest != expected {
+			t.Errorf("Expected latest bundle to be %q, got %q", expected, latest)
+		}
+	})
+
+	t.Run("Directory with only .tar.gz files", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create only valid bundle files
+		bundles := []string{"app.tar.gz", "service.tar.gz", "tool.tar.gz"}
+		for i, name := range bundles {
+			bundlePath := filepath.Join(tempDir, name)
+			if err := os.WriteFile(bundlePath, []byte(name), 0644); err != nil {
+				t.Fatalf("Failed to create %s: %v", name, err)
+			}
+			if i < len(bundles)-1 {
+				time.Sleep(10 * time.Millisecond) // Ensure different timestamps
+			}
+		}
+
+		latest, err := findLatestBundle(tempDir)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := filepath.Join(tempDir, "tool.tar.gz") // Last created
+
+		if latest != expected {
+			t.Errorf("Expected latest bundle to be %q, got %q", expected, latest)
+		}
+	})
+}
+
+// Test for buildAgentBundle function
+func Test_buildAgentBundle(t *testing.T) {
+	t.Run("Successful build", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create a mock build script that succeeds
+		scriptPath := filepath.Join(tempDir, "build-bundle.sh")
+		scriptContent := "#!/bin/bash\necho 'Building bundle...'\nexit 0"
+		if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+			t.Fatalf("Failed to create build script: %v", err)
+		}
+
+		// Test building the bundle
+		err := buildAgentBundle(scriptPath, tempDir)
+		if err != nil {
+			t.Errorf("Unexpected error building bundle: %v", err)
+		}
+	})
+
+	t.Run("Build script failure", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create a mock build script that fails
+		scriptPath := filepath.Join(tempDir, "build-bundle.sh")
+		scriptContent := "#!/bin/bash\necho 'Build failed!' >&2\nexit 1"
+		if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+			t.Fatalf("Failed to create build script: %v", err)
+		}
+
+		// Test building the bundle
+		err := buildAgentBundle(scriptPath, tempDir)
+		if err == nil {
+			t.Error("Expected error when build script fails")
+		}
+
+		// Verify error message contains command output
+		if !strings.Contains(err.Error(), "Build failed!") {
+			t.Errorf("Expected error message to contain script output, got: %v", err)
+		}
+	})
+
+	t.Run("Non-existent build script", func(t *testing.T) {
+		tempDir := t.TempDir()
+		scriptPath := filepath.Join(tempDir, "nonexistent.sh")
+
+		// Test building with non-existent script
+		err := buildAgentBundle(scriptPath, tempDir)
+		if err == nil {
+			t.Error("Expected error when build script doesn't exist")
+		}
+
+		// Verify error mentions the script execution
+		errorMsg := err.Error()
+		if !strings.Contains(errorMsg, "bash") && !strings.Contains(errorMsg, scriptPath) {
+			t.Errorf("Expected error to mention bash or script path, got: %s", errorMsg)
+		}
+	})
+}
+
+// Test for resolveAgentBundle function
+func TestRunner_resolveAgentBundle(t *testing.T) {
+	runner := NewRunner(&MockRuntime{})
+
+	t.Run("Direct bundle path provided", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create a bundle file
+		bundlePath := filepath.Join(tempDir, "custom-bundle.tar.gz")
+		if err := os.WriteFile(bundlePath, []byte("bundle content"), 0644); err != nil {
+			t.Fatalf("Failed to create bundle: %v", err)
+		}
+
+		cfg := RunnerConfig{
+			AgentBundle:   bundlePath,
+			WorkspacePath: tempDir,
+		}
+
+		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+
+		if resolvedPath != bundlePath {
+			t.Errorf("Expected resolved path to be %q, got %q", bundlePath, resolvedPath)
+		}
+
+		if resolvedImage != "" {
+			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
+		}
+	})
+
+	t.Run("Direct bundle path does not exist", func(t *testing.T) {
+		cfg := RunnerConfig{
+			AgentBundle: "/nonexistent/bundle.tar.gz",
+		}
+
+		_, _, err := runner.resolveAgentBundle(cfg, "")
+		if err == nil {
+			t.Error("Expected error for non-existent bundle path")
+		}
+
+		expectedError := "agent bundle not found"
+		if !strings.Contains(err.Error(), expectedError) {
+			t.Errorf("Expected error containing %q, got %q", expectedError, err.Error())
+		}
+	})
+
+	t.Run("Adapter image is a file path", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create a bundle file to act as adapter image
+		bundlePath := filepath.Join(tempDir, "adapter-bundle.tar.gz")
+		if err := os.WriteFile(bundlePath, []byte("adapter bundle"), 0644); err != nil {
+			t.Fatalf("Failed to create bundle: %v", err)
+		}
+
+		cfg := RunnerConfig{
+			AdapterImage:  bundlePath,
+			WorkspacePath: tempDir,
+		}
+
+		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+
+		if resolvedPath != bundlePath {
+			t.Errorf("Expected resolved path to be %q, got %q", bundlePath, resolvedPath)
+		}
+
+		if resolvedImage != "" {
+			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
+		}
+	})
+
+	t.Run("Local bundle found in expected location", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create bundle directory structure
+		bundleDir := filepath.Join(tempDir, "images", "adapter-claude", "dist", "agent-bundles")
+		if err := os.MkdirAll(bundleDir, 0755); err != nil {
+			t.Fatalf("Failed to create bundle directory: %v", err)
+		}
+
+		// Create build script directory (required for bundle discovery)
+		scriptDir := filepath.Join(tempDir, "images", "adapter-claude", "scripts")
+		if err := os.MkdirAll(scriptDir, 0755); err != nil {
+			t.Fatalf("Failed to create script directory: %v", err)
+		}
+		scriptPath := filepath.Join(scriptDir, "build-bundle.sh")
+		if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\nexit 0"), 0755); err != nil {
+			t.Fatalf("Failed to create build script: %v", err)
+		}
+
+		// Create a bundle file
+		bundlePath := filepath.Join(bundleDir, "local-bundle.tar.gz")
+		if err := os.WriteFile(bundlePath, []byte("local bundle"), 0644); err != nil {
+			t.Fatalf("Failed to create bundle: %v", err)
+		}
+
+		cfg := RunnerConfig{
+			WorkspacePath: tempDir,
+			// Use default adapter image (empty string)
+		}
+
+		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+
+		if resolvedPath != bundlePath {
+			t.Errorf("Expected resolved path to be %q, got %q", bundlePath, resolvedPath)
+		}
+
+		if resolvedImage != "" {
+			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
+		}
+	})
+
+	t.Run("Build bundle when none exists", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create bundle directory structure but no bundle file
+		bundleDir := filepath.Join(tempDir, "images", "adapter-claude", "dist", "agent-bundles")
+		if err := os.MkdirAll(bundleDir, 0755); err != nil {
+			t.Fatalf("Failed to create bundle directory: %v", err)
+		}
+
+		// Create build script directory and script
+		scriptDir := filepath.Join(tempDir, "images", "adapter-claude", "scripts")
+		if err := os.MkdirAll(scriptDir, 0755); err != nil {
+			t.Fatalf("Failed to create script directory: %v", err)
+		}
+		scriptPath := filepath.Join(scriptDir, "build-bundle.sh")
+		scriptContent := "#!/bin/bash\n# Create a bundle file\nmkdir -p images/adapter-claude/dist/agent-bundles\ntouch images/adapter-claude/dist/agent-bundles/auto-built.tar.gz\nexit 0"
+		if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+			t.Fatalf("Failed to create build script: %v", err)
+		}
+
+		cfg := RunnerConfig{
+			WorkspacePath: tempDir,
+		}
+
+		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+
+		expectedBundle := filepath.Join(bundleDir, "auto-built.tar.gz")
+		if resolvedPath != expectedBundle {
+			t.Errorf("Expected resolved path to be %q, got %q", expectedBundle, resolvedPath)
+		}
+
+		if resolvedImage != "" {
+			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
+		}
+
+		// Verify bundle was actually created
+		if _, err := os.Stat(expectedBundle); os.IsNotExist(err) {
+			t.Errorf("Expected bundle file to be created at %s", expectedBundle)
+		}
+	})
+
+	t.Run("Build bundle script fails", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create bundle directory structure but no bundle file
+		bundleDir := filepath.Join(tempDir, "images", "adapter-claude", "dist", "agent-bundles")
+		if err := os.MkdirAll(bundleDir, 0755); err != nil {
+			t.Fatalf("Failed to create bundle directory: %v", err)
+		}
+
+		// Create a failing build script
+		scriptDir := filepath.Join(tempDir, "images", "adapter-claude", "scripts")
+		if err := os.MkdirAll(scriptDir, 0755); err != nil {
+			t.Fatalf("Failed to create script directory: %v", err)
+		}
+		scriptPath := filepath.Join(scriptDir, "build-bundle.sh")
+		scriptContent := "#!/bin/bash\necho 'Build failed' >&2\nexit 1"
+		if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+			t.Fatalf("Failed to create build script: %v", err)
+		}
+
+		cfg := RunnerConfig{
+			WorkspacePath: tempDir,
+		}
+
+		// This should error since bundle building fails
+		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err == nil {
+			t.Error("Expected error when build script fails")
+		}
+
+		if resolvedPath != "" {
+			t.Errorf("Expected resolved path to be empty when script fails, got %q", resolvedPath)
+		}
+
+		if resolvedImage != "" {
+			t.Errorf("Expected resolved image to be empty when script fails, got %q", resolvedImage)
+		}
+
+		// Verify error mentions build failure
+		errorMsg := err.Error()
+		if !strings.Contains(errorMsg, "failed to build agent bundle") {
+			t.Errorf("Expected error to mention build failure, got: %s", errorMsg)
+		}
+	})
+
+	t.Run("Custom adapter image fallback", func(t *testing.T) {
+		tempDir := t.TempDir()
+		customAdapter := "custom-adapter:latest"
+
+		cfg := RunnerConfig{
+			AdapterImage:  customAdapter,
+			WorkspacePath: tempDir,
+		}
+
+		// Test with custom adapter image that's not a file path
+		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+
+		if resolvedPath != "" {
+			t.Errorf("Expected resolved path to be empty, got %q", resolvedPath)
+		}
+
+		if resolvedImage != customAdapter {
+			t.Errorf("Expected resolved image to be %q, got %q", customAdapter, resolvedImage)
+		}
+	})
+
+	t.Run("Default adapter fallback when no bundle found", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		cfg := RunnerConfig{
+			WorkspacePath: tempDir,
+		}
+
+		// Test with no bundle directory and no build script
+		// Should fallback to default adapter image
+		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+
+		if resolvedPath != "" {
+			t.Errorf("Expected resolved path to be empty, got %q", resolvedPath)
+		}
+
+		if resolvedImage != "holon-adapter-claude" {
+			t.Errorf("Expected resolved image to be default adapter, got %q", resolvedImage)
+		}
+	})
+
+	t.Run("Multiple bundles - selects latest", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create bundle directory structure
+		bundleDir := filepath.Join(tempDir, "images", "adapter-claude", "dist", "agent-bundles")
+		if err := os.MkdirAll(bundleDir, 0755); err != nil {
+			t.Fatalf("Failed to create bundle directory: %v", err)
+		}
+
+		// Create build script directory (required for bundle discovery)
+		scriptDir := filepath.Join(tempDir, "images", "adapter-claude", "scripts")
+		if err := os.MkdirAll(scriptDir, 0755); err != nil {
+			t.Fatalf("Failed to create script directory: %v", err)
+		}
+		scriptPath := filepath.Join(scriptDir, "build-bundle.sh")
+		if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\nexit 0"), 0755); err != nil {
+			t.Fatalf("Failed to create build script: %v", err)
+		}
+
+		// Create multiple bundles with different timestamps
+		bundle1 := filepath.Join(bundleDir, "bundle1.tar.gz")
+		bundle2 := filepath.Join(bundleDir, "bundle2.tar.gz")
+
+		if err := os.WriteFile(bundle1, []byte("bundle1"), 0644); err != nil {
+			t.Fatalf("Failed to create bundle1: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+
+		if err := os.WriteFile(bundle2, []byte("bundle2"), 0644); err != nil {
+			t.Fatalf("Failed to create bundle2: %v", err)
+		}
+
+		cfg := RunnerConfig{
+			WorkspacePath: tempDir,
+		}
+
+		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+
+		if resolvedPath != bundle2 {
+			t.Errorf("Expected resolved path to be latest bundle %q, got %q", bundle2, resolvedPath)
+		}
+
+		if resolvedImage != "" {
+			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
+		}
+	})
 }
