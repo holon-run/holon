@@ -448,7 +448,7 @@ async function runAdapter(): Promise<void> {
     const manifest = {
       status: "completed",
       outcome: "success",
-      mode: mode,
+      mode: "probe",
       artifacts: [{ name: "manifest.json", path: "manifest.json" }],
     };
     fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
