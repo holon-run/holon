@@ -411,6 +411,7 @@ async function runClaude(
 
 async function runAdapter(): Promise<void> {
   const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress");
+  const isProbe = process.argv.slice(2).includes("--probe");
 
   console.log("Holon Claude Adapter process started...");
   logger.minimal("Holon Claude Adapter Starting...");
@@ -419,12 +420,43 @@ async function runAdapter(): Promise<void> {
   const evidenceDir = path.join(outputDir, "evidence");
   fs.mkdirSync(evidenceDir, { recursive: true });
 
-  logger.logPhase("Loading specification");
   const specPath = "/holon/input/spec.yaml";
   if (!fs.existsSync(specPath)) {
     logger.minimal(`Error: Spec not found at ${specPath}`);
     process.exit(1);
   }
+
+  if (isProbe) {
+    logger.logPhase("Probe: Validating inputs");
+    const workspacePath = "/holon/workspace";
+    if (!fs.existsSync(workspacePath)) {
+      logger.minimal(`Error: Workspace not found at ${workspacePath}`);
+      process.exit(1);
+    }
+
+    try {
+      fs.accessSync(outputDir, fs.constants.W_OK);
+      const probePath = path.join(outputDir, ".probe");
+      fs.writeFileSync(probePath, "ok\n");
+      fs.unlinkSync(probePath);
+    } catch (error) {
+      logger.minimal(`Error: Output directory not writable: ${String(error)}`);
+      process.exit(1);
+    }
+
+    const manifest = {
+      status: "completed",
+      outcome: "success",
+      mode: "probe",
+      artifacts: [{ name: "manifest.json", path: "manifest.json" }],
+    };
+    fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+    fixPermissions(outputDir, logger);
+    logger.minimal("Probe completed.");
+    return;
+  }
+
+  logger.logPhase("Loading specification");
 
   const spec = parseYaml(fs.readFileSync(specPath, "utf8")) as Record<string, any>;
   const goalVal = spec.goal ?? "";

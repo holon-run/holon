@@ -39,6 +39,11 @@ and how the runner consumes it.
   "platform": "linux",
   "arch": "amd64",
   "libc": "glibc",
+  "engine": {
+    "name": "claude-code",
+    "sdk": "@anthropic-ai/claude-agent-sdk",
+    "sdkVersion": "0.1.75"
+  },
   "runtime": {
     "type": "node",
     "version": "20.15.1",
@@ -58,6 +63,7 @@ and how the runner consumes it.
 - `bundleVersion`: schema version used by the runner.
 - `entry`: relative path to the executable that will be invoked as the container
   entrypoint.
+- `engine`: underlying agent runtime metadata (implementation-specific).
 - `runtime.embedded`: when `true`, the bundle contains its own runtime (e.g. Node)
   and does not rely on OS-level package installs.
 - `libc`: used to select compatible bundles (`glibc` vs `musl`).
@@ -94,4 +100,3 @@ fetching a prebuilt artifact. Recommended behavior:
 ## Open questions
 - Whether to sign bundles and verify checksums.
 - Whether to support additional resolver prefixes (e.g. `file:`, `gh:`).
-

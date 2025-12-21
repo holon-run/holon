@@ -16,6 +16,11 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
         
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -24,6 +29,11 @@ jobs:
 
     - name: Test Adapter
       run: make test-adapter
+
+    - name: Verify Adapter Bundle
+      run: |
+        cd images/adapter-claude
+        npm run verify-bundle
       
     - name: Test
       run: make test

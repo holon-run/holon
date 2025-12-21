@@ -70,6 +70,17 @@ When `diff.patch` is required by the spec, the adapter MUST produce a patch that
 
 For binary-file compatibility, adapters SHOULD generate patches using `git diff --binary --full-index` (or equivalent).
 
+### 3.6 Probe mode (optional)
+
+Adapters MAY implement a probe mode to validate basic runtime readiness without invoking the underlying tool.
+
+If supported, invoking the adapter with `--probe` MUST:
+- verify `/holon/input/spec.yaml` exists and `/holon/output/` is writable,
+- exit with code `0` on success,
+- write a minimal `manifest.json` indicating probe success.
+
+Hosts MAY use `--probe` to validate bundles/images in CI or preflight checks.
+
 ## 4. Host Responsibilities (Normative)
 
 To preserve atomicity and enable deterministic automation, the Host MUST:
