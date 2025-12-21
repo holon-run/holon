@@ -361,8 +361,14 @@ async function runClaude(
           }
         }
       } else if (message?.type === "result") {
-        logger.info(`Task result received: ${message.subtype}, is_error: ${message.is_error}`);
-        if (message.is_error) {
+        const safeSubtype =
+          typeof (message as any).subtype === "string" ? message.subtype : "unknown";
+        const isError =
+          typeof (message as any).is_error === "boolean"
+            ? message.is_error
+            : Boolean((message as any).is_error);
+        logger.info(`Task result received: ${safeSubtype}, is_error: ${isError}`);
+        if (isError) {
           success = false;
         }
         if ("result" in message && typeof message.result === "string") {
