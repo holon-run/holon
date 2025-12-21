@@ -1,0 +1,97 @@
+# Agent Bundle Specification (Design Draft)
+
+This document defines the **agent bundle** packaging format. It replaces the term
+"adapter bundle" as part of the terminology refactor.
+
+The **agent contract** (filesystem layout, inputs, outputs) is defined in
+`rfc/0002-adapter-scheme.md`. This document only specifies the bundle packaging
+and how the runner consumes it.
+
+## Goals
+- Make runtime image composition independent of agent implementation details.
+- Allow a bundle to be copied into a composed image without installing OS packages.
+- Support both prebuilt bundles and locally built bundles inside the Holon repo.
+- Provide a stable manifest so the runner can validate compatibility.
+
+## Non-goals
+- Defining new agent behavior or runtime protocol.
+- Replacing the current container isolation model.
+
+## Bundle format
+- **Container**: `tar.gz` or `tar.zst` archive.
+- **Root layout**:
+  - `manifest.json`
+  - `bin/agent` (entrypoint executable or script)
+  - `dist/` (agent code)
+  - `node_modules/` (production dependencies, if applicable)
+  - `runtime/` (embedded runtime, optional)
+  - `assets/` (optional)
+
+## Manifest schema (v1)
+`manifest.json` is required. Suggested fields:
+
+```json
+{
+  "bundleVersion": "1",
+  "name": "agent-claude",
+  "version": "0.1.0",
+  "entry": "bin/agent",
+  "platform": "linux",
+  "arch": "amd64",
+  "libc": "glibc",
+  "runtime": {
+    "type": "node",
+    "version": "20.15.1",
+    "embedded": true
+  },
+  "env": {
+    "NODE_ENV": "production"
+  },
+  "capabilities": {
+    "needsNetwork": true,
+    "needsGit": true
+  }
+}
+```
+
+**Field notes**
+- `bundleVersion`: schema version used by the runner.
+- `entry`: relative path to the executable that will be invoked as the container
+  entrypoint.
+- `runtime.embedded`: when `true`, the bundle contains its own runtime (e.g. Node)
+  and does not rely on OS-level package installs.
+- `libc`: used to select compatible bundles (`glibc` vs `musl`).
+
+## Runner contract
+The runner treats the bundle as a black box:
+1. Copy the bundle archive into the build context.
+2. Extract into a fixed path (e.g. `/holon/agent`).
+3. Set entrypoint to `<extract_root>/<manifest.entry>`.
+4. Mount `/holon/input`, `/holon/workspace`, `/holon/output` per the agent contract.
+
+The runner should not assume language, package manager, or build system.
+
+## Bundle naming (recommended)
+`agent-bundle-{name}-{version}-{platform}-{arch}-{libc}.tar.zst`
+
+Example:
+`agent-bundle-agent-claude-0.1.0-linux-amd64-glibc.tar.zst`
+
+## Local build inside the Holon repo
+If the agent source tree is available (e.g. `images/agent-claude/` or
+`images/adapter-claude/`), the runner may build a bundle locally instead of
+fetching a prebuilt artifact. Recommended behavior:
+- Compute a cache key from source + lockfile + runtime version.
+- If cached bundle exists, reuse it.
+- Otherwise run a local build script that produces a bundle matching this spec.
+
+## Compatibility rules
+- Bundles must be self-contained if `runtime.embedded` is `true`.
+- If `runtime.embedded` is `false`, the runner must ensure the base image provides
+  the declared runtime and version.
+- `platform`, `arch`, and `libc` must match the composed image environment.
+
+## Open questions
+- Whether to sign bundles and verify checksums.
+- Whether to support additional resolver prefixes (e.g. `file:`, `gh:`).
+

@@ -86,6 +86,9 @@ We’re converging on a single user-facing knob: `mode` (`execute` / `plan` / `r
 
 Today, the CLI supports `--role` (prompt persona) and `--log-level`. `--mode` is tracked as a follow-up (see issue #94).
 
+## Terminology
+Project terms and naming are being stabilized for public release. See `docs/terminology.md`.
+
 ## Development
 Useful commands:
 ```bash
