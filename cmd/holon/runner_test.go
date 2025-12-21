@@ -805,17 +805,13 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 
 		if resolvedPath != bundlePath {
 			t.Errorf("Expected resolved path to be %q, got %q", bundlePath, resolvedPath)
-		}
-
-		if resolvedImage != "" {
-			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
 		}
 	})
 
@@ -824,7 +820,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			AgentBundle: "/nonexistent/bundle.tar.gz",
 		}
 
-		_, _, err := runner.resolveAgentBundle(cfg, "")
+		_, err := runner.resolveAgentBundle(cfg, "")
 		if err == nil {
 			t.Error("Expected error for non-existent bundle path")
 		}
@@ -835,31 +831,16 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		}
 	})
 
-	t.Run("Adapter image is a file path", func(t *testing.T) {
+	t.Run("Direct bundle path is a directory", func(t *testing.T) {
 		tempDir := t.TempDir()
 
-		// Create a bundle file to act as adapter image
-		bundlePath := filepath.Join(tempDir, "adapter-bundle.tar.gz")
-		if err := os.WriteFile(bundlePath, []byte("adapter bundle"), 0644); err != nil {
-			t.Fatalf("Failed to create bundle: %v", err)
-		}
-
 		cfg := RunnerConfig{
-			AdapterImage:  bundlePath,
-			WorkspacePath: tempDir,
+			AgentBundle: tempDir,
 		}
 
-		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-
-		if resolvedPath != bundlePath {
-			t.Errorf("Expected resolved path to be %q, got %q", bundlePath, resolvedPath)
-		}
-
-		if resolvedImage != "" {
-			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
+		_, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err == nil {
+			t.Error("Expected error for bundle path directory")
 		}
 	})
 
@@ -890,20 +871,15 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 
 		cfg := RunnerConfig{
 			WorkspacePath: tempDir,
-			// Use default adapter image (empty string)
 		}
 
-		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 
 		if resolvedPath != bundlePath {
 			t.Errorf("Expected resolved path to be %q, got %q", bundlePath, resolvedPath)
-		}
-
-		if resolvedImage != "" {
-			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
 		}
 	})
 
@@ -931,7 +907,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -939,10 +915,6 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		expectedBundle := filepath.Join(bundleDir, "auto-built.tar.gz")
 		if resolvedPath != expectedBundle {
 			t.Errorf("Expected resolved path to be %q, got %q", expectedBundle, resolvedPath)
-		}
-
-		if resolvedImage != "" {
-			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
 		}
 
 		// Verify bundle was actually created
@@ -976,17 +948,13 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		}
 
 		// This should error since bundle building fails
-		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
 		if err == nil {
 			t.Error("Expected error when build script fails")
 		}
 
 		if resolvedPath != "" {
 			t.Errorf("Expected resolved path to be empty when script fails, got %q", resolvedPath)
-		}
-
-		if resolvedImage != "" {
-			t.Errorf("Expected resolved image to be empty when script fails, got %q", resolvedImage)
 		}
 
 		// Verify error mentions build failure
@@ -996,50 +964,16 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		}
 	})
 
-	t.Run("Custom adapter image fallback", func(t *testing.T) {
-		tempDir := t.TempDir()
-		customAdapter := "custom-adapter:latest"
-
-		cfg := RunnerConfig{
-			AdapterImage:  customAdapter,
-			WorkspacePath: tempDir,
-		}
-
-		// Test with custom adapter image that's not a file path
-		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-
-		if resolvedPath != "" {
-			t.Errorf("Expected resolved path to be empty, got %q", resolvedPath)
-		}
-
-		if resolvedImage != customAdapter {
-			t.Errorf("Expected resolved image to be %q, got %q", customAdapter, resolvedImage)
-		}
-	})
-
-	t.Run("Default adapter fallback when no bundle found", func(t *testing.T) {
+	t.Run("No bundle and no build script", func(t *testing.T) {
 		tempDir := t.TempDir()
 
 		cfg := RunnerConfig{
 			WorkspacePath: tempDir,
 		}
 
-		// Test with no bundle directory and no build script
-		// Should fallback to default adapter image
-		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-
-		if resolvedPath != "" {
-			t.Errorf("Expected resolved path to be empty, got %q", resolvedPath)
-		}
-
-		if resolvedImage != "holon-adapter-claude" {
-			t.Errorf("Expected resolved image to be default adapter, got %q", resolvedImage)
+		_, err := runner.resolveAgentBundle(cfg, tempDir)
+		if err == nil {
+			t.Error("Expected error when no bundle and no build script are present")
 		}
 	})
 
@@ -1087,17 +1021,13 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		resolvedPath, resolvedImage, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 
 		if resolvedPath != bundle2 {
 			t.Errorf("Expected resolved path to be latest bundle %q, got %q", bundle2, resolvedPath)
-		}
-
-		if resolvedImage != "" {
-			t.Errorf("Expected resolved image to be empty, got %q", resolvedImage)
 		}
 	})
 }
