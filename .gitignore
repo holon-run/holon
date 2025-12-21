@@ -1,7 +1,5 @@
 # Binaries
 bin/
-/holon
-/holon-adapter
 
 # Holon execution outputs
 holon-output/
