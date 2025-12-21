@@ -38,10 +38,10 @@ test: test-adapter
 	@echo "Running Go tests..."
 	go test ./... -v
 
-## test-adapter: Run adapter TypeScript checks
+## test-adapter: Run adapter TypeScript tests
 test-adapter:
-	@echo "Running TypeScript adapter checks..."
-	cd $(ADAPTER_DIR) && npm install && npm run build
+	@echo "Running TypeScript adapter tests..."
+	cd $(ADAPTER_DIR) && npm install && npm run build && npm test
 
 ## clean: Remove build artifacts
 clean:
