@@ -98,14 +98,14 @@ output:
 
 **TypeScript Adapter**: `images/adapter-claude/`
 - Entry point: `/app/dist/adapter.js`
-- Pre-installed Claude Code CLI and GitHub CLI
+- Pre-installed Claude Code runtime (for Agent SDK) and GitHub CLI
 - Standardized I/O paths: `/holon/input/`, `/holon/workspace/`, `/holon/output/`
 
 ### Execution Flow
 1. **Workspace Snapshot**: Copy workspace to isolated location
 2. **Image Composition**: Build composed image from base + adapter
 3. **Container Creation**: Start container with mounted volumes
-4. **Agent Execution**: Run Claude Code adapter with injected prompts
+4. **Agent Execution**: Run Claude Agent SDK adapter with injected prompts
 5. **Artifact Validation**: Verify required outputs exist
 
 ### Directory Structure

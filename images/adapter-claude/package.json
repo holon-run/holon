@@ -1,12 +1,14 @@
 {
   "name": "holon-adapter-claude",
   "private": true,
-  "type": "commonjs",
+  "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "yaml": "^2.5.0"
+    "@anthropic-ai/claude-agent-sdk": "^0.1.75",
+    "yaml": "^2.5.0",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.9",
