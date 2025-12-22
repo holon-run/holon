@@ -1,12 +1,8 @@
 package agent
 
 import (
-	"context"
-	"fmt"
 	"os"
 	"strings"
-
-	"github.com/holon-run/holon/pkg/agent/resolver"
 )
 
 // BuiltinAgent represents the default builtin agent configuration
@@ -24,9 +20,9 @@ func DefaultBuiltinAgent() *BuiltinAgent {
 	// For now, using a placeholder that will be replaced with real values
 	return &BuiltinAgent{
 		Name:     "claude-agent",
-		Version:  "v0.1.0",
-		URL:      "https://github.com/holon-run/claude-agent/releases/download/v0.1.0/agent-bundle.tar.gz",
-		Checksum: "sha256=0000000000000000000000000000000000000000000000000000000000000000", // placeholder
+		Version:  "agent-claude-v0.2.0",
+		URL:      "https://github.com/holon-run/holon/releases/download/agent-claude-v0.2.0/holon-agent-claude-0.2.0.tar.gz",
+		Checksum: "5cde0cbaa9f3e7f210b2484185c7ad554bc53a55cbebf8c00fae4fbc04a5b04f",
 	}
 }
 
@@ -36,38 +32,3 @@ func IsAutoInstallDisabled() bool {
 	return strings.ToLower(disabled) == "1" || strings.ToLower(disabled) == "true"
 }
 
-// BuiltinResolver resolves the builtin default agent
-type BuiltinResolver struct {
-	agent *BuiltinAgent
-}
-
-// NewBuiltinResolver creates a new builtin resolver
-func NewBuiltinResolver() *BuiltinResolver {
-	return &BuiltinResolver{
-		agent: DefaultBuiltinAgent(),
-	}
-}
-
-// CanResolve returns true if this is a request for the default agent
-func (r *BuiltinResolver) CanResolve(ref string) bool {
-	// Resolve empty string (no agent specified) and "default" alias
-	return strings.TrimSpace(ref) == "" || strings.TrimSpace(ref) == "default"
-}
-
-// Resolve resolves the builtin agent to a local bundle path
-func (r *BuiltinResolver) Resolve(ctx context.Context, cacheDir string) (string, error) {
-	if IsAutoInstallDisabled() {
-		return "", fmt.Errorf("auto-install is disabled (HOLON_NO_AUTO_INSTALL=1)")
-	}
-
-	// Create a resolver registry to handle the download
-	registry := resolver.NewRegistry(cacheDir)
-
-	// Resolve the builtin agent URL
-	return registry.Resolve(ctx, r.agent.URL+"#sha256="+r.agent.Checksum)
-}
-
-// GetInfo returns information about the builtin agent
-func (r *BuiltinResolver) GetInfo() *BuiltinAgent {
-	return r.agent
-}

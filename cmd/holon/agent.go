@@ -139,6 +139,76 @@ func validateURL(urlStr string) error {
 	return nil
 }
 
+var agentCheckUpdateCmd = &cobra.Command{
+	Use:   "check-update",
+	Short: "Check for newer agent versions",
+	Long: `Check if there's a newer version of the builtin agent available
+from GitHub releases.
+
+This command specifically looks for agent releases in the holon-run/holon
+repository, filtering for releases that:
+- Have tags starting with "agent-" (e.g., agent-claude-v0.2.0)
+- Contain agent bundle assets (.tar.gz files)
+- Are stable releases (not drafts or prereleases)
+
+This ensures we distinguish between agent bundle releases and main Holon
+application releases.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println("Checking for newer agent versions...")
+		fmt.Println()
+
+		// Get current builtin agent info
+		currentAgent := agent.DefaultBuiltinAgent()
+		if currentAgent == nil {
+			fmt.Println("No builtin agent configured.")
+			return nil
+		}
+
+		fmt.Printf("Current builtin agent:\n")
+		fmt.Printf("  Version: %s\n", currentAgent.Version)
+		fmt.Printf("  URL: %s\n", currentAgent.URL)
+		fmt.Println()
+
+		// Check latest agent release
+		latestRelease, err := agent.GetLatestAgentRelease("holon-run/holon")
+		if err != nil {
+			fmt.Printf("Error checking for updates: %v\n", err)
+			fmt.Println("Note: This requires internet access to GitHub API.")
+			return nil
+		}
+
+		fmt.Printf("Latest agent release: %s\n", latestRelease.TagName)
+		fmt.Printf("Published: %s\n", latestRelease.PublishedAt)
+		fmt.Printf("Release name: %s\n", latestRelease.Name)
+		fmt.Println()
+
+		// Find agent bundle in the release
+		bundleName, bundleURL, err := agent.FindAgentBundleAsset(latestRelease)
+		if err != nil {
+			fmt.Printf("Warning: %v\n", err)
+			return nil
+		}
+
+		fmt.Printf("Agent bundle: %s\n", bundleName)
+		fmt.Printf("Bundle URL: %s\n", bundleURL)
+		fmt.Println()
+
+		// Compare versions
+		if currentAgent.Version == latestRelease.TagName {
+			fmt.Println("✓ You have the latest version!")
+		} else {
+			fmt.Printf("⚠ A newer version is available: %s\n", latestRelease.TagName)
+			fmt.Println()
+			fmt.Println("To update to the latest version, update the following in pkg/agent/builtin.go:")
+			fmt.Printf("  Version:  %q\n", latestRelease.TagName)
+			fmt.Printf("  URL:      %q\n", bundleURL)
+			fmt.Println("  Checksum: <SHA256 checksum of the bundle>")
+		}
+
+		return nil
+	},
+}
+
 var agentInfoCmd = &cobra.Command{
 	Use:   "info",
 	Short: "Show information about agent bundles",
@@ -190,6 +260,7 @@ func init() {
 	agentCmd.AddCommand(agentInstallCmd)
 	agentCmd.AddCommand(agentListCmd)
 	agentCmd.AddCommand(agentRemoveCmd)
+	agentCmd.AddCommand(agentCheckUpdateCmd)
 	agentCmd.AddCommand(agentInfoCmd)
 	agentInfoCmd.AddCommand(agentInfoDefaultCmd)
 }

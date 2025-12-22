@@ -386,7 +386,9 @@ func (r *BuiltinResolver) Resolve(ctx context.Context, ref string) (string, erro
 		},
 	}
 
-	// Resolve the builtin agent URL with checksum
-	agentURL := builtinAgent.URL + "#sha256=" + builtinAgent.Checksum
+	// Resolve the builtin agent URL with checksum - fix double prefix issue
+	checksum := strings.TrimPrefix(builtinAgent.Checksum, "sha256=")
+	agentURL := builtinAgent.URL + "#sha256=" + checksum
 	return httpResolver.Resolve(ctx, agentURL)
 }
+

@@ -1,12 +1,9 @@
 package agent
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/holon-run/holon/pkg/agent/resolver"
 )
 
 func TestDefaultBuiltinAgent(t *testing.T) {
@@ -78,105 +75,43 @@ func TestIsAutoInstallDisabled(t *testing.T) {
 	}
 }
 
-func TestBuiltinResolver_CanResolve(t *testing.T) {
+func TestBuiltinAgent_AutoInstallDisabled(t *testing.T) {
 	// Save original value
 	origValue := os.Getenv("HOLON_NO_AUTO_INSTALL")
 	defer os.Setenv("HOLON_NO_AUTO_INSTALL", origValue)
+
+	// Test with auto-install disabled
+	os.Setenv("HOLON_NO_AUTO_INSTALL", "1")
+	if !IsAutoInstallDisabled() {
+		t.Error("Auto-install should be disabled when HOLON_NO_AUTO_INSTALL=1")
+	}
 
 	// Test with auto-install enabled
 	os.Unsetenv("HOLON_NO_AUTO_INSTALL")
-	r := NewBuiltinResolver()
-
-	testCases := []struct {
-		ref      string
-		expected bool
-	}{
-		{"", true},
-		{"default", true},
-		{"Default", true}, // case insensitive due to TrimSpace
-		{"default ", true},
-		{" default", true},
-		{"  default  ", true},
-		{"custom-agent", false},
-		{"http://example.com/agent.tar.gz", false},
-		{"/path/to/agent.tar.gz", false},
-		{"default-agent", false},
-	}
-
-	for _, tc := range testCases {
-		result := r.CanResolve(tc.ref)
-		if result != tc.expected {
-			t.Errorf("CanResolve(%q) = %v, expected %v", tc.ref, result, tc.expected)
-		}
+	if IsAutoInstallDisabled() {
+		t.Error("Auto-install should be enabled when HOLON_NO_AUTO_INSTALL is unset")
 	}
 }
 
-func TestBuiltinResolver_CanResolve_WithAutoInstallDisabled(t *testing.T) {
-	// Save original value
-	origValue := os.Getenv("HOLON_NO_AUTO_INSTALL")
-	defer os.Setenv("HOLON_NO_AUTO_INSTALL", origValue)
+func TestDefaultBuiltinAgent_Consistency(t *testing.T) {
+	// Test that DefaultBuiltinAgent returns consistent data
+	agent1 := DefaultBuiltinAgent()
+	agent2 := DefaultBuiltinAgent()
 
-	// Disable auto-install
-	os.Setenv("HOLON_NO_AUTO_INSTALL", "1")
-	r := NewBuiltinResolver()
-
-	testCases := []struct {
-		ref      string
-		expected bool
-	}{
-		{"", false},
-		{"default", false},
-		{"custom-agent", false},
+	if agent1.Name != agent2.Name {
+		t.Error("DefaultBuiltinAgent() should return consistent agent name")
 	}
 
-	for _, tc := range testCases {
-		result := r.CanResolve(tc.ref)
-		if result != tc.expected {
-			t.Errorf("CanResolve(%q) with auto-install disabled = %v, expected %v", tc.ref, result, tc.expected)
-		}
+	if agent1.Version != agent2.Version {
+		t.Error("DefaultBuiltinAgent() should return consistent agent version")
+	}
+
+	if agent1.URL != agent2.URL {
+		t.Error("DefaultBuiltinAgent() should return consistent agent URL")
+	}
+
+	if agent1.Checksum != agent2.Checksum {
+		t.Error("DefaultBuiltinAgent() should return consistent agent checksum")
 	}
 }
 
-func TestBuiltinResolver_GetInfo(t *testing.T) {
-	r := NewBuiltinResolver()
-	info := r.GetInfo()
-
-	if info == nil {
-		t.Fatal("GetInfo() returned nil")
-	}
-
-	if info != DefaultBuiltinAgent() {
-		t.Error("GetInfo() should return the same agent as DefaultBuiltinAgent()")
-	}
-}
-
-func TestResolverRegistry_WithBuiltinResolver(t *testing.T) {
-	// Create a temporary directory for cache
-	tmpDir := t.TempDir()
-	registry := resolver.NewRegistry(tmpDir)
-
-	// Test that empty string resolves (or attempts to resolve) to builtin agent
-	ctx := context.Background()
-
-	// This will likely fail since we're using a placeholder URL, but it should
-	// attempt to resolve through the builtin resolver and give us a meaningful error
-	_, err := registry.Resolve(ctx, "")
-	if err == nil {
-		t.Error("Expected error when resolving builtin agent with placeholder URL")
-	}
-
-	// Check that the error is related to downloading, not to "no resolver found"
-	if strings.Contains(err.Error(), "no resolver found") {
-		t.Errorf("Expected download-related error, got: %v", err)
-	}
-
-	// Test that "default" also resolves through builtin resolver
-	_, err = registry.Resolve(ctx, "default")
-	if err == nil {
-		t.Error("Expected error when resolving builtin agent with placeholder URL")
-	}
-
-	if strings.Contains(err.Error(), "no resolver found") {
-		t.Errorf("Expected download-related error, got: %v", err)
-	}
-}

@@ -110,6 +110,16 @@ func TestValidateAliasName(t *testing.T) {
 			alias:     strings.Repeat("a", 101),
 			shouldErr: true,
 		},
+		{
+			name:      "default alias should be reserved",
+			alias:     "default",
+			shouldErr: true,
+		},
+		{
+			name:      "default alias with spaces should be reserved",
+			alias:     "  default  ",
+			shouldErr: true,
+		},
 	}
 
 	for _, tt := range tests {

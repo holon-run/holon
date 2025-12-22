@@ -279,6 +279,11 @@ func (c *Cache) validateAliasName(name string) error {
 		return fmt.Errorf("alias name cannot be empty")
 	}
 
+	// Reserve "default" for the builtin agent
+	if strings.TrimSpace(name) == "default" {
+		return fmt.Errorf("alias name 'default' is reserved for the builtin agent")
+	}
+
 	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
 		return fmt.Errorf("alias name contains invalid characters")
 	}
