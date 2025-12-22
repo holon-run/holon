@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types/mount"
-	"github.com/jolestar/holon/pkg/api/v1"
+	"github.com/holon-run/holon/pkg/api/v1"
 )
 
 func TestBuildContainerMounts(t *testing.T) {

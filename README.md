@@ -57,7 +57,7 @@ See `.github/workflows/holon-issue.yml` for a working end-to-end flow that appli
 
 Minimal usage:
 ```yaml
-- uses: jolestar/holon@main
+- uses: holon-run/holon@main
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```

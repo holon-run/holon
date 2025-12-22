@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	v1 "github.com/jolestar/holon/pkg/api/v1"
-	"github.com/jolestar/holon/pkg/prompt"
-	"github.com/jolestar/holon/pkg/runtime/docker"
+	v1 "github.com/holon-run/holon/pkg/api/v1"
+	"github.com/holon-run/holon/pkg/prompt"
+	"github.com/holon-run/holon/pkg/runtime/docker"
 	"gopkg.in/yaml.v3"
 )
 
