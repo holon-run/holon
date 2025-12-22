@@ -248,15 +248,11 @@ Core runner extensions in `pkg/runtime/docker/`:
 - **Proper error wrapping**: Use `fmt.Errorf("context: %w", err)` to add context
 
 ```go
-// GOOD: Handle errors properly
 data, err := os.ReadFile(filename)
 if err != nil {
     return "", fmt.Errorf("failed to read file %s: %w", filename, err)
 }
 
-// BAD: Ignoring errors
-data, _ := os.ReadFile(filename) // ERROR: Missing error handling!
-
-// Acceptable: With justification
-_ = os.Remove(tempFile) // Best-effort cleanup, OS handles eventually
+// Best-effort cleanup: failure to remove temp file is not critical
+_ = os.Remove(tempFile)
 ```

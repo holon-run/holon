@@ -35,17 +35,13 @@
 
 **Example:**
 ```go
-// GOOD: Handle errors properly
 data, err := os.ReadFile(filename)
 if err != nil {
     return "", fmt.Errorf("failed to read file %s: %w", filename, err)
 }
 
-// BAD: Ignoring errors
-data, _ := os.ReadFile(filename) // ERROR: Missing error handling!
-
-// Acceptable: Error ignoring with justification
-_ = os.Remove(tempFile) // Best-effort cleanup, OS will handle eventually
+// Best-effort cleanup: failure to remove temp file is not critical
+_ = os.Remove(tempFile)
 ```
 
 ## Testing Guidelines
