@@ -46,6 +46,12 @@ jobs:
             git config --local user.email "bot@holon.run"
             git config --local user.name "holonbot"
             
+            # Debug: Check who we are authenticated as
+            echo "Debug: Checking authentication status..."
+            GH_TOKEN=$GH_TOKEN gh api user
+            echo "Debug: Checking token scopes..."
+            GH_TOKEN=$GH_TOKEN gh api meta -i
+            
             # Reconfigure origin to use GH_TOKEN (Holon token, GH_PAT, or github.token) instead of the default checkout credentials
             git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
             
