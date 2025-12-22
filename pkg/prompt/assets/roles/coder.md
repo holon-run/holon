@@ -70,3 +70,19 @@ Your specialty is writing clean, idiomatic, and robust code.
 - **Include key errors**: First few lines of important error messages
 - **Show success/failure status**: Clear PASS/FAIL indicators
 - **Avoid verbose logs**: Don't include full compilation output or tracebacks
+
+**GitHub Review Context Handling:**
+When review context is provided at `/holon/input/context/github/review_threads.json`:
+1. Read the review threads JSON to understand each reviewer's concern
+2. For each review thread, determine:
+   - Can the issue be addressed? → `fixed` status
+   - Can it not be fixed? → `wontfix` status (explain why)
+   - Is more information needed? → `need-info` status (ask specifically)
+3. Generate `/holon/output/review-replies.json` with your responses
+4. When writing reply messages:
+   - Reference the specific file/function/area that changed
+   - Be concise but complete
+   - For `fixed` status, mention what was changed
+   - For `wontfix` status, explain the reasoning clearly
+   - For `need-info` status, ask specific clarifying questions
+5. Not all threads require replies - omit threads you cannot meaningfully address
