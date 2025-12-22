@@ -3,8 +3,8 @@
 ## Project Structure & Module Organization
 
 - `cmd/holon/`: Go CLI entrypoint (`holon`).
-- `pkg/`: Go libraries used by the CLI (API spec, prompt compilation, runtime).
-- `agents/claude/`: TypeScript-based adapter bundle sources (Claude Agent SDK integration).
+- `pkg/`: Go libraries used by the CLI (API spec, prompt compilation, runner/runtime).
+- `agents/claude/`: TypeScript-based agent bundle sources (Claude Agent SDK integration).
 - `tests/integration/`: Go `testscript` integration tests (`*.txtar`).
 - `holonbot/`: Node-based GitHub App/bot (separate CI workflow).
 - `rfc/`: Design notes and proposals.
@@ -13,8 +13,8 @@
 ## Build, Test, and Development Commands
 
 - `make build`: Build the Go CLI to `bin/holon`.
-- `make test`: Run adapter checks (`make test-adapter`) followed by Go tests (`go test ./...`).
-- `make test-adapter`: Build/check the TypeScript adapter under `agents/claude/`.
+- `make test`: Run agent checks (`make test-adapter`) followed by Go tests (`go test ./...`).
+- `make test-adapter`: Build/check the TypeScript agent under `agents/claude/`.
 - `npm run bundle` (under `agents/claude/`): Build the agent bundle archive.
 - `make test-integration`: Run integration tests (requires Docker).
 - `make run-example`: Run an example spec (requires Docker and Anthropic credentials).
@@ -22,7 +22,7 @@
 ## Coding Style & Naming Conventions
 
 - Go: run `gofmt` on all `.go` files; keep exported identifiers and package names idiomatic.
-- TypeScript adapter: keep changes minimal and deterministic; avoid committing `node_modules/` and `dist/` (maintain `.gitignore`).
+- TypeScript agent: keep changes minimal and deterministic; avoid committing `node_modules/` and `dist/` (maintain `.gitignore`).
 - Files/paths: prefer explicit, stable artifact names in `holon-output/` (e.g., `diff.patch`, `summary.md`).
 
 ## Testing Guidelines
@@ -39,4 +39,4 @@
 
 ## Agent-Specific Notes
 
-Holon runs adapters in containers with a standardized layout: workspace at `/holon/workspace`, inputs under `/holon/input/`, and artifacts under `/holon/output/`. Design changes that affect these paths should update relevant RFCs and keep backward compatibility where feasible.
+Holon runs agents in containers with a standardized layout: workspace at `/holon/workspace`, inputs under `/holon/input/`, and artifacts under `/holon/output/`. Design changes that affect these paths should update relevant RFCs and keep backward compatibility where feasible.

@@ -92,7 +92,7 @@ set -eu
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 NODE_BIN="${NODE_BIN:-node}"
 
-exec "${NODE_BIN}" "${ROOT_DIR}/dist/adapter.js" "$@"
+exec "${NODE_BIN}" "${ROOT_DIR}/dist/agent.js" "$@"
 ENTRYPOINT
 chmod +x "${BUNDLE_DIR}/bin/agent"
 

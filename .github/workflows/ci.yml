@@ -22,15 +22,15 @@ jobs:
       with:
         node-version: '20'
         
-    - name: Test Adapter
+    - name: Test Agent
       run: make test-adapter
 
-    - name: Build Adapter Bundle
+    - name: Build Agent Bundle
       run: |
         cd agents/claude
         npm run bundle
 
-    - name: Verify Adapter Bundle
+    - name: Verify Agent Bundle
       run: |
         cd agents/claude
         npm ci

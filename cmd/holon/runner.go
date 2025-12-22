@@ -188,7 +188,7 @@ output:
 		Env:            envVars,
 	}
 
-	fmt.Printf("Running Holon: %s with base image %s (agent bundle: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AgentBundle)
+	fmt.Printf("Running Holon: %s with base image %s (agent: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AgentBundle)
 	if err := r.runtime.RunHolon(ctx, containerCfg); err != nil {
 		return fmt.Errorf("execution failed: %w", err)
 	}
@@ -198,8 +198,16 @@ output:
 }
 
 func (r *Runner) resolveAgentBundle(cfg RunnerConfig, workspace string) (string, error) {
-	if cfg.AgentBundle != "" {
-		absBundle, err := filepath.Abs(cfg.AgentBundle)
+	agentRef := strings.TrimSpace(cfg.AgentBundle)
+	if agentRef == "" {
+		agentRef = strings.TrimSpace(os.Getenv("HOLON_AGENT"))
+	}
+	if agentRef == "" {
+		agentRef = strings.TrimSpace(os.Getenv("HOLON_AGENT_BUNDLE"))
+	}
+
+	if agentRef != "" {
+		absBundle, err := filepath.Abs(agentRef)
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve agent bundle path: %w", err)
 		}
@@ -215,7 +223,7 @@ func (r *Runner) resolveAgentBundle(cfg RunnerConfig, workspace string) (string,
 
 	scriptPath := filepath.Join(workspace, "agents", "claude", "scripts", "build-bundle.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
-		return "", fmt.Errorf("agent bundle not found; set --agent-bundle to a bundle archive")
+		return "", fmt.Errorf("agent bundle not found; set --agent/HOLON_AGENT (legacy: --agent-bundle/HOLON_AGENT_BUNDLE)")
 	}
 
 	bundleDir := filepath.Join(workspace, "agents", "claude", "dist", "agent-bundles")

@@ -4,7 +4,7 @@ This document defines the **agent bundle** packaging format. It replaces the ter
 "adapter bundle" as part of the terminology refactor.
 
 The **agent contract** (filesystem layout, inputs, outputs) is defined in
-`rfc/0002-adapter-scheme.md`. This document only specifies the bundle packaging
+`rfc/0002-agent-scheme.md`. This document only specifies the bundle packaging
 and how the runner consumes it.
 
 ## Goals

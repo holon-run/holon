@@ -85,14 +85,14 @@ set -e
 
 if [ ! -f "${OUTPUT_DIR}/manifest.json" ]; then
   echo "Bundle verification failed: manifest.json not found." >&2
-  echo "Adapter output:" >&2
+  echo "Agent output:" >&2
   echo "${DOCKER_OUTPUT}" >&2
   exit 1
 fi
 
 if [ "${EXIT_CODE}" -ne 0 ]; then
-  echo "Bundle verification failed: adapter exited with code ${EXIT_CODE}." >&2
-  echo "Adapter output:" >&2
+  echo "Bundle verification failed: agent exited with code ${EXIT_CODE}." >&2
+  echo "Agent output:" >&2
   echo "${DOCKER_OUTPUT}" >&2
   exit "${EXIT_CODE}"
 else

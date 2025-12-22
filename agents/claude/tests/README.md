@@ -1,6 +1,6 @@
-# Adapter Tests
+# Agent Tests
 
-This directory contains unit tests for the Holon TypeScript Claude adapter.
+This directory contains unit tests for the Holon TypeScript Claude agent.
 
 ## Test Coverage
 

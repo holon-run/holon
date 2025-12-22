@@ -66,7 +66,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		return fmt.Errorf("base image is required")
 	}
 
-	fmt.Printf("Composing runtime image for %s + bundle %s...\n", cfg.BaseImage, cfg.AgentBundle)
+	fmt.Printf("Composing execution image for %s + agent bundle %s...\n", cfg.BaseImage, cfg.AgentBundle)
 	composedImage, err := r.buildComposedImageFromBundle(ctx, cfg.BaseImage, cfg.AgentBundle)
 	if err != nil {
 		return fmt.Errorf("failed to compose image: %w", err)

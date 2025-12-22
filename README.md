@@ -15,10 +15,10 @@ Holon writes to the directory specified by `--out` (default `./holon-output`). C
 | `manifest.json` | machine-readable run metadata/status | always expected |
 | `diff.patch` | patch representing workspace changes | produced when requested by spec/goal |
 | `summary.md` | human summary for PR body / step summary | optional/required depending on spec |
-| `prompt.compiled.system.md` | compiled system prompt (debug) | written by host |
-| `prompt.compiled.user.md` | compiled user prompt (debug) | written by host |
+| `prompt.compiled.system.md` | compiled system prompt (debug) | written by runner |
+| `prompt.compiled.user.md` | compiled user prompt (debug) | written by runner |
 
-See `rfc/0002-adapter-scheme.md` for the artifact contract.
+See `rfc/0002-agent-scheme.md` for the agent artifact contract.
 
 ## Quickstart (local)
 Prereqs:
@@ -34,7 +34,7 @@ export ANTHROPIC_API_KEY=...
 make build
 (cd agents/claude && npm run bundle)
 BUNDLE_PATH=$(ls -t agents/claude/dist/agent-bundles/*.tar.gz | head -n 1)
-./bin/holon run --spec examples/fix-bug.yaml --image golang:1.22 --agent-bundle "$BUNDLE_PATH" --workspace . --out ./holon-output
+./bin/holon run --spec examples/fix-bug.yaml --image golang:1.22 --agent "$BUNDLE_PATH" --workspace . --out ./holon-output
 ```
 
 Apply the patch to your working tree (explicit, outside the sandbox):
@@ -66,14 +66,19 @@ Minimal usage:
 CLI flags (most used):
 - `--goal` / `--spec`: task input
 - `--image`: base toolchain image (e.g. `golang:1.22`, `node:20`, ...)
-- `--agent-bundle`: agent bundle archive (`.tar.gz`)
+- `--agent`: agent bundle reference (`.tar.gz`)
+- `--agent-bundle`: deprecated alias for `--agent`
 - `--workspace`: repo/workspace path (default `.`)
 - `--context`: extra context dir mounted at `/holon/input/context`
-- `--role`: prompt persona (`default`, `coder`)
+- `--role`: prompt persona (`developer`, `reviewer`)
 - `--log-level`: `debug|info|progress|minimal`
 - `--env K=V`: pass env into the sandbox
 
-Claude adapter env (optional):
+Agent selection env vars (optional):
+- `HOLON_AGENT`: agent bundle reference (`.tar.gz`)
+- `HOLON_AGENT_BUNDLE`: deprecated alias for `HOLON_AGENT`
+
+Claude agent env (optional):
 - `HOLON_MODEL`, `HOLON_FALLBACK_MODEL`
 - `HOLON_QUERY_TIMEOUT_SECONDS`, `HOLON_HEARTBEAT_SECONDS`, `HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS`, `HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS` (see `agents/claude/README.md`)
 
@@ -94,14 +99,14 @@ Project terms and naming are being stabilized for public release. See `docs/term
 Useful commands:
 ```bash
 make build          # build ./bin/holon
-make test           # Go tests + adapter build check
-make test-adapter   # TypeScript adapter build check
+make test           # Go tests + agent build check
+make test-adapter   # TypeScript agent build check
 make test-integration  # integration tests (requires Docker)
 ```
 
 Repo layout:
-- `cmd/holon/`: host CLI
-- `pkg/`: spec parsing, prompt compilation, docker runtime
-- `agents/claude/`: Claude adapter (TypeScript, Claude Agent SDK)
+- `cmd/holon/`: runner CLI
+- `pkg/`: spec parsing, prompt compilation, docker runner
+- `agents/claude/`: Claude agent (TypeScript, Claude Agent SDK)
 - `examples/`: runnable specs
 - `rfc/`: design docs / contracts

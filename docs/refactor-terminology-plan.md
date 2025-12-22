@@ -2,11 +2,12 @@
 
 This document turns the terminology work into a concrete, incremental task list. It assumes:
 - We keep existing behavior working (no breaking changes before public release).
-- We introduce `--agent` as the new primary CLI flag, while keeping legacy flags as aliases.
+- We introduce `--agent` as the new primary CLI flag, while keeping legacy flags as aliases (e.g. `--agent-bundle`).
 
 Related:
 - `docs/terminology.md` (final terms + mapping)
 - `docs/modes.md` (mode/profile design)
+- `docs/agent-bundle.md` (bundle format)
 
 ## Phase 0 — Freeze Terms (decision only)
 - [ ] Confirm public terms: Runner / Agent / Engine / Mode / Role / Outputs / Publisher
@@ -30,9 +31,12 @@ Related:
 ## Phase 2 — CLI & Action Compatibility Layer (public-facing API)
 
 ### CLI (`holon run`)
-- [ ] Add `--agent-bundle` flag:
-  - default: local agent bundle (built from `agents/claude` when available)
-  - help text uses “agent bundle”
+- [ ] Add `--agent` flag (new primary):
+  - accepts an agent reference (MVP: a local `.tar.gz` bundle path)
+  - default behavior: auto-detect the latest bundle under `agents/claude/dist/agent-bundles/` when present
+- [ ] Keep `--agent-bundle` as an alias (deprecated):
+  - still works
+  - help text marks it as deprecated (or hide from help)
 - [ ] Update log output and errors to use the new terms:
   - “agent” instead of “adapter”
   - “runner” instead of “host/runtime”
@@ -43,18 +47,21 @@ Related:
 - tests: `cmd/holon/runner_test.go`
 
 **Acceptance**
-- `holon run --agent-bundle <bundle.tar.gz> ...` works.
+- `holon run --agent <bundle.tar.gz> ...` works.
+- `holon run --agent-bundle <bundle.tar.gz> ...` continues to work (compat).
 
 ### Environment variables
-- [ ] Add new env var name(s) to mirror `--agent` (e.g. `HOLON_AGENT`).
-- [ ] Keep legacy env var(s) as aliases (if they exist) and document precedence.
+- [ ] Add a new env var to mirror `--agent` (e.g. `HOLON_AGENT`).
+- [ ] Keep legacy env var(s) as aliases (e.g. `HOLON_AGENT_BUNDLE`) and document precedence.
 
 **Acceptance**
 - Precedence is documented and covered by unit tests.
 
 ### GitHub Action (`action.yml`)
-- [ ] Add a new input `agent` (optional) and prefer it over older names.
-- [ ] Keep current behavior as default; print a one-line migration hint in logs.
+- [ ] Add a new input `agent` (optional) and pass it to `holon run --agent`.
+- [ ] Keep current behavior as default:
+  - if `agent` is empty, build a bundle from `agents/claude` and pick the latest `dist/agent-bundles/*.tar.gz`
+  - print a one-line migration hint in logs
 
 **Files**
 - `action.yml`
@@ -66,24 +73,25 @@ Related:
 
 ## Phase 3 — Internal Renames (optional, later)
 - [ ] Rename internal structs/fields to match public terms:
-  - `AdapterImage` → `Agent` (or `AgentRef`)
-  - `Adapter` wording in logs/messages → `Agent`
+  - `AgentBundle`/`agent-bundle` wording → `Agent` (or `AgentRef`)
+  - `agentBundlePath` → `agent` (or `agentRef`) in CLI plumbing
+  - remaining “adapter” wording in code/logs → “agent”
 - [ ] Keep package names stable until churn is acceptable (e.g. `pkg/runtime/docker` can stay).
 
 **Acceptance**
 - Internal naming is consistent, but external compatibility remains intact.
 
 ## Phase 4 — Agent Bundle Resolver (enables npm/binary later)
-- [ ] Define a bundle reference format for `--agent` (initially keep it simple):
-  - default: treat `--agent` as a docker image name
-  - future: prefixes like `docker:...`, `npm:...`, `file:...`
-- [ ] Implement a resolver interface:
-  - `docker` resolver (current behavior)
-  - `npm` resolver: design stub / behind a feature flag
+- [ ] Define an agent reference format for `--agent` (start simple, keep extendable):
+  - MVP: file path to a `.tar.gz` agent bundle
+  - future: prefixes like `file:...`, `npm:...`, `http(s):...`
+- [ ] Implement a resolver interface (keep Docker as the runner sandbox, not as the agent distribution):
+  - `file` resolver (current behavior: local bundle archive)
+  - `npm` resolver: design stub / behind a feature flag (install bundle at run time)
 
 **Acceptance**
-- No behavior change for docker users.
-- Code structure allows adding an npm-based agent bundle without redesigning flags.
+- No behavior change for current users (local bundle + Docker runner).
+- Code structure allows adding npm-distributed agent bundles without redesigning flags.
 
 ## Phase 5 — Publishers (boundary first, features later)
 - [ ] Keep “publisher” as the external layer (workflows/scripts) that consumes outputs.

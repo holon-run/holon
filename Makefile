@@ -4,17 +4,17 @@
 BINARY_NAME=holon
 BIN_DIR=bin
 GO_FILES=$(shell find . -type f -name '*.go')
-ADAPTER_DIR=agents/claude
+AGENT_DIR=agents/claude
 
 # Default target
 all: build
 
-## build: Build the holon host CLI
+## build: Build the holon runner CLI
 build: build-host
 
-## build-host: Build host CLI for current OS/Arch
+## build-host: Build runner CLI for current OS/Arch
 build-host:
-	@echo "Building host CLI..."
+	@echo "Building runner CLI..."
 	@mkdir -p $(BIN_DIR)
 	go build -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/holon
 
@@ -23,10 +23,10 @@ test: test-adapter
 	@echo "Running Go tests..."
 	go test ./... -v
 
-## test-adapter: Run adapter TypeScript tests
+## test-adapter: Run agent TypeScript tests
 test-adapter:
-	@echo "Running TypeScript adapter tests..."
-	cd $(ADAPTER_DIR) && npm install && npm run build && npm test
+	@echo "Running TypeScript agent tests..."
+	cd $(AGENT_DIR) && npm install && npm run build && npm test
 
 ## clean: Remove build artifacts
 clean:

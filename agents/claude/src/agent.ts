@@ -271,7 +271,6 @@ async function runClaude(
     env.CLAUDE_CODE_API_URL = baseUrl;
   }
   env.IS_SANDBOX = "1";
-  env.CLAUDE_CODE_ENTRYPOINT = "holon-adapter-ts";
 
   const model = env.HOLON_MODEL;
   const fallbackModel = env.HOLON_FALLBACK_MODEL;
@@ -322,26 +321,26 @@ async function runClaude(
 
   const heartbeatTimer = heartbeatSeconds > 0
     ? setInterval(() => {
-        const now = Date.now();
-        const idleFor = (now - lastMsgTime) / 1000;
-        const totalFor = (now - startTime) / 1000;
+      const now = Date.now();
+      const idleFor = (now - lastMsgTime) / 1000;
+      const totalFor = (now - startTime) / 1000;
 
-        if (idleFor >= heartbeatSeconds) {
-          logger.minimal(`No response yet (idle ${Math.floor(idleFor)}s, total ${Math.floor(totalFor)}s)...`);
-        }
+      if (idleFor >= heartbeatSeconds) {
+        logger.minimal(`No response yet (idle ${Math.floor(idleFor)}s, total ${Math.floor(totalFor)}s)...`);
+      }
 
-        if (queryTimeoutSeconds > 0 && msgCount === 0 && totalFor >= queryTimeoutSeconds) {
-          timeoutError = new Error(`No response for ${Math.floor(totalFor)}s (query timeout ${queryTimeoutSeconds}s)`);
-        } else if (idleTimeoutSeconds > 0 && idleFor >= idleTimeoutSeconds) {
-          timeoutError = new Error(`No response for ${Math.floor(idleFor)}s (idle timeout ${idleTimeoutSeconds}s)`);
-        } else if (totalTimeoutSeconds > 0 && totalFor >= totalTimeoutSeconds) {
-          timeoutError = new Error(`Response stream exceeded ${totalTimeoutSeconds}s total timeout`);
-        }
+      if (queryTimeoutSeconds > 0 && msgCount === 0 && totalFor >= queryTimeoutSeconds) {
+        timeoutError = new Error(`No response for ${Math.floor(totalFor)}s (query timeout ${queryTimeoutSeconds}s)`);
+      } else if (idleTimeoutSeconds > 0 && idleFor >= idleTimeoutSeconds) {
+        timeoutError = new Error(`No response for ${Math.floor(idleFor)}s (idle timeout ${idleTimeoutSeconds}s)`);
+      } else if (totalTimeoutSeconds > 0 && totalFor >= totalTimeoutSeconds) {
+        timeoutError = new Error(`Response stream exceeded ${totalTimeoutSeconds}s total timeout`);
+      }
 
-        if (timeoutError && !abortController.signal.aborted) {
-          abortController.abort();
-        }
-      }, heartbeatSeconds * 1000)
+      if (timeoutError && !abortController.signal.aborted) {
+        abortController.abort();
+      }
+    }, heartbeatSeconds * 1000)
     : null;
 
   const queryStream = query({ prompt: userPrompt, options });
@@ -409,12 +408,12 @@ async function runClaude(
   return { success, result: finalResult };
 }
 
-async function runAdapter(): Promise<void> {
+async function runAgent(): Promise<void> {
   const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress");
   const isProbe = process.argv.slice(2).includes("--probe");
 
-  console.log("Holon Claude Adapter process started...");
-  logger.minimal("Holon Claude Adapter Starting...");
+  console.log("Holon Claude Agent process started...");
+  logger.minimal("Holon Claude Agent Starting...");
 
   const outputDir = "/holon/output";
   const evidenceDir = path.join(outputDir, "evidence");
@@ -486,8 +485,8 @@ async function runAdapter(): Promise<void> {
 
   logger.debug("Configuring git");
   runCommand("git", ["config", "--global", "--add", "safe.directory", workspacePath], { allowFailure: true });
-  runCommand("git", ["config", "--global", "user.name", "holon-adapter"], { allowFailure: true });
-  runCommand("git", ["config", "--global", "user.email", "adapter@holon.local"], { allowFailure: true });
+  runCommand("git", ["config", "--global", "user.name", "holon-agent"], { allowFailure: true });
+  runCommand("git", ["config", "--global", "user.email", "agent@holon.local"], { allowFailure: true });
 
   const hasGit = fs.existsSync(path.join(workspacePath, ".git"));
   if (!hasGit) {
@@ -544,7 +543,7 @@ async function runAdapter(): Promise<void> {
 
     const manifest = {
       metadata: {
-        adapter: "claude-code-ts",
+        agent: "claude-code",
         version: "0.1.0",
       },
       status: "completed",
@@ -597,7 +596,7 @@ async function runAdapter(): Promise<void> {
   }
 }
 
-runAdapter().catch((error) => {
+runAgent().catch((error) => {
   console.error(error);
   process.exit(1);
 });

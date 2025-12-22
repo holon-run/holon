@@ -26,4 +26,4 @@ COPY .claude.json /root/.claude.json
 
 ENV IS_SANDBOX=1
 
-ENTRYPOINT ["node", "/app/dist/adapter.js"]
+ENTRYPOINT ["node", "/app/dist/agent.js"]

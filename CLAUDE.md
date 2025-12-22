@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Holon is a standardized, atomic execution unit for AI-driven software engineering. It bridges the gap between AI agent probability and engineering determinism by providing a "Brain-in-a-Sandbox" environment. Holon treats AI agent sessions as standardized batch jobs rather than interactive chatbots, enabling deterministic execution with clear inputs/outputs for CI/CD integration.
+Holon is a standardized runner for AI-driven software engineering. It bridges the gap between AI agent probability and engineering determinism by providing a "Brain-in-a-Sandbox" environment. Holon treats AI agent sessions as standardized batch jobs rather than interactive chatbots, enabling deterministic execution with clear inputs/outputs for CI/CD integration.
 
 ### Core Architecture
 
 **"Brain-in-Body" Principle**: The AI logic (Brain) runs inside the same container (Body) as the code it's working on, ensuring atomicity and perfect context.
 
 - **Go Framework**: Main CLI and orchestration logic in Go 1.24+
-- **Docker Runtime**: Container-based execution environment
-- **TypeScript Adapter**: Claude Code integration via TypeScript adapter
+- **Docker Runner**: Container-based execution environment
+- **TypeScript Agent**: Claude Code integration via TypeScript agent
 - **Spec-Driven Execution**: Declarative YAML task definitions
 
 ## Development Commands
@@ -22,7 +22,7 @@ Holon is a standardized, atomic execution unit for AI-driven software engineerin
 # Build main CLI binary
 make build
 
-# Run all tests (TypeScript adapter + Go)
+# Run all tests (TypeScript agent + Go)
 make test
 
 # Run only Go tests
@@ -55,7 +55,8 @@ make clean
 - `--spec` / `-s`: Path to holon spec file
 - `--goal` / `-g`: Goal description (alternative to spec)
 - `--image` / `-i`: Docker base image (default: golang:1.22)
-- `--agent-bundle`: Agent bundle archive (.tar.gz)
+- `--agent`: Agent bundle reference (.tar.gz)
+- `--agent-bundle`: Deprecated alias for `--agent`
 - `--workspace` / `-w`: Workspace path (default: .)
 - `--out` / `-o`: Output directory (default: ./holon-output)
 - `--env` / `-e`: Environment variables (K=V format)
@@ -70,7 +71,7 @@ make clean
 - Single `run` command with comprehensive flags
 - Delegates to Runner for execution logic
 
-**Docker Runtime**: `pkg/runtime/docker/runtime.go`
+**Docker Runner**: `pkg/runtime/docker/runtime.go`
 - `NewRuntime()`: Initialize Docker client
 - `RunHolon()`: Main execution orchestrator
 - `buildComposedImageFromBundle()`: Dynamically combines base image + agent bundle
@@ -96,7 +97,7 @@ output:
       required: true
 ```
 
-**TypeScript Adapter**: `agents/claude/`
+**TypeScript Agent**: `agents/claude/`
 - Entry point inside composed image: `/holon/agent/bin/agent`
 - Claude Code runtime installed during composition
 - Standardized I/O paths: `/holon/input/`, `/holon/workspace/`, `/holon/output/`
@@ -105,7 +106,7 @@ output:
 1. **Workspace Snapshot**: Copy workspace to isolated location
 2. **Image Composition**: Build composed image from base + agent bundle
 3. **Container Creation**: Start container with mounted volumes
-4. **Agent Execution**: Run Claude Agent SDK adapter with injected prompts
+4. **Agent Execution**: Run Claude Agent SDK agent with injected prompts
 5. **Artifact Validation**: Verify required outputs exist
 
 ### Directory Structure
@@ -115,7 +116,7 @@ pkg/                # Core Go libraries
   ├── api/v1/       # HolonSpec and HolonManifest types
   ├── runtime/docker/ # Docker runtime implementation
   └── prompt/       # Prompt compilation system
-agents/claude/ # TypeScript Claude adapter (bundle source)
+agents/claude/ # TypeScript Claude agent (bundle source)
 tests/integration/  # testscript integration tests
 examples/          # Example specification files
 rfc/              # RFC documentation
@@ -130,9 +131,9 @@ holonbot/         # Node.js GitHub App
 - Docker-dependent tests skip automatically if Docker unavailable
 - Run with: `go test ./tests/integration/... -v`
 
-### Adapter Tests
+### Agent Tests
 ```bash
-# Build/check the TypeScript adapter
+# Build/check the TypeScript agent
 make test-adapter
 ```
 
@@ -157,16 +158,16 @@ Each execution produces standardized outputs:
 - Additional artifacts as specified in the spec
 
 ### Dynamic Image Composition
-The runtime dynamically combines base images with the agent bundle at runtime, enabling any standard Docker image to become a Holon execution environment without modification.
+The runner dynamically combines base images with the agent bundle at runtime, enabling any standard Docker image to become a Holon execution environment without modification.
 
 ### Spec vs Goal Execution
 - **Spec mode**: Use `--spec` for structured, reproducible task definitions
 - **Goal mode**: Use `--goal` for quick, ad-hoc task execution (auto-generates spec)
 
-### Adapter Pattern
-While v0.1 focuses on Claude Code, the architecture supports future adapters through:
+### Agent Pattern
+While v0.1 focuses on Claude Code, the architecture supports future agents through:
 - Standardized I/O interface (`/holon/input/`, `/holon/workspace/`, `/holon/output/`)
-- Pluggable agent bundles via `--agent-bundle` flag
+- Pluggable agent bundles via `--agent` flag
 - Common prompt compilation system in `pkg/prompt/`
 
 ## Common Development Patterns
@@ -180,11 +181,11 @@ Create YAML files in `examples/` following the pattern in `fix-bug.yaml`:
 ### Debugging Execution
 - Use `--log-level debug` for verbose execution details
 - Check generated `manifest.json` for execution status
-- Examine container logs via Docker if adapter fails
+- Examine container logs via Docker if agent fails
 - Review `diff.patch` for generated changes
 
-### Extending the Runtime
-Core runtime extensions in `pkg/runtime/docker/`:
+### Extending the Runner
+Core runner extensions in `pkg/runtime/docker/`:
 - Modify `buildComposedImage()` for custom image composition
 - Extend `RunHolon()` for new execution patterns
 - Update artifact validation for new output types

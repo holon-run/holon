@@ -7,7 +7,7 @@ describe("CI Compatibility", () => {
   test("all test files are present and accessible", () => {
     const testDir = path.dirname(new URL(import.meta.url).pathname);
     const testFiles = [
-      "adapter.test.js",
+      "agent.test.js",
       "ci-compatibility.test.js"
     ];
 
@@ -18,10 +18,10 @@ describe("CI Compatibility", () => {
     }
   });
 
-  test("adapter source file exists for type checking", () => {
-    const srcPath = path.join(path.dirname(path.dirname(new URL(import.meta.url).pathname)), "src", "adapter.ts");
-    assert.ok(fs.existsSync(srcPath), "Adapter source file exists");
-    assert.ok(fs.statSync(srcPath).isFile(), "Adapter source is a regular file");
+  test("agent source file exists for type checking", () => {
+    const srcPath = path.join(path.dirname(path.dirname(new URL(import.meta.url).pathname)), "src", "agent.ts");
+    assert.ok(fs.existsSync(srcPath), "Agent source file exists");
+    assert.ok(fs.statSync(srcPath).isFile(), "Agent source is a regular file");
   });
 
   test("package.json has correct test scripts", () => {

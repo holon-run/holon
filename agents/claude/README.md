@@ -1,9 +1,9 @@
-# TypeScript Claude Adapter (prototype)
+# TypeScript Claude Agent (prototype)
 
-This adapter mirrors the Python bridge behavior using the Claude Agent SDK (v1) with the Claude Code runtime.
+This agent mirrors the Python bridge behavior using the Claude Agent SDK (v1) with the Claude Code runtime.
 
 Notes:
-- Entrypoint is `node /app/dist/adapter.js`.
+- Entrypoint is `node /app/dist/agent.js`.
 - Uses the Agent SDK `query()` stream and parses SDK messages for artifacts.
 - Model overrides: `HOLON_MODEL`, `HOLON_FALLBACK_MODEL`.
 - Timeouts: `HOLON_QUERY_TIMEOUT_SECONDS`, `HOLON_HEARTBEAT_SECONDS`, `HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS`, `HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS`.
@@ -25,7 +25,7 @@ Environment variables:
 - `BUNDLE_ENGINE_NAME`, `BUNDLE_ENGINE_SDK`, `BUNDLE_ENGINE_SDK_VERSION`: override engine metadata in the manifest.
 
 ## Bundle verification
-Run a smoke test that builds a bundle and runs the adapter in probe mode using a Node base image.
+Run a smoke test that builds a bundle and runs the agent in probe mode using a Node base image.
 
 ```
 npm run verify-bundle
