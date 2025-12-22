@@ -46,9 +46,8 @@ jobs:
             git config --local user.email "bot@holon.run"
             git config --local user.name "holonbot"
             
-            # Authenticate using git credential helper to avoid leaking token in logs
-            git config --local credential.helper store
-            echo "https://x-access-token:${GH_TOKEN}@github.com" > ~/.git-credentials
+            # Authenticate using git remote set-url to explicitly override any checkout credentials
+            git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
             
             # Create and switch to a new branch
             git checkout -b "$BRANCH_NAME"
