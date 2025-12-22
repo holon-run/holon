@@ -43,15 +43,12 @@ jobs:
             ISSUE_NUMBER="${{ github.event.issue.number }}"
             BRANCH_NAME="holon/fix-issue-${ISSUE_NUMBER}"
             
-            git config --local user.email "bot@holon.run"
-            git config --local user.name "holonbot"
+            git config --local user.email "250454749+holonbot[bot]@users.noreply.github.com"
+            git config --local user.name "holonbot[bot]"
             
             # Remove the default header which contains the GITHUB_TOKEN
             # This is crucial because even if we set a new remote URL, this header might take precedence
             git config --local --unset-all http.https://github.com/.extraheader
-            
-            echo "Debug: Checking token scopes..."
-            GH_TOKEN=$GH_TOKEN gh api meta -i
             
             # Reconfigure origin to use GH_TOKEN (Holon token, GH_PAT, or github.token) instead of the default checkout credentials
             git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"

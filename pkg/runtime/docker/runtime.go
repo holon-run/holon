@@ -89,6 +89,18 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	}
 
 	// 3. Create Container
+	// Inject host git identity
+	gitName, _ := getGitConfig("user.name")
+	gitEmail, _ := getGitConfig("user.email")
+	if gitName != "" {
+		cfg.Env["GIT_AUTHOR_NAME"] = gitName
+		cfg.Env["GIT_COMMITTER_NAME"] = gitName
+	}
+	if gitEmail != "" {
+		cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
+		cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
+	}
+
 	env := BuildContainerEnv(&EnvConfig{
 		UserEnv: cfg.Env,
 		HostUID: os.Getuid(),

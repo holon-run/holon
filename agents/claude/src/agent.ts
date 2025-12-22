@@ -486,8 +486,12 @@ async function runAgent(): Promise<void> {
 
   logger.debug("Configuring git");
   runCommand("git", ["config", "--global", "--add", "safe.directory", workspacePath], { allowFailure: true });
-  runCommand("git", ["config", "--global", "user.name", "holon-agent"], { allowFailure: true });
-  runCommand("git", ["config", "--global", "user.email", "agent@holon.local"], { allowFailure: true });
+
+  const gitName = process.env.GIT_AUTHOR_NAME || "holonbot[bot]";
+  const gitEmail = process.env.GIT_AUTHOR_EMAIL || "250454749+holonbot[bot]@users.noreply.github.com";
+
+  runCommand("git", ["config", "--global", "user.name", gitName], { allowFailure: true });
+  runCommand("git", ["config", "--global", "user.email", gitEmail], { allowFailure: true });
 
   const hasGit = fs.existsSync(path.join(workspacePath, ".git"));
   if (!hasGit) {
