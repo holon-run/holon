@@ -58,7 +58,6 @@ jobs:
           if [ "$ACTOR" = "holonbot[bot]" ]; then
             echo "should_run=false" >> $GITHUB_OUTPUT
             echo "reason=Actor is holonbot[bot] - skipping" >> $GITHUB_OUTPUT
-            echo "exit 0" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -67,7 +66,6 @@ jobs:
           if [ "$FIRST_LINE" != "@holonbot fix" ]; then
             echo "should_run=false" >> $GITHUB_OUTPUT
             echo "reason=First line is not '@holonbot fix' - found: '$FIRST_LINE'" >> $GITHUB_OUTPUT
-            echo "exit 1" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -79,7 +77,6 @@ jobs:
           if [ "$BASE_REPO" != "$HEAD_REPO" ]; then
             echo "should_run=false" >> $GITHUB_OUTPUT
             echo "reason=PR is from fork (head: $HEAD_REPO, base: $BASE_REPO) - not supported in MVP" >> $GITHUB_OUTPUT
-            echo "exit 2" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -101,7 +98,6 @@ jobs:
           else
             echo "should_run=false" >> $GITHUB_OUTPUT
             echo "reason=User $ACTOR lacks write/maintain permissions" >> $GITHUB_OUTPUT
-            echo "exit 3" >> $GITHUB_OUTPUT
             exit 0
           fi
         env:
@@ -211,46 +207,57 @@ jobs:
           PR_NUMBER="${{ needs.parse-and-gate.outputs.pr_number }}"
           OUTCOME="${{ steps.holon.outcome }}"
 
+          # Create a temporary file for the comment body
+          BODY_FILE="$(mktemp)"
+
           if [ "$OUTCOME" = "success" ]; then
-            MESSAGE="## ✅ Holon Fix Complete
+            cat >"$BODY_FILE" <<EOF
+          ## ✅ Holon Fix Complete
 
-            I've successfully analyzed and processed your fix request for PR #${PR_NUMBER}.
+          I've successfully analyzed and processed your fix request for PR #${PR_NUMBER}.
 
-            **Status**: Success
-            **Triggered by**: @${{ github.actor }}
-            **Task**: ${{ steps.task-extraction.outputs.goal }}
+          **Status**: Success
+          **Triggered by**: @${{ github.actor }}
+          **Task**: ${{ steps.task-extraction.outputs.goal }}
 
-            "
+          EOF
 
             # Add summary if available
             if [ -f holon-output/summary.md ]; then
-              MESSAGE="${MESSAGE}
-            **Summary**:
-            $(cat holon-output/summary.md)
-            "
+              cat >>"$BODY_FILE" <<'EOF'
+          **Summary**:
+          EOF
+              cat holon-output/summary.md >>"$BODY_FILE"
+              echo >>"$BODY_FILE"
+              echo >>"$BODY_FILE"
             fi
 
-            MESSAGE="${MESSAGE}
-
-            ---
-            *Processed by Holon*"
+            cat >>"$BODY_FILE" <<'EOF'
+          ---
+          *Processed by Holon*
+          EOF
           else
-            MESSAGE="## ❌ Holon Fix Failed
+            cat >"$BODY_FILE" <<EOF
+          ## ❌ Holon Fix Failed
 
-            I encountered an error while processing your fix request for PR #${PR_NUMBER}.
+          I encountered an error while processing your fix request for PR #${PR_NUMBER}.
 
-            **Status**: Failed
-            **Triggered by**: @${{ github.actor }}
-            **Task**: ${{ steps.task-extraction.outputs.goal }}
+          **Status**: Failed
+          **Triggered by**: @${{ github.actor }}
+          **Task**: ${{ steps.task-extraction.outputs.goal }}
 
-            Please check the workflow logs for more details.
+          Please check the workflow logs for more details.
 
-            ---
-            *Processed by Holon*"
+          ---
+          *Processed by Holon*
+          EOF
           fi
 
-          # Post comment
-          gh issue comment "$PR_NUMBER" --body "$MESSAGE"
+          # Post comment using the file
+          gh issue comment "$PR_NUMBER" --body-file "$BODY_FILE"
+
+          # Clean up temporary file
+          rm -f "$BODY_FILE"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
