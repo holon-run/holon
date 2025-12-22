@@ -35,8 +35,8 @@ jobs:
       id: check_tag
       run: |
         TAG="agent-claude-v${{ steps.version.outputs.version }}"
-        # Check if tag exists locally or remotely
-        if git rev-parse "$TAG" >/dev/null 2>&1 || git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+        # After fetching all tags, we only need to check locally
+        if git rev-parse "$TAG" >/dev/null 2>&1; then
           echo "exists=true" >> $GITHUB_OUTPUT
           echo "Tag $TAG already exists"
         else
@@ -85,16 +85,32 @@ jobs:
         fi
 
     - name: Create and push tag
+      id: push_tag
       if: steps.check_tag.outputs.exists == 'false'
       run: |
         TAG="agent-claude-v${{ steps.version.outputs.version }}"
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git tag -a "$TAG" -m "Release Claude Agent v${{ steps.version.outputs.version }}"
-        git push origin "$TAG"
+
+        # Try to push tag, handle race condition
+        if git push origin "$TAG" 2>/dev/null; then
+          echo "pushed=true" >> $GITHUB_OUTPUT
+          echo "Tag $TAG pushed successfully"
+        else
+          # Check if tag exists remotely now
+          if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+            echo "pushed=false" >> $GITHUB_OUTPUT
+            echo "Tag $TAG already exists remotely, skipping push"
+          else
+            echo "pushed=false" >> $GITHUB_OUTPUT
+            echo "Failed to push tag $TAG and it doesn't exist remotely" >&2
+            exit 1
+          fi
+        fi
 
     - name: Create GitHub Release
-      if: steps.check_tag.outputs.exists == 'false'
+      if: steps.check_tag.outputs.exists == 'false' && steps.push_tag.outputs.pushed == 'true'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: agent-claude-v${{ steps.version.outputs.version }}
