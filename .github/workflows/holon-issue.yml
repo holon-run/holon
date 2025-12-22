@@ -46,7 +46,7 @@ jobs:
             git config --local user.email "bot@holon.run"
             git config --local user.name "holonbot"
             
-            # Authenticate using git remote set-url to explicitly override any checkout credentials
+            # Reconfigure origin to use GH_TOKEN (Holon token, GH_PAT, or github.token) instead of the default checkout credentials
             git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
             
             # Create and switch to a new branch
