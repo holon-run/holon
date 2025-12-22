@@ -1,4 +1,4 @@
-.PHONY: build build-host test test-all clean run-example test-adapter help
+.PHONY: build build-host test test-all clean run-example test-agent help
 
 # Project variables
 BINARY_NAME=holon
@@ -19,12 +19,12 @@ build-host:
 	go build -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/holon
 
 ## test: Run all project tests
-test: test-adapter
+test: test-agent
 	@echo "Running Go tests..."
 	go test ./... -v
 
-## test-adapter: Run agent TypeScript tests
-test-adapter:
+## test-agent: Run agent TypeScript tests
+test-agent:
 	@echo "Running TypeScript agent tests..."
 	cd $(AGENT_DIR) && npm install && npm run build && npm test
 

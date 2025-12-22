@@ -100,7 +100,7 @@ Useful commands:
 ```bash
 make build          # build ./bin/holon
 make test           # Go tests + agent build check
-make test-adapter   # TypeScript agent build check
+make test-agent     # TypeScript agent build check
 make test-integration  # integration tests (requires Docker)
 ```
 

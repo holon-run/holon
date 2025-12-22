@@ -13,8 +13,8 @@
 ## Build, Test, and Development Commands
 
 - `make build`: Build the Go CLI to `bin/holon`.
-- `make test`: Run agent checks (`make test-adapter`) followed by Go tests (`go test ./...`).
-- `make test-adapter`: Build/check the TypeScript agent under `agents/claude/`.
+- `make test`: Run agent checks (`make test-agent`) followed by Go tests (`go test ./...`).
+- `make test-agent`: Build/check the TypeScript agent under `agents/claude/`.
 - `npm run bundle` (under `agents/claude/`): Build the agent bundle archive.
 - `make test-integration`: Run integration tests (requires Docker).
 - `make run-example`: Run an example spec (requires Docker and Anthropic credentials).

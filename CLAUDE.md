@@ -134,7 +134,7 @@ holonbot/         # Node.js GitHub App
 ### Agent Tests
 ```bash
 # Build/check the TypeScript agent
-make test-adapter
+make test-agent
 ```
 
 ## Environment Setup

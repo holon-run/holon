@@ -23,7 +23,7 @@ jobs:
         node-version: '20'
         
     - name: Test Agent
-      run: make test-adapter
+      run: make test-agent
 
     - name: Build Agent Bundle
       run: |
