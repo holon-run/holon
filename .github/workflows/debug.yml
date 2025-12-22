@@ -1,0 +1,92 @@
+name: Debug Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      debug_message:
+        description: 'Debug message to display'
+        required: false
+        default: 'Debug workflow triggered'
+        type: string
+  push:
+    branches: [ "debug", "debug/*" ]
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - '.github/workflows/debug.yml'
+
+jobs:
+  debug-permissions:
+    name: Debug GitHub Actions Permissions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      deployments: read
+      issues: read
+      packages: read
+      pull-requests: read
+      repository-projects: read
+      security-events: read
+      statuses: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Display debug message
+      run: |
+        echo "🔍 Debug Workflow Started"
+        echo "📅 Timestamp: $(date -u)"
+        echo "🏃 Runner: ${{ runner.os }}"
+        echo "📂 Repository: ${{ github.repository }}"
+        echo "🔀 Ref: ${{ github.ref }}"
+        echo "📝 Workflow: ${{ github.workflow }}"
+        echo "💬 Message: ${{ github.event.inputs.debug_message || 'Default debug message' }}"
+
+    - name: Show current permissions
+      run: |
+        echo "🔒 Current token permissions:"
+        echo "Repository contents: $(if gh repo view --json name >/dev/null 2>&1; then echo "✅ Read access"; else echo "❌ No access"; fi)"
+        echo "Actions access: $(if gh api --method GET -H "Accept: application/vnd.github.v3+json" /repos/${{ github.repository }}/actions/runs >/dev/null 2>&1; then echo "✅ Read access"; else echo "❌ No access"; fi)"
+
+    - name: Test basic GitHub CLI access
+      run: |
+        echo "🔧 Testing GitHub CLI functionality..."
+        if command -v gh >/dev/null 2>&1; then
+          echo "✅ GitHub CLI is available"
+          echo "📊 Repository info:"
+          gh repo view --json name,description,visibility,language 2>/dev/null || echo "⚠️ Could not fetch repo info (permission limited)"
+        else
+          echo "❌ GitHub CLI not found"
+        fi
+
+    - name: Environment variables debug
+      run: |
+        echo "🌍 Environment Variables:"
+        echo "GITHUB_ACTOR: $GITHUB_ACTOR"
+        echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+        echo "GITHUB_REF_NAME: $GITHUB_REF_NAME"
+        echo "GITHUB_SHA: $GITHUB_SHA"
+        echo "RUNNER_OS: $RUNNER_OS"
+        echo "RUNNER_TEMP: $RUNNER_TEMP"
+
+    - name: Directory structure
+      run: |
+        echo "📁 Workspace directory structure:"
+        find . -maxdepth 3 -type f -name "*.md" -o -name "*.go" -o -name "*.yml" -o -name "*.yaml" | head -20
+
+    - name: Git information
+      run: |
+        echo "🔀 Git information:"
+        git log --oneline -5 || echo "Could not fetch git log"
+        git remote -v || echo "Could not fetch remotes"
+
+    - name: Test file operations
+      run: |
+        echo "📝 Testing file write operations..."
+        echo "Debug test at $(date)" > /tmp/debug-test.txt
+        cat /tmp/debug-test.txt
+        rm /tmp/debug-test.txt
+        echo "✅ File operations working correctly"
