@@ -29,3 +29,9 @@ thirdparty/
 .vercel
 
 dist
+
+# Claude directories
+.claude/
+
+# Exception: allow .claude in agents/claude (needed for agent development)
+!agents/claude/.claude/
