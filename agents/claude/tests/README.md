@@ -51,7 +51,7 @@ npm test
 npm run test:watch
 
 # Run from project root
-make test-adapter
+make test-agent
 ```
 
 ## Test Framework

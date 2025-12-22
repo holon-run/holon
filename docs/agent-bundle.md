@@ -1,7 +1,7 @@
 # Agent Bundle Specification (Design Draft)
 
 This document defines the **agent bundle** packaging format. It replaces the term
-"adapter bundle" as part of the terminology refactor.
+"agent bundle" as part of the terminology refactor.
 
 The **agent contract** (filesystem layout, inputs, outputs) is defined in
 `rfc/0002-agent-scheme.md`. This document only specifies the bundle packaging
