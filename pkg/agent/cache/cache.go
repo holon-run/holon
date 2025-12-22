@@ -74,13 +74,19 @@ func (c *Cache) StoreBundle(url, checksum string, reader io.Reader, size int64) 
 
 	written, err := io.Copy(file, reader)
 	if err != nil {
-		os.RemoveAll(bundleDir)
+		if removeErr := os.RemoveAll(bundleDir); removeErr != nil {
+			// Log the cleanup error but don't mask the original error
+			fmt.Printf("Warning: failed to cleanup bundle directory: %v\n", removeErr)
+		}
 		return "", fmt.Errorf("failed to write bundle file: %w", err)
 	}
 
 	// Verify that we wrote all the data
 	if written != size {
-		os.RemoveAll(bundleDir)
+		if removeErr := os.RemoveAll(bundleDir); removeErr != nil {
+			// Log the cleanup error but don't mask the original error
+			fmt.Printf("Warning: failed to cleanup bundle directory: %v\n", removeErr)
+		}
 		return "", fmt.Errorf("incomplete write: expected %d bytes, wrote %d", size, written)
 	}
 
@@ -94,7 +100,10 @@ func (c *Cache) StoreBundle(url, checksum string, reader io.Reader, size int64) 
 
 	metadataPath := filepath.Join(bundleDir, "metadata.json")
 	if err := c.writeMetadata(metadataPath, metadata); err != nil {
-		os.RemoveAll(bundleDir)
+		if removeErr := os.RemoveAll(bundleDir); removeErr != nil {
+			// Log the cleanup error but don't mask the original error
+			fmt.Printf("Warning: failed to cleanup bundle directory: %v\n", removeErr)
+		}
 		return "", fmt.Errorf("failed to write metadata: %w", err)
 	}
 
@@ -305,7 +314,11 @@ func (c *Cache) readMetadata(path string) (BundleMetadata, error) {
 		return metadata, err
 	}
 
-	return metadata, json.Unmarshal(data, &metadata)
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return metadata, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
+
+	return metadata, nil
 }
 
 func (c *Cache) writeAliases(path string, aliases map[string]string) error {
