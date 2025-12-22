@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,14 +258,32 @@ func TestRegistryWithAlias(t *testing.T) {
 		t.Fatalf("Failed to set test alias: %v", err)
 	}
 
-	// Should resolve the alias to the URL
-	resolved, err := registry.Resolve(context.Background(), testAlias)
-	if err != nil {
-		t.Fatalf("Resolve() failed: %v", err)
+	// Test alias resolution directly - verify that the alias exists and can be resolved
+	aliasResolver := &AliasResolver{cache: c}
+
+	// Verify the alias resolver can resolve the alias
+	if !aliasResolver.CanResolve(testAlias) {
+		t.Errorf("AliasResolver should be able to resolve alias %q", testAlias)
 	}
 
-	// Since we can't actually download, we expect an error from the HTTP resolver
-	// but the alias resolution should work
-	// The fact that we got past the alias resolution means it worked
-	_ = resolved
+	// Test with the full registry - we expect an error because the HTTP resolver
+	// will try to download a non-existent URL, but the alias resolution part should work
+	_, err = registry.Resolve(context.Background(), testAlias)
+	if err == nil {
+		t.Errorf("Expected registry resolve to fail due to HTTP download error")
+	}
+
+	// The error should be about downloading, not about alias resolution
+	expectedErrorSubstrings := []string{"download", "HTTP", "404", "Not Found"}
+	errorMsg := err.Error()
+	foundExpected := false
+	for _, substr := range expectedErrorSubstrings {
+		if strings.Contains(errorMsg, substr) {
+			foundExpected = true
+			break
+		}
+	}
+	if !foundExpected {
+		t.Errorf("Expected download-related error, got: %v", err)
+	}
 }

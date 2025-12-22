@@ -38,7 +38,24 @@ func NewRegistry(cacheDir string) *Registry {
 			&HTTPResolver{
 				cache: cache,
 				client: &http.Client{
-					Timeout: 30 * time.Second,
+					Timeout: 60 * time.Second, // Increased timeout for large bundles
+					CheckRedirect: func(req *http.Request, via []*http.Request) error {
+						// Enforce a maximum number of redirects to avoid redirect loops
+						const maxRedirects = 10
+						if len(via) >= maxRedirects {
+							return fmt.Errorf("stopped after %d redirects", maxRedirects)
+						}
+
+						// Only allow redirects to HTTP or HTTPS endpoints
+						if req.URL != nil && req.URL.Scheme != "" {
+							scheme := strings.ToLower(req.URL.Scheme)
+							if scheme != "http" && scheme != "https" {
+								return fmt.Errorf("redirect to unsupported scheme: %s", req.URL.Scheme)
+							}
+						}
+
+						return nil
+					},
 				},
 			},
 			&AliasResolver{
@@ -159,7 +176,29 @@ func (r *HTTPResolver) downloadAndCache(ctx context.Context, url, expectedChecks
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to download agent bundle: HTTP %d", resp.StatusCode)
+		// Read a small portion of the response body for better diagnostics
+		var bodySnippet string
+		if resp.Body != nil {
+			const maxBodyBytes = 1024
+			if b, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes)); readErr == nil && len(b) > 0 {
+				bodySnippet = strings.TrimSpace(string(b))
+			}
+		}
+
+		if bodySnippet != "" {
+			return "", fmt.Errorf(
+				"failed to download agent bundle: HTTP %d %s: %s",
+				resp.StatusCode,
+				http.StatusText(resp.StatusCode),
+				bodySnippet,
+			)
+		}
+
+		return "", fmt.Errorf(
+			"failed to download agent bundle: HTTP %d %s",
+			resp.StatusCode,
+			http.StatusText(resp.StatusCode),
+		)
 	}
 
 	// Calculate checksum while downloading
@@ -179,7 +218,7 @@ func (r *HTTPResolver) downloadAndCache(ctx context.Context, url, expectedChecks
 	}
 
 	if expectedChecksum == "" {
-		fmt.Printf("Warning: Downloaded agent bundle without integrity verification (URL: %s)\n", url)
+		fmt.Fprintf(os.Stderr, "Warning: Downloaded agent bundle without integrity verification (URL: %s)\n", url)
 	}
 
 	// Seek back to beginning of file for caching
@@ -202,8 +241,8 @@ type AliasResolver struct {
 }
 
 func (r *AliasResolver) CanResolve(ref string) bool {
-	// Don't resolve URLs, absolute paths, or files with extensions
-	if strings.Contains(ref, "://") || filepath.IsAbs(ref) || strings.Contains(ref, ".") {
+	// Don't resolve URLs, absolute paths, or aliases containing path separators
+	if strings.Contains(ref, "://") || filepath.IsAbs(ref) || strings.Contains(ref, "/") || strings.Contains(ref, "\\") {
 		return false
 	}
 

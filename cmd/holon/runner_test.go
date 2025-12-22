@@ -866,7 +866,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -889,7 +889,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -913,7 +913,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -928,7 +928,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			AgentBundle: "/nonexistent/bundle.tar.gz",
 		}
 
-		_, err := runner.resolveAgentBundle(cfg, "")
+		_, err := runner.resolveAgentBundle(context.Background(), cfg, "")
 		if err == nil {
 			t.Error("Expected error for non-existent bundle path")
 		}
@@ -946,7 +946,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			AgentBundle: tempDir,
 		}
 
-		_, err := runner.resolveAgentBundle(cfg, tempDir)
+		_, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
 		if err == nil {
 			t.Error("Expected error for bundle path directory")
 		}
@@ -981,7 +981,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -1015,7 +1015,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -1056,7 +1056,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		}
 
 		// This should error since bundle building fails
-		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
 		if err == nil {
 			t.Error("Expected error when build script fails")
 		}
@@ -1079,7 +1079,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		_, err := runner.resolveAgentBundle(cfg, tempDir)
+		_, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
 		if err == nil {
 			t.Error("Expected error when no bundle and no build script are present")
 		}
@@ -1129,7 +1129,7 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 			WorkspacePath: tempDir,
 		}
 
-		resolvedPath, err := runner.resolveAgentBundle(cfg, tempDir)
+		resolvedPath, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}

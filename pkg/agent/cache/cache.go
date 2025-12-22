@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,19 +206,59 @@ func (c *Cache) ListAliases() (map[string]string, error) {
 }
 
 // cacheKey generates a deterministic cache key for a URL and checksum
-func (c *Cache) cacheKey(url, checksum string) string {
-	// Create a safe key from URL and checksum
-	safeURL := strings.NewReplacer(
-		":", "_",
+func (c *Cache) cacheKey(rawURL, checksum string) string {
+	// Parse URL to handle hostname differently from path
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		// If URL parsing fails, fall back to simple replacement
+		safeURL := strings.NewReplacer(
+			":", "_",
+			"/", "_",
+			"?", "_",
+			"#", "_",
+			"&", "_",
+			"=", "_",
+			".", "_",
+		).Replace(rawURL)
+
+		if checksum != "" {
+			n := len(checksum)
+			if n > 8 {
+				n = 8
+			}
+			safeURL += "_" + checksum[:n]
+		}
+		return safeURL
+	}
+
+	// Replace dots in hostname but keep them in path
+	safeHost := strings.ReplaceAll(parsedURL.Host, ".", "_")
+
+	// Build the key by replacing special characters in the rest
+	queryAndFragment := ""
+	if parsedURL.RawQuery != "" {
+		queryAndFragment += "?" + parsedURL.RawQuery
+	}
+	if parsedURL.Fragment != "" {
+		queryAndFragment += "#" + parsedURL.Fragment
+	}
+
+	safePath := strings.NewReplacer(
 		"/", "_",
 		"?", "_",
-		"#", "_",
 		"&", "_",
 		"=", "_",
-	).Replace(url)
+	).Replace(parsedURL.Path + queryAndFragment)
+
+	safeURL := strings.ReplaceAll(parsedURL.Scheme, ":", "_") + "___" + safeHost + safePath
 
 	if checksum != "" {
-		safeURL += "_" + checksum[:8] // Use first 8 chars of checksum
+		// Use up to first 8 chars of checksum to prevent panic if checksum is too short
+		n := len(checksum)
+		if n > 8 {
+			n = 8
+		}
+		safeURL += "_" + checksum[:n]
 	}
 
 	return safeURL

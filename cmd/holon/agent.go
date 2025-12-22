@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"sort"
 
 	"github.com/holon-run/holon/pkg/agent/cache"
 	"github.com/spf13/cobra"
@@ -34,6 +36,11 @@ Examples:
 		name, _ := cmd.Flags().GetString("name")
 		if name == "" {
 			return fmt.Errorf("--name is required")
+		}
+
+		// Validate URL format and scheme
+		if err := validateURL(url); err != nil {
+			return fmt.Errorf("invalid URL: %w", err)
 		}
 
 		cacheDir := os.Getenv("HOLON_CACHE_DIR")
@@ -70,8 +77,16 @@ alias names and their corresponding URLs.`,
 
 		fmt.Println("Installed agent aliases:")
 		fmt.Println()
-		for name, url := range aliases {
-			fmt.Printf("  %s: %s\n", name, url)
+
+		// Sort aliases alphabetically for consistent output
+		sortedAliases := make([]string, 0, len(aliases))
+		for name := range aliases {
+			sortedAliases = append(sortedAliases, name)
+		}
+		sort.Strings(sortedAliases)
+
+		for _, name := range sortedAliases {
+			fmt.Printf("  %s: %s\n", name, aliases[name])
 		}
 		fmt.Println()
 		fmt.Println("Usage example:")
@@ -100,6 +115,27 @@ just the alias name mapping.`,
 		fmt.Printf("Alias '%s' removed.\n", name)
 		return nil
 	},
+}
+
+// validateURL checks that the URL has a valid format and supported scheme
+func validateURL(urlStr string) error {
+	// Parse URL to validate format
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+
+	// Check for supported schemes
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("unsupported URL scheme: %s (only http and https are supported)", parsedURL.Scheme)
+	}
+
+	// Ensure the URL has a host
+	if parsedURL.Host == "" {
+		return fmt.Errorf("URL must have a host")
+	}
+
+	return nil
 }
 
 func init() {
