@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	v1 "github.com/holon-run/holon/pkg/api/v1"
+	"github.com/holon-run/holon/pkg/agent/resolver"
 	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"gopkg.in/yaml.v3"
@@ -39,13 +40,17 @@ type RunnerConfig struct {
 
 // Runner encapsulates the dependencies and state needed to run a holon
 type Runner struct {
-	runtime Runtime
+	runtime  Runtime
+	resolver *resolver.Registry
 }
 
 // NewRunner creates a new Runner with the given runtime
 func NewRunner(rt Runtime) *Runner {
+	// Initialize cache directory from environment or use default
+	cacheDir := os.Getenv("HOLON_CACHE_DIR")
 	return &Runner{
-		runtime: rt,
+		runtime:  rt,
+		resolver: resolver.NewRegistry(cacheDir),
 	}
 }
 
@@ -179,7 +184,7 @@ output:
 		fmt.Printf("Warning: Failed to write debug prompts: %v\n", err)
 	}
 
-	agentBundlePath, err := r.resolveAgentBundle(cfg, absWorkspace)
+	agentBundlePath, err := r.resolveAgentBundle(ctx, cfg, absWorkspace)
 	if err != nil {
 		return err
 	}
@@ -205,7 +210,7 @@ output:
 	return nil
 }
 
-func (r *Runner) resolveAgentBundle(cfg RunnerConfig, workspace string) (string, error) {
+func (r *Runner) resolveAgentBundle(ctx context.Context, cfg RunnerConfig, workspace string) (string, error) {
 	agentRef := strings.TrimSpace(cfg.AgentBundle)
 	if agentRef == "" {
 		agentRef = strings.TrimSpace(os.Getenv("HOLON_AGENT"))
@@ -214,21 +219,16 @@ func (r *Runner) resolveAgentBundle(cfg RunnerConfig, workspace string) (string,
 		agentRef = strings.TrimSpace(os.Getenv("HOLON_AGENT_BUNDLE"))
 	}
 
+	// If we have an explicit reference, try to resolve it using the resolver system
 	if agentRef != "" {
-		absBundle, err := filepath.Abs(agentRef)
+		resolvedPath, err := r.resolver.Resolve(ctx, agentRef)
 		if err != nil {
-			return "", fmt.Errorf("failed to resolve agent bundle path: %w", err)
+			return "", fmt.Errorf("failed to resolve agent bundle '%s': %w", agentRef, err)
 		}
-		info, err := os.Stat(absBundle)
-		if err != nil {
-			return "", fmt.Errorf("agent bundle not found: %w", err)
-		}
-		if info.IsDir() {
-			return "", fmt.Errorf("agent bundle path is a directory: %s", absBundle)
-		}
-		return absBundle, nil
+		return resolvedPath, nil
 	}
 
+	// Fall back to local build system
 	scriptPath := filepath.Join(workspace, "agents", "claude", "scripts", "build-bundle.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
 		return "", fmt.Errorf("agent bundle not found; set --agent/HOLON_AGENT (legacy: --agent-bundle/HOLON_AGENT_BUNDLE)")

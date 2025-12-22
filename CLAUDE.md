@@ -55,12 +55,17 @@ make clean
 - `--spec` / `-s`: Path to holon spec file
 - `--goal` / `-g`: Goal description (alternative to spec)
 - `--image` / `-i`: Docker base image (default: golang:1.22)
-- `--agent`: Agent bundle reference (.tar.gz)
+- `--agent`: Agent bundle reference (path to .tar.gz, URL, or alias)
 - `--agent-bundle`: Deprecated alias for `--agent`
 - `--workspace` / `-w`: Workspace path (default: .)
 - `--out` / `-o`: Output directory (default: ./holon-output)
 - `--env` / `-e`: Environment variables (K=V format)
 - `--log-level`: Logging verbosity (debug, info, progress, minimal)
+
+### Agent Bundle Management
+- `holon agent install <url> --name <alias>`: Install an agent alias
+- `holon agent list`: List installed agent aliases
+- `holon agent remove <alias>`: Remove an agent alias
 
 ## Code Architecture
 
@@ -75,6 +80,16 @@ make clean
 - `NewRuntime()`: Initialize Docker client
 - `RunHolon()`: Main execution orchestrator
 - `buildComposedImageFromBundle()`: Dynamically combines base image + agent bundle
+
+**Agent Resolver System**: `pkg/agent/resolver/`
+- Supports multiple resolution strategies: local files, HTTP URLs, and aliases
+- Automatic caching of downloaded bundles with integrity verification
+- CLI commands for managing agent aliases
+
+**Agent Cache**: `pkg/agent/cache/`
+- Manages local bundle storage in `$HOLON_CACHE_DIR` or `~/.holon/cache`
+- SHA256 checksum verification for integrity
+- Metadata tracking and cache deduplication
 
 **Holon Specification**: `pkg/api/v1/spec.go`
 ```yaml
@@ -103,17 +118,22 @@ output:
 - Standardized I/O paths: `/holon/input/`, `/holon/workspace/`, `/holon/output/`
 
 ### Execution Flow
-1. **Workspace Snapshot**: Copy workspace to isolated location
-2. **Image Composition**: Build composed image from base + agent bundle
-3. **Container Creation**: Start container with mounted volumes
-4. **Agent Execution**: Run Claude Agent SDK agent with injected prompts
-5. **Artifact Validation**: Verify required outputs exist
+1. **Agent Resolution**: Resolve agent bundle reference (local file, URL, or alias)
+2. **Bundle Download/Cache**: Download remote bundles and cache locally with integrity verification
+3. **Workspace Snapshot**: Copy workspace to isolated location
+4. **Image Composition**: Build composed image from base + agent bundle
+5. **Container Creation**: Start container with mounted volumes
+6. **Agent Execution**: Run Claude Agent SDK agent with injected prompts
+7. **Artifact Validation**: Verify required outputs exist
 
 ### Directory Structure
 ```
 cmd/holon/          # Main Go CLI entry point
 pkg/                # Core Go libraries
   ├── api/v1/       # HolonSpec and HolonManifest types
+  ├── agent/        # Agent resolver and cache system
+  │   ├── resolver/ # Bundle resolution logic
+  │   └── cache/    # Bundle caching and alias management
   ├── runtime/docker/ # Docker runtime implementation
   └── prompt/       # Prompt compilation system
 agents/claude/ # TypeScript Claude agent (bundle source)
@@ -142,6 +162,9 @@ make test-agent
 ### Required Environment Variables
 - `ANTHROPIC_API_KEY`: Claude API authentication (required for execution)
 - Optional: `HOLON_SNAPSHOT_BASE`: Custom snapshot location
+- Optional: `HOLON_CACHE_DIR`: Custom cache directory (default: `~/.holon/cache`)
+- Optional: `HOLON_AGENT`: Default agent bundle reference
+- Optional: `HOLON_AGENT_BUNDLE`: Legacy default agent bundle (deprecated)
 
 ### Development Prerequisites
 - Docker installed and running
@@ -160,6 +183,29 @@ Each execution produces standardized outputs:
 ### Dynamic Image Composition
 The runner dynamically combines base images with the agent bundle at runtime, enabling any standard Docker image to become a Holon execution environment without modification.
 
+### Agent Bundle Usage Examples
+
+**Using local bundle:**
+```bash
+holon run --agent ./my-agent.tar.gz --goal "Fix the bug"
+```
+
+**Using remote URL with integrity verification:**
+```bash
+holon run --agent https://github.com/example/agent/releases/download/v1.0.0/agent.tar.gz#sha256=abcd1234 --goal "Analyze code"
+```
+
+**Using installed alias:**
+```bash
+holon agent install https://github.com/example/agent/releases/download/v1.0.0/agent.tar.gz --name myagent
+holon run --agent myagent --goal "Refactor component"
+```
+
+**Cache Management:**
+- Bundles are cached in `$HOLON_CACHE_DIR` or `~/.holon/cache`
+- Use `holon agent list` to see installed aliases
+- Cache avoids re-downloading on repeated runs
+
 ### Spec vs Goal Execution
 - **Spec mode**: Use `--spec` for structured, reproducible task definitions
 - **Goal mode**: Use `--goal` for quick, ad-hoc task execution (auto-generates spec)
@@ -168,6 +214,7 @@ The runner dynamically combines base images with the agent bundle at runtime, en
 While v0.1 focuses on Claude Code, the architecture supports future agents through:
 - Standardized I/O interface (`/holon/input/`, `/holon/workspace/`, `/holon/output/`)
 - Pluggable agent bundles via `--agent` flag
+- Resolver system for flexible agent discovery
 - Common prompt compilation system in `pkg/prompt/`
 
 ## Common Development Patterns

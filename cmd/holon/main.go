@@ -65,7 +65,7 @@ func init() {
 	runCmd.Flags().StringVarP(&goalStr, "goal", "g", "", "Goal description (alternative to --spec)")
 	runCmd.Flags().StringVarP(&taskName, "name", "n", "", "Task name (optional, defaults to auto-generated)")
 	runCmd.Flags().StringVarP(&baseImage, "image", "i", "golang:1.22", "Docker image for execution (Base toolchain)")
-	runCmd.Flags().StringVar(&agentPath, "agent", "", "Agent bundle reference (path to .tar.gz)")
+	runCmd.Flags().StringVar(&agentPath, "agent", "", "Agent bundle reference (path to .tar.gz, URL, or alias)")
 	runCmd.Flags().StringVar(&agentBundlePath, "agent-bundle", "", "Deprecated: use --agent")
 	_ = runCmd.Flags().MarkDeprecated("agent-bundle", "use --agent instead")
 	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
@@ -76,6 +76,7 @@ func init() {
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(agentCmd)
 }
 
 func main() {

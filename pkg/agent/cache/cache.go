@@ -1,0 +1,299 @@
+package cache
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Cache manages agent bundle storage and aliases
+type Cache struct {
+	mu       sync.RWMutex
+	cacheDir string
+}
+
+// New creates a new cache instance
+func New(cacheDir string) *Cache {
+	if cacheDir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			cacheDir = "/tmp/.holon-cache"
+		} else {
+			cacheDir = filepath.Join(homeDir, ".holon", "cache")
+		}
+	}
+
+	cache := &Cache{cacheDir: cacheDir}
+	cache.initialize()
+	return cache
+}
+
+// initialize sets up the cache directory structure
+func (c *Cache) initialize() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Create cache directories
+	dirs := []string{
+		c.cacheDir,
+		filepath.Join(c.cacheDir, "bundles"),
+		filepath.Join(c.cacheDir, "aliases"),
+	}
+
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			// Continue even if we can't create directories
+			// The cache will be non-functional but won't crash the application
+			continue
+		}
+	}
+}
+
+// StoreBundle stores a downloaded bundle in the cache
+func (c *Cache) StoreBundle(url, checksum string, reader io.Reader, size int64) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	bundleDir := filepath.Join(c.cacheDir, "bundles", c.cacheKey(url, checksum))
+	if err := os.MkdirAll(bundleDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create bundle directory: %w", err)
+	}
+
+	bundlePath := filepath.Join(bundleDir, "bundle.tar.gz")
+	file, err := os.OpenFile(bundlePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return "", fmt.Errorf("failed to create bundle file: %w", err)
+	}
+	defer file.Close()
+
+	written, err := io.Copy(file, reader)
+	if err != nil {
+		os.RemoveAll(bundleDir)
+		return "", fmt.Errorf("failed to write bundle file: %w", err)
+	}
+
+	// Verify that we wrote all the data
+	if written != size {
+		os.RemoveAll(bundleDir)
+		return "", fmt.Errorf("incomplete write: expected %d bytes, wrote %d", size, written)
+	}
+
+	// Store metadata
+	metadata := BundleMetadata{
+		URL:      url,
+		Checksum: checksum,
+		Size:     size,
+		CachedAt: time.Now().Unix(),
+	}
+
+	metadataPath := filepath.Join(bundleDir, "metadata.json")
+	if err := c.writeMetadata(metadataPath, metadata); err != nil {
+		os.RemoveAll(bundleDir)
+		return "", fmt.Errorf("failed to write metadata: %w", err)
+	}
+
+	return bundlePath, nil
+}
+
+// GetBundle retrieves a cached bundle
+func (c *Cache) GetBundle(url, checksum string) (string, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	bundleDir := filepath.Join(c.cacheDir, "bundles", c.cacheKey(url, checksum))
+	bundlePath := filepath.Join(bundleDir, "bundle.tar.gz")
+
+	// Check if bundle exists
+	if _, err := os.Stat(bundlePath); err != nil {
+		return "", fmt.Errorf("bundle not found in cache")
+	}
+
+	// Verify checksum if provided
+	if checksum != "" {
+		metadataPath := filepath.Join(bundleDir, "metadata.json")
+		metadata, err := c.readMetadata(metadataPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read metadata: %w", err)
+		}
+
+		if metadata.Checksum != checksum {
+			return "", fmt.Errorf("checksum mismatch")
+		}
+	}
+
+	return bundlePath, nil
+}
+
+// SetAlias stores an alias for a URL
+func (c *Cache) SetAlias(name, url string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.validateAliasName(name); err != nil {
+		return err
+	}
+
+	aliasesPath := filepath.Join(c.cacheDir, "aliases", "aliases.json")
+	aliases, err := c.loadAliases(aliasesPath)
+	if err != nil {
+		aliases = make(map[string]string)
+	}
+
+	aliases[name] = url
+
+	return c.writeAliases(aliasesPath, aliases)
+}
+
+// GetAlias retrieves a URL by alias name
+func (c *Cache) GetAlias(name string) (string, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if err := c.validateAliasName(name); err != nil {
+		return "", err
+	}
+
+	aliasesPath := filepath.Join(c.cacheDir, "aliases", "aliases.json")
+	aliases, err := c.loadAliases(aliasesPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to load aliases: %w", err)
+	}
+
+	url, exists := aliases[name]
+	if !exists {
+		return "", fmt.Errorf("alias not found: %s", name)
+	}
+
+	return url, nil
+}
+
+// RemoveAlias removes an alias
+func (c *Cache) RemoveAlias(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.validateAliasName(name); err != nil {
+		return err
+	}
+
+	aliasesPath := filepath.Join(c.cacheDir, "aliases", "aliases.json")
+	aliases, err := c.loadAliases(aliasesPath)
+	if err != nil {
+		return fmt.Errorf("failed to load aliases: %w", err)
+	}
+
+	if _, exists := aliases[name]; !exists {
+		return fmt.Errorf("alias not found: %s", name)
+	}
+
+	delete(aliases, name)
+	return c.writeAliases(aliasesPath, aliases)
+}
+
+// ListAliases returns all configured aliases
+func (c *Cache) ListAliases() (map[string]string, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	aliasesPath := filepath.Join(c.cacheDir, "aliases", "aliases.json")
+	return c.loadAliases(aliasesPath)
+}
+
+// cacheKey generates a deterministic cache key for a URL and checksum
+func (c *Cache) cacheKey(url, checksum string) string {
+	// Create a safe key from URL and checksum
+	safeURL := strings.NewReplacer(
+		":", "_",
+		"/", "_",
+		"?", "_",
+		"#", "_",
+		"&", "_",
+		"=", "_",
+	).Replace(url)
+
+	if checksum != "" {
+		safeURL += "_" + checksum[:8] // Use first 8 chars of checksum
+	}
+
+	return safeURL
+}
+
+// validateAliasName ensures alias names are safe
+func (c *Cache) validateAliasName(name string) error {
+	if name == "" {
+		return fmt.Errorf("alias name cannot be empty")
+	}
+
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return fmt.Errorf("alias name contains invalid characters")
+	}
+
+	if len(name) > 100 {
+		return fmt.Errorf("alias name too long (max 100 characters)")
+	}
+
+	return nil
+}
+
+// BundleMetadata stores information about a cached bundle
+type BundleMetadata struct {
+	URL      string `json:"url"`
+	Checksum string `json:"checksum"`
+	Size     int64  `json:"size"`
+	CachedAt int64  `json:"cached_at"`
+}
+
+func (c *Cache) writeMetadata(path string, metadata BundleMetadata) error {
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0644)
+}
+
+func (c *Cache) readMetadata(path string) (BundleMetadata, error) {
+	var metadata BundleMetadata
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return metadata, err
+	}
+
+	return metadata, json.Unmarshal(data, &metadata)
+}
+
+func (c *Cache) writeAliases(path string, aliases map[string]string) error {
+	data, err := json.MarshalIndent(aliases, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0644)
+}
+
+func (c *Cache) loadAliases(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return make(map[string]string), nil
+		}
+		return nil, err
+	}
+
+	var aliases map[string]string
+	err = json.Unmarshal(data, &aliases)
+	if err != nil {
+		return nil, err
+	}
+
+	if aliases == nil {
+		aliases = make(map[string]string)
+	}
+
+	return aliases, nil
+}
