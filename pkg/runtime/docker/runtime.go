@@ -90,8 +90,21 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 
 	// 3. Create Container
 	// Inject host git identity
-	gitName, _ := getGitConfig("user.name")
-	gitEmail, _ := getGitConfig("user.email")
+	gitName, err := getGitConfig("user.name")
+	if err != nil {
+		fmt.Printf("Warning: failed to get host git config 'user.name': %v\n", err)
+	}
+	gitEmail, err := getGitConfig("user.email")
+	if err != nil {
+		fmt.Printf("Warning: failed to get host git config 'user.email': %v\n", err)
+	}
+
+	if gitName != "" || gitEmail != "" {
+		if cfg.Env == nil {
+			cfg.Env = make(map[string]string)
+		}
+	}
+
 	if gitName != "" {
 		cfg.Env["GIT_AUTHOR_NAME"] = gitName
 		cfg.Env["GIT_COMMITTER_NAME"] = gitName
