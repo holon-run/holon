@@ -58,9 +58,41 @@ func NewRegistry(cacheDir string) *Registry {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
-	builtinResolver := &BuiltinResolver{
+	// Create a single HTTP resolver that can be reused by BuiltinResolver
+	httpResolver := &HTTPResolver{
 		cache: cache,
-		transport: transport,
+		client: &http.Client{
+			// Overall timeout for the entire request (including redirects, download, etc.)
+			// Set higher to accommodate slow downloads and network issues
+			Timeout: 300 * time.Second, // 5 minutes total timeout
+
+			// Use custom transport with granular timeout controls
+			Transport: transport,
+
+			// Redirect handling
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				// Enforce a maximum number of redirects to avoid redirect loops
+				const maxRedirects = 10
+				if len(via) >= maxRedirects {
+					return fmt.Errorf("stopped after %d redirects", maxRedirects)
+				}
+
+				// Only allow redirects to HTTP or HTTPS endpoints
+				if req.URL != nil && req.URL.Scheme != "" {
+					scheme := strings.ToLower(req.URL.Scheme)
+					if scheme != "http" && scheme != "https" {
+						return fmt.Errorf("redirect to unsupported scheme: %s", req.URL.Scheme)
+					}
+				}
+
+				return nil
+			},
+		},
+	}
+
+	// Create builtin resolver that reuses the HTTP resolver
+	builtinResolver := &BuiltinResolver{
+		httpResolver: httpResolver,
 	}
 
 	return &Registry{
@@ -68,36 +100,7 @@ func NewRegistry(cacheDir string) *Registry {
 		resolvers: []Resolver{
 			&FileResolver{},
 			builtinResolver, // Builtin resolver should be checked before HTTP/URL resolvers
-			&HTTPResolver{
-				cache: cache,
-				client: &http.Client{
-					// Overall timeout for the entire request (including redirects, download, etc.)
-					// Set higher to accommodate slow downloads and network issues
-					Timeout: 300 * time.Second, // 5 minutes total timeout
-
-					// Use custom transport with granular timeout controls
-					Transport: transport,
-
-					// Redirect handling
-					CheckRedirect: func(req *http.Request, via []*http.Request) error {
-						// Enforce a maximum number of redirects to avoid redirect loops
-						const maxRedirects = 10
-						if len(via) >= maxRedirects {
-							return fmt.Errorf("stopped after %d redirects", maxRedirects)
-						}
-
-						// Only allow redirects to HTTP or HTTPS endpoints
-						if req.URL != nil && req.URL.Scheme != "" {
-							scheme := strings.ToLower(req.URL.Scheme)
-							if scheme != "http" && scheme != "https" {
-								return fmt.Errorf("redirect to unsupported scheme: %s", req.URL.Scheme)
-							}
-						}
-
-						return nil
-					},
-				},
-			},
+			httpResolver,    // Reuse the same HTTP resolver instance
 			&AliasResolver{
 				cache: cache,
 			},
@@ -339,8 +342,7 @@ func (r *AliasResolver) Resolve(ctx context.Context, ref string) (string, error)
 
 // BuiltinResolver resolves the builtin default agent
 type BuiltinResolver struct {
-	cache     *cache.Cache
-	transport *http.Transport
+	httpResolver *HTTPResolver
 }
 
 func (r *BuiltinResolver) CanResolve(ref string) bool {
@@ -364,31 +366,9 @@ func (r *BuiltinResolver) Resolve(ctx context.Context, ref string) (string, erro
 		return "", fmt.Errorf("no builtin agent configured")
 	}
 
-	// Create an HTTP resolver to download the builtin agent
-	httpResolver := &HTTPResolver{
-		cache: r.cache,
-		client: &http.Client{
-			Timeout:   300 * time.Second,
-			Transport: r.transport,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				const maxRedirects = 10
-				if len(via) >= maxRedirects {
-					return fmt.Errorf("stopped after %d redirects", maxRedirects)
-				}
-				if req.URL != nil && req.URL.Scheme != "" {
-					scheme := strings.ToLower(req.URL.Scheme)
-					if scheme != "http" && scheme != "https" {
-						return fmt.Errorf("redirect to unsupported scheme: %s", req.URL.Scheme)
-					}
-				}
-				return nil
-			},
-		},
-	}
-
 	// Resolve the builtin agent URL with checksum - fix double prefix issue
 	checksum := strings.TrimPrefix(builtinAgent.Checksum, "sha256=")
 	agentURL := builtinAgent.URL + "#sha256=" + checksum
-	return httpResolver.Resolve(ctx, agentURL)
+	return r.httpResolver.Resolve(ctx, agentURL)
 }
 
