@@ -42,6 +42,9 @@ cp "${BUNDLE_FILE}" "${RELEASE_BUNDLE}"
 # Note: The checksum file records only the bundle's basename, not a path.
 # When verifying with `sha256sum -c`, ensure the bundle and checksum files
 # are in the same directory (e.g., download both into one folder first).
+# Note: The checksum file records only the bundle's basename, not a path.
+# When verifying with `sha256sum -c`, ensure the bundle and checksum files
+# are in the same directory (e.g., download both into one folder first).
 cd "${RELEASE_DIR}"
 sha256sum "$(basename "${RELEASE_BUNDLE}")" > "$(basename "${RELEASE_CHECKSUM}")"
 
