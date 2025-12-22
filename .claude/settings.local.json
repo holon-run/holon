@@ -6,7 +6,8 @@
       "Bash(go test:*)",
       "mcp__MCP_DOCKER__list_commits",
       "mcp__MCP_DOCKER__get_commit",
-      "Bash(make:*)"
+      "Bash(make:*)",
+      "WebSearch"
     ]
   }
 }

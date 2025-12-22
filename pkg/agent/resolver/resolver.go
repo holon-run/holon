@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,6 +32,31 @@ type Registry struct {
 func NewRegistry(cacheDir string) *Registry {
 	cache := cache.New(cacheDir)
 
+	// Configure transport with granular timeout controls for poor network conditions
+	transport := &http.Transport{
+		// Connection timeout - time to establish the first connection
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second, // Connection establishment timeout
+			KeepAlive: 30 * time.Second, // Keep alive for connections
+		}).DialContext,
+
+		// Maximum time to wait for a TLS handshake
+		TLSHandshakeTimeout:   30 * time.Second,
+
+		// Response header timeout - time to wait for response headers
+		ResponseHeaderTimeout: 60 * time.Second,
+
+		// Connection management for better performance in poor network conditions
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second, // How long idle connections remain open
+		DisableKeepAlives:     false,
+		DisableCompression:    false,
+
+		// Expect continue timeout for request bodies
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
 	return &Registry{
 		cache: cache,
 		resolvers: []Resolver{
@@ -38,7 +64,14 @@ func NewRegistry(cacheDir string) *Registry {
 			&HTTPResolver{
 				cache: cache,
 				client: &http.Client{
-					Timeout: 60 * time.Second, // Increased timeout for large bundles
+					// Overall timeout for the entire request (including redirects, download, etc.)
+					// Set higher to accommodate slow downloads and network issues
+					Timeout: 300 * time.Second, // 5 minutes total timeout
+
+					// Use custom transport with granular timeout controls
+					Transport: transport,
+
+					// Redirect handling
 					CheckRedirect: func(req *http.Request, via []*http.Request) error {
 						// Enforce a maximum number of redirects to avoid redirect loops
 						const maxRedirects = 10
@@ -257,10 +290,41 @@ func (r *AliasResolver) Resolve(ctx context.Context, ref string) (string, error)
 		return "", fmt.Errorf("alias not found: %s", ref)
 	}
 
-	// Delegate to HTTP resolver
+	// Delegate to HTTP resolver with same granular timeout configuration
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		DisableKeepAlives:     false,
+		DisableCompression:    false,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
 	httpResolver := &HTTPResolver{
-		cache:  r.cache,
-		client: &http.Client{Timeout: 30 * time.Second},
+		cache: r.cache,
+		client: &http.Client{
+			Timeout:   300 * time.Second,
+			Transport: transport,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				const maxRedirects = 10
+				if len(via) >= maxRedirects {
+					return fmt.Errorf("stopped after %d redirects", maxRedirects)
+				}
+				if req.URL != nil && req.URL.Scheme != "" {
+					scheme := strings.ToLower(req.URL.Scheme)
+					if scheme != "http" && scheme != "https" {
+						return fmt.Errorf("redirect to unsupported scheme: %s", req.URL.Scheme)
+					}
+				}
+				return nil
+			},
+		},
 	}
 
 	return httpResolver.Resolve(ctx, url)
