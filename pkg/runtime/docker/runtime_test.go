@@ -3,6 +3,7 @@ package docker
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -271,5 +272,200 @@ func TestMkdirTempOutsideWorkspace_DoesNotNest(t *testing.T) {
 	}
 	if isSubpath(absDir, absWorkspace) {
 		t.Fatalf("expected snapshot dir to be outside workspace:\nworkspace=%s\ndir=%s", absWorkspace, absDir)
+	}
+}
+
+// TestGetGitConfig tests the getGitConfig helper function
+func TestGetGitConfig(t *testing.T) {
+	// Skip test on Windows as it relies on Unix shell scripts
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows - requires Unix shell")
+	}
+
+	// Save original PATH for restoring in each test
+	originalPath := os.Getenv("PATH")
+
+	tests := []struct {
+		name           string
+		key            string
+		setupFunc      func()
+		expectedResult string
+		expectedError  bool
+		errorContains  string
+	}{
+		{
+			name: "successful git config retrieval",
+			key:  "user.name",
+			setupFunc: func() {
+				// Create a mock git command that returns a known value
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ] && [ "$3" = "user.name" ]; then
+	echo "Test User"
+	exit 0
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+
+				// Prepend temp dir to PATH to use our mock git
+				// Use list.ListSeparator for cross-platform compatibility
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+				// Cleanup handled by t.TempDir()
+			},
+			expectedResult: "Test User",
+			expectedError:  false,
+		},
+		{
+			name: "git config with leading/trailing whitespace",
+			key:  "user.email",
+			setupFunc: func() {
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ] && [ "$3" = "user.email" ]; then
+	echo "  test@example.com  "
+	exit 0
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedResult: "test@example.com",
+			expectedError:  false,
+		},
+		{
+			name: "git config with multiline output",
+			key:  "user.name",
+			setupFunc: func() {
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ] && [ "$3" = "user.name" ]; then
+	echo -e "Test User\\n\\n"
+	exit 0
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedResult: "Test User",
+			expectedError:  false,
+		},
+		{
+			name: "git command not found",
+			key:  "user.name",
+			setupFunc: func() {
+				// Set PATH to empty directory so git is not found
+				tempDir := t.TempDir()
+				t.Setenv("PATH", tempDir)
+			},
+			expectedResult: "",
+			expectedError:  true,
+			errorContains:  "executable file not found",
+		},
+		{
+			name: "git config key not found",
+			key:  "nonexistent.key",
+			setupFunc: func() {
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ] && [ "$3" = "nonexistent.key" ]; then
+	exit 1
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedResult: "",
+			expectedError:  true,
+		},
+		{
+			name: "git command exits with error",
+			key:  "user.name",
+			setupFunc: func() {
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+echo "git: error" >&2
+exit 128`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedResult: "",
+			expectedError:  true,
+		},
+		{
+			name: "empty git config value",
+			key:  "user.name",
+			setupFunc: func() {
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ] && [ "$3" = "user.name" ]; then
+	echo ""
+	exit 0
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedResult: "",
+			expectedError:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup test environment
+			if tt.setupFunc != nil {
+				tt.setupFunc()
+				// No cleanup needed - t.Setenv handles restoration automatically
+			}
+
+			// Test the function
+			result, err := getGitConfig(tt.key)
+
+			// Check expectations
+			if tt.expectedError {
+				if err == nil {
+					t.Errorf("getGitConfig(%q) expected error but got none", tt.key)
+				} else if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("getGitConfig(%q) expected error containing %q, got %q", tt.key, tt.errorContains, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("getGitConfig(%q) unexpected error: %v", tt.key, err)
+				}
+			}
+
+			if result != tt.expectedResult {
+				t.Errorf("getGitConfig(%q) = %q, want %q", tt.key, result, tt.expectedResult)
+			}
+		})
 	}
 }

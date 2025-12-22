@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__MCP_DOCKER__pull_request_read",
+      "mcp__MCP_DOCKER__list_pull_requests",
+      "Bash(go test:*)"
+    ]
+  }
+}
