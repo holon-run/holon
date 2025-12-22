@@ -80,8 +80,15 @@ func (c *Client) FetchPRInfo(ctx context.Context, owner, repo string, prNumber i
 		return nil, fmt.Errorf("failed to decode PR data: %w", err)
 	}
 
-	createdAt, _ := time.Parse(time.RFC3339, prData.CreatedAt)
-	updatedAt, _ := time.Parse(time.RFC3339, prData.UpdatedAt)
+	var createdAt, updatedAt time.Time
+	if t, err := time.Parse(time.RFC3339, prData.CreatedAt); err == nil {
+		createdAt = t
+	}
+	// If parsing fails, createdAt remains zero time - this is a non-fatal issue
+	if t, err := time.Parse(time.RFC3339, prData.UpdatedAt); err == nil {
+		updatedAt = t
+	}
+	// If parsing fails, updatedAt remains zero time - this is a non-fatal issue
 
 	return &PRInfo{
 		Number:      prData.Number,
@@ -325,10 +332,16 @@ func (c *Client) commentToThread(comment map[string]interface{}) ReviewThread {
 
 	var createdAt, updatedAt time.Time
 	if ca, ok := comment["created_at"].(string); ok {
-		createdAt, _ = time.Parse(time.RFC3339, ca)
+		if t, err := time.Parse(time.RFC3339, ca); err == nil {
+			createdAt = t
+		}
+		// If parsing fails, createdAt remains zero time - this is a non-fatal issue
 	}
 	if ua, ok := comment["updated_at"].(string); ok {
-		updatedAt, _ = time.Parse(time.RFC3339, ua)
+		if t, err := time.Parse(time.RFC3339, ua); err == nil {
+			updatedAt = t
+		}
+		// If parsing fails, updatedAt remains zero time - this is a non-fatal issue
 	}
 
 	return ReviewThread{
@@ -363,10 +376,16 @@ func (c *Client) commentToReply(comment map[string]interface{}) Reply {
 
 	var createdAt, updatedAt time.Time
 	if ca, ok := comment["created_at"].(string); ok {
-		createdAt, _ = time.Parse(time.RFC3339, ca)
+		if t, err := time.Parse(time.RFC3339, ca); err == nil {
+			createdAt = t
+		}
+		// If parsing fails, createdAt remains zero time - this is a non-fatal issue
 	}
 	if ua, ok := comment["updated_at"].(string); ok {
-		updatedAt, _ = time.Parse(time.RFC3339, ua)
+		if t, err := time.Parse(time.RFC3339, ua); err == nil {
+			updatedAt = t
+		}
+		// If parsing fails, updatedAt remains zero time - this is a non-fatal issue
 	}
 
 	var inReplyToID int64

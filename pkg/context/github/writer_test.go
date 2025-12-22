@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -143,27 +144,15 @@ index abc123..def456 100644
 			t.Errorf("Failed to read review.md: %v", err)
 		}
 		content := string(data)
-		if !contains(content, "Test PR") {
+		if !strings.Contains(content, "Test PR") {
 			t.Errorf("review.md should contain PR title")
 		}
-		if !contains(content, "Please fix this") {
+		if !strings.Contains(content, "Please fix this") {
 			t.Errorf("review.md should contain comment body")
 		}
-		if !contains(content, "I'll fix it") {
+		if !strings.Contains(content, "I'll fix it") {
 			t.Errorf("review.md should contain reply body")
 		}
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) > 0 && len(substr) > 0 && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsSubstring(s, substr)))
-}
-
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

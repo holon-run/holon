@@ -126,9 +126,14 @@ func writeReviewMarkdown(dir string, prInfo *PRInfo, threads []ReviewThread) err
 			sb.WriteString(fmt.Sprintf("### Thread %d\n\n", i+1))
 			sb.WriteString(fmt.Sprintf("- **File**: `%s`\n", thread.Path))
 			if thread.Line > 0 {
-				sb.WriteString(fmt.Sprintf("- **Line**: %d", thread.Line))
+				start := thread.Line
+				end := thread.Line
 				if thread.StartLine > 0 && thread.StartLine != thread.Line {
-					sb.WriteString(fmt.Sprintf("-%d", thread.StartLine))
+					start = thread.StartLine
+				}
+				sb.WriteString(fmt.Sprintf("- **Line**: %d", start))
+				if end != start {
+					sb.WriteString(fmt.Sprintf("-%d", end))
 				}
 				sb.WriteString("\n")
 			}

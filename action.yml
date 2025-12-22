@@ -110,11 +110,11 @@ runs:
 
           if [ -n "$TITLE" ]; then
             GOAL="Issue Title: $TITLE\n\nIssue Description:\n$BODY"
-            CONTEXT_ARG=""
+            CONTEXT_ARGS=()
             if [ -n "${{ inputs.context }}" ]; then
-              CONTEXT_ARG="--context ${{ inputs.context }}"
+              CONTEXT_ARGS=(--context "${{ inputs.context }}")
             fi
-            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --agent "$AGENT_REF" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}" $CONTEXT_ARG --log-level "${{ inputs.log_level }}"
+            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --agent "$AGENT_REF" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}" "${CONTEXT_ARGS[@]}" --log-level "${{ inputs.log_level }}"
           else
             echo "Not an issue event or title is empty."
             exit 1
