@@ -15,7 +15,7 @@ const jose = await import('jose');
 describe('OIDC Validation', () => {
     test('should validate correct claims', () => {
         const claims = {
-            repository: 'jolestar/holon',
+            repository: 'holon-run/holon',
             repository_owner: 'jolestar',
             actor: 'jolestar',
             ref: 'refs/heads/main'
@@ -23,7 +23,7 @@ describe('OIDC Validation', () => {
 
         const result = validateClaims(claims);
         expect(result).toEqual({
-            repository: 'jolestar/holon',
+            repository: 'holon-run/holon',
             owner: 'jolestar',
             actor: 'jolestar',
             ref: 'refs/heads/main'
@@ -39,7 +39,7 @@ describe('OIDC Validation', () => {
 
     test('should throw error if owner is missing', () => {
         const claims = {
-            repository: 'jolestar/holon'
+            repository: 'holon-run/holon'
         };
         expect(() => validateClaims(claims)).toThrow('Missing repository information');
     });

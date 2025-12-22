@@ -1,4 +1,4 @@
-module github.com/jolestar/holon
+module github.com/holon-run/holon
 
 go 1.24.0
 

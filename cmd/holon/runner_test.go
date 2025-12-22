@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jolestar/holon/pkg/runtime/docker"
+	"github.com/holon-run/holon/pkg/runtime/docker"
 )
 
 // MockRuntime is a mock implementation of the Runtime interface for testing
