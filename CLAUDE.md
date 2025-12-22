@@ -241,43 +241,22 @@ Core runner extensions in `pkg/runtime/docker/`:
 
 ### Error Handling Requirements
 
-**MANDATORY**: Never ignore returned errors in Go code unless absolutely necessary.
+**MANDATORY**: Never ignore returned errors in Go code.
 
-#### Critical Rules
-- **Always check errors**: Every function that returns `(result, error)` must have the error value checked
-- **No blank identifier for errors**: Never use `err, _` or ignore errors without explicit justification
-- **Proper error wrapping**: Use `fmt.Errorf("context: %w", err)` to add context while preserving original error
-
-#### When Error Ignoring is Acceptable
-You may ignore errors **only** when:
-1. The operation is non-critical and failure has no meaningful impact
-2. You add a comment explaining why the error can be safely ignored
-3. The failure case is handled by other mechanisms (e.g., best-effort cleanup)
+- **Always check errors**: Every function returning `(result, error)` must handle the error
+- **No error ignoring**: Never use `err, _` unless you add a comment explaining why
+- **Proper error wrapping**: Use `fmt.Errorf("context: %w", err)` to add context
 
 ```go
-// GOOD: Proper error handling
+// GOOD: Handle errors properly
 data, err := os.ReadFile(filename)
 if err != nil {
-    return "", fmt.Errorf("failed to read config file %s: %w", filename, err)
+    return "", fmt.Errorf("failed to read file %s: %w", filename, err)
 }
 
-// GOOD: Error ignoring with justification
-_ = os.Remove(tempFile) // Best-effort cleanup, OS will handle eventually
-
-// BAD: Unjustified error ignoring
+// BAD: Ignoring errors
 data, _ := os.ReadFile(filename) // ERROR: Missing error handling!
 
-// GOOD: Handle cleanup errors without masking main error
-if err := writeFile(); err != nil {
-    if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
-        fmt.Printf("Warning: failed to cleanup directory: %v\n", cleanupErr)
-    }
-    return fmt.Errorf("failed to write file: %w", err)
-}
+// Acceptable: With justification
+_ = os.Remove(tempFile) // Best-effort cleanup, OS handles eventually
 ```
-
-#### Required Verification
-- All Go code changes must include proper error handling
-- Use `go vet` and `golangci-lint` to catch unhandled errors
-- Test error paths in unit tests
-- Review pull requests specifically for error handling compliance
