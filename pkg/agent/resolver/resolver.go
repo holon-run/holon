@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/holon-run/holon/pkg/agent"
 	"github.com/holon-run/holon/pkg/agent/cache"
 )
 
@@ -57,10 +58,16 @@ func NewRegistry(cacheDir string) *Registry {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
+	builtinResolver := &BuiltinResolver{
+		cache: cache,
+		transport: transport,
+	}
+
 	return &Registry{
 		cache: cache,
 		resolvers: []Resolver{
 			&FileResolver{},
+			builtinResolver, // Builtin resolver should be checked before HTTP/URL resolvers
 			&HTTPResolver{
 				cache: cache,
 				client: &http.Client{
@@ -328,4 +335,58 @@ func (r *AliasResolver) Resolve(ctx context.Context, ref string) (string, error)
 	}
 
 	return httpResolver.Resolve(ctx, url)
+}
+
+// BuiltinResolver resolves the builtin default agent
+type BuiltinResolver struct {
+	cache     *cache.Cache
+	transport *http.Transport
+}
+
+func (r *BuiltinResolver) CanResolve(ref string) bool {
+	// Don't resolve if auto-install is disabled
+	if agent.IsAutoInstallDisabled() {
+		return false
+	}
+
+	// Resolve empty string (no agent specified) and "default" alias
+	ref = strings.TrimSpace(ref)
+	return ref == "" || ref == "default"
+}
+
+func (r *BuiltinResolver) Resolve(ctx context.Context, ref string) (string, error) {
+	if !r.CanResolve(ref) {
+		return "", fmt.Errorf("builtin resolver cannot handle reference: %s", ref)
+	}
+
+	builtinAgent := agent.DefaultBuiltinAgent()
+	if builtinAgent == nil {
+		return "", fmt.Errorf("no builtin agent configured")
+	}
+
+	// Create an HTTP resolver to download the builtin agent
+	httpResolver := &HTTPResolver{
+		cache: r.cache,
+		client: &http.Client{
+			Timeout:   300 * time.Second,
+			Transport: r.transport,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				const maxRedirects = 10
+				if len(via) >= maxRedirects {
+					return fmt.Errorf("stopped after %d redirects", maxRedirects)
+				}
+				if req.URL != nil && req.URL.Scheme != "" {
+					scheme := strings.ToLower(req.URL.Scheme)
+					if scheme != "http" && scheme != "https" {
+						return fmt.Errorf("redirect to unsupported scheme: %s", req.URL.Scheme)
+					}
+				}
+				return nil
+			},
+		},
+	}
+
+	// Resolve the builtin agent URL with checksum
+	agentURL := builtinAgent.URL + "#sha256=" + builtinAgent.Checksum
+	return httpResolver.Resolve(ctx, agentURL)
 }

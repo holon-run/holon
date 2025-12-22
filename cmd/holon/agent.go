@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/holon-run/holon/pkg/agent"
 	"github.com/holon-run/holon/pkg/agent/cache"
 	"github.com/spf13/cobra"
 )
@@ -138,6 +139,50 @@ func validateURL(urlStr string) error {
 	return nil
 }
 
+var agentInfoCmd = &cobra.Command{
+	Use:   "info",
+	Short: "Show information about agent bundles",
+	Long: `Show detailed information about agent bundles, including the builtin
+default agent configuration.`,
+}
+
+var agentInfoDefaultCmd = &cobra.Command{
+	Use:   "default",
+	Short: "Show information about the builtin default agent",
+	Long: `Display detailed information about the builtin default agent that Holon
+uses when no agent is explicitly specified.
+
+This shows the agent version, download URL, and checksum that will be used
+for auto-installation.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		builtinAgent := agent.DefaultBuiltinAgent()
+		if builtinAgent == nil {
+			fmt.Println("No builtin agent configured.")
+			return nil
+		}
+
+		fmt.Printf("Builtin Default Agent:\n")
+		fmt.Printf("  Name:     %s\n", builtinAgent.Name)
+		fmt.Printf("  Version:  %s\n", builtinAgent.Version)
+		fmt.Printf("  URL:      %s\n", builtinAgent.URL)
+		fmt.Printf("  Checksum: %s\n", builtinAgent.Checksum)
+
+		fmt.Println()
+		if agent.IsAutoInstallDisabled() {
+			fmt.Println("Auto-install: DISABLED (HOLON_NO_AUTO_INSTALL=1)")
+		} else {
+			fmt.Println("Auto-install: ENABLED")
+		}
+
+		fmt.Println()
+		fmt.Println("Usage:")
+		fmt.Println("  holon run --goal \"your goal\"      # Uses builtin agent")
+		fmt.Println("  holon run --agent default --goal \"your goal\"  # Explicitly uses builtin agent")
+
+		return nil
+	},
+}
+
 func init() {
 	agentInstallCmd.Flags().String("name", "", "Alias name for the agent bundle (required)")
 	_ = agentInstallCmd.MarkFlagRequired("name")
@@ -145,4 +190,6 @@ func init() {
 	agentCmd.AddCommand(agentInstallCmd)
 	agentCmd.AddCommand(agentListCmd)
 	agentCmd.AddCommand(agentRemoveCmd)
+	agentCmd.AddCommand(agentInfoCmd)
+	agentInfoCmd.AddCommand(agentInfoDefaultCmd)
 }

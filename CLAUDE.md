@@ -66,6 +66,7 @@ make clean
 - `holon agent install <url> --name <alias>`: Install an agent alias
 - `holon agent list`: List installed agent aliases
 - `holon agent remove <alias>`: Remove an agent alias
+- `holon agent info default`: Show information about builtin default agent
 
 ## Code Architecture
 
@@ -82,9 +83,10 @@ make clean
 - `buildComposedImageFromBundle()`: Dynamically combines base image + agent bundle
 
 **Agent Resolver System**: `pkg/agent/resolver/`
-- Supports multiple resolution strategies: local files, HTTP URLs, and aliases
+- Supports multiple resolution strategies: local files, HTTP URLs, aliases, and builtin default
 - Automatic caching of downloaded bundles with integrity verification
 - CLI commands for managing agent aliases
+- **BuiltinResolver**: Provides automatic fallback to default agent when none specified
 
 **Agent Cache**: `pkg/agent/cache/`
 - Manages local bundle storage in `$HOLON_CACHE_DIR` or `~/.holon/cache`
@@ -165,10 +167,11 @@ make test-agent
 - Optional: `HOLON_CACHE_DIR`: Custom cache directory (default: `~/.holon/cache`)
 - Optional: `HOLON_AGENT`: Default agent bundle reference
 - Optional: `HOLON_AGENT_BUNDLE`: Legacy default agent bundle (deprecated)
+- Optional: `HOLON_NO_AUTO_INSTALL`: Disable builtin agent auto-install (set to "1" or "true")
 
 ### Development Prerequisites
 - Docker installed and running
-- Go 1.22+
+- Go 1.24+ (required by go.mod)
 - Node.js (for holonbot development)
 
 ## Key Implementation Details
@@ -205,6 +208,42 @@ holon run --agent myagent --goal "Refactor component"
 - Bundles are cached in `$HOLON_CACHE_DIR` or `~/.holon/cache`
 - Use `holon agent list` to see installed aliases
 - Cache avoids re-downloading on repeated runs
+
+### Builtin Agent Auto-Install
+
+Holon includes a builtin default agent that provides out-of-the-box functionality without manual agent bundle setup.
+
+**Default Agent Resolution:**
+When no `--agent` is specified, Holon automatically:
+1. Attempts to resolve/install the builtin default agent
+2. Falls back to local build system if auto-install fails
+3. Requires explicit `--agent` if both fail
+
+**Usage Examples:**
+```bash
+# Uses builtin agent automatically
+holon run --goal "Fix the division by zero error in examples/buggy.go"
+
+# Explicitly use builtin agent
+holon run --agent default --goal "Analyze the codebase"
+
+# Disable auto-install (requires explicit agent or local build)
+HOLON_NO_AUTO_INSTALL=1 holon run --goal "Fix the bug"
+
+# Check builtin agent configuration
+holon agent info default
+```
+
+**Auto-Install Control:**
+- **Enabled by default**: Builtin agent downloads and caches automatically
+- **Disable with**: `HOLON_NO_AUTO_INSTALL=1` environment variable
+- **Strict environments**: Set this variable to prevent network downloads
+
+**Builtin Agent Metadata:**
+- **Location**: `pkg/agent/builtin.go` - embedded in binary
+- **Configuration**: Release URL + SHA256 checksum for integrity verification
+- **Caching**: Uses same cache system as remote URL installs
+- **Updates**: Tied to Holon releases (configurable per version)
 
 ### Spec vs Goal Execution
 - **Spec mode**: Use `--spec` for structured, reproducible task definitions

@@ -228,10 +228,21 @@ func (r *Runner) resolveAgentBundle(ctx context.Context, cfg RunnerConfig, works
 		return resolvedPath, nil
 	}
 
-	// Fall back to local build system
+	// Try builtin agent (auto-install) first
+	fmt.Println("No agent specified, trying builtin default agent...")
+	resolvedPath, err := r.resolver.Resolve(ctx, "") // Empty string triggers builtin resolver
+	if err == nil {
+		fmt.Printf("Successfully resolved builtin agent: %s\n", resolvedPath)
+		return resolvedPath, nil
+	}
+
+	// If builtin agent failed (e.g., auto-install disabled), fall back to local build system
+	fmt.Printf("Builtin agent not available: %v\n", err)
+	fmt.Println("Falling back to local build system...")
+
 	scriptPath := filepath.Join(workspace, "agents", "claude", "scripts", "build-bundle.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
-		return "", fmt.Errorf("agent bundle not found; set --agent/HOLON_AGENT (legacy: --agent-bundle/HOLON_AGENT_BUNDLE)")
+		return "", fmt.Errorf("agent bundle not found; set --agent/HOLON_AGENT (legacy: --agent-bundle/HOLON_AGENT_BUNDLE) or enable auto-install")
 	}
 
 	bundleDir := filepath.Join(workspace, "agents", "claude", "dist", "agent-bundles")
