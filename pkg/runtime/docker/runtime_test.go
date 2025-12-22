@@ -3,6 +3,7 @@ package docker
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -276,16 +277,18 @@ func TestMkdirTempOutsideWorkspace_DoesNotNest(t *testing.T) {
 
 // TestGetGitConfig tests the getGitConfig helper function
 func TestGetGitConfig(t *testing.T) {
-	// Save original PATH and restore it after tests
+	// Skip test on Windows as it relies on Unix shell scripts
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows - requires Unix shell")
+	}
+
+	// Save original PATH for restoring in each test
 	originalPath := os.Getenv("PATH")
-	defer func() {
-		os.Setenv("PATH", originalPath)
-	}()
 
 	tests := []struct {
 		name           string
 		key            string
-		setupFunc      func() func()
+		setupFunc      func()
 		expectedResult string
 		expectedError  bool
 		errorContains  string
@@ -293,7 +296,7 @@ func TestGetGitConfig(t *testing.T) {
 		{
 			name: "successful git config retrieval",
 			key:  "user.name",
-			setupFunc: func() func() {
+			setupFunc: func() {
 				// Create a mock git command that returns a known value
 				tempDir := t.TempDir()
 				mockGit := filepath.Join(tempDir, "git")
@@ -308,10 +311,10 @@ exit 1`
 				}
 
 				// Prepend temp dir to PATH to use our mock git
-				os.Setenv("PATH", tempDir+":"+originalPath)
-				return func() {
-					// Cleanup handled by t.TempDir()
-				}
+				// Use list.ListSeparator for cross-platform compatibility
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+				// Cleanup handled by t.TempDir()
 			},
 			expectedResult: "Test User",
 			expectedError:  false,
@@ -319,7 +322,7 @@ exit 1`
 		{
 			name: "git config with leading/trailing whitespace",
 			key:  "user.email",
-			setupFunc: func() func() {
+			setupFunc: func() {
 				tempDir := t.TempDir()
 				mockGit := filepath.Join(tempDir, "git")
 				script := `#!/bin/bash
@@ -332,8 +335,8 @@ exit 1`
 					t.Fatalf("Failed to create mock git: %v", err)
 				}
 
-				os.Setenv("PATH", tempDir+":"+originalPath)
-				return func() {}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
 			expectedResult: "test@example.com",
 			expectedError:  false,
@@ -341,7 +344,7 @@ exit 1`
 		{
 			name: "git config with multiline output",
 			key:  "user.name",
-			setupFunc: func() func() {
+			setupFunc: func() {
 				tempDir := t.TempDir()
 				mockGit := filepath.Join(tempDir, "git")
 				script := `#!/bin/bash
@@ -354,8 +357,8 @@ exit 1`
 					t.Fatalf("Failed to create mock git: %v", err)
 				}
 
-				os.Setenv("PATH", tempDir+":"+originalPath)
-				return func() {}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
 			expectedResult: "Test User",
 			expectedError:  false,
@@ -363,11 +366,10 @@ exit 1`
 		{
 			name: "git command not found",
 			key:  "user.name",
-			setupFunc: func() func() {
+			setupFunc: func() {
 				// Set PATH to empty directory so git is not found
 				tempDir := t.TempDir()
-				os.Setenv("PATH", tempDir)
-				return func() {}
+				t.Setenv("PATH", tempDir)
 			},
 			expectedResult: "",
 			expectedError:  true,
@@ -376,7 +378,7 @@ exit 1`
 		{
 			name: "git config key not found",
 			key:  "nonexistent.key",
-			setupFunc: func() func() {
+			setupFunc: func() {
 				tempDir := t.TempDir()
 				mockGit := filepath.Join(tempDir, "git")
 				script := `#!/bin/bash
@@ -388,8 +390,8 @@ exit 1`
 					t.Fatalf("Failed to create mock git: %v", err)
 				}
 
-				os.Setenv("PATH", tempDir+":"+originalPath)
-				return func() {}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
 			expectedResult: "",
 			expectedError:  true,
@@ -397,7 +399,7 @@ exit 1`
 		{
 			name: "git command exits with error",
 			key:  "user.name",
-			setupFunc: func() func() {
+			setupFunc: func() {
 				tempDir := t.TempDir()
 				mockGit := filepath.Join(tempDir, "git")
 				script := `#!/bin/bash
@@ -407,8 +409,8 @@ exit 128`
 					t.Fatalf("Failed to create mock git: %v", err)
 				}
 
-				os.Setenv("PATH", tempDir+":"+originalPath)
-				return func() {}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
 			expectedResult: "",
 			expectedError:  true,
@@ -416,7 +418,7 @@ exit 128`
 		{
 			name: "empty git config value",
 			key:  "user.name",
-			setupFunc: func() func() {
+			setupFunc: func() {
 				tempDir := t.TempDir()
 				mockGit := filepath.Join(tempDir, "git")
 				script := `#!/bin/bash
@@ -429,8 +431,8 @@ exit 1`
 					t.Fatalf("Failed to create mock git: %v", err)
 				}
 
-				os.Setenv("PATH", tempDir+":"+originalPath)
-				return func() {}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
 			expectedResult: "",
 			expectedError:  false,
@@ -441,8 +443,8 @@ exit 1`
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup test environment
 			if tt.setupFunc != nil {
-				cleanup := tt.setupFunc()
-				defer cleanup()
+				tt.setupFunc()
+				// No cleanup needed - t.Setenv handles restoration automatically
 			}
 
 			// Test the function
