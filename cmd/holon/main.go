@@ -77,6 +77,7 @@ func init() {
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(agentCmd)
+	rootCmd.AddCommand(contextCmd)
 }
 
 func main() {

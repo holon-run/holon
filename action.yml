@@ -27,6 +27,10 @@ inputs:
     description: 'Path to output directory'
     required: false
     default: './holon-output'
+  context:
+    description: 'Path to context directory'
+    required: false
+    default: ''
   holonbot_broker_url:
     description: 'URL of the Holonbot Token Broker'
     required: false
@@ -106,7 +110,11 @@ runs:
 
           if [ -n "$TITLE" ]; then
             GOAL="Issue Title: $TITLE\n\nIssue Description:\n$BODY"
-            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --agent "$AGENT_REF" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}" --log-level "${{ inputs.log_level }}"
+            CONTEXT_ARG=""
+            if [ -n "${{ inputs.context }}" ]; then
+              CONTEXT_ARG="--context ${{ inputs.context }}"
+            fi
+            ./bin/holon run --goal "$GOAL" --image "${{ inputs.image }}" --agent "$AGENT_REF" --workspace "${{ inputs.workspace }}" --out "${{ inputs.out_dir }}" $CONTEXT_ARG --log-level "${{ inputs.log_level }}"
           else
             echo "Not an issue event or title is empty."
             exit 1

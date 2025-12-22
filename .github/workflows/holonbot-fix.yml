@@ -162,6 +162,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare PR context
+        id: prepare-context
+        run: |
+          echo "Preparing PR review context..."
+          mkdir -p holon-input/context
+
+          # Build holon if not present
+          if [ ! -f bin/holon ]; then
+            make build
+          fi
+
+          # Collect PR context using the new context command
+          ./bin/holon context collect-pr \
+            --owner "${{ github.repository_owner }}" \
+            --repo "${{ github.event.repository.name }}" \
+            --pr "${{ needs.parse-and-gate.outputs.pr_number }}" \
+            --token "${{ secrets.GITHUB_TOKEN }}" \
+            --out "./holon-input/context" \
+            --include-diff \
+            --unresolved-only=false
+
+          echo "Context preparation complete!"
+          ls -la holon-input/context/github/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run Holon
         id: holon
         uses: ./
@@ -175,6 +201,7 @@ jobs:
           goal: ${{ steps.task-extraction.outputs.goal }}
           spec: ''
           workspace: '.'
+          context: './holon-input/context'
           out: './holon-output'
 
       - name: Update reaction based on result
