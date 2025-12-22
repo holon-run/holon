@@ -16,6 +16,9 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Fetch all tags
+      run: git fetch --tags --force
+
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
@@ -32,7 +35,8 @@ jobs:
       id: check_tag
       run: |
         TAG="agent-claude-v${{ steps.version.outputs.version }}"
-        if git rev-parse "$TAG" >/dev/null 2>&1; then
+        # Check if tag exists locally or remotely
+        if git rev-parse "$TAG" >/dev/null 2>&1 || git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
           echo "exists=true" >> $GITHUB_OUTPUT
           echo "Tag $TAG already exists"
         else
@@ -53,7 +57,32 @@ jobs:
         cd agents/claude
         chmod +x scripts/prepare-release-assets.sh
         ./scripts/prepare-release-assets.sh ${{ steps.version.outputs.version }} > /tmp/release-assets.env
-        cat /tmp/release-assets.env >> $GITHUB_ENV
+
+        # Validate that expected environment variables were produced
+        set -a
+        . /tmp/release-assets.env
+        set +a
+
+        if [ -z "$bundle_file" ] || [ -z "$checksum_file" ]; then
+          echo "Error: Expected bundle_file and checksum_file to be set in /tmp/release-assets.env" >&2
+          echo "Contents of /tmp/release-assets.env:" >&2
+          cat /tmp/release-assets.env >&2 || true
+          exit 1
+        fi
+
+        cat /tmp/release-assets.env >> "$GITHUB_ENV"
+
+    - name: Validate release assets
+      if: steps.check_tag.outputs.exists == 'false'
+      run: |
+        if [ ! -f "${{ env.bundle_file }}" ]; then
+          echo "Error: Bundle file not found at ${{ env.bundle_file }}" >&2
+          exit 1
+        fi
+        if [ ! -f "${{ env.checksum_file }}" ]; then
+          echo "Error: Checksum file not found at ${{ env.checksum_file }}" >&2
+          exit 1
+        fi
 
     - name: Create and push tag
       if: steps.check_tag.outputs.exists == 'false'

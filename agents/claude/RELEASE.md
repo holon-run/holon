@@ -58,8 +58,22 @@ sha256sum -c "holon-agent-claude-${VERSION}.tar.gz.sha256"
 # Using a local bundle file
 holon run --agent ./holon-agent-claude-0.1.0.tar.gz --spec your-spec.yaml
 
-# Using a remote URL (requires download first)
-holon run --agent https://github.com/holoscript/holon/releases/download/agent-claude-v0.1.0/holon-agent-claude-0.1.0.tar.gz --spec your-spec.yaml
+# Using a remote bundle (download first)
+VERSION="0.1.0"
+REPO="holoscript/holon"
+BUNDLE="holon-agent-claude-${VERSION}.tar.gz"
+
+# Download the bundle
+curl -L -o "${BUNDLE}" \
+  "https://github.com/${REPO}/releases/download/agent-claude-v${VERSION}/${BUNDLE}"
+
+# Verify checksum
+curl -L -o "${BUNDLE}.sha256" \
+  "https://github.com/${REPO}/releases/download/agent-claude-v${VERSION}/${BUNDLE}.sha256"
+sha256sum -c "${BUNDLE}.sha256"
+
+# Use with Holon CLI
+holon run --agent "${BUNDLE}" --spec your-spec.yaml
 ```
 
 ### CI/CD Integration
