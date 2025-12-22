@@ -1,0 +1,141 @@
+name: Publish Claude Agent Bundle
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'agents/claude/package.json'
+
+permissions:
+  contents: write
+
+jobs:
+  publish-agent-bundle:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Fetch all tags
+      run: git fetch --tags --force
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Get package version
+      id: version
+      run: |
+        VERSION=$(node -e "const p=require('./agents/claude/package.json'); console.log(p.version)")
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Package version: $VERSION"
+
+    - name: Check if tag exists
+      id: check_tag
+      run: |
+        TAG="agent-claude-v${{ steps.version.outputs.version }}"
+        # After fetching all tags, we only need to check locally
+        if git rev-parse "$TAG" >/dev/null 2>&1; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "Tag $TAG already exists"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "Tag $TAG does not exist"
+        fi
+
+    - name: Build agent bundle
+      if: steps.check_tag.outputs.exists == 'false'
+      run: |
+        cd agents/claude
+        npm ci
+        npm run bundle
+
+    - name: Prepare release assets
+      if: steps.check_tag.outputs.exists == 'false'
+      run: |
+        cd agents/claude
+        chmod +x scripts/prepare-release-assets.sh
+        ./scripts/prepare-release-assets.sh ${{ steps.version.outputs.version }} > /tmp/release-assets.env
+
+        # Validate that expected environment variables were produced
+        set -a
+        . /tmp/release-assets.env
+        set +a
+
+        if [ -z "$bundle_file" ] || [ -z "$checksum_file" ]; then
+          echo "Error: Expected bundle_file and checksum_file to be set in /tmp/release-assets.env" >&2
+          echo "Contents of /tmp/release-assets.env:" >&2
+          cat /tmp/release-assets.env >&2 || true
+          exit 1
+        fi
+
+        cat /tmp/release-assets.env >> "$GITHUB_ENV"
+
+    - name: Validate release assets
+      if: steps.check_tag.outputs.exists == 'false'
+      run: |
+        if [ ! -f "${{ env.bundle_file }}" ]; then
+          echo "Error: Bundle file not found at ${{ env.bundle_file }}" >&2
+          exit 1
+        fi
+        if [ ! -f "${{ env.checksum_file }}" ]; then
+          echo "Error: Checksum file not found at ${{ env.checksum_file }}" >&2
+          exit 1
+        fi
+
+    - name: Create and push tag
+      id: push_tag
+      if: steps.check_tag.outputs.exists == 'false'
+      run: |
+        TAG="agent-claude-v${{ steps.version.outputs.version }}"
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git tag -a "$TAG" -m "Release Claude Agent v${{ steps.version.outputs.version }}"
+
+        # Try to push tag, handle race condition
+        if git push origin "$TAG" 2>/dev/null; then
+          echo "pushed=true" >> $GITHUB_OUTPUT
+          echo "Tag $TAG pushed successfully"
+        else
+          # Check if tag exists remotely now
+          if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+            echo "pushed=false" >> $GITHUB_OUTPUT
+            echo "Tag $TAG already exists remotely, skipping push"
+          else
+            echo "pushed=false" >> $GITHUB_OUTPUT
+            echo "Failed to push tag $TAG and it doesn't exist remotely" >&2
+            exit 1
+          fi
+        fi
+
+    - name: Create GitHub Release
+      if: steps.check_tag.outputs.exists == 'false' && steps.push_tag.outputs.pushed == 'true'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: agent-claude-v${{ steps.version.outputs.version }}
+        name: Claude Agent v${{ steps.version.outputs.version }}
+        body: |
+          Claude Agent Bundle v${{ steps.version.outputs.version }}
+
+          ## Assets
+          - `holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz` - Agent bundle
+          - `holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz.sha256` - SHA256 checksum
+
+          ## Usage
+          ```bash
+          # Download and verify
+          curl -L -o holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz "https://github.com/${{ github.repository }}/releases/download/agent-claude-v${{ steps.version.outputs.version }}/holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz"
+          curl -L -o holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz.sha256 "https://github.com/${{ github.repository }}/releases/download/agent-claude-v${{ steps.version.outputs.version }}/holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz.sha256"
+
+          # Verify checksum
+          sha256sum -c holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz.sha256
+
+          # Use with Holon CLI
+          holon run --agent holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz --spec your-spec.yaml
+          ```
+        files: |
+          ${{ env.bundle_file }}
+          ${{ env.checksum_file }}
+        draft: false
+        prerelease: false
