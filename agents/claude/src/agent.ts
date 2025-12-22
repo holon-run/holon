@@ -410,6 +410,7 @@ async function runClaude(
 
 async function runAgent(): Promise<void> {
   const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress");
+  const mode = process.env.HOLON_MODE ?? "execute";
   const isProbe = process.argv.slice(2).includes("--probe");
 
   console.log("Holon Claude Agent process started...");
@@ -545,6 +546,7 @@ async function runAgent(): Promise<void> {
       metadata: {
         agent: "claude-code",
         version: "0.1.0",
+        mode: mode,
       },
       status: "completed",
       outcome: success ? "success" : "failure",
@@ -583,6 +585,11 @@ async function runAgent(): Promise<void> {
     logger.logOutcome(false, durationSeconds, String(error));
 
     const manifest = {
+      metadata: {
+        agent: "claude-code",
+        version: "0.1.0",
+        mode: mode,
+      },
       status: "completed",
       outcome: "failure",
       error: String(error),

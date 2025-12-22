@@ -21,6 +21,7 @@ var outDir string
 var roleName string
 var envVarsList []string
 var logLevel string
+var mode string
 
 var runCmd = &cobra.Command{
 	Use:   "run",
@@ -49,6 +50,7 @@ var runCmd = &cobra.Command{
 			RoleName:      roleName,
 			EnvVarsList:   envVarsList,
 			LogLevel:      logLevel,
+			Mode:          mode,
 		})
 	},
 }
@@ -70,6 +72,7 @@ func init() {
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVarP(&outDir, "out", "o", "./holon-output", "Path to output directory")
 	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. developer, reviewer)")
+	runCmd.Flags().StringVar(&mode, "mode", "execute", "Execution mode: execute, plan, review")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	rootCmd.AddCommand(runCmd)

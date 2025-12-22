@@ -394,6 +394,61 @@ func TestRunner_Run_LogLevelDefaults(t *testing.T) {
 	}
 }
 
+func TestRunner_Run_ModeDefaults(t *testing.T) {
+	mockRuntime := &MockRuntime{}
+	runner := NewRunner(mockRuntime)
+
+	_, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, t.TempDir())
+
+	// Test without explicit mode (should default to "execute")
+	cfg1 := RunnerConfig{
+		GoalStr:       "Test goal",
+		TaskName:      "test-mode-1",
+		WorkspacePath: workspaceDir,
+		OutDir:        outDir,
+		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
+	}
+
+	err := runner.Run(context.Background(), cfg1)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	calls1 := mockRuntime.GetCalls()
+	if len(calls1) == 0 {
+		t.Error("Expected at least 1 call to RunHolon")
+	} else if calls1[0].cfg.Env["HOLON_MODE"] != "execute" {
+		t.Errorf("Expected default HOLON_MODE to be 'execute', got %q", calls1[0].cfg.Env["HOLON_MODE"])
+	}
+
+	mockRuntime.Reset()
+
+	// Test with explicit mode
+	cfg2 := RunnerConfig{
+		GoalStr:       "Test goal",
+		TaskName:      "test-mode-2",
+		WorkspacePath: workspaceDir,
+		OutDir:        outDir,
+		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
+		Mode:          "plan",
+	}
+
+	err = runner.Run(context.Background(), cfg2)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	calls2 := mockRuntime.GetCalls()
+	if len(calls2) == 0 {
+		t.Error("Expected at least 1 call to RunHolon")
+	} else if calls2[0].cfg.Env["HOLON_MODE"] != "plan" {
+		t.Errorf("Expected HOLON_MODE to be 'plan', got %q", calls2[0].cfg.Env["HOLON_MODE"])
+	}
+}
+
 func TestRunner_collectEnvVars_SpecEnvParsing(t *testing.T) {
 	runner := NewRunner(&MockRuntime{})
 
@@ -561,6 +616,7 @@ func TestRunner_Integration(t *testing.T) {
 		RoleName:      "coder",
 		EnvVarsList:   []string{"CLI_VAR=cli-value"},
 		LogLevel:      "debug",
+		Mode:          "execute",
 	}
 
 	err := runner.Run(context.Background(), cfg)
@@ -584,6 +640,9 @@ func TestRunner_Integration(t *testing.T) {
 	}
 	if env["LOG_LEVEL"] != "debug" {
 		t.Errorf("Expected LOG_LEVEL to be 'debug', got %q", env["LOG_LEVEL"])
+	}
+	if env["HOLON_MODE"] != "execute" {
+		t.Errorf("Expected HOLON_MODE to be 'execute', got %q", env["HOLON_MODE"])
 	}
 
 	// Verify debug prompts were created
