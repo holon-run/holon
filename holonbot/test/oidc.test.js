@@ -16,7 +16,7 @@ describe('OIDC Validation', () => {
     test('should validate correct claims', () => {
         const claims = {
             repository: 'holon-run/holon',
-            repository_owner: 'jolestar',
+            repository_owner: 'holon-run',
             actor: 'jolestar',
             ref: 'refs/heads/main'
         };
@@ -24,7 +24,7 @@ describe('OIDC Validation', () => {
         const result = validateClaims(claims);
         expect(result).toEqual({
             repository: 'holon-run/holon',
-            owner: 'jolestar',
+            owner: 'holon-run',
             actor: 'jolestar',
             ref: 'refs/heads/main'
         });
