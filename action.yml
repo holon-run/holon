@@ -198,8 +198,15 @@ runs:
       run: |
         OUT_DIR="${{ inputs.out_dir }}"
 
-        if [ -s "$OUT_DIR/diff.patch" ]; then
-          echo "diff_exists=true" >> "$GITHUB_OUTPUT"
+        if [ -e "$OUT_DIR/diff.patch" ]; then
+          if [ -s "$OUT_DIR/diff.patch" ]; then
+            echo "Non-empty diff.patch detected in $OUT_DIR."
+            echo "diff_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "diff.patch exists in $OUT_DIR but is empty."
+            echo "diff_exists=false" >> "$GITHUB_OUTPUT"
+          fi
         else
+          echo "diff.patch not found in $OUT_DIR."
           echo "diff_exists=false" >> "$GITHUB_OUTPUT"
         fi
