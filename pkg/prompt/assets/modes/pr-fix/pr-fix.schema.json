@@ -4,7 +4,10 @@
   "title": "PR Fix Output",
   "description": "Schema for pr-fix mode output. Contains structured responses to GitHub PR review comments and CI/check run status updates.",
   "type": "object",
-  "required": [],
+  "anyOf": [
+    {"required": ["review_replies"]},
+    {"required": ["checks"]}
+  ],
   "properties": {
     "review_replies": {
       "type": "array",
@@ -18,7 +21,7 @@
               {"type": "integer"},
               {"type": "string"}
             ],
-            "description": "Unique identifier for the review comment to reply to (GitHub comment ID)."
+            "description": "Unique identifier for the review comment to reply to (GitHub comment ID). Prefer an integer (as returned by GitHub APIs); a string is allowed for compatibility with clients that serialize IDs as strings."
           },
           "status": {
             "type": "string",

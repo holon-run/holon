@@ -47,7 +47,7 @@ The `pr-fix.json` file contains two main sections:
       "action_taken": "Added error checking and fmt.Errorf wrapping in parseConfig function"
     },
     {
-      "comment_id": 456,
+      "comment_id": "456",
       "status": "wontfix",
       "message": "This pattern aligns with our existing error handling conventions in pkg/runtime. The tradeoff is more verbose code but better consistency.",
       "action_taken": null

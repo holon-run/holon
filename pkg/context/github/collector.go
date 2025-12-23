@@ -71,15 +71,16 @@ func (c *Collector) Collect(ctx context.Context) error {
 	}
 
 	fmt.Println("Context collection complete!")
-	fmt.Printf("  Output directory: %s/github/\n", c.config.OutputDir)
+	fmt.Printf("  Output directory: %s/\n", c.config.OutputDir)
+	fmt.Printf("  GitHub context directory: %s/github/\n", c.config.OutputDir)
 	fmt.Println("  Files created:")
-	fmt.Println("    - pr.json")
-	fmt.Println("    - review_threads.json")
+	fmt.Println("    - github/pr.json")
+	fmt.Println("    - github/review_threads.json")
 	fmt.Println("    - pr-fix.schema.json")
 	if diff != "" {
-		fmt.Println("    - pr.diff")
+		fmt.Println("    - github/pr.diff")
 	}
-	fmt.Println("    - review.md")
+	fmt.Println("    - github/review.md")
 
 	return nil
 }
