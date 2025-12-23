@@ -44,11 +44,11 @@ inputs:
     required: false
     default: 'execute'
   goal:
-    description: 'Goal description (alternative to spec, takes precedence over issue event extraction)'
+    description: 'Goal description (used when spec is not provided, takes precedence over issue event extraction)'
     required: false
     default: ''
   spec:
-    description: 'Path to holon spec file (alternative to goal)'
+    description: 'Path to holon spec file (takes precedence over goal)'
     required: false
     default: ''
   role:
