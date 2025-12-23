@@ -3,6 +3,7 @@ package prompt
 import (
 	"bytes"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"text/template"
@@ -98,11 +99,11 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		role = manifest.Defaults.Role
 	}
 	if role == "" {
-		role = "coder" // Fallback
+		role = "developer" // Fallback
 	}
-	// Support "developer" as alias for "coder"
-	if role == "developer" {
-		role = "coder"
+	// Support "coder" as an alias for "developer"
+	if role == "coder" {
+		role = "developer"
 	}
 
 	// 4. Load Common Contract (base layer)
@@ -111,37 +112,54 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		return "", fmt.Errorf("failed to read common contract: %w", err)
 	}
 
-	// 5. Load Mode Contract (optional overlay)
-	// Mode contracts are optional - if missing, skip silently
+	// 5. Load Role (required behavioral layer)
+	rolePath := fmt.Sprintf("roles/%s.md", role)
+	roleData, err := fs.ReadFile(c.assets, rolePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read role %s: %w", role, err)
+	}
+
+	// 6. Load Mode Contract (optional layer)
+	// Mode contracts are optional - if missing, continue without them.
 	var modeData []byte
 	modeContractPath := fmt.Sprintf("modes/%s/contract.md", mode)
-	modeData, err = fs.ReadFile(c.assets, modeContractPath)
+	modeData, err = readOptionalFile(c.assets, modeContractPath)
 	if err != nil {
-		// Mode contract is optional - continue without it
-
+		return "", err
 	}
 
-	// 6. Load Role (behavioral overlay)
-	// Try mode-specific role overlay first, then fall back to generic role
-	modeRolePath := fmt.Sprintf("modes/%s/roles/%s.md", mode, role)
-	roleData, err := fs.ReadFile(c.assets, modeRolePath)
+	// 7. Load Mode Overlay (optional layer)
+	var modeOverlayData []byte
+	modeOverlayPath := fmt.Sprintf("modes/%s/overlay.md", mode)
+	modeOverlayData, err = readOptionalFile(c.assets, modeOverlayPath)
 	if err != nil {
-		// Mode-specific role not found, try generic role
-		rolePath := fmt.Sprintf("roles/%s.md", role)
-		roleData, err = fs.ReadFile(c.assets, rolePath)
-		if err != nil {
-			return "", fmt.Errorf("failed to read role %s: tried mode-specific path %s and generic path %s: %w", role, modeRolePath, rolePath, err)
-		}
+		return "", err
 	}
 
-	// 7. Combine layers in order: common + mode contract + role
+	// 8. Load Role Overlay (optional layer for selected role only)
+	var roleOverlayData []byte
+	roleOverlayPath := fmt.Sprintf("modes/%s/overlays/%s.md", mode, role)
+	roleOverlayData, err = readOptionalFile(c.assets, roleOverlayPath)
+	if err != nil {
+		return "", err
+	}
+
+	// 9. Combine layers in order: common + role + mode contract + mode overlay + role overlay
 	fullTemplate := string(commonData)
+
+	fullTemplate += "\n\n" + string(roleData)
 
 	if modeData != nil {
 		fullTemplate += "\n\n" + string(modeData)
 	}
 
-	fullTemplate += "\n\n" + string(roleData)
+	if modeOverlayData != nil {
+		fullTemplate += "\n\n" + string(modeOverlayData)
+	}
+
+	if roleOverlayData != nil {
+		fullTemplate += "\n\n" + string(roleOverlayData)
+	}
 
 	// 8. Template Execution
 	tmpl, err := template.New("system").Parse(fullTemplate)
@@ -155,6 +173,17 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+func readOptionalFile(assets fs.FS, path string) ([]byte, error) {
+	data, err := fs.ReadFile(assets, path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read optional file %s: %w", path, err)
+	}
+	return data, nil
 }
 
 // CompileUserPrompt assembles the user's task prompt (Goal + Context Filenames)

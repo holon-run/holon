@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://holon.dev/schemas/review-replies-v1.json",
+  "$id": "https://holon.dev/schemas/review-replies-v2.json",
   "title": "Review Replies",
   "description": "Schema for review replies generated in review-fix mode. Contains structured responses to GitHub PR review comments.",
   "type": "object",
@@ -11,11 +11,11 @@
       "description": "Array of reply objects, one per review comment thread.",
       "items": {
         "type": "object",
-        "required": ["thread_id", "comment_body", "reply"],
+        "required": ["comment_id", "comment_body", "reply"],
         "properties": {
-          "thread_id": {
+          "comment_id": {
             "type": "string",
-            "description": "Unique identifier for the review comment thread (typically the GitHub comment ID or thread hash)."
+            "description": "Unique identifier for the review comment to reply to (GitHub comment ID)."
           },
           "comment_body": {
             "type": "string",
