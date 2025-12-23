@@ -275,9 +275,10 @@ pkg/prompt/assets/
 │   ├── execute/           # Default execution mode
 │   │   ├── contract.md    # Execute mode overlay
 │   │   └── roles/         # Mode-specific role overrides
-│   └── review-fix/        # Example: review-fix mode
-│       ├── contract.md
-│       └── roles/
+│   └── pr-fix/            # PR-fix mode
+│       ├── contract.md    # PR-fix mode contract
+│       ├── pr-fix.schema.json  # Canonical output schema
+│       └── overlays/      # Role-specific overlays
 └── roles/
     ├── coder.md           # Senior software engineer role
     └── default.md         # Generic assistant role
@@ -293,10 +294,10 @@ defaults:
 ```
 
 **Mode System:**
-- Modes define execution patterns (e.g., `execute`, `review-fix`, `plan`)
+- Modes define execution patterns (e.g., `execute`, `pr-fix`, `plan`)
 - Each mode can have its own contract overlay and role-specific overrides
 - Mode contracts are **optional** - if missing, only common contract is used
-- Role files are looked up first in `modes/{mode}/roles/`, then in `roles/`
+- Role files are looked up first in `modes/{mode}/overlays/`, then in `roles/`
 
 **Role Aliases:**
 - `developer` → `coder` (alias for backward compatibility)
@@ -308,7 +309,7 @@ defaults:
 holon run --goal "Fix the bug"
 
 # Explicit mode selection
-holon run --mode review-fix --goal "Review and fix the issue"
+holon run --mode pr-fix --goal "Fix the PR review comments"
 
 # Use a specific role
 holon run --role architect --goal "Design the system"

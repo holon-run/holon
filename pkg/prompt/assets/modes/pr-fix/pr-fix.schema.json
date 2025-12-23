@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://holon.dev/schemas/pr-fix-v1.json",
+  "title": "PR Fix Output",
+  "description": "Schema for pr-fix mode output. Contains structured responses to GitHub PR review comments and CI/check run status updates.",
+  "type": "object",
+  "required": [],
+  "properties": {
+    "review_replies": {
+      "type": "array",
+      "description": "Array of reply objects for review thread comments. Each reply addresses a specific review comment.",
+      "items": {
+        "type": "object",
+        "required": ["comment_id", "status", "message"],
+        "properties": {
+          "comment_id": {
+            "oneOf": [
+              {"type": "integer"},
+              {"type": "string"}
+            ],
+            "description": "Unique identifier for the review comment to reply to (GitHub comment ID)."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["fixed", "wontfix", "need-info"],
+            "description": "Status of the fix for this review comment."
+          },
+          "message": {
+            "type": "string",
+            "description": "The response message to the reviewer explaining what was done or why."
+          },
+          "action_taken": {
+            "type": ["string", "null"],
+            "description": "Description of any code changes made to address the review comment. Null if no changes were made."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "checks": {
+      "type": "array",
+      "description": "Array of check run status updates. Each entry describes the fix status for a CI/check run.",
+      "items": {
+        "type": "object",
+        "required": ["name", "conclusion", "fix_status", "message"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the check run (e.g., 'ci/test', 'lint', 'security-scan')."
+          },
+          "conclusion": {
+            "type": "string",
+            "enum": ["failure", "success", "cancelled"],
+            "description": "The original conclusion of the check run."
+          },
+          "fix_status": {
+            "type": "string",
+            "enum": ["fixed", "unfixed", "not-applicable"],
+            "description": "Status of the fix attempt for this check run."
+          },
+          "message": {
+            "type": "string",
+            "description": "Explanation of what was fixed, what remains, or why the fix is not applicable."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

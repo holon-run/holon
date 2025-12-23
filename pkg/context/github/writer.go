@@ -29,9 +29,9 @@ func WriteContext(outputDir string, prInfo *PRInfo, reviewThreads []ReviewThread
 		return fmt.Errorf("failed to write review_threads.json: %w", err)
 	}
 
-	// Write review-replies.schema.json
-	if err := writeReviewRepliesSchema(outputDir); err != nil {
-		return fmt.Errorf("failed to write review replies schema: %w", err)
+	// Write pr-fix.schema.json
+	if err := writePRFixSchema(outputDir); err != nil {
+		return fmt.Errorf("failed to write pr-fix schema: %w", err)
 	}
 
 	// Write pr.diff if available
@@ -89,13 +89,13 @@ func writePRDiff(dir string, diff string) error {
 	return nil
 }
 
-func writeReviewRepliesSchema(dir string) error {
-	data, err := prompt.ReadAsset("modes/review-fix/review-replies.schema.json")
+func writePRFixSchema(dir string) error {
+	data, err := prompt.ReadAsset("modes/pr-fix/pr-fix.schema.json")
 	if err != nil {
-		return fmt.Errorf("failed to read review replies schema asset: %w", err)
+		return fmt.Errorf("failed to read pr-fix schema asset: %w", err)
 	}
 
-	path := filepath.Join(dir, "review-replies.schema.json")
+	path := filepath.Join(dir, "pr-fix.schema.json")
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}

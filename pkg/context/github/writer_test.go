@@ -120,17 +120,17 @@ index abc123..def456 100644
 		}
 	}
 
-	// Check review-replies.schema.json
-	schemaPath := filepath.Join(tmpDir, "review-replies.schema.json")
+	// Check pr-fix.schema.json
+	schemaPath := filepath.Join(tmpDir, "pr-fix.schema.json")
 	if _, err := os.Stat(schemaPath); os.IsNotExist(err) {
-		t.Errorf("review-replies.schema.json not created")
+		t.Errorf("pr-fix.schema.json not created")
 	} else {
 		data, err := os.ReadFile(schemaPath)
 		if err != nil {
-			t.Errorf("Failed to read review-replies.schema.json: %v", err)
+			t.Errorf("Failed to read pr-fix.schema.json: %v", err)
 		}
 		if len(data) == 0 {
-			t.Errorf("review-replies.schema.json is empty")
+			t.Errorf("pr-fix.schema.json is empty")
 		}
 	}
 

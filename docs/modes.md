@@ -5,11 +5,11 @@
 ## 核心概念
 
 ### Mode（用户入口）
-用户通过 `mode` 表达“这次 Holon 要做什么类型的工作”，例如：
+用户通过 `mode` 表达"这次 Holon 要做什么类型的工作"，例如：
 - `execute`：执行/修改代码并输出补丁
 - `plan`：只产出计划，不修改代码
 - `review`：只产出代码评审意见，不修改代码
-- `review-fix`：根据 review comments 修复并更新 PR（可选的复合模式）
+- `pr-fix`：根据 review comments 和 CI failures 修复并更新 PR（可选的复合模式）
 
 ### Profile（内部绑定配置）
 每个 `mode` 对应一个 profile。profile 由三部分组成：
@@ -66,9 +66,9 @@ constraints:
 
 有些模式天然需要“多阶段编排”（例如先 plan 再 execute，或先 review 再 fix）。由于 workspace RO/RW 不可在同一容器内动态切换，**多阶段通常意味着两次容器运行**。
 
-建议将其作为“复合 mode”（或单独的 `holon flow` 命令）实现：
+建议将其作为"复合 mode"（或单独的 `holon flow` 命令）实现：
 - `plan-then-execute`：先 `mode=plan` 产出 `plan.md`，再 `mode=execute` 将 `plan.md` 作为上下文输入并生成 `diff.patch`。
-- `review-fix`：先 `mode=review` 产出 `review.json`，再 `mode=execute`（或 `mode=fix`）将 `review.json` 作为上下文输入并更新 PR 分支。
+- `pr-fix`：先 `mode=review` 产出 `review.json`，再 `mode=execute`（或 `mode=fix`）将 `review.json` 作为上下文输入并更新 PR 分支。
 
 在 GitHub Actions 中，推荐拆成两个 workflow/job，通过 label/comment 作为“人工确认门”。
 
