@@ -8,7 +8,6 @@
  * - Publishing Holon execution results (review replies + summary) to PRs
  */
 
-import { hasValidHolonOutput, publishHolonResults } from './publisher.js';
 
 export default async function botHandler(app) {
   // Log when the app is initialized
@@ -40,7 +39,7 @@ export default async function botHandler(app) {
     const repo = repository.name;
 
     // Skip if push was by holonbot itself to avoid loops
-    if (pusher.name === 'holonbot') {
+    if (pusher.name === 'holonbot' || pusher.name === 'holonbot[bot]') {
       app.log.info('Skipping push from holonbot itself to avoid loops');
       return;
     }

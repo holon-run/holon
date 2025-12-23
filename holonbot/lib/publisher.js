@@ -54,7 +54,7 @@ async function readMarkdownFile(filePath) {
  * @returns {boolean} True if comment is from holonbot
  */
 export function isHolonbotComment(comment) {
-    return comment.user?.login === BOT_NAME || comment.user?.type === 'bot';
+    return comment.user?.login === BOT_NAME;
 }
 
 /**
@@ -67,12 +67,15 @@ export function isHolonbotComment(comment) {
  */
 async function findExistingSummaryComment(octokit, owner, repo, prNumber) {
     try {
-        const { data: comments } = await octokit.rest.issues.listComments({
-            owner,
-            repo,
-            issue_number: prNumber,
-            per_page: 100
-        });
+        const comments = await octokit.paginate(
+            octokit.rest.issues.listComments,
+            {
+                owner,
+                repo,
+                issue_number: prNumber,
+                per_page: 100
+            }
+        );
 
         // Find the most recent comment from holonbot with our marker
         return comments

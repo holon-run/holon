@@ -5,7 +5,7 @@
 import { jest } from '@jest/globals';
 
 // Create a manual mock for fs/promises BEFORE importing publisher
-import { readFile } from 'fs/promises';
+
 
 // Mock fs/promises at the module level
 const mockReadFile = jest.fn();
