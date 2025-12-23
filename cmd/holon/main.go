@@ -78,6 +78,7 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(contextCmd)
+	rootCmd.AddCommand(publishCmd)
 }
 
 func main() {
