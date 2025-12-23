@@ -318,6 +318,11 @@ jobs:
           if [ -s holon-output/diff.patch ]; then
             echo "Applying diff.patch to branch $BRANCH_NAME"
             git apply --3way holon-output/diff.patch
+
+            # Remove holon-input directory if it was created (it's temporary context data)
+            rm -rf holon-input
+
+            # Add all changes except holon-input (which should not be committed)
             git add .
             git commit -m "Apply Holon automated fixes
 
@@ -350,7 +355,7 @@ jobs:
         if: always()
         run: |
           cd holonbot
-          node bin/publisher.js \
+          node ./bin/publisher.js \
             --owner "${{ github.repository_owner }}" \
             --repo "${{ github.event.repository.name }}" \
             --pr "${{ needs.parse-and-gate.outputs.pr_number }}" \
