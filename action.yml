@@ -60,6 +60,9 @@ outputs:
   token:
     description: 'The GitHub token used (either Holonbot token or input github_token)'
     value: ${{ steps.get_token.outputs.token }}
+  diff_exists:
+    description: 'Whether a non-empty diff.patch exists in the output directory'
+    value: ${{ steps.detect_outputs.outputs.diff_exists }}
 
 runs:
   using: 'composite'
@@ -99,12 +102,15 @@ runs:
         echo "token=${{ inputs.github_token }}" >> $GITHUB_OUTPUT
 
     - name: Run Holon
+      id: run_holon
       shell: bash
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         GITHUB_TOKEN: ${{ steps.get_token.outputs.token }}
       run: |
+        OUT_DIR="${{ inputs.out_dir }}"
+
         AGENT_REF="${{ inputs.agent }}"
         if [ -z "$AGENT_REF" ]; then
           AGENT_REF="${HOLON_AGENT:-${HOLON_AGENT_BUNDLE:-}}"
@@ -141,7 +147,7 @@ runs:
             --image "${{ inputs.image }}" \
             --agent "$AGENT_REF" \
             --workspace "${{ inputs.workspace }}" \
-            --out "${{ inputs.out_dir }}" \
+            --out "$OUT_DIR" \
             "${MODE_ARGS[@]}" \
             "${ROLE_ARGS[@]}" \
             "${CONTEXT_ARGS[@]}" \
@@ -154,7 +160,7 @@ runs:
             --image "${{ inputs.image }}" \
             --agent "$AGENT_REF" \
             --workspace "${{ inputs.workspace }}" \
-            --out "${{ inputs.out_dir }}" \
+            --out "$OUT_DIR" \
             "${MODE_ARGS[@]}" \
             "${ROLE_ARGS[@]}" \
             "${CONTEXT_ARGS[@]}" \
@@ -172,7 +178,7 @@ runs:
               --image "${{ inputs.image }}" \
               --agent "$AGENT_REF" \
               --workspace "${{ inputs.workspace }}" \
-              --out "${{ inputs.out_dir }}" \
+              --out "$OUT_DIR" \
               "${MODE_ARGS[@]}" \
               "${ROLE_ARGS[@]}" \
               "${CONTEXT_ARGS[@]}" \
@@ -184,4 +190,23 @@ runs:
         else
           echo "Error: No spec, goal provided, and GITHUB_EVENT_PATH not found."
           exit 1
+        fi
+
+    - name: Detect Holon Outputs
+      id: detect_outputs
+      shell: bash
+      run: |
+        OUT_DIR="${{ inputs.out_dir }}"
+
+        if [ -e "$OUT_DIR/diff.patch" ]; then
+          if [ -s "$OUT_DIR/diff.patch" ]; then
+            echo "Non-empty diff.patch detected in $OUT_DIR."
+            echo "diff_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "diff.patch exists in $OUT_DIR but is empty."
+            echo "diff_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        else
+          echo "diff.patch not found in $OUT_DIR."
+          echo "diff_exists=false" >> "$GITHUB_OUTPUT"
         fi

@@ -203,7 +203,7 @@ jobs:
           spec: ''
           workspace: '.'
           context: './holon-input/context'
-          out: './holon-output'
+          out_dir: './holon-output'
 
       - name: Update reaction based on result
         if: always()
