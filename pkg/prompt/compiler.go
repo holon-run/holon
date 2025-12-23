@@ -26,8 +26,10 @@ type Config struct {
 type Manifest struct {
 	Version  string `yaml:"version"`
 	Defaults struct {
-		Mode     string `yaml:"mode"`
-		Role     string `yaml:"role"`
+		Mode string `yaml:"mode"`
+		Role string `yaml:"role"`
+		// Contract is kept for backward compatibility with existing manifests and
+		// external tools. It is intentionally not used by the current compiler.
 		Contract string `yaml:"contract"`
 	} `yaml:"defaults"`
 }
@@ -116,7 +118,7 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 	modeData, err = fs.ReadFile(c.assets, modeContractPath)
 	if err != nil {
 		// Mode contract is optional - continue without it
-		modeData = nil
+
 	}
 
 	// 6. Load Role (behavioral overlay)
@@ -128,13 +130,12 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		rolePath := fmt.Sprintf("roles/%s.md", role)
 		roleData, err = fs.ReadFile(c.assets, rolePath)
 		if err != nil {
-			return "", fmt.Errorf("failed to read role %s (tried %s and %s): %w", role, modeRolePath, rolePath, err)
+			return "", fmt.Errorf("failed to read role %s: tried mode-specific path %s and generic path %s: %w", role, modeRolePath, rolePath, err)
 		}
 	}
 
 	// 7. Combine layers in order: common + mode contract + role
-	var fullTemplate string
-	fullTemplate = string(commonData)
+	fullTemplate := string(commonData)
 
 	if modeData != nil {
 		fullTemplate += "\n\n" + string(modeData)
