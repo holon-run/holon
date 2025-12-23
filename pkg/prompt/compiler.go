@@ -161,7 +161,7 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		fullTemplate += "\n\n" + string(roleOverlayData)
 	}
 
-	// 8. Template Execution
+	// 10. Template Execution
 	tmpl, err := template.New("system").Parse(fullTemplate)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse template: %w", err)

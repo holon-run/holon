@@ -346,7 +346,7 @@ func TestModeOverlayLoading(t *testing.T) {
 				"roles/developer.md":        {Data: []byte("Developer Role")},
 			},
 			cfg: Config{WorkingDir: "/test"},
-			expectedInPrompt: []string{"Common Contract", "Review-Fix Mode Contract", "Review-Fix Mode Overlay", "Developer Role"},
+			expectedInPrompt: []string{"Common Contract", "Developer Role", "Review-Fix Mode Contract", "Review-Fix Mode Overlay"},
 		},
 		{
 			name: "Missing mode contract is handled gracefully",
@@ -368,7 +368,7 @@ func TestModeOverlayLoading(t *testing.T) {
 				"roles/developer.md":           {Data: []byte("Base Developer Role")},
 			},
 			cfg: Config{WorkingDir: "/test"},
-			expectedInPrompt: []string{"Common Contract", "Review-Fix Mode", "Base Developer Role", "Review-Fix Developer Overlay"},
+			expectedInPrompt: []string{"Common Contract", "Base Developer Role", "Review-Fix Mode", "Review-Fix Developer Overlay"},
 		},
 		{
 			name: "Role overlay is only loaded for selected role",

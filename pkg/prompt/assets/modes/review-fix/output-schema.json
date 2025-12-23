@@ -8,7 +8,7 @@
   "properties": {
     "replies": {
       "type": "array",
-      "description": "Array of reply objects, one per review comment thread.",
+      "description": "Array of reply objects, one per review comment.",
       "items": {
         "type": "object",
         "required": ["comment_id", "comment_body", "reply"],

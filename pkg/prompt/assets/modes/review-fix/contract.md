@@ -18,7 +18,7 @@ Review-Fix mode is designed for GitHub PR review reply generation. The agent ana
 - If you cannot address a review comment, explain why in your response
 
 **Review Replies Format:**
-The `review-replies.json` file should contain an array of reply objects, one per review thread. Each reply includes:
+The `review-replies.json` file should contain an array of reply objects, one per review comment. Each reply includes:
 - `comment_id`: Unique identifier for the review comment to reply to
 - `comment_body`: Text of the original review comment
 - `reply`: Your proposed response
