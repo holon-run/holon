@@ -41,7 +41,11 @@ jobs:
           if [ -n "$PR_URL" ]; then
             echo "is_pull_request=true" >> $GITHUB_OUTPUT
             echo "pr_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
-            echo "Found PR #${{ github.event.issue.number }}"
+
+            # Get PR branch name
+            PR_BRANCH=$(gh pr view "${{ github.event.issue.number }}" --json headRefName --jq '.headRefName')
+            echo "pr_branch=$PR_BRANCH" >> $GITHUB_OUTPUT
+            echo "Found PR #${{ github.event.issue.number }} (branch: $PR_BRANCH)"
           else
             echo "is_pull_request=false" >> $GITHUB_OUTPUT
             echo "Not a pull request - skipping"
@@ -130,6 +134,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+          ref: "refs/heads/${{ needs.parse-and-gate.outputs.pr_branch }}"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -308,10 +313,7 @@ jobs:
       - name: Apply changes to PR branch
         if: success() && steps.holon.outputs.diff_exists == 'true'
         run: |
-          PR_NUMBER="${{ needs.parse-and-gate.outputs.pr_number }}"
-
-          # Get the PR branch name
-          BRANCH_NAME=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+          BRANCH_NAME="${{ needs.parse-and-gate.outputs.pr_branch }}"
 
           git config --local user.email "250454749+holonbot[bot]@users.noreply.github.com"
           git config --local user.name "holonbot[bot]"
@@ -322,9 +324,7 @@ jobs:
           # Set up authentication with proper token
           git remote set-url origin "https://x-access-token:${{ steps.holon.outputs.token || secrets.GH_PAT || github.token }}@github.com/${{ github.repository }}.git"
 
-          # Switch to the PR branch
-          git checkout "$BRANCH_NAME" || git checkout -b "$BRANCH_NAME" origin/"$BRANCH_NAME"
-
+          # Already on PR branch (checked out at the start), just apply the changes
           # Apply the generated changes
           if [ -s /tmp/holon-output/diff.patch ]; then
             echo "Applying diff.patch to branch $BRANCH_NAME"
