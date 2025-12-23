@@ -2,36 +2,39 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://holon.dev/schemas/review-replies-v1.json",
   "title": "Review Replies",
-  "description": "Schema for review replies generated in review-fix mode. Contains structured responses to GitHub PR review comments.",
+  "description": "Schema for review replies generated in review-fix mode. Contains structured responses to GitHub PR review comments, keyed by comment_id for per-thread reply support.",
   "type": "object",
   "required": ["replies"],
   "properties": {
     "replies": {
-      "type": "array",
-      "description": "Array of reply objects, one per review comment thread.",
-      "items": {
-        "type": "object",
-        "required": ["thread_id", "comment_body", "reply"],
-        "properties": {
-          "thread_id": {
-            "type": "string",
-            "description": "Unique identifier for the review comment thread (typically the GitHub comment ID or thread hash)."
+      "type": "object",
+      "description": "Object mapping comment_id to reply objects. Each key is a comment_id for O(1) lookup and publisher compatibility with GitHub thread replies.",
+      "patternProperties": {
+        "^[0-9]+$": {
+          "type": "object",
+          "required": ["comment_id", "comment_body", "reply"],
+          "properties": {
+            "comment_id": {
+              "type": "string",
+              "description": "Unique identifier for the review comment (the GitHub comment ID). This is required for publisher's per-thread reply functionality."
+            },
+            "comment_body": {
+              "type": "string",
+              "description": "The text content of the original review comment being responded to."
+            },
+            "reply": {
+              "type": "string",
+              "description": "The proposed response to the review comment."
+            },
+            "action_taken": {
+              "type": "string",
+              "description": "Description of any code changes made to address the review comment. Optional if no changes were made."
+            }
           },
-          "comment_body": {
-            "type": "string",
-            "description": "The text content of the original review comment being responded to."
-          },
-          "reply": {
-            "type": "string",
-            "description": "The proposed response to the review comment."
-          },
-          "action_taken": {
-            "type": "string",
-            "description": "Description of any code changes made to address the review comment. Optional if no changes were made."
-          }
-        },
-        "additionalProperties": false
-      }
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
