@@ -171,7 +171,10 @@ jobs:
         id: prepare-context
         run: |
           echo "Preparing PR review context..."
-          mkdir -p holon-input/context
+
+          # Create context directory in /tmp to avoid it being included in git diff
+          CONTEXT_DIR="/tmp/holon-context"
+          mkdir -p "$CONTEXT_DIR"
 
           # Build holon if not present
           if [ ! -f bin/holon ]; then
@@ -184,12 +187,15 @@ jobs:
             --repo "${{ github.event.repository.name }}" \
             --pr "${{ needs.parse-and-gate.outputs.pr_number }}" \
             --token "${{ secrets.GH_PAT || github.token }}" \
-            --out "./holon-input/context" \
+            --out "$CONTEXT_DIR" \
             --include-diff \
             --unresolved-only=false
 
           echo "Context preparation complete!"
-          ls -la holon-input/context/github/
+          ls -la "$CONTEXT_DIR/github/"
+
+          # Save context directory path for next step
+          echo "context_dir=$CONTEXT_DIR" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
 
@@ -207,7 +213,7 @@ jobs:
           goal: ${{ steps.task-extraction.outputs.goal }}
           spec: ''
           workspace: '.'
-          context: './holon-input/context'
+          context: '${{ steps.prepare-context.outputs.context_dir }}'
           out_dir: './holon-output'
 
       - name: Update reaction based on result
@@ -319,10 +325,7 @@ jobs:
             echo "Applying diff.patch to branch $BRANCH_NAME"
             git apply --3way holon-output/diff.patch
 
-            # Remove holon-input directory if it was created (it's temporary context data)
-            rm -rf holon-input
-
-            # Add all changes except holon-input (which should not be committed)
+            # Add all changes
             git add .
             git commit -m "Apply Holon automated fixes
 
@@ -354,6 +357,9 @@ jobs:
       - name: Publish Holon Results
         if: always()
         run: |
+          # Switch back to main branch first (PR branch doesn't have holonbot/bin/ because it's in .gitignore)
+          git checkout main || git checkout ${{ github.ref_name }}
+
           cd holonbot
           node ./bin/publisher.js \
             --owner "${{ github.repository_owner }}" \
