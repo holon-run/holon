@@ -30,7 +30,7 @@ func WriteContext(outputDir string, prInfo *PRInfo, reviewThreads []ReviewThread
 	}
 
 	// Write review-replies.schema.json
-	if err := writeReviewRepliesSchema(githubDir); err != nil {
+	if err := writeReviewRepliesSchema(outputDir); err != nil {
 		return fmt.Errorf("failed to write review replies schema: %w", err)
 	}
 
