@@ -1,3 +1,3 @@
 # Test File
 
-This is a test file added to the project root directory.
+这是一个添加到项目根目录的测试文件。
