@@ -198,6 +198,7 @@ jobs:
           anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
           log_level: 'debug'
           image: 'golang:1.24'
+          mode: 'pr-fix'
           goal: ${{ steps.task-extraction.outputs.goal }}
           spec: ''
           workspace: '.'
