@@ -10,9 +10,10 @@ permissions:
   pull-requests: read
   issues: read
 
-# Concurrency control to prevent multiple runs per PR
+# Concurrency control to prevent multiple runs per PR per user
+# Include actor in group key so different users' comments don't cancel each other's runs
 concurrency:
-  group: holonbot-fix-pr-${{ github.event.issue.number }}
+  group: holonbot-fix-pr-${{ github.event.issue.number }}-${{ github.actor }}
   cancel-in-progress: true
 
 jobs:
@@ -63,7 +64,9 @@ jobs:
           ACTOR="${{ github.actor }}"
 
           echo "Analyzing comment from user: $ACTOR"
-          echo "Comment body: $COMMENT_BODY"
+          echo "Comment body:"
+          echo "$COMMENT_BODY" | head -c 500
+          echo ""
 
           # Gate 1: Check if actor is not holonbot[bot]
           if [ "$ACTOR" = "holonbot[bot]" ]; then
