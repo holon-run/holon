@@ -166,13 +166,16 @@ async function postSummaryComment(octokit, owner, repo, prNumber, summary) {
  */
 async function getCommentReplies(octokit, owner, repo, prNumber, commentId) {
     try {
-        // Get the review thread for this comment
-        const { data: comments } = await octokit.rest.pulls.listCommentsForReview({
-            owner,
-            repo,
-            pull_number: prNumber,
-            // We need to get all comments and filter by the original comment_id
-        });
+        // Get all review comments for this PR
+        const comments = await octokit.paginate(
+            octokit.rest.pulls.listReviewComments,
+            {
+                owner,
+                repo,
+                pull_number: prNumber,
+                per_page: 100
+            }
+        );
 
         // Filter for replies to the specific comment
         // In GitHub API, replies have a `in_reply_to_id` field

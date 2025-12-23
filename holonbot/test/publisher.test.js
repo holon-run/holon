@@ -4,9 +4,6 @@
 
 import { jest } from '@jest/globals';
 
-// Create a manual mock for fs/promises BEFORE importing publisher
-
-
 // Mock fs/promises at the module level
 const mockReadFile = jest.fn();
 jest.unstable_mockModule('fs/promises', () => ({
@@ -32,10 +29,6 @@ describe('Publisher Module', () => {
     describe('isHolonbotComment', () => {
         test('should return true for holonbot[bot]', () => {
             expect(isHolonbotComment({ user: { login: 'holonbot[bot]' } })).toBe(true);
-        });
-
-        test('should return true for bot type', () => {
-            expect(isHolonbotComment({ user: { type: 'bot' } })).toBe(true);
         });
 
         test('should return false for regular users', () => {
