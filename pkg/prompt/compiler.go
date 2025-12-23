@@ -15,6 +15,7 @@ var promptAssets embed.FS
 
 // Config represents the prompt configuration
 type Config struct {
+	Mode         string
 	Role         string
 	Language     string
 	WorkingDir   string
@@ -25,6 +26,7 @@ type Config struct {
 type Manifest struct {
 	Version  string `yaml:"version"`
 	Defaults struct {
+		Mode     string `yaml:"mode"`
 		Role     string `yaml:"role"`
 		Contract string `yaml:"contract"`
 	} `yaml:"defaults"`
@@ -79,7 +81,16 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		return "", fmt.Errorf("failed to parse manifest: %w", err)
 	}
 
-	// 2. Resolve Role
+	// 2. Resolve Mode (with defaults)
+	mode := cfg.Mode
+	if mode == "" {
+		mode = manifest.Defaults.Mode
+	}
+	if mode == "" {
+		mode = "execute" // Fallback
+	}
+
+	// 3. Resolve Role (with defaults and alias support)
 	role := cfg.Role
 	if role == "" {
 		role = manifest.Defaults.Role
@@ -87,28 +98,51 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 	if role == "" {
 		role = "coder" // Fallback
 	}
-
-	// 3. Load Contract
-	contractName := manifest.Defaults.Contract
-	if contractName == "" {
-		contractName = "v1"
+	// Support "developer" as alias for "coder"
+	if role == "developer" {
+		role = "coder"
 	}
-	contractData, err := fs.ReadFile(c.assets, fmt.Sprintf("contract/%s.md", contractName))
+
+	// 4. Load Common Contract (base layer)
+	commonData, err := fs.ReadFile(c.assets, "contracts/common.md")
 	if err != nil {
-		return "", fmt.Errorf("failed to read contract %s: %w", contractName, err)
+		return "", fmt.Errorf("failed to read common contract: %w", err)
 	}
 
-	// 4. Load Role
-	roleData, err := fs.ReadFile(c.assets, fmt.Sprintf("roles/%s.md", role))
+	// 5. Load Mode Contract (optional overlay)
+	// Mode contracts are optional - if missing, skip silently
+	var modeData []byte
+	modeContractPath := fmt.Sprintf("modes/%s/contract.md", mode)
+	modeData, err = fs.ReadFile(c.assets, modeContractPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read role %s: %w", role, err)
+		// Mode contract is optional - continue without it
+		modeData = nil
 	}
 
-	// 5. Combine
-	// We combine them with a newline separator
-	fullTemplate := string(contractData) + "\n\n" + string(roleData)
+	// 6. Load Role (behavioral overlay)
+	// Try mode-specific role overlay first, then fall back to generic role
+	modeRolePath := fmt.Sprintf("modes/%s/roles/%s.md", mode, role)
+	roleData, err := fs.ReadFile(c.assets, modeRolePath)
+	if err != nil {
+		// Mode-specific role not found, try generic role
+		rolePath := fmt.Sprintf("roles/%s.md", role)
+		roleData, err = fs.ReadFile(c.assets, rolePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read role %s (tried %s and %s): %w", role, modeRolePath, rolePath, err)
+		}
+	}
 
-	// 6. Template Execution
+	// 7. Combine layers in order: common + mode contract + role
+	var fullTemplate string
+	fullTemplate = string(commonData)
+
+	if modeData != nil {
+		fullTemplate += "\n\n" + string(modeData)
+	}
+
+	fullTemplate += "\n\n" + string(roleData)
+
+	// 8. Template Execution
 	tmpl, err := template.New("system").Parse(fullTemplate)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse template: %w", err)

@@ -414,6 +414,7 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string) (sysPrompt,
 	}
 
 	sysPrompt, err = compiler.CompileSystemPrompt(prompt.Config{
+		Mode:         cfg.Mode,
 		Role:         cfg.RoleName,
 		Language:     "en", // TODO: Detect or flag
 		WorkingDir:   "/holon/workspace",

@@ -256,6 +256,67 @@ While v0.1 focuses on Claude Code, the architecture supports future agents throu
 - Resolver system for flexible agent discovery
 - Common prompt compilation system in `pkg/prompt/`
 
+### Prompt Compiler Architecture
+
+The prompt compiler system (`pkg/prompt/`) uses a **layered assembly** approach to build system prompts from composable assets.
+
+**Layer Order (bottom to top):**
+1. **Common Contract** (`contracts/common.md`): Base sandbox rules and physics
+2. **Mode Contract** (`modes/{mode}/contract.md`): Mode-specific behavioral overlay (optional)
+3. **Role Definition** (`roles/{role}.md` or `modes/{mode}/roles/{role}.md`): Role-specific behavior
+
+**Asset Structure:**
+```
+pkg/prompt/assets/
+├── manifest.yaml           # Default configuration
+├── contracts/
+│   └── common.md          # Common contract (required)
+├── modes/
+│   ├── execute/           # Default execution mode
+│   │   ├── contract.md    # Execute mode overlay
+│   │   └── roles/         # Mode-specific role overrides
+│   └── review-fix/        # Example: review-fix mode
+│       ├── contract.md
+│       └── roles/
+└── roles/
+    ├── coder.md           # Senior software engineer role
+    └── default.md         # Generic assistant role
+```
+
+**Manifest Configuration (`manifest.yaml`):**
+```yaml
+version: 1.0.0
+defaults:
+  mode: execute    # Default execution mode
+  role: coder     # Default role (developer maps to coder)
+  contract: v1    # Legacy field (for backward compatibility)
+```
+
+**Mode System:**
+- Modes define execution patterns (e.g., `execute`, `review-fix`, `plan`)
+- Each mode can have its own contract overlay and role-specific overrides
+- Mode contracts are **optional** - if missing, only common contract is used
+- Role files are looked up first in `modes/{mode}/roles/`, then in `roles/`
+
+**Role Aliases:**
+- `developer` → `coder` (alias for backward compatibility)
+- New roles can be added by creating markdown files in `roles/` or mode-specific subdirectories
+
+**CLI Integration:**
+```bash
+# Use default mode (execute) and role (coder)
+holon run --goal "Fix the bug"
+
+# Explicit mode selection
+holon run --mode review-fix --goal "Review and fix the issue"
+
+# Use a specific role
+holon run --role architect --goal "Design the system"
+```
+
+**Environment Variable:**
+- `HOLON_MODE`: Execution mode (set by runner, can be overridden via `--mode` flag)
+
 ## Common Development Patterns
 
 ### Adding New Examples
