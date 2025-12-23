@@ -35,10 +35,10 @@ jobs:
           # the issue.pull_request field. We can check this directly from the event context.
           # This is more reliable than calling gh pr view.
 
-          # Assign to variable first to avoid shell parsing issues
-          PULL_REQUEST='${{ github.event.issue.pull_request }}'
+          # Check if pull_request field exists by checking its URL property
+          PR_URL="${{ github.event.issue.pull_request.html_url }}"
 
-          if [ -n "$PULL_REQUEST" ]; then
+          if [ -n "$PR_URL" ]; then
             echo "is_pull_request=true" >> $GITHUB_OUTPUT
             echo "pr_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
             echo "Found PR #${{ github.event.issue.number }}"
