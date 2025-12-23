@@ -10,6 +10,7 @@ Review-Fix mode is designed for GitHub PR review reply generation. The agent ana
 **Required Outputs:**
 1. **`/holon/output/summary.md`**: Human-readable summary of your analysis and responses
 2. **`/holon/output/review-replies.json`**: Structured JSON containing replies to review threads
+   - Must conform to `/holon/input/context/review-replies.schema.json` (read it if needed)
 
 **Execution Behavior:**
 - You are running **HEADLESSLY** - do not wait for user input or confirmation

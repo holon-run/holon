@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/holon-run/holon/pkg/prompt"
 )
 
 // WriteContext writes PR context to the specified directory
@@ -25,6 +27,11 @@ func WriteContext(outputDir string, prInfo *PRInfo, reviewThreads []ReviewThread
 	// Write review_threads.json
 	if err := writeReviewThreadsJSON(githubDir, reviewThreads); err != nil {
 		return fmt.Errorf("failed to write review_threads.json: %w", err)
+	}
+
+	// Write review-replies.schema.json
+	if err := writeReviewRepliesSchema(outputDir); err != nil {
+		return fmt.Errorf("failed to write review replies schema: %w", err)
 	}
 
 	// Write pr.diff if available
@@ -76,6 +83,20 @@ func writeReviewThreadsJSON(dir string, threads []ReviewThread) error {
 func writePRDiff(dir string, diff string) error {
 	path := filepath.Join(dir, "pr.diff")
 	if err := os.WriteFile(path, []byte(diff), 0644); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
+}
+
+func writeReviewRepliesSchema(dir string) error {
+	data, err := prompt.ReadAsset("modes/review-fix/review-replies.schema.json")
+	if err != nil {
+		return fmt.Errorf("failed to read review replies schema asset: %w", err)
+	}
+
+	path := filepath.Join(dir, "review-replies.schema.json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 

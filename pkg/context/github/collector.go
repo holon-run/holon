@@ -75,6 +75,7 @@ func (c *Collector) Collect(ctx context.Context) error {
 	fmt.Println("  Files created:")
 	fmt.Println("    - pr.json")
 	fmt.Println("    - review_threads.json")
+	fmt.Println("    - review-replies.schema.json")
 	if diff != "" {
 		fmt.Println("    - pr.diff")
 	}

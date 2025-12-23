@@ -2,7 +2,6 @@ package prompt
 
 import (
 	"bytes"
-	"embed"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,9 +9,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-//go:embed all:assets/*
-var promptAssets embed.FS
 
 // Config represents the prompt configuration
 type Config struct {
@@ -52,11 +48,10 @@ func NewCompiler(assetsPath string) *Compiler {
 	// Simplification: We will assume assets are embedded in THIS package for now,
 	// or we use os.DirFS if running locally and the path exists.
 
-	// Fix: fs.Sub to strip 'assets' prefix so ReadFile("manifest.yaml") works
-	sub, err := fs.Sub(promptAssets, "assets")
+	sub, err := AssetsFS()
 	if err != nil {
 		// Should not happen with embedded assets unless structure is wrong
-		panic(fmt.Errorf("failed to subtree assets: %w", err))
+		panic(err)
 	}
 
 	return &Compiler{
