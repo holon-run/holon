@@ -23,6 +23,12 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Build holon
+        run: |
+          echo "Building holon..."
+          make build
+          echo "✅ Holon built successfully"
+
       - name: Run Holon
         id: holon
         uses: ./

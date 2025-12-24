@@ -115,9 +115,12 @@ runs:
         if [ -z "$AGENT_REF" ]; then
           AGENT_REF="${HOLON_AGENT:-${HOLON_AGENT_BUNDLE:-}}"
         fi
-        # Build holon and bundle if not present
+        # Verify holon binary exists (workflow should have built it)
         if [ ! -f bin/holon ]; then
-          make build
+          echo "Error: holon binary not found at bin/holon"
+          echo "Workflow must build holon before calling this action"
+          echo "See holonbot-fix.yml or holon-issue.yml for examples"
+          exit 1
         fi
         if [ -z "$AGENT_REF" ]; then
           echo "Building agent bundle..."
