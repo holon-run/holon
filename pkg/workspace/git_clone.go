@@ -74,12 +74,15 @@ func (p *GitClonePreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 		return PrepareResult{}, fmt.Errorf("git clone succeeded but destination is not a git repository")
 	}
 
-	// Handle ref checkout if specified
-	if req.Ref != "" {
-		if err := checkoutRefContext(ctx, req.Dest, req.Ref); err != nil {
-			// Checkout failed - log a note but don't fail
-			result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to checkout ref '%s': %v", req.Ref, err))
-		}
+	// Checkout the requested ref, or HEAD if no ref specified
+	// We always do a checkout since we used --no-checkout during clone
+	checkoutRef := req.Ref
+	if checkoutRef == "" {
+		checkoutRef = "HEAD"
+	}
+	if err := checkoutRefContext(ctx, req.Dest, checkoutRef); err != nil {
+		// Checkout failed - log a note but don't fail
+		result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to checkout ref '%s': %v", checkoutRef, err))
 	}
 
 	// Handle submodules if requested
@@ -117,12 +120,14 @@ func (p *GitClonePreparer) Cleanup(dest string) error {
 
 // buildCloneArgs constructs the git clone command arguments based on the request
 func (p *GitClonePreparer) buildCloneArgs(req PrepareRequest) []string {
-	args := []string{"clone", "--quiet"}
+	args := []string{"clone", "--quiet", "--no-checkout"}
 
 	// Handle history mode
 	switch req.History {
 	case HistoryShallow:
 		args = append(args, "--depth", "1")
+		// Note: --local is incompatible with --depth for creating true shallow clones
+		// When shallow is requested, we don't use --local even for local repos
 	case HistoryNone:
 		// For history none, we use depth 1 to create a minimal clone.
 		// While this creates a git repository, it has effectively no history
