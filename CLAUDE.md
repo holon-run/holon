@@ -266,13 +266,13 @@ holon run --goal "Fix the bug" --workspace . --out ./test-output
   "description": "Task description",
   "operations": [
     {
-      "type": "write_file|append_file|delete_file|write_output",
+      "type": "write_file",
       "path": "relative/path/to/file",
       "content": "file content"
     }
   ],
   "outcome": {
-    "success": true|false,
+    "success": true,
     "result_text": "Result message",
     "summary": "Optional summary.md content"
   }
