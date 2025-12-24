@@ -1,0 +1,138 @@
+[!docker] skip 'docker not available'
+
+# Test worktree diff generation in git worktree environment
+
+mkdir work
+mkdir work/examples
+mkdir out
+mkdir fixtures
+mkdir bundle-src
+mkdir bundle-src/bin
+
+# Setup git repository (will trigger worktree usage)
+exec git -C work init
+exec git -C work config user.email "test@example.com"
+exec git -C work config user.name "Test User"
+
+# Commit initial state
+exec git -C work add examples/buggy.go
+exec git -C work commit -m 'initial commit'
+
+# Build and bundle the agent
+exec chmod +x bundle-src/bin/agent
+exec tar -czf agent-bundle.tar.gz -C bundle-src .
+
+# Run holon with mock driver
+env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixtures/fix.json
+exec holon run --agent agent-bundle.tar.gz --goal 'Fix the division by zero error' --workspace work --out out --image golang:1.22
+
+# Verify outputs exist
+exists out/manifest.json
+exists out/diff.patch
+exists out/summary.md
+
+# Verify diff.patch content
+grep 'if b == 0' out/diff.patch
+grep 'return 0' out/diff.patch
+
+# Verify diff can be applied to original workspace
+exec git -C work apply --check --3way ../out/diff.patch
+
+-- bundle-src/manifest.json --
+{
+  "bundleVersion": "1",
+  "name": "agent-stub",
+  "version": "0.0.0",
+  "entry": "bin/agent",
+  "platform": "linux",
+  "arch": "amd64",
+  "libc": "glibc",
+  "runtime": {
+    "type": "node",
+    "version": "20"
+  }
+}
+
+-- bundle-src/bin/agent --
+#!/bin/sh
+set -e
+# Create output directory
+mkdir -p /holon/output
+
+WORKSPACE=/holon/workspace
+
+# Write the fixed version of buggy.go
+cat > "$WORKSPACE/examples/buggy.go" << 'EOF'
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Result:", divide(10, 0))
+}
+
+func divide(a, b int) int {
+    if b == 0 {
+        return 0
+    }
+    return a / b
+}
+EOF
+
+# Stage changes with git (this should work now after the fix)
+cd "$WORKSPACE"
+git add -A
+git reset holon 2>/dev/null || true
+git reset bin/holon 2>/dev/null || true
+
+# Generate outputs
+echo '{"version":"v1"}' > /holon/output/manifest.json
+
+# Generate diff.patch - this is the critical test
+git diff --cached > /holon/output/diff.patch
+
+# Check if diff is empty - if so, the fix didn't work
+if [ ! -s /holon/output/diff.patch ]; then
+  echo "Error: Generated diff.patch is empty!" >&2
+  echo "Git worktree fix may not have worked correctly." >&2
+  echo "Git status:" >&2
+  git status >&2
+  echo "Git diff cached:" >&2
+  git diff --cached >&2
+  exit 1
+fi
+
+echo '# Task Summary' > /holon/output/summary.md
+echo '## Fixed Division by Zero Error' >> /holon/output/summary.md
+echo 'Added safety check to handle division by zero.' >> /holon/output/summary.md
+echo 'Git worktree fix verified - diff.patch generated successfully.' >> /holon/output/summary.md
+
+-- work/examples/buggy.go --
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Result:", divide(10, 0))
+}
+
+func divide(a, b int) int {
+    return a / b
+}
+
+-- fixtures/fix.json --
+{
+  "version": "v1",
+  "description": "Fix division by zero",
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "examples/buggy.go",
+      "content": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Result:\", divide(10, 0))\n}\n\nfunc divide(a, b int) int {\n\tif b == 0 {\n\t\treturn 0\n\t}\n\treturn a / b\n}\n"
+    }
+  ],
+  "outcome": {
+    "success": true,
+    "result_text": "Fixed division by zero error"
+  }
+}

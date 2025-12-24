@@ -555,8 +555,8 @@ func TestIsGitRepo(t *testing.T) {
 	}
 }
 
-// TestCreateWorktree tests the createWorktree function
-func TestCreateWorktree(t *testing.T) {
+// TestCreateSharedClone tests the createSharedClone function
+func TestCreateSharedClone(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping test on Windows - requires Unix shell")
 	}
@@ -585,49 +585,62 @@ func TestCreateWorktree(t *testing.T) {
 		t.Fatalf("git commit failed: %v", err)
 	}
 
-	// Test creating a worktree
-	worktreePath := filepath.Join(t.TempDir(), "worktree")
-	if err := createWorktree(sourceRepo, worktreePath); err != nil {
-		t.Fatalf("createWorktree failed: %v", err)
+	// Test creating a shared clone
+	clonePath := filepath.Join(t.TempDir(), "clone")
+	if err := createSharedClone(sourceRepo, clonePath); err != nil {
+		t.Fatalf("createSharedClone failed: %v", err)
 	}
 
-	// Verify worktree was created
-	if _, err := os.Stat(worktreePath); err != nil {
-		t.Errorf("worktree directory not created: %v", err)
+	// Verify clone was created
+	if _, err := os.Stat(clonePath); err != nil {
+		t.Errorf("clone directory not created: %v", err)
 	}
 
-	// Verify the file exists in the worktree
-	worktreeFile := filepath.Join(worktreePath, "test.txt")
-	content, err := os.ReadFile(worktreeFile)
+	// Verify the file exists in the clone
+	cloneFile := filepath.Join(clonePath, "test.txt")
+	content, err := os.ReadFile(cloneFile)
 	if err != nil {
-		t.Errorf("failed to read file in worktree: %v", err)
+		t.Errorf("failed to read file in clone: %v", err)
 	}
 	if string(content) != "test content" {
 		t.Errorf("file content mismatch: got %q, want %q", string(content), "test content")
 	}
 
-	// Verify .git is a file (not a directory) in the worktree
-	gitEntry := filepath.Join(worktreePath, ".git")
+	// Verify .git is a directory (not a file) in the clone - this is the key difference from worktree
+	gitEntry := filepath.Join(clonePath, ".git")
 	info, err := os.Lstat(gitEntry)
 	if err != nil {
-		t.Errorf("failed to stat .git in worktree: %v", err)
+		t.Errorf("failed to stat .git in clone: %v", err)
 	}
-	if info.Mode()&os.ModeDir != 0 {
-		t.Error(".git in worktree should be a file, not a directory")
+	if info.Mode()&os.ModeDir == 0 {
+		t.Error(".git in clone should be a directory, not a file")
 	}
 
-	// Test git operations work correctly in the worktree (the core fix)
+	// Verify objects are shared (alternates file should point to source repo)
+	alternatesFile := filepath.Join(clonePath, ".git", "objects", "info", "alternates")
+	if _, err := os.Stat(alternatesFile); err != nil {
+		t.Errorf("objects alternates file not found: %v", err)
+	}
+	alternatesContent, err := os.ReadFile(alternatesFile)
+	if err != nil {
+		t.Errorf("failed to read alternates file: %v", err)
+	}
+	if !strings.Contains(string(alternatesContent), sourceRepo) {
+		t.Errorf("alternates file doesn't point to source repo: %s", string(alternatesContent))
+	}
+
+	// Test git operations work correctly in the clone (this works in containers too!)
 	// Make a change, stage it, and verify it's tracked
-	modifiedFile := filepath.Join(worktreePath, "test.txt")
+	modifiedFile := filepath.Join(clonePath, "test.txt")
 	if err := os.WriteFile(modifiedFile, []byte("modified content"), 0644); err != nil {
-		t.Fatalf("failed to modify file in worktree: %v", err)
+		t.Fatalf("failed to modify file in clone: %v", err)
 	}
 	// Stage the change
-	if err := runCmd(worktreePath, "git", "add", "test.txt"); err != nil {
-		t.Fatalf("git add in worktree failed: %v", err)
+	if err := runCmd(clonePath, "git", "add", "test.txt"); err != nil {
+		t.Fatalf("git add in clone failed: %v", err)
 	}
 	// Verify the change is staged
-	out, err := exec.Command("git", "-C", worktreePath, "diff", "--cached", "--name-only").CombinedOutput()
+	out, err := exec.Command("git", "-C", clonePath, "diff", "--cached", "--name-only").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git diff --cached failed: %v", err)
 	}
@@ -635,150 +648,24 @@ func TestCreateWorktree(t *testing.T) {
 		t.Errorf("expected test.txt to be staged, got: %s", string(out))
 	}
 
-	// Test cleanup: remove the worktree and verify cleanup
-	if err := removeWorktree(sourceRepo, worktreePath); err != nil {
-		t.Errorf("removeWorktree failed: %v", err)
+	// Test cleanup: remove the clone and verify cleanup
+	if err := os.RemoveAll(clonePath); err != nil {
+		t.Errorf("failed to remove clone: %v", err)
 	}
-	// Verify worktree directory was removed
-	if _, err := os.Stat(worktreePath); err == nil {
-		t.Error("worktree directory still exists after removal")
+	// Verify clone directory was removed
+	if _, err := os.Stat(clonePath); err == nil {
+		t.Error("clone directory still exists after removal")
 	}
-	// Get the list of worktrees using porcelain mode for cleaner parsing
-	worktrees, err := exec.Command("git", "-C", sourceRepo, "worktree", "list", "--porcelain").CombinedOutput()
+
+	// Verify source repo is still intact
+	sourceContent, err := os.ReadFile(testFile)
 	if err != nil {
-		t.Fatalf("git worktree list failed: %v", err)
+		t.Errorf("failed to read source file after clone cleanup: %v", err)
 	}
-	// In porcelain mode, each worktree is shown with "worktree" line followed by other info.
-	// After removal, the worktree should either be:
-	// 1. Not listed at all (ideal case)
-	// 2. Listed but marked as "prunable" (git detected it was removed)
-	// We want to ensure it's not listed as an ACTIVE (non-prunable) worktree.
-	lines := strings.Split(string(worktrees), "\n")
-	var currentWorktreePath string
-	var currentWorktreeIsPrunable bool
-	for _, line := range lines {
-		if strings.HasPrefix(line, "worktree ") {
-			// Check if the previous worktree (if any) was our target and wasn't prunable
-			if currentWorktreePath != "" && !currentWorktreeIsPrunable {
-				// Resolve both paths for comparison
-				resolvedListPath, err1 := filepath.EvalSymlinks(currentWorktreePath)
-				resolvedWorktreePath, err2 := filepath.EvalSymlinks(worktreePath)
-				if err1 != nil {
-					resolvedListPath = currentWorktreePath
-				}
-				if err2 != nil {
-					resolvedWorktreePath = worktreePath
-				}
-				if resolvedListPath == resolvedWorktreePath || currentWorktreePath == worktreePath {
-					t.Errorf("worktree is still listed as active (non-prunable) in git worktree list after removal\nworktrees output:\n%s", string(worktrees))
-				}
-			}
-			// Start tracking new worktree
-			currentWorktreePath = strings.TrimPrefix(line, "worktree ")
-			currentWorktreeIsPrunable = false
-		} else if strings.Contains(line, "prunable") {
-			currentWorktreeIsPrunable = true
-		}
-	}
-	// Check the last worktree in the list
-	if currentWorktreePath != "" && !currentWorktreeIsPrunable {
-		resolvedListPath, err1 := filepath.EvalSymlinks(currentWorktreePath)
-		resolvedWorktreePath, err2 := filepath.EvalSymlinks(worktreePath)
-		if err1 != nil {
-			resolvedListPath = currentWorktreePath
-		}
-		if err2 != nil {
-			resolvedWorktreePath = worktreePath
-		}
-		if resolvedListPath == resolvedWorktreePath || currentWorktreePath == worktreePath {
-			t.Errorf("worktree is still listed as active (non-prunable) in git worktree list after removal\nworktrees output:\n%s", string(worktrees))
-		}
+	if string(sourceContent) != "test content" {
+		t.Errorf("source file content changed: got %q, want %q", string(sourceContent), "test content")
 	}
 }
-
-// TestRemoveWorktree tests the removeWorktree function including both success and fallback cases
-func TestRemoveWorktree(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping test on Windows - requires Unix shell")
-	}
-
-	// Create a temporary git repository
-	sourceRepo := t.TempDir()
-	if err := runCmd(sourceRepo, "git", "init"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	if err := runCmd(sourceRepo, "git", "config", "user.email", "test@example.com"); err != nil {
-		t.Fatalf("git config failed: %v", err)
-	}
-	if err := runCmd(sourceRepo, "git", "config", "user.name", "Test User"); err != nil {
-		t.Fatalf("git config failed: %v", err)
-	}
-
-	// Create and commit a file
-	testFile := filepath.Join(sourceRepo, "test.txt")
-	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
-		t.Fatalf("write test file failed: %v", err)
-	}
-	if err := runCmd(sourceRepo, "git", "add", "test.txt"); err != nil {
-		t.Fatalf("git add failed: %v", err)
-	}
-	if err := runCmd(sourceRepo, "git", "commit", "-m", "initial commit"); err != nil {
-		t.Fatalf("git commit failed: %v", err)
-	}
-
-	t.Run("successful removal", func(t *testing.T) {
-		// Create a worktree
-		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := createWorktree(sourceRepo, worktreePath); err != nil {
-			t.Fatalf("createWorktree failed: %v", err)
-		}
-
-		// Verify worktree exists
-		if _, err := os.Stat(worktreePath); err != nil {
-			t.Fatalf("worktree was not created: %v", err)
-		}
-
-		// Remove the worktree
-		if err := removeWorktree(sourceRepo, worktreePath); err != nil {
-			t.Errorf("removeWorktree failed: %v", err)
-		}
-
-		// Verify worktree directory was removed
-		if _, err := os.Stat(worktreePath); err == nil {
-			t.Error("worktree directory still exists after removal")
-		}
-	})
-
-	t.Run("fallback to os.RemoveAll when git worktree remove fails", func(t *testing.T) {
-		// Create a worktree
-		worktreePath := filepath.Join(t.TempDir(), "worktree2")
-		if err := createWorktree(sourceRepo, worktreePath); err != nil {
-			t.Fatalf("createWorktree failed: %v", err)
-		}
-
-		// Verify worktree exists
-		if _, err := os.Stat(worktreePath); err != nil {
-			t.Fatalf("worktree was not created: %v", err)
-		}
-
-		// Manually corrupt the .git file to simulate a bad state that will cause git worktree remove to fail
-		gitFile := filepath.Join(worktreePath, ".git")
-		if err := os.WriteFile(gitFile, []byte("invalid"), 0644); err != nil {
-			t.Fatalf("failed to corrupt .git file: %v", err)
-		}
-
-		// Remove the worktree - should fall back to os.RemoveAll
-		if err := removeWorktree(sourceRepo, worktreePath); err != nil {
-			t.Errorf("removeWorktree with fallback failed: %v", err)
-		}
-
-		// Verify worktree directory was removed via fallback
-		if _, err := os.Stat(worktreePath); err == nil {
-			t.Error("worktree directory still exists after removal with fallback")
-		}
-	})
-}
-
 // runCmd is a helper to run a command in a directory
 func runCmd(dir string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
