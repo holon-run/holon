@@ -12,6 +12,77 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// collectFromEnv parses environment variables for GitHub Actions mode and returns
+// the collect request and output directory. Returns an error if required environment
+// variables are not set.
+func collectFromEnv() (collector.CollectRequest, string, error) {
+	// Get provider from registry
+	prov := registry.Get("github")
+	if prov == nil {
+		return collector.CollectRequest{}, "", fmt.Errorf("github provider not found in registry")
+	}
+
+	// Parse repository from GITHUB_REPOSITORY env var
+	repo := os.Getenv("GITHUB_REPOSITORY")
+	if repo == "" {
+		return collector.CollectRequest{}, "", fmt.Errorf("GITHUB_REPOSITORY environment variable not set")
+	}
+
+	// Get PR number from event
+	prNumberStr := os.Getenv("PR_NUMBER")
+	if prNumberStr == "" {
+		return collector.CollectRequest{}, "", fmt.Errorf("PR_NUMBER environment variable not set")
+	}
+
+	ref := fmt.Sprintf("%s#%s", repo, prNumberStr)
+
+	// Get token from environment
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		token = os.Getenv("GH_TOKEN")
+	}
+	if token == "" {
+		return collector.CollectRequest{}, "", fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable not set")
+	}
+
+	// Check if we should only include unresolved threads
+	unresolvedOnly := os.Getenv("UNRESOLVED_ONLY") == "true"
+
+	// Check if we should include diff
+	includeDiff := os.Getenv("INCLUDE_DIFF") != "false" // Default to true
+
+	// Get output directory from environment or use default
+	outDir := os.Getenv("HOLON_CONTEXT_OUT")
+	if outDir == "" {
+		outDir = "./holon-input/context"
+	}
+
+	return collector.CollectRequest{
+		Kind:      collector.KindPR,
+		Ref:       ref,
+		OutputDir: outDir,
+		Options: collector.Options{
+			Token:          token,
+			IncludeDiff:    includeDiff,
+			UnresolvedOnly: unresolvedOnly,
+		},
+	}, outDir, nil
+}
+
+// printCollectionSummary prints a formatted summary of the collection result.
+func printCollectionSummary(result collector.CollectResult, outputDir string) {
+	fmt.Println("\nCollection summary:")
+	fmt.Printf("  Provider: %s\n", result.Provider)
+	fmt.Printf("  Kind: %s\n", result.Kind)
+	fmt.Printf("  Repository: %s/%s#%d\n", result.Owner, result.Repo, result.Number)
+	fmt.Printf("  Collected at: %s\n", result.CollectedAt.Format("2006-01-02 15:04:05"))
+	fmt.Printf("  Files written: %d\n", len(result.Files))
+	for _, f := range result.Files {
+		fmt.Printf("    - %s\n", f.Path)
+	}
+	fmt.Printf("  Output directory: %s/\n", outputDir)
+}
+
 var (
 	contextOwner          string
 	contextRepo           string
@@ -85,51 +156,22 @@ Examples:
 				return fmt.Errorf("positional arguments are not allowed when using --from-env\n\nUsage: holon context collect --from-env --out ./holon-input/context")
 			}
 
+			// Parse environment variables and build request
+			req, outDir, err := collectFromEnv()
+			if err != nil {
+				return err
+			}
+
+			// Override output directory if explicitly set via flag
+			if cmd.Flags().Changed("out") {
+				req.OutputDir = collectOut
+				outDir = collectOut
+			}
+
 			// Get provider from registry
 			prov := registry.Get("github")
 			if prov == nil {
 				return fmt.Errorf("github provider not found in registry")
-			}
-
-			// Parse repository from GITHUB_REPOSITORY env var
-			repo := os.Getenv("GITHUB_REPOSITORY")
-			if repo == "" {
-				return fmt.Errorf("GITHUB_REPOSITORY environment variable not set")
-			}
-
-			// Get PR number from event
-			prNumberStr := os.Getenv("PR_NUMBER")
-			if prNumberStr == "" {
-				return fmt.Errorf("PR_NUMBER environment variable not set")
-			}
-
-			ref := fmt.Sprintf("%s#%s", repo, prNumberStr)
-
-			// Get token from environment
-			token := os.Getenv("GITHUB_TOKEN")
-			if token == "" {
-				token = os.Getenv("GH_TOKEN")
-			}
-			if token == "" {
-				return fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable not set")
-			}
-
-			// Check if we should only include unresolved threads
-			unresolvedOnly := os.Getenv("UNRESOLVED_ONLY") == "true"
-
-			// Check if we should include diff
-			includeDiff := os.Getenv("INCLUDE_DIFF") != "false" // Default to true
-
-			// Build request
-			req := collector.CollectRequest{
-				Kind:      collector.KindPR,
-				Ref:       ref,
-				OutputDir: collectOut,
-				Options: collector.Options{
-					Token:          token,
-					IncludeDiff:    includeDiff,
-					UnresolvedOnly: unresolvedOnly,
-				},
 			}
 
 			// Validate request
@@ -144,16 +186,7 @@ Examples:
 			}
 
 			// Print summary
-			fmt.Println("\nCollection summary:")
-			fmt.Printf("  Provider: %s\n", result.Provider)
-			fmt.Printf("  Kind: %s\n", result.Kind)
-			fmt.Printf("  Repository: %s/%s#%d\n", result.Owner, result.Repo, result.Number)
-			fmt.Printf("  Collected at: %s\n", result.CollectedAt.Format("2006-01-02 15:04:05"))
-			fmt.Printf("  Files written: %d\n", len(result.Files))
-			for _, f := range result.Files {
-				fmt.Printf("    - %s\n", f.Path)
-			}
-			fmt.Printf("  Output directory: %s/\n", collectOut)
+			printCollectionSummary(result, outDir)
 
 			return nil
 		}
@@ -227,16 +260,7 @@ Examples:
 		}
 
 		// Print summary
-		fmt.Println("\nCollection summary:")
-		fmt.Printf("  Provider: %s\n", result.Provider)
-		fmt.Printf("  Kind: %s\n", result.Kind)
-		fmt.Printf("  Repository: %s/%s#%d\n", result.Owner, result.Repo, result.Number)
-		fmt.Printf("  Collected at: %s\n", result.CollectedAt.Format("2006-01-02 15:04:05"))
-		fmt.Printf("  Files written: %d\n", len(result.Files))
-		for _, f := range result.Files {
-			fmt.Printf("    - %s\n", f.Path)
-		}
-		fmt.Printf("  Output directory: %s/\n", collectOut)
+		printCollectionSummary(result, collectOut)
 
 		return nil
 	},
@@ -285,34 +309,21 @@ Note: This is a legacy command. Use 'holon context collect' for new workflows.
 
 		if contextFromEnv {
 			// Use environment variables (GitHub Actions mode)
-			// Parse repository from GITHUB_REPOSITORY env var
-			repo := os.Getenv("GITHUB_REPOSITORY")
-			if repo == "" {
-				return fmt.Errorf("GITHUB_REPOSITORY environment variable not set")
+			reqFromEnv, outDirFromEnv, err := collectFromEnv()
+			if err != nil {
+				return err
 			}
 
-			// Get PR number from event
-			prNumberStr := os.Getenv("PR_NUMBER")
-			if prNumberStr == "" {
-				return fmt.Errorf("PR_NUMBER environment variable not set")
+			// Extract values from the request
+			ref = reqFromEnv.Ref
+			contextToken = reqFromEnv.Options.Token
+			includeDiff = reqFromEnv.Options.IncludeDiff
+			unresolvedOnly = reqFromEnv.Options.UnresolvedOnly
+
+			// Use output directory from env unless explicitly overridden
+			if contextOutputDir == "./holon-input/context" {
+				contextOutputDir = outDirFromEnv
 			}
-
-			ref = fmt.Sprintf("%s#%s", repo, prNumberStr)
-
-			// Get token from environment
-			contextToken = os.Getenv("GITHUB_TOKEN")
-			if contextToken == "" {
-				contextToken = os.Getenv("GH_TOKEN")
-			}
-			if contextToken == "" {
-				return fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable not set")
-			}
-
-			// Check if we should only include unresolved threads
-			unresolvedOnly = os.Getenv("UNRESOLVED_ONLY") == "true"
-
-			// Check if we should include diff
-			includeDiff = os.Getenv("INCLUDE_DIFF") != "false" // Default to true
 		} else {
 			// Validate required flags
 			if contextOwner == "" {
@@ -356,17 +367,8 @@ Note: This is a legacy command. Use 'holon context collect' for new workflows.
 			return fmt.Errorf("collection failed: %w", err)
 		}
 
-		// Print summary (consistent with new collect command)
-		fmt.Println("\nCollection summary:")
-		fmt.Printf("  Provider: %s\n", result.Provider)
-		fmt.Printf("  Kind: %s\n", result.Kind)
-		fmt.Printf("  Repository: %s/%s#%d\n", result.Owner, result.Repo, result.Number)
-		fmt.Printf("  Collected at: %s\n", result.CollectedAt.Format("2006-01-02 15:04:05"))
-		fmt.Printf("  Files written: %d\n", len(result.Files))
-		for _, f := range result.Files {
-			fmt.Printf("    - %s\n", f.Path)
-		}
-		fmt.Printf("  Output directory: %s/\n", contextOutputDir)
+		// Print summary
+		printCollectionSummary(result, contextOutputDir)
 
 		return nil
 	},
