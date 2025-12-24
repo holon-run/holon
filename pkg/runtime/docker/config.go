@@ -82,7 +82,7 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 // BuildContainerEnv assembles the environment variables for a container
 // This function is pure and deterministic - no Docker client interaction
 func BuildContainerEnv(cfg *EnvConfig) []string {
-	env := make([]string, 0, len(cfg.UserEnv)+4)
+	env := make([]string, 0, len(cfg.UserEnv)+3)
 
 	// Add user-provided environment variables
 	for k, v := range cfg.UserEnv {
@@ -97,7 +97,6 @@ func BuildContainerEnv(cfg *EnvConfig) []string {
 	// This is needed because Docker containers may have different UIDs
 	// than the host, causing Git to detect "dubious ownership"
 	env = append(env, "GIT_CONFIG_NOSYSTEM=1")
-	env = append(env, "GIT_CONFIG_GLOBAL=/dev/null")
 
 	return env
 }

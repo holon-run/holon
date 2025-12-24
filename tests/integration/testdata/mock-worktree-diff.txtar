@@ -79,6 +79,9 @@ func divide(a, b int) int {
 }
 EOF
 
+# Configure git to ignore ownership checks (needed in containers)
+git config --global --add safe.directory /holon/workspace
+
 # Stage changes with git (this should work now after the fix)
 cd "$WORKSPACE"
 git add -A
