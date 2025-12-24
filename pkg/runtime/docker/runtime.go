@@ -435,11 +435,14 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 		fmt.Printf("  HEAD: %s\n", result.HeadSHA)
 	}
 	if result.HasHistory {
-		fmt.Printf("  History: %s", map[bool]string{true: "full", false: "shallow"}[!result.IsShallow])
+		if result.IsShallow {
+			fmt.Printf("  History: shallow\n")
+		} else {
+			fmt.Printf("  History: full\n")
+		}
 	} else {
-		fmt.Printf("  History: none")
+		fmt.Printf("  History: none\n")
 	}
-	fmt.Printf("\n")
 
 	// Log any notes
 	for _, note := range result.Notes {

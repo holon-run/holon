@@ -27,7 +27,7 @@ func WriteManifest(dest string, result PrepareResult) error {
 	}
 
 	manifestPath := filepath.Join(dest, "workspace.manifest.json")
-	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write workspace manifest: %w", err)
 	}
 

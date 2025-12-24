@@ -361,7 +361,7 @@ func setupTestRepo(t *testing.T, dir string) {
 
 	// Create a test file
 	testFile := filepath.Join(dir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte("test content"), 0o644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 

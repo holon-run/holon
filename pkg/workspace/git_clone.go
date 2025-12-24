@@ -76,7 +76,7 @@ func (p *GitClonePreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 
 	// Handle ref checkout if specified
 	if req.Ref != "" {
-		if err := checkoutRef(req.Dest, req.Ref); err != nil {
+		if err := checkoutRefContext(ctx, req.Dest, req.Ref); err != nil {
 			// Checkout failed - log a note but don't fail
 			result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to checkout ref '%s': %v", req.Ref, err))
 		}
@@ -91,7 +91,7 @@ func (p *GitClonePreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	}
 
 	// Get HEAD SHA
-	headSHA, err := getHeadSHA(req.Dest)
+	headSHA, err := getHeadSHAContext(ctx, req.Dest)
 	if err != nil {
 		result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to get HEAD SHA: %v", err))
 	} else {
@@ -100,7 +100,7 @@ func (p *GitClonePreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 
 	// Determine history status
 	result.HasHistory = req.History != HistoryNone
-	result.IsShallow = req.History == HistoryShallow || isShallowClone(req.Dest)
+	result.IsShallow = req.History == HistoryShallow || isShallowCloneContext(ctx, req.Dest)
 
 	// Write workspace manifest
 	if err := WriteManifest(req.Dest, result); err != nil {
@@ -124,7 +124,10 @@ func (p *GitClonePreparer) buildCloneArgs(req PrepareRequest) []string {
 	case HistoryShallow:
 		args = append(args, "--depth", "1")
 	case HistoryNone:
-		// For history none, we still clone but with depth 1
+		// For history none, we use depth 1 to create a minimal clone.
+		// While this creates a git repository, it has effectively no history
+		// beyond the single commit. For true "no history" behavior without a
+		// git repository at all, use the snapshot strategy instead.
 		args = append(args, "--depth", "1")
 	case HistoryFull:
 		// Full history is the default for git clone

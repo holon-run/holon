@@ -80,7 +80,7 @@ func (p *SnapshotPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	headSHA := ""
 	if sourceIsGit {
 		// Try to get HEAD SHA from source
-		if sha, err := getHeadSHA(req.Source); err == nil {
+		if sha, err := getHeadSHAContext(ctx, req.Source); err == nil {
 			headSHA = sha
 			result.HeadSHA = sha
 		}
@@ -97,7 +97,7 @@ func (p *SnapshotPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	// If the source was a git repo, initialize a minimal git repository
 	// This enables git operations inside the container even without history
 	if sourceIsGit {
-		if err := p.initMinimalGit(req.Dest, headSHA); err != nil {
+		if err := p.initMinimalGit(ctx, req.Dest, headSHA); err != nil {
 			result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to initialize minimal git: %v", err))
 		}
 	}
@@ -122,26 +122,26 @@ func (p *SnapshotPreparer) Cleanup(dest string) error {
 
 // initMinimalGit initializes a minimal git repository for a snapshot
 // This allows git commands to work inside the container even without history
-func (p *SnapshotPreparer) initMinimalGit(dir string, headSHA string) error {
+func (p *SnapshotPreparer) initMinimalGit(ctx context.Context, dir string, headSHA string) error {
 	// Initialize git repo
-	cmd := execGit(dir, "init")
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "init")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git init failed: %v, output: %s", err, string(out))
 	}
 
 	// Configure user (required for commits)
-	cmd = execGit(dir, "config", "user.email", "holon@holon.run")
+	cmd = exec.CommandContext(ctx, "git", "-C", dir, "config", "user.email", "holon@holon.run")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git config user.email failed: %w", err)
 	}
 
-	cmd = execGit(dir, "config", "user.name", "Holon")
+	cmd = exec.CommandContext(ctx, "git", "-C", dir, "config", "user.name", "Holon")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git config user.name failed: %w", err)
 	}
 
 	// Add all files
-	cmd = execGit(dir, "add", "-A")
+	cmd = exec.CommandContext(ctx, "git", "-C", dir, "add", "-A")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add failed: %v, output: %s", err, string(out))
 	}
@@ -149,9 +149,9 @@ func (p *SnapshotPreparer) initMinimalGit(dir string, headSHA string) error {
 	// Create initial commit
 	if headSHA != "" {
 		// Try to preserve the original commit message if available
-		cmd = execGit(dir, "commit", "-m", fmt.Sprintf("Holon snapshot\n\nOriginal commit: %s", headSHA))
+		cmd = exec.CommandContext(ctx, "git", "-C", dir, "commit", "-m", fmt.Sprintf("Holon snapshot\n\nOriginal commit: %s", headSHA))
 	} else {
-		cmd = execGit(dir, "commit", "-m", "Holon snapshot")
+		cmd = exec.CommandContext(ctx, "git", "-C", dir, "commit", "-m", "Holon snapshot")
 	}
 
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -159,9 +159,4 @@ func (p *SnapshotPreparer) initMinimalGit(dir string, headSHA string) error {
 	}
 
 	return nil
-}
-
-func execGit(dir string, args ...string) *exec.Cmd {
-	cmdArgs := append([]string{"-C", dir}, args...)
-	return exec.Command("git", cmdArgs...)
 }

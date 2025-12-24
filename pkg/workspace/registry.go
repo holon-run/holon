@@ -10,6 +10,20 @@ var (
 	preparers  = make(map[string]Preparer)
 )
 
+// init registers the built-in workspace preparers.
+func init() {
+	// Register built-in preparers
+	if err := Register(NewGitClonePreparer()); err != nil {
+		panic(fmt.Sprintf("failed to register git-clone preparer: %v", err))
+	}
+	if err := Register(NewSnapshotPreparer()); err != nil {
+		panic(fmt.Sprintf("failed to register snapshot preparer: %v", err))
+	}
+	if err := Register(NewExistingPreparer()); err != nil {
+		panic(fmt.Sprintf("failed to register existing preparer: %v", err))
+	}
+}
+
 // Register registers a preparer with a given name.
 // If a preparer with the same name is already registered, it returns an error.
 func Register(preparer Preparer) error {

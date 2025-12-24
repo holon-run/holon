@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -84,14 +85,20 @@ func isSubpath(candidate, parent string) bool {
 		return false
 	}
 	rel = filepath.Clean(rel)
-	if rel == "." {
-		return true
-	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+	return rel == "." || !strings.HasPrefix(rel, "..")
 }
 
-// copyDir copies a directory recursively using cp -a
+// copyDir copies a directory recursively using cp -a (Unix) or xcopy (Windows)
 func copyDir(src string, dst string) error {
+	if runtime.GOOS == "windows" {
+		// Windows: Use xcopy for recursive directory copy
+		cmd := exec.Command("xcopy", src+"\\*", dst, "/E", "/I", "/H", "/Y", "/Q")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("xcopy failed: %v, output: %s", err, string(out))
+		}
+		return nil
+	}
+	// Unix: Use cp -a for recursive copy with attributes preserved
 	cmd := exec.Command("cp", "-a", src+"/.", dst+"/")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("cp failed: %v, output: %s", err, string(out))
@@ -108,9 +115,28 @@ func IsGitRepo(dir string) bool {
 	return true
 }
 
+// IsGitRepoContext checks if the given directory is inside a git repository with context support
+func IsGitRepoContext(ctx context.Context, dir string) bool {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-dir")
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
 // getHeadSHA returns the current HEAD SHA of a git repository
 func getHeadSHA(dir string) (string, error) {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get HEAD SHA: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// getHeadSHAContext returns the current HEAD SHA of a git repository with context support
+func getHeadSHAContext(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get HEAD SHA: %w", err)
@@ -128,6 +154,16 @@ func isShallowClone(dir string) bool {
 	return strings.TrimSpace(string(output)) == "true"
 }
 
+// isShallowCloneContext checks if a git repository is a shallow clone with context support
+func isShallowCloneContext(ctx context.Context, dir string) bool {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-shallow-repository")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(output)) == "true"
+}
+
 // checkoutRef checks out a git reference in a repository
 func checkoutRef(dir, ref string) error {
 	args := []string{"-C", dir, "checkout", "--quiet"}
@@ -135,6 +171,19 @@ func checkoutRef(dir, ref string) error {
 		args = append(args, ref)
 	}
 	cmd := exec.Command("git", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to checkout ref %s: %v, output: %s", ref, err, string(out))
+	}
+	return nil
+}
+
+// checkoutRefContext checks out a git reference in a repository with context support
+func checkoutRefContext(ctx context.Context, dir, ref string) error {
+	args := []string{"-C", dir, "checkout", "--quiet"}
+	if ref != "" {
+		args = append(args, ref)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to checkout ref %s: %v, output: %s", ref, err, string(out))
 	}

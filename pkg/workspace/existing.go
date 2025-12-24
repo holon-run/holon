@@ -39,9 +39,12 @@ func (p *ExistingPreparer) Validate(req PrepareRequest) error {
 	return nil
 }
 
-// Prepare uses an existing directory as the workspace
-// The Source should be the existing directory path
-// The Dest is ignored (we use Source as both source and destination)
+// Prepare uses an existing directory as the workspace without modification.
+// The Source should be the existing directory path to use.
+// The Dest parameter is validated for API compatibility but is ignored during execution;
+// the actual workspace used is the Source directory itself.
+// This strategy is useful when the user wants to use an existing checkout without
+// creating a copy or clone, and ensures the workspace manifest is written to the source.
 func (p *ExistingPreparer) Prepare(ctx context.Context, req PrepareRequest) (PrepareResult, error) {
 	if err := p.Validate(req); err != nil {
 		return PrepareResult{}, fmt.Errorf("validation failed: %w", err)
@@ -58,21 +61,21 @@ func (p *ExistingPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	// Get git information if available
 	if IsGitRepo(actualDest) {
 		// Get HEAD SHA
-		if headSHA, err := getHeadSHA(actualDest); err == nil {
+		if headSHA, err := getHeadSHAContext(ctx, actualDest); err == nil {
 			result.HeadSHA = headSHA
 		}
 
 		// Check if shallow
-		result.IsShallow = isShallowClone(actualDest)
+		result.IsShallow = isShallowCloneContext(ctx, actualDest)
 		result.HasHistory = !result.IsShallow
 
 		// Handle ref checkout if requested
 		if req.Ref != "" {
-			if err := checkoutRef(actualDest, req.Ref); err != nil {
+			if err := checkoutRefContext(ctx, actualDest, req.Ref); err != nil {
 				result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to checkout ref '%s': %v", req.Ref, err))
 			} else {
 				// Update HEAD SHA after checkout
-				if headSHA, err := getHeadSHA(actualDest); err == nil {
+				if headSHA, err := getHeadSHAContext(ctx, actualDest); err == nil {
 					result.HeadSHA = headSHA
 				}
 			}
