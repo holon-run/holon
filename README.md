@@ -23,8 +23,40 @@ See `rfc/0002-agent-scheme.md` for the agent artifact contract.
 ## Quickstart (local)
 Prereqs:
 - Docker
-- Go toolchain (this repo uses Go 1.24; see `go.mod`)
+- Go toolchain (this repo uses Go 1.24; see `go.mod`) - OR use prebuilt binaries
 - Anthropic API key: `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`)
+
+### Option 1: Using prebuilt binaries
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/holon-run/holon/releases):
+
+**Linux (amd64):**
+```bash
+curl -fsSL https://github.com/holon-run/holon/releases/latest/download/holon-linux-amd64.tar.gz | tar -xz
+chmod +x holon-linux-amd64
+sudo mv holon-linux-amd64 /usr/local/bin/holon
+```
+
+**macOS (Intel):**
+```bash
+curl -fsSL https://github.com/holon-run/holon/releases/latest/download/holon-darwin-amd64.tar.gz | tar -xz
+chmod +x holon-darwin-amd64
+sudo mv holon-darwin-amd64 /usr/local/bin/holon
+```
+
+**macOS (Apple Silicon):**
+```bash
+curl -fsSL https://github.com/holon-run/holon/releases/latest/download/holon-darwin-arm64.tar.gz | tar -xz
+chmod +x holon-darwin-arm64
+sudo mv holon-darwin-arm64 /usr/local/bin/holon
+```
+
+Verify your installation:
+```bash
+holon version
+```
+
+### Option 2: Building from source
 
 Pick a base toolchain image that matches your repo (via `--image`). Holon composes it with the agent bundle at runtime.
 
@@ -63,6 +95,13 @@ Minimal usage:
 ```
 
 ## Configuration
+CLI commands:
+- `run`: Run a Holon agent execution
+- `version`: Show version information
+- `agent`: Manage agent bundles and aliases (`install`, `list`, `remove`, `info`)
+- `context`: Context management
+- `publish`: Publishing functionality
+
 CLI flags (most used):
 - `--goal` / `--spec`: task input
 - `--image`: base toolchain image (e.g. `golang:1.22`, `node:20`, ...)

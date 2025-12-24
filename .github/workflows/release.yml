@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Build Agent Bundle
+      run: |
+        cd agents/claude
+        npm ci
+        npm run bundle
+
+    - name: Extract version info
+      id: version
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        echo "build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_OUTPUT
+
+    - name: Build for Linux amd64
+      run: |
+        make release-build
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        COMMIT: ${{ steps.version.outputs.commit }}
+        BUILD_DATE: ${{ steps.version.outputs.build_date }}
+
+    - name: Create release archives
+      run: |
+        cd bin
+        for binary in holon-*; do
+          tar -czf "${binary}.tar.gz" "${binary}"
+        done
+
+    - name: Generate checksums
+      run: |
+        cd bin
+        sha256sum *.tar.gz > checksums.txt
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          bin/*.tar.gz
+          bin/checksums.txt
+        generate_release_notes: true
+        body: |
+          ## Holon CLI ${{ steps.version.outputs.version }}
+
+          ### Installation
+
+          Download the binary for your platform:
+
+          **Linux (amd64):**
+          ```bash
+          curl -fsSL https://github.com/holon-run/holon/releases/download/${{ steps.version.outputs.version }}/holon-linux-amd64.tar.gz | tar -xz
+          chmod +x holon-linux-amd64
+          sudo mv holon-linux-amd64 /usr/local/bin/holon
+          ```
+
+          **macOS (Intel):**
+          ```bash
+          curl -fsSL https://github.com/holon-run/holon/releases/download/${{ steps.version.outputs.version }}/holon-darwin-amd64.tar.gz | tar -xz
+          chmod +x holon-darwin-amd64
+          sudo mv holon-darwin-amd64 /usr/local/bin/holon
+          ```
+
+          **macOS (Apple Silicon):**
+          ```bash
+          curl -fsSL https://github.com/holon-run/holon/releases/download/${{ steps.version.outputs.version }}/holon-darwin-arm64.tar.gz | tar -xz
+          chmod +x holon-darwin-arm64
+          sudo mv holon-darwin-arm64 /usr/local/bin/holon
+          ```
+
+          ### Verify Checksum
+          ```bash
+          sha256sum -c checksums.txt
+          ```
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
