@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	ghcontext "github.com/holon-run/holon/pkg/context/github"
 	"github.com/holon-run/holon/pkg/context/collector"
 	"github.com/holon-run/holon/pkg/context/provider/github"
 	"github.com/holon-run/holon/pkg/context/registry"
@@ -85,7 +84,78 @@ Examples:
 			if len(args) > 0 {
 				return fmt.Errorf("positional arguments are not allowed when using --from-env\n\nUsage: holon context collect --from-env --out ./holon-input/context")
 			}
-			return ghcontext.CollectFromEnv(ctx, collectOut)
+
+			// Get provider from registry
+			prov := registry.Get("github")
+			if prov == nil {
+				return fmt.Errorf("github provider not found in registry")
+			}
+
+			// Parse repository from GITHUB_REPOSITORY env var
+			repo := os.Getenv("GITHUB_REPOSITORY")
+			if repo == "" {
+				return fmt.Errorf("GITHUB_REPOSITORY environment variable not set")
+			}
+
+			// Get PR number from event
+			prNumberStr := os.Getenv("PR_NUMBER")
+			if prNumberStr == "" {
+				return fmt.Errorf("PR_NUMBER environment variable not set")
+			}
+
+			ref := fmt.Sprintf("%s#%s", repo, prNumberStr)
+
+			// Get token from environment
+			token := os.Getenv("GITHUB_TOKEN")
+			if token == "" {
+				token = os.Getenv("GH_TOKEN")
+			}
+			if token == "" {
+				return fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable not set")
+			}
+
+			// Check if we should only include unresolved threads
+			unresolvedOnly := os.Getenv("UNRESOLVED_ONLY") == "true"
+
+			// Check if we should include diff
+			includeDiff := os.Getenv("INCLUDE_DIFF") != "false" // Default to true
+
+			// Build request
+			req := collector.CollectRequest{
+				Kind:      collector.KindPR,
+				Ref:       ref,
+				OutputDir: collectOut,
+				Options: collector.Options{
+					Token:          token,
+					IncludeDiff:    includeDiff,
+					UnresolvedOnly: unresolvedOnly,
+				},
+			}
+
+			// Validate request
+			if err := prov.Validate(req); err != nil {
+				return fmt.Errorf("validation failed: %w", err)
+			}
+
+			// Collect
+			result, err := prov.Collect(ctx, req)
+			if err != nil {
+				return fmt.Errorf("collection failed: %w", err)
+			}
+
+			// Print summary
+			fmt.Println("\nCollection summary:")
+			fmt.Printf("  Provider: %s\n", result.Provider)
+			fmt.Printf("  Kind: %s\n", result.Kind)
+			fmt.Printf("  Repository: %s/%s#%d\n", result.Owner, result.Repo, result.Number)
+			fmt.Printf("  Collected at: %s\n", result.CollectedAt.Format("2006-01-02 15:04:05"))
+			fmt.Printf("  Files written: %d\n", len(result.Files))
+			for _, f := range result.Files {
+				fmt.Printf("    - %s\n", f.Path)
+			}
+			fmt.Printf("  Output directory: %s/\n", collectOut)
+
+			return nil
 		}
 
 		// Parse arguments
@@ -182,10 +252,12 @@ This command fetches PR information, review comments, and optionally the diff,
 and writes them to a standardized directory structure for use by Holon agents.
 
 The output directory will contain:
+  - manifest.json: Collection metadata
   - github/pr.json: Pull request metadata
   - github/review_threads.json: Review comment threads
   - github/pr.diff: Unified diff (optional)
   - github/review.md: Human-readable summary
+  - pr-fix.schema.json: PR-fix output schema
 
 Examples:
   # Collect context for a specific PR
@@ -202,37 +274,101 @@ Note: This is a legacy command. Use 'holon context collect' for new workflows.
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 
+		// Use the new provider abstraction for consistent output (including manifest.json)
+		prov := registry.Get("github")
+		if prov == nil {
+			return fmt.Errorf("github provider not found in registry")
+		}
+
+		var ref string
+		var includeDiff, unresolvedOnly bool
+
 		if contextFromEnv {
 			// Use environment variables (GitHub Actions mode)
-			return ghcontext.CollectFromEnv(ctx, contextOutputDir)
+			// Parse repository from GITHUB_REPOSITORY env var
+			repo := os.Getenv("GITHUB_REPOSITORY")
+			if repo == "" {
+				return fmt.Errorf("GITHUB_REPOSITORY environment variable not set")
+			}
+
+			// Get PR number from event
+			prNumberStr := os.Getenv("PR_NUMBER")
+			if prNumberStr == "" {
+				return fmt.Errorf("PR_NUMBER environment variable not set")
+			}
+
+			ref = fmt.Sprintf("%s#%s", repo, prNumberStr)
+
+			// Get token from environment
+			contextToken = os.Getenv("GITHUB_TOKEN")
+			if contextToken == "" {
+				contextToken = os.Getenv("GH_TOKEN")
+			}
+			if contextToken == "" {
+				return fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable not set")
+			}
+
+			// Check if we should only include unresolved threads
+			unresolvedOnly = os.Getenv("UNRESOLVED_ONLY") == "true"
+
+			// Check if we should include diff
+			includeDiff = os.Getenv("INCLUDE_DIFF") != "false" // Default to true
+		} else {
+			// Validate required flags
+			if contextOwner == "" {
+				return fmt.Errorf("--owner is required")
+			}
+			if contextRepo == "" {
+				return fmt.Errorf("--repo is required")
+			}
+			if contextPRNumber == 0 {
+				return fmt.Errorf("--pr is required")
+			}
+			if contextToken == "" {
+				return fmt.Errorf("--token is required (or use --from-env)")
+			}
+
+			// Build reference from owner/repo/PR number
+			ref = fmt.Sprintf("%s/%s#%d", contextOwner, contextRepo, contextPRNumber)
+			includeDiff = contextIncludeDiff
+			unresolvedOnly = contextUnresolvedOnly
 		}
 
-		// Validate required flags
-		if contextOwner == "" {
-			return fmt.Errorf("--owner is required")
-		}
-		if contextRepo == "" {
-			return fmt.Errorf("--repo is required")
-		}
-		if contextPRNumber == 0 {
-			return fmt.Errorf("--pr is required")
-		}
-		if contextToken == "" {
-			return fmt.Errorf("--token is required (or use --from-env)")
+		req := collector.CollectRequest{
+			Kind:      collector.KindPR,
+			Ref:       ref,
+			OutputDir: contextOutputDir,
+			Options: collector.Options{
+				Token:          contextToken,
+				IncludeDiff:    includeDiff,
+				UnresolvedOnly: unresolvedOnly,
+			},
 		}
 
-		config := ghcontext.CollectorConfig{
-			Owner:          contextOwner,
-			Repo:           contextRepo,
-			PRNumber:       contextPRNumber,
-			Token:          contextToken,
-			OutputDir:      contextOutputDir,
-			UnresolvedOnly: contextUnresolvedOnly,
-			IncludeDiff:    contextIncludeDiff,
+		// Validate request
+		if err := prov.Validate(req); err != nil {
+			return fmt.Errorf("validation failed: %w", err)
 		}
 
-		collector := ghcontext.NewCollector(config)
-		return collector.Collect(ctx)
+		// Collect
+		result, err := prov.Collect(ctx, req)
+		if err != nil {
+			return fmt.Errorf("collection failed: %w", err)
+		}
+
+		// Print summary (consistent with new collect command)
+		fmt.Println("\nCollection summary:")
+		fmt.Printf("  Provider: %s\n", result.Provider)
+		fmt.Printf("  Kind: %s\n", result.Kind)
+		fmt.Printf("  Repository: %s/%s#%d\n", result.Owner, result.Repo, result.Number)
+		fmt.Printf("  Collected at: %s\n", result.CollectedAt.Format("2006-01-02 15:04:05"))
+		fmt.Printf("  Files written: %d\n", len(result.Files))
+		for _, f := range result.Files {
+			fmt.Printf("    - %s\n", f.Path)
+		}
+		fmt.Printf("  Output directory: %s/\n", contextOutputDir)
+
+		return nil
 	},
 }
 
