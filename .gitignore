@@ -1,6 +1,6 @@
 # Binaries
 bin/
-holon
+/holon              # Root binary only (leading / ensures it doesn't affect cmd/holon/)
 
 # Holon execution outputs
 holon-output/
