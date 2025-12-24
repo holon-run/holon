@@ -1,4 +1,4 @@
-.PHONY: build build-host test test-all clean run-example test-agent help
+.PHONY: build build-host test test-all clean run-example test-agent help release-build
 
 # Project variables
 BINARY_NAME=holon
@@ -6,17 +6,35 @@ BIN_DIR=bin
 GO_FILES=$(shell find . -type f -name '*.go')
 AGENT_DIR=agents/claude
 
+# Version variables (injected via ldflags)
+VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE?=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "unknown")
+LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildDate=$(BUILD_DATE)"
+
 # Default target
 all: build
 
 ## build: Build the holon runner CLI
 build: build-host
 
-## build-host: Build runner CLI for current OS/Arch
+## build-host: Build runner CLI for current OS/Arch with version info
 build-host:
-	@echo "Building runner CLI..."
+	@echo "Building runner CLI (Version: $(VERSION), Commit: $(COMMIT))..."
 	@mkdir -p $(BIN_DIR)
-	go build -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/holon
+	go build $(LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/holon
+
+## release-build: Build binaries for multiple platforms
+release-build:
+	@echo "Building release binaries..."
+	@mkdir -p $(BIN_DIR)
+	@echo "Building for linux/amd64..."
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/holon
+	@echo "Building for darwin/amd64..."
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME)-darwin-amd64 ./cmd/holon
+	@echo "Building for darwin/arm64..."
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME)-darwin-arm64 ./cmd/holon
+	@echo "Release binaries built successfully"
 
 ## test: Run all project tests
 test: test-agent
