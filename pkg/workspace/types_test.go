@@ -420,23 +420,28 @@ func TestGitClonePreparerSelfContained(t *testing.T) {
 		ctx := context.Background()
 		destDir := t.TempDir()
 
-		// Create a branch in the source repo
-		runGit(t, sourceDir, "checkout", "-b", "test-branch")
-		testFile2 := filepath.Join(sourceDir, "test2.txt")
+		// Create an isolated test repository with a branch for this test
+		// This avoids modifying the shared sourceDir which would affect other subtests
+		sourceDirForBranchTest := t.TempDir()
+		setupTestRepoWithMultipleCommits(t, sourceDirForBranchTest)
+
+		// Create a branch in the isolated source repo
+		runGit(t, sourceDirForBranchTest, "checkout", "-b", "test-branch")
+		testFile2 := filepath.Join(sourceDirForBranchTest, "test2.txt")
 		if err := os.WriteFile(testFile2, []byte("branch content"), 0o644); err != nil {
 			t.Fatalf("failed to create test file: %v", err)
 		}
-		runGit(t, sourceDir, "add", "test2.txt")
-		runGit(t, sourceDir, "commit", "-m", "Branch commit")
-		branchSHA := getGitSHA(t, sourceDir)
+		runGit(t, sourceDirForBranchTest, "add", "test2.txt")
+		runGit(t, sourceDirForBranchTest, "commit", "-m", "Branch commit")
+		branchSHA := getGitSHA(t, sourceDirForBranchTest)
 
 		// Switch back to main
-		runGit(t, sourceDir, "checkout", "main")
-		mainSHA := getGitSHA(t, sourceDir)
+		runGit(t, sourceDirForBranchTest, "checkout", "main")
+		mainSHA := getGitSHA(t, sourceDirForBranchTest)
 
 		preparer := NewGitClonePreparer()
 		req := PrepareRequest{
-			Source:  sourceDir,
+			Source:  sourceDirForBranchTest,
 			Dest:    destDir,
 			Ref:     "test-branch",
 			History: HistoryFull,
@@ -467,7 +472,7 @@ func TestGitClonePreparerSelfContained(t *testing.T) {
 		// Test checking out main branch
 		destDir2 := t.TempDir()
 		req2 := PrepareRequest{
-			Source:  sourceDir,
+			Source:  sourceDirForBranchTest,
 			Dest:    destDir2,
 			Ref:     "main",
 			History: HistoryFull,
