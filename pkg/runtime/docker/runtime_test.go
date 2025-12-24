@@ -1,7 +1,9 @@
 package docker
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -468,4 +470,161 @@ exit 1`
 			}
 		})
 	}
+}
+
+// TestIsGitRepo tests the isGitRepo helper function
+func TestIsGitRepo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows - requires Unix shell")
+	}
+
+	tests := []struct {
+		name     string
+		setupDir func(t *testing.T) string
+		want     bool
+	}{
+		{
+			name: "git repository",
+			setupDir: func(t *testing.T) string {
+				dir := t.TempDir()
+				// Initialize a git repository
+				if err := runCmd(dir, "git", "init"); err != nil {
+					t.Fatalf("git init failed: %v", err)
+				}
+				if err := runCmd(dir, "git", "config", "user.email", "test@example.com"); err != nil {
+					t.Fatalf("git config failed: %v", err)
+				}
+				if err := runCmd(dir, "git", "config", "user.name", "Test User"); err != nil {
+					t.Fatalf("git config failed: %v", err)
+				}
+				// Create and commit a file
+				testFile := filepath.Join(dir, "test.txt")
+				if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+					t.Fatalf("write test file failed: %v", err)
+				}
+				if err := runCmd(dir, "git", "add", "test.txt"); err != nil {
+					t.Fatalf("git add failed: %v", err)
+				}
+				if err := runCmd(dir, "git", "commit", "-m", "initial"); err != nil {
+					t.Fatalf("git commit failed: %v", err)
+				}
+				return dir
+			},
+			want: true,
+		},
+		{
+			name: "non-git directory",
+			setupDir: func(t *testing.T) string {
+				return t.TempDir()
+			},
+			want: false,
+		},
+		{
+			name: "subdirectory of git repository",
+			setupDir: func(t *testing.T) string {
+				dir := t.TempDir()
+				// Initialize a git repository
+				if err := runCmd(dir, "git", "init"); err != nil {
+					t.Fatalf("git init failed: %v", err)
+				}
+				if err := runCmd(dir, "git", "config", "user.email", "test@example.com"); err != nil {
+					t.Fatalf("git config failed: %v", err)
+				}
+				if err := runCmd(dir, "git", "config", "user.name", "Test User"); err != nil {
+					t.Fatalf("git config failed: %v", err)
+				}
+				// Create a subdirectory
+				subdir := filepath.Join(dir, "subdir")
+				if err := os.MkdirAll(subdir, 0755); err != nil {
+					t.Fatalf("mkdir failed: %v", err)
+				}
+				return subdir
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := tt.setupDir(t)
+			got := isGitRepo(dir)
+			if got != tt.want {
+				t.Errorf("isGitRepo(%q) = %v, want %v", dir, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCreateWorktree tests the createWorktree function
+func TestCreateWorktree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows - requires Unix shell")
+	}
+
+	// Create a temporary git repository
+	sourceRepo := t.TempDir()
+	if err := runCmd(sourceRepo, "git", "init"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if err := runCmd(sourceRepo, "git", "config", "user.email", "test@example.com"); err != nil {
+		t.Fatalf("git config failed: %v", err)
+	}
+	if err := runCmd(sourceRepo, "git", "config", "user.name", "Test User"); err != nil {
+		t.Fatalf("git config failed: %v", err)
+	}
+
+	// Create and commit a file
+	testFile := filepath.Join(sourceRepo, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("write test file failed: %v", err)
+	}
+	if err := runCmd(sourceRepo, "git", "add", "test.txt"); err != nil {
+		t.Fatalf("git add failed: %v", err)
+	}
+	if err := runCmd(sourceRepo, "git", "commit", "-m", "initial commit"); err != nil {
+		t.Fatalf("git commit failed: %v", err)
+	}
+
+	// Test creating a worktree
+	worktreePath := filepath.Join(t.TempDir(), "worktree")
+	if err := createWorktree(sourceRepo, worktreePath); err != nil {
+		t.Fatalf("createWorktree failed: %v", err)
+	}
+	defer removeWorktree(worktreePath)
+
+	// Verify worktree was created
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Errorf("worktree directory not created: %v", err)
+	}
+
+	// Verify the file exists in the worktree
+	worktreeFile := filepath.Join(worktreePath, "test.txt")
+	content, err := os.ReadFile(worktreeFile)
+	if err != nil {
+		t.Errorf("failed to read file in worktree: %v", err)
+	}
+	if string(content) != "test content" {
+		t.Errorf("file content mismatch: got %q, want %q", string(content), "test content")
+	}
+
+	// Verify .git is a file (not a directory) in the worktree
+	gitEntry := filepath.Join(worktreePath, ".git")
+	info, err := os.Lstat(gitEntry)
+	if err != nil {
+		t.Errorf("failed to stat .git in worktree: %v", err)
+	}
+	if info.Mode()&os.ModeDir != 0 {
+		t.Error(".git in worktree should be a file, not a directory")
+	}
+}
+
+// runCmd is a helper to run a command in a directory
+func runCmd(dir string, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("command %s %v failed: %v, output: %s", name, args, err, string(out))
+	}
+	return nil
 }
