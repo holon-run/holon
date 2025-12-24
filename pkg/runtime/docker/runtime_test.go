@@ -556,8 +556,8 @@ func TestIsGitRepo(t *testing.T) {
 	}
 }
 
-// TestCreateSharedClone tests the createSharedClone function
-func TestCreateSharedClone(t *testing.T) {
+// TestCreateClone tests the createClone function
+func TestCreateClone(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping test on Windows - requires Unix shell")
 	}
@@ -586,10 +586,10 @@ func TestCreateSharedClone(t *testing.T) {
 		t.Fatalf("git commit failed: %v", err)
 	}
 
-	// Test creating a shared clone
+	// Test creating a clone
 	clonePath := filepath.Join(t.TempDir(), "clone")
-	if err := createSharedClone(sourceRepo, clonePath); err != nil {
-		t.Fatalf("createSharedClone failed: %v", err)
+	if err := createClone(sourceRepo, clonePath); err != nil {
+		t.Fatalf("createClone failed: %v", err)
 	}
 
 	// Verify clone was created
@@ -617,39 +617,10 @@ func TestCreateSharedClone(t *testing.T) {
 		t.Error(".git in clone should be a directory, not a file")
 	}
 
-	// Verify objects are shared (alternates file should point to source repo)
+	// Verify clone has its own object database (no alternates file)
 	alternatesFile := filepath.Join(clonePath, ".git", "objects", "info", "alternates")
-	if _, err := os.Stat(alternatesFile); err != nil {
-		t.Errorf("objects alternates file not found: %v", err)
-	}
-	alternatesContent, err := os.ReadFile(alternatesFile)
-	if err != nil {
-		t.Errorf("failed to read alternates file: %v", err)
-	}
-	// Verify alternates points to source repo (can be absolute or relative path)
-	alternatesPath := strings.TrimSpace(string(alternatesContent))
-	if filepath.IsAbs(alternatesPath) {
-		// If absolute, should point to source repo
-		if !strings.Contains(alternatesPath, sourceRepo) {
-			t.Errorf("absolute alternates path doesn't point to source repo: %s (expected to contain %s)", alternatesPath, sourceRepo)
-		}
-	} else {
-		// If relative, verify it resolves to the source repo's objects directory
-		resolvedPath := filepath.Join(clonePath, ".git", "objects", alternatesPath)
-		expectedObjectsDir := filepath.Join(sourceRepo, ".git", "objects")
-		// Clean both paths for comparison
-		resolvedPath = filepath.Clean(resolvedPath)
-		expectedObjectsDir = filepath.Clean(expectedObjectsDir)
-		// Resolve symlinks for accurate comparison
-		if realResolved, err := filepath.EvalSymlinks(resolvedPath); err == nil {
-			resolvedPath = realResolved
-		}
-		if realExpected, err := filepath.EvalSymlinks(expectedObjectsDir); err == nil {
-			expectedObjectsDir = realExpected
-		}
-		if resolvedPath != expectedObjectsDir {
-			t.Errorf("relative alternates path %s doesn't resolve to source repo objects: resolved=%s, expected=%s", alternatesPath, resolvedPath, expectedObjectsDir)
-		}
+	if _, err := os.Stat(alternatesFile); err == nil {
+		t.Error("clone should not have alternates file (should have own object database)")
 	}
 
 	// Test git operations work correctly in the clone (this works in containers too!)
