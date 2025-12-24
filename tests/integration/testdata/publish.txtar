@@ -1,0 +1,27 @@
+# Publish command tests
+
+# Test publish help
+exec holon publish --help
+stdout 'Publish Holon execution outputs'
+stdout 'provider'
+stdout 'target'
+
+# Test publish list (no publishers registered)
+exec holon publish list
+stdout 'No publishers are currently registered'
+
+# Test publish missing provider flag
+! exec holon publish --target test-target
+stderr '"provider" not set'
+
+# Test publish missing target flag
+! exec holon publish --provider test-provider
+stderr '"target" not set'
+
+# Test publish with non-existent provider
+! exec holon publish --provider nonexistent --target test-target
+stderr 'no publishers available'
+
+# Test publish info with non-existent provider
+! exec holon publish info nonexistent
+stderr 'not found'
