@@ -114,7 +114,7 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 		env := BuildContainerEnv(cfg)
 
 		// Verify we get expected number of env vars
-		expectedEnvCount := 5 // 3 user vars + HOST_UID + HOST_GID
+		expectedEnvCount := 6 // 3 user vars + HOST_UID + HOST_GID + GIT_CONFIG_NOSYSTEM
 		if len(env) != expectedEnvCount {
 			t.Errorf("Expected %d env vars, got %d", expectedEnvCount, len(env))
 		}
@@ -131,6 +131,7 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 			"CUSTOM_VAR=custom-value",
 			"HOST_UID=1000",
 			"HOST_GID=1000",
+			"GIT_CONFIG_NOSYSTEM=1",
 		}
 
 		for _, expectedVar := range expectedEnv {

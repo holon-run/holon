@@ -162,6 +162,7 @@ func TestBuildContainerEnv(t *testing.T) {
 			expected: []string{
 				"HOST_UID=1000",
 				"HOST_GID=1000",
+				"GIT_CONFIG_NOSYSTEM=1",
 			},
 		},
 		{
@@ -179,6 +180,7 @@ func TestBuildContainerEnv(t *testing.T) {
 				"DEBUG=true",
 				"HOST_UID=1001",
 				"HOST_GID=1001",
+				"GIT_CONFIG_NOSYSTEM=1",
 			},
 		},
 		{
@@ -191,6 +193,7 @@ func TestBuildContainerEnv(t *testing.T) {
 			expected: []string{
 				"HOST_UID=0",
 				"HOST_GID=0",
+				"GIT_CONFIG_NOSYSTEM=1",
 			},
 		},
 	}
