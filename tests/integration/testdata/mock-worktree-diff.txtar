@@ -1,6 +1,6 @@
 [!docker] skip 'docker not available'
 
-# Test worktree diff generation in git worktree environment
+# Test diff generation in a shared clone git workspace
 
 mkdir work
 mkdir work/examples
@@ -9,7 +9,7 @@ mkdir fixtures
 mkdir bundle-src
 mkdir bundle-src/bin
 
-# Setup git repository (will trigger worktree usage)
+# Setup git repository (will trigger shared clone usage)
 exec git -C work init
 exec git -C work config user.email "test@example.com"
 exec git -C work config user.name "Test User"
@@ -94,7 +94,7 @@ git diff --cached > /holon/output/diff.patch
 # Check if diff is empty - if so, the fix didn't work
 if [ ! -s /holon/output/diff.patch ]; then
   echo "Error: Generated diff.patch is empty!" >&2
-  echo "Git worktree fix may not have worked correctly." >&2
+  echo "Git shared clone fix may not have worked correctly." >&2
   echo "Git status:" >&2
   git status >&2
   echo "Git diff cached:" >&2
@@ -105,7 +105,7 @@ fi
 echo '# Task Summary' > /holon/output/summary.md
 echo '## Fixed Division by Zero Error' >> /holon/output/summary.md
 echo 'Added safety check to handle division by zero.' >> /holon/output/summary.md
-echo 'Git worktree fix verified - diff.patch generated successfully.' >> /holon/output/summary.md
+echo 'Git shared clone fix verified - diff.patch generated successfully.' >> /holon/output/summary.md
 
 -- work/examples/buggy.go --
 package main

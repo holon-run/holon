@@ -625,8 +625,30 @@ func TestCreateSharedClone(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to read alternates file: %v", err)
 	}
-	if !strings.Contains(string(alternatesContent), sourceRepo) {
-		t.Errorf("alternates file doesn't point to source repo: %s", string(alternatesContent))
+	// Verify alternates points to source repo (can be absolute or relative path)
+	alternatesPath := strings.TrimSpace(string(alternatesContent))
+	if filepath.IsAbs(alternatesPath) {
+		// If absolute, should point to source repo
+		if !strings.Contains(alternatesPath, sourceRepo) {
+			t.Errorf("absolute alternates path doesn't point to source repo: %s (expected to contain %s)", alternatesPath, sourceRepo)
+		}
+	} else {
+		// If relative, verify it resolves to the source repo's objects directory
+		resolvedPath := filepath.Join(clonePath, ".git", "objects", alternatesPath)
+		expectedObjectsDir := filepath.Join(sourceRepo, ".git", "objects")
+		// Clean both paths for comparison
+		resolvedPath = filepath.Clean(resolvedPath)
+		expectedObjectsDir = filepath.Clean(expectedObjectsDir)
+		// Resolve symlinks for accurate comparison
+		if realResolved, err := filepath.EvalSymlinks(resolvedPath); err == nil {
+			resolvedPath = realResolved
+		}
+		if realExpected, err := filepath.EvalSymlinks(expectedObjectsDir); err == nil {
+			expectedObjectsDir = realExpected
+		}
+		if resolvedPath != expectedObjectsDir {
+			t.Errorf("relative alternates path %s doesn't resolve to source repo objects: resolved=%s, expected=%s", alternatesPath, resolvedPath, expectedObjectsDir)
+		}
 	}
 
 	// Test git operations work correctly in the clone (this works in containers too!)

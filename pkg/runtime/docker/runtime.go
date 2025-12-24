@@ -407,8 +407,6 @@ func isGitRepo(dir string) bool {
 	return true
 }
 
-// createWorktree creates a git worktree at the specified path
-// The worktree is created from HEAD with a unique branch name for isolation
 // createSharedClone creates a git clone with shared object database
 // This is preferred over worktree because it creates a complete .git directory
 // that works correctly inside containers, while sharing objects to save space.
@@ -426,11 +424,26 @@ func createSharedClone(sourceRepo, clonePath string) error {
 	if content, err := os.ReadFile(alternatesFile); err == nil {
 		alternatesPath := strings.TrimSpace(string(content))
 		// Convert absolute path to relative path
+		// Path is interpreted relative to .git/objects (not .git/objects/info where the file is)
 		if filepath.IsAbs(alternatesPath) {
-			relPath, err := filepath.Rel(clonePath, alternatesPath)
-			if err == nil {
-				if err := os.WriteFile(alternatesFile, []byte(relPath+"\n"), 0644); err != nil {
-					fmt.Printf("  Warning: failed to update alternates to relative path: %v\n", err)
+			// Resolve both paths through symlinks (important for macOS where /tmp -> /private/tmp)
+			resolvedAlternatesPath, err := cleanAbs(alternatesPath)
+			if err != nil {
+				fmt.Printf("  Warning: failed to resolve alternates path: %v\n", err)
+			} else {
+				// Resolve clonePath to ensure both paths are in the same "world"
+				resolvedClonePath, err := cleanAbs(clonePath)
+				if err != nil {
+					fmt.Printf("  Warning: failed to resolve clone path: %v\n", err)
+				} else {
+					// Calculate relative path from .git/objects
+					objectsDir := filepath.Join(resolvedClonePath, ".git", "objects")
+					relPath, err := filepath.Rel(objectsDir, resolvedAlternatesPath)
+					if err == nil {
+						if err := os.WriteFile(alternatesFile, []byte(relPath+"\n"), 0644); err != nil {
+							fmt.Printf("  Warning: failed to update alternates to relative path: %v\n", err)
+						}
+					}
 				}
 			}
 		}
