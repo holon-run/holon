@@ -23,8 +23,13 @@ var publishCmd = &cobra.Command{
 	Short: "Publish Holon outputs to external systems",
 	Long: `Publish Holon outputs to external systems like GitHub, git repositories, etc.
 
-The publish command takes the results from a Holon execution (manifest.json, diff.patch,
-summary.md) and publishes them to the specified target using the chosen provider.
+The publish command takes the results from a Holon execution and publishes them to the
+specified target using the chosen provider. Each provider may require different files
+from the output directory.
+
+The command validates that the output directory exists. Individual providers are
+responsible for validating their required files (e.g., a git provider may require
+diff.patch, while a GitHub PR provider may require summary.md for posting as a comment).
 
 Examples:
   holon publish mock example-target --out ./holon-output
@@ -57,8 +62,12 @@ containing details about the actions taken and any errors that occurred.`,
 
 		// Register stub providers (will return "not implemented" errors)
 		// These are here for documentation purposes and to validate provider names
-		_ = registry.Register(providers.NewGitPublisher())
-		_ = registry.Register(providers.NewGitHubPublisher())
+		if err := registry.Register(providers.NewGitPublisher()); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to register git publisher: %v\n", err)
+		}
+		if err := registry.Register(providers.NewGitHubPublisher()); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to register github publisher: %v\n", err)
+		}
 
 		// Resolve output directory
 		outDir := publishOutDir
