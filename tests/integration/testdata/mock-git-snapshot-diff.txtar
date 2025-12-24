@@ -1,6 +1,6 @@
 [!docker] skip 'docker not available'
 
-# Test diff generation in a shared clone git workspace
+# Test diff generation in a git workspace snapshot
 
 mkdir work
 mkdir work/examples
@@ -9,7 +9,7 @@ mkdir fixtures
 mkdir bundle-src
 mkdir bundle-src/bin
 
-# Setup git repository (will trigger shared clone usage)
+# Setup git repository (will trigger git clone snapshot)
 exec git -C work init
 exec git -C work config user.email "test@example.com"
 exec git -C work config user.name "Test User"
@@ -82,7 +82,7 @@ EOF
 # Configure git to ignore ownership checks (needed in containers)
 git config --global --add safe.directory /holon/workspace
 
-# Stage changes with git (this should work now after the fix)
+# Stage changes with git
 cd "$WORKSPACE"
 git add -A
 git reset holon 2>/dev/null || true
@@ -94,10 +94,10 @@ echo '{"version":"v1"}' > /holon/output/manifest.json
 # Generate diff.patch - this is the critical test
 git diff --cached > /holon/output/diff.patch
 
-# Check if diff is empty - if so, the fix didn't work
+# Check if diff is empty - if so, something went wrong
 if [ ! -s /holon/output/diff.patch ]; then
   echo "Error: Generated diff.patch is empty!" >&2
-  echo "Git shared clone fix may not have worked correctly." >&2
+  echo "Git snapshot may not have worked correctly." >&2
   echo "Git status:" >&2
   git status >&2
   echo "Git diff cached:" >&2
@@ -108,7 +108,7 @@ fi
 echo '# Task Summary' > /holon/output/summary.md
 echo '## Fixed Division by Zero Error' >> /holon/output/summary.md
 echo 'Added safety check to handle division by zero.' >> /holon/output/summary.md
-echo 'Git shared clone fix verified - diff.patch generated successfully.' >> /holon/output/summary.md
+echo 'Git snapshot verified - diff.patch generated successfully.' >> /holon/output/summary.md
 
 -- work/examples/buggy.go --
 package main
