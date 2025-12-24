@@ -81,6 +81,10 @@ Examples:
 
 		// Handle --from-env mode (GitHub Actions integration)
 		if cmd.Flags().Changed("from-env") && contextFromEnv {
+			// Validate that no positional arguments are provided with --from-env
+			if len(args) > 0 {
+				return fmt.Errorf("positional arguments are not allowed when using --from-env\n\nUsage: holon context collect --from-env --out ./holon-input/context")
+			}
 			return ghcontext.CollectFromEnv(ctx, collectOut)
 		}
 

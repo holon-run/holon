@@ -387,11 +387,24 @@ func (c *Client) groupCommentsIntoThreads(comments []map[string]interface{}) []R
 
 	// First pass: create all threads and identify top-level comments
 	for _, comment := range comments {
-		commentID := int64(comment["id"].(float64))
+		// Safe type assertion for comment ID
+		var commentID int64
+		if idVal, ok := comment["id"]; ok && idVal != nil {
+			if idFloat, ok := idVal.(float64); ok {
+				commentID = int64(idFloat)
+			} else {
+				continue // Skip if id is not a valid number
+			}
+		} else {
+			continue // Skip if id is missing
+		}
 
+		// Safe type assertion for in_reply_to_id
 		var inReplyToID int64
 		if replyTo, ok := comment["in_reply_to_id"]; ok && replyTo != nil {
-			inReplyToID = int64(replyTo.(float64))
+			if replyToFloat, ok := replyTo.(float64); ok {
+				inReplyToID = int64(replyToFloat)
+			}
 		}
 
 		if inReplyToID == 0 {
@@ -403,9 +416,12 @@ func (c *Client) groupCommentsIntoThreads(comments []map[string]interface{}) []R
 
 	// Second pass: add replies to threads
 	for _, comment := range comments {
+		// Safe type assertion for in_reply_to_id
 		var inReplyToID int64
 		if replyTo, ok := comment["in_reply_to_id"]; ok && replyTo != nil {
-			inReplyToID = int64(replyTo.(float64))
+			if replyToFloat, ok := replyTo.(float64); ok {
+				inReplyToID = int64(replyToFloat)
+			}
 		}
 
 		if inReplyToID != 0 {
@@ -444,43 +460,80 @@ func (c *Client) findParentThread(threadMap map[int64]*ReviewThread, commentID i
 
 // commentToThread converts a GitHub API comment to a ReviewThread
 func (c *Client) commentToThread(comment map[string]interface{}) ReviewThread {
-	commentID := int64(comment["id"].(float64))
-	url := comment["html_url"].(string)
-	body := comment["body"].(string)
+	// Extract required fields with safe type assertions
+	commentID := int64(0)
+	if idVal, ok := comment["id"]; ok && idVal != nil {
+		if idFloat, ok := idVal.(float64); ok {
+			commentID = int64(idFloat)
+		}
+	}
+
+	url := ""
+	if urlVal, ok := comment["html_url"]; ok && urlVal != nil {
+		if urlStr, ok := urlVal.(string); ok {
+			url = urlStr
+		}
+	}
+
+	body := ""
+	if bodyVal, ok := comment["body"]; ok && bodyVal != nil {
+		if bodyStr, ok := bodyVal.(string); ok {
+			body = bodyStr
+		}
+	}
+
 	diffHunk := ""
 	if dh, ok := comment["diff_hunk"]; ok && dh != nil {
-		diffHunk = dh.(string)
+		if dhStr, ok := dh.(string); ok {
+			diffHunk = dhStr
+		}
 	}
 
 	path := ""
 	if p, ok := comment["path"]; ok && p != nil {
-		path = p.(string)
+		if pStr, ok := p.(string); ok {
+			path = pStr
+		}
 	}
 
 	var line, startLine, position int
 	if l, ok := comment["line"]; ok && l != nil {
-		line = int(l.(float64))
+		if lFloat, ok := l.(float64); ok {
+			line = int(lFloat)
+		}
 	}
 	if sl, ok := comment["start_line"]; ok && sl != nil {
-		startLine = int(sl.(float64))
+		if slFloat, ok := sl.(float64); ok {
+			startLine = int(slFloat)
+		}
 	}
 	if pos, ok := comment["position"]; ok && pos != nil {
-		position = int(pos.(float64))
+		if posFloat, ok := pos.(float64); ok {
+			position = int(posFloat)
+		}
 	}
 
 	side := ""
 	if s, ok := comment["side"]; ok && s != nil {
-		side = s.(string)
+		if sStr, ok := s.(string); ok {
+			side = sStr
+		}
 	}
 
 	startSide := ""
 	if ss, ok := comment["start_side"]; ok && ss != nil {
-		startSide = ss.(string)
+		if ssStr, ok := ss.(string); ok {
+			startSide = ssStr
+		}
 	}
 
 	author := ""
-	if user, ok := comment["user"].(map[string]interface{}); ok {
-		author = user["login"].(string)
+	if user, ok := comment["user"].(map[string]interface{}); ok && user != nil {
+		if loginVal, ok := user["login"]; ok && loginVal != nil {
+			if loginStr, ok := loginVal.(string); ok {
+				author = loginStr
+			}
+		}
 	}
 
 	var createdAt, updatedAt time.Time
@@ -516,13 +569,35 @@ func (c *Client) commentToThread(comment map[string]interface{}) ReviewThread {
 
 // commentToReply converts a GitHub API comment to a Reply
 func (c *Client) commentToReply(comment map[string]interface{}) Reply {
-	commentID := int64(comment["id"].(float64))
-	url := comment["html_url"].(string)
-	body := comment["body"].(string)
+	// Extract required fields with safe type assertions
+	commentID := int64(0)
+	if idVal, ok := comment["id"]; ok && idVal != nil {
+		if idFloat, ok := idVal.(float64); ok {
+			commentID = int64(idFloat)
+		}
+	}
+
+	url := ""
+	if urlVal, ok := comment["html_url"]; ok && urlVal != nil {
+		if urlStr, ok := urlVal.(string); ok {
+			url = urlStr
+		}
+	}
+
+	body := ""
+	if bodyVal, ok := comment["body"]; ok && bodyVal != nil {
+		if bodyStr, ok := bodyVal.(string); ok {
+			body = bodyStr
+		}
+	}
 
 	author := ""
-	if user, ok := comment["user"].(map[string]interface{}); ok {
-		author = user["login"].(string)
+	if user, ok := comment["user"].(map[string]interface{}); ok && user != nil {
+		if loginVal, ok := user["login"]; ok && loginVal != nil {
+			if loginStr, ok := loginVal.(string); ok {
+				author = loginStr
+			}
+		}
 	}
 
 	var createdAt, updatedAt time.Time
@@ -539,7 +614,9 @@ func (c *Client) commentToReply(comment map[string]interface{}) Reply {
 
 	var inReplyToID int64
 	if replyTo, ok := comment["in_reply_to_id"]; ok && replyTo != nil {
-		inReplyToID = int64(replyTo.(float64))
+		if replyToFloat, ok := replyTo.(float64); ok {
+			inReplyToID = int64(replyToFloat)
+		}
 	}
 
 	return Reply{

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/holon-run/holon/pkg/context/collector"
@@ -79,7 +80,7 @@ func TestRegister(t *testing.T) {
 				return
 			}
 			if err != nil && tt.errContains != "" {
-				if !contains(err.Error(), tt.errContains) {
+				if !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("Register() error = %v, should contain %q", err, tt.errContains)
 				}
 			}
@@ -95,8 +96,12 @@ func TestUnregister(t *testing.T) {
 	// Setup
 	c1 := &mockCollector{name: "test-unregister-1"}
 	c2 := &mockCollector{name: "test-unregister-2"}
-	Register(c1)
-	Register(c2)
+	if err := Register(c1); err != nil {
+		t.Fatalf("failed to register test collector: %v", err)
+	}
+	if err := Register(c2); err != nil {
+		t.Fatalf("failed to register test collector: %v", err)
+	}
 
 	tests := []struct {
 		name        string
@@ -125,7 +130,7 @@ func TestUnregister(t *testing.T) {
 				return
 			}
 			if err != nil && tt.errContains != "" {
-				if !contains(err.Error(), tt.errContains) {
+				if !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("Unregister() error = %v, should contain %q", err, tt.errContains)
 				}
 			}
@@ -139,7 +144,9 @@ func TestUnregister(t *testing.T) {
 func TestGet(t *testing.T) {
 	// Setup
 	c1 := &mockCollector{name: "test-get-1"}
-	Register(c1)
+	if err := Register(c1); err != nil {
+		t.Fatalf("failed to register test collector: %v", err)
+	}
 
 	tests := []struct {
 		name         string
@@ -185,9 +192,15 @@ func TestList(t *testing.T) {
 	initialCount := len(initialList)
 
 	// Register test collectors
-	Register(&mockCollector{name: "test-list-1"})
-	Register(&mockCollector{name: "test-list-2"})
-	Register(&mockCollector{name: "test-list-3"})
+	if err := Register(&mockCollector{name: "test-list-1"}); err != nil {
+		t.Fatalf("failed to register test collector: %v", err)
+	}
+	if err := Register(&mockCollector{name: "test-list-2"}); err != nil {
+		t.Fatalf("failed to register test collector: %v", err)
+	}
+	if err := Register(&mockCollector{name: "test-list-3"}); err != nil {
+		t.Fatalf("failed to register test collector: %v", err)
+	}
 
 	list := List()
 	if len(list) < initialCount+3 {
@@ -217,7 +230,9 @@ func TestIsRegistered(t *testing.T) {
 	Unregister("test-registered-2")
 
 	// Register test collector
-	Register(&mockCollector{name: "test-registered-1"})
+	if err := Register(&mockCollector{name: "test-registered-1"}); err != nil {
+		t.Fatalf("failed to register test collector: %v", err)
+	}
 
 	tests := []struct {
 		name         string
@@ -247,18 +262,4 @@ func TestIsRegistered(t *testing.T) {
 
 	// Clean up
 	Unregister("test-registered-1")
-}
-
-// contains is a helper function to check if a string contains a substring
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && findSubstring(s, substr)
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

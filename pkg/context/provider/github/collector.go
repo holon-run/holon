@@ -204,10 +204,11 @@ func ParseRef(ref, repoHint string) (owner, repo string, number int, err error) 
 	// Parse owner/repo from repoHint if provided
 	if repoHint != "" {
 		o, r, e := parseRepo(repoHint)
-		if e == nil {
-			owner = o
-			repo = r
+		if e != nil {
+			return "", "", 0, fmt.Errorf("invalid repo hint %q: %w", repoHint, e)
 		}
+		owner = o
+		repo = r
 	}
 
 	// Check if ref is a URL
