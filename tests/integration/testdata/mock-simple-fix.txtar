@@ -1,0 +1,49 @@
+[!docker] skip 'docker not available'
+
+mkdir work
+mkdir work/examples
+mkdir out
+mkdir bundle-src
+
+# Build and bundle the local agent (includes new mock driver code)
+# For now, skip this test since we need to build the agent bundle first
+# This will be properly tested once the agent is released
+skip 'needs agent bundle with mock driver code'
+
+# Placeholder for when we can test with the new agent bundle
+# The fixture file is provided as a txtar section
+env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json
+exec holon run --agent bundle-src/agent-bundle.tar.gz --goal 'Fix the division by zero error' --workspace work --out out --image golang:1.22
+
+# Verify outputs
+exists out/manifest.json
+exists out/diff.patch
+exists out/summary.md
+
+# Initial file (workspace snapshot)
+-- work/examples/buggy.go --
+package main
+import "fmt"
+func main() {
+    fmt.Println("Result:", divide(10, 0))
+}
+func divide(a, b int) int {
+    return a / b
+}
+
+-- fixture.json --
+{
+  "version": "v1",
+  "description": "Fix division by zero",
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "examples/buggy.go",
+      "content": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Result:\", divide(10, 0))\n}\n\nfunc divide(a, b int) int {\n\tif b == 0 {\n\t\treturn 0\n\t}\n\treturn a / b\n}\n"
+    }
+  ],
+  "outcome": {
+    "success": true,
+    "result_text": "Fixed division by zero error"
+  }
+}

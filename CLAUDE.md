@@ -245,6 +245,56 @@ holon agent info default
 - **Caching**: Uses same cache system as remote URL installs
 - **Updates**: Tied to Holon releases (configurable per version)
 
+### Mock Driver for Testing
+
+Holon includes a mock driver for deterministic end-to-end testing without requiring Anthropic API credentials.
+
+**Mock Mode Usage:**
+```bash
+# Set environment variables to enable mock mode
+export HOLON_CLAUDE_DRIVER=mock
+export HOLON_CLAUDE_MOCK_FIXTURE=/path/to/fixture.json
+
+# Run holon (no API key needed)
+holon run --goal "Fix the bug" --workspace . --out ./test-output
+```
+
+**Fixture File Format:**
+```json
+{
+  "version": "v1",
+  "description": "Task description",
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "relative/path/to/file",
+      "content": "file content"
+    }
+  ],
+  "outcome": {
+    "success": true,
+    "result_text": "Result message",
+    "summary": "Optional summary.md content"
+  }
+}
+```
+
+**Operation Types:**
+- `write_file`: Create or overwrite a workspace file
+- `append_file`: Append content to an existing file
+- `delete_file`: Remove a file
+- `write_output`: Write to `/holon/output/` (e.g., summary.md, pr-fix.json)
+
+**Testing Without API Keys:**
+```bash
+# Run integration tests with mock driver
+go test ./tests/integration/... -v -run Mock
+```
+
+**Environment Variables:**
+- `HOLON_CLAUDE_DRIVER`: Set to `mock` to use mock driver, otherwise uses real SDK
+- `HOLON_CLAUDE_MOCK_FIXTURE`: Path to fixture file (required in mock mode)
+
 ### Spec vs Goal Execution
 - **Spec mode**: Use `--spec` for structured, reproducible task definitions
 - **Goal mode**: Use `--goal` for quick, ad-hoc task execution (auto-generates spec)

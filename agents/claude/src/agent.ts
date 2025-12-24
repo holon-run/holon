@@ -3,8 +3,8 @@ import path from "path";
 import os from "os";
 import { spawnSync } from "child_process";
 import { parse as parseYaml } from "yaml";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import { query } from "./claudeSdk.js";
+import type { Options } from "./claudeSdk.js";
 
 enum LogLevel {
   DEBUG = "debug",

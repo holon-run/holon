@@ -1,0 +1,20 @@
+{
+  "version": "v1",
+  "description": "Fix PR review comment about error handling",
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "pkg/context/loader.go",
+      "content": "func loadContext() *Context {\n    if cfg == nil {\n        return &Context{}\n    }\n    return parseContext(cfg)\n}\n"
+    },
+    {
+      "type": "write_output",
+      "path": "pr-fix.json",
+      "content": "{\"review_replies\":[{\"comment_id\":123456,\"status\":\"fixed\",\"message\":\"Added nil check\",\"action_taken\":\"Added guard clause for nil config\"}],\"checks\":[{\"name\":\"ci/test\",\"conclusion\":\"failure\",\"fix_status\":\"fixed\",\"message\":\"Fixed nil dereference in tests\"}]}"
+    }
+  ],
+  "outcome": {
+    "success": true,
+    "result_text": "Successfully fixed PR review comments and CI failures"
+  }
+}
