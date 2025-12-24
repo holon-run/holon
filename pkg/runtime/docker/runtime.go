@@ -11,13 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/holon-run/holon/pkg/workspace"
 )
 
 type Runtime struct {
@@ -43,40 +43,23 @@ type ContainerConfig struct {
 	PromptPath     string   // Path to compiled system.md
 	UserPromptPath string   // Path to compiled user.md
 	Cmd            []string // Optional command override
+
+	// Workspace preparation options
+	WorkspaceStrategy string                          // Workspace preparation strategy (e.g., "git-clone", "snapshot")
+	WorkspaceHistory  workspace.HistoryMode          // How much git history to include
+	WorkspaceRef      string                          // Git ref to checkout (optional)
 }
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
-	// 1. Snapshot Workspace (Isolation)
-	snapshotDir, err := mkdirTempOutsideWorkspace(cfg.Workspace, "holon-workspace-*")
+	// 1. Prepare Workspace using WorkspacePreparer
+	snapshotDir, preparer, err := prepareWorkspace(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to create snapshot dir: %w", err)
+		return err
 	}
 
-	// Use git clone if workspace is a git repository, otherwise fall back to copy
-	useGitClone := isGitRepo(cfg.Workspace)
-	if useGitClone {
-		fmt.Printf("Creating git clone at %s...\n", snapshotDir)
-		if err := createClone(cfg.Workspace, snapshotDir); err != nil {
-			// If clone creation fails, log a warning and fall back to copy
-			fmt.Printf("Warning: failed to create clone: %v. Falling back to copy...\n", err)
-			useGitClone = false
-			if err := copyDir(cfg.Workspace, snapshotDir); err != nil {
-				os.RemoveAll(snapshotDir)
-				return fmt.Errorf("failed to snapshot workspace: %w", err)
-			}
-		}
-	} else {
-		fmt.Printf("Snapshotting workspace to %s...\n", snapshotDir)
-		if err := copyDir(cfg.Workspace, snapshotDir); err != nil {
-			os.RemoveAll(snapshotDir)
-			return fmt.Errorf("failed to snapshot workspace: %w", err)
-		}
-	}
-
-	// Set up cleanup function based on snapshot method
+	// Set up cleanup function
 	cleanupSnapshot := func() error {
-		// Both git clone and regular snapshot can be cleaned up with simple removal
-		return os.RemoveAll(snapshotDir)
+		return preparer.Cleanup(snapshotDir)
 	}
 	defer func() {
 		if err := cleanupSnapshot(); err != nil {
@@ -398,130 +381,73 @@ func copyFile(src, dst string) error {
 	return out.Sync()
 }
 
-// isGitRepo checks if the given directory is inside a git repository
-func isGitRepo(dir string) bool {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--git-dir")
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return true
-}
-
-// createClone creates a git clone with complete object database
-// This creates a standalone .git directory that works correctly inside containers
-// without relying on alternates or external object databases.
-func createClone(sourceRepo, clonePath string) error {
-	fmt.Printf("  Creating clone of %s...\n", sourceRepo)
-
-	cmd := exec.Command("git", "clone", "--quiet", sourceRepo, clonePath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to create clone: %v, output: %s", err, string(out))
-	}
-
-	// Verify clone was created successfully
-	verifyCmd := exec.Command("git", "-C", clonePath, "status", "--short")
-	if verifyOut, verifyErr := verifyCmd.CombinedOutput(); verifyErr != nil {
-		return fmt.Errorf("clone created but git check failed: %v, output: %s", verifyErr, string(verifyOut))
-	}
-	fmt.Printf("  ✓ Clone created and verified\n")
-
-	return nil
-}
-
-// removeWorktree removes a git worktree at the specified path
-func removeWorktree(sourceRepo, worktreePath string) error {
-	cmd := exec.Command("git", "-C", sourceRepo, "worktree", "remove", worktreePath)
-	if err := cmd.Run(); err != nil {
-		// Fallback to manual removal if worktree remove fails
-		// This can happen if the worktree was already removed or is in a bad state
-		return os.RemoveAll(worktreePath)
-	}
-	return nil
-}
-
-// copyDir is a helper to snapshot the workspace (fallback for non-git repos)
-func copyDir(src string, dst string) error {
-	// Using cp -a for recursive copy on Darwin/Linux
-	cmd := exec.Command("cp", "-a", src+"/.", dst+"/")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("cp failed: %v, output: %s", err, string(out))
-	}
-	return nil
-}
-
-func mkdirTempOutsideWorkspace(workspace, pattern string) (string, error) {
-	absWorkspace, err := cleanAbs(workspace)
+// prepareWorkspace prepares the workspace using the configured strategy
+func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, workspace.Preparer, error) {
+	// Create snapshot directory outside workspace
+	snapshotDir, err := workspace.MkdirTempOutsideWorkspace(cfg.Workspace, "holon-workspace-*")
 	if err != nil {
-		return "", err
+		return "", nil, fmt.Errorf("failed to create snapshot dir: %w", err)
 	}
 
-	var baseCandidates []string
-	if v := strings.TrimSpace(os.Getenv("HOLON_SNAPSHOT_BASE")); v != "" {
-		baseCandidates = append(baseCandidates, v)
-	}
-	baseCandidates = append(baseCandidates, os.TempDir())
-
-	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
-		baseCandidates = append(baseCandidates, filepath.Join(cacheDir, "holon"))
-	}
-
-	// Parent directory is a good, usually writable, fallback.
-	baseCandidates = append(baseCandidates, filepath.Dir(absWorkspace))
-
-	if runtime.GOOS != "windows" {
-		baseCandidates = append(baseCandidates, "/tmp")
-	}
-
-	var lastErr error
-	for _, base := range baseCandidates {
-		if strings.TrimSpace(base) == "" {
-			continue
+	// Determine the strategy to use
+	strategyName := cfg.WorkspaceStrategy
+	if strategyName == "" {
+		// Auto-detect: use git-clone for git repos, snapshot otherwise
+		if workspace.IsGitRepo(cfg.Workspace) {
+			strategyName = "git-clone"
+		} else {
+			strategyName = "snapshot"
 		}
-		absBase, err := cleanAbs(base)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if isSubpath(absBase, absWorkspace) {
-			continue
-		}
-		if err := os.MkdirAll(absBase, 0o755); err != nil {
-			lastErr = err
-			continue
-		}
-		dir, err := os.MkdirTemp(absBase, pattern)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		return dir, nil
 	}
 
-	if lastErr != nil {
-		return "", lastErr
+	// Get the preparer
+	preparer := workspace.Get(strategyName)
+	if preparer == nil {
+		os.RemoveAll(snapshotDir)
+		return "", nil, fmt.Errorf("workspace strategy '%s' not found", strategyName)
 	}
-	return "", fmt.Errorf("unable to create temp dir outside workspace %q", absWorkspace)
-}
 
-func cleanAbs(path string) (string, error) {
-	abs, err := filepath.Abs(path)
+	// Determine history mode
+	historyMode := cfg.WorkspaceHistory
+	if historyMode == "" {
+		historyMode = workspace.HistoryFull // Default to full history
+	}
+
+	// Prepare the workspace
+	fmt.Printf("Preparing workspace using %s strategy...\n", strategyName)
+	result, err := preparer.Prepare(ctx, workspace.PrepareRequest{
+		Source:     cfg.Workspace,
+		Dest:       snapshotDir,
+		Ref:        cfg.WorkspaceRef,
+		History:    historyMode,
+		Submodules: workspace.SubmodulesNone,
+		CleanDest:  true,
+	})
+
 	if err != nil {
-		return "", err
+		os.RemoveAll(snapshotDir)
+		return "", nil, fmt.Errorf("failed to prepare workspace: %w", err)
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved, nil
-	}
-	return abs, nil
-}
 
-func isSubpath(candidate, parent string) bool {
-	rel, err := filepath.Rel(parent, candidate)
-	if err != nil {
-		return false
+	// Log preparation details
+	fmt.Printf("  Strategy: %s\n", result.Strategy)
+	if result.HeadSHA != "" {
+		fmt.Printf("  HEAD: %s\n", result.HeadSHA)
 	}
-	rel = filepath.Clean(rel)
-	if rel == "." {
-		return true
+	if result.HasHistory {
+		if result.IsShallow {
+			fmt.Printf("  History: shallow\n")
+		} else {
+			fmt.Printf("  History: full\n")
+		}
+	} else {
+		fmt.Printf("  History: none\n")
 	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+
+	// Log any notes
+	for _, note := range result.Notes {
+		fmt.Printf("  Note: %s\n", note)
+	}
+
+	return snapshotDir, preparer, nil
 }

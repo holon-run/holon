@@ -1,0 +1,100 @@
+package workspace
+
+import (
+	"context"
+	"fmt"
+	"os"
+)
+
+// ExistingPreparer uses an existing directory as the workspace without modification
+// This is useful when the user wants to use an existing checkout
+type ExistingPreparer struct {
+	name string
+}
+
+// NewExistingPreparer creates a new existing preparer
+func NewExistingPreparer() *ExistingPreparer {
+	return &ExistingPreparer{
+		name: "existing",
+	}
+}
+
+// Name returns the strategy name
+func (p *ExistingPreparer) Name() string {
+	return p.name
+}
+
+// Validate checks if the request is valid for this preparer
+func (p *ExistingPreparer) Validate(req PrepareRequest) error {
+	if req.Source == "" {
+		return fmt.Errorf("source cannot be empty")
+	}
+	if req.Dest == "" {
+		return fmt.Errorf("dest cannot be empty")
+	}
+	// Check that source exists
+	if _, err := os.Stat(req.Source); os.IsNotExist(err) {
+		return fmt.Errorf("source does not exist: %s", req.Source)
+	}
+	return nil
+}
+
+// Prepare uses an existing directory as the workspace without modification.
+// The Source should be the existing directory path to use.
+// The Dest parameter is validated for API compatibility but is ignored during execution;
+// the actual workspace used is the Source directory itself.
+// This strategy is useful when the user wants to use an existing checkout without
+// creating a copy or clone, and ensures the workspace manifest is written to the source.
+func (p *ExistingPreparer) Prepare(ctx context.Context, req PrepareRequest) (PrepareResult, error) {
+	if err := p.Validate(req); err != nil {
+		return PrepareResult{}, fmt.Errorf("validation failed: %w", err)
+	}
+
+	result := NewPrepareResult(p.Name())
+	result.Source = req.Source
+	result.Ref = req.Ref
+
+	// For existing strategy, we use the source as the workspace
+	// The dest parameter is effectively ignored
+	actualDest := req.Source
+
+	// Get git information if available
+	if IsGitRepo(actualDest) {
+		// Get HEAD SHA
+		if headSHA, err := getHeadSHAContext(ctx, actualDest); err == nil {
+			result.HeadSHA = headSHA
+		}
+
+		// Check if shallow
+		result.IsShallow = isShallowCloneContext(ctx, actualDest)
+		result.HasHistory = !result.IsShallow
+
+		// Handle ref checkout if requested
+		if req.Ref != "" {
+			if err := checkoutRefContext(ctx, actualDest, req.Ref); err != nil {
+				result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to checkout ref '%s': %v", req.Ref, err))
+			} else {
+				// Update HEAD SHA after checkout
+				if headSHA, err := getHeadSHAContext(ctx, actualDest); err == nil {
+					result.HeadSHA = headSHA
+				}
+			}
+		}
+	} else {
+		result.HasHistory = false
+		result.IsShallow = false
+	}
+
+	// Write workspace manifest
+	if err := WriteManifest(actualDest, result); err != nil {
+		return PrepareResult{}, fmt.Errorf("failed to write workspace manifest: %w", err)
+	}
+
+	return result, nil
+}
+
+// Cleanup for existing strategy is a no-op (we don't own the directory)
+func (p *ExistingPreparer) Cleanup(dest string) error {
+	// Don't clean up directories we don't own
+	return nil
+}

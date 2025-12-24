@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/holon-run/holon/pkg/workspace"
 )
 
 func TestNewRuntime(t *testing.T) {
@@ -252,29 +255,37 @@ func TestComposedImageTagGeneration(t *testing.T) {
 }
 
 func TestMkdirTempOutsideWorkspace_DoesNotNest(t *testing.T) {
-	workspace := t.TempDir()
-	tmpInside := filepath.Join(workspace, "tmp")
+	ws := t.TempDir()
+	tmpInside := filepath.Join(ws, "tmp")
 	if err := os.MkdirAll(tmpInside, 0o755); err != nil {
 		t.Fatalf("mkdir tmp: %v", err)
 	}
 	t.Setenv("TMPDIR", tmpInside)
 
-	dir, err := mkdirTempOutsideWorkspace(workspace, "holon-test-*")
+	dir, err := workspace.MkdirTempOutsideWorkspace(ws, "holon-test-*")
 	if err != nil {
 		t.Fatalf("mkdirTempOutsideWorkspace: %v", err)
 	}
 	defer os.RemoveAll(dir)
 
-	absWorkspace, err := cleanAbs(workspace)
+	// Use filepath.Abs for verification since cleanAbs is now private
+	absWs, err := filepath.Abs(ws)
 	if err != nil {
-		t.Fatalf("cleanAbs workspace: %v", err)
+		t.Fatalf("abs workspace: %v", err)
 	}
-	absDir, err := cleanAbs(dir)
+	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		t.Fatalf("cleanAbs dir: %v", err)
+		t.Fatalf("abs dir: %v", err)
 	}
-	if isSubpath(absDir, absWorkspace) {
-		t.Fatalf("expected snapshot dir to be outside workspace:\nworkspace=%s\ndir=%s", absWorkspace, absDir)
+
+	// Check that dir is not a subpath of workspace
+	rel, err := filepath.Rel(absWs, absDir)
+	if err != nil {
+		t.Fatalf("rel: %v", err)
+	}
+	rel = filepath.Clean(rel)
+	if rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..") {
+		t.Fatalf("expected snapshot dir to be outside workspace:\nworkspace=%s\ndir=%s\nrel=%s", absWs, absDir, rel)
 	}
 }
 
@@ -473,7 +484,7 @@ exit 1`
 	}
 }
 
-// TestIsGitRepo tests the isGitRepo helper function
+// TestIsGitRepo tests the workspace.IsGitRepo helper function
 func TestIsGitRepo(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping test on Windows - requires Unix shell")
@@ -548,15 +559,15 @@ func TestIsGitRepo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := tt.setupDir(t)
-			got := isGitRepo(dir)
+			got := workspace.IsGitRepo(dir)
 			if got != tt.want {
-				t.Errorf("isGitRepo(%q) = %v, want %v", dir, got, tt.want)
+				t.Errorf("IsGitRepo(%q) = %v, want %v", dir, got, tt.want)
 			}
 		})
 	}
 }
 
-// TestCreateClone tests the createClone function
+// TestCreateClone tests the GitClonePreparer workspace preparation
 func TestCreateClone(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping test on Windows - requires Unix shell")
@@ -586,11 +597,18 @@ func TestCreateClone(t *testing.T) {
 		t.Fatalf("git commit failed: %v", err)
 	}
 
-	// Test creating a clone
+	// Test creating a clone using the GitClonePreparer
 	clonePath := filepath.Join(t.TempDir(), "clone")
-	if err := createClone(sourceRepo, clonePath); err != nil {
-		t.Fatalf("createClone failed: %v", err)
+	preparer := workspace.NewGitClonePreparer()
+	result, err := preparer.Prepare(context.Background(), workspace.PrepareRequest{
+		Source:  sourceRepo,
+		Dest:    clonePath,
+		History: workspace.HistoryFull,
+	})
+	if err != nil {
+		t.Fatalf("GitClonePreparer.Prepare failed: %v", err)
 	}
+	_ = result // Use result to avoid unused variable warning
 
 	// Verify clone was created
 	if _, err := os.Stat(clonePath); err != nil {
@@ -623,6 +641,12 @@ func TestCreateClone(t *testing.T) {
 		t.Error("clone should not have alternates file (should have own object database)")
 	}
 
+	// Verify workspace.manifest.json was created
+	manifestPath := filepath.Join(clonePath, "workspace.manifest.json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Errorf("workspace.manifest.json not created: %v", err)
+	}
+
 	// Test git operations work correctly in the clone (this works in containers too!)
 	// Make a change, stage it, and verify it's tracked
 	modifiedFile := filepath.Join(clonePath, "test.txt")
@@ -643,7 +667,7 @@ func TestCreateClone(t *testing.T) {
 	}
 
 	// Test cleanup: remove the clone and verify cleanup
-	if err := os.RemoveAll(clonePath); err != nil {
+	if err := preparer.Cleanup(clonePath); err != nil {
 		t.Errorf("failed to remove clone: %v", err)
 	}
 	// Verify clone directory was removed
