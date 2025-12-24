@@ -133,12 +133,13 @@ function intEnv(name: string, fallback: number): number {
 function runCommand(
   command: string,
   args: string[],
-  options?: { cwd?: string; env?: NodeJS.ProcessEnv; allowFailure?: boolean }
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv; allowFailure?: boolean; maxBuffer?: number }
 ): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(command, args, {
     cwd: options?.cwd,
     env: options?.env,
     encoding: "utf8",
+    maxBuffer: options?.maxBuffer ?? 50 * 1024 * 1024, // 50MB default
   });
   if (!options?.allowFailure && result.status !== 0) {
     throw new Error(
@@ -535,6 +536,13 @@ async function runAgent(): Promise<void> {
 
     logger.progress("Staging changes for diff");
     runCommand("git", ["add", "-A"], { cwd: workspacePath, allowFailure: true });
+
+    // Remove compiled holon binary from git index.
+    // The 'bin/' directory is in .gitignore, but 'go build ./cmd/holon' creates
+    // a 'holon' binary in the root directory which is NOT ignored.
+    // Compiled binaries should not be included in the PR's code changes.
+    runCommand("git", ["reset", "holon"], { cwd: workspacePath, allowFailure: true });
+    runCommand("git", ["reset", "bin/holon"], { cwd: workspacePath, allowFailure: true });
 
     logger.progress("Generating patch file");
     const diffResult = runCommand(
