@@ -440,8 +440,35 @@ func createSharedClone(sourceRepo, clonePath string) error {
 					objectsDir := filepath.Join(resolvedClonePath, ".git", "objects")
 					relPath, err := filepath.Rel(objectsDir, resolvedAlternatesPath)
 					if err == nil {
-						if err := os.WriteFile(alternatesFile, []byte(relPath+"\n"), 0644); err != nil {
-							fmt.Printf("  Warning: failed to update alternates to relative path: %v\n", err)
+						// Only use relative path if it doesn't go to filesystem root
+						// If the relative path starts with ".." and would reach root, use absolute path
+						useRelative := true
+						if strings.HasPrefix(relPath, "..") {
+							// Count ".." components in relPath
+							dotDotCount := strings.Count(relPath, ".."+string(filepath.Separator))
+							if strings.HasSuffix(relPath, "..") {
+								dotDotCount++
+							}
+							// Calculate path depth: number of non-empty components
+							// For "/tmp/xxx/.git/objects", components are [tmp, xxx, .git, objects] = 4
+							// Need 4 ".."s to reach root, so if dotDotCount >= 4, use absolute
+							components := strings.Split(filepath.Clean(objectsDir), string(filepath.Separator))
+							// Filter out empty components (can happen on some systems)
+							nonEmptyCount := 0
+							for _, c := range components {
+								if c != "" {
+									nonEmptyCount++
+								}
+							}
+							if dotDotCount >= nonEmptyCount {
+								useRelative = false
+								fmt.Printf("  Info: keeping absolute alternates path (relative would go to root)\n")
+							}
+						}
+						if useRelative {
+							if err := os.WriteFile(alternatesFile, []byte(relPath+"\n"), 0644); err != nil {
+								fmt.Printf("  Warning: failed to update alternates to relative path: %v\n", err)
+							}
 						}
 					}
 				}
