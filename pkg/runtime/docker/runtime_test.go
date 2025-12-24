@@ -590,7 +590,6 @@ func TestCreateWorktree(t *testing.T) {
 	if err := createWorktree(sourceRepo, worktreePath); err != nil {
 		t.Fatalf("createWorktree failed: %v", err)
 	}
-	defer removeWorktree(worktreePath)
 
 	// Verify worktree was created
 	if _, err := os.Stat(worktreePath); err != nil {
@@ -616,6 +615,168 @@ func TestCreateWorktree(t *testing.T) {
 	if info.Mode()&os.ModeDir != 0 {
 		t.Error(".git in worktree should be a file, not a directory")
 	}
+
+	// Test git operations work correctly in the worktree (the core fix)
+	// Make a change, stage it, and verify it's tracked
+	modifiedFile := filepath.Join(worktreePath, "test.txt")
+	if err := os.WriteFile(modifiedFile, []byte("modified content"), 0644); err != nil {
+		t.Fatalf("failed to modify file in worktree: %v", err)
+	}
+	// Stage the change
+	if err := runCmd(worktreePath, "git", "add", "test.txt"); err != nil {
+		t.Fatalf("git add in worktree failed: %v", err)
+	}
+	// Verify the change is staged
+	out, err := exec.Command("git", "-C", worktreePath, "diff", "--cached", "--name-only").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git diff --cached failed: %v", err)
+	}
+	if !strings.Contains(string(out), "test.txt") {
+		t.Errorf("expected test.txt to be staged, got: %s", string(out))
+	}
+
+	// Test cleanup: remove the worktree and verify cleanup
+	if err := removeWorktree(sourceRepo, worktreePath); err != nil {
+		t.Errorf("removeWorktree failed: %v", err)
+	}
+	// Verify worktree directory was removed
+	if _, err := os.Stat(worktreePath); err == nil {
+		t.Error("worktree directory still exists after removal")
+	}
+	// Get the list of worktrees using porcelain mode for cleaner parsing
+	worktrees, err := exec.Command("git", "-C", sourceRepo, "worktree", "list", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git worktree list failed: %v", err)
+	}
+	// In porcelain mode, each worktree is shown with "worktree" line followed by other info.
+	// After removal, the worktree should either be:
+	// 1. Not listed at all (ideal case)
+	// 2. Listed but marked as "prunable" (git detected it was removed)
+	// We want to ensure it's not listed as an ACTIVE (non-prunable) worktree.
+	lines := strings.Split(string(worktrees), "\n")
+	var currentWorktreePath string
+	var currentWorktreeIsPrunable bool
+	for _, line := range lines {
+		if strings.HasPrefix(line, "worktree ") {
+			// Check if the previous worktree (if any) was our target and wasn't prunable
+			if currentWorktreePath != "" && !currentWorktreeIsPrunable {
+				// Resolve both paths for comparison
+				resolvedListPath, err1 := filepath.EvalSymlinks(currentWorktreePath)
+				resolvedWorktreePath, err2 := filepath.EvalSymlinks(worktreePath)
+				if err1 != nil {
+					resolvedListPath = currentWorktreePath
+				}
+				if err2 != nil {
+					resolvedWorktreePath = worktreePath
+				}
+				if resolvedListPath == resolvedWorktreePath || currentWorktreePath == worktreePath {
+					t.Errorf("worktree is still listed as active (non-prunable) in git worktree list after removal\nworktrees output:\n%s", string(worktrees))
+				}
+			}
+			// Start tracking new worktree
+			currentWorktreePath = strings.TrimPrefix(line, "worktree ")
+			currentWorktreeIsPrunable = false
+		} else if strings.Contains(line, "prunable") {
+			currentWorktreeIsPrunable = true
+		}
+	}
+	// Check the last worktree in the list
+	if currentWorktreePath != "" && !currentWorktreeIsPrunable {
+		resolvedListPath, err1 := filepath.EvalSymlinks(currentWorktreePath)
+		resolvedWorktreePath, err2 := filepath.EvalSymlinks(worktreePath)
+		if err1 != nil {
+			resolvedListPath = currentWorktreePath
+		}
+		if err2 != nil {
+			resolvedWorktreePath = worktreePath
+		}
+		if resolvedListPath == resolvedWorktreePath || currentWorktreePath == worktreePath {
+			t.Errorf("worktree is still listed as active (non-prunable) in git worktree list after removal\nworktrees output:\n%s", string(worktrees))
+		}
+	}
+}
+
+// TestRemoveWorktree tests the removeWorktree function including both success and fallback cases
+func TestRemoveWorktree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows - requires Unix shell")
+	}
+
+	// Create a temporary git repository
+	sourceRepo := t.TempDir()
+	if err := runCmd(sourceRepo, "git", "init"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if err := runCmd(sourceRepo, "git", "config", "user.email", "test@example.com"); err != nil {
+		t.Fatalf("git config failed: %v", err)
+	}
+	if err := runCmd(sourceRepo, "git", "config", "user.name", "Test User"); err != nil {
+		t.Fatalf("git config failed: %v", err)
+	}
+
+	// Create and commit a file
+	testFile := filepath.Join(sourceRepo, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("write test file failed: %v", err)
+	}
+	if err := runCmd(sourceRepo, "git", "add", "test.txt"); err != nil {
+		t.Fatalf("git add failed: %v", err)
+	}
+	if err := runCmd(sourceRepo, "git", "commit", "-m", "initial commit"); err != nil {
+		t.Fatalf("git commit failed: %v", err)
+	}
+
+	t.Run("successful removal", func(t *testing.T) {
+		// Create a worktree
+		worktreePath := filepath.Join(t.TempDir(), "worktree")
+		if err := createWorktree(sourceRepo, worktreePath); err != nil {
+			t.Fatalf("createWorktree failed: %v", err)
+		}
+
+		// Verify worktree exists
+		if _, err := os.Stat(worktreePath); err != nil {
+			t.Fatalf("worktree was not created: %v", err)
+		}
+
+		// Remove the worktree
+		if err := removeWorktree(sourceRepo, worktreePath); err != nil {
+			t.Errorf("removeWorktree failed: %v", err)
+		}
+
+		// Verify worktree directory was removed
+		if _, err := os.Stat(worktreePath); err == nil {
+			t.Error("worktree directory still exists after removal")
+		}
+	})
+
+	t.Run("fallback to os.RemoveAll when git worktree remove fails", func(t *testing.T) {
+		// Create a worktree
+		worktreePath := filepath.Join(t.TempDir(), "worktree2")
+		if err := createWorktree(sourceRepo, worktreePath); err != nil {
+			t.Fatalf("createWorktree failed: %v", err)
+		}
+
+		// Verify worktree exists
+		if _, err := os.Stat(worktreePath); err != nil {
+			t.Fatalf("worktree was not created: %v", err)
+		}
+
+		// Manually corrupt the .git file to simulate a bad state that will cause git worktree remove to fail
+		gitFile := filepath.Join(worktreePath, ".git")
+		if err := os.WriteFile(gitFile, []byte("invalid"), 0644); err != nil {
+			t.Fatalf("failed to corrupt .git file: %v", err)
+		}
+
+		// Remove the worktree - should fall back to os.RemoveAll
+		if err := removeWorktree(sourceRepo, worktreePath); err != nil {
+			t.Errorf("removeWorktree with fallback failed: %v", err)
+		}
+
+		// Verify worktree directory was removed via fallback
+		if _, err := os.Stat(worktreePath); err == nil {
+			t.Error("worktree directory still exists after removal with fallback")
+		}
+	})
 }
 
 // runCmd is a helper to run a command in a directory
