@@ -52,14 +52,14 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		return fmt.Errorf("failed to create snapshot dir: %w", err)
 	}
 
-	// Use git shared clone if workspace is a git repository, otherwise fall back to copy
-	useSharedClone := isGitRepo(cfg.Workspace)
-	if useSharedClone {
-		fmt.Printf("Creating git shared clone at %s...\n", snapshotDir)
-		if err := createSharedClone(cfg.Workspace, snapshotDir); err != nil {
-			// If shared clone creation fails, log a warning and fall back to copy
-			fmt.Printf("Warning: failed to create shared clone: %v. Falling back to copy...\n", err)
-			useSharedClone = false
+	// Use git clone if workspace is a git repository, otherwise fall back to copy
+	useGitClone := isGitRepo(cfg.Workspace)
+	if useGitClone {
+		fmt.Printf("Creating git clone at %s...\n", snapshotDir)
+		if err := createClone(cfg.Workspace, snapshotDir); err != nil {
+			// If clone creation fails, log a warning and fall back to copy
+			fmt.Printf("Warning: failed to create clone: %v. Falling back to copy...\n", err)
+			useGitClone = false
 			if err := copyDir(cfg.Workspace, snapshotDir); err != nil {
 				os.RemoveAll(snapshotDir)
 				return fmt.Errorf("failed to snapshot workspace: %w", err)
@@ -75,7 +75,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 
 	// Set up cleanup function based on snapshot method
 	cleanupSnapshot := func() error {
-		// Both shared clone and regular snapshot can be cleaned up with simple removal
+		// Both git clone and regular snapshot can be cleaned up with simple removal
 		return os.RemoveAll(snapshotDir)
 	}
 	defer func() {
@@ -407,73 +407,15 @@ func isGitRepo(dir string) bool {
 	return true
 }
 
-// createSharedClone creates a git clone with shared object database
-// This is preferred over worktree because it creates a complete .git directory
-// that works correctly inside containers, while sharing objects to save space.
-func createSharedClone(sourceRepo, clonePath string) error {
-	fmt.Printf("  Creating shared clone of %s...\n", sourceRepo)
+// createClone creates a git clone with complete object database
+// This creates a standalone .git directory that works correctly inside containers
+// without relying on alternates or external object databases.
+func createClone(sourceRepo, clonePath string) error {
+	fmt.Printf("  Creating clone of %s...\n", sourceRepo)
 
-	cmd := exec.Command("git", "clone", "--shared", "--quiet", sourceRepo, clonePath)
+	cmd := exec.Command("git", "clone", "--quiet", sourceRepo, clonePath)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to create shared clone: %v, output: %s", err, string(out))
-	}
-
-	// Fix alternates path to use relative path instead of absolute
-	// This ensures the shared clone works correctly when mounted in a container
-	alternatesFile := filepath.Join(clonePath, ".git", "objects", "info", "alternates")
-	if content, err := os.ReadFile(alternatesFile); err == nil {
-		alternatesPath := strings.TrimSpace(string(content))
-		// Convert absolute path to relative path
-		// Path is interpreted relative to .git/objects (not .git/objects/info where the file is)
-		if filepath.IsAbs(alternatesPath) {
-			// Resolve both paths through symlinks (important for macOS where /tmp -> /private/tmp)
-			resolvedAlternatesPath, err := cleanAbs(alternatesPath)
-			if err != nil {
-				fmt.Printf("  Warning: failed to resolve alternates path: %v\n", err)
-			} else {
-				// Resolve clonePath to ensure both paths are in the same "world"
-				resolvedClonePath, err := cleanAbs(clonePath)
-				if err != nil {
-					fmt.Printf("  Warning: failed to resolve clone path: %v\n", err)
-				} else {
-					// Calculate relative path from .git/objects
-					objectsDir := filepath.Join(resolvedClonePath, ".git", "objects")
-					relPath, err := filepath.Rel(objectsDir, resolvedAlternatesPath)
-					if err == nil {
-						// Only use relative path if it doesn't go to filesystem root
-						// If the relative path starts with ".." and would reach root, use absolute path
-						useRelative := true
-						if strings.HasPrefix(relPath, "..") {
-							// Count ".." components in relPath
-							dotDotCount := strings.Count(relPath, ".."+string(filepath.Separator))
-							if strings.HasSuffix(relPath, "..") {
-								dotDotCount++
-							}
-							// Calculate path depth: number of non-empty components
-							// For "/tmp/xxx/.git/objects", components are [tmp, xxx, .git, objects] = 4
-							// Need 4 ".."s to reach root, so if dotDotCount >= 4, use absolute
-							components := strings.Split(filepath.Clean(objectsDir), string(filepath.Separator))
-							// Filter out empty components (can happen on some systems)
-							nonEmptyCount := 0
-							for _, c := range components {
-								if c != "" {
-									nonEmptyCount++
-								}
-							}
-							if dotDotCount >= nonEmptyCount {
-								useRelative = false
-								fmt.Printf("  Info: keeping absolute alternates path (relative would go to root)\n")
-							}
-						}
-						if useRelative {
-							if err := os.WriteFile(alternatesFile, []byte(relPath+"\n"), 0644); err != nil {
-								fmt.Printf("  Warning: failed to update alternates to relative path: %v\n", err)
-							}
-						}
-					}
-				}
-			}
-		}
+		return fmt.Errorf("failed to create clone: %v, output: %s", err, string(out))
 	}
 
 	// Verify clone was created successfully
@@ -481,7 +423,7 @@ func createSharedClone(sourceRepo, clonePath string) error {
 	if verifyOut, verifyErr := verifyCmd.CombinedOutput(); verifyErr != nil {
 		return fmt.Errorf("clone created but git check failed: %v, output: %s", verifyErr, string(verifyOut))
 	}
-	fmt.Printf("  ✓ Shared clone created and verified\n")
+	fmt.Printf("  ✓ Clone created and verified\n")
 
 	return nil
 }
