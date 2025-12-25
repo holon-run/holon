@@ -533,7 +533,7 @@ func (c *Client) UpdatePullRequest(ctx context.Context, owner, repo string, prNu
 }
 
 // ListPullRequests lists all pull requests with optional filters
-func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, state string) ([]*github.PullRequest, error) {
+func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, state string) ([]*PRInfo, error) {
 	opts := &github.PullRequestListOptions{
 		State: state,
 		ListOptions: github.ListOptions{
@@ -541,14 +541,17 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, state
 		},
 	}
 
-	var allPRs []*github.PullRequest
+	var allPRs []*PRInfo
 	for {
 		prs, resp, err := c.GitHubClient().PullRequests.List(ctx, owner, repo, opts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list pull requests: %w", err)
 		}
 
-		allPRs = append(allPRs, prs...)
+		// Convert each PR to PRInfo using the existing conversion function
+		for _, pr := range prs {
+			allPRs = append(allPRs, convertFromGitHubPR(pr))
+		}
 
 		if resp.NextPage == 0 {
 			break

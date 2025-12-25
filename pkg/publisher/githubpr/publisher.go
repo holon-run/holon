@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/go-github/v68/github"
 	hghelper "github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/publisher"
 )
@@ -271,35 +270,12 @@ func (p *PRPublisher) findPRByBranch(ctx context.Context, client *hghelper.Clien
 
 	// Search for PR with matching head branch
 	for _, pr := range prs {
-		headRef := pr.GetHead()
-		if headRef != nil && headRef.GetRef() == branchName {
-			// Convert github.PullRequest to hghelper.PRInfo
-			return convertToPRInfo(pr), nil
+		if pr.HeadRef == branchName {
+			return pr, nil
 		}
 	}
 
 	return nil, nil
-}
-
-// convertToPRInfo converts a github.PullRequest to hghelper.PRInfo
-func convertToPRInfo(pr *github.PullRequest) *hghelper.PRInfo {
-	var baseRef, headRef string
-	if base := pr.GetBase(); base != nil {
-		baseRef = base.GetRef()
-	}
-	if head := pr.GetHead(); head != nil {
-		headRef = head.GetRef()
-	}
-
-	return &hghelper.PRInfo{
-		Number:  pr.GetNumber(),
-		Title:   pr.GetTitle(),
-		Body:    pr.GetBody(),
-		State:   pr.GetState(),
-		URL:     pr.GetHTMLURL(),
-		BaseRef: baseRef,
-		HeadRef: headRef,
-	}
 }
 
 // buildConfig builds publisher configuration from manifest metadata.
