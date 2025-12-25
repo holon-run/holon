@@ -45,6 +45,9 @@ type ContainerConfig struct {
 	WorkspaceStrategy string                 // Workspace preparation strategy (e.g., "git-clone", "snapshot")
 	WorkspaceHistory  workspace.HistoryMode // How much git history to include
 	WorkspaceRef      string                 // Git ref to checkout (optional)
+
+	// Local Claude config mount
+	UseLocalClaudeConfig bool // Mount host ~/.claude into container
 }
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
@@ -131,6 +134,37 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		InputPath:   cfg.InputPath,
 		OutDir:      cfg.OutDir,
 	}
+
+	// Handle local Claude config mounting if requested
+	if cfg.UseLocalClaudeConfig {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Printf("Warning: failed to get home directory: %v\n", err)
+		} else {
+			claudeDir := filepath.Join(homeDir, ".claude")
+			if _, err := os.Stat(claudeDir); err != nil {
+				if os.IsNotExist(err) {
+					fmt.Printf("Warning: --use-local-claude-config flag specified, but ~/.claude does not exist\n")
+				} else {
+					fmt.Printf("Warning: failed to stat ~/.claude: %v\n", err)
+				}
+			} else {
+				// Found ~/.claude, mount it
+				mountConfig.LocalClaudeConfigDir = claudeDir
+				fmt.Println("============================================================")
+				fmt.Println("WARNING: Mounting host ~/.claude into container")
+				fmt.Println("This exposes your personal Claude login and session to the container.")
+				fmt.Println("Do NOT use this in CI or shared environments.")
+				fmt.Println("============================================================")
+				// Set environment variable to indicate mounted config is available
+				if cfg.Env == nil {
+					cfg.Env = make(map[string]string)
+				}
+				cfg.Env["HOLON_MOUNTED_CLAUDE_CONFIG"] = "1"
+			}
+		}
+	}
+
 	mounts := BuildContainerMounts(mountConfig)
 
 	fmt.Printf("Creating container from image %s...\n", finalImage)

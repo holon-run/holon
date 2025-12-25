@@ -25,20 +25,21 @@ type Runtime interface {
 
 // RunnerConfig holds the configuration for the Run function
 type RunnerConfig struct {
-	SpecPath      string
-	GoalStr       string
-	TaskName      string
-	BaseImage     string
-	AgentBundle   string
-	WorkspacePath string
-	ContextPath   string
-	InputPath     string // Optional: path to input directory (if empty, creates temp dir)
-	OutDir        string
-	RoleName      string
-	EnvVarsList   []string
-	LogLevel      string
-	Mode          string
-	Cleanup       string // Cleanup mode: "auto" (default), "none", "all"
+	SpecPath            string
+	GoalStr             string
+	TaskName            string
+	BaseImage           string
+	AgentBundle         string
+	WorkspacePath       string
+	ContextPath         string
+	InputPath           string // Optional: path to input directory (if empty, creates temp dir)
+	OutDir              string
+	RoleName            string
+	EnvVarsList         []string
+	LogLevel            string
+	Mode                string
+	Cleanup             string // Cleanup mode: "auto" (default), "none", "all"
+	UseLocalClaudeConfig bool   // Mount host ~/.claude into container
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -259,12 +260,13 @@ output:
 	}
 
 	containerCfg := &docker.ContainerConfig{
-		BaseImage:   cfg.BaseImage,
-		AgentBundle: agentBundlePath,
-		Workspace:   absWorkspace,
-		InputPath:   absInputDir,
-		OutDir:      absOut,
-		Env:         envVars,
+		BaseImage:           cfg.BaseImage,
+		AgentBundle:         agentBundlePath,
+		Workspace:           absWorkspace,
+		InputPath:           absInputDir,
+		OutDir:              absOut,
+		Env:                 envVars,
+		UseLocalClaudeConfig: cfg.UseLocalClaudeConfig,
 	}
 
 	fmt.Printf("Running Holon: %s with base image %s (agent: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AgentBundle)

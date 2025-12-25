@@ -205,6 +205,14 @@ async function syncClaudeSettings(logger: ProgressLogger, authToken: string | un
     return;
   }
 
+  // Check if this is a mounted config (read-only mount from host)
+  // If HOLON_MOUNTED_CLAUDE_CONFIG is set, the config is mounted and should not be modified
+  const isMountedConfig = process.env.HOLON_MOUNTED_CLAUDE_CONFIG === "1";
+  if (isMountedConfig) {
+    logger.debug("Using mounted Claude config from host (skipping settings sync)");
+    return;
+  }
+
   try {
     const raw = fs.readFileSync(settingsPath, "utf8");
     const settings = JSON.parse(raw) as Record<string, unknown>;
@@ -259,17 +267,27 @@ async function runClaude(
   logFile: fs.WriteStream
 ): Promise<{ success: boolean; result: string }> {
   const env = { ...process.env } as NodeJS.ProcessEnv;
-  const authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
-  const baseUrl = env.ANTHROPIC_BASE_URL || env.ANTHROPIC_API_URL || "https://api.anthropic.com";
+  const isMountedConfig = env.HOLON_MOUNTED_CLAUDE_CONFIG === "1";
 
-  if (authToken) {
-    env.ANTHROPIC_AUTH_TOKEN = authToken;
-    env.ANTHROPIC_API_KEY = authToken;
-  }
-  if (baseUrl) {
-    env.ANTHROPIC_BASE_URL = baseUrl;
-    env.ANTHROPIC_API_URL = baseUrl;
-    env.CLAUDE_CODE_API_URL = baseUrl;
+  // When mounted config is present, prefer it over env-based API keys
+  // Only use env-based auth if no mounted config exists
+  let authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
+  let baseUrl = env.ANTHROPIC_BASE_URL || env.ANTHROPIC_API_URL || "https://api.anthropic.com";
+
+  if (isMountedConfig) {
+    logger.info("Using mounted Claude config from host (env-based auth as fallback)");
+    // Keep the existing values - Claude Code SDK will use mounted settings first
+  } else {
+    // No mounted config - use env-based auth
+    if (authToken) {
+      env.ANTHROPIC_AUTH_TOKEN = authToken;
+      env.ANTHROPIC_API_KEY = authToken;
+    }
+    if (baseUrl) {
+      env.ANTHROPIC_BASE_URL = baseUrl;
+      env.ANTHROPIC_API_URL = baseUrl;
+      env.CLAUDE_CODE_API_URL = baseUrl;
+    }
   }
   env.IS_SANDBOX = "1";
 
