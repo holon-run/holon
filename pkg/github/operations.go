@@ -20,19 +20,37 @@ func (c *Client) FetchPRInfo(ctx context.Context, owner, repo string, prNumber i
 
 // convertFromGitHubPR converts a github.PullRequest to our PRInfo type
 func convertFromGitHubPR(pr *github.PullRequest) *PRInfo {
+	// Initialize with empty strings, then populate if base/head are not nil
+	var baseRef, headRef, baseSHA, headSHA string
+
+	if base := pr.GetBase(); base != nil {
+		baseRef = base.GetRef()
+		baseSHA = base.GetSHA()
+	}
+
+	if head := pr.GetHead(); head != nil {
+		headRef = head.GetRef()
+		headSHA = head.GetSHA()
+	}
+
+	author := ""
+	if user := pr.GetUser(); user != nil {
+		author = user.GetLogin()
+	}
+
 	info := &PRInfo{
-		Number:    pr.GetNumber(),
-		Title:     pr.GetTitle(),
-		Body:      pr.GetBody(),
-		State:     pr.GetState(),
-		URL:       pr.GetHTMLURL(),
-		BaseRef:   pr.GetBase().GetRef(),
-		HeadRef:   pr.GetHead().GetRef(),
-		BaseSHA:   pr.GetBase().GetSHA(),
-		HeadSHA:   pr.GetHead().GetSHA(),
-		Author:    pr.GetUser().GetLogin(),
-		CreatedAt: pr.GetCreatedAt().Time,
-		UpdatedAt: pr.GetUpdatedAt().Time,
+		Number:      pr.GetNumber(),
+		Title:       pr.GetTitle(),
+		Body:        pr.GetBody(),
+		State:       pr.GetState(),
+		URL:         pr.GetHTMLURL(),
+		BaseRef:     baseRef,
+		HeadRef:     headRef,
+		BaseSHA:     baseSHA,
+		HeadSHA:     headSHA,
+		Author:      author,
+		CreatedAt:   pr.GetCreatedAt().Time,
+		UpdatedAt:   pr.GetUpdatedAt().Time,
 		MergeCommit: pr.GetMergeCommitSHA(),
 	}
 
@@ -55,16 +73,25 @@ func (c *Client) FetchIssueInfo(ctx context.Context, owner, repo string, issueNu
 
 // convertFromGitHubIssue converts a github.Issue to our IssueInfo type
 func convertFromGitHubIssue(issue *github.Issue) *IssueInfo {
+	author := ""
+	if user := issue.GetUser(); user != nil {
+		author = user.GetLogin()
+	}
+
 	info := &IssueInfo{
-		Number:     issue.GetNumber(),
-		Title:      issue.GetTitle(),
-		Body:       issue.GetBody(),
-		State:      issue.GetState(),
-		URL:        issue.GetHTMLURL(),
-		Author:     issue.GetUser().GetLogin(),
-		CreatedAt:  issue.GetCreatedAt().Time,
-		UpdatedAt:  issue.GetUpdatedAt().Time,
-		Repository: issue.GetRepository().GetFullName(),
+		Number:    issue.GetNumber(),
+		Title:     issue.GetTitle(),
+		Body:      issue.GetBody(),
+		State:     issue.GetState(),
+		URL:       issue.GetHTMLURL(),
+		Author:    author,
+		CreatedAt: issue.GetCreatedAt().Time,
+		UpdatedAt: issue.GetUpdatedAt().Time,
+	}
+
+	// Repository may be nil in some API responses
+	if issue.GetRepository() != nil {
+		info.Repository = issue.GetRepository().GetFullName()
 	}
 
 	if issue.GetAssignee() != nil {
@@ -108,11 +135,16 @@ func (c *Client) FetchIssueComments(ctx context.Context, owner, repo string, iss
 
 // convertFromGitHubIssueComment converts a github.IssueComment to our IssueComment type
 func convertFromGitHubIssueComment(comment *github.IssueComment) IssueComment {
+	author := ""
+	if user := comment.GetUser(); user != nil {
+		author = user.GetLogin()
+	}
+
 	return IssueComment{
 		CommentID: comment.GetID(),
 		URL:       comment.GetHTMLURL(),
 		Body:      comment.GetBody(),
-		Author:    comment.GetUser().GetLogin(),
+		Author:    author,
 		CreatedAt: comment.GetCreatedAt().Time,
 		UpdatedAt: comment.GetUpdatedAt().Time,
 	}
@@ -215,6 +247,11 @@ func findParentThreadInMap(threadMap map[int64]*ReviewThread, commentID int64) *
 
 // convertFromGitHubPullRequestComment converts a github.PullRequestComment to our ReviewThread type
 func convertFromGitHubPullRequestComment(comment *github.PullRequestComment) ReviewThread {
+	author := ""
+	if user := comment.GetUser(); user != nil {
+		author = user.GetLogin()
+	}
+
 	thread := ReviewThread{
 		CommentID: comment.GetID(),
 		URL:       comment.GetHTMLURL(),
@@ -222,7 +259,7 @@ func convertFromGitHubPullRequestComment(comment *github.PullRequestComment) Rev
 		Body:      comment.GetBody(),
 		DiffHunk:  comment.GetDiffHunk(),
 		Line:      comment.GetLine(),
-		Author:    comment.GetUser().GetLogin(),
+		Author:    author,
 		CreatedAt: comment.GetCreatedAt().Time,
 		UpdatedAt: comment.GetUpdatedAt().Time,
 		Replies:   []Reply{},
@@ -246,11 +283,16 @@ func convertFromGitHubPullRequestComment(comment *github.PullRequestComment) Rev
 
 // convertFromGitHubReplyComment converts a github.PullRequestComment to our Reply type
 func convertFromGitHubReplyComment(comment *github.PullRequestComment) Reply {
+	author := ""
+	if user := comment.GetUser(); user != nil {
+		author = user.GetLogin()
+	}
+
 	return Reply{
 		CommentID:   comment.GetID(),
 		URL:         comment.GetHTMLURL(),
 		Body:        comment.GetBody(),
-		Author:      comment.GetUser().GetLogin(),
+		Author:      author,
 		CreatedAt:   comment.GetCreatedAt().Time,
 		UpdatedAt:   comment.GetUpdatedAt().Time,
 		InReplyToID: comment.GetInReplyTo(),
@@ -295,10 +337,16 @@ func (c *Client) FetchCheckRuns(ctx context.Context, owner, repo, ref string, ma
 	var allCheckRuns []CheckRun
 	fetched := 0
 
+PaginationLoop:
 	for {
 		checkRuns, resp, err := c.GitHubClient().Checks.ListCheckRunsForRef(ctx, owner, repo, ref, opts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch check runs: %w", err)
+		}
+
+		// Check for nil response
+		if checkRuns == nil {
+			break
 		}
 
 		for _, cr := range checkRuns.CheckRuns {
@@ -308,7 +356,7 @@ func (c *Client) FetchCheckRuns(ctx context.Context, owner, repo, ref string, ma
 			}
 			// Check max results
 			if maxResults > 0 && fetched >= maxResults {
-				break
+				break PaginationLoop
 			}
 			allCheckRuns = append(allCheckRuns, convertFromGitHubCheckRun(cr))
 			fetched++
