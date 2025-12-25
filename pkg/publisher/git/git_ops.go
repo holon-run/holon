@@ -34,7 +34,7 @@ func NewGitClient(workspaceDir, token string) *GitClient {
 
 // ApplyPatch applies a patch file to the workspace using git apply --3way.
 // Returns true if patch was applied, false if patch file was empty/missing.
-func (g *GitClient) ApplyPatch(patchPath string) (bool, error) {
+func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) (bool, error) {
 	// Check if patch file exists
 	info, err := os.Stat(patchPath)
 	if err != nil {
@@ -52,7 +52,6 @@ func (g *GitClient) ApplyPatch(patchPath string) (bool, error) {
 	}
 
 	client := holonGit.NewClient(g.WorkspaceDir)
-	ctx := context.Background()
 
 	// Use git apply command with --3way for better merge behavior
 	if err := client.ApplyCheck(ctx, patchPath, true); err != nil {

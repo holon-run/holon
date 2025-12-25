@@ -76,14 +76,6 @@ func (p *GitClonePreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 		return PrepareResult{}, fmt.Errorf("git clone succeeded but destination is not a git repository")
 	}
 
-	// Handle submodules if requested
-	if req.Submodules == SubmodulesRecursive {
-		if err := client.InitSubmodules(ctx); err != nil {
-			// Submodule init failed - log a note but don't fail
-			result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to initialize submodules: %v", err))
-		}
-	}
-
 	// Get HEAD SHA from clone result or fallback to client
 	headSHA := cloneResult.HEAD
 	if headSHA == "" {

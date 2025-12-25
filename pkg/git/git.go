@@ -279,7 +279,10 @@ func (c *Client) IsShallowClone(ctx context.Context) (bool, error) {
 
 // Checkout checks out a reference (branch, tag, or commit).
 func (c *Client) Checkout(ctx context.Context, ref string) error {
-	args := []string{"checkout", c.quietFlag()}
+	args := []string{"checkout"}
+	if q := c.quietFlag(); q != "" {
+		args = append(args, q)
+	}
 	if ref != "" {
 		args = append(args, ref)
 	}
@@ -405,14 +408,20 @@ func (c *Client) ApplyCheck(ctx context.Context, patchPath string, threeWay bool
 
 // InitSubmodules initializes git submodules.
 func (c *Client) InitSubmodules(ctx context.Context) error {
-	args := []string{"submodule", "update", "--init", "--recursive", c.quietFlag()}
+	args := []string{"submodule", "update", "--init", "--recursive"}
+	if q := c.quietFlag(); q != "" {
+		args = append(args, q)
+	}
 	_, err := c.execCommand(ctx, args...)
 	return err
 }
 
 // Branch creates a new branch or checks out an existing one.
 func (c *Client) Branch(ctx context.Context, name string, create bool) error {
-	args := []string{"checkout", c.quietFlag()}
+	args := []string{"checkout"}
+	if q := c.quietFlag(); q != "" {
+		args = append(args, q)
+	}
 	if create {
 		args = append(args, "-b", name)
 	} else {
@@ -422,7 +431,9 @@ func (c *Client) Branch(ctx context.Context, name string, create bool) error {
 	return err
 }
 
-// RemoteGetConfig retrieves a git configuration value.
+// RemoteGetConfig retrieves a global/system git configuration value.
+// This function does not use a repository directory and reads from global/system config.
+// Use client.ConfigGet() for repository-specific configuration.
 func RemoteGetConfig(ctx context.Context, key string) (string, error) {
 	cmd := exec.Command("git", "config", "--get", key)
 	output, err := cmd.Output()

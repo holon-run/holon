@@ -33,14 +33,13 @@ func NewGitClient(workspaceDir, token string) *GitClient {
 }
 
 // ApplyPatch applies a patch file to the workspace.
-func (g *GitClient) ApplyPatch(patchPath string) error {
+func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) error {
 	// Verify patch file exists
 	if _, err := os.Stat(patchPath); err != nil {
 		return fmt.Errorf("patch file not found: %w", err)
 	}
 
 	client := holonGit.NewClient(g.WorkspaceDir)
-	ctx := context.Background()
 
 	// Use git apply command with proper exec.Command to avoid injection
 	if err := client.ApplyCheck(ctx, patchPath, false); err != nil {
