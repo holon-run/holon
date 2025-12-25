@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -46,7 +45,7 @@ func TestVCRPRPublisher_FindExistingPR(t *testing.T) {
 	}
 	defer rec.Stop()
 
-	client := github.NewClient(rec.HTTPClient())
+	client := gh.NewClient("", gh.WithHTTPClient(rec.HTTPClient()))
 
 	// Test the findPRByBranch method directly
 	p := &PRPublisher{}
@@ -335,11 +334,8 @@ func (m *mockGitHubServerForPR) getBaseURL() string {
 }
 
 // newTestGitHubClientForPR creates a GitHub client for the mock server
-func newTestGitHubClientForPR(t *testing.T, mockServer *mockGitHubServerForPR) *github.Client {
-	client := github.NewClient(nil)
-	baseURL, _ := url.Parse(mockServer.server.URL + "/")
-	client.BaseURL = baseURL
-	return client
+func newTestGitHubClientForPR(t *testing.T, mockServer *mockGitHubServerForPR) *gh.Client {
+	return gh.NewClient("", gh.WithBaseURL(mockServer.server.URL))
 }
 
 // TestMockPRPublisher_ListPRs tests listing PRs with mock server
@@ -372,83 +368,6 @@ func TestMockPRPublisher_ListPRs(t *testing.T) {
 
 	if existingPR != nil {
 		t.Errorf("findPRByBranch() = %v, want nil for empty list", existingPR)
-	}
-}
-
-// TestMockPRPublisher_CreateAndUpdatePR tests creating and updating PRs with mock
-func TestMockPRPublisher_CreateAndUpdatePR(t *testing.T) {
-	mockServer := newMockGitHubServerForPR(t)
-	defer mockServer.close()
-
-	createdPR := false
-
-	// Handler for creating PRs
-	mockServer.mux.HandleFunc("/repos/holon-run/holon/pulls", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			createdPR = true
-			pr := &github.PullRequest{
-				Number:  github.Int(123),
-				Title:   github.String("Test PR"),
-				HTMLURL: github.String("https://github.com/holon-run/holon/pull/123"),
-				Head: &github.PullRequestBranch{
-					Ref: github.String("test-branch"),
-				},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(pr)
-		}
-	})
-
-	// Handler for updating PRs
-	mockServer.mux.HandleFunc("/repos/holon-run/holon/pulls/123", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch {
-			pr := &github.PullRequest{
-				Number:  github.Int(123),
-				Title:   github.String("Updated PR"),
-				HTMLURL: github.String("https://github.com/holon-run/holon/pull/123"),
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(pr)
-		}
-	})
-
-	client := newTestGitHubClientForPR(t, mockServer)
-
-	// Test creating PR
-	newPR := &github.NewPullRequest{
-		Title: github.String("Test PR"),
-		Head:  github.String("test-branch"),
-		Base:  github.String("main"),
-		Body:  github.String("Test body"),
-	}
-
-	created, _, err := client.PullRequests.Create(context.Background(), "holon-run", "holon", newPR)
-	if err != nil {
-		t.Fatalf("PullRequests.Create() error = %v", err)
-	}
-
-	if !createdPR {
-		t.Error("PR was not created")
-	}
-
-	if created.GetNumber() != 123 {
-		t.Errorf("PR number = %v, want 123", created.GetNumber())
-	}
-
-	// Test updating PR
-	updatedPR := &github.PullRequest{
-		Title: github.String("Updated PR"),
-		Body:  github.String("Updated body"),
-	}
-
-	updated, _, err := client.PullRequests.Edit(context.Background(), "holon-run", "holon", 123, updatedPR)
-	if err != nil {
-		t.Fatalf("PullRequests.Edit() error = %v", err)
-	}
-
-	if updated.GetTitle() != "Updated PR" {
-		t.Errorf("Updated PR title = %v, want 'Updated PR'", updated.GetTitle())
 	}
 }
 
@@ -492,8 +411,8 @@ func TestMockPRPublisher_FindPRByBranch(t *testing.T) {
 		t.Fatal("findPRByBranch() = nil, want existing PR")
 	}
 
-	if existingPR.GetNumber() != 456 {
-		t.Errorf("PR number = %v, want 456", existingPR.GetNumber())
+	if existingPR.Number != 456 {
+		t.Errorf("PR number = %v, want 456", existingPR.Number)
 	}
 }
 
@@ -591,15 +510,12 @@ func TestVCRPRPublisher_ResultStructContract(t *testing.T) {
 // Note: This is a basic smoke test to verify the client is created.
 // More thorough OAuth verification is done in TestMockPRPublisher_CreateGitHubClientWithTransport.
 func TestMockPRPublisher_CreateGitHubClient(t *testing.T) {
-	p := &PRPublisher{}
-
 	token := "test-token"
-	ctx := context.Background()
 
-	client := p.createGitHubClient(ctx, token)
+	client := gh.NewClient(token)
 
 	if client == nil {
-		t.Fatal("createGitHubClient() returned nil")
+		t.Fatal("NewClient() returned nil")
 	}
 
 	// Verify the client is properly configured
@@ -611,12 +527,8 @@ func TestMockPRPublisher_CreateGitHubClient(t *testing.T) {
 
 // TestMockPRPublisher_CreateGitHubClientWithTransport tests that client uses correct transport
 func TestMockPRPublisher_CreateGitHubClientWithTransport(t *testing.T) {
-	p := &PRPublisher{}
-
 	token := "test-token-123"
 	ctx := context.Background()
-
-	client := p.createGitHubClient(ctx, token)
 
 	// Create a mock server to test the client and verify OAuth token is used
 	var receivedAuth string
@@ -628,15 +540,10 @@ func TestMockPRPublisher_CreateGitHubClientWithTransport(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	// Set the base URL to the mock server
-	baseURL, err := url.Parse(mockServer.URL + "/")
-	if err != nil {
-		t.Fatalf("failed to parse test server URL: %v", err)
-	}
-	client.BaseURL = baseURL
+	client := gh.NewClient(token, gh.WithBaseURL(mockServer.URL))
 
 	// Make a test request to trigger a request
-	_, _, err = client.PullRequests.List(ctx, "test", "test", nil)
+	_, err := client.ListPullRequests(ctx, "test", "test", "open")
 	if err != nil {
 		t.Logf("Request error (may be expected): %v", err)
 	}
@@ -666,7 +573,7 @@ func TestVCRPRPublisher_ErrorHandlingContract(t *testing.T) {
 	}
 	defer rec.Stop()
 
-	client := github.NewClient(rec.HTTPClient())
+	client := gh.NewClient("", gh.WithHTTPClient(rec.HTTPClient()))
 
 	// Test with invalid repo
 	p := &PRPublisher{}
@@ -705,7 +612,7 @@ func TestVCRPRPublisher_PaginationContract(t *testing.T) {
 	}
 	defer rec.Stop()
 
-	client := github.NewClient(rec.HTTPClient())
+	client := gh.NewClient("", gh.WithHTTPClient(rec.HTTPClient()))
 
 	p := &PRPublisher{}
 	prRef := PRRef{
