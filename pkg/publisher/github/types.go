@@ -2,14 +2,24 @@ package github
 
 // PRFixData represents the parsed pr-fix.json file.
 type PRFixData struct {
-	ReviewReplies []ReviewReply `json:"review_replies"`
-	Checks        []CheckRun    `json:"checks"`
+	ReviewReplies   []ReviewReply     `json:"review_replies"`
+	FollowUpIssues  []FollowUpIssue   `json:"follow_up_issues,omitempty"`
+	Checks          []CheckRun        `json:"checks"`
+}
+
+// FollowUpIssue represents a follow-up issue for deferred work.
+type FollowUpIssue struct {
+	Title               string   `json:"title"`
+	Body                string   `json:"body"`
+	DeferredCommentIDs  []int64  `json:"deferred_comment_ids"`
+	Labels              []string `json:"labels,omitempty"`
+	IssueURL            string   `json:"issue_url,omitempty"`
 }
 
 // ReviewReply represents a single review comment reply from pr-fix.json.
 type ReviewReply struct {
 	CommentID   int64   `json:"comment_id"`
-	Status      string  `json:"status"` // "fixed", "wontfix", "need-info"
+	Status      string  `json:"status"` // "fixed", "wontfix", "need-info", "deferred"
 	Message     string  `json:"message"`
 	ActionTaken *string `json:"action_taken,omitempty"`
 }
@@ -64,4 +74,17 @@ type ReplyResult struct {
 	CommentID int64  `json:"comment_id"`
 	Status    string `json:"status"` // "posted", "skipped", "failed"
 	Reason    string `json:"reason,omitempty"`
+}
+
+// FollowUpIssuesResult represents the result of handling follow-up issues.
+type FollowUpIssuesResult struct {
+	Created       []FollowUpIssueDetail `json:"created,omitempty"`
+	CreatedCount  int                   `json:"created_count"`
+	DeferredCount int                   `json:"deferred_count"`
+}
+
+// FollowUpIssueDetail represents a created follow-up issue.
+type FollowUpIssueDetail struct {
+	Title    string `json:"title"`
+	IssueURL string `json:"issue_url"`
 }

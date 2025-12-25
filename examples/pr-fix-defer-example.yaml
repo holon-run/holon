@@ -1,0 +1,79 @@
+version: "v1"
+kind: Holon
+metadata:
+  name: "pr-fix-with-defer"
+context:
+  workspace: "/workspace"
+  env:
+    # Enable automatic creation of follow-up issues for deferred work
+    HOLON_PRFIX_AUTO_CREATE_ISSUES: "false"  # Set to "true" to auto-create GitHub issues
+  files:
+    - "pkg/prompt/assets/modes/pr-fix/contract.md"
+    - "pkg/prompt/assets/modes/pr-fix/pr-fix.schema.json"
+goal:
+  description: |
+    ## PR-Fix Mode with Deferred Work Handling
+
+    This example demonstrates the pr-fix mode's ability to handle non-blocking refactor requests
+    by creating follow-up issues instead of flat rejection or scope explosion.
+
+    **Scenario:**
+    You are responding to PR review comments. Some comments request small fixes (e.g., add error handling),
+    while others request larger improvements (e.g., comprehensive test suite, major refactoring).
+
+    **Expected Behavior:**
+    1. **Blocking issues** (bugs, security, breaking changes) → status: "fixed" with code changes
+    2. **Non-blocking improvements** (test coverage, refactoring, nice-to-haves) → status: "deferred" with follow-up issue
+    3. **Rejected suggestions** (not aligned with project goals) → status: "wontfix" with explanation
+
+    **Output Requirements:**
+    1. `/holon/output/pr-fix.json` - Structured responses with:
+       - `review_replies`: One entry per review comment (fixed/wontfix/deferred/need-info)
+       - `follow_up_issues`: Draft issues for deferred work (title, body, labels, deferred_comment_ids)
+       - `checks`: Status updates for any CI failures
+
+    2. `/holon/output/summary.md` - Human-readable summary explaining:
+       - What was fixed immediately
+       - What was deferred and why
+       - Links to follow-up issues (or mention they're included as drafts)
+
+    **Configuration:**
+    - `HOLON_PRFIX_AUTO_CREATE_ISSUES=false` (default): Follow-up issues are included as drafts in pr-fix.json
+    - `HOLON_PRFIX_AUTO_CREATE_ISSUES=true`: Publisher automatically creates GitHub issues
+
+    **Example Output (pr-fix.json):**
+    ```json
+    {
+      "review_replies": [
+        {
+          "comment_id": 123,
+          "status": "fixed",
+          "message": "Good catch! Added proper error handling.",
+          "action_taken": "Added error checking and wrapped errors with context"
+        },
+        {
+          "comment_id": 456,
+          "status": "deferred",
+          "message": "Valid suggestion for comprehensive tests! This would substantially increase PR scope. Created follow-up issue to track this enhancement.",
+          "action_taken": null
+        }
+      ],
+      "follow_up_issues": [
+        {
+          "title": "Add comprehensive integration test suite for payment module",
+          "body": "## Context\nDuring review of PR #123, @reviewer suggested adding comprehensive integration tests...\n\n## Requested Changes\n- Add end-to-end tests for payment flow\n- Test edge cases (failures, retries, timeouts)\n\n## Suggested Approach\n1. Create tests/integration/payment_test.go\n2. Use testcontainers for real database testing\n\n## Related PR\nDeferred from PR #123 comment #456",
+          "deferred_comment_ids": [456],
+          "labels": ["enhancement", "testing", "good-first-issue"]
+        }
+      ]
+    }
+    ```
+
+output:
+  artifacts:
+    - path: "manifest.json"
+      required: true
+    - path: "pr-fix.json"
+      required: true
+    - path: "summary.md"
+      required: true

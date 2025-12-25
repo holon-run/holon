@@ -22,15 +22,22 @@ PR-Fix mode is designed for GitHub PR fix operations. The agent analyzes PR feed
 - If you cannot address an issue, explain why in your response
 
 **PR-Fix JSON Format:**
-The `pr-fix.json` file contains two main sections:
+The `pr-fix.json` file contains three main sections:
 
 1. **`review_replies`**: Responses to review comments
    - `comment_id`: Unique identifier for the review comment
-   - `status`: One of `fixed`, `wontfix`, `need-info`
+   - `status`: One of `fixed`, `wontfix`, `need-info`, `deferred`
    - `message`: Your response to the reviewer
    - `action_taken`: Description of code changes made (if applicable)
 
-2. **`checks`**: Status updates for CI/check runs
+2. **`follow_up_issues`** (optional): Follow-up issues for deferred work
+   - `title`: Title of the follow-up issue
+   - `body`: Body/content of the issue in Markdown format
+   - `deferred_comment_ids`: Array of comment IDs this issue addresses
+   - `labels`: Suggested labels for the issue (optional)
+   - `issue_url`: URL of created issue if auto-created (optional)
+
+3. **`checks`**: Status updates for CI/check runs
    - `name`: Check run name (e.g., `ci/test`, `lint`)
    - `conclusion`: Original check conclusion (`failure`, `success`, `cancelled`)
    - `fix_status`: One of `fixed`, `unfixed`, `not-applicable`
@@ -51,6 +58,20 @@ The `pr-fix.json` file contains two main sections:
       "status": "wontfix",
       "message": "This pattern aligns with our existing error handling conventions in pkg/runtime. The tradeoff is more verbose code but better consistency.",
       "action_taken": null
+    },
+    {
+      "comment_id": "789",
+      "status": "deferred",
+      "message": "Valid suggestion for a comprehensive test suite! This is beyond the scope of this PR which focuses on the core feature. I've created a follow-up issue to track this work.",
+      "action_taken": null
+    }
+  ],
+  "follow_up_issues": [
+    {
+      "title": "Add comprehensive integration test suite for payment processing",
+      "body": "## Context\n\nDuring review of PR #123, @reviewer suggested adding comprehensive integration tests for the payment processing module.\n\n## Requested Changes\n\n- Add end-to-end tests for payment flow\n- Test edge cases (failures, retries, timeouts)\n- Add performance benchmarks\n\n## Suggested Approach\n\n1. Create new test file: `tests/integration/payment_test.go`\n2. Use testcontainers for real database testing\n3. Add test fixtures for various payment scenarios\n4. Include benchmark tests for performance regression detection\n\n## Related PR\n\nDeferred from PR #123 comment #789\n",
+      "deferred_comment_ids": [789],
+      "labels": ["enhancement", "testing", "good-first-issue"]
     }
   ],
   "checks": [
@@ -69,6 +90,42 @@ The `pr-fix.json` file contains two main sections:
   ]
 }
 ```
+
+**Handling Non-Blocking Refactor Requests:**
+
+When review comments request substantial refactoring, testing, or enhancements that are **valid but non-blocking** (i.e., not critical to merging this PR), use the `deferred` status:
+
+1. **Determine if the request is truly non-blocking:**
+   - Does not affect correctness, security, or API contracts
+   - Would substantially increase PR scope (e.g., large refactor, comprehensive test suite)
+   - Can be reasonably addressed in a follow-up without impacting this PR's value
+   - Is an improvement rather than a fix for a problem introduced in this PR
+
+2. **Use `status: "deferred"`** for the review reply with a clear explanation:
+   - Acknowledge the validity of the suggestion
+   - Explain why it's being deferred (scope, complexity, etc.)
+   - Reference that a follow-up issue has been created
+
+3. **Create a follow-up issue entry** in `follow_up_issues`:
+   - **`title`**: Clear, actionable issue title following project conventions
+   - **`body`**: Comprehensive issue description including:
+     - Context: Which PR and comment this came from
+     - Requested changes: What the reviewer asked for
+     - Rationale: Why this is valuable work
+     - Suggested approach: Implementation guidance
+     - References: Link to original PR and comment
+   - **`deferred_comment_ids`**: Array of comment IDs this issue addresses
+   - **`labels`**: Suggested labels (e.g., `enhancement`, `testing`, `refactor`)
+
+4. **Only defer when appropriate:**
+   - **BLOCKING issues must be fixed in the PR**: bugs, security issues, breaking changes, missing critical functionality
+   - **DEFER appropriate improvements**: additional test coverage, refactoring for clarity, performance optimizations that aren't blocking, documentation enhancements
+   - **Use `wontfix` for rejected suggestions**: requests that don't align with project goals or would be actively harmful
+
+5. **Configuration:**
+   - **`HOLON_PRFIX_AUTO_CREATE_ISSUES`**: Set to `true` to automatically create GitHub issues for deferred work (requires `GITHUB_TOKEN`)
+   - If not set or `false`, follow-up issues are included as drafts in `pr-fix.json` for manual filing
+   - Draft issues include `title` and `body` ready to file manually
 
 **Context Files:**
 Additional context files may be provided in `/holon/input/context/`. Read them if they contain relevant information for addressing the review comments or CI failures.

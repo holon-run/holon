@@ -373,6 +373,11 @@ Holon includes a publish system for publishing Holon execution outputs to extern
    - Target format: `owner/repo/pr/123` or `owner/repo#123`
    - Posts summary comments with idempotency
    - Replies to review comments based on `pr-fix.json`
+   - **Deferred work support**: Can create follow-up issues for non-blocking refactor requests
+     - New status `deferred` with 🔜 emoji for valid but non-blocking requests
+     - Automatically creates GitHub issues when `HOLON_PRFIX_AUTO_CREATE_ISSUES=true`
+     - Follow-up issues include context, rationale, and implementation guidance
+     - When disabled, issues are included as drafts in `pr-fix.json` for manual filing
 
 2. **GitHub PR Publisher** (`pkg/publisher/githubpr/`):
    - Creates or updates GitHub PRs from Holon outputs
@@ -407,6 +412,9 @@ holon publish --provider github-pr --target holon-run/holon --dry-run --out ./ho
 - `GITHUB_TOKEN`: GitHub authentication token (for both GitHub publishers)
 - `HOLON_GITHUB_TOKEN`: Legacy alternative to `GITHUB_TOKEN`
 - `HOLON_WORKSPACE`: Workspace directory (for git operations, defaults to `.`)
+- `HOLON_PRFIX_AUTO_CREATE_ISSUES`: Enable auto-creation of follow-up issues for deferred work (default: false)
+  - Set to `true` or `1` to automatically create GitHub issues when using `deferred` status
+  - When disabled (default), follow-up issues are included as drafts in `pr-fix.json` for manual filing
 
 **Publish Result Output**:
 - `publish-result.json` written to output directory
@@ -439,6 +447,7 @@ Uses go-github SDK under the hood:
 - `FetchPRDiff()` - Unified diff
 - `FetchCheckRuns()` - CI/check runs
 - `FetchCombinedStatus()` - Combined commit status
+- `CreateIssue()` - Create a new GitHub issue (used for follow-up issues from pr-fix mode)
 
 **Types**: `pkg/github/types.go`
 Custom type definitions that mirror GitHub API responses:

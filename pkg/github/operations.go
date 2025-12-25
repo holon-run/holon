@@ -463,6 +463,22 @@ func (c *Client) EditIssueComment(ctx context.Context, owner, repo string, comme
 	return nil
 }
 
+// CreateIssue creates a new GitHub issue
+func (c *Client) CreateIssue(ctx context.Context, owner, repo, title, body string, labels []string) (string, error) {
+	req := &github.IssueRequest{
+		Title:  &title,
+		Body:   &body,
+		Labels: &labels,
+	}
+
+	issue, _, err := c.GitHubClient().Issues.Create(ctx, owner, repo, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to create issue: %w", err)
+	}
+
+	return issue.GetHTMLURL(), nil
+}
+
 // ListIssueComments lists all issue/PR comments with pagination
 func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, issueNumber int) ([]IssueComment, error) {
 	return c.FetchIssueComments(ctx, owner, repo, issueNumber)

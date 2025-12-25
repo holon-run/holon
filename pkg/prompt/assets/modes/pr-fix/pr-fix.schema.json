@@ -25,8 +25,8 @@
           },
           "status": {
             "type": "string",
-            "enum": ["fixed", "wontfix", "need-info"],
-            "description": "Status of the fix for this review comment."
+            "enum": ["fixed", "wontfix", "need-info", "deferred"],
+            "description": "Status of the fix for this review comment. 'deferred' indicates the request is valid but non-blocking, and will be addressed in a follow-up issue."
           },
           "message": {
             "type": "string",
@@ -35,6 +35,46 @@
           "action_taken": {
             "type": ["string", "null"],
             "description": "Description of any code changes made to address the review comment. Null if no changes were made."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "follow_up_issues": {
+      "type": "array",
+      "description": "Array of follow-up issue drafts for deferred work. Each entry represents a GitHub issue to be created for tracking non-blocking requests.",
+      "items": {
+        "type": "object",
+        "required": ["title", "body", "deferred_comment_ids"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title of the follow-up issue."
+          },
+          "body": {
+            "type": "string",
+            "description": "Body/content of the follow-up issue in Markdown format. Should include context, rationale, and suggested approach."
+          },
+          "deferred_comment_ids": {
+            "type": "array",
+            "description": "Array of comment IDs that this follow-up issue addresses. Links the deferred review comments to the issue.",
+            "items": {
+              "oneOf": [
+                {"type": "integer"},
+                {"type": "string"}
+              ]
+            }
+          },
+          "labels": {
+            "type": "array",
+            "description": "Suggested labels for the follow-up issue (optional).",
+            "items": {
+              "type": "string"
+            }
+          },
+          "issue_url": {
+            "type": "string",
+            "description": "URL of the created issue if auto-created (optional). Present only when HOLON_PRFIX_AUTO_CREATE_ISSUES=true and issue creation succeeds."
           }
         },
         "additionalProperties": false
