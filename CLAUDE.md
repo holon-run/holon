@@ -61,6 +61,39 @@ make clean
 - `--out` / `-o`: Output directory (default: ./holon-output)
 - `--env` / `-e`: Environment variables (K=V format)
 - `--log-level`: Logging verbosity (debug, info, progress, minimal)
+- `--use-local-claude-config`: Mount host ~/.claude into container (WARNING: exposes personal login/session, not for CI)
+
+### Local Claude Config Mounting
+
+**WARNING**: This feature exposes your personal Claude login and session to the container. Only use this for local development, never in CI or shared environments.
+
+The `--use-local-claude-config` flag allows you to reuse your existing Claude Code configuration from the host machine inside the Holon container. When enabled:
+
+- If `~/.claude` exists on the host, it will be mounted into the container at `/root/.claude`
+- The mount is **read-only** to prevent accidental modifications
+- The agent will respect the existing config and NOT overwrite it
+- Environment-based API keys (ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL) act as fallback when mounted config doesn't have those values set
+
+**Usage:**
+```bash
+# Use your existing Claude config from host
+./bin/holon run --goal "Fix the bug" --use-local-claude-config
+
+# Config mount + custom API key (fills in missing values in mounted config)
+ANTHROPIC_API_KEY=sk-xxx ./bin/holon run --goal "Fix the bug" --use-local-claude-config
+```
+
+**How it works:**
+1. Holon checks if `~/.claude` exists on the host
+2. If found, mounts it read-only into the container
+3. Sets `HOLON_MOUNTED_CLAUDE_CONFIG=1` environment variable
+4. Agent detects this variable and skips settings sync
+5. Mounted config is used first, env vars as fallback
+
+**Default behavior (without flag):**
+- Container has no access to host ~/.claude
+- Agent creates its own config from environment variables
+- API key must be provided via ANTHROPIC_API_KEY or similar env var
 
 ### Agent Bundle Management
 - `holon agent install <url> --name <alias>`: Install an agent alias

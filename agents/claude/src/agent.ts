@@ -205,6 +205,14 @@ async function syncClaudeSettings(logger: ProgressLogger, authToken: string | un
     return;
   }
 
+  // Check if this is a mounted config (read-only mount from host)
+  // If HOLON_MOUNTED_CLAUDE_CONFIG is set, the config is mounted and should not be modified
+  const isMountedConfig = process.env.HOLON_MOUNTED_CLAUDE_CONFIG === "1";
+  if (isMountedConfig) {
+    logger.debug("Using mounted Claude config from host (skipping settings sync)");
+    return;
+  }
+
   try {
     const raw = fs.readFileSync(settingsPath, "utf8");
     const settings = JSON.parse(raw) as Record<string, unknown>;
@@ -259,17 +267,38 @@ async function runClaude(
   logFile: fs.WriteStream
 ): Promise<{ success: boolean; result: string }> {
   const env = { ...process.env } as NodeJS.ProcessEnv;
+  const isMountedConfig = env.HOLON_MOUNTED_CLAUDE_CONFIG === "1";
+
+  // Extract auth token and base URL from environment variables
+  // These will be used as fallback when mounted config doesn't have them
   const authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
   const baseUrl = env.ANTHROPIC_BASE_URL || env.ANTHROPIC_API_URL || "https://api.anthropic.com";
 
+  // Normalize env-based auth variables so the Claude Code SDK can rely on them,
+  // regardless of whether a mounted config is present. Do not overwrite any
+  // values that are already set (from mounted config or the user).
   if (authToken) {
-    env.ANTHROPIC_AUTH_TOKEN = authToken;
-    env.ANTHROPIC_API_KEY = authToken;
+    if (!env.ANTHROPIC_AUTH_TOKEN) {
+      env.ANTHROPIC_AUTH_TOKEN = authToken;
+    }
+    if (!env.ANTHROPIC_API_KEY) {
+      env.ANTHROPIC_API_KEY = authToken;
+    }
   }
   if (baseUrl) {
-    env.ANTHROPIC_BASE_URL = baseUrl;
-    env.ANTHROPIC_API_URL = baseUrl;
-    env.CLAUDE_CODE_API_URL = baseUrl;
+    if (!env.ANTHROPIC_BASE_URL) {
+      env.ANTHROPIC_BASE_URL = baseUrl;
+    }
+    if (!env.ANTHROPIC_API_URL) {
+      env.ANTHROPIC_API_URL = baseUrl;
+    }
+    if (!env.CLAUDE_CODE_API_URL) {
+      env.CLAUDE_CODE_API_URL = baseUrl;
+    }
+  }
+
+  if (isMountedConfig) {
+    logger.info("Using mounted Claude config from host (env-based auth as fallback)");
   }
   env.IS_SANDBOX = "1";
 

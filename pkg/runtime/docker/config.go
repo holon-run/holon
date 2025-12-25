@@ -13,9 +13,10 @@ import (
 
 // MountConfig represents the mount configuration for a container
 type MountConfig struct {
-	SnapshotDir string
-	InputPath   string // Path to input directory (contains spec.yaml, context/, prompts/)
-	OutDir      string
+	SnapshotDir          string
+	InputPath            string // Path to input directory (contains spec.yaml, context/, prompts/)
+	OutDir               string
+	LocalClaudeConfigDir string // Path to host ~/.claude directory (optional, for mounting)
 }
 
 // EnvConfig represents the environment configuration for a container
@@ -44,6 +45,17 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 			Source: cfg.OutDir,
 			Target: "/holon/output",
 		},
+	}
+
+	// Add Claude config directory mount if provided
+	if cfg.LocalClaudeConfigDir != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:        mount.TypeBind,
+			Source:      cfg.LocalClaudeConfigDir,
+			Target:      "/root/.claude",
+			ReadOnly:    true, // Mount read-only to prevent accidental modifications
+			BindOptions: &mount.BindOptions{Propagation: mount.PropagationRPrivate},
+		})
 	}
 
 	return mounts
