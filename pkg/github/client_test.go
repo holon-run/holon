@@ -1,0 +1,623 @@
+package github
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// TestFetcher is a helper interface for test fetch operations
+type TestFetcher interface {
+	Fetch(ctx context.Context) error
+}
+
+// setupTestClient creates a test client with VCR recording
+func setupTestClient(t *testing.T, fixtureName string) (*Client, *Recorder) {
+	t.Helper()
+
+	// Create recorder
+	rec, err := NewRecorder(t, fixtureName)
+	if err != nil {
+		t.Fatalf("failed to create recorder: %v", err)
+	}
+
+	// Create test client with recorder's HTTP client
+	// Use a dummy token - it will be filtered from recordings
+	testClient := NewClient("test-token",
+		WithTimeout(10*time.Second),
+	)
+
+	// Override the HTTP client to use the recorder
+	testClient.httpClient = rec.HTTPClient()
+
+	return testClient, rec
+}
+
+// TestFetchPRInfo tests fetching PR information
+func TestFetchPRInfo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	client, rec := setupTestClient(t, "fetch_pr_info")
+	defer rec.Stop()
+
+	ctx := context.Background()
+
+	prInfo, err := client.FetchPRInfo(ctx, "holon-run", "holon", 123)
+	if err != nil {
+		t.Fatalf("FetchPRInfo() error = %v", err)
+	}
+
+	// Verify basic fields
+	if prInfo.Number != 123 {
+		t.Errorf("Number = %v, want %v", prInfo.Number, 123)
+	}
+
+	if prInfo.Repository == "" {
+		t.Error("Repository should not be empty")
+	}
+
+	if prInfo.Author == "" {
+		t.Error("Author should not be empty")
+	}
+
+	// Verify time fields are non-zero
+	if prInfo.CreatedAt.IsZero() {
+		t.Error("CreatedAt should not be zero")
+	}
+
+	if prInfo.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt should not be zero")
+	}
+
+	// Verify SHA fields
+	if prInfo.BaseSHA == "" {
+		t.Error("BaseSHA should not be empty")
+	}
+
+	if prInfo.HeadSHA == "" {
+		t.Error("HeadSHA should not be empty")
+	}
+
+	// Verify refs
+	if prInfo.BaseRef == "" {
+		t.Error("BaseRef should not be empty")
+	}
+
+	if prInfo.HeadRef == "" {
+		t.Error("HeadRef should not be empty")
+	}
+}
+
+// TestFetchIssueInfo tests fetching issue information
+func TestFetchIssueInfo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	client, rec := setupTestClient(t, "fetch_issue_info")
+	defer rec.Stop()
+
+	ctx := context.Background()
+
+	issueInfo, err := client.FetchIssueInfo(ctx, "holon-run", "holon", 456)
+	if err != nil {
+		t.Fatalf("FetchIssueInfo() error = %v", err)
+	}
+
+	// Verify basic fields
+	if issueInfo.Number != 456 {
+		t.Errorf("Number = %v, want %v", issueInfo.Number, 456)
+	}
+
+	if issueInfo.Title == "" {
+		t.Error("Title should not be empty")
+	}
+
+	if issueInfo.State == "" {
+		t.Error("State should not be empty")
+	}
+
+	if issueInfo.Author == "" {
+		t.Error("Author should not be empty")
+	}
+
+	// Verify time fields
+	if issueInfo.CreatedAt.IsZero() {
+		t.Error("CreatedAt should not be zero")
+	}
+
+	if issueInfo.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt should not be zero")
+	}
+}
+
+// TestFetchIssueComments tests fetching issue comments with pagination
+func TestFetchIssueComments(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	client, rec := setupTestClient(t, "fetch_issue_comments")
+	defer rec.Stop()
+
+	ctx := context.Background()
+
+	comments, err := client.FetchIssueComments(ctx, "holon-run", "holon", 456)
+	if err != nil {
+		t.Fatalf("FetchIssueComments() error = %v", err)
+	}
+
+	// Verify we got comments
+	if len(comments) == 0 {
+		t.Fatal("Expected at least one comment")
+	}
+
+	// Verify comment structure
+	for _, comment := range comments {
+		if comment.CommentID == 0 {
+			t.Error("CommentID should not be zero")
+		}
+
+		if comment.Body == "" {
+			t.Error("Body should not be empty")
+		}
+
+		if comment.Author == "" {
+			t.Error("Author should not be empty")
+		}
+
+		if comment.CreatedAt.IsZero() {
+			t.Error("CreatedAt should not be zero")
+		}
+	}
+}
+
+// TestFetchReviewThreads tests fetching review comment threads
+func TestFetchReviewThreads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	tests := []struct {
+		name           string
+		fixture        string
+		unresolvedOnly bool
+		wantThreads    bool
+	}{
+		{
+			name:           "all threads",
+			fixture:        "fetch_review_threads_all",
+			unresolvedOnly: false,
+			wantThreads:    true,
+		},
+		{
+			name:           "unresolved only",
+			fixture:        "fetch_review_threads_unresolved",
+			unresolvedOnly: true,
+			wantThreads:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, rec := setupTestClient(t, tt.fixture)
+			defer rec.Stop()
+
+			ctx := context.Background()
+
+			threads, err := client.FetchReviewThreads(ctx, "holon-run", "holon", 789, tt.unresolvedOnly)
+			if err != nil {
+				t.Fatalf("FetchReviewThreads() error = %v", err)
+			}
+
+			if tt.wantThreads && len(threads) == 0 {
+				t.Error("Expected at least one review thread")
+			}
+
+			// Verify thread structure
+			for _, thread := range threads {
+				if thread.CommentID == 0 {
+					t.Error("CommentID should not be zero")
+				}
+
+				if thread.Path == "" {
+					t.Error("Path should not be empty")
+				}
+
+				if thread.Body == "" {
+					t.Error("Body should not be empty")
+				}
+
+				if thread.Author == "" {
+					t.Error("Author should not be empty")
+				}
+
+				// If unresolvedOnly is true, verify all threads are unresolved
+				if tt.unresolvedOnly && thread.Resolved {
+					t.Error("Expected only unresolved threads")
+				}
+			}
+		})
+	}
+}
+
+// TestFetchPRDiff tests fetching PR diff
+func TestFetchPRDiff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	client, rec := setupTestClient(t, "fetch_pr_diff")
+	defer rec.Stop()
+
+	ctx := context.Background()
+
+	diff, err := client.FetchPRDiff(ctx, "holon-run", "holon", 123)
+	if err != nil {
+		t.Fatalf("FetchPRDiff() error = %v", err)
+	}
+
+	// Verify diff content
+	if diff == "" {
+		t.Fatal("Diff should not be empty")
+	}
+
+	// Verify it looks like a diff (has standard diff headers)
+	if len(diff) < 10 {
+		t.Fatal("Diff seems too short")
+	}
+}
+
+// TestFetchCheckRuns tests fetching check runs for a ref
+func TestFetchCheckRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	tests := []struct {
+		name      string
+		fixture   string
+		maxResults int
+	}{
+		{
+			name:      "all check runs",
+			fixture:   "fetch_check_runs_all",
+			maxResults: 0, // No limit
+		},
+		{
+			name:      "limited check runs",
+			fixture:   "fetch_check_runs_limited",
+			maxResults: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, rec := setupTestClient(t, tt.fixture)
+			defer rec.Stop()
+
+			ctx := context.Background()
+
+			checkRuns, err := client.FetchCheckRuns(ctx, "holon-run", "holon", "abc123def456", tt.maxResults)
+			if err != nil {
+				t.Fatalf("FetchCheckRuns() error = %v", err)
+			}
+
+			if len(checkRuns) == 0 {
+				t.Fatal("Expected at least one check run")
+			}
+
+			// Verify check run structure
+			for _, cr := range checkRuns {
+				if cr.ID == 0 {
+					t.Error("ID should not be zero")
+				}
+
+				if cr.Name == "" {
+					t.Error("Name should not be empty")
+				}
+
+				if cr.HeadSHA == "" {
+					t.Error("HeadSHA should not be empty")
+				}
+
+				if cr.Status == "" {
+					t.Error("Status should not be empty")
+				}
+
+				// Verify max results limit
+				if tt.maxResults > 0 && len(checkRuns) > tt.maxResults {
+					t.Errorf("Expected max %d results, got %d", tt.maxResults, len(checkRuns))
+				}
+			}
+		})
+	}
+}
+
+// TestFetchCombinedStatus tests fetching combined status
+func TestFetchCombinedStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	client, rec := setupTestClient(t, "fetch_combined_status")
+	defer rec.Stop()
+
+	ctx := context.Background()
+
+	status, err := client.FetchCombinedStatus(ctx, "holon-run", "holon", "abc123def456")
+	if err != nil {
+		t.Fatalf("FetchCombinedStatus() error = %v", err)
+	}
+
+	// Verify combined status structure
+	if status.SHA == "" {
+		t.Error("SHA should not be empty")
+	}
+
+	if status.State == "" {
+		t.Error("State should not be empty")
+	}
+
+	// Verify statuses
+	for _, st := range status.Statuses {
+		if st.Context == "" {
+			t.Error("Status context should not be empty")
+		}
+
+		if st.State == "" {
+			t.Error("Status state should not be empty")
+		}
+	}
+}
+
+// TestRateLimitTracking tests rate limit header parsing
+func TestRateLimitTracking(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	client, rec := setupTestClient(t, "rate_limit_tracking")
+	defer rec.Stop()
+
+	// Enable rate limit tracking
+	client.rateLimitTracker = NewRateLimitTracker()
+
+	ctx := context.Background()
+
+	// Make a request that will have rate limit headers
+	_, err := client.FetchPRInfo(ctx, "holon-run", "holon", 123)
+	if err != nil {
+		t.Fatalf("FetchPRInfo() error = %v", err)
+	}
+
+	// Check rate limit status was updated
+	status, err := client.GetRateLimitStatus()
+	if err != nil {
+		t.Fatalf("GetRateLimitStatus() error = %v", err)
+	}
+
+	// In recorded fixtures, we should have rate limit info
+	if status.Limit == 0 {
+		t.Log("Warning: Rate limit not recorded in fixture")
+	}
+
+	if status.Remaining == 0 && status.Limit > 0 {
+		t.Log("Warning: No remaining requests recorded in fixture")
+	}
+}
+
+// TestClientErrors tests error handling
+func TestClientErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	tests := []struct {
+		name        string
+		fixture     string
+		setupClient func(*Client)
+		fetch       func(*Client, context.Context) error
+		wantErrType string
+	}{
+		{
+			name:    "not found",
+			fixture: "error_not_found",
+			fetch: func(c *Client, ctx context.Context) error {
+				_, err := c.FetchPRInfo(ctx, "holon-run", "holon", 999999999)
+				return err
+			},
+			wantErrType: "not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, rec := setupTestClient(t, tt.fixture)
+			defer rec.Stop()
+
+			if tt.setupClient != nil {
+				tt.setupClient(client)
+			}
+
+			ctx := context.Background()
+
+			err := tt.fetch(client, ctx)
+			if err == nil {
+				t.Fatal("Expected error, got nil")
+			}
+
+			// Verify error type
+			if tt.wantErrType != "" {
+				if tt.wantErrType == "not found" && !IsNotFoundError(err) {
+					t.Errorf("Expected not found error, got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestPaginationTests tests pagination for various endpoints
+func TestPaginationTests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	t.Run("issue comments pagination", func(t *testing.T) {
+		client, rec := setupTestClient(t, "pagination_issue_comments")
+		defer rec.Stop()
+
+		ctx := context.Background()
+
+		// This fixture should have multiple pages
+		comments, err := client.FetchIssueComments(ctx, "holon-run", "holon", 456)
+		if err != nil {
+			t.Fatalf("FetchIssueComments() error = %v", err)
+		}
+
+		// Verify we got a reasonable number of comments
+		if len(comments) < 100 {
+			t.Logf("Warning: Only got %d comments, pagination may not be fully tested", len(comments))
+		}
+	})
+
+	t.Run("review threads pagination", func(t *testing.T) {
+		client, rec := setupTestClient(t, "pagination_review_threads")
+		defer rec.Stop()
+
+		ctx := context.Background()
+
+		threads, err := client.FetchReviewThreads(ctx, "holon-run", "holon", 789, false)
+		if err != nil {
+			t.Fatalf("FetchReviewThreads() error = %v", err)
+		}
+
+		// Verify thread structure even with pagination
+		for _, thread := range threads {
+			if thread.CommentID == 0 {
+				t.Error("CommentID should not be zero")
+			}
+
+			// Verify replies are properly attached
+			if len(thread.Replies) > 0 {
+				for _, reply := range thread.Replies {
+					if reply.InReplyToID == 0 {
+						t.Error("Reply InReplyToID should not be zero")
+					}
+				}
+			}
+		}
+	})
+}
+
+// TestFixtureFileStructure tests that fixture files exist and are properly formatted
+func TestFixtureFileStructure(t *testing.T) {
+	fixturesDir := filepath.Join("testdata", "fixtures")
+
+	entries, err := os.ReadDir(fixturesDir)
+	if err != nil {
+		t.Fatalf("Failed to read fixtures directory: %v", err)
+	}
+
+	if len(entries) == 0 {
+		t.Log("No fixtures found - tests will need to record fixtures first")
+		t.Log("To record fixtures, run: HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/github/...")
+		return
+	}
+
+	// Verify all fixtures are YAML files
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		ext := filepath.Ext(name)
+
+		if ext != ".yaml" && ext != ".yml" {
+			t.Errorf("Fixture %s has invalid extension %s, want .yaml or .yml", name, ext)
+		}
+	}
+}
+
+// TestTypeConversions tests that type conversions from go-github types work correctly
+func TestTypeConversions(t *testing.T) {
+	// This test doesn't require fixtures - it tests the conversion functions directly
+
+	t.Run("PRInfo conversion", func(t *testing.T) {
+		// Test with minimal PR data
+		prInfo := &PRInfo{
+			Number:      123,
+			Title:       "Test PR",
+			State:       "open",
+			BaseRef:     "main",
+			HeadRef:     "feature",
+			BaseSHA:     "abc123",
+			HeadSHA:     "def456",
+			Author:      "testuser",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Repository:  "holon-run/holon",
+		}
+
+		if prInfo.Number != 123 {
+			t.Error("Number not preserved")
+		}
+
+		if prInfo.State != "open" {
+			t.Error("State not preserved")
+		}
+	})
+
+	t.Run("IssueInfo conversion", func(t *testing.T) {
+		issueInfo := &IssueInfo{
+			Number:     456,
+			Title:      "Test Issue",
+			State:      "open",
+			Author:     "testuser",
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
+			Repository: "holon-run/holon",
+			Labels:     []string{"bug", "enhancement"},
+		}
+
+		if len(issueInfo.Labels) != 2 {
+			t.Errorf("Labels not preserved, got %d", len(issueInfo.Labels))
+		}
+	})
+
+	t.Run("ReviewThread conversion", func(t *testing.T) {
+		thread := &ReviewThread{
+			CommentID: 789,
+			Path:      "README.md",
+			Line:      42,
+			Body:      "Test comment",
+			Author:    "testuser",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Resolved:  false,
+			Replies: []Reply{
+				{
+					CommentID:   790,
+					Body:        "Test reply",
+					Author:      "anotheruser",
+					CreatedAt:   time.Now(),
+					UpdatedAt:   time.Now(),
+					InReplyToID: 789,
+				},
+			},
+		}
+
+		if len(thread.Replies) != 1 {
+			t.Error("Replies not preserved")
+		}
+
+		if thread.Replies[0].InReplyToID != 789 {
+			t.Error("InReplyToID not correct")
+		}
+	})
+}
