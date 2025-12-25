@@ -27,7 +27,7 @@ var roleName string
 var envVarsList []string
 var logLevel string
 var mode string
-var useLocalClaudeConfig bool
+var agentConfigMode string
 
 var runCmd = &cobra.Command{
 	Use:   "run",
@@ -45,21 +45,21 @@ var runCmd = &cobra.Command{
 
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{
-			SpecPath:            specPath,
-			GoalStr:             goalStr,
-			TaskName:            taskName,
-			BaseImage:           baseImage,
-			AgentBundle:         agentPath,
-			WorkspacePath:       workspacePath,
-			ContextPath:         contextPath,
-			InputPath:           inputPath,
-			OutDir:              outDir,
-			RoleName:            roleName,
-			EnvVarsList:         envVarsList,
-			LogLevel:            logLevel,
-			Mode:                mode,
-			Cleanup:             cleanupMode,
-			UseLocalClaudeConfig: useLocalClaudeConfig,
+			SpecPath:        specPath,
+			GoalStr:         goalStr,
+			TaskName:        taskName,
+			BaseImage:       baseImage,
+			AgentBundle:     agentPath,
+			WorkspacePath:   workspacePath,
+			ContextPath:     contextPath,
+			InputPath:       inputPath,
+			OutDir:          outDir,
+			RoleName:        roleName,
+			EnvVarsList:     envVarsList,
+			LogLevel:        logLevel,
+			Mode:            mode,
+			Cleanup:         cleanupMode,
+			AgentConfigMode: agentConfigMode,
 		})
 	},
 }
@@ -86,7 +86,7 @@ func init() {
 	runCmd.Flags().StringVar(&mode, "mode", "solve", "Execution mode: solve, pr-fix, plan, review")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
-	runCmd.Flags().BoolVar(&useLocalClaudeConfig, "use-local-claude-config", false, "Mount host ~/.claude directory into container (WARNING: exposes personal login/session, not for CI)")
+	runCmd.Flags().StringVar(&agentConfigMode, "agent-config-mode", "auto", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount)")
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(contextCmd)

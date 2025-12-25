@@ -46,8 +46,8 @@ type ContainerConfig struct {
 	WorkspaceHistory  workspace.HistoryMode // How much git history to include
 	WorkspaceRef      string                 // Git ref to checkout (optional)
 
-	// Local Claude config mount
-	UseLocalClaudeConfig bool // Mount host ~/.claude into container
+	// Agent config mount mode
+	AgentConfigMode string // Agent config mount mode: "auto", "yes", "no"
 }
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
@@ -135,21 +135,41 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		OutDir:      cfg.OutDir,
 	}
 
-	// Handle local Claude config mounting if requested
-	if cfg.UseLocalClaudeConfig {
+	// Handle agent config mounting based on mode
+	// Parse the config mode, default to "auto" if empty or invalid
+	configMode, err := ParseAgentConfigMode(cfg.AgentConfigMode)
+	if err != nil {
+		fmt.Printf("Warning: invalid agent config mode %q, defaulting to 'auto': %v\n", cfg.AgentConfigMode, err)
+		configMode = AgentConfigModeAuto
+	}
+
+	// For "no" mode, skip entirely
+	if configMode != AgentConfigModeNo {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			fmt.Printf("Warning: failed to get home directory: %v\n", err)
 		} else {
 			claudeDir := filepath.Join(homeDir, ".claude")
+			dirExists := true
 			if _, err := os.Stat(claudeDir); err != nil {
 				if os.IsNotExist(err) {
-					fmt.Printf("Warning: --use-local-claude-config flag specified, but ~/.claude does not exist\n")
+					dirExists = false
 				} else {
 					fmt.Printf("Warning: failed to stat ~/.claude: %v\n", err)
+					dirExists = false
 				}
-			} else {
-				// Found ~/.claude, mount it
+			}
+
+			// Determine whether to mount based on mode and directory existence
+			shouldMount := configMode.ShouldMount(dirExists)
+			shouldWarn := configMode.WarnIfMissing() && !dirExists
+
+			if shouldWarn {
+				fmt.Printf("Warning: --agent-config-mode=yes specified, but ~/.claude does not exist\n")
+			}
+
+			if shouldMount && dirExists {
+				// Mount the config directory
 				mountConfig.LocalClaudeConfigDir = claudeDir
 				fmt.Println("============================================================")
 				fmt.Println("WARNING: Mounting host ~/.claude into container")
