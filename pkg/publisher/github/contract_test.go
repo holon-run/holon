@@ -256,7 +256,7 @@ func TestContractReviewRepliesIdempotency(t *testing.T) {
 
 		// Create publisher with mock server URL
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "testowner/testrepo/pr/123",
@@ -323,7 +323,7 @@ func TestContractReviewRepliesPosting(t *testing.T) {
 
 		// Create publisher
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "testowner/testrepo/pr/123",
@@ -400,7 +400,7 @@ func TestContractReviewRepliesMultiple(t *testing.T) {
 		}
 
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "testowner/testrepo/pr/456",
@@ -441,7 +441,7 @@ func TestContractSummaryCommentCreate(t *testing.T) {
 		}
 
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "testowner/testrepo/pr/789",
@@ -500,7 +500,7 @@ func TestContractSummaryCommentUpdate(t *testing.T) {
 		}
 
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "testowner/testrepo/pr/101",
@@ -563,7 +563,7 @@ func TestContractSummaryCommentMostRecent(t *testing.T) {
 		}
 
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "testowner/testrepo/pr/202",
@@ -621,7 +621,7 @@ func TestContractFullPublishWithFixtures(t *testing.T) {
 		copyFixtureToFile(t, "summary_simple.md", tempDir, "summary.md")
 
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "holon-run/holon/pr/303",
@@ -681,7 +681,7 @@ func TestContractEmptyPRFixtures(t *testing.T) {
 		copyFixtureToFile(t, "summary_simple.md", tempDir, "summary.md")
 
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "testowner/testrepo/pr/404",
@@ -720,7 +720,7 @@ func TestContractMultipleRepliesWithFixtures(t *testing.T) {
 		copyFixtureToFile(t, "summary_detailed.md", tempDir, "summary.md")
 
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "testowner/testrepo/pr/505",
@@ -761,7 +761,7 @@ func TestContractMissingArtifacts(t *testing.T) {
 		copyFixtureToFile(t, "summary_simple.md", tempDir, "summary.md")
 
 		p := NewGitHubPublisher()
-		p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+		p.client = newTestGitHubClient(t, mockServer)
 
 		req := publisher.PublishRequest{
 			Target: "testowner/testrepo/pr/606",
@@ -822,7 +822,7 @@ func TestContractReplyFormats(t *testing.T) {
 			}
 
 			p := NewGitHubPublisher()
-			p.client = newTestGitHubClient(t, mockServer) //nolint:interfacer
+			p.client = newTestGitHubClient(t, mockServer)
 
 			req := publisher.PublishRequest{
 				Target: "testowner/testrepo/pr/707",
