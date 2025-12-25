@@ -94,12 +94,11 @@ func (p *SnapshotPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 		}
 	}
 
-	// If the source was a git repo, initialize a minimal git repository
-	// This enables git operations inside the container even without history
-	if sourceIsGit {
-		if err := p.initMinimalGit(ctx, req.Dest, headSHA); err != nil {
-			result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to initialize minimal git: %v", err))
-		}
+	// Always initialize a minimal git repository
+	// This enables git operations (like git diff) inside the container even without history
+	// This is required for the acceptance criterion that git diff must work on snapshot workspaces
+	if err := p.initMinimalGit(ctx, req.Dest, headSHA); err != nil {
+		result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to initialize minimal git: %v", err))
 	}
 
 	// Handle ref checkout - this won't work without history, but we can note it
