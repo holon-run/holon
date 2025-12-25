@@ -3,195 +3,176 @@ package github
 import (
 	"context"
 	"fmt"
-	"time"
+	"io"
+
+	"github.com/google/go-github/v68/github"
 )
 
-// FetchPRInfo fetches basic pull request information
+// FetchPRInfo fetches basic pull request information using go-github SDK
 func (c *Client) FetchPRInfo(ctx context.Context, owner, repo string, prNumber int) (*PRInfo, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.baseURL, owner, repo, prNumber)
-
-	req, err := c.NewRequest(ctx, "GET", url, nil)
+	pr, _, err := c.GitHubClient().PullRequests.Get(ctx, owner, repo, prNumber)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch PR: %w", err)
 	}
 
-	resp, err := c.Do(req, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Close()
-
-	var prData struct {
-		Number    int    `json:"number"`
-		Title     string `json:"title"`
-		Body      string `json:"body"`
-		State     string `json:"state"`
-		HTMLURL   string `json:"html_url"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-		Base      struct {
-			Ref  string `json:"ref"`
-			SHA  string `json:"sha"`
-			Repo struct {
-				FullName string `json:"full_name"`
-			} `json:"repo"`
-		} `json:"base"`
-		Head struct {
-			Ref string `json:"ref"`
-			SHA string `json:"sha"`
-		} `json:"head"`
-		User struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		MergeCommitSHA string `json:"merge_commit_sha"`
-	}
-
-	if err := resp.DecodeJSON(&prData); err != nil {
-		return nil, err
-	}
-
-	var createdAt, updatedAt time.Time
-	if t, err := time.Parse(time.RFC3339, prData.CreatedAt); err == nil {
-		createdAt = t
-	}
-	if t, err := time.Parse(time.RFC3339, prData.UpdatedAt); err == nil {
-		updatedAt = t
-	}
-
-	return &PRInfo{
-		Number:      prData.Number,
-		Title:       prData.Title,
-		Body:        prData.Body,
-		State:       prData.State,
-		URL:         prData.HTMLURL,
-		BaseRef:     prData.Base.Ref,
-		HeadRef:     prData.Head.Ref,
-		BaseSHA:     prData.Base.SHA,
-		HeadSHA:     prData.Head.SHA,
-		Author:      prData.User.Login,
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
-		Repository:  prData.Base.Repo.FullName,
-		MergeCommit: prData.MergeCommitSHA,
-	}, nil
+	return convertFromGitHubPR(pr), nil
 }
 
-// FetchIssueInfo fetches basic issue information
+// convertFromGitHubPR converts a github.PullRequest to our PRInfo type
+func convertFromGitHubPR(pr *github.PullRequest) *PRInfo {
+	// Initialize with empty strings, then populate if base/head are not nil
+	var baseRef, headRef, baseSHA, headSHA string
+
+	if base := pr.GetBase(); base != nil {
+		baseRef = base.GetRef()
+		baseSHA = base.GetSHA()
+	}
+
+	if head := pr.GetHead(); head != nil {
+		headRef = head.GetRef()
+		headSHA = head.GetSHA()
+	}
+
+	author := ""
+	if user := pr.GetUser(); user != nil {
+		author = user.GetLogin()
+	}
+
+	info := &PRInfo{
+		Number:      pr.GetNumber(),
+		Title:       pr.GetTitle(),
+		Body:        pr.GetBody(),
+		State:       pr.GetState(),
+		URL:         pr.GetHTMLURL(),
+		BaseRef:     baseRef,
+		HeadRef:     headRef,
+		BaseSHA:     baseSHA,
+		HeadSHA:     headSHA,
+		Author:      author,
+		CreatedAt:   pr.GetCreatedAt().Time,
+		UpdatedAt:   pr.GetUpdatedAt().Time,
+		MergeCommit: pr.GetMergeCommitSHA(),
+	}
+
+	if pr.GetBase() != nil && pr.GetBase().GetRepo() != nil {
+		info.Repository = pr.GetBase().GetRepo().GetFullName()
+	}
+
+	return info
+}
+
+// FetchIssueInfo fetches basic issue information using go-github SDK
 func (c *Client) FetchIssueInfo(ctx context.Context, owner, repo string, issueNumber int) (*IssueInfo, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d", c.baseURL, owner, repo, issueNumber)
-
-	req, err := c.NewRequest(ctx, "GET", url, nil)
+	issue, _, err := c.GitHubClient().Issues.Get(ctx, owner, repo, issueNumber)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch issue: %w", err)
 	}
 
-	resp, err := c.Do(req, nil)
-	if err != nil {
-		return nil, err
-	}
-	// Note: resp.Close() will be called by DecodeJSON via defer
-
-	var issueData struct {
-		Number    int    `json:"number"`
-		Title     string `json:"title"`
-		Body      string `json:"body"`
-		State     string `json:"state"`
-		HTMLURL   string `json:"html_url"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-		User      struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		Assignee *struct {
-			Login string `json:"login"`
-		} `json:"assignee"`
-		Labels []struct {
-			Name string `json:"name"`
-		} `json:"labels"`
-		Repository string `json:"repository"`
-	}
-
-	if err := resp.DecodeJSON(&issueData); err != nil {
-		return nil, err
-	}
-
-	var createdAt, updatedAt time.Time
-	if t, err := time.Parse(time.RFC3339, issueData.CreatedAt); err == nil {
-		createdAt = t
-	}
-	if t, err := time.Parse(time.RFC3339, issueData.UpdatedAt); err == nil {
-		updatedAt = t
-	}
-
-	labels := make([]string, len(issueData.Labels))
-	for i, label := range issueData.Labels {
-		labels[i] = label.Name
-	}
-
-	assignee := ""
-	if issueData.Assignee != nil {
-		assignee = issueData.Assignee.Login
-	}
-
-	return &IssueInfo{
-		Number:     issueData.Number,
-		Title:      issueData.Title,
-		Body:       issueData.Body,
-		State:      issueData.State,
-		URL:        issueData.HTMLURL,
-		Author:     issueData.User.Login,
-		Assignee:   assignee,
-		CreatedAt:  createdAt,
-		UpdatedAt:  updatedAt,
-		Labels:     labels,
-		Repository: issueData.Repository,
-	}, nil
+	return convertFromGitHubIssue(issue), nil
 }
 
-// FetchIssueComments fetches comments for an issue with pagination
+// convertFromGitHubIssue converts a github.Issue to our IssueInfo type
+func convertFromGitHubIssue(issue *github.Issue) *IssueInfo {
+	author := ""
+	if user := issue.GetUser(); user != nil {
+		author = user.GetLogin()
+	}
+
+	info := &IssueInfo{
+		Number:    issue.GetNumber(),
+		Title:     issue.GetTitle(),
+		Body:      issue.GetBody(),
+		State:     issue.GetState(),
+		URL:       issue.GetHTMLURL(),
+		Author:    author,
+		CreatedAt: issue.GetCreatedAt().Time,
+		UpdatedAt: issue.GetUpdatedAt().Time,
+	}
+
+	// Repository may be nil in some API responses
+	if issue.GetRepository() != nil {
+		info.Repository = issue.GetRepository().GetFullName()
+	}
+
+	if issue.GetAssignee() != nil {
+		info.Assignee = issue.GetAssignee().GetLogin()
+	}
+
+	labels := issue.Labels
+	info.Labels = make([]string, len(labels))
+	for i, label := range labels {
+		info.Labels[i] = label.GetName()
+	}
+
+	return info
+}
+
+// FetchIssueComments fetches comments for an issue with pagination using go-github SDK
 func (c *Client) FetchIssueComments(ctx context.Context, owner, repo string, issueNumber int) ([]IssueComment, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", c.baseURL, owner, repo, issueNumber)
-
-	paginator := NewPaginator(c, DefaultListOptions())
-	items, err := paginator.FetchAll(ctx, url)
-	if err != nil {
-		return nil, err
+	opts := &github.IssueListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
-	comments := make([]IssueComment, len(items))
-	for i, item := range items {
-		// Type assert to map
-		commentMap, ok := item.(map[string]interface{})
-		if !ok {
-			continue
+	var allComments []IssueComment
+	for {
+		comments, resp, err := c.GitHubClient().Issues.ListComments(ctx, owner, repo, issueNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch issue comments: %w", err)
 		}
 
-		comments[i] = parseIssueComment(commentMap)
+		for _, comment := range comments {
+			allComments = append(allComments, convertFromGitHubIssueComment(comment))
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 
-	return comments, nil
+	return allComments, nil
 }
 
-// FetchReviewThreads fetches review comment threads for a PR
-func (c *Client) FetchReviewThreads(ctx context.Context, owner, repo string, prNumber int, unresolvedOnly bool) ([]ReviewThread, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/comments", c.baseURL, owner, repo, prNumber)
-
-	paginator := NewPaginator(c, DefaultListOptions())
-	items, err := paginator.FetchAll(ctx, url)
-	if err != nil {
-		return nil, err
+// convertFromGitHubIssueComment converts a github.IssueComment to our IssueComment type
+func convertFromGitHubIssueComment(comment *github.IssueComment) IssueComment {
+	author := ""
+	if user := comment.GetUser(); user != nil {
+		author = user.GetLogin()
 	}
 
-	// Convert items to comment maps
-	comments := make([]map[string]interface{}, len(items))
-	for i, item := range items {
-		if commentMap, ok := item.(map[string]interface{}); ok {
-			comments[i] = commentMap
+	return IssueComment{
+		CommentID: comment.GetID(),
+		URL:       comment.GetHTMLURL(),
+		Body:      comment.GetBody(),
+		Author:    author,
+		CreatedAt: comment.GetCreatedAt().Time,
+		UpdatedAt: comment.GetUpdatedAt().Time,
+	}
+}
+
+// FetchReviewThreads fetches review comment threads for a PR using go-github SDK
+func (c *Client) FetchReviewThreads(ctx context.Context, owner, repo string, prNumber int, unresolvedOnly bool) ([]ReviewThread, error) {
+	opts := &github.PullRequestListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+
+	var allComments []*github.PullRequestComment
+	for {
+		comments, resp, err := c.GitHubClient().PullRequests.ListComments(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch review comments: %w", err)
 		}
+
+		allComments = append(allComments, comments...)
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 
 	// Group comments into threads
-	threads := groupCommentsIntoThreads(comments)
+	threads := groupGitHubCommentsIntoThreads(allComments)
 
 	// Filter unresolved if requested
 	if unresolvedOnly {
@@ -207,204 +188,21 @@ func (c *Client) FetchReviewThreads(ctx context.Context, owner, repo string, prN
 	return threads, nil
 }
 
-// FetchPRDiff fetches the unified diff for a PR
-func (c *Client) FetchPRDiff(ctx context.Context, owner, repo string, prNumber int) (string, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.baseURL, owner, repo, prNumber)
-
-	req, err := c.NewRequest(ctx, "GET", url, nil)
-	if err != nil {
-		return "", err
-	}
-
-	// Request diff format
-	req.Header.Set("Accept", "application/vnd.github.v3.diff")
-
-	resp, err := c.Do(req, nil)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Close()
-
-	diff, err := resp.ReadAll()
-	if err != nil {
-		return "", fmt.Errorf("failed to read diff: %w", err)
-	}
-
-	return string(diff), nil
-}
-
-// FetchCheckRuns fetches check runs for a commit ref
-func (c *Client) FetchCheckRuns(ctx context.Context, owner, repo, ref string, maxResults int) ([]CheckRun, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/commits/%s/check-runs", c.baseURL, owner, repo, ref)
-
-	paginator := NewPaginator(c, DefaultListOptions())
-	paginator.SetMaxResults(maxResults)
-
-	// We need to handle the wrapped response
-	var allCheckRuns []CheckRun
-	page := 1
-	perPage := 100
-
-	for {
-		pageURL := fmt.Sprintf("%s?page=%d&per_page=%d", url, page, perPage)
-
-		req, err := c.NewRequest(ctx, "GET", pageURL, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		resp, err := c.Do(req, nil)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Close()
-
-		var response CheckRunsResponse
-		if err := resp.DecodeJSON(&response); err != nil {
-			return nil, err
-		}
-
-		allCheckRuns = append(allCheckRuns, response.CheckRuns...)
-
-		// Check if we've reached max results
-		if maxResults > 0 && len(allCheckRuns) >= maxResults {
-			allCheckRuns = allCheckRuns[:maxResults]
-			break
-		}
-
-		// Check if we've fetched all check runs
-		if len(response.CheckRuns) < perPage {
-			break
-		}
-		page++
-	}
-
-	return allCheckRuns, nil
-}
-
-// FetchCombinedStatus fetches the combined status for a commit ref
-func (c *Client) FetchCombinedStatus(ctx context.Context, owner, repo, ref string) (*CombinedStatus, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/commits/%s/status", c.baseURL, owner, repo, ref)
-
-	req, err := c.NewRequest(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.Do(req, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Close()
-
-	var statusData struct {
-		SHA        string `json:"sha"`
-		State      string `json:"state"`
-		TotalCount int    `json:"total_count"`
-		Statuses   []struct {
-			ID          int64  `json:"id"`
-			Context     string `json:"context"`
-			State       string `json:"state"`
-			TargetURL   string `json:"target_url,omitempty"`
-			Description string `json:"description,omitempty"`
-			CreatedAt   string `json:"created_at"`
-			UpdatedAt   string `json:"updated_at"`
-		} `json:"statuses"`
-	}
-
-	if err := resp.DecodeJSON(&statusData); err != nil {
-		return nil, err
-	}
-
-	// Convert statuses
-	statuses := make([]Status, len(statusData.Statuses))
-	for i, s := range statusData.Statuses {
-		var createdAt, updatedAt time.Time
-		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
-			createdAt = t
-		}
-		if t, err := time.Parse(time.RFC3339, s.UpdatedAt); err == nil {
-			updatedAt = t
-		}
-
-		statuses[i] = Status{
-			ID:          s.ID,
-			Context:     s.Context,
-			State:       s.State,
-			TargetURL:   s.TargetURL,
-			Description: s.Description,
-			CreatedAt:   createdAt,
-			UpdatedAt:   updatedAt,
-		}
-	}
-
-	return &CombinedStatus{
-		SHA:        statusData.SHA,
-		State:      statusData.State,
-		TotalCount: statusData.TotalCount,
-		Statuses:   statuses,
-	}, nil
-}
-
-// Helper functions for parsing
-
-func parseIssueComment(comment map[string]interface{}) IssueComment {
-	var result IssueComment
-
-	if id, ok := comment["id"].(float64); ok {
-		result.CommentID = int64(id)
-	}
-	if url, ok := comment["html_url"].(string); ok {
-		result.URL = url
-	}
-	if body, ok := comment["body"].(string); ok {
-		result.Body = body
-	}
-	if user, ok := comment["user"].(map[string]interface{}); ok {
-		if login, ok := user["login"].(string); ok {
-			result.Author = login
-		}
-	}
-	if createdAt, ok := comment["created_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
-			result.CreatedAt = t
-		}
-	}
-	if updatedAt, ok := comment["updated_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, updatedAt); err == nil {
-			result.UpdatedAt = t
-		}
-	}
-
-	return result
-}
-
-func groupCommentsIntoThreads(comments []map[string]interface{}) []ReviewThread {
+// groupGitHubCommentsIntoThreads groups github.PullRequestComment into ReviewThread
+func groupGitHubCommentsIntoThreads(comments []*github.PullRequestComment) []ReviewThread {
 	threadMap := make(map[int64]*ReviewThread)
 	var threadIDs []int64
 
 	// First pass: create all threads and identify top-level comments
 	for _, comment := range comments {
-		commentID := int64(0)
-		if idVal, ok := comment["id"]; ok && idVal != nil {
-			if idFloat, ok := idVal.(float64); ok {
-				commentID = int64(idFloat)
-			}
-		}
-
+		commentID := comment.GetID()
 		if commentID == 0 {
 			continue
 		}
 
-		var inReplyToID int64
-		if replyTo, ok := comment["in_reply_to_id"]; ok && replyTo != nil {
-			if replyToFloat, ok := replyTo.(float64); ok {
-				inReplyToID = int64(replyToFloat)
-			}
-		}
-
-		if inReplyToID == 0 {
-			thread := commentToThread(comment)
+		// Top-level comments don't have InReplyTo
+		if comment.GetInReplyTo() == 0 {
+			thread := convertFromGitHubPullRequestComment(comment)
 			threadMap[commentID] = &thread
 			threadIDs = append(threadIDs, commentID)
 		}
@@ -412,17 +210,11 @@ func groupCommentsIntoThreads(comments []map[string]interface{}) []ReviewThread 
 
 	// Second pass: add replies to threads
 	for _, comment := range comments {
-		var inReplyToID int64
-		if replyTo, ok := comment["in_reply_to_id"]; ok && replyTo != nil {
-			if replyToFloat, ok := replyTo.(float64); ok {
-				inReplyToID = int64(replyToFloat)
-			}
-		}
-
+		inReplyToID := comment.GetInReplyTo()
 		if inReplyToID != 0 {
-			parentThread := findParentThread(threadMap, inReplyToID)
+			parentThread := findParentThreadInMap(threadMap, inReplyToID)
 			if parentThread != nil {
-				reply := commentToReply(comment)
+				reply := convertFromGitHubReplyComment(comment)
 				parentThread.Replies = append(parentThread.Replies, reply)
 			}
 		}
@@ -436,7 +228,8 @@ func groupCommentsIntoThreads(comments []map[string]interface{}) []ReviewThread 
 	return threads
 }
 
-func findParentThread(threadMap map[int64]*ReviewThread, commentID int64) *ReviewThread {
+// findParentThreadInMap finds a thread by comment ID or by checking reply chains
+func findParentThreadInMap(threadMap map[int64]*ReviewThread, commentID int64) *ReviewThread {
 	if thread, ok := threadMap[commentID]; ok {
 		return thread
 	}
@@ -452,140 +245,202 @@ func findParentThread(threadMap map[int64]*ReviewThread, commentID int64) *Revie
 	return nil
 }
 
-func commentToThread(comment map[string]interface{}) ReviewThread {
+// convertFromGitHubPullRequestComment converts a github.PullRequestComment to our ReviewThread type
+func convertFromGitHubPullRequestComment(comment *github.PullRequestComment) ReviewThread {
+	author := ""
+	if user := comment.GetUser(); user != nil {
+		author = user.GetLogin()
+	}
+
 	thread := ReviewThread{
-		Replies: []Reply{},
+		CommentID: comment.GetID(),
+		URL:       comment.GetHTMLURL(),
+		Path:      comment.GetPath(),
+		Body:      comment.GetBody(),
+		DiffHunk:  comment.GetDiffHunk(),
+		Line:      comment.GetLine(),
+		Author:    author,
+		CreatedAt: comment.GetCreatedAt().Time,
+		UpdatedAt: comment.GetUpdatedAt().Time,
+		Replies:   []Reply{},
 	}
 
-	if idVal, ok := comment["id"]; ok && idVal != nil {
-		if idFloat, ok := idVal.(float64); ok {
-			thread.CommentID = int64(idFloat)
-		}
+	if comment.StartLine != nil {
+		thread.StartLine = comment.GetStartLine()
 	}
-
-	if urlVal, ok := comment["html_url"]; ok && urlVal != nil {
-		if urlStr, ok := urlVal.(string); ok {
-			thread.URL = urlStr
-		}
+	if comment.Side != nil {
+		thread.Side = comment.GetSide()
 	}
-
-	if bodyVal, ok := comment["body"]; ok && bodyVal != nil {
-		if bodyStr, ok := bodyVal.(string); ok {
-			thread.Body = bodyStr
-		}
+	if comment.StartSide != nil {
+		thread.StartSide = comment.GetStartSide()
 	}
-
-	if dh, ok := comment["diff_hunk"]; ok && dh != nil {
-		if dhStr, ok := dh.(string); ok {
-			thread.DiffHunk = dhStr
-		}
-	}
-
-	if p, ok := comment["path"]; ok && p != nil {
-		if pStr, ok := p.(string); ok {
-			thread.Path = pStr
-		}
-	}
-
-	if l, ok := comment["line"]; ok && l != nil {
-		if lFloat, ok := l.(float64); ok {
-			thread.Line = int(lFloat)
-		}
-	}
-
-	if sl, ok := comment["start_line"]; ok && sl != nil {
-		if slFloat, ok := sl.(float64); ok {
-			thread.StartLine = int(slFloat)
-		}
-	}
-
-	if pos, ok := comment["position"]; ok && pos != nil {
-		if posFloat, ok := pos.(float64); ok {
-			thread.Position = int(posFloat)
-		}
-	}
-
-	if s, ok := comment["side"]; ok && s != nil {
-		if sStr, ok := s.(string); ok {
-			thread.Side = sStr
-		}
-	}
-
-	if ss, ok := comment["start_side"]; ok && ss != nil {
-		if ssStr, ok := ss.(string); ok {
-			thread.StartSide = ssStr
-		}
-	}
-
-	if user, ok := comment["user"].(map[string]interface{}); ok && user != nil {
-		if loginVal, ok := user["login"]; ok && loginVal != nil {
-			if loginStr, ok := loginVal.(string); ok {
-				thread.Author = loginStr
-			}
-		}
-	}
-
-	if ca, ok := comment["created_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, ca); err == nil {
-			thread.CreatedAt = t
-		}
-	}
-
-	if ua, ok := comment["updated_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, ua); err == nil {
-			thread.UpdatedAt = t
-		}
+	if comment.Position != nil {
+		thread.Position = comment.GetPosition()
 	}
 
 	return thread
 }
 
-func commentToReply(comment map[string]interface{}) Reply {
-	reply := Reply{}
-
-	if idVal, ok := comment["id"]; ok && idVal != nil {
-		if idFloat, ok := idVal.(float64); ok {
-			reply.CommentID = int64(idFloat)
-		}
+// convertFromGitHubReplyComment converts a github.PullRequestComment to our Reply type
+func convertFromGitHubReplyComment(comment *github.PullRequestComment) Reply {
+	author := ""
+	if user := comment.GetUser(); user != nil {
+		author = user.GetLogin()
 	}
 
-	if urlVal, ok := comment["html_url"]; ok && urlVal != nil {
-		if urlStr, ok := urlVal.(string); ok {
-			reply.URL = urlStr
-		}
+	return Reply{
+		CommentID:   comment.GetID(),
+		URL:         comment.GetHTMLURL(),
+		Body:        comment.GetBody(),
+		Author:      author,
+		CreatedAt:   comment.GetCreatedAt().Time,
+		UpdatedAt:   comment.GetUpdatedAt().Time,
+		InReplyToID: comment.GetInReplyTo(),
+	}
+}
+
+// FetchPRDiff fetches the unified diff for a PR using go-github SDK
+func (c *Client) FetchPRDiff(ctx context.Context, owner, repo string, prNumber int) (string, error) {
+	// Use go-github client with raw Accept header for diff format
+	client := c.GitHubClient()
+
+	// Get the raw response with diff media type
+	req, err := client.NewRequest("GET", fmt.Sprintf("repos/%s/%s/pulls/%d", owner, repo, prNumber), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	if bodyVal, ok := comment["body"]; ok && bodyVal != nil {
-		if bodyStr, ok := bodyVal.(string); ok {
-			reply.Body = bodyStr
-		}
+	// Request diff format
+	req.Header.Set("Accept", "application/vnd.github.v3.diff")
+
+	resp, err := client.Do(ctx, req, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch PR diff: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the diff body
+	diffBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read diff response: %w", err)
 	}
 
-	if user, ok := comment["user"].(map[string]interface{}); ok && user != nil {
-		if loginVal, ok := user["login"]; ok && loginVal != nil {
-			if loginStr, ok := loginVal.(string); ok {
-				reply.Author = loginStr
+	return string(diffBytes), nil
+}
+
+// FetchCheckRuns fetches check runs for a commit ref using go-github SDK
+func (c *Client) FetchCheckRuns(ctx context.Context, owner, repo, ref string, maxResults int) ([]CheckRun, error) {
+	opts := &github.ListCheckRunsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+
+	var allCheckRuns []CheckRun
+	fetched := 0
+
+PaginationLoop:
+	for {
+		checkRuns, resp, err := c.GitHubClient().Checks.ListCheckRunsForRef(ctx, owner, repo, ref, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch check runs: %w", err)
+		}
+
+		// Check for nil response
+		if checkRuns == nil {
+			break
+		}
+
+		for _, cr := range checkRuns.CheckRuns {
+			// Check for nil check runs
+			if cr == nil {
+				continue
 			}
+			// Check max results
+			if maxResults > 0 && fetched >= maxResults {
+				break PaginationLoop
+			}
+			allCheckRuns = append(allCheckRuns, convertFromGitHubCheckRun(cr))
+			fetched++
+		}
+
+		// Check if we've reached max results
+		if maxResults > 0 && fetched >= maxResults {
+			break
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return allCheckRuns, nil
+}
+
+// convertFromGitHubCheckRun converts a github.CheckRun to our CheckRun type
+func convertFromGitHubCheckRun(cr *github.CheckRun) CheckRun {
+	checkRun := CheckRun{
+		ID:         cr.GetID(),
+		Name:       cr.GetName(),
+		HeadSHA:    cr.GetHeadSHA(),
+		Status:     cr.GetStatus(),
+		Conclusion: cr.GetConclusion(),
+		DetailsURL: cr.GetDetailsURL(),
+	}
+
+	if cr.CheckSuite != nil {
+		checkRun.CheckSuiteID = cr.GetCheckSuite().GetID()
+	}
+
+	// Handle StartedAt and CompletedAt using GetTime() which returns nil for zero timestamps
+	if t := cr.StartedAt.GetTime(); t != nil {
+		checkRun.StartedAt = t
+	}
+	if t := cr.CompletedAt.GetTime(); t != nil {
+		checkRun.CompletedAt = t
+	}
+	if cr.GetApp() != nil {
+		checkRun.AppSlug = cr.GetApp().GetSlug()
+	}
+	if cr.GetOutput() != nil {
+		checkRun.Output = CheckRunOutput{
+			Title:   cr.GetOutput().GetTitle(),
+			Summary: cr.GetOutput().GetSummary(),
+			Text:    cr.GetOutput().GetText(),
 		}
 	}
 
-	if ca, ok := comment["created_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, ca); err == nil {
-			reply.CreatedAt = t
+	return checkRun
+}
+
+// FetchCombinedStatus fetches the combined status for a commit ref using go-github SDK
+func (c *Client) FetchCombinedStatus(ctx context.Context, owner, repo, ref string) (*CombinedStatus, error) {
+	combinedStatus, _, err := c.GitHubClient().Repositories.GetCombinedStatus(ctx, owner, repo, ref, &github.ListOptions{PerPage: 100})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch combined status: %w", err)
+	}
+
+	return convertFromGitHubCombinedStatus(combinedStatus), nil
+}
+
+// convertFromGitHubCombinedStatus converts a github.CombinedStatus to our CombinedStatus type
+func convertFromGitHubCombinedStatus(cs *github.CombinedStatus) *CombinedStatus {
+	statuses := make([]Status, len(cs.Statuses))
+	for i, s := range cs.Statuses {
+		statuses[i] = Status{
+			ID:          s.GetID(),
+			Context:     s.GetContext(),
+			State:       s.GetState(),
+			TargetURL:   s.GetTargetURL(),
+			Description: s.GetDescription(),
+			CreatedAt:   s.GetCreatedAt().Time,
+			UpdatedAt:   s.GetUpdatedAt().Time,
 		}
 	}
 
-	if ua, ok := comment["updated_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, ua); err == nil {
-			reply.UpdatedAt = t
-		}
+	return &CombinedStatus{
+		SHA:        cs.GetSHA(),
+		State:      cs.GetState(),
+		TotalCount: cs.GetTotalCount(),
+		Statuses:   statuses,
 	}
-
-	if replyTo, ok := comment["in_reply_to_id"]; ok && replyTo != nil {
-		if replyToFloat, ok := replyTo.(float64); ok {
-			reply.InReplyToID = int64(replyToFloat)
-		}
-	}
-
-	return reply
 }

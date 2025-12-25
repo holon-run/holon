@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"sync"
@@ -132,6 +133,13 @@ func (c *Client) SetToken(token string) {
 	c.githubClient = nil
 }
 
+// SetBaseURL updates the base URL for the GitHub API
+func (c *Client) SetBaseURL(baseURL string) {
+	c.baseURL = baseURL
+	// Invalidate cached github client
+	c.githubClient = nil
+}
+
 // GetRateLimitStatus returns the current rate limit status
 func (c *Client) GetRateLimitStatus() (RateLimitStatus, error) {
 	if c.rateLimitTracker == nil {
@@ -147,6 +155,23 @@ func (c *Client) GitHubClient() *github.Client {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: c.token})
 		tc := oauth2.NewClient(ctx, ts)
 		c.githubClient = github.NewClient(tc)
+
+		// Set custom base URL if configured (for testing)
+		if c.baseURL != DefaultBaseURL && c.baseURL != "" {
+			baseURL := c.baseURL
+			// Ensure trailing slash for go-github (only if len > 0 to avoid index out of bounds)
+			if len(baseURL) > 0 && baseURL[len(baseURL)-1] != '/' {
+				baseURL += "/"
+			}
+			parsedURL, err := url.Parse(baseURL)
+			if err != nil {
+				// Log the error but don't fail - the client will use default base URL
+				// In a testing context, an invalid URL should be caught early
+				baseURL = DefaultBaseURL
+				parsedURL, _ = url.Parse(baseURL)
+			}
+			c.githubClient.BaseURL = parsedURL
+		}
 	}
 	return c.githubClient
 }
