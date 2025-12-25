@@ -12,7 +12,8 @@ import (
 )
 
 // setupTestRepo creates a temporary git repository for testing.
-func setupTestRepo(t *testing.T) (string, func()) {
+// Note: Uses t.TempDir() for automatic cleanup, so no explicit cleanup is needed.
+func setupTestRepo(t *testing.T) string {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -55,11 +56,7 @@ func setupTestRepo(t *testing.T) (string, func()) {
 		t.Fatalf("git commit failed: %v", err)
 	}
 
-	cleanup := func() {
-		os.RemoveAll(tmpDir)
-	}
-
-	return tmpDir, cleanup
+	return tmpDir
 }
 
 // setupRemoteRepo creates a bare repository for testing push operations.
@@ -78,11 +75,81 @@ func setupRemoteRepo(t *testing.T) string {
 	return remoteDir
 }
 
+// setupWorkingRepoWithCommits creates a working repository with commits
+// and pushes it to a bare remote. Returns the working directory path.
+func setupWorkingRepoWithCommits(t *testing.T, bareRemote string, commits int) string {
+	t.Helper()
+
+	workingDir := t.TempDir()
+	initCmd := exec.Command("git", "init")
+	initCmd.Dir = workingDir
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v, output: %s", err, string(out))
+	}
+
+	// Configure user
+	configCmd := exec.Command("git", "config", "user.name", "Test User")
+	configCmd.Dir = workingDir
+	if err := configCmd.Run(); err != nil {
+		t.Fatalf("git config user.name failed: %v", err)
+	}
+	configCmd = exec.Command("git", "config", "user.email", "test@example.com")
+	configCmd.Dir = workingDir
+	if err := configCmd.Run(); err != nil {
+		t.Fatalf("git config user.email failed: %v", err)
+	}
+
+	// Create commits
+	testFile := filepath.Join(workingDir, "test.txt")
+	for i := 1; i <= commits; i++ {
+		if err := os.WriteFile(testFile, []byte(fmt.Sprintf("content v%d", i)), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		addCmd := exec.Command("git", "add", ".")
+		addCmd.Dir = workingDir
+		if err := addCmd.Run(); err != nil {
+			t.Fatalf("git add failed: %v", err)
+		}
+
+		commitCmd := exec.Command("git", "commit", "-m", fmt.Sprintf("commit %d", i))
+		commitCmd.Dir = workingDir
+		if err := commitCmd.Run(); err != nil {
+			t.Fatalf("git commit failed: %v", err)
+		}
+	}
+
+	// Add remote
+	remoteAddCmd := exec.Command("git", "remote", "add", "origin", bareRemote)
+	remoteAddCmd.Dir = workingDir
+	if err := remoteAddCmd.Run(); err != nil {
+		t.Fatalf("git remote add failed: %v", err)
+	}
+
+	// Determine current branch
+	branchCheckCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchCheckCmd.Dir = workingDir
+	branchOutput, err := branchCheckCmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse failed: %v", err)
+	}
+	currentBranch := strings.TrimSpace(string(branchOutput))
+
+	// Push to bare remote
+	pushCmd := exec.Command("git", "push", "-u", "origin", currentBranch)
+	pushCmd.Dir = workingDir
+	if out, err := pushCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git push failed: %v, output: %s", err, string(out))
+	}
+
+	return workingDir
+}
+
 func TestClient_IsRepo(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("valid git repository", func(t *testing.T) {
-		repoDir, _ := setupTestRepo(t)
+		repoDir := setupTestRepo(t)
 		client := NewClient(repoDir)
 
 		if !client.IsRepo(ctx) {
@@ -102,7 +169,7 @@ func TestClient_IsRepo(t *testing.T) {
 
 func TestClient_GetHeadSHA(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	sha, err := client.GetHeadSHA(ctx)
@@ -123,7 +190,7 @@ func TestClient_IsShallowClone(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("full clone", func(t *testing.T) {
-		repoDir, _ := setupTestRepo(t)
+		repoDir := setupTestRepo(t)
 		client := NewClient(repoDir)
 
 		isShallow, err := client.IsShallowClone(ctx)
@@ -140,7 +207,7 @@ func TestClient_IsShallowClone(t *testing.T) {
 		t.Skip("Skipping shallow clone test - git clone --depth doesn't create shallow repos when cloning from a local file:// URL")
 
 		// Create a shallow clone
-		repoDir, _ := setupTestRepo(t)
+		repoDir := setupTestRepo(t)
 		cloneDir := t.TempDir()
 
 		cmd := exec.Command("git", "clone", "--depth=1", repoDir, cloneDir)
@@ -162,7 +229,7 @@ func TestClient_IsShallowClone(t *testing.T) {
 
 func TestClient_GetRepositoryInfo(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	info, err := client.GetRepositoryInfo(ctx)
@@ -185,7 +252,7 @@ func TestClient_GetRepositoryInfo(t *testing.T) {
 
 func TestClient_Checkout(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Get the initial branch name
@@ -218,7 +285,7 @@ func TestClient_Checkout(t *testing.T) {
 
 func TestClient_Branch(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	t.Run("create new branch", func(t *testing.T) {
@@ -274,7 +341,7 @@ func TestClient_Branch(t *testing.T) {
 
 func TestClient_AddAndCommit(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Create a new file
@@ -306,7 +373,7 @@ func TestClient_AddAndCommit(t *testing.T) {
 
 func TestClient_AddAll(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Create multiple files
@@ -335,7 +402,7 @@ func TestClient_AddAll(t *testing.T) {
 
 func TestClient_HasChanges(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Initially clean
@@ -396,7 +463,7 @@ func TestClient_InitRepository(t *testing.T) {
 
 func TestClient_SetConfig(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Set a config value
@@ -417,7 +484,7 @@ func TestClient_SetConfig(t *testing.T) {
 
 func TestClient_Apply(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Create a patch file
@@ -451,7 +518,7 @@ index 0000000..1234567
 
 func TestClient_ApplyCheck(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Create a valid patch file
@@ -476,7 +543,7 @@ index 0000000..1234567
 
 func TestClient_CommitWith(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Create a file
@@ -526,7 +593,7 @@ func TestClone(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup source repository
-	sourceRepo, _ := setupTestRepo(t)
+	sourceRepo := setupTestRepo(t)
 
 	t.Run("basic clone", func(t *testing.T) {
 		destDir := t.TempDir()
@@ -618,7 +685,7 @@ func TestRemoteGetConfig(t *testing.T) {
 
 func TestClient_DryRun(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 
 	client := NewClient(repoDir)
 	client.Options = &ClientOptions{
@@ -638,7 +705,7 @@ func TestClient_DryRun(t *testing.T) {
 
 func TestClient_IsClean(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Initially clean
@@ -660,7 +727,7 @@ func TestClient_IsClean(t *testing.T) {
 
 func TestClient_InitSubmodules(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// This test verifies that the command runs without error
@@ -684,81 +751,8 @@ func TestClone_ShallowFromBareRemote(t *testing.T) {
 	// Create a bare remote repository
 	bareRemote := setupRemoteRepo(t)
 
-	// Create a working repo and push to bare remote
-	workingDir := t.TempDir()
-	initCmd := exec.Command("git", "init")
-	initCmd.Dir = workingDir
-	if out, err := initCmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init failed: %v, output: %s", err, string(out))
-	}
-
-	// Configure user
-	configCmd := exec.Command("git", "config", "user.name", "Test User")
-	configCmd.Dir = workingDir
-	if err := configCmd.Run(); err != nil {
-		t.Fatalf("git config user.name failed: %v", err)
-	}
-	configCmd = exec.Command("git", "config", "user.email", "test@example.com")
-	configCmd.Dir = workingDir
-	if err := configCmd.Run(); err != nil {
-		t.Fatalf("git config user.email failed: %v", err)
-	}
-
-	// Create and commit a file
-	testFile := filepath.Join(workingDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("content"), 0644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
-
-	addCmd := exec.Command("git", "add", ".")
-	addCmd.Dir = workingDir
-	if err := addCmd.Run(); err != nil {
-		t.Fatalf("git add failed: %v", err)
-	}
-
-	commitCmd := exec.Command("git", "commit", "-m", "initial commit")
-	commitCmd.Dir = workingDir
-	if err := commitCmd.Run(); err != nil {
-		t.Fatalf("git commit failed: %v", err)
-	}
-
-	// Add second commit for testing
-	if err := os.WriteFile(testFile, []byte("content v2"), 0644); err != nil {
-		t.Fatalf("failed to modify test file: %v", err)
-	}
-	addCmd = exec.Command("git", "add", ".")
-	addCmd.Dir = workingDir
-	if err := addCmd.Run(); err != nil {
-		t.Fatalf("git add failed: %v", err)
-	}
-	commitCmd = exec.Command("git", "commit", "-m", "second commit")
-	commitCmd.Dir = workingDir
-	if err := commitCmd.Run(); err != nil {
-		t.Fatalf("git commit failed: %v", err)
-	}
-
-	// Add remote
-	remoteAddCmd := exec.Command("git", "remote", "add", "origin", bareRemote)
-	remoteAddCmd.Dir = workingDir
-	if err := remoteAddCmd.Run(); err != nil {
-		t.Fatalf("git remote add failed: %v", err)
-	}
-
-	// Determine current branch
-	branchCheckCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	branchCheckCmd.Dir = workingDir
-	branchOutput, err := branchCheckCmd.Output()
-	if err != nil {
-		t.Fatalf("git rev-parse failed: %v", err)
-	}
-	currentBranch := strings.TrimSpace(string(branchOutput))
-
-	// Push to bare remote
-	pushCmd := exec.Command("git", "push", "origin", currentBranch)
-	pushCmd.Dir = workingDir
-	if out, err := pushCmd.CombinedOutput(); err != nil {
-		t.Fatalf("git push failed: %v, output: %s", err, string(out))
-	}
+	// Create a working repo with commits and push to bare remote
+	_ = setupWorkingRepoWithCommits(t, bareRemote, 2)
 
 	// Test clone with Depth option from bare remote
 	cloneDir := t.TempDir()
@@ -926,7 +920,7 @@ func TestClient_PushToBareRemote(t *testing.T) {
 // TestClient_ApplyPatchConflict tests patch apply failure scenarios.
 func TestClient_ApplyPatchConflict(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Create and commit initial file
@@ -974,7 +968,7 @@ index 1234567..abcdefg 100644
 // TestClient_ApplyPatchThreeWay tests successful 3-way patch application.
 func TestClient_ApplyPatchThreeWay(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Create and commit initial file
@@ -1047,7 +1041,7 @@ index 1234567..abcdefg 100644
 // TestClient_CommitWithAllowEmpty tests commit with AllowEmpty option.
 func TestClient_CommitWithAllowEmpty(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Get initial HEAD
@@ -1100,7 +1094,7 @@ func TestClient_CommitWithAllowEmpty(t *testing.T) {
 // TestClient_CommitNoOp tests that committing without changes fails.
 func TestClient_CommitNoOp(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	// Try to commit with no changes
@@ -1114,7 +1108,7 @@ func TestClient_CommitNoOp(t *testing.T) {
 // TestBranchExistence checks branch existence using git commands.
 func TestBranchExistence(t *testing.T) {
 	ctx := context.Background()
-	repoDir, _ := setupTestRepo(t)
+	repoDir := setupTestRepo(t)
 	client := NewClient(repoDir)
 
 	t.Run("branch exists", func(t *testing.T) {
@@ -1152,67 +1146,8 @@ func TestClone_FullFromBareRemote(t *testing.T) {
 	// Create a bare remote with multiple commits
 	bareRemote := setupRemoteRepo(t)
 
-	// Create a working repo and push to bare remote
-	workingDir := t.TempDir()
-	initCmd := exec.Command("git", "init")
-	initCmd.Dir = workingDir
-	if out, err := initCmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init failed: %v, output: %s", err, string(out))
-	}
-
-	// Configure user
-	configCmd := exec.Command("git", "config", "user.name", "Test User")
-	configCmd.Dir = workingDir
-	if err := configCmd.Run(); err != nil {
-		t.Fatalf("git config user.name failed: %v", err)
-	}
-	configCmd = exec.Command("git", "config", "user.email", "test@example.com")
-	configCmd.Dir = workingDir
-	if err := configCmd.Run(); err != nil {
-		t.Fatalf("git config user.email failed: %v", err)
-	}
-
-	// Create multiple commits
-	for i := 1; i <= 3; i++ {
-		testFile := filepath.Join(workingDir, "test.txt")
-		if err := os.WriteFile(testFile, []byte(fmt.Sprintf("content v%d", i)), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
-		}
-
-		addCmd := exec.Command("git", "add", ".")
-		addCmd.Dir = workingDir
-		if err := addCmd.Run(); err != nil {
-			t.Fatalf("git add failed: %v", err)
-		}
-
-		commitCmd := exec.Command("git", "commit", "-m", fmt.Sprintf("commit %d", i))
-		commitCmd.Dir = workingDir
-		if err := commitCmd.Run(); err != nil {
-			t.Fatalf("git commit failed: %v", err)
-		}
-	}
-
-	// Add remote and push
-	remoteAddCmd := exec.Command("git", "remote", "add", "origin", bareRemote)
-	remoteAddCmd.Dir = workingDir
-	if err := remoteAddCmd.Run(); err != nil {
-		t.Fatalf("git remote add failed: %v", err)
-	}
-
-	// Determine current branch
-	branchCheckCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	branchCheckCmd.Dir = workingDir
-	branchOutput, err := branchCheckCmd.Output()
-	if err != nil {
-		t.Fatalf("git rev-parse failed: %v", err)
-	}
-	currentBranch := strings.TrimSpace(string(branchOutput))
-
-	pushCmd := exec.Command("git", "push", "-u", "origin", currentBranch)
-	pushCmd.Dir = workingDir
-	if out, err := pushCmd.CombinedOutput(); err != nil {
-		t.Fatalf("git push failed: %v, output: %s", err, string(out))
-	}
+	// Create a working repo with commits and push to bare remote
+	_ = setupWorkingRepoWithCommits(t, bareRemote, 3)
 
 	// Full clone from bare remote
 	cloneDir := t.TempDir()
