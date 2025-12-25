@@ -9,6 +9,202 @@ import (
 	"github.com/holon-run/holon/pkg/api/v1"
 )
 
+func TestParseAgentConfigMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    AgentConfigMode
+		wantErr bool
+	}{
+		{
+			name:  "auto lowercase",
+			input: "auto",
+			want:  AgentConfigModeAuto,
+		},
+		{
+			name:  "auto uppercase",
+			input: "AUTO",
+			want:  AgentConfigModeAuto,
+		},
+		{
+			name:  "auto mixed case",
+			input: "AuTo",
+			want:  AgentConfigModeAuto,
+		},
+		{
+			name:  "auto with spaces",
+			input: "  auto  ",
+			want:  AgentConfigModeAuto,
+		},
+		{
+			name:  "yes lowercase",
+			input: "yes",
+			want:  AgentConfigModeYes,
+		},
+		{
+			name:  "yes uppercase",
+			input: "YES",
+			want:  AgentConfigModeYes,
+		},
+		{
+			name:  "y alias",
+			input: "y",
+			want:  AgentConfigModeYes,
+		},
+		{
+			name:  "true alias",
+			input: "true",
+			want:  AgentConfigModeYes,
+		},
+		{
+			name:  "1 alias",
+			input: "1",
+			want:  AgentConfigModeYes,
+		},
+		{
+			name:  "no lowercase",
+			input: "no",
+			want:  AgentConfigModeNo,
+		},
+		{
+			name:  "no uppercase",
+			input: "NO",
+			want:  AgentConfigModeNo,
+		},
+		{
+			name:  "n alias",
+			input: "n",
+			want:  AgentConfigModeNo,
+		},
+		{
+			name:  "false alias",
+			input: "false",
+			want:  AgentConfigModeNo,
+		},
+		{
+			name:  "0 alias",
+			input: "0",
+			want:  AgentConfigModeNo,
+		},
+		{
+			name:    "invalid value",
+			input:   "invalid",
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseAgentConfigMode(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseAgentConfigMode() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("ParseAgentConfigMode() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentConfigModeString(t *testing.T) {
+	tests := []struct {
+		mode AgentConfigMode
+		want string
+	}{
+		{AgentConfigModeAuto, "auto"},
+		{AgentConfigModeYes, "yes"},
+		{AgentConfigModeNo, "no"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := tt.mode.String(); got != tt.want {
+				t.Errorf("AgentConfigMode.String() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentConfigModeShouldMount(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      AgentConfigMode
+		dirExists bool
+		want      bool
+	}{
+		{
+			name:      "auto with existing dir",
+			mode:      AgentConfigModeAuto,
+			dirExists: true,
+			want:      true,
+		},
+		{
+			name:      "auto without existing dir",
+			mode:      AgentConfigModeAuto,
+			dirExists: false,
+			want:      false,
+		},
+		{
+			name:      "yes with existing dir",
+			mode:      AgentConfigModeYes,
+			dirExists: true,
+			want:      true,
+		},
+		{
+			name:      "yes without existing dir",
+			mode:      AgentConfigModeYes,
+			dirExists: false,
+			want:      true, // yes always tries to mount
+		},
+		{
+			name:      "no with existing dir",
+			mode:      AgentConfigModeNo,
+			dirExists: true,
+			want:      false,
+		},
+		{
+			name:      "no without existing dir",
+			mode:      AgentConfigModeNo,
+			dirExists: false,
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.mode.ShouldMount(tt.dirExists); got != tt.want {
+				t.Errorf("AgentConfigMode.ShouldMount() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentConfigModeWarnIfMissing(t *testing.T) {
+	tests := []struct {
+		mode AgentConfigMode
+		want bool
+	}{
+		{AgentConfigModeAuto, false},
+		{AgentConfigModeYes, true},
+		{AgentConfigModeNo, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.mode.String(), func(t *testing.T) {
+			if got := tt.mode.WarnIfMissing(); got != tt.want {
+				t.Errorf("AgentConfigMode.WarnIfMissing() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+
 func TestBuildContainerMounts(t *testing.T) {
 	// Create temporary directories for testing
 	tmpDir := t.TempDir()
