@@ -75,3 +75,51 @@ type IssueComment struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// CheckRun represents a GitHub check run
+type CheckRun struct {
+	ID              int64      `json:"id"`
+	Name            string     `json:"name"`
+	HeadSHA         string     `json:"head_sha"`
+	Status          string     `json:"status"`          // queued, in_progress, completed
+	Conclusion      string     `json:"conclusion"`      // success, failure, neutral, cancelled, skipped, timed_out, action_required
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	DetailsURL      string     `json:"details_url,omitempty"`
+	ExternalID      string     `json:"external_id,omitempty"`
+	AppSlug         string     `json:"app_slug,omitempty"`          // e.g., "github-actions"
+	CheckSuiteID    int64      `json:"check_suite_id,omitempty"`
+	Output          CheckRunOutput `json:"output,omitempty"`
+}
+
+// CheckRunOutput represents the output of a check run
+type CheckRunOutput struct {
+	Title    string `json:"title,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+	Text     string `json:"text,omitempty"`
+}
+
+// CheckRunsResponse is the API response for check runs
+type CheckRunsResponse struct {
+	TotalCount int        `json:"total_count"`
+	CheckRuns  []CheckRun `json:"check_runs"`
+}
+
+// CombinedStatus represents the combined status for a ref
+type CombinedStatus struct {
+	SHA          string         `json:"sha"`
+	State        string         `json:"state"` // pending, success, failure, error
+	TotalCount   int            `json:"total_count"`
+	Statuses     []Status       `json:"statuses"`
+}
+
+// Status represents an individual status
+type Status struct {
+	ID         int64      `json:"id"`
+	Context    string     `json:"context"`      // e.g., "ci/travis-ci", "coverage/coveralls"
+	State      string     `json:"state"`        // pending, success, failure, error
+	TargetURL  string     `json:"target_url,omitempty"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}

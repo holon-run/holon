@@ -45,6 +45,16 @@ type Options struct {
 
 	// UnresolvedOnly indicates whether to only collect unresolved review threads (for PRs)
 	UnresolvedOnly bool
+
+	// IncludeChecks indicates whether to fetch CI/check results (for PRs)
+	IncludeChecks bool
+
+	// ChecksOnlyFailed indicates whether to only include failed checks (for PRs)
+	ChecksOnlyFailed bool
+
+	// ChecksMax is the maximum number of check runs to fetch (for PRs)
+	// 0 or negative means no limit
+	ChecksMax int
 }
 
 // FileInfo represents metadata about a collected file

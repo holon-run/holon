@@ -152,9 +152,44 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 		}
 	}
 
+	// Fetch check runs and status if requested
+	var checkRuns []CheckRun
+	var combinedStatus *CombinedStatus
+	if req.Options.IncludeChecks {
+		fmt.Println("Fetching CI/check results...")
+
+		// Fetch check runs
+		checkRuns, err = p.client.FetchCheckRuns(ctx, owner, repo, prInfo.HeadSHA, req.Options.ChecksMax)
+		if err != nil {
+			fmt.Printf("  Warning: failed to fetch check runs: %v\n", err)
+			// Don't fail - checks are optional
+		} else {
+			// Filter to only failed checks if requested
+			if req.Options.ChecksOnlyFailed {
+				failedRuns := []CheckRun{}
+				for _, cr := range checkRuns {
+					if cr.Conclusion == "failure" || cr.Conclusion == "timed_out" || cr.Conclusion == "action_required" {
+						failedRuns = append(failedRuns, cr)
+					}
+				}
+				checkRuns = failedRuns
+			}
+			fmt.Printf("  Found %d check runs\n", len(checkRuns))
+		}
+
+		// Fetch combined status (optional but cheap)
+		combinedStatus, err = p.client.FetchCombinedStatus(ctx, owner, repo, prInfo.HeadSHA)
+		if err != nil {
+			fmt.Printf("  Warning: failed to fetch combined status: %v\n", err)
+			// Don't fail - status is optional
+		} else {
+			fmt.Printf("  Combined status: %s\n", combinedStatus.State)
+		}
+	}
+
 	// Write context files
 	fmt.Printf("Writing context files to %s...\n", req.OutputDir)
-	files, err := WritePRContext(req.OutputDir, prInfo, reviewThreads, diff)
+	files, err := WritePRContext(req.OutputDir, prInfo, reviewThreads, diff, checkRuns, combinedStatus)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write context: %w", err)
 	}
