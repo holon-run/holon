@@ -38,17 +38,21 @@ func (p *Publisher) Name() string {
 
 // Validate checks if the request is valid for this publisher.
 func (p *Publisher) Validate(req publisher.PublishRequest) error {
+	// Build configuration to validate
+	config := p.buildConfig(req.Manifest)
+
+	// Validate that push requires commit
+	if config.Push && !config.Commit {
+		return fmt.Errorf("push requires commit to be enabled")
+	}
+
+	// Determine whether we need to validate that the workspace is a git repository.
+	needsGitValidation := false
+
 	// Check for diff.patch artifact (it's ok if it doesn't exist or is empty)
 	// We'll handle that in Publish as a no-op
-
-	// If diff.patch exists, validate workspace is a git repository
 	if patchPath, ok := req.Artifacts["diff.patch"]; ok {
-		workspaceDir := p.getWorkspaceDir()
-		gitClient := NewGitClient(workspaceDir, "")
-
-		if err := gitClient.EnsureRepository(); err != nil {
-			return fmt.Errorf("workspace validation failed: %w", err)
-		}
+		needsGitValidation = true
 
 		// Check that patch file can be read (but don't fail if it doesn't exist)
 		if _, err := os.Stat(patchPath); err != nil && !os.IsNotExist(err) {
@@ -56,19 +60,36 @@ func (p *Publisher) Validate(req publisher.PublishRequest) error {
 		}
 	}
 
+	// Also validate the workspace as a git repository whenever metadata
+	// indicates that git operations (branch selection, commit, or push)
+	// will be performed.
+	if config.Branch != "" || config.Commit || config.Push {
+		needsGitValidation = true
+	}
+
+	if needsGitValidation {
+		workspaceDir := p.getWorkspaceDir()
+		gitClient := NewGitClient(workspaceDir, "")
+
+		if err := gitClient.EnsureRepository(); err != nil {
+			return fmt.Errorf("workspace validation failed: %w", err)
+		}
+	}
+
 	return nil
 }
 
 // Publish sends Holon outputs to git.
+//
+// Note: If branch creation succeeds but a subsequent step (patch application,
+// commit, or push) fails, the repository will be left on the newly created/checked
+// out branch. This behavior is intentional to preserve state for debugging.
 func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResult, error) {
-	startTime := time.Now()
-
 	// Build configuration from manifest metadata
 	config := p.buildConfig(req.Manifest)
 
 	// Get workspace directory
 	workspaceDir := p.getWorkspaceDir()
-	config.WorkspaceDir = workspaceDir
 
 	// Get authentication token (optional)
 	token := os.Getenv(GitTokenEnv)
@@ -221,7 +242,7 @@ func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResu
 		})
 	}
 
-	result.PublishedAt = startTime
+	result.PublishedAt = time.Now()
 	return result, nil
 }
 

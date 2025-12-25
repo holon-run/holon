@@ -83,7 +83,7 @@ func (g *GitClient) CreateBranch(branchName string) error {
 	// Check if branch already exists
 	_, err = repo.Branch(branchName)
 	if err == nil {
-		// Branch exists, checkout it
+		// Branch exists, check it out
 		worktree, err := repo.Worktree()
 		if err != nil {
 			return fmt.Errorf("failed to get worktree: %w", err)
@@ -130,7 +130,9 @@ func (g *GitClient) CommitChanges(message string) (string, error) {
 		return "", fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	// Stage all changes
+	// Stage all changes.
+	// Note: ApplyPatch already runs `git add -A`, so this can be redundant in that flow.
+	// We still stage here so CommitChanges is safe to call independently of ApplyPatch.
 	_, err = worktree.Add(".")
 	if err != nil {
 		return "", fmt.Errorf("failed to stage changes: %w", err)
@@ -199,7 +201,7 @@ func (g *GitClient) Push(branchName, remoteName string) error {
 
 // EnsureRepository ensures the workspace is a Git repository.
 func (g *GitClient) EnsureRepository() error {
-	repo, err := git.PlainOpen(g.WorkspaceDir)
+	_, err := git.PlainOpen(g.WorkspaceDir)
 	if err != nil {
 		if err == git.ErrRepositoryNotExists {
 			return fmt.Errorf("workspace is not a git repository")
@@ -207,6 +209,5 @@ func (g *GitClient) EnsureRepository() error {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
 
-	_ = repo
 	return nil
 }

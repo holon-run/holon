@@ -255,6 +255,51 @@ index 94c1a57..1a3c6d8 100644
 			t.Errorf("expected no_op action, got: %+v", result.Actions)
 		}
 	})
+
+	t.Run("push requires commit validation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		workspaceDir := filepath.Join(tmpDir, "workspace")
+		outputDir := filepath.Join(tmpDir, "output")
+
+		// Create workspace directory
+		if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+			t.Fatalf("failed to create workspace: %v", err)
+		}
+
+		// Create output directory
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			t.Fatalf("failed to create output directory: %v", err)
+		}
+
+		// Initialize git repository
+		if err := initRealGitRepo(workspaceDir); err != nil {
+			t.Fatalf("failed to init git repo: %v", err)
+		}
+
+		// Set workspace environment variable
+		os.Setenv(WorkspaceEnv, workspaceDir)
+
+		// Test: push without commit should fail validation
+		p := NewPublisher()
+		req := publisher.PublishRequest{
+			Target:    "origin/main",
+			OutputDir: outputDir,
+			Manifest: map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"push": true,
+				},
+			},
+			Artifacts: map[string]string{},
+		}
+
+		err := p.Validate(req)
+		if err == nil {
+			t.Fatal("Validate() with push without commit should fail, got nil error")
+		}
+		if !strings.Contains(err.Error(), "push requires commit") {
+			t.Errorf("expected error about push requiring commit, got: %v", err)
+		}
+	})
 }
 
 // initRealGitRepo initializes a real git repository using git commands.
