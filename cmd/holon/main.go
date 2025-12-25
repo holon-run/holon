@@ -20,7 +20,9 @@ var agentPath string
 var agentBundlePath string
 var workspacePath string
 var contextPath string
+var inputPath string
 var outDir string
+var cleanupMode string
 var roleName string
 var envVarsList []string
 var logLevel string
@@ -49,11 +51,13 @@ var runCmd = &cobra.Command{
 			AgentBundle:   agentPath,
 			WorkspacePath: workspacePath,
 			ContextPath:   contextPath,
+			InputPath:     inputPath,
 			OutDir:        outDir,
 			RoleName:      roleName,
 			EnvVarsList:   envVarsList,
 			LogLevel:      logLevel,
 			Mode:          mode,
+			Cleanup:       cleanupMode,
 		})
 	},
 }
@@ -73,7 +77,9 @@ func init() {
 	_ = runCmd.Flags().MarkDeprecated("agent-bundle", "use --agent instead")
 	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
+	runCmd.Flags().StringVar(&inputPath, "input", "", "Path to input directory (default: creates temp dir, auto-cleaned)")
 	runCmd.Flags().StringVarP(&outDir, "out", "o", "./holon-output", "Path to output directory")
+	runCmd.Flags().StringVar(&cleanupMode, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
 	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. developer, reviewer)")
 	runCmd.Flags().StringVar(&mode, "mode", "solve", "Execution mode: solve, pr-fix, plan, review")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")

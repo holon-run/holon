@@ -121,9 +121,10 @@ func TestRunner_Run_RequiresSpecOrGoal(t *testing.T) {
 func TestRunner_Run_WithGoalOnly(t *testing.T) {
 	mockRuntime := &MockRuntime{
 		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) error {
-			// Verify that the spec file exists
-			if _, err := os.Stat(cfg.SpecPath); os.IsNotExist(err) {
-				t.Errorf("Expected spec file to exist at %s", cfg.SpecPath)
+			// Verify that the spec file exists in input directory
+			specPath := filepath.Join(cfg.InputPath, "spec.yaml")
+			if _, err := os.Stat(specPath); os.IsNotExist(err) {
+				t.Errorf("Expected spec file to exist at %s", specPath)
 			}
 			return nil
 		},

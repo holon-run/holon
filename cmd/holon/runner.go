@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,11 +32,13 @@ type RunnerConfig struct {
 	AgentBundle   string
 	WorkspacePath string
 	ContextPath   string
+	InputPath     string // Optional: path to input directory (if empty, creates temp dir)
 	OutDir        string
 	RoleName      string
 	EnvVarsList   []string
 	LogLevel      string
 	Mode          string
+	Cleanup       string // Cleanup mode: "auto" (default), "none", "all"
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -62,7 +65,62 @@ func (r *Runner) Run(ctx context.Context, cfg RunnerConfig) error {
 		return fmt.Errorf("either --spec or --goal is required")
 	}
 
-	var tempDir string
+	// Determine cleanup mode
+	cleanupMode := cfg.Cleanup
+	if cleanupMode == "" {
+		cleanupMode = "auto" // Default to auto cleanup
+	}
+
+	// Create or use input directory
+	inputDir := cfg.InputPath
+	inputIsTemp := false
+	if inputDir == "" {
+		// Create temporary input directory
+		td, err := os.MkdirTemp("", "holon-input-*")
+		if err != nil {
+			return fmt.Errorf("failed to create temp input dir: %w", err)
+		}
+		inputDir = td
+		inputIsTemp = true
+	}
+
+	// Cleanup input directory based on cleanup mode
+	if inputIsTemp && (cleanupMode == "auto" || cleanupMode == "all") {
+		defer os.RemoveAll(inputDir)
+	}
+
+	// Create input subdirectories
+	inputPromptsDir := filepath.Join(inputDir, "prompts")
+	if err := os.MkdirAll(inputPromptsDir, 0755); err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
+		return fmt.Errorf("failed to create input/prompts dir: %w", err)
+	}
+
+	// Copy or create context directory in input
+	var absContext string
+	if cfg.ContextPath != "" {
+		var err error
+		absContext, err = filepath.Abs(cfg.ContextPath)
+		if err != nil {
+			if inputIsTemp {
+				os.RemoveAll(inputDir)
+			}
+			return fmt.Errorf("failed to resolve context path: %w", err)
+		}
+		// Copy context to input directory
+		inputContextDir := filepath.Join(inputDir, "context")
+		if err := copyDir(absContext, inputContextDir); err != nil {
+			if inputIsTemp {
+				os.RemoveAll(inputDir)
+			}
+			return fmt.Errorf("failed to copy context to input dir: %w", err)
+		}
+		absContext = inputContextDir
+	}
+
+	var tempSpecDir string
 	var cleanupNeeded bool
 
 	if cfg.GoalStr != "" {
@@ -72,12 +130,15 @@ func (r *Runner) Run(ctx context.Context, cfg RunnerConfig) error {
 		// Create a temporary spec file
 		td, err := os.MkdirTemp("", "holon-spec-*")
 		if err != nil {
+			if inputIsTemp {
+				os.RemoveAll(inputDir)
+			}
 			return fmt.Errorf("failed to create temp dir for spec: %w", err)
 		}
-		tempDir = td
+		tempSpecDir = td
 		cleanupNeeded = true
 
-		cfg.SpecPath = filepath.Join(tempDir, "spec.yaml")
+		cfg.SpecPath = filepath.Join(tempSpecDir, "spec.yaml")
 		specContent := fmt.Sprintf(`version: "v1"
 kind: Holon
 metadata:
@@ -96,7 +157,10 @@ output:
 
 		if err := os.WriteFile(cfg.SpecPath, []byte(specContent), 0644); err != nil {
 			if cleanupNeeded {
-				os.RemoveAll(tempDir)
+				os.RemoveAll(tempSpecDir)
+			}
+			if inputIsTemp {
+				os.RemoveAll(inputDir)
 			}
 			return fmt.Errorf("failed to write temporary spec: %w", err)
 		}
@@ -104,37 +168,54 @@ output:
 
 	// Ensure cleanup happens even if we fail later
 	if cleanupNeeded {
-		defer os.RemoveAll(tempDir)
+		defer os.RemoveAll(tempSpecDir)
 	}
 
 	absWorkspace, err := filepath.Abs(cfg.WorkspacePath)
 	if err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
 		return fmt.Errorf("failed to resolve workspace path: %w", err)
 	}
 	absSpec, err := filepath.Abs(cfg.SpecPath)
 	if err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
 		return fmt.Errorf("failed to resolve spec path: %w", err)
 	}
 	absOut, err := filepath.Abs(cfg.OutDir)
 	if err != nil {
-		return fmt.Errorf("failed to resolve output path: %w", err)
-	}
-	var absContext string
-	if cfg.ContextPath != "" {
-		absContext, err = filepath.Abs(cfg.ContextPath)
-		if err != nil {
-			return fmt.Errorf("failed to resolve context path: %w", err)
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
 		}
+		return fmt.Errorf("failed to resolve output path: %w", err)
 	}
 
 	// Ensure out dir exists
 	if err := os.MkdirAll(absOut, 0755); err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
 		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Copy spec to input directory
+	inputSpecPath := filepath.Join(inputDir, "spec.yaml")
+	if err := copyFile(absSpec, inputSpecPath); err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
+		return fmt.Errorf("failed to copy spec to input dir: %w", err)
 	}
 
 	// Collect Env Vars with proper precedence
 	envVars, err := r.collectEnvVars(cfg, absSpec)
 	if err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
 		return err
 	}
 
@@ -151,6 +232,9 @@ output:
 
 	// Validation: must have goal by now
 	if cfg.GoalStr == "" {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
 		return fmt.Errorf("goal description is missing in spec or flags")
 	}
 
@@ -171,12 +255,25 @@ output:
 	// Compile prompts
 	sysPrompt, userPrompt, promptTempDir, err := r.compilePrompts(cfg, absContext)
 	if err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
 		return err
 	}
 	defer os.RemoveAll(promptTempDir)
-	absPromptTempDir, err := filepath.Abs(promptTempDir)
-	if err != nil {
-		return fmt.Errorf("failed to resolve prompt temp dir: %w", err)
+
+	// Copy prompts to input directory
+	if err := os.WriteFile(filepath.Join(inputPromptsDir, "system.md"), []byte(sysPrompt), 0644); err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
+		return fmt.Errorf("failed to write system prompt to input dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(inputPromptsDir, "user.md"), []byte(userPrompt), 0644); err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
+		return fmt.Errorf("failed to write user prompt to input dir: %w", err)
 	}
 
 	// Write debug prompts to output directory
@@ -184,21 +281,30 @@ output:
 		fmt.Printf("Warning: Failed to write debug prompts: %v\n", err)
 	}
 
+	// Resolve input directory to absolute path
+	absInputDir, err := filepath.Abs(inputDir)
+	if err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
+		return fmt.Errorf("failed to resolve input path: %w", err)
+	}
+
 	agentBundlePath, err := r.resolveAgentBundle(ctx, cfg, absWorkspace)
 	if err != nil {
+		if inputIsTemp {
+			os.RemoveAll(inputDir)
+		}
 		return err
 	}
 
 	containerCfg := &docker.ContainerConfig{
-		BaseImage:      cfg.BaseImage,
-		AgentBundle:    agentBundlePath,
-		Workspace:      absWorkspace,
-		SpecPath:       absSpec,
-		ContextPath:    absContext,
-		PromptPath:     filepath.Join(absPromptTempDir, "system.md"),
-		UserPromptPath: filepath.Join(absPromptTempDir, "user.md"),
-		OutDir:         absOut,
-		Env:            envVars,
+		BaseImage:   cfg.BaseImage,
+		AgentBundle: agentBundlePath,
+		Workspace:   absWorkspace,
+		InputPath:   absInputDir,
+		OutDir:      absOut,
+		Env:         envVars,
 	}
 
 	fmt.Printf("Running Holon: %s with base image %s (agent: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AgentBundle)
@@ -206,6 +312,12 @@ output:
 		return fmt.Errorf("execution failed: %w", err)
 	}
 	fmt.Println("Holon execution completed.")
+
+	// Cleanup output directory if requested
+	if cleanupMode == "all" {
+		fmt.Printf("Cleaning up output directory: %s\n", absOut)
+		os.RemoveAll(absOut)
+	}
 
 	return nil
 }
@@ -476,5 +588,54 @@ func (r *Runner) writeDebugPrompts(absOut, sysPrompt, userPrompt string) error {
 	if err := os.WriteFile(filepath.Join(absOut, "prompt.compiled.user.md"), []byte(userPrompt), 0644); err != nil {
 		return fmt.Errorf("failed to write debug user prompt: %w", err)
 	}
+	return nil
+}
+
+// copyFile copies a file from src to dst
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
+}
+
+// copyDir recursively copies a directory tree from src to dst
+func copyDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }

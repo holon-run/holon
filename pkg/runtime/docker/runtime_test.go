@@ -60,19 +60,34 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 
 	// Test mount configuration assembly
 	t.Run("mount assembly", func(t *testing.T) {
+		// Create input directory structure
+		inputDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(inputDir, "spec.yaml"), []byte("test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(inputDir, "context"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(inputDir, "prompts"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(inputDir, "prompts", "system.md"), []byte("# System Prompt"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(inputDir, "prompts", "user.md"), []byte("# User Prompt"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
 		cfg := &MountConfig{
-			SnapshotDir:    "/tmp/workspace-snapshot",
-			SpecPath:       specFile,
-			ContextPath:    contextDir,
-			OutDir:         outDir,
-			PromptPath:     promptFile,
-			UserPromptPath: userPromptFile,
+			SnapshotDir: "/tmp/workspace-snapshot",
+			InputPath:   inputDir,
+			OutDir:      outDir,
 		}
 
 		mounts := BuildContainerMounts(cfg)
 
-		// Verify we get expected number of mounts
-		expectedMountCount := 6 // workspace, spec, output, context, system.md, user.md
+		// Verify we get expected number of mounts (workspace, input, output)
+		expectedMountCount := 3
 		if len(mounts) != expectedMountCount {
 			t.Errorf("Expected %d mounts, got %d", expectedMountCount, len(mounts))
 		}
@@ -84,12 +99,9 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 		}
 
 		expectedTargets := map[string]string{
-			"/holon/workspace":               "/tmp/workspace-snapshot",
-			"/holon/input/spec.yaml":         specFile,
-			"/holon/output":                  outDir,
-			"/holon/input/context":           contextDir,
-			"/holon/input/prompts/system.md": promptFile,
-			"/holon/input/prompts/user.md":   userPromptFile,
+			"/holon/workspace": "/tmp/workspace-snapshot",
+			"/holon/input":     inputDir,
+			"/holon/output":    outDir,
 		}
 
 		for target, expectedSource := range expectedTargets {
@@ -146,13 +158,28 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 
 	// Test mount target validation
 	t.Run("mount target validation", func(t *testing.T) {
+		// Create input directory structure
+		inputDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(inputDir, "spec.yaml"), []byte("test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(inputDir, "context"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(inputDir, "prompts"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(inputDir, "prompts", "system.md"), []byte("# System Prompt"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(inputDir, "prompts", "user.md"), []byte("# User Prompt"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
 		cfg := &MountConfig{
-			SnapshotDir:    "/tmp/snapshot-test",
-			SpecPath:       specFile,
-			ContextPath:    contextDir,
-			OutDir:         outDir,
-			PromptPath:     promptFile,
-			UserPromptPath: userPromptFile,
+			SnapshotDir: "/tmp/snapshot-test",
+			InputPath:   inputDir,
+			OutDir:      outDir,
 		}
 
 		// Should pass validation
@@ -163,7 +190,7 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 		// Test invalid configuration
 		invalidCfg := &MountConfig{
 			SnapshotDir: "", // Empty snapshot dir should fail
-			SpecPath:    specFile,
+			InputPath:   inputDir,
 			OutDir:      outDir,
 		}
 

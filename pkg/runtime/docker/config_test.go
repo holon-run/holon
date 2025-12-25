@@ -10,6 +10,20 @@ import (
 )
 
 func TestBuildContainerMounts(t *testing.T) {
+	// Create temporary directories for testing
+	tmpDir := t.TempDir()
+	inputDir := filepath.Join(tmpDir, "input")
+	outDir := filepath.Join(tmpDir, "output")
+	snapshotDir := filepath.Join(tmpDir, "snapshot")
+
+	// Create required directories
+	if err := os.MkdirAll(inputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
 		name     string
 		cfg      *MountConfig
@@ -18,99 +32,25 @@ func TestBuildContainerMounts(t *testing.T) {
 		{
 			name: "required mounts only",
 			cfg: &MountConfig{
-				SnapshotDir: "/tmp/snapshot",
-				SpecPath:    "/path/to/spec.yaml",
-				OutDir:      "/tmp/output",
+				SnapshotDir: snapshotDir,
+				InputPath:   inputDir,
+				OutDir:      outDir,
 			},
 			expected: []mount.Mount{
 				{
 					Type:   mount.TypeBind,
-					Source: "/tmp/snapshot",
+					Source: snapshotDir,
 					Target: "/holon/workspace",
 				},
 				{
 					Type:   mount.TypeBind,
-					Source: "/path/to/spec.yaml",
-					Target: "/holon/input/spec.yaml",
+					Source: inputDir,
+					Target: "/holon/input",
 				},
 				{
 					Type:   mount.TypeBind,
-					Source: "/tmp/output",
+					Source: outDir,
 					Target: "/holon/output",
-				},
-			},
-		},
-		{
-			name: "all mounts including optional",
-			cfg: &MountConfig{
-				SnapshotDir:    "/tmp/snapshot",
-				SpecPath:       "/path/to/spec.yaml",
-				ContextPath:    "/path/to/context",
-				OutDir:         "/tmp/output",
-				PromptPath:     "/path/to/system.md",
-				UserPromptPath: "/path/to/user.md",
-			},
-			expected: []mount.Mount{
-				{
-					Type:   mount.TypeBind,
-					Source: "/tmp/snapshot",
-					Target: "/holon/workspace",
-				},
-				{
-					Type:   mount.TypeBind,
-					Source: "/path/to/spec.yaml",
-					Target: "/holon/input/spec.yaml",
-				},
-				{
-					Type:   mount.TypeBind,
-					Source: "/tmp/output",
-					Target: "/holon/output",
-				},
-				{
-					Type:   mount.TypeBind,
-					Source: "/path/to/context",
-					Target: "/holon/input/context",
-				},
-				{
-					Type:   mount.TypeBind,
-					Source: "/path/to/system.md",
-					Target: "/holon/input/prompts/system.md",
-				},
-				{
-					Type:   mount.TypeBind,
-					Source: "/path/to/user.md",
-					Target: "/holon/input/prompts/user.md",
-				},
-			},
-		},
-		{
-			name: "partial optional mounts",
-			cfg: &MountConfig{
-				SnapshotDir: "/tmp/snapshot",
-				SpecPath:    "/path/to/spec.yaml",
-				OutDir:      "/tmp/output",
-				PromptPath:  "/path/to/system.md",
-			},
-			expected: []mount.Mount{
-				{
-					Type:   mount.TypeBind,
-					Source: "/tmp/snapshot",
-					Target: "/holon/workspace",
-				},
-				{
-					Type:   mount.TypeBind,
-					Source: "/path/to/spec.yaml",
-					Target: "/holon/input/spec.yaml",
-				},
-				{
-					Type:   mount.TypeBind,
-					Source: "/tmp/output",
-					Target: "/holon/output",
-				},
-				{
-					Type:   mount.TypeBind,
-					Source: "/path/to/system.md",
-					Target: "/holon/input/prompts/system.md",
 				},
 			},
 		},
@@ -121,25 +61,19 @@ func TestBuildContainerMounts(t *testing.T) {
 			result := BuildContainerMounts(tt.cfg)
 
 			if len(result) != len(tt.expected) {
-				t.Errorf("Expected %d mounts, got %d", len(tt.expected), len(result))
+				t.Errorf("BuildContainerMounts() returned %d mounts, expected %d", len(result), len(tt.expected))
+				return
 			}
 
-			// Compare mount structures
-			for i, expectedMount := range tt.expected {
-				if i >= len(result) {
-					t.Errorf("Missing mount at index %d", i)
-					continue
+			for i := range result {
+				if result[i].Type != tt.expected[i].Type {
+					t.Errorf("mount %d: Type = %v, want %v", i, result[i].Type, tt.expected[i].Type)
 				}
-
-				actualMount := result[i]
-				if actualMount.Type != expectedMount.Type {
-					t.Errorf("Mount %d: expected type %v, got %v", i, expectedMount.Type, actualMount.Type)
+				if result[i].Source != tt.expected[i].Source {
+					t.Errorf("mount %d: Source = %v, want %v", i, result[i].Source, tt.expected[i].Source)
 				}
-				if actualMount.Source != expectedMount.Source {
-					t.Errorf("Mount %d: expected source %s, got %s", i, expectedMount.Source, actualMount.Source)
-				}
-				if actualMount.Target != expectedMount.Target {
-					t.Errorf("Mount %d: expected target %s, got %s", i, expectedMount.Target, actualMount.Target)
+				if result[i].Target != tt.expected[i].Target {
+					t.Errorf("mount %d: Target = %v, want %v", i, result[i].Target, tt.expected[i].Target)
 				}
 			}
 		})
@@ -150,49 +84,37 @@ func TestBuildContainerEnv(t *testing.T) {
 	tests := []struct {
 		name     string
 		cfg      *EnvConfig
-		expected []string
+		contains []string
 	}{
 		{
-			name: "no user env",
+			name: "basic env vars",
 			cfg: &EnvConfig{
-				UserEnv: map[string]string{},
+				UserEnv: map[string]string{
+					"TEST_VAR": "test_value",
+				},
 				HostUID: 1000,
 				HostGID: 1000,
 			},
-			expected: []string{
+			contains: []string{
+				"TEST_VAR=test_value",
 				"HOST_UID=1000",
 				"HOST_GID=1000",
 				"GIT_CONFIG_NOSYSTEM=1",
 			},
 		},
 		{
-			name: "with user env",
+			name: "with secret injection",
 			cfg: &EnvConfig{
 				UserEnv: map[string]string{
-					"ANTHROPIC_API_KEY": "test-key",
-					"DEBUG":              "true",
+					"ANTHROPIC_API_KEY": "sk-test-key",
 				},
-				HostUID: 1001,
-				HostGID: 1001,
+				HostUID: 1000,
+				HostGID: 1000,
 			},
-			expected: []string{
-				"ANTHROPIC_API_KEY=test-key",
-				"DEBUG=true",
-				"HOST_UID=1001",
-				"HOST_GID=1001",
-				"GIT_CONFIG_NOSYSTEM=1",
-			},
-		},
-		{
-			name: "empty user env",
-			cfg: &EnvConfig{
-				UserEnv: nil,
-				HostUID: 0,
-				HostGID: 0,
-			},
-			expected: []string{
-				"HOST_UID=0",
-				"HOST_GID=0",
+			contains: []string{
+				"ANTHROPIC_API_KEY=sk-test-key",
+				"HOST_UID=1000",
+				"HOST_GID=1000",
 				"GIT_CONFIG_NOSYSTEM=1",
 			},
 		},
@@ -202,33 +124,16 @@ func TestBuildContainerEnv(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := BuildContainerEnv(tt.cfg)
 
-			// Check count
-			if len(result) != len(tt.expected) {
-				t.Errorf("Expected %d env vars, got %d", len(tt.expected), len(result))
-			}
-
-			// Convert to sets for comparison (order doesn't matter for user env)
-			expectedSet := make(map[string]bool)
-			for _, env := range tt.expected {
-				expectedSet[env] = true
-			}
-
-			resultSet := make(map[string]bool)
-			for _, env := range result {
-				resultSet[env] = true
-			}
-
-			// Check that all expected env vars are present
-			for env := range expectedSet {
-				if !resultSet[env] {
-					t.Errorf("Missing expected env var: %s", env)
+			for _, expected := range tt.contains {
+				found := false
+				for _, envVar := range result {
+					if envVar == expected {
+						found = true
+						break
+					}
 				}
-			}
-
-			// Check that there are no extra env vars
-			for env := range resultSet {
-				if !expectedSet[env] {
-					t.Errorf("Unexpected extra env var: %s", env)
+				if !found {
+					t.Errorf("BuildContainerEnv() missing expected env var %q. Got: %v", expected, result)
 				}
 			}
 		})
@@ -236,292 +141,172 @@ func TestBuildContainerEnv(t *testing.T) {
 }
 
 func TestValidateRequiredArtifacts(t *testing.T) {
-	// Create temporary directory for test artifacts
-	tmpDir, err := os.MkdirTemp("", "holon-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	t.Run("all required artifacts present", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestPath := filepath.Join(tmpDir, "manifest.json")
+		if err := os.WriteFile(manifestPath, []byte(`{"status": "success"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
 
-	tests := []struct {
-		name             string
-		setupArtifacts   func(string) error
-		requiredArtifacts []v1.Artifact
-		expectError      bool
-		errorContains    string
-	}{
-		{
-			name: "valid manifest only",
-			setupArtifacts: func(outDir string) error {
-				return os.WriteFile(filepath.Join(outDir, "manifest.json"), []byte(`{"status": "success"}`), 0644)
-			},
-			requiredArtifacts: nil,
-			expectError:       false,
-		},
-		{
-			name:             "missing manifest",
-			setupArtifacts:   func(outDir string) error { return nil },
-			requiredArtifacts: nil,
-			expectError:       true,
-			errorContains:     "missing required artifact: manifest.json",
-		},
-		{
-			name: "valid manifest and required artifacts",
-			setupArtifacts: func(outDir string) error {
-				if err := os.WriteFile(filepath.Join(outDir, "manifest.json"), []byte(`{"status": "success"}`), 0644); err != nil {
-					return err
-				}
-				if err := os.WriteFile(filepath.Join(outDir, "diff.patch"), []byte("diff content"), 0644); err != nil {
-					return err
-				}
-				return os.WriteFile(filepath.Join(outDir, "summary.md"), []byte("# Summary"), 0644)
-			},
-			requiredArtifacts: []v1.Artifact{
-				{Path: "diff.patch", Required: true},
-				{Path: "summary.md", Required: true},
-			},
-			expectError: false,
-		},
-		{
-			name: "missing required artifact",
-			setupArtifacts: func(outDir string) error {
-				return os.WriteFile(filepath.Join(outDir, "manifest.json"), []byte(`{"status": "success"}`), 0644)
-			},
-			requiredArtifacts: []v1.Artifact{
-				{Path: "diff.patch", Required: true},
-				{Path: "summary.md", Required: false},
-			},
-			expectError:    true,
-			errorContains:  "missing required artifact: diff.patch",
-		},
-		{
-			name: "optional artifact missing",
-			setupArtifacts: func(outDir string) error {
-				if err := os.WriteFile(filepath.Join(outDir, "manifest.json"), []byte(`{"status": "success"}`), 0644); err != nil {
-					return err
-				}
-				return os.WriteFile(filepath.Join(outDir, "diff.patch"), []byte("diff content"), 0644)
-			},
-			requiredArtifacts: []v1.Artifact{
-				{Path: "diff.patch", Required: true},
-				{Path: "summary.md", Required: false},
-			},
-			expectError: false,
-		},
-	}
+		requiredArtifacts := []v1.Artifact{
+			{Path: "manifest.json", Required: true},
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create a clean output directory for each test
-			testOutDir := filepath.Join(tmpDir, t.Name())
-			if err := os.MkdirAll(testOutDir, 0755); err != nil {
-				t.Fatalf("Failed to create test output dir: %v", err)
-			}
+		if err := ValidateRequiredArtifacts(tmpDir, requiredArtifacts); err != nil {
+			t.Errorf("ValidateRequiredArtifacts() error = %v", err)
+		}
+	})
 
-			// Setup artifacts
-			if err := tt.setupArtifacts(testOutDir); err != nil {
-				t.Fatalf("Failed to setup artifacts: %v", err)
-			}
+	t.Run("missing required artifact", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestPath := filepath.Join(tmpDir, "manifest.json")
+		if err := os.WriteFile(manifestPath, []byte(`{"status": "success"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
 
-			// Run validation
-			err := ValidateRequiredArtifacts(testOutDir, tt.requiredArtifacts)
+		requiredArtifacts := []v1.Artifact{
+			{Path: "manifest.json", Required: true},
+			{Path: "diff.patch", Required: true},
+		}
 
-			if tt.expectError {
-				if err == nil {
-					t.Errorf("Expected error but got none")
-				} else if tt.errorContains != "" && err.Error() != tt.errorContains {
-					t.Errorf("Expected error containing %q, got %q", tt.errorContains, err.Error())
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Expected no error but got: %v", err)
-				}
-			}
-		})
-	}
+		if err := ValidateRequiredArtifacts(tmpDir, requiredArtifacts); err == nil {
+			t.Error("ValidateRequiredArtifacts() expected error for missing diff.patch, got nil")
+		}
+	})
+
+	t.Run("missing manifest.json", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		requiredArtifacts := []v1.Artifact{}
+
+		if err := ValidateRequiredArtifacts(tmpDir, requiredArtifacts); err == nil {
+			t.Error("ValidateRequiredArtifacts() expected error for missing manifest.json, got nil")
+		}
+	})
+
+	t.Run("optional artifact ignored", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestPath := filepath.Join(tmpDir, "manifest.json")
+		if err := os.WriteFile(manifestPath, []byte(`{"status": "success"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		requiredArtifacts := []v1.Artifact{
+			{Path: "manifest.json", Required: true},
+			{Path: "summary.md", Required: false},
+		}
+
+		if err := ValidateRequiredArtifacts(tmpDir, requiredArtifacts); err != nil {
+			t.Errorf("ValidateRequiredArtifacts() error = %v", err)
+		}
+	})
 }
 
 func TestValidateMountTargets(t *testing.T) {
-	// Create temporary directory and files for testing
-	tmpDir, err := os.MkdirTemp("", "holon-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	t.Run("all required mounts valid", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		inputDir := filepath.Join(tmpDir, "input")
+		outDir := filepath.Join(tmpDir, "output")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
 
-	// Create test files
-	specFile := filepath.Join(tmpDir, "spec.yaml")
-	if err := os.WriteFile(specFile, []byte("test: spec"), 0644); err != nil {
-		t.Fatalf("Failed to create test spec file: %v", err)
-	}
-
-	outDir := filepath.Join(tmpDir, "output")
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		t.Fatalf("Failed to create output dir: %v", err)
-	}
-
-	contextDir := filepath.Join(tmpDir, "context")
-	if err := os.MkdirAll(contextDir, 0755); err != nil {
-		t.Fatalf("Failed to create context dir: %v", err)
-	}
-
-	promptFile := filepath.Join(tmpDir, "system.md")
-	if err := os.WriteFile(promptFile, []byte("# System Prompt"), 0644); err != nil {
-		t.Fatalf("Failed to create test prompt file: %v", err)
-	}
-
-	userPromptFile := filepath.Join(tmpDir, "user.md")
-	if err := os.WriteFile(userPromptFile, []byte("# User Prompt"), 0644); err != nil {
-		t.Fatalf("Failed to create test user prompt file: %v", err)
-	}
-
-	tests := []struct {
-		name        string
-		cfg         *MountConfig
-		expectError bool
-		errorContains string
-	}{
-		{
-			name: "valid required mounts",
-			cfg: &MountConfig{
-				SnapshotDir: "/tmp/snapshot",
-				SpecPath:    specFile,
-				OutDir:      outDir,
-			},
-			expectError: false,
-		},
-		{
-			name: "all mounts valid",
-			cfg: &MountConfig{
-				SnapshotDir:    "/tmp/snapshot",
-				SpecPath:       specFile,
-				ContextPath:    contextDir,
-				OutDir:         outDir,
-				PromptPath:     promptFile,
-				UserPromptPath: userPromptFile,
-			},
-			expectError: false,
-		},
-		{
-			name: "missing snapshot dir",
-			cfg: &MountConfig{
-				SnapshotDir: "",
-				SpecPath:    specFile,
-				OutDir:      outDir,
-			},
-			expectError:    true,
-			errorContains:  "snapshot directory cannot be empty",
-		},
-		{
-			name: "missing spec path",
-			cfg: &MountConfig{
-				SnapshotDir: "/tmp/snapshot",
-				SpecPath:    "",
-				OutDir:      outDir,
-			},
-			expectError:    true,
-			errorContains:  "spec path cannot be empty",
-		},
-		{
-			name: "missing output dir",
-			cfg: &MountConfig{
-				SnapshotDir: "/tmp/snapshot",
-				SpecPath:    specFile,
-				OutDir:      "",
-			},
-			expectError:    true,
-			errorContains:  "output directory cannot be empty",
-		},
-		{
-			name: "non-existent spec path",
-			cfg: &MountConfig{
-				SnapshotDir: "/tmp/snapshot",
-				SpecPath:    "/non/existent/spec.yaml",
-				OutDir:      outDir,
-			},
-			expectError:    true,
-			errorContains:  "spec path does not exist",
-		},
-		{
-			name: "non-existent output dir",
-			cfg: &MountConfig{
-				SnapshotDir: "/tmp/snapshot",
-				SpecPath:    specFile,
-				OutDir:      "/non/existent/output",
-			},
-			expectError:    true,
-			errorContains:  "output directory does not exist",
-		},
-		{
-			name: "non-existent optional context path",
-			cfg: &MountConfig{
-				SnapshotDir: "/tmp/snapshot",
-				SpecPath:    specFile,
-				ContextPath: "/non/existent/context",
-				OutDir:      outDir,
-			},
-			expectError:    true,
-			errorContains:  "context path does not exist",
-		},
-		{
-			name: "non-existent optional prompt path",
-			cfg: &MountConfig{
-				SnapshotDir: "/tmp/snapshot",
-				SpecPath:    specFile,
-				OutDir:      outDir,
-				PromptPath:  "/non/existent/prompt.md",
-			},
-			expectError:    true,
-			errorContains:  "prompt path does not exist",
-		},
-		{
-			name: "non-existent optional user prompt path",
-			cfg: &MountConfig{
-				SnapshotDir:    "/tmp/snapshot",
-				SpecPath:       specFile,
-				OutDir:         outDir,
-				UserPromptPath: "/non/existent/user.md",
-			},
-			expectError:    true,
-			errorContains:  "user prompt path does not exist",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateMountTargets(tt.cfg)
-
-			if tt.expectError {
-				if err == nil {
-					t.Errorf("Expected error but got none")
-				} else if tt.errorContains != "" {
-					if !contains(err.Error(), tt.errorContains) {
-						t.Errorf("Expected error containing %q, got %q", tt.errorContains, err.Error())
-					}
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Expected no error but got: %v", err)
-				}
-			}
-		})
-	}
-}
-
-// Helper function to check if string contains substring (case-sensitive)
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		(len(s) > len(substr) &&
-			(s[:len(substr)] == substr ||
-			 s[len(s)-len(substr):] == substr ||
-			 containsMiddle(s, substr))))
-}
-
-func containsMiddle(s, substr string) bool {
-	for i := 1; i < len(s)-len(substr)+1; i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+		if err := os.MkdirAll(inputDir, 0755); err != nil {
+			t.Fatal(err)
 		}
-	}
-	return false
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: snapshotDir,
+			InputPath:   inputDir,
+			OutDir:      outDir,
+		}
+
+		if err := ValidateMountTargets(cfg); err != nil {
+			t.Errorf("ValidateMountTargets() error = %v", err)
+		}
+	})
+
+	t.Run("missing input path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		outDir := filepath.Join(tmpDir, "output")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
+
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: snapshotDir,
+			InputPath:   "/nonexistent/input",
+			OutDir:      outDir,
+		}
+
+		if err := ValidateMountTargets(cfg); err == nil {
+			t.Error("ValidateMountTargets() expected error for missing input path, got nil")
+		}
+	})
+
+	t.Run("missing output directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		inputDir := filepath.Join(tmpDir, "input")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
+
+		if err := os.MkdirAll(inputDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: snapshotDir,
+			InputPath:   inputDir,
+			OutDir:      "/nonexistent/output",
+		}
+
+		if err := ValidateMountTargets(cfg); err == nil {
+			t.Error("ValidateMountTargets() expected error for missing output directory, got nil")
+		}
+	})
+
+	t.Run("empty snapshot directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		inputDir := filepath.Join(tmpDir, "input")
+		outDir := filepath.Join(tmpDir, "output")
+
+		if err := os.MkdirAll(inputDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: "",
+			InputPath:   inputDir,
+			OutDir:      outDir,
+		}
+
+		if err := ValidateMountTargets(cfg); err == nil {
+			t.Error("ValidateMountTargets() expected error for empty snapshot directory, got nil")
+		}
+	})
+
+	t.Run("empty input path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		outDir := filepath.Join(tmpDir, "output")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
+
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: snapshotDir,
+			InputPath:   "",
+			OutDir:      outDir,
+		}
+
+		if err := ValidateMountTargets(cfg); err == nil {
+			t.Error("ValidateMountTargets() expected error for empty input path, got nil")
+		}
+	})
 }

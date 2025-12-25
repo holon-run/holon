@@ -36,18 +36,15 @@ type ContainerConfig struct {
 	BaseImage      string // e.g., golang:1.22 (The toolchain)
 	AgentBundle    string // Required path to agent bundle archive (.tar.gz)
 	Workspace      string
-	SpecPath       string
-	ContextPath    string // Optional: path to context files
+	InputPath      string // Path to input directory (contains spec.yaml, context/, prompts/)
 	OutDir         string
 	Env            map[string]string
-	PromptPath     string   // Path to compiled system.md
-	UserPromptPath string   // Path to compiled user.md
 	Cmd            []string // Optional command override
 
 	// Workspace preparation options
-	WorkspaceStrategy string                          // Workspace preparation strategy (e.g., "git-clone", "snapshot")
-	WorkspaceHistory  workspace.HistoryMode          // How much git history to include
-	WorkspaceRef      string                          // Git ref to checkout (optional)
+	WorkspaceStrategy string                 // Workspace preparation strategy (e.g., "git-clone", "snapshot")
+	WorkspaceHistory  workspace.HistoryMode // How much git history to include
+	WorkspaceRef      string                 // Git ref to checkout (optional)
 }
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
@@ -130,12 +127,9 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	})
 
 	mountConfig := &MountConfig{
-		SnapshotDir:    snapshotDir,
-		SpecPath:       cfg.SpecPath,
-		ContextPath:    cfg.ContextPath,
-		OutDir:         cfg.OutDir,
-		PromptPath:     cfg.PromptPath,
-		UserPromptPath: cfg.UserPromptPath,
+		SnapshotDir: snapshotDir,
+		InputPath:   cfg.InputPath,
+		OutDir:      cfg.OutDir,
 	}
 	mounts := BuildContainerMounts(mountConfig)
 

@@ -13,12 +13,9 @@ import (
 
 // MountConfig represents the mount configuration for a container
 type MountConfig struct {
-	SnapshotDir    string
-	SpecPath       string
-	ContextPath    string
-	OutDir         string
-	PromptPath     string
-	UserPromptPath string
+	SnapshotDir string
+	InputPath   string // Path to input directory (contains spec.yaml, context/, prompts/)
+	OutDir      string
 }
 
 // EnvConfig represents the environment configuration for a container
@@ -39,41 +36,14 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 		},
 		{
 			Type:   mount.TypeBind,
-			Source: cfg.SpecPath,
-			Target: "/holon/input/spec.yaml",
+			Source: cfg.InputPath,
+			Target: "/holon/input",
 		},
 		{
 			Type:   mount.TypeBind,
 			Source: cfg.OutDir,
 			Target: "/holon/output",
 		},
-	}
-
-	// Optional context mount
-	if cfg.ContextPath != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: cfg.ContextPath,
-			Target: "/holon/input/context",
-		})
-	}
-
-	// Optional system prompt mount
-	if cfg.PromptPath != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: cfg.PromptPath,
-			Target: "/holon/input/prompts/system.md",
-		})
-	}
-
-	// Optional user prompt mount
-	if cfg.UserPromptPath != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: cfg.UserPromptPath,
-			Target: "/holon/input/prompts/user.md",
-		})
 	}
 
 	return mounts
@@ -130,38 +100,19 @@ func ValidateMountTargets(cfg *MountConfig) error {
 	if cfg.SnapshotDir == "" {
 		return fmt.Errorf("snapshot directory cannot be empty")
 	}
-	if cfg.SpecPath == "" {
-		return fmt.Errorf("spec path cannot be empty")
+	if cfg.InputPath == "" {
+		return fmt.Errorf("input path cannot be empty")
 	}
 	if cfg.OutDir == "" {
 		return fmt.Errorf("output directory cannot be empty")
 	}
 
 	// Check that mount sources exist (except snapshot which will be created)
-	if _, err := os.Stat(cfg.SpecPath); os.IsNotExist(err) {
-		return fmt.Errorf("spec path does not exist: %s", cfg.SpecPath)
+	if _, err := os.Stat(cfg.InputPath); os.IsNotExist(err) {
+		return fmt.Errorf("input path does not exist: %s", cfg.InputPath)
 	}
 	if _, err := os.Stat(cfg.OutDir); os.IsNotExist(err) {
 		return fmt.Errorf("output directory does not exist: %s", cfg.OutDir)
-	}
-
-	// Check optional mount sources if provided
-	if cfg.ContextPath != "" {
-		if _, err := os.Stat(cfg.ContextPath); os.IsNotExist(err) {
-			return fmt.Errorf("context path does not exist: %s", cfg.ContextPath)
-		}
-	}
-
-	if cfg.PromptPath != "" {
-		if _, err := os.Stat(cfg.PromptPath); os.IsNotExist(err) {
-			return fmt.Errorf("prompt path does not exist: %s", cfg.PromptPath)
-		}
-	}
-
-	if cfg.UserPromptPath != "" {
-		if _, err := os.Stat(cfg.UserPromptPath); os.IsNotExist(err) {
-			return fmt.Errorf("user prompt path does not exist: %s", cfg.UserPromptPath)
-		}
 	}
 
 	return nil
