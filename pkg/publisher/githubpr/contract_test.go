@@ -19,10 +19,15 @@ import (
 // These tests use go-vcr to record/replay real GitHub API interactions.
 // They ensure the API contract is maintained for PR creation/update operations.
 //
-// Recording new fixtures:
+// IMPORTANT: VCR fixtures must be recorded before these tests can run.
+// To record new fixtures:
 //   HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/publisher/githubpr/... -run TestVCR
 //
 // The fixtures will be stored in pkg/github/testdata/fixtures/githubpr/
+// If fixtures don't exist, tests will be skipped with a helpful message.
+//
+// Note: When recording fixtures, ensure you have appropriate permissions in the
+// test repository (holon-run/holon) and that any referenced PRs and comments exist.
 // ============================================================================
 
 // TestVCRPRPublisher_FindExistingPR tests finding existing PRs with VCR.
@@ -241,7 +246,9 @@ func TestVCRPRPublisher_ValidateContract(t *testing.T) {
 }
 
 // TestVCRPRPublisher_ActionMetadataContract tests action metadata structure.
-// This test ensures action metadata contains expected fields.
+// This test documents the expected metadata fields for each action type.
+// Note: This is a documentation-only test that validates expected metadata structure
+// but doesn't verify the implementation produces this metadata.
 func TestVCRPRPublisher_ActionMetadataContract(t *testing.T) {
 	// This is a structural test that validates the contract for action metadata
 
@@ -272,8 +279,8 @@ func TestVCRPRPublisher_ActionMetadataContract(t *testing.T) {
 	}
 }
 
-// TestVCRPRPublisher_PublishActionsOrder tests that actions are in correct order.
-// This test locks the contract for action ordering.
+// TestVCRPRPublisher_PublishActionsOrder documents that actions should be in correct order.
+// This is a documentation-only test that specifies the expected action ordering.
 func TestVCRPRPublisher_PublishActionsOrder(t *testing.T) {
 	// Contract: Actions should be in a specific order
 	expectedOrder := []string{
@@ -295,6 +302,8 @@ func TestVCRPRPublisher_PublishActionsOrder(t *testing.T) {
 
 	// The actual implementation should follow this order
 	// This test documents the contract for future maintenance
+	// Note: This test doesn't verify the implementation produces this order,
+	// it only documents what the expected order should be.
 }
 
 // ============================================================================
@@ -489,7 +498,7 @@ func TestMockPRPublisher_FindPRByBranch(t *testing.T) {
 }
 
 // TestVCRPRPublisher_ResultStructContract tests the PublishResult structure.
-// This ensures result structs match expected contract.
+// This documents the expected result structure contract.
 //
 // To record new fixtures:
 //   HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/publisher/githubpr/... -run TestVCRPRPublisher_ResultStructContract
@@ -505,7 +514,8 @@ func TestVCRPRPublisher_ResultStructContract(t *testing.T) {
 	defer rec.Stop()
 
 	// Test result structure validation
-	// This test documents the expected contract
+	// This test documents the expected contract - it manually constructs a result
+	// to validate the expected structure, but doesn't verify the implementation produces it.
 
 	result := publisher.PublishResult{
 		Provider:   "github-pr",
@@ -577,7 +587,9 @@ func TestVCRPRPublisher_ResultStructContract(t *testing.T) {
 	}
 }
 
-// TestMockPRPublisher_CreateGitHubClient tests client creation
+// TestMockPRPublisher_CreateGitHubClient tests client creation.
+// Note: This is a basic smoke test to verify the client is created.
+// More thorough OAuth verification is done in TestMockPRPublisher_CreateGitHubClientWithTransport.
 func TestMockPRPublisher_CreateGitHubClient(t *testing.T) {
 	p := &PRPublisher{}
 
@@ -590,8 +602,11 @@ func TestMockPRPublisher_CreateGitHubClient(t *testing.T) {
 		t.Fatal("createGitHubClient() returned nil")
 	}
 
-	// Verify the client has the correct transport
-	// The client should use oauth2 with the provided token
+	// Verify the client is properly configured
+	if client == nil {
+		t.Error("Expected non-nil client")
+	}
+	// The actual OAuth token verification is done in TestMockPRPublisher_CreateGitHubClientWithTransport
 }
 
 // TestMockPRPublisher_CreateGitHubClientWithTransport tests that client uses correct transport
@@ -603,26 +618,35 @@ func TestMockPRPublisher_CreateGitHubClientWithTransport(t *testing.T) {
 
 	client := p.createGitHubClient(ctx, token)
 
-	// Create a mock server to test the client
+	// Create a mock server to test the client and verify OAuth token is used
+	var receivedAuth string
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify the Authorization header is set correctly
-		auth := r.Header.Get("Authorization")
-		if !strings.Contains(auth, "Bearer "+token) && !strings.Contains(auth, "token "+token) {
-			t.Errorf("Authorization header = %v, want contain token", auth)
-		}
-		w.WriteHeader(http.StatusOK)
+		receivedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		// Return minimal valid JSON body for go-github to decode
+		_, _ = w.Write([]byte(`[]`))
 	}))
 	defer mockServer.Close()
 
 	// Set the base URL to the mock server
-	baseURL, _ := url.Parse(mockServer.URL + "/")
+	baseURL, err := url.Parse(mockServer.URL + "/")
+	if err != nil {
+		t.Fatalf("failed to parse test server URL: %v", err)
+	}
 	client.BaseURL = baseURL
 
-	// Make a test request
-	_, _, err := client.PullRequests.List(ctx, "test", "test", nil)
+	// Make a test request to trigger a request
+	_, _, err = client.PullRequests.List(ctx, "test", "test", nil)
 	if err != nil {
-		// Expected to succeed or fail with auth error, but the transport should work
-		t.Logf("Request error (expected): %v", err)
+		t.Logf("Request error (may be expected): %v", err)
+	}
+
+	// Verify the Authorization header was set with the token
+	if receivedAuth == "" {
+		t.Fatalf("expected Authorization header to be set, got empty string")
+	}
+	if !strings.Contains(receivedAuth, token) {
+		t.Fatalf("expected Authorization header to contain token %q, got %q", token, receivedAuth)
 	}
 }
 
@@ -699,20 +723,4 @@ func TestVCRPRPublisher_PaginationContract(t *testing.T) {
 	if err != nil {
 		t.Logf("findPRByBranch error (may be expected): %v", err)
 	}
-}
-
-// TestVCRPRPublisher_CreateClientWithOauth tests OAuth client creation
-func TestVCRPRPublisher_CreateClientWithOauth(t *testing.T) {
-	token := "test-token"
-	ctx := context.Background()
-
-	p := &PRPublisher{}
-	client := p.createGitHubClient(ctx, token)
-
-	if client == nil {
-		t.Fatal("createGitHubClient() returned nil")
-	}
-
-	// Verify the underlying HTTP client is configured correctly
-	// This tests the contract for client creation
 }

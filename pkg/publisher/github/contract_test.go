@@ -890,8 +890,12 @@ func newTestGitHubClient(t *testing.T, mockServer *mockGitHubServer) *github.Cli
 // TestVCRPublishSummaryComment tests summary comment publishing with VCR.
 // This test locks the API contract for creating/updating summary comments.
 //
+// IMPORTANT: These VCR tests reference fixtures that must be recorded before they can run.
 // To record new fixtures:
 //   HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/publisher/github/... -run TestVCRPublishSummaryComment
+//
+// The fixtures will be stored in pkg/github/testdata/fixtures/publisher/
+// If fixtures don't exist, these tests will be skipped with a helpful message.
 func TestVCRPublishSummaryComment(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping VCR test in short mode")
@@ -979,16 +983,14 @@ func TestVCRPublishReviewReplies(t *testing.T) {
 
 	// Create pr-fix.json
 	prFixPath := filepath.Join(tmpDir, "pr-fix.json")
+	actionTaken := "Updated code"
 	prFixData := PRFixData{
 		ReviewReplies: []ReviewReply{
 			{
-				CommentID: 123456789,
-				Status:    "fixed",
-				Message:   "Fixed the bug",
-				ActionTaken: func() *string {
-					s := "Updated code"
-					return &s
-				}(),
+				CommentID:   123456789,
+				Status:      "fixed",
+				Message:     "Fixed the bug",
+				ActionTaken: &actionTaken,
 			},
 		},
 	}
@@ -1088,15 +1090,18 @@ func TestVCRPublishIdempotency(t *testing.T) {
 	}
 
 	// Contract: Summary should mention both posted and skipped
+	// Note: The exact format may vary, but these keywords should appear
 	summary := result.Actions[len(result.Actions)-1].Description
 	hasPosted := strings.Contains(summary, "1 posted") || strings.Contains(summary, "posted")
 	hasSkipped := strings.Contains(summary, "1 skipped") || strings.Contains(summary, "skipped")
 
+	// These are informational warnings rather than hard assertions
+	// since the exact summary format may vary
 	if !hasPosted {
-		t.Logf("Warning: expected 'posted' in summary: %v", summary)
+		t.Logf("Note: expected 'posted' in summary: %v", summary)
 	}
 	if !hasSkipped {
-		t.Logf("Warning: expected 'skipped' in summary: %v", summary)
+		t.Logf("Note: expected 'skipped' in summary: %v", summary)
 	}
 }
 
@@ -1130,6 +1135,8 @@ func TestVCRPublishBothSummaryAndReplies(t *testing.T) {
 	prFixData := PRFixData{
 		ReviewReplies: []ReviewReply{
 			{
+				// Note: This is a placeholder comment ID for VCR recording.
+				// When recording fixtures, use actual comment IDs from the test repository.
 				CommentID: 333333333,
 				Status:    "fixed",
 				Message:   "Fixed in combined run",
@@ -1304,7 +1311,8 @@ func TestVCRErrorHandling(t *testing.T) {
 	}
 
 	// Error message should be meaningful
+	// Note: The exact error message may vary, but it should indicate the PR wasn't found
 	if err != nil && !strings.Contains(err.Error(), "404") && !strings.Contains(strings.ToLower(err.Error()), "not found") {
-		t.Logf("Note: error message may vary: %v", err)
+		t.Logf("Note: error message format may vary: %v", err)
 	}
 }
