@@ -5,28 +5,36 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/holon-run/holon/pkg/context/issue"
 	prcontext "github.com/holon-run/holon/pkg/context/github"
+	"github.com/holon-run/holon/pkg/git"
 	pkggithub "github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/publisher"
 	"github.com/holon-run/holon/pkg/runtime/docker"
+	"github.com/holon-run/holon/pkg/workspace"
 	"github.com/spf13/cobra"
 )
 
 var (
-	solveRepo     string
-	solveBase     string
-	solveOutDir   string
-	solveContext  string
-	solveAgent    string
-	solveImage    string
-	solveMode     string
-	solveRole     string
-	solveLogLevel string
-	solveDryRun   bool
+	solveRepo            string
+	solveBase            string
+	solveOutDir          string
+	solveContext         string
+	solveAgent           string
+	solveImage           string
+	solveMode            string
+	solveRole            string
+	solveLogLevel        string
+	solveDryRun          bool
+	solveWorkspace       string
+	solveWorkspaceStrategy string
+	solveWorkspaceHistory  string
+	solveWorkspaceRef      string
+	solveFetchRemote       bool
 )
 
 // solveCmd is the parent solve command
@@ -36,9 +44,18 @@ var solveCmd = &cobra.Command{
 	Long: `Solve a GitHub Issue or PR reference by collecting context, running Holon, and publishing results.
 
 This is a high-level command that orchestrates the full workflow:
-1. Collect context from the GitHub Issue or PR
-2. Run Holon with the collected context
-3. Publish results (create PR for issues, or push/fix for PRs)
+1. Prepare workspace using smart workspace preparation
+2. Collect context from the GitHub Issue or PR
+3. Run Holon with the collected context
+4. Publish results (create PR for issues, or push/fix for PRs)
+
+Workspace Preparation:
+  The workspace is prepared automatically based on the context:
+  - If --workspace PATH is provided: uses the existing directory (no cloning)
+  - If current directory matches the ref repo: creates a clean temp workspace via git-clone (using --local)
+  - Otherwise: clones from the remote repository into a temp directory (shallow by default)
+
+  Temporary workspaces are automatically cleaned up after execution.
 
 Supported Reference Formats:
   - Full URLs:
@@ -60,7 +77,13 @@ Examples:
 
   # Numeric reference (requires --repo)
   holon solve 123 --repo holon-run/holon
-  holon solve #123 --repo holon-run/holon`,
+  holon solve #123 --repo holon-run/holon
+
+  # Use specific workspace path
+  holon solve holon-run/holon#123 --workspace /path/to/workspace
+
+  # Control workspace history mode
+  holon solve holon-run/holon#123 --workspace-history full`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return fmt.Errorf("reference argument is required")
@@ -115,6 +138,222 @@ Examples:
 		}
 		return runSolve(context.Background(), args[0], "pr")
 	},
+}
+
+// workspacePreparation holds the workspace preparation result
+type workspacePreparation struct {
+	path       string
+	preparer   workspace.Preparer
+	cleanupNeeded bool
+}
+
+// prepareWorkspaceForSolve prepares a workspace based on the solve reference and flags
+// Decision logic:
+// 1) If --workspace PATH is provided: use preparer "existing" on PATH (no clone/copy)
+// 2) If not provided and current dir is a git repo matching the ref owner/repo:
+//    prepare a clean temp workspace via git-clone with Source=current repo (using --local internally)
+// 3) Otherwise: prepare via git-clone from the ref's repo URL into a temp dir (shallow by default)
+func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef, token string) (*workspacePreparation, error) {
+	var workspacePath string
+	var preparer workspace.Preparer
+	var cleanupNeeded bool
+	var source string
+
+	// Decision 1: If --workspace PATH is provided, use "existing" strategy
+	if solveWorkspace != "" {
+		source = solveWorkspace
+		workspacePath = solveWorkspace
+		preparer = workspace.NewExistingPreparer()
+		cleanupNeeded = false
+
+		fmt.Printf("Workspace mode: existing (user-provided path)\n")
+		fmt.Printf("  Path: %s\n", workspacePath)
+
+		// Prepare using existing strategy
+		_, err := preparer.Prepare(ctx, workspace.PrepareRequest{
+			Source:  source,
+			Dest:    workspacePath,
+			Ref:     solveWorkspaceRef,
+			History: workspace.HistoryFull, // History doesn't matter for existing
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to prepare workspace using existing strategy: %w", err)
+		}
+
+		return &workspacePreparation{
+			path:         workspacePath,
+			preparer:     preparer,
+			cleanupNeeded: cleanupNeeded,
+		}, nil
+	}
+
+	// Decision 2: Check if current directory matches the ref owner/repo
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	currentDirRepo, err := getGitRepoOrigin(currentDir)
+	if err == nil && currentDirRepo == fmt.Sprintf("%s/%s", solveRef.Owner, solveRef.Repo) {
+		// Current dir matches the ref repo - use git-clone with --local from current repo
+		source = currentDir
+
+		// Create a temp directory for the workspace
+		tempDir, err := os.MkdirTemp("", "holon-solve-workspace-*")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create temp workspace directory: %w", err)
+		}
+		workspacePath = tempDir
+		preparer = workspace.NewGitClonePreparer()
+		cleanupNeeded = true
+
+		fmt.Printf("Workspace mode: git-clone (from local repo matching ref)\n")
+		fmt.Printf("  Source: %s\n", source)
+		fmt.Printf("  Dest: %s\n", workspacePath)
+
+		// Determine history mode
+		historyMode := solveWorkspaceHistory
+		if historyMode == "" {
+			historyMode = "full" // Default to full for local clones
+		}
+
+		// Prepare using git-clone strategy
+		_, err = preparer.Prepare(ctx, workspace.PrepareRequest{
+			Source:  source,
+			Dest:    workspacePath,
+			Ref:     solveWorkspaceRef,
+			History: workspace.HistoryMode(historyMode),
+			CleanDest: true,
+		})
+		if err != nil {
+			os.RemoveAll(workspacePath)
+			return nil, fmt.Errorf("failed to prepare workspace using git-clone from local repo: %w", err)
+		}
+
+		return &workspacePreparation{
+			path:         workspacePath,
+			preparer:     preparer,
+			cleanupNeeded: cleanupNeeded,
+		}, nil
+	}
+
+	// Decision 3: Clone from remote repository
+	source = fmt.Sprintf("https://github.com/%s/%s.git", solveRef.Owner, solveRef.Repo)
+
+	// Create a temp directory for the workspace
+	tempDir, err := os.MkdirTemp("", "holon-solve-workspace-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp workspace directory: %w", err)
+	}
+	workspacePath = tempDir
+	preparer = workspace.NewGitClonePreparer()
+	cleanupNeeded = true
+
+	fmt.Printf("Workspace mode: git-clone (from remote)\n")
+	fmt.Printf("  Source: %s\n", source)
+	fmt.Printf("  Dest: %s\n", workspacePath)
+
+	// Determine history mode
+	historyMode := solveWorkspaceHistory
+	if historyMode == "" {
+		historyMode = "shallow" // Default to shallow for remote clones
+	}
+
+	// Prepare using git-clone strategy
+	result, err := preparer.Prepare(ctx, workspace.PrepareRequest{
+		Source:  source,
+		Dest:    workspacePath,
+		Ref:     solveWorkspaceRef,
+		History: workspace.HistoryMode(historyMode),
+		CleanDest: true,
+	})
+	if err != nil {
+		os.RemoveAll(workspacePath)
+		return nil, fmt.Errorf("failed to prepare workspace using git-clone from remote: %w", err)
+	}
+
+	// Log preparation details
+	fmt.Printf("  Strategy: %s\n", result.Strategy)
+	if result.HeadSHA != "" {
+		fmt.Printf("  HEAD: %s\n", result.HeadSHA)
+	}
+	if result.HasHistory {
+		if result.IsShallow {
+			fmt.Printf("  History: shallow\n")
+		} else {
+			fmt.Printf("  History: full\n")
+		}
+	} else {
+		fmt.Printf("  History: none\n")
+	}
+
+	// Optional: fetch remote updates if requested
+	if solveFetchRemote {
+		fmt.Println("Fetching remote updates...")
+		if err := fetchRemoteUpdates(ctx, workspacePath); err != nil {
+			fmt.Printf("Warning: failed to fetch remote updates: %v\n", err)
+		}
+	}
+
+	return &workspacePreparation{
+		path:         workspacePath,
+		preparer:     preparer,
+		cleanupNeeded: cleanupNeeded,
+	}, nil
+}
+
+// getGitRepoOrigin gets the owner/repo from a git repository's remote origin
+func getGitRepoOrigin(dir string) (string, error) {
+	client := git.NewClient(dir)
+
+	// Get remote origin URL
+	originURL, err := client.ConfigGet(context.Background(), "remote.origin.url")
+	if err != nil {
+		return "", fmt.Errorf("failed to get remote origin URL: %w", err)
+	}
+
+	// Parse the URL to extract owner/repo
+	// Support both HTTPS and SSH URLs
+	// HTTPS: https://github.com/owner/repo.git or https://github.com/owner/repo
+	// SSH: git@github.com:owner/repo.git
+
+	// Remove .git suffix if present
+	url := strings.TrimSuffix(originURL, ".git")
+
+	// Handle SSH format: git@github.com:owner/repo
+	if strings.HasPrefix(url, "git@") {
+		parts := strings.SplitN(url, ":", 2)
+		if len(parts) == 2 {
+			url = parts[1]
+		}
+	}
+
+	// Handle HTTPS format: https://github.com/owner/repo
+	if strings.HasPrefix(url, "https://") {
+		parts := strings.Split(url, "/")
+		if len(parts) >= 2 {
+			return fmt.Sprintf("%s/%s", parts[len(parts)-2], parts[len(parts)-1]), nil
+		}
+	}
+
+	// Handle remaining format: owner/repo
+	parts := strings.Split(url, "/")
+	if len(parts) >= 2 {
+		return fmt.Sprintf("%s/%s", parts[len(parts)-2], parts[len(parts)-1]), nil
+	}
+
+	return "", fmt.Errorf("unable to parse owner/repo from URL: %s", originURL)
+}
+
+// fetchRemoteUpdates fetches updates from the remote repository
+func fetchRemoteUpdates(ctx context.Context, dir string) error {
+	// Fetch from origin
+	cmd := exec.Command("git", "-C", dir, "fetch", "origin")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch failed: %w: %s", err, string(output))
+	}
+
+	return nil
 }
 
 // runSolve implements the main solve logic
@@ -203,12 +442,30 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		}
 	}
 
-	// Get workspace directory
-	workspace := "."
-	if solveRepo != "" {
-		// Try to clone the repo if not already present
-		// For now, we'll use the current directory as workspace
-		// In the future, we could support auto-cloning
+	// Prepare workspace using the workspace prepare abstraction
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("Preparing workspace...")
+	fmt.Println(strings.Repeat("=", 60))
+
+	workspacePrep, err := prepareWorkspaceForSolve(ctx, solveRef, token)
+	if err != nil {
+		return fmt.Errorf("failed to prepare workspace: %w", err)
+	}
+
+	// Ensure cleanup happens for temporary workspaces
+	if workspacePrep.cleanupNeeded {
+		defer func() {
+			fmt.Printf("\nCleaning up temporary workspace: %s\n", workspacePrep.path)
+			if err := workspacePrep.preparer.Cleanup(workspacePrep.path); err != nil {
+				fmt.Printf("Warning: failed to cleanup workspace: %v\n", err)
+			}
+		}()
+	}
+
+	// Set HOLON_WORKSPACE environment variable for publishers
+	// This needs to be set before running holon so it's available in the environment
+	if err := os.Setenv("HOLON_WORKSPACE", workspacePrep.path); err != nil {
+		return fmt.Errorf("failed to set HOLON_WORKSPACE environment variable: %w", err)
 	}
 
 	// Determine goal from the reference
@@ -230,7 +487,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		TaskName:      fmt.Sprintf("solve-%s-%d", refType, solveRef.Number),
 		BaseImage:     solveImage,
 		AgentBundle:   solveAgent,
-		WorkspacePath: workspace,
+		WorkspacePath: workspacePrep.path,
 		ContextPath:   contextDir,
 		OutDir:        outDir,
 		RoleName:      solveRole,
@@ -424,6 +681,12 @@ func init() {
 	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")
 	solveCmd.Flags().BoolVar(&solveDryRun, "dry-run", false, "Validate without running (not yet implemented)")
+
+	// Workspace preparation flags
+	solveCmd.Flags().StringVar(&solveWorkspace, "workspace", "", "Workspace path (uses existing directory, no cloning)")
+	solveCmd.Flags().StringVar(&solveWorkspaceRef, "workspace-ref", "", "Git ref to checkout (branch, tag, or SHA)")
+	solveCmd.Flags().StringVar(&solveWorkspaceHistory, "workspace-history", "", "Git history mode: full, shallow, or none (default: full for local, shallow for remote)")
+	solveCmd.Flags().BoolVar(&solveFetchRemote, "fetch-remote", false, "Fetch remote updates before solving (default: false)")
 
 	// Add subcommands
 	solveCmd.AddCommand(solveIssueCmd)
