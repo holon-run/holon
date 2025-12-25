@@ -55,8 +55,8 @@ Examples:
   # Solve a PR (fixes review comments)
   holon solve https://github.com/holon-run/holon/pull/456
 
-  # Short form with explicit repo
-  holon solve holon-run/holon#789 --repo holon-run/holon
+  # Short form
+  holon solve holon-run/holon#789
 
   # Numeric reference (requires --repo)
   holon solve 123 --repo holon-run/holon
@@ -119,6 +119,12 @@ Examples:
 
 // runSolve implements the main solve logic
 func runSolve(ctx context.Context, refStr, explicitType string) error {
+	// Get GitHub token early for validation
+	token, err := getGitHubToken()
+	if err != nil {
+		return err
+	}
+
 	// Parse the reference
 	solveRef, err := pkggithub.ParseSolveRef(refStr, solveRepo)
 	if err != nil {
@@ -131,7 +137,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	refType := explicitType
 	if refType == "" {
 		// Determine type by checking if it's a PR via API
-		refType, err = determineRefType(ctx, solveRef)
+		refType, err = determineRefType(ctx, solveRef, token)
 		if err != nil {
 			return fmt.Errorf("failed to determine reference type: %w", err)
 		}
@@ -155,15 +161,6 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	// Get GitHub token
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		token = os.Getenv("GH_TOKEN")
-	}
-	if token == "" {
-		return fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable is required")
-	}
-
 	// Collect context based on type
 	contextDir := filepath.Join(outDir, "context")
 	if err := os.MkdirAll(contextDir, 0755); err != nil {
@@ -184,7 +181,10 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		if err := prCollector.Collect(ctx); err != nil {
 			return fmt.Errorf("failed to collect PR context: %w", err)
 		}
-		solveMode = "pr-fix"
+		// Only override mode if user hasn't explicitly set it
+		if solveMode == "" {
+			solveMode = "pr-fix"
+		}
 	} else {
 		// Collect issue context
 		issueCollector := issue.NewCollector(issue.CollectorConfig{
@@ -197,7 +197,10 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		if err := issueCollector.Collect(ctx); err != nil {
 			return fmt.Errorf("failed to collect issue context: %w", err)
 		}
-		solveMode = "solve"
+		// Only override mode if user hasn't explicitly set it
+		if solveMode == "" {
+			solveMode = "solve"
+		}
 	}
 
 	// Get workspace directory
@@ -256,15 +259,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 }
 
 // determineRefType determines if a reference is an issue or PR via GitHub API
-func determineRefType(ctx context.Context, ref *pkggithub.SolveRef) (string, error) {
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		token = os.Getenv("GH_TOKEN")
-	}
-	if token == "" {
-		return "", fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable is required")
-	}
-
+func determineRefType(ctx context.Context, ref *pkggithub.SolveRef, token string) (string, error) {
 	client := pkggithub.NewClient(token)
 
 	// Try to fetch as PR - if successful, it's a PR
@@ -282,6 +277,18 @@ func determineRefType(ctx context.Context, ref *pkggithub.SolveRef) (string, err
 	}
 
 	return "", fmt.Errorf("reference is neither a valid PR nor issue")
+}
+
+// getGitHubToken retrieves the GitHub token from environment variables
+func getGitHubToken() (string, error) {
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		token = os.Getenv("GH_TOKEN")
+	}
+	if token == "" {
+		return "", fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable is required")
+	}
+	return token, nil
 }
 
 // buildGoal builds a goal description from the reference
@@ -413,10 +420,10 @@ func init() {
 	solveCmd.Flags().StringVarP(&solveContext, "context", "c", "", "Additional context directory (deprecated)")
 	solveCmd.Flags().StringVar(&solveAgent, "agent", "", "Agent bundle reference")
 	solveCmd.Flags().StringVarP(&solveImage, "image", "i", "golang:1.22", "Docker base image")
-	solveCmd.Flags().StringVar(&solveMode, "mode", "", "Execution mode (auto-detected from ref type)")
+	solveCmd.Flags().StringVar(&solveMode, "mode", "", "Execution mode (default: auto-detect from ref type)")
 	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")
-	solveCmd.Flags().BoolVar(&solveDryRun, "dry-run", false, "Validate without running")
+	solveCmd.Flags().BoolVar(&solveDryRun, "dry-run", false, "Validate without running (not yet implemented)")
 
 	// Add subcommands
 	solveCmd.AddCommand(solveIssueCmd)

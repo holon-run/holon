@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/holon-run/holon/pkg/github"
 )
@@ -78,7 +79,7 @@ func (c *Collector) Collect(ctx context.Context) error {
 // writeContext writes the issue context to files
 func (c *Collector) writeContext(info *github.IssueInfo, comments []github.IssueComment) error {
 	// Create github directory
-	githubDir := fmt.Sprintf("%s/github", c.config.OutputDir)
+	githubDir := filepath.Join(c.config.OutputDir, "github")
 	if err := os.MkdirAll(githubDir, 0755); err != nil {
 		return fmt.Errorf("failed to create github directory: %w", err)
 	}
@@ -88,7 +89,7 @@ func (c *Collector) writeContext(info *github.IssueInfo, comments []github.Issue
 	if err != nil {
 		return fmt.Errorf("failed to marshal issue info: %w", err)
 	}
-	issuePath := fmt.Sprintf("%s/issue.json", githubDir)
+	issuePath := filepath.Join(githubDir, "issue.json")
 	if err := os.WriteFile(issuePath, issueData, 0644); err != nil {
 		return fmt.Errorf("failed to write issue.json: %w", err)
 	}
@@ -98,7 +99,7 @@ func (c *Collector) writeContext(info *github.IssueInfo, comments []github.Issue
 	if err != nil {
 		return fmt.Errorf("failed to marshal comments: %w", err)
 	}
-	commentsPath := fmt.Sprintf("%s/issue_comments.json", githubDir)
+	commentsPath := filepath.Join(githubDir, "issue_comments.json")
 	if err := os.WriteFile(commentsPath, commentsData, 0644); err != nil {
 		return fmt.Errorf("failed to write issue_comments.json: %w", err)
 	}

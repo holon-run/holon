@@ -73,11 +73,12 @@ func ParseSolveRef(ref string, defaultRepo string) (*SolveRef, error) {
 	if matches := shortRefPattern.FindStringSubmatch(ref); matches != nil {
 		num, _ := strconv.Atoi(matches[3])
 		// Type is ambiguous - will be determined via API
+		// Default placeholder value; actual type determined via API in determineRefType
 		return &SolveRef{
 			Owner:  matches[1],
 			Repo:   matches[2],
 			Number: num,
-			Type:   SolveRefTypePR, // Default to PR for backward compatibility
+			Type:   SolveRefTypePR, // Placeholder; type determined via API
 		}, nil
 	}
 
@@ -86,8 +87,8 @@ func ParseSolveRef(ref string, defaultRepo string) (*SolveRef, error) {
 		return nil, fmt.Errorf("ambiguous reference '%s' requires --repo flag (e.g., --repo owner/repo)", ref)
 	}
 
-	numericStr := strings.TrimPrefix(ref, "#")
-	if matches := numericPattern.FindStringSubmatch(numericStr); matches != nil {
+	refWithoutHash := strings.TrimPrefix(ref, "#")
+	if matches := numericPattern.FindStringSubmatch(refWithoutHash); matches != nil {
 		// Parse defaultRepo
 		parts := strings.Split(defaultRepo, "/")
 		if len(parts) != 2 {
@@ -98,7 +99,7 @@ func ParseSolveRef(ref string, defaultRepo string) (*SolveRef, error) {
 			Owner:  parts[0],
 			Repo:   parts[1],
 			Number: num,
-			Type:   SolveRefTypePR, // Default to PR for backward compatibility
+			Type:   SolveRefTypePR, // Placeholder; type determined via API
 		}, nil
 	}
 
@@ -117,7 +118,8 @@ func (r *SolveRef) String() string {
 	}
 }
 
-// URL returns the GitHub URL for this reference
+// URL returns the GitHub URL for this reference.
+// Falls back to issues URL for unknown types (should not occur in normal usage).
 func (r *SolveRef) URL() string {
 	switch r.Type {
 	case SolveRefTypeIssue:
@@ -125,6 +127,7 @@ func (r *SolveRef) URL() string {
 	case SolveRefTypePR:
 		return fmt.Sprintf("https://github.com/%s/%s/pull/%d", r.Owner, r.Repo, r.Number)
 	default:
+		// Fallback to issues URL for unknown types
 		return fmt.Sprintf("https://github.com/%s/%s/issues/%d", r.Owner, r.Repo, r.Number)
 	}
 }
