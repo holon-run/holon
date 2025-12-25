@@ -32,19 +32,18 @@ func (p *ExistingPreparer) Validate(req PrepareRequest) error {
 	if req.Dest == "" {
 		return fmt.Errorf("dest cannot be empty")
 	}
-	// Check that source exists
-	if _, err := os.Stat(req.Source); os.IsNotExist(err) {
-		return fmt.Errorf("source does not exist: %s", req.Source)
+	// Check that dest exists (it should already contain the workspace content)
+	if _, err := os.Stat(req.Dest); os.IsNotExist(err) {
+		return fmt.Errorf("dest does not exist: %s", req.Dest)
 	}
 	return nil
 }
 
 // Prepare uses an existing directory as the workspace without modification.
-// The Source should be the existing directory path to use.
-// The Dest parameter is validated for API compatibility but is ignored during execution;
-// the actual workspace used is the Source directory itself.
-// This strategy is useful when the user wants to use an existing checkout without
-// creating a copy or clone, and ensures the workspace manifest is written to the source.
+// This validates that dest contains a usable git repository or directory tree,
+// records metadata into workspace.manifest.json, and does not modify the content.
+// The Source parameter is used for metadata and origin tracking.
+// This strategy is useful for using already-prepared workspaces (e.g., GitHub Actions checkout).
 func (p *ExistingPreparer) Prepare(ctx context.Context, req PrepareRequest) (PrepareResult, error) {
 	if err := p.Validate(req); err != nil {
 		return PrepareResult{}, fmt.Errorf("validation failed: %w", err)
@@ -54,9 +53,8 @@ func (p *ExistingPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	result.Source = req.Source
 	result.Ref = req.Ref
 
-	// For existing strategy, we use the source as the workspace
-	// The dest parameter is effectively ignored
-	actualDest := req.Source
+	// For existing strategy, dest should already contain the workspace content
+	actualDest := req.Dest
 
 	// Get git information if available
 	if IsGitRepo(actualDest) {

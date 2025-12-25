@@ -263,17 +263,17 @@ func TestExistingPreparer(t *testing.T) {
 		t.Skip("skipping existing test in short mode")
 	}
 
-	// Create a temporary git repository to use as source
-	sourceDir := t.TempDir()
-	setupTestRepo(t, sourceDir)
+	// Create a temporary git repository to use as the existing workspace
+	destDir := t.TempDir()
+	setupTestRepo(t, destDir)
 
 	t.Run("Prepare existing", func(t *testing.T) {
 		ctx := context.Background()
 
 		preparer := NewExistingPreparer()
 		req := PrepareRequest{
-			Source:  sourceDir,
-			Dest:    "/ignored", // dest is ignored for existing strategy
+			Source:  "/origin/repo", // source is used for metadata/origin tracking
+			Dest:    destDir,        // dest should already contain the workspace
 			History: HistoryNone,
 		}
 
@@ -288,9 +288,12 @@ func TestExistingPreparer(t *testing.T) {
 		if result.HeadSHA == "" {
 			t.Error("expected HeadSHA to be set")
 		}
+		if result.Source != "/origin/repo" {
+			t.Errorf("expected source /origin/repo, got %s", result.Source)
+		}
 
-		// Verify workspace.manifest.json was written to source
-		manifestPath := filepath.Join(sourceDir, "workspace.manifest.json")
+		// Verify workspace.manifest.json was written to dest
+		manifestPath := filepath.Join(destDir, "workspace.manifest.json")
 		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
 			t.Error("workspace.manifest.json was not created")
 		}
@@ -300,14 +303,119 @@ func TestExistingPreparer(t *testing.T) {
 		preparer := NewExistingPreparer()
 
 		// Cleanup should be a no-op
-		err := preparer.Cleanup(sourceDir)
+		err := preparer.Cleanup(destDir)
 		if err != nil {
 			t.Fatalf("Cleanup() failed: %v", err)
 		}
 
 		// Directory should still exist
-		if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
-			t.Error("source directory was removed (should be no-op)")
+		if _, err := os.Stat(destDir); os.IsNotExist(err) {
+			t.Error("dest directory was removed (should be no-op)")
+		}
+	})
+
+	t.Run("Validate fails when dest does not exist", func(t *testing.T) {
+		preparer := NewExistingPreparer()
+		req := PrepareRequest{
+			Source: "/origin/repo",
+			Dest:   "/nonexistent/path",
+		}
+
+		err := preparer.Validate(req)
+		if err == nil {
+			t.Error("expected error when dest does not exist")
+		}
+	})
+
+	t.Run("GitHub Actions checkout scenario", func(t *testing.T) {
+		// Simulate a GitHub Actions checkout directory
+		ghCheckoutDir := t.TempDir()
+		setupTestRepo(t, ghCheckoutDir)
+
+		ctx := context.Background()
+
+		preparer := NewExistingPreparer()
+		req := PrepareRequest{
+			Source: "https://github.com/owner/repo",
+			Dest:   ghCheckoutDir,
+			Ref:    "main",
+		}
+
+		result, err := preparer.Prepare(ctx, req)
+		if err != nil {
+			t.Fatalf("Prepare() failed: %v", err)
+		}
+
+		// Verify the workspace is usable
+		if result.Strategy != "existing" {
+			t.Errorf("expected strategy existing, got %s", result.Strategy)
+		}
+		if result.Source != "https://github.com/owner/repo" {
+			t.Errorf("expected source URL to be preserved")
+		}
+		if result.HeadSHA == "" {
+			t.Error("expected HeadSHA to be set for git repo")
+		}
+		if !result.HasHistory {
+			t.Error("expected HasHistory to be true for full git checkout")
+		}
+
+		// Verify workspace.manifest.json was written
+		manifestPath := filepath.Join(ghCheckoutDir, "workspace.manifest.json")
+		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
+			t.Error("workspace.manifest.json was not created")
+		}
+
+		// Verify the manifest contains the correct information
+		manifest, err := ReadManifest(ghCheckoutDir)
+		if err != nil {
+			t.Fatalf("Failed to read manifest: %v", err)
+		}
+		if manifest.Strategy != "existing" {
+			t.Errorf("expected manifest strategy existing, got %s", manifest.Strategy)
+		}
+		if manifest.HeadSHA == "" {
+			t.Error("expected manifest HeadSHA to be set")
+		}
+	})
+
+	t.Run("Non-git directory tree (history=none)", func(t *testing.T) {
+		// Simulate a directory tree without git history
+		dirWithoutGit := t.TempDir()
+		// Create some files but no .git directory
+		if err := os.WriteFile(filepath.Join(dirWithoutGit, "README.md"), []byte("test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ctx := context.Background()
+
+		preparer := NewExistingPreparer()
+		req := PrepareRequest{
+			Source:  "local-source",
+			Dest:    dirWithoutGit,
+			History: HistoryNone,
+		}
+
+		result, err := preparer.Prepare(ctx, req)
+		if err != nil {
+			t.Fatalf("Prepare() failed: %v", err)
+		}
+
+		// Should work without git
+		if result.Strategy != "existing" {
+			t.Errorf("expected strategy existing, got %s", result.Strategy)
+		}
+		if result.HasHistory {
+			t.Error("expected HasHistory to be false for non-git directory")
+		}
+		if result.HeadSHA != "" {
+			t.Error("expected HeadSHA to be empty for non-git directory")
+		}
+
+		// Manifest should still be written
+		manifestPath := filepath.Join(dirWithoutGit, "workspace.manifest.json")
+		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
+			t.Error("workspace.manifest.json was not created")
 		}
 	})
 }
