@@ -157,10 +157,8 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 				fmt.Println("Do NOT use this in CI or shared environments.")
 				fmt.Println("============================================================")
 				// Set environment variable to indicate mounted config is available
-				if cfg.Env == nil {
-					cfg.Env = make(map[string]string)
-				}
-				cfg.Env["HOLON_MOUNTED_CLAUDE_CONFIG"] = "1"
+				// Add directly to env slice since BuildContainerEnv was already called
+				env = append(env, "HOLON_MOUNTED_CLAUDE_CONFIG=1")
 			}
 		}
 	}

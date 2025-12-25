@@ -269,25 +269,36 @@ async function runClaude(
   const env = { ...process.env } as NodeJS.ProcessEnv;
   const isMountedConfig = env.HOLON_MOUNTED_CLAUDE_CONFIG === "1";
 
-  // When mounted config is present, prefer it over env-based API keys
-  // Only use env-based auth if no mounted config exists
-  let authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
-  let baseUrl = env.ANTHROPIC_BASE_URL || env.ANTHROPIC_API_URL || "https://api.anthropic.com";
+  // Extract auth token and base URL from environment variables
+  // These will be used as fallback when mounted config doesn't have them
+  const authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
+  const baseUrl = env.ANTHROPIC_BASE_URL || env.ANTHROPIC_API_URL || "https://api.anthropic.com";
+
+  // Normalize env-based auth variables so the Claude Code SDK can rely on them,
+  // regardless of whether a mounted config is present. Do not overwrite any
+  // values that are already set (from mounted config or the user).
+  if (authToken) {
+    if (!env.ANTHROPIC_AUTH_TOKEN) {
+      env.ANTHROPIC_AUTH_TOKEN = authToken;
+    }
+    if (!env.ANTHROPIC_API_KEY) {
+      env.ANTHROPIC_API_KEY = authToken;
+    }
+  }
+  if (baseUrl) {
+    if (!env.ANTHROPIC_BASE_URL) {
+      env.ANTHROPIC_BASE_URL = baseUrl;
+    }
+    if (!env.ANTHROPIC_API_URL) {
+      env.ANTHROPIC_API_URL = baseUrl;
+    }
+    if (!env.CLAUDE_CODE_API_URL) {
+      env.CLAUDE_CODE_API_URL = baseUrl;
+    }
+  }
 
   if (isMountedConfig) {
     logger.info("Using mounted Claude config from host (env-based auth as fallback)");
-    // Keep the existing values - Claude Code SDK will use mounted settings first
-  } else {
-    // No mounted config - use env-based auth
-    if (authToken) {
-      env.ANTHROPIC_AUTH_TOKEN = authToken;
-      env.ANTHROPIC_API_KEY = authToken;
-    }
-    if (baseUrl) {
-      env.ANTHROPIC_BASE_URL = baseUrl;
-      env.ANTHROPIC_API_URL = baseUrl;
-      env.CLAUDE_CODE_API_URL = baseUrl;
-    }
   }
   env.IS_SANDBOX = "1";
 

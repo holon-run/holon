@@ -72,14 +72,14 @@ The `--use-local-claude-config` flag allows you to reuse your existing Claude Co
 - If `~/.claude` exists on the host, it will be mounted into the container at `/root/.claude`
 - The mount is **read-only** to prevent accidental modifications
 - The agent will respect the existing config and NOT overwrite it
-- Environment-based API keys (ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL) act as fallback
+- Environment-based API keys (ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL) act as fallback when mounted config doesn't have those values set
 
 **Usage:**
 ```bash
 # Use your existing Claude config from host
 ./bin/holon run --goal "Fix the bug" --use-local-claude-config
 
-# Config mount + custom API key (overrides mounted config)
+# Config mount + custom API key (fills in missing values in mounted config)
 ANTHROPIC_API_KEY=sk-xxx ./bin/holon run --goal "Fix the bug" --use-local-claude-config
 ```
 
