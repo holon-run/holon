@@ -127,7 +127,7 @@ Tasks can be defined via `--spec` using `spec.yaml` (see `examples/*.yaml`). At 
 - expected outputs (`output.artifacts`)
 
 ## Execution modes (design)
-We’re converging on a single user-facing knob: `mode` (`execute` / `plan` / `review`) that binds prompts + hard sandbox semantics + required artifacts. Design notes live in `docs/modes.md`.
+We're converging on a single user-facing knob: `mode` (`solve` / `plan` / `review`) that binds prompts + hard sandbox semantics + required artifacts. Design notes live in `docs/modes.md`.
 
 Today, the CLI supports `--role` (prompt persona) and `--log-level`. `--mode` is tracked as a follow-up (see issue #94).
 

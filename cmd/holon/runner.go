@@ -165,7 +165,7 @@ output:
 	if cfg.Mode != "" {
 		envVars["HOLON_MODE"] = cfg.Mode
 	} else {
-		envVars["HOLON_MODE"] = "execute" // Default to execute mode
+		envVars["HOLON_MODE"] = "solve" // Default to solve mode
 	}
 
 	// Compile prompts

@@ -96,4 +96,4 @@ Implementation details and examples:
 - Agent encapsulation scheme: `docs/agent-encapsulation.md`
 - Claude agent reference notes: `docs/agent-claude.md`
 - High-level architecture and composition notes: `docs/holon-architecture.md`
-- `mode` design (execute/plan/review): `docs/modes.md`
+- `mode` design (solve/plan/review): `docs/modes.md`

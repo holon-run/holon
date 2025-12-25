@@ -85,7 +85,7 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		mode = manifest.Defaults.Mode
 	}
 	if mode == "" {
-		mode = "execute" // Fallback
+		mode = "solve" // Fallback
 	}
 
 	// 3. Resolve Role (with defaults and alias support)

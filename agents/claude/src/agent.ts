@@ -411,7 +411,7 @@ async function runClaude(
 
 async function runAgent(): Promise<void> {
   const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress");
-  const mode = process.env.HOLON_MODE ?? "execute";
+  const mode = process.env.HOLON_MODE ?? "solve";
   const isProbe = process.argv.slice(2).includes("--probe");
 
   console.log("Holon Claude Agent process started...");

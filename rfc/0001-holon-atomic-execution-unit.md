@@ -110,4 +110,4 @@ v0.1 assumes network access is available for calling LLM APIs. Future versions m
 Design notes and examples (non-normative):
 - Architecture/design: `docs/holon-architecture.md`
 - Agent pattern (non-normative): `docs/agent-encapsulation.md`
-- `mode` design (execute/plan/review): `docs/modes.md`
+- `mode` design (solve/plan/review): `docs/modes.md`

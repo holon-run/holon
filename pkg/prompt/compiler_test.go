@@ -13,13 +13,13 @@ func TestCompileSystemPrompt(t *testing.T) {
 		"manifest.yaml": {Data: []byte(`
 version: 1.0.0
 defaults:
-  mode: execute
+  mode: solve
   role: developer
   contract: v1
 `)},
-		"contracts/common.md":      {Data: []byte("Common: {{ .WorkingDir }}")},
-		"modes/execute/contract.md": {Data: []byte("Execute Mode Contract")},
-		"roles/developer.md":        {Data: []byte("Role: Developer")},
+		"contracts/common.md":     {Data: []byte("Common: {{ .WorkingDir }}")},
+		"modes/solve/contract.md": {Data: []byte("Solve Mode Contract")},
+		"roles/developer.md":      {Data: []byte("Role: Developer")},
 	}
 
 	compiler := NewCompilerFromFS(mockFS)
@@ -35,7 +35,7 @@ defaults:
 		if !strings.Contains(prompt, "Common: /test/ws") {
 			t.Errorf("Prompt missing common contract data: %s", prompt)
 		}
-		if !strings.Contains(prompt, "Execute Mode Contract") {
+		if !strings.Contains(prompt, "Solve Mode Contract") {
 			t.Errorf("Prompt missing mode contract data: %s", prompt)
 		}
 		if !strings.Contains(prompt, "Role: Developer") {
@@ -104,9 +104,9 @@ func TestCompileSystemPromptErrors(t *testing.T) {
 		{
 			name: "Missing manifest.yaml",
 			mockFS: fstest.MapFS{
-				"contracts/common.md":      {Data: []byte("Common content")},
-				"modes/execute/contract.md": {Data: []byte("Execute mode")},
-				"roles/developer.md":        {Data: []byte("Role content")},
+				"contracts/common.md":     {Data: []byte("Common content")},
+				"modes/solve/contract.md": {Data: []byte("Solve mode")},
+				"roles/developer.md":      {Data: []byte("Role content")},
 			},
 			cfg:           Config{WorkingDir: "/test"},
 			expectedError: "failed to read manifest",
@@ -114,10 +114,10 @@ func TestCompileSystemPromptErrors(t *testing.T) {
 		{
 			name: "Invalid YAML in manifest",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":             {Data: []byte("invalid: yaml: content: [")},
-				"contracts/common.md":       {Data: []byte("Contract content")},
-				"modes/execute/contract.md": {Data: []byte("Execute mode")},
-				"roles/developer.md":        {Data: []byte("Role content")},
+				"manifest.yaml":           {Data: []byte("invalid: yaml: content: [")},
+				"contracts/common.md":     {Data: []byte("Contract content")},
+				"modes/solve/contract.md": {Data: []byte("Solve mode")},
+				"roles/developer.md":      {Data: []byte("Role content")},
 			},
 			cfg:           Config{WorkingDir: "/test"},
 			expectedError: "failed to parse manifest",
@@ -125,8 +125,8 @@ func TestCompileSystemPromptErrors(t *testing.T) {
 		{
 			name: "Missing common contract file",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":             {Data: []byte("version: 1.0.0\ndefaults:\n  mode: execute\n  role: developer\n")},
-				"modes/execute/contract.md": {Data: []byte("Execute mode")},
+				"manifest.yaml":           {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
+				"modes/solve/contract.md": {Data: []byte("Solve mode")},
 				"roles/developer.md":        {Data: []byte("Role content")},
 			},
 			cfg:           Config{WorkingDir: "/test"},
@@ -135,7 +135,7 @@ func TestCompileSystemPromptErrors(t *testing.T) {
 		{
 			name: "Missing role file",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: execute\n  role: architect\n")},
+				"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: architect\n")},
 				"contracts/common.md": {Data: []byte("Common content")},
 				"roles/developer.md":  {Data: []byte("Role content")},
 			},
@@ -145,7 +145,7 @@ func TestCompileSystemPromptErrors(t *testing.T) {
 		{
 			name: "Missing role file with explicit role",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: execute\n  role: developer\n")},
+				"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
 				"contracts/common.md": {Data: []byte("Common content")},
 				"roles/developer.md":  {Data: []byte("Role content")},
 			},
@@ -266,7 +266,7 @@ func TestCompileSystemPromptFallbacks(t *testing.T) {
 		{
 			name: "Fallback to default role when manifest has no role",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: execute\n")},
+				"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n")},
 				"contracts/common.md": {Data: []byte("Common: {{ .WorkingDir }}")},
 				"roles/developer.md":  {Data: []byte("Default Role")},
 			},
@@ -313,28 +313,28 @@ func TestModeOverlayLoading(t *testing.T) {
 		notExpectedInPrompt []string
 	}{
 		{
-			name: "Execute mode loads execute contract",
+			name: "Solve mode loads solve contract",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":             {Data: []byte("version: 1.0.0\ndefaults:\n  mode: execute\n  role: developer\n")},
-				"contracts/common.md":       {Data: []byte("Common Contract")},
-				"modes/execute/contract.md": {Data: []byte("Execute Mode Overlay")},
-				"roles/developer.md":        {Data: []byte("Developer Role")},
+				"manifest.yaml":           {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
+				"contracts/common.md":     {Data: []byte("Common Contract")},
+				"modes/solve/contract.md": {Data: []byte("Solve Mode Overlay")},
+				"roles/developer.md":      {Data: []byte("Developer Role")},
 			},
 			cfg: Config{WorkingDir: "/test"},
-			expectedInPrompt: []string{"Common Contract", "Execute Mode Overlay", "Developer Role"},
+			expectedInPrompt: []string{"Common Contract", "Solve Mode Overlay", "Developer Role"},
 		},
 		{
 			name: "PR-fix mode loads pr-fix contract",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":          {Data: []byte("version: 1.0.0\ndefaults:\n  mode: execute\n  role: developer\n")},
-				"contracts/common.md":    {Data: []byte("Common Contract")},
-				"modes/pr-fix/contract.md": {Data: []byte("PR-Fix Mode Overlay")},
-				"modes/execute/contract.md": {Data: []byte("Execute Mode Overlay")},
-				"roles/developer.md":     {Data: []byte("Developer Role")},
+				"manifest.yaml":              {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
+				"contracts/common.md":        {Data: []byte("Common Contract")},
+				"modes/pr-fix/contract.md":   {Data: []byte("PR-Fix Mode Overlay")},
+				"modes/solve/contract.md":    {Data: []byte("Solve Mode Overlay")},
+				"roles/developer.md":         {Data: []byte("Developer Role")},
 			},
 			cfg: Config{Mode: "pr-fix", WorkingDir: "/test"},
 			expectedInPrompt: []string{"Common Contract", "PR-Fix Mode Overlay", "Developer Role"},
-			notExpectedInPrompt: []string{"Execute Mode Overlay"},
+			notExpectedInPrompt: []string{"Solve Mode Overlay"},
 		},
 		{
 			name: "Mode overlay is layered after mode contract",
@@ -351,7 +351,7 @@ func TestModeOverlayLoading(t *testing.T) {
 		{
 			name: "Missing mode contract is handled gracefully",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: execute\n  role: developer\n")},
+				"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
 				"contracts/common.md": {Data: []byte("Common Contract")},
 				"roles/developer.md":  {Data: []byte("Developer Role")},
 			},
@@ -412,10 +412,10 @@ func TestModeOverlayLoading(t *testing.T) {
 func TestBackwardCompatibility(t *testing.T) {
 	t.Run("No mode specified uses default from manifest", func(t *testing.T) {
 		mockFS := fstest.MapFS{
-			"manifest.yaml":             {Data: []byte("version: 1.0.0\ndefaults:\n  mode: execute\n  role: developer\n")},
-			"contracts/common.md":       {Data: []byte("Common")},
-			"modes/execute/contract.md": {Data: []byte("Execute")},
-			"roles/developer.md":        {Data: []byte("Developer")},
+			"manifest.yaml":           {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
+			"contracts/common.md":     {Data: []byte("Common")},
+			"modes/solve/contract.md": {Data: []byte("Solve")},
+			"roles/developer.md":      {Data: []byte("Developer")},
 		}
 
 		compiler := NewCompilerFromFS(mockFS)
@@ -428,8 +428,8 @@ func TestBackwardCompatibility(t *testing.T) {
 		if !strings.Contains(prompt, "Common") {
 			t.Error("Missing common contract")
 		}
-		if !strings.Contains(prompt, "Execute") {
-			t.Error("Missing execute mode contract")
+		if !strings.Contains(prompt, "Solve") {
+			t.Error("Missing solve mode contract")
 		}
 		if !strings.Contains(prompt, "Developer") {
 			t.Error("Missing developer role")
@@ -438,7 +438,7 @@ func TestBackwardCompatibility(t *testing.T) {
 
 	t.Run("Coder role alias maps to developer", func(t *testing.T) {
 		mockFS := fstest.MapFS{
-			"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: execute\n  role: developer\n")},
+			"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
 			"contracts/common.md": {Data: []byte("Common")},
 			"roles/developer.md":  {Data: []byte("Developer Role Content")},
 		}
