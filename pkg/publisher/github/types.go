@@ -44,9 +44,10 @@ type PublishResult struct {
 
 // CommentResult represents the result of posting/updating a summary comment.
 type CommentResult struct {
-	Posted   bool   `json:"posted"`
-	CommentID int64 `json:"comment_id,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Posted    bool   `json:"posted"`
+	Updated   bool   `json:"updated,omitempty"` // true if an existing comment was updated
+	CommentID int64  `json:"comment_id,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // ReviewRepliesResult represents the aggregated results of posting review replies.

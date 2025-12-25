@@ -94,8 +94,8 @@ func (g *GitHubPublisher) Publish(req publisher.PublishRequest) (publisher.Publi
 	if prFixPath != "" {
 		prFixData, err := readPRFixData(prFixPath)
 		if err != nil {
-			err := fmt.Errorf("failed to read pr-fix.json: %w", err)
-			result.Errors = append(result.Errors, publisher.NewError(err.Error()))
+			wrappedErr := fmt.Errorf("failed to read pr-fix.json: %w", err)
+			result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
 			result.Success = false
 		} else if len(prFixData.ReviewReplies) > 0 {
 			replyResult, err := g.publishReviewReplies(ctx, client, *prRef, prFixData.ReviewReplies, botLogin)
@@ -130,8 +130,8 @@ func (g *GitHubPublisher) Publish(req publisher.PublishRequest) (publisher.Publi
 	if summaryPath != "" {
 		summaryContent, err := os.ReadFile(summaryPath)
 		if err != nil {
-			err := fmt.Errorf("failed to read summary.md: %w", err)
-			result.Errors = append(result.Errors, publisher.NewError(err.Error()))
+			wrappedErr := fmt.Errorf("failed to read summary.md: %w", err)
+			result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
 			result.Success = false
 		} else {
 			commentResult, err := g.publishSummaryComment(ctx, client, *prRef, string(summaryContent), botLogin)
@@ -140,7 +140,7 @@ func (g *GitHubPublisher) Publish(req publisher.PublishRequest) (publisher.Publi
 				result.Success = false
 			} else if commentResult.Posted {
 				actionType := "created_summary_comment"
-				if commentResult.CommentID > 0 {
+				if commentResult.Updated {
 					actionType = "updated_summary_comment"
 				}
 				result.Actions = append(result.Actions, publisher.PublishAction{
@@ -229,7 +229,7 @@ func (g *GitHubPublisher) publishSummaryComment(ctx context.Context, client *git
 	// Find existing summary comment
 	existing, err := findExistingSummaryComment(ctx, client, prRef, botLogin)
 	if err != nil {
-		return CommentResult{Posted: false, Error: err.Error()}, err
+		return CommentResult{Posted: false, Updated: false, Error: err.Error()}, err
 	}
 
 	// Prepare comment body with marker
@@ -245,9 +245,9 @@ func (g *GitHubPublisher) publishSummaryComment(ctx context.Context, client *git
 			&github.IssueComment{Body: &body},
 		)
 		if err != nil {
-			return CommentResult{Posted: false, Error: err.Error()}, err
+			return CommentResult{Posted: false, Updated: false, Error: err.Error()}, err
 		}
-		return CommentResult{Posted: true, CommentID: *existing.ID}, nil
+		return CommentResult{Posted: true, Updated: true, CommentID: *existing.ID}, nil
 	}
 
 	// Create new comment
@@ -259,34 +259,44 @@ func (g *GitHubPublisher) publishSummaryComment(ctx context.Context, client *git
 		&github.IssueComment{Body: &body},
 	)
 	if err != nil {
-		return CommentResult{Posted: false, Error: err.Error()}, err
+		return CommentResult{Posted: false, Updated: false, Error: err.Error()}, err
 	}
 
-	return CommentResult{Posted: true, CommentID: comment.GetID()}, nil
+	return CommentResult{Posted: true, Updated: false, CommentID: comment.GetID()}, nil
 }
 
 // hasBotRepliedToComment checks if the bot has already replied to a review comment.
 func hasBotRepliedToComment(ctx context.Context, client *github.Client, prRef PRRef, commentID int64, botLogin string) (bool, error) {
-	// List all review comments for the PR
-	comments, _, err := client.PullRequests.ListComments(
-		ctx,
-		prRef.Owner,
-		prRef.Repo,
-		prRef.PRNumber,
-		&github.PullRequestListCommentsOptions{
-			ListOptions: github.ListOptions{PerPage: 100},
-		},
-	)
-	if err != nil {
-		return false, fmt.Errorf("failed to list comments: %w", err)
+	// List all review comments for the PR, handling pagination
+	opts := &github.PullRequestListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
-	// Check if any reply is from the bot and in_reply_to matches commentID
-	for _, comment := range comments {
-		// InReplyTo contains the parent comment ID for replies
-		if comment.InReplyTo != nil && *comment.InReplyTo == commentID && comment.User.GetLogin() == botLogin {
-			return true, nil
+	for {
+		comments, resp, err := client.PullRequests.ListComments(
+			ctx,
+			prRef.Owner,
+			prRef.Repo,
+			prRef.PRNumber,
+			opts,
+		)
+		if err != nil {
+			return false, fmt.Errorf("failed to list comments: %w", err)
 		}
+
+		// Check if any reply is from the bot and in_reply_to matches commentID
+		for _, comment := range comments {
+			// InReplyTo contains the parent comment ID for replies
+			if comment.InReplyTo != nil && *comment.InReplyTo == commentID && comment.User.GetLogin() == botLogin {
+				return true, nil
+			}
+		}
+
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+
+		opts.Page = resp.NextPage
 	}
 
 	return false, nil
@@ -294,28 +304,39 @@ func hasBotRepliedToComment(ctx context.Context, client *github.Client, prRef PR
 
 // findExistingSummaryComment finds an existing summary comment by the bot.
 func findExistingSummaryComment(ctx context.Context, client *github.Client, prRef PRRef, botLogin string) (*github.IssueComment, error) {
-	// List all issue comments for the PR
-	comments, _, err := client.Issues.ListComments(
-		ctx,
-		prRef.Owner,
-		prRef.Repo,
-		prRef.PRNumber,
-		&github.IssueListCommentsOptions{
-			ListOptions: github.ListOptions{PerPage: 100},
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list comments: %w", err)
+	// List all issue comments for the PR, handling pagination
+	opts := &github.IssueListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
-	// Find the most recent comment from the bot with the marker
 	var mostRecent *github.IssueComment
-	for _, comment := range comments {
-		if comment.User.GetLogin() == botLogin && strings.Contains(comment.GetBody(), SummaryMarker) {
-			if mostRecent == nil || comment.GetID() > mostRecent.GetID() {
-				mostRecent = comment
+
+	for {
+		comments, resp, err := client.Issues.ListComments(
+			ctx,
+			prRef.Owner,
+			prRef.Repo,
+			prRef.PRNumber,
+			opts,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list comments: %w", err)
+		}
+
+		// Find the most recent comment from the bot with the marker
+		for _, comment := range comments {
+			if comment.User.GetLogin() == botLogin && strings.Contains(comment.GetBody(), SummaryMarker) {
+				if mostRecent == nil || comment.GetID() > mostRecent.GetID() {
+					mostRecent = comment
+				}
 			}
 		}
+
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+
+		opts.Page = resp.NextPage
 	}
 
 	return mostRecent, nil

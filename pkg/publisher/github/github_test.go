@@ -1,6 +1,7 @@
 package github
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/holon-run/holon/pkg/publisher"
@@ -117,7 +118,7 @@ func TestFormatReviewReply(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := formatReviewReply(tt.reply)
 			for _, substr := range tt.contains {
-				if !contains(got, substr) {
+				if !strings.Contains(got, substr) {
 					t.Errorf("formatReviewReply() = %v, does not contain %v", got, substr)
 				}
 			}
@@ -138,18 +139,4 @@ func TestGetBotLogin(t *testing.T) {
 	if got := getBotLogin(); got != customLogin {
 		t.Errorf("getBotLogin() = %v, want %v", got, customLogin)
 	}
-}
-
-// contains checks if a string contains a substring
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
