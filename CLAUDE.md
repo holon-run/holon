@@ -431,26 +431,28 @@ checkRuns, err := client.FetchCheckRuns(ctx, "owner", "repo", "sha", 10)
 The prompt compiler system (`pkg/prompt/`) uses a **layered assembly** approach to build system prompts from composable assets.
 
 **Layer Order (bottom to top):**
-1. **Common Contract** (`contracts/common.md`): Base sandbox rules and physics
+1. **Common Contract** (`contracts/common.md`): Base sandbox rules and physics - **ACTIVE**
 2. **Mode Contract** (`modes/{mode}/contract.md`): Mode-specific behavioral overlay (optional)
-3. **Role Definition** (`roles/{role}.md` or `modes/{mode}/roles/{role}.md`): Role-specific behavior
+3. **Role Definition** (`roles/{role}.md` or `modes/{mode}/overlays/{role}.md`): Role-specific behavior
+
+**IMPORTANT:** The active contract is `pkg/prompt/assets/contracts/common.md`. The legacy `contract/v1.md` has been relocated to `docs/legacy-contract/` for historical reference only.
 
 **Asset Structure:**
 ```
 pkg/prompt/assets/
 ├── manifest.yaml           # Default configuration
 ├── contracts/
-│   └── common.md          # Common contract (required)
+│   └── common.md          # Common contract (ACTIVE - required)
 ├── modes/
 │   ├── solve/             # Default execution mode
 │   │   ├── contract.md    # Solve mode overlay
-│   │   └── roles/         # Mode-specific role overrides
+│   │   └── overlays/      # Role-specific overlays (not roles/)
 │   └── pr-fix/            # PR-fix mode
 │       ├── contract.md    # PR-fix mode contract
 │       ├── pr-fix.schema.json  # Canonical output schema
 │       └── overlays/      # Role-specific overlays
 └── roles/
-    ├── coder.md           # Senior software engineer role
+    ├── developer.md       # Senior software engineer role (alias: coder)
     └── default.md         # Generic assistant role
 ```
 
@@ -459,8 +461,8 @@ pkg/prompt/assets/
 version: 1.0.0
 defaults:
   mode: solve      # Default execution mode
-  role: coder     # Default role (developer maps to coder)
-  contract: v1    # Legacy field (for backward compatibility)
+  role: developer  # Default role (alias: coder)
+  contract: v1    # Legacy field, NOT used by compiler (kept for backward compatibility)
 ```
 
 **Mode System:**
