@@ -401,7 +401,7 @@ func TestRunner_Run_ModeDefaults(t *testing.T) {
 	_, workspaceDir, outDir := setupTestEnv(t)
 	bundlePath := createDummyBundle(t, t.TempDir())
 
-	// Test without explicit mode (should default to "execute")
+	// Test without explicit mode (should default to "solve")
 	cfg1 := RunnerConfig{
 		GoalStr:       "Test goal",
 		TaskName:      "test-mode-1",
@@ -419,8 +419,8 @@ func TestRunner_Run_ModeDefaults(t *testing.T) {
 	calls1 := mockRuntime.GetCalls()
 	if len(calls1) == 0 {
 		t.Error("Expected at least 1 call to RunHolon")
-	} else if calls1[0].cfg.Env["HOLON_MODE"] != "execute" {
-		t.Errorf("Expected default HOLON_MODE to be 'execute', got %q", calls1[0].cfg.Env["HOLON_MODE"])
+	} else if calls1[0].cfg.Env["HOLON_MODE"] != "solve" {
+		t.Errorf("Expected default HOLON_MODE to be 'solve', got %q", calls1[0].cfg.Env["HOLON_MODE"])
 	}
 
 	mockRuntime.Reset()
@@ -616,7 +616,7 @@ func TestRunner_Integration(t *testing.T) {
 		RoleName:      "coder",
 		EnvVarsList:   []string{"CLI_VAR=cli-value"},
 		LogLevel:      "debug",
-		Mode:          "execute",
+		Mode:          "solve",
 	}
 
 	err := runner.Run(context.Background(), cfg)
@@ -641,8 +641,8 @@ func TestRunner_Integration(t *testing.T) {
 	if env["LOG_LEVEL"] != "debug" {
 		t.Errorf("Expected LOG_LEVEL to be 'debug', got %q", env["LOG_LEVEL"])
 	}
-	if env["HOLON_MODE"] != "execute" {
-		t.Errorf("Expected HOLON_MODE to be 'execute', got %q", env["HOLON_MODE"])
+	if env["HOLON_MODE"] != "solve" {
+		t.Errorf("Expected HOLON_MODE to be 'solve', got %q", env["HOLON_MODE"])
 	}
 
 	// Verify debug prompts were created

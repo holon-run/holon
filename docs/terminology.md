@@ -53,7 +53,7 @@ The underlying AI tool/runtime controlled by the agent (e.g. Claude Code runtime
 
 ### Mode
 The run intent with **hard semantics** (e.g. required outputs, workspace RO/RW policy).
-- `execute`: produce changes (usually `diff.patch`)
+- `solve`: produce changes (usually `diff.patch`)
 - `plan`: propose changes only
 - `review`: produce review feedback only
 

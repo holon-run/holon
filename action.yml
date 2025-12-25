@@ -40,9 +40,9 @@ inputs:
     required: false
     default: 'progress'
   mode:
-    description: 'Execution mode: execute, pr-fix, plan, review (default: execute)'
+    description: 'Execution mode: solve, pr-fix, plan, review (default: solve)'
     required: false
-    default: 'execute'
+    default: 'solve'
   goal:
     description: 'Goal description (used when spec is not provided, takes precedence over issue event extraction)'
     required: false

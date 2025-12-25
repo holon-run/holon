@@ -442,8 +442,8 @@ pkg/prompt/assets/
 ├── contracts/
 │   └── common.md          # Common contract (required)
 ├── modes/
-│   ├── execute/           # Default execution mode
-│   │   ├── contract.md    # Execute mode overlay
+│   ├── solve/             # Default execution mode
+│   │   ├── contract.md    # Solve mode overlay
 │   │   └── roles/         # Mode-specific role overrides
 │   └── pr-fix/            # PR-fix mode
 │       ├── contract.md    # PR-fix mode contract
@@ -458,13 +458,13 @@ pkg/prompt/assets/
 ```yaml
 version: 1.0.0
 defaults:
-  mode: execute    # Default execution mode
+  mode: solve      # Default execution mode
   role: coder     # Default role (developer maps to coder)
   contract: v1    # Legacy field (for backward compatibility)
 ```
 
 **Mode System:**
-- Modes define execution patterns (e.g., `execute`, `pr-fix`, `plan`)
+- Modes define execution patterns (e.g., `solve`, `pr-fix`, `plan`)
 - Each mode can have its own contract overlay and role-specific overrides
 - Mode contracts are **optional** - if missing, only common contract is used
 - Role files are looked up first in `modes/{mode}/overlays/`, then in `roles/`
@@ -475,7 +475,7 @@ defaults:
 
 **CLI Integration:**
 ```bash
-# Use default mode (execute) and role (coder)
+# Use default mode (solve) and role (coder)
 holon run --goal "Fix the bug"
 
 # Explicit mode selection

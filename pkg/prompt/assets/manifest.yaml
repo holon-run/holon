@@ -1,4 +1,4 @@
 version: 1.0.0
 defaults:
-  mode: execute
+  mode: solve
   role: developer

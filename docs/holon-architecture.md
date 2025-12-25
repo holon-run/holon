@@ -40,6 +40,6 @@ Many tasks need a project toolchain (Go/Node/Java/etc.). Holon supports composin
 This avoids maintaining a large prebuilt agent×toolchain matrix.
 
 ## Related docs
-- `docs/modes.md`: design for `mode` as the single user-facing selector (execute/plan/review).
+- `docs/modes.md`: design for `mode` as the single user-facing selector (solve/plan/review).
 - `docs/agent-encapsulation.md`: non-normative description of the agent pattern and image composition approach.
 - `docs/agent-claude.md`: reference implementation notes for the Claude agent.
