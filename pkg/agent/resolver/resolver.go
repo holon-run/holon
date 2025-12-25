@@ -366,6 +366,13 @@ func (r *BuiltinResolver) Resolve(ctx context.Context, ref string) (string, erro
 		return "", fmt.Errorf("no builtin agent configured")
 	}
 
+	// Check for staleness (best-effort, non-blocking)
+	// This runs in the background and logs warnings if the version is stale
+	go func() {
+		const defaultRepo = "holon-run/holon"
+		_, _, _ = agent.CheckBuiltinAgentStaleness(defaultRepo)
+	}()
+
 	// Resolve the builtin agent URL with checksum - fix double prefix issue
 	checksum := strings.TrimPrefix(builtinAgent.Checksum, "sha256=")
 	agentURL := builtinAgent.URL + "#sha256=" + checksum

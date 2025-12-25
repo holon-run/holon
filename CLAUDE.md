@@ -246,7 +246,8 @@ holon agent info default
 - **Location**: `pkg/agent/builtin.go` - embedded in binary
 - **Configuration**: Release URL + SHA256 checksum for integrity verification
 - **Caching**: Uses same cache system as remote URL installs
-- **Updates**: Tied to Holon releases (configurable per version)
+- **Updates**: Updated with each Holon release to point to the latest agent release
+- **Staleness Detection**: When the builtin agent is used, Holon automatically checks GitHub for newer releases and logs warnings if the embedded version is behind the latest release. This is a best-effort check that runs in the background and doesn't block agent resolution.
 
 ### Mock Driver for Testing
 
