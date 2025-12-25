@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -657,8 +658,7 @@ func (c *Client) FetchCheckRuns(ctx context.Context, owner, repo, ref string, ma
 		}
 
 		c.setHeaders(req)
-		// Check runs API requires specific accept header
-		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		// Note: setHeaders() already sets the Accept header to application/vnd.github.v3+json
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -742,10 +742,14 @@ func (c *Client) FetchCombinedStatus(ctx context.Context, owner, repo, ref strin
 	statuses := make([]Status, len(statusData.Statuses))
 	for i, s := range statusData.Statuses {
 		var createdAt, updatedAt time.Time
-		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
+		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to parse status created_at timestamp %q: %v\n", s.CreatedAt, err)
+		} else {
 			createdAt = t
 		}
-		if t, err := time.Parse(time.RFC3339, s.UpdatedAt); err == nil {
+		if t, err := time.Parse(time.RFC3339, s.UpdatedAt); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to parse status updated_at timestamp %q: %v\n", s.UpdatedAt, err)
+		} else {
 			updatedAt = t
 		}
 

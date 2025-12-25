@@ -60,8 +60,8 @@ func collectFromEnv() (collector.CollectRequest, string, error) {
 	// Get max checks (default 200)
 	checksMax := 200
 	if maxStr := os.Getenv("CHECKS_MAX"); maxStr != "" {
-		if n, err := fmt.Sscanf(maxStr, "%d", &checksMax); n == 1 && err == nil {
-			// Parsed successfully
+		if n, err := fmt.Sscanf(maxStr, "%d", &checksMax); !(n == 1 && err == nil) {
+			fmt.Fprintf(os.Stderr, "Warning: invalid CHECKS_MAX value %q, using default %d\n", maxStr, checksMax)
 		}
 	}
 

@@ -78,18 +78,17 @@ type IssueComment struct {
 
 // CheckRun represents a GitHub check run
 type CheckRun struct {
-	ID              int64      `json:"id"`
-	Name            string     `json:"name"`
-	HeadSHA         string     `json:"head_sha"`
-	Status          string     `json:"status"`          // queued, in_progress, completed
-	Conclusion      string     `json:"conclusion"`      // success, failure, neutral, cancelled, skipped, timed_out, action_required
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
-	DetailsURL      string     `json:"details_url,omitempty"`
-	ExternalID      string     `json:"external_id,omitempty"`
-	AppSlug         string     `json:"app_slug,omitempty"`          // e.g., "github-actions"
-	CheckSuiteID    int64      `json:"check_suite_id,omitempty"`
-	Output          CheckRunOutput `json:"output,omitempty"`
+	ID           int64          `json:"id"`
+	Name         string         `json:"name"`
+	HeadSHA      string         `json:"head_sha"`
+	Status       string         `json:"status"`          // queued, in_progress, completed
+	Conclusion   string         `json:"conclusion"`      // success, failure, neutral, cancelled, skipped, timed_out, action_required
+	StartedAt    *time.Time     `json:"started_at,omitempty"`
+	CompletedAt  *time.Time     `json:"completed_at,omitempty"`
+	DetailsURL   string         `json:"details_url,omitempty"`
+	AppSlug      string         `json:"app_slug,omitempty"`          // e.g., "github-actions"
+	CheckSuiteID int64          `json:"check_suite_id,omitempty"`
+	Output       CheckRunOutput `json:"output,omitempty"`
 }
 
 // CheckRunOutput represents the output of a check run

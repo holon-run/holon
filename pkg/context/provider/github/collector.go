@@ -165,6 +165,7 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 			// Don't fail - checks are optional
 		} else {
 			// Filter to only failed checks if requested
+			// Note: Incomplete checks (queued/in_progress) have no conclusion and are excluded when filtering to only failed checks
 			if req.Options.ChecksOnlyFailed {
 				failedRuns := []CheckRun{}
 				for _, cr := range checkRuns {
