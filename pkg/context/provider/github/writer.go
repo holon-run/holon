@@ -28,7 +28,7 @@ func WriteManifest(outputDir string, result collector.CollectResult) error {
 }
 
 // WritePRContext writes PR context files and returns the list of files written
-func WritePRContext(outputDir string, prInfo *PRInfo, reviewThreads []ReviewThread, diff string) ([]collector.FileInfo, error) {
+func WritePRContext(outputDir string, prInfo *PRInfo, reviewThreads []ReviewThread, diff string, checkRuns []CheckRun, combinedStatus *CombinedStatus) ([]collector.FileInfo, error) {
 	// Create output directory structure
 	githubDir := filepath.Join(outputDir, "github")
 	if err := os.MkdirAll(githubDir, 0755); err != nil {
@@ -79,8 +79,32 @@ func WritePRContext(outputDir string, prInfo *PRInfo, reviewThreads []ReviewThre
 		})
 	}
 
+	// Write check_runs.json if available
+	if len(checkRuns) > 0 {
+		if err := writeCheckRunsJSON(githubDir, checkRuns); err != nil {
+			return nil, fmt.Errorf("failed to write check_runs.json: %w", err)
+		}
+		files = append(files, collector.FileInfo{
+			Path:        "github/check_runs.json",
+			ContentType: "application/json",
+			Description: "CI check runs",
+		})
+	}
+
+	// Write commit_status.json if available
+	if combinedStatus != nil {
+		if err := writeCommitStatusJSON(githubDir, combinedStatus); err != nil {
+			return nil, fmt.Errorf("failed to write commit_status.json: %w", err)
+		}
+		files = append(files, collector.FileInfo{
+			Path:        "github/commit_status.json",
+			ContentType: "application/json",
+			Description: "Combined commit status",
+		})
+	}
+
 	// Write review.md (optional human-readable rendering)
-	if err := writeReviewMarkdown(githubDir, prInfo, reviewThreads); err != nil {
+	if err := writeReviewMarkdown(githubDir, prInfo, reviewThreads, checkRuns, combinedStatus); err != nil {
 		return nil, fmt.Errorf("failed to write review.md: %w", err)
 	}
 	files = append(files, collector.FileInfo{
@@ -205,6 +229,36 @@ func writeCommentsJSON(dir string, comments []IssueComment) error {
 	return nil
 }
 
+// writeCheckRunsJSON writes check runs as JSON
+func writeCheckRunsJSON(dir string, checkRuns []CheckRun) error {
+	data, err := json.MarshalIndent(checkRuns, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal check runs: %w", err)
+	}
+
+	path := filepath.Join(dir, "check_runs.json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
+}
+
+// writeCommitStatusJSON writes combined status as JSON
+func writeCommitStatusJSON(dir string, status *CombinedStatus) error {
+	data, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal combined status: %w", err)
+	}
+
+	path := filepath.Join(dir, "commit_status.json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
+}
+
 func writePRFixSchema(dir string) error {
 	data, err := prompt.ReadAsset("modes/pr-fix/pr-fix.schema.json")
 	if err != nil {
@@ -220,7 +274,7 @@ func writePRFixSchema(dir string) error {
 }
 
 // writeReviewMarkdown writes a human-readable markdown summary for PRs
-func writeReviewMarkdown(dir string, prInfo *PRInfo, threads []ReviewThread) error {
+func writeReviewMarkdown(dir string, prInfo *PRInfo, threads []ReviewThread, checkRuns []CheckRun, combinedStatus *CombinedStatus) error {
 	var sb strings.Builder
 
 	sb.WriteString("# Pull Request Review Context\n\n")
@@ -249,6 +303,63 @@ func writeReviewMarkdown(dir string, prInfo *PRInfo, threads []ReviewThread) err
 		sb.WriteString("### Description\n\n")
 		sb.WriteString(prInfo.Body)
 		sb.WriteString("\n\n")
+	}
+
+	// CI/Check Results Summary
+	if len(checkRuns) > 0 || combinedStatus != nil {
+		sb.WriteString("## CI/Check Results\n\n")
+
+		if combinedStatus != nil {
+			sb.WriteString(fmt.Sprintf("### Combined Status\n\n"))
+			sb.WriteString(fmt.Sprintf("**State**: %s\n", statusBadge(combinedStatus.State)))
+			sb.WriteString(fmt.Sprintf("**Total Checks**: %d\n\n", combinedStatus.TotalCount))
+		}
+
+		if len(checkRuns) > 0 {
+			sb.WriteString(fmt.Sprintf("### Check Runs (%d)\n\n", len(checkRuns)))
+
+			// Group by conclusion for summary
+			successCount := 0
+			failureCount := 0
+			otherCount := 0
+			for _, cr := range checkRuns {
+				switch cr.Conclusion {
+				case "success":
+					successCount++
+				case "failure", "timed_out", "action_required":
+					failureCount++
+				default:
+					otherCount++
+				}
+			}
+
+			sb.WriteString(fmt.Sprintf("- **Passed**: %d\n", successCount))
+			sb.WriteString(fmt.Sprintf("- **Failed**: %d\n", failureCount))
+			sb.WriteString(fmt.Sprintf("- **Other**: %d\n\n", otherCount))
+
+			// List individual check runs
+			for _, cr := range checkRuns {
+				sb.WriteString(fmt.Sprintf("#### %s\n", cr.Name))
+				sb.WriteString(fmt.Sprintf("- **Status**: %s", cr.Status))
+				if cr.Conclusion != "" {
+					sb.WriteString(fmt.Sprintf(", **Conclusion**: %s", statusBadge(cr.Conclusion)))
+				}
+				sb.WriteString("\n")
+				if cr.AppSlug != "" {
+					sb.WriteString(fmt.Sprintf("- **App**: %s\n", cr.AppSlug))
+				}
+				if cr.DetailsURL != "" {
+					sb.WriteString(fmt.Sprintf("- **Details**: [View Details](%s)\n", cr.DetailsURL))
+				}
+				if cr.Output.Title != "" {
+					sb.WriteString(fmt.Sprintf("- **Title**: %s\n", cr.Output.Title))
+				}
+				if cr.Output.Summary != "" {
+					sb.WriteString(fmt.Sprintf("- **Summary**: %s\n", cr.Output.Summary))
+				}
+				sb.WriteString("\n")
+			}
+		}
 	}
 
 	// Review Threads
@@ -377,4 +488,34 @@ func resolvedStatus(resolved bool) string {
 		return "Resolved ✓"
 	}
 	return "Unresolved"
+}
+
+// statusBadge returns a string representation of a status/conclusion with emoji
+func statusBadge(status string) string {
+	switch status {
+	case "success":
+		return "Success ✓"
+	case "failure":
+		return "Failure ✗"
+	case "pending":
+		return "Pending ⏳"
+	case "error":
+		return "Error ⚠️"
+	case "timed_out":
+		return "Timed Out ⏱️"
+	case "cancelled":
+		return "Cancelled 🚫"
+	case "action_required":
+		return "Action Required ⚡"
+	case "neutral":
+		return "Neutral ○"
+	case "skipped":
+		return "Skipped ↷"
+	default:
+		// Capitalize first letter
+		if len(status) == 0 {
+			return "Unknown"
+		}
+		return strings.ToUpper(status[:1]) + status[1:]
+	}
 }

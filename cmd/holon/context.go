@@ -51,6 +51,20 @@ func collectFromEnv() (collector.CollectRequest, string, error) {
 	// Check if we should include diff
 	includeDiff := os.Getenv("INCLUDE_DIFF") != "false" // Default to true
 
+	// Check if we should include CI/checks
+	includeChecks := os.Getenv("INCLUDE_CHECKS") != "false" // Default to true
+
+	// Check if we should only include failed checks
+	checksOnlyFailed := os.Getenv("CHECKS_ONLY_FAILED") == "true"
+
+	// Get max checks (default 200)
+	checksMax := 200
+	if maxStr := os.Getenv("CHECKS_MAX"); maxStr != "" {
+		if n, err := fmt.Sscanf(maxStr, "%d", &checksMax); !(n == 1 && err == nil) {
+			fmt.Fprintf(os.Stderr, "Warning: invalid CHECKS_MAX value %q, using default %d\n", maxStr, checksMax)
+		}
+	}
+
 	// Get output directory from environment or use default
 	outDir := os.Getenv("HOLON_CONTEXT_OUT")
 	if outDir == "" {
@@ -62,9 +76,12 @@ func collectFromEnv() (collector.CollectRequest, string, error) {
 		Ref:       ref,
 		OutputDir: outDir,
 		Options: collector.Options{
-			Token:          token,
-			IncludeDiff:    includeDiff,
-			UnresolvedOnly: unresolvedOnly,
+			Token:           token,
+			IncludeDiff:     includeDiff,
+			UnresolvedOnly:  unresolvedOnly,
+			IncludeChecks:   includeChecks,
+			ChecksOnlyFailed: checksOnlyFailed,
+			ChecksMax:       checksMax,
 		},
 	}, outDir, nil
 }
@@ -94,14 +111,17 @@ var (
 	contextFromEnv        bool
 
 	// New collect command flags
-	collectKind      string
-	collectRef       string
-	collectRepo      string
-	collectProvider  string
-	collectToken     string
-	collectOut       string
-	collectNoDiff    bool
+	collectKind       string
+	collectRef        string
+	collectRepo       string
+	collectProvider   string
+	collectToken      string
+	collectOut        string
+	collectNoDiff     bool
 	collectUnresolved bool
+	collectNoChecks   bool
+	collectChecksOnlyFailed bool
+	collectChecksMax  int
 )
 
 var contextCmd = &cobra.Command{
@@ -234,9 +254,12 @@ Examples:
 			RepoHint:  collectRepo,
 			OutputDir: collectOut,
 			Options: collector.Options{
-				Token:          collectToken,
-				IncludeDiff:    !collectNoDiff,
-				UnresolvedOnly: collectUnresolved,
+				Token:            collectToken,
+				IncludeDiff:      !collectNoDiff,
+				UnresolvedOnly:   collectUnresolved,
+				IncludeChecks:    !collectNoChecks,
+				ChecksOnlyFailed: collectChecksOnlyFailed,
+				ChecksMax:        collectChecksMax,
 			},
 		}
 
@@ -388,6 +411,9 @@ func init() {
 	collectCmd.Flags().StringVarP(&collectOut, "out", "o", "./holon-input/context", "Output directory for context files")
 	collectCmd.Flags().BoolVar(&collectNoDiff, "no-diff", false, "Exclude PR diff")
 	collectCmd.Flags().BoolVar(&collectUnresolved, "unresolved-only", false, "Only collect unresolved review threads")
+	collectCmd.Flags().BoolVar(&collectNoChecks, "no-checks", false, "Exclude CI/check results")
+	collectCmd.Flags().BoolVar(&collectChecksOnlyFailed, "checks-only-failed", false, "Only include failed checks")
+	collectCmd.Flags().IntVar(&collectChecksMax, "checks-max", 200, "Maximum number of check runs to fetch (0 = unlimited)")
 	collectCmd.Flags().BoolVar(&contextFromEnv, "from-env", false, "Read configuration from environment variables (GitHub Actions mode)")
 
 	contextCmd.AddCommand(collectCmd)

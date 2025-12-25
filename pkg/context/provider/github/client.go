@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -636,4 +637,137 @@ func (c *Client) setHeaders(req *http.Request) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "token "+c.token)
 	}
+}
+
+// FetchCheckRuns fetches check runs for a commit ref
+// See: https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
+func (c *Client) FetchCheckRuns(ctx context.Context, owner, repo, ref string, maxResults int) ([]CheckRun, error) {
+	// Use the Check Runs API endpoint
+	url := fmt.Sprintf("%s/repos/%s/%s/commits/%s/check-runs", c.baseURL, owner, repo, ref)
+
+	var allCheckRuns []CheckRun
+	page := 1
+	perPage := 100
+
+	for {
+		pageURL := fmt.Sprintf("%s?page=%d&per_page=%d", url, page, perPage)
+
+		req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		c.setHeaders(req)
+		// Note: setHeaders() already sets the Accept header to application/vnd.github.v3+json
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch check runs: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var response CheckRunsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode check runs response: %w", err)
+		}
+		resp.Body.Close()
+
+		allCheckRuns = append(allCheckRuns, response.CheckRuns...)
+
+		// Check if we've reached max results
+		if maxResults > 0 && len(allCheckRuns) >= maxResults {
+			allCheckRuns = allCheckRuns[:maxResults]
+			break
+		}
+
+		// Check if we've fetched all check runs
+		if len(response.CheckRuns) < perPage {
+			break
+		}
+		page++
+	}
+
+	return allCheckRuns, nil
+}
+
+// FetchCombinedStatus fetches the combined status for a commit ref
+// See: https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference
+func (c *Client) FetchCombinedStatus(ctx context.Context, owner, repo, ref string) (*CombinedStatus, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/commits/%s/status", c.baseURL, owner, repo, ref)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch combined status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var statusData struct {
+		SHA        string `json:"sha"`
+		State      string `json:"state"`
+		TotalCount int    `json:"total_count"`
+		Statuses   []struct {
+			ID          int64  `json:"id"`
+			Context     string `json:"context"`
+			State       string `json:"state"`
+			TargetURL   string `json:"target_url,omitempty"`
+			Description string `json:"description,omitempty"`
+			CreatedAt   string `json:"created_at"`
+			UpdatedAt   string `json:"updated_at"`
+		} `json:"statuses"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&statusData); err != nil {
+		return nil, fmt.Errorf("failed to decode combined status: %w", err)
+	}
+
+	// Convert statuses
+	statuses := make([]Status, len(statusData.Statuses))
+	for i, s := range statusData.Statuses {
+		var createdAt, updatedAt time.Time
+		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to parse status created_at timestamp %q: %v\n", s.CreatedAt, err)
+		} else {
+			createdAt = t
+		}
+		if t, err := time.Parse(time.RFC3339, s.UpdatedAt); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to parse status updated_at timestamp %q: %v\n", s.UpdatedAt, err)
+		} else {
+			updatedAt = t
+		}
+
+		statuses[i] = Status{
+			ID:          s.ID,
+			Context:     s.Context,
+			State:       s.State,
+			TargetURL:   s.TargetURL,
+			Description: s.Description,
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+		}
+	}
+
+	return &CombinedStatus{
+		SHA:        statusData.SHA,
+		State:      statusData.State,
+		TotalCount: statusData.TotalCount,
+		Statuses:   statuses,
+	}, nil
 }
