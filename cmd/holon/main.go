@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	_ "github.com/holon-run/holon/pkg/publisher/github" // Register GitHub publisher
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/spf13/cobra"
 )
