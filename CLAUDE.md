@@ -435,7 +435,7 @@ The prompt compiler system (`pkg/prompt/`) uses a **layered assembly** approach 
 2. **Mode Contract** (`modes/{mode}/contract.md`): Mode-specific behavioral overlay (optional)
 3. **Role Definition** (`roles/{role}.md` or `modes/{mode}/overlays/{role}.md`): Role-specific behavior
 
-**IMPORTANT:** The active contract is `pkg/prompt/assets/contracts/common.md`. The legacy `contract/v1.md` has been relocated to `docs/legacy-contract/` for historical reference only.
+**IMPORTANT:** The active contract is `pkg/prompt/assets/contracts/common.md`. This is the only contract file used by the compiler.
 
 **Asset Structure:**
 ```
@@ -445,12 +445,11 @@ pkg/prompt/assets/
 │   └── common.md          # Common contract (ACTIVE - required)
 ├── modes/
 │   ├── solve/             # Default execution mode
-│   │   ├── contract.md    # Solve mode overlay
-│   │   └── overlays/      # Role-specific overlays (not roles/)
+│   │   └── contract.md    # Solve mode overlay
 │   └── pr-fix/            # PR-fix mode
 │       ├── contract.md    # PR-fix mode contract
 │       ├── pr-fix.schema.json  # Canonical output schema
-│       └── overlays/      # Role-specific overlays
+│       └── overlays/      # Role-specific overlays (optional)
 └── roles/
     ├── developer.md       # Senior software engineer role (alias: coder)
     └── default.md         # Generic assistant role
@@ -467,9 +466,10 @@ defaults:
 
 **Mode System:**
 - Modes define execution patterns (e.g., `solve`, `pr-fix`, `plan`)
-- Each mode can have its own contract overlay and role-specific overrides
+- Each mode can have its own contract overlay and optional role-specific overrides in `overlays/`
 - Mode contracts are **optional** - if missing, only common contract is used
-- Role files are looked up first in `modes/{mode}/overlays/`, then in `roles/`
+- The `overlays/` subdirectory within modes is **optional** - modes like `solve` don't have it
+- Role files are looked up first in `modes/{mode}/overlays/` (if it exists), then in `roles/`
 
 **Role Aliases:**
 - `developer` → `coder` (alias for backward compatibility)
