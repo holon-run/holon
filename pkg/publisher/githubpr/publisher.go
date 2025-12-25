@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/google/go-github/v68/github"
 	"github.com/holon-run/holon/pkg/publisher"
@@ -262,6 +263,7 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 		})
 	}
 
+	result.PublishedAt = time.Now()
 	return result, nil
 }
 
@@ -284,7 +286,7 @@ func (p *PRPublisher) findPRByBranch(ctx context.Context, client *github.Client,
 		// Search for PR with matching head branch
 		for _, pr := range prs {
 			headRef := pr.GetHead()
-			if headRef != nil && headRef.GetRef() == "refs/heads/"+branchName {
+			if headRef != nil && headRef.GetRef() == branchName {
 				return pr, nil
 			}
 		}

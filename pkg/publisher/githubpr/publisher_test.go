@@ -2,6 +2,7 @@ package githubpr
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/holon-run/holon/pkg/publisher"
@@ -102,7 +103,7 @@ func TestPRPublisherValidate(t *testing.T) {
 			if tt.wantErr && tt.errMsg != "" {
 				if err == nil {
 					t.Errorf("PRPublisher.Validate() expected error containing %q, got nil", tt.errMsg)
-				} else if err.Error() != tt.errMsg && !contains(err.Error(), tt.errMsg) {
+				} else if err.Error() != tt.errMsg && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("PRPublisher.Validate() error = %q, want error containing %q", err.Error(), tt.errMsg)
 				}
 			}
@@ -209,21 +210,7 @@ func TestPublishWithoutToken(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error when token is not set")
 	}
-	if !contains(err.Error(), "GITHUB_TOKEN") && !contains(err.Error(), "HOLON_GITHUB_TOKEN") {
+	if !strings.Contains(err.Error(), "GITHUB_TOKEN") && !strings.Contains(err.Error(), "HOLON_GITHUB_TOKEN") {
 		t.Errorf("Error should mention required token env vars, got: %v", err)
 	}
-}
-
-// Helper function
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsSubstring(s, substr))
-}
-
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

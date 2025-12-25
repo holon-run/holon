@@ -10,7 +10,7 @@ import (
 // - "owner/repo" (base branch defaults to "main")
 // - "owner/repo:base-branch"
 
-var prRefRegex = regexp.MustCompile(`^([\w-]+)/([\w-]+)(?::([\w-]+))?$`)
+var prRefRegex = regexp.MustCompile(`^([\w.-]+)/([\w.-]+)(?::([\w./-]+))?$`)
 
 // ParsePRRef parses a PR reference string into a PRRef struct.
 func ParsePRRef(target string) (*PRRef, error) {
@@ -63,9 +63,12 @@ func ExtractBranchFromSummary(summary string, issueID string) string {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "Branch:") || strings.HasPrefix(line, "branch:") {
-			branch := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "Branch:"), "branch:"))
-			if branch != "" {
-				return branch
+			// Find the colon and extract everything after it
+			if idx := strings.Index(line, ":"); idx != -1 {
+				branch := strings.TrimSpace(line[idx+1:])
+				if branch != "" {
+					return branch
+				}
 			}
 		}
 	}
