@@ -12,9 +12,19 @@ import (
 func setupTestClient(t *testing.T, fixtureName string) (*Client, *Recorder) {
 	t.Helper()
 
+	// Check if fixtures directory exists
+	fixturesDir := filepath.Join("testdata", "fixtures")
+	if _, err := os.Stat(fixturesDir); os.IsNotExist(err) {
+		t.Skipf("fixtures directory not found. To record fixtures, run: HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/github/...")
+	}
+
 	// Create recorder
 	rec, err := NewRecorder(t, fixtureName)
 	if err != nil {
+		// If cassette not found and we're in replay mode, skip the test
+		if os.IsNotExist(err) {
+			t.Skipf("fixture %q not found. To record it, run: HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test -v ./pkg/github/ -run %s", fixtureName, t.Name())
+		}
 		t.Fatalf("failed to create recorder: %v", err)
 	}
 
@@ -515,13 +525,14 @@ func TestFixtureFileStructure(t *testing.T) {
 
 	entries, err := os.ReadDir(fixturesDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("fixtures directory not found. To record fixtures, run: HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/github/...")
+		}
 		t.Fatalf("Failed to read fixtures directory: %v", err)
 	}
 
 	if len(entries) == 0 {
-		t.Log("No fixtures found - tests will need to record fixtures first")
-		t.Log("To record fixtures, run: HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/github/...")
-		return
+		t.Skip("No fixtures found - tests will need to record fixtures first. Run: HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/github/...")
 	}
 
 	// Verify all fixtures are YAML files
