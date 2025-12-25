@@ -97,10 +97,77 @@ Minimal usage:
 ## Configuration
 CLI commands:
 - `run`: Run a Holon agent execution
+- `solve`: Solve a GitHub Issue or PR reference (high-level workflow)
+- `fix`: Alias for `solve` - resolve a GitHub Issue or PR reference
 - `version`: Show version information
 - `agent`: Manage agent bundles and aliases (`install`, `list`, `remove`, `info`)
 - `context`: Context management
 - `publish`: Publishing functionality
+
+### `holon solve` - High-level GitHub workflow
+
+The `solve` command provides a single entry point to resolve GitHub Issues or PRs:
+
+```bash
+# Solve an issue (creates/updates a PR)
+holon solve https://github.com/owner/repo/issues/123
+
+# Solve a PR (fixes review comments)
+holon solve https://github.com/owner/repo/pull/456
+
+# Short form references
+holon solve owner/repo#789
+holon solve 123 --repo owner/repo  # requires --repo for numeric refs
+```
+
+**Workflow:**
+1. **Collect context** - Fetches issue/PR data from GitHub API
+2. **Run Holon** - Executes agent with appropriate mode (`solve` for issues, `pr-fix` for PRs)
+3. **Publish results** - Creates/updates PR for issues, or posts fixes for PRs
+
+**Supported reference formats:**
+- Full URLs: `https://github.com/<owner>/<repo>/issues/<n>` or `.../pull/<n>`
+- Short forms: `<owner>/<repo>#<n>`
+- Numeric: `#<n>` or `<n>` (requires `--repo owner/repo`)
+
+**Explicit subcommands:**
+```bash
+holon solve issue <ref>   # Force issue mode
+holon solve pr <ref>      # Force PR mode
+```
+
+**Flags:**
+- `--repo <owner/repo>`: Default repository for numeric references
+- `--base <branch>`: Base branch for PR creation (default: `main`, issue mode only)
+- `--agent <bundle>`: Agent bundle reference
+- `--image <image>`: Docker base image (default: `golang:1.22`)
+- `--out <dir>`: Output directory (default: `./holon-output`)
+- `--role <role>`: Role to assume (e.g., `developer`, `reviewer`)
+- `--log-level <level>`: Log verbosity (default: `progress`)
+
+**Example: Issue resolution**
+```bash
+export GITHUB_TOKEN=ghp_xxx
+export ANTHROPIC_API_KEY=sk-ant-xxx
+holon solve holon-run/holon#123
+```
+
+This will:
+1. Collect issue context (title, body, comments)
+2. Run Holon in "solve" mode to implement a solution
+3. Create/commit/push changes to a new branch
+4. Create or update a PR referencing the original issue
+
+**Example: PR review fixes**
+```bash
+holon solve pr https://github.com/holon-run/holon/pull/456
+```
+
+This will:
+1. Collect PR context (diff, review threads, checks)
+2. Run Holon in "pr-fix" mode to address review comments
+3. Apply/push changes to the PR branch
+4. Post replies based on `pr-fix.json`
 
 CLI flags (most used):
 - `--goal` / `--spec`: task input
