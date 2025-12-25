@@ -111,14 +111,19 @@ func TestSnapshotPreparerGitDiff(t *testing.T) {
 		t.Errorf("git status failed: %v", err)
 	}
 
-	statusLines := strings.Split(strings.TrimSpace(string(statusOutput)), "\n")
-	if len(statusLines) < 2 {
-		t.Errorf("expected at least 2 changed files in git status, got: %s", string(statusOutput))
+	trimmedStatus := strings.TrimSpace(string(statusOutput))
+	if trimmedStatus == "" {
+		t.Errorf("expected at least 2 changed files in git status, got empty status output")
+	} else {
+		statusLines := strings.Split(trimmedStatus, "\n")
+		if len(statusLines) < 2 {
+			t.Errorf("expected at least 2 changed files in git status, got: %s", string(statusOutput))
+		}
 	}
 
 	// Verify git status shows modified and new files
 	statusText := string(statusOutput)
-	if !strings.Contains(statusText, "M test1.txt") && !strings.Contains(statusText, " M") {
+	if !strings.Contains(statusText, "M test1.txt") && !strings.Contains(statusText, " Mtest1.txt") {
 		t.Log("git status output:", statusText)
 		t.Error("git status should show test1.txt as modified")
 	}
