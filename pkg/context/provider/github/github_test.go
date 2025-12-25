@@ -194,8 +194,12 @@ func TestFetchCheckRuns(t *testing.T) {
 						"started_at": "2024-01-01T00:00:00Z",
 						"completed_at": "2024-01-01T00:01:00Z",
 						"details_url": "https://example.com/details",
-						"app_slug": "github-actions",
-						"check_suite_id": 123,
+						"app": {
+							"slug": "github-actions"
+						},
+						"check_suite": {
+							"id": 123
+						},
 						"output": {
 							"title": "Test Summary",
 							"summary": "All tests passed",
@@ -274,8 +278,9 @@ func TestFetchCheckRuns(t *testing.T) {
 					t.Errorf("unexpected method: %s", r.Method)
 				}
 
-				// Check auth header
-				if auth := r.Header.Get("Authorization"); auth != "token test-token" {
+				// Check auth header - accept both "token" and "Bearer" formats
+				auth := r.Header.Get("Authorization")
+				if auth != "token test-token" && auth != "Bearer test-token" {
 					t.Errorf("unexpected authorization header: %s", auth)
 				}
 
@@ -403,8 +408,9 @@ func TestFetchCombinedStatus(t *testing.T) {
 					t.Errorf("unexpected method: %s", r.Method)
 				}
 
-				// Check auth header
-				if auth := r.Header.Get("Authorization"); auth != "token test-token" {
+				// Check auth header - accept both "token" and "Bearer" formats
+				auth := r.Header.Get("Authorization")
+				if auth != "token test-token" && auth != "Bearer test-token" {
 					t.Errorf("unexpected authorization header: %s", auth)
 				}
 

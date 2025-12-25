@@ -371,6 +371,61 @@ holon publish --provider github-pr --target holon-run/holon --dry-run --out ./ho
 3. Register in `init()` function
 4. Add blank import in `cmd/holon/main.go`
 
+### GitHub Helper System
+
+Holon includes a unified GitHub helper system (`pkg/github/`) that provides a consistent interface for interacting with the GitHub API across collectors and publishers.
+
+**Core Client**: `pkg/github/client.go`
+- Unified client supporting both direct HTTP and go-github v68 SDK
+- Lazy-loaded go-github client via `GitHubClient()` method
+- Automatic rate limit tracking (when enabled via `WithRateLimitTracking`)
+- Retry logic with exponential backoff (when configured via `WithRetryConfig`)
+- Custom base URL support for testing
+
+**Operations**: `pkg/github/operations.go`
+Uses go-github SDK under the hood:
+- `FetchPRInfo()` - Pull request information
+- `FetchIssueInfo()` - Issue information
+- `FetchIssueComments()` - Issue comments with pagination
+- `FetchReviewThreads()` - Review comment threads with grouping
+- `FetchPRDiff()` - Unified diff
+- `FetchCheckRuns()` - CI/check runs
+- `FetchCombinedStatus()` - Combined commit status
+
+**Types**: `pkg/github/types.go`
+Custom type definitions that mirror GitHub API responses:
+- `PRInfo`, `ReviewThread`, `Reply`, `IssueInfo`
+- `CheckRun`, `CheckRunOutput`, `CombinedStatus`, `Status`
+- Conversion functions from go-github types to custom types
+
+**Usage Example**:
+```go
+import "github.com/holon-run/holon/pkg/github"
+
+// Create client with token
+client := github.NewClient(token,
+    github.WithRateLimitTracking(true),
+    github.WithRetryConfig(github.DefaultRetryConfig()),
+)
+
+// Fetch PR information
+prInfo, err := client.FetchPRInfo(ctx, "owner", "repo", 123)
+
+// Fetch review threads (unresolved only)
+threads, err := client.FetchReviewThreads(ctx, "owner", "repo", 123, true)
+
+// Fetch check runs with max limit
+checkRuns, err := client.FetchCheckRuns(ctx, "owner", "repo", "sha", 10)
+```
+
+**Environment Variables**:
+- `GITHUB_TOKEN`: GitHub authentication token (preferred)
+- `HOLON_GITHUB_TOKEN`: Legacy alternative
+
+**Testing Support**:
+- `SetBaseURL()` method allows custom base URL for httptest servers
+- Compatible with httptest for recording/mocking API responses
+
 ### Prompt Compiler Architecture
 
 The prompt compiler system (`pkg/prompt/`) uses a **layered assembly** approach to build system prompts from composable assets.
