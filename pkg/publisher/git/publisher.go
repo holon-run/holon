@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -146,7 +147,7 @@ func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResu
 	}
 
 	// Apply patch
-	applied, err := gitClient.ApplyPatch(patchPath)
+	applied, err := gitClient.ApplyPatch(context.Background(), patchPath)
 	if err != nil {
 		wrappedErr := fmt.Errorf("failed to apply patch: %w", err)
 		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))

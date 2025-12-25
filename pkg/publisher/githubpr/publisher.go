@@ -142,7 +142,7 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 
 	// Step 3: Apply patch
 	patchPath := req.Artifacts["diff.patch"]
-	if err := gitClient.ApplyPatch(patchPath); err != nil {
+	if err := gitClient.ApplyPatch(context.Background(), patchPath); err != nil {
 		wrappedErr := fmt.Errorf("failed to apply patch: %w", err)
 		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
 		result.Success = false

@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+
+	"github.com/holon-run/holon/pkg/git"
 )
 
 // GitClonePreparer prepares a workspace using git clone
@@ -60,50 +61,34 @@ func (p *GitClonePreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 		return PrepareResult{}, fmt.Errorf("failed to create parent directory: %w", err)
 	}
 
-	// Build git clone arguments based on history mode
-	args := p.buildCloneArgs(req)
+	// Build git clone options based on history mode
+	opts := p.buildCloneOptions(req)
 
 	// Execute git clone
-	cmd := exec.CommandContext(ctx, "git", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return PrepareResult{}, fmt.Errorf("git clone failed: %v, output: %s", err, string(out))
+	cloneResult, err := git.Clone(ctx, opts)
+	if err != nil {
+		return PrepareResult{}, fmt.Errorf("git clone failed: %w", err)
 	}
 
 	// Verify the clone was created successfully
-	if !IsGitRepo(req.Dest) {
+	client := git.NewClient(req.Dest)
+	if !client.IsRepo(ctx) {
 		return PrepareResult{}, fmt.Errorf("git clone succeeded but destination is not a git repository")
 	}
 
-	// Checkout the requested ref, or HEAD if no ref specified
-	// We always do a checkout since we used --no-checkout during clone
-	checkoutRef := req.Ref
-	if checkoutRef == "" {
-		checkoutRef = "HEAD"
-	}
-	if err := checkoutRefContext(ctx, req.Dest, checkoutRef); err != nil {
-		// Checkout failed - log a note but don't fail
-		result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to checkout ref '%s': %v", checkoutRef, err))
-	}
-
-	// Handle submodules if requested
-	if req.Submodules == SubmodulesRecursive {
-		if err := p.initSubmodules(ctx, req.Dest); err != nil {
-			// Submodule init failed - log a note but don't fail
-			result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to initialize submodules: %v", err))
+	// Get HEAD SHA from clone result or fallback to client
+	headSHA := cloneResult.HEAD
+	if headSHA == "" {
+		headSHA, err = client.GetHeadSHA(ctx)
+		if err != nil {
+			result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to get HEAD SHA: %v", err))
 		}
 	}
-
-	// Get HEAD SHA
-	headSHA, err := getHeadSHAContext(ctx, req.Dest)
-	if err != nil {
-		result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to get HEAD SHA: %v", err))
-	} else {
-		result.HeadSHA = headSHA
-	}
+	result.HeadSHA = headSHA
 
 	// Determine history status
 	result.HasHistory = req.History != HistoryNone
-	result.IsShallow = req.History == HistoryShallow || isShallowCloneContext(ctx, req.Dest)
+	result.IsShallow = req.History == HistoryShallow || cloneResult.IsShallow
 
 	// Write workspace manifest
 	if err := WriteManifest(req.Dest, result); err != nil {
@@ -118,14 +103,19 @@ func (p *GitClonePreparer) Cleanup(dest string) error {
 	return os.RemoveAll(dest)
 }
 
-// buildCloneArgs constructs the git clone command arguments based on the request
-func (p *GitClonePreparer) buildCloneArgs(req PrepareRequest) []string {
-	args := []string{"clone", "--quiet", "--no-checkout"}
+// buildCloneOptions constructs the git clone options based on the request
+func (p *GitClonePreparer) buildCloneOptions(req PrepareRequest) git.CloneOptions {
+	opts := git.CloneOptions{
+		Source: req.Source,
+		Dest:   req.Dest,
+		Ref:    req.Ref,
+		Quiet:  true,
+	}
 
 	// Handle history mode
 	switch req.History {
 	case HistoryShallow:
-		args = append(args, "--depth", "1")
+		opts.Depth = 1
 		// Note: --local is incompatible with --depth for creating true shallow clones
 		// When shallow is requested, we don't use --local even for local repos
 	case HistoryNone:
@@ -133,26 +123,19 @@ func (p *GitClonePreparer) buildCloneArgs(req PrepareRequest) []string {
 		// While this creates a git repository, it has effectively no history
 		// beyond the single commit. For true "no history" behavior without a
 		// git repository at all, use the snapshot strategy instead.
-		args = append(args, "--depth", "1")
+		opts.Depth = 1
 	case HistoryFull:
 		// Full history is the default for git clone
 		// When source is a local repo, git clone --local is more efficient
 		if IsGitRepo(req.Source) {
-			args = append(args, "--local")
+			opts.Local = true
 		}
 	}
 
-	// Source and destination
-	args = append(args, req.Source, req.Dest)
-
-	return args
-}
-
-// initSubmodules initializes git submodules recursively
-func (p *GitClonePreparer) initSubmodules(ctx context.Context, dir string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "submodule", "update", "--init", "--recursive", "--quiet")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("submodule init failed: %v, output: %s", err, string(out))
+	// Handle submodules
+	if req.Submodules == SubmodulesRecursive {
+		opts.Submodules = true
 	}
-	return nil
+
+	return opts
 }

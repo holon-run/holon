@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -150,7 +151,7 @@ func TestApplyPatchNoOp(t *testing.T) {
 	client := NewGitClient(tmpDir, "")
 
 	// Test with non-existent patch file
-	applied, err := client.ApplyPatch(tmpDir + "/nonexistent.patch")
+	applied, err := client.ApplyPatch(context.Background(), tmpDir+"/nonexistent.patch")
 	if err != nil {
 		t.Errorf("ApplyPatch() with non-existent file should return no error, got: %v", err)
 	}
@@ -164,7 +165,7 @@ func TestApplyPatchNoOp(t *testing.T) {
 		t.Fatalf("failed to create empty patch file: %v", err)
 	}
 
-	applied, err = client.ApplyPatch(emptyPatch)
+	applied, err = client.ApplyPatch(context.Background(), emptyPatch)
 	if err != nil {
 		t.Errorf("ApplyPatch() with empty file should return no error, got: %v", err)
 	}
