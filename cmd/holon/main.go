@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	_ "github.com/holon-run/holon/pkg/publisher/github" // Register GitHub publisher
+	_ "github.com/holon-run/holon/pkg/publisher/github"  // Register GitHub publisher
+	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/spf13/cobra"
 )

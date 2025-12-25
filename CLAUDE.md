@@ -136,13 +136,16 @@ pkg/                # Core Go libraries
   ├── agent/        # Agent resolver and cache system
   │   ├── resolver/ # Bundle resolution logic
   │   └── cache/    # Bundle caching and alias management
+  ├── publisher/    # Publisher system for publishing outputs
+  │   ├── github/   # GitHub PR comment/reply publisher
+  │   └── githubpr/ # GitHub PR creation/update publisher
   ├── runtime/docker/ # Docker runtime implementation
   └── prompt/       # Prompt compilation system
-agents/claude/ # TypeScript Claude agent (bundle source)
+agents/claude/      # TypeScript Claude agent (bundle source)
 tests/integration/  # testscript integration tests
-examples/          # Example specification files
-rfc/              # RFC documentation
-holonbot/         # Node.js GitHub App
+examples/           # Example specification files
+rfc/               # RFC documentation
+holonbot/          # Node.js GitHub App
 ```
 
 ## Testing
@@ -305,6 +308,68 @@ While v0.1 focuses on Claude Code, the architecture supports future agents throu
 - Pluggable agent bundles via `--agent` flag
 - Resolver system for flexible agent discovery
 - Common prompt compilation system in `pkg/prompt/`
+
+### Publisher System
+
+Holon includes a publish system for publishing Holon execution outputs to external systems like GitHub.
+
+**Publisher Interface**: `pkg/publisher/types.go`
+- `Publisher` interface defines the contract for all publishers
+- `PublishRequest` contains target, artifacts, and manifest
+- `PublishResult` tracks actions, errors, and success status
+
+**Available Publishers**:
+
+1. **GitHub Publisher** (`pkg/publisher/github/`):
+   - Publishes comments and review replies to existing PRs
+   - Target format: `owner/repo/pr/123` or `owner/repo#123`
+   - Posts summary comments with idempotency
+   - Replies to review comments based on `pr-fix.json`
+
+2. **GitHub PR Publisher** (`pkg/publisher/githubpr/`):
+   - Creates or updates GitHub PRs from Holon outputs
+   - Target format: `owner/repo[:base_branch]` (defaults to main)
+   - Applies `diff.patch`, creates branch, commits, and pushes
+   - Creates PR or updates existing one with same branch
+   - Uses `summary.md` for PR title and body
+   - References issues via `metadata.issue` or `goal.issue_id`
+
+**Usage**:
+```bash
+# List available publishers
+holon publish list
+
+# Publish to existing PR (comments/replies)
+holon publish --provider github --target holon-run/holon/pr/123 --out ./holon-output
+
+# Create/update PR from diff
+export GITHUB_TOKEN=ghp_xxx
+holon publish --provider github-pr --target holon-run/holon:main --out ./holon-output
+
+# Dry-run (validate without publishing)
+holon publish --provider github-pr --target holon-run/holon --dry-run --out ./holon-output
+```
+
+**Publisher Registry**:
+- Publishers register via `publisher.Register()` in `init()` functions
+- Registered in `cmd/holon/main.go` using blank imports
+- Thread-safe global registry with `Get()`, `List()`, `Unregister()`
+
+**Environment Variables**:
+- `GITHUB_TOKEN`: GitHub authentication token (for both GitHub publishers)
+- `HOLON_GITHUB_TOKEN`: Legacy alternative to `GITHUB_TOKEN`
+- `HOLON_WORKSPACE`: Workspace directory (for git operations, defaults to `.`)
+
+**Publish Result Output**:
+- `publish-result.json` written to output directory
+- Contains actions taken, errors, success status, timestamps
+- Includes metadata like PR numbers, commit hashes, branch names
+
+**Adding New Publishers**:
+1. Create package in `pkg/publisher/<name>/`
+2. Implement `Publisher` interface
+3. Register in `init()` function
+4. Add blank import in `cmd/holon/main.go`
 
 ### Prompt Compiler Architecture
 
