@@ -42,7 +42,13 @@ func (e *APIError) Error() string {
 // IsRateLimitError returns true if the error is a rate limit error
 func IsRateLimitError(err error) bool {
 	if apiErr, ok := err.(*APIError); ok {
-		return apiErr.StatusCode == http.StatusForbidden && apiErr.RateLimit != nil
+		// Check for rate limit error (403 with RateLimit info, or 429)
+		if apiErr.StatusCode == http.StatusTooManyRequests {
+			return true
+		}
+		if apiErr.StatusCode == http.StatusForbidden && apiErr.RateLimit != nil {
+			return true
+		}
 	}
 	return false
 }
@@ -58,6 +64,10 @@ func IsNotFoundError(err error) bool {
 // IsAuthenticationError returns true if the error is an authentication error
 func IsAuthenticationError(err error) bool {
 	if apiErr, ok := err.(*APIError); ok {
+		// Exclude rate limit errors (they're not auth errors)
+		if IsRateLimitError(err) {
+			return false
+		}
 		return apiErr.StatusCode == http.StatusUnauthorized ||
 			apiErr.StatusCode == http.StatusForbidden
 	}

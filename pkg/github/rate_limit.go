@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -161,23 +162,19 @@ func (rc *RetryConfig) GetDelay(attempt int) time.Duration {
 	// Exponential backoff with jitter
 	delay := rc.BaseDelay * time.Duration(1<<uint(attempt))
 
-	// Add some jitter to avoid thundering herd
-	jitter := time.Duration(float64(delay) * 0.1 * (0.5 + randFloat64()))
+	// Add jitter to avoid thundering herd (±10%)
+	jitter := time.Duration(float64(delay) * 0.1 * (rand.Float64()*2 - 1))
 	delay += jitter
 
-	// Cap at max delay
+	// Ensure non-negative and cap at max delay
+	if delay < 0 {
+		delay = rc.BaseDelay
+	}
 	if delay > rc.MaxDelay {
 		delay = rc.MaxDelay
 	}
 
 	return delay
-}
-
-// Helper function for jitter
-func randFloat64() float64 {
-	// Simple deterministic pseudo-random for jitter
-	// In production, you might want to use math/rand/v2
-	return float64(time.Now().UnixNano()%1000) / 1000.0
 }
 
 // IsRetryableError checks if an error is retryable

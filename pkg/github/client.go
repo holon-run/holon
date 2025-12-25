@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v68/github"
@@ -61,7 +62,20 @@ func WithRetryConfig(config *RetryConfig) ClientOption {
 	}
 }
 
-// Client is a unified GitHub API client that supports both direct HTTP and go-github
+// Client is a unified GitHub API client that supports both direct HTTP and go-github.
+//
+// The client provides:
+// - Direct HTTP access via NewRequest/Do methods
+// - Lazy-loaded go-github client via GitHubClient() for advanced operations
+// - Automatic rate limit tracking (when enabled via WithRateLimitTracking)
+// - Retry logic with exponential backoff (when configured via WithRetryConfig)
+//
+// Example:
+//
+//	client := github.NewClient(token,
+//	    github.WithRateLimitTracking(true),
+//	    github.WithRetryConfig(github.DefaultRetryConfig()),
+//	)
 type Client struct {
 	token             string
 	baseURL           string
@@ -205,8 +219,12 @@ func (c *Client) Do(req *http.Request, result interface{}) (*ClientResponse, err
 				// Extract rate limit info
 				if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
 					if resetInt, err := strconv.ParseInt(reset, 10, 64); err == nil {
+						limit := 0
+						if c.rateLimitTracker != nil {
+							limit = c.rateLimitTracker.GetStatus().Limit
+						}
 						apiErr.RateLimit = &RateLimitInfo{
-							Limit:     c.rateLimitTracker.GetStatus().Limit,
+							Limit:     limit,
 							Remaining: 0,
 							Reset:     resetInt,
 						}
@@ -252,25 +270,31 @@ func (c *Client) setHeaders(req *http.Request) {
 // ClientResponse wraps an HTTP response with additional methods
 type ClientResponse struct {
 	*http.Response
-	client *Client
+	client    *Client
+	closed    bool  // Track if body was already closed
+	closeOnce sync.Once
 }
 
 // DecodeJSON decodes the response body as JSON
 func (r *ClientResponse) DecodeJSON(v interface{}) error {
-	defer r.Response.Body.Close()
+	defer r.Close()
 	return json.NewDecoder(r.Response.Body).Decode(v)
 }
 
 // ReadAll reads the entire response body
 func (r *ClientResponse) ReadAll() ([]byte, error) {
-	defer r.Response.Body.Close()
+	defer r.Close()
 	return io.ReadAll(r.Response.Body)
 }
 
-// Close closes the response body
+// Close closes the response body (idempotent)
 func (r *ClientResponse) Close() error {
-	if r.Response != nil && r.Response.Body != nil {
-		return r.Response.Body.Close()
-	}
-	return nil
+	var err error
+	r.closeOnce.Do(func() {
+		if r.Response != nil && r.Response.Body != nil {
+			err = r.Response.Body.Close()
+			r.closed = true
+		}
+	})
+	return err
 }

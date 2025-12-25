@@ -89,7 +89,7 @@ func (c *Client) FetchIssueInfo(ctx context.Context, owner, repo string, issueNu
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Close()
+	// Note: resp.Close() will be called by DecodeJSON via defer
 
 	var issueData struct {
 		Number    int    `json:"number"`

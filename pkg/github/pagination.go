@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -28,32 +29,47 @@ func DefaultListOptions() *ListOptions {
 
 // ApplyToURL applies list options to a URL as query parameters
 func (lo *ListOptions) ApplyToURL(baseURL string) string {
+	var b strings.Builder
+	b.Grow(len(baseURL) + 100) // Pre-allocate for efficiency
+	b.WriteString(baseURL)
+
 	sep := "?"
 	if lo.Page > 0 {
-		baseURL += sep + "page=" + strconv.Itoa(lo.Page)
+		b.WriteString(sep)
+		b.WriteString("page=")
+		b.WriteString(strconv.Itoa(lo.Page))
 		sep = "&"
 	}
 	if lo.PerPage > 0 {
-		baseURL += sep + "per_page=" + strconv.Itoa(lo.PerPage)
+		b.WriteString(sep)
+		b.WriteString("per_page=")
+		b.WriteString(strconv.Itoa(lo.PerPage))
 		sep = "&"
 	}
 	if !lo.Since.IsZero() {
-		baseURL += sep + "since=" + lo.Since.Format(time.RFC3339)
+		b.WriteString(sep)
+		b.WriteString("since=")
+		b.WriteString(lo.Since.Format(time.RFC3339))
 		sep = "&"
 	}
 	if lo.State != "" {
-		baseURL += sep + "state=" + lo.State
+		b.WriteString(sep)
+		b.WriteString("state=")
+		b.WriteString(lo.State)
 		sep = "&"
 	}
 	if lo.Sort != "" {
-		baseURL += sep + "sort=" + lo.Sort
+		b.WriteString(sep)
+		b.WriteString("sort=")
+		b.WriteString(lo.Sort)
 		sep = "&"
 	}
 	if lo.Direction != "" {
-		baseURL += sep + "direction=" + lo.Direction
-		sep = "&"
+		b.WriteString(sep)
+		b.WriteString("direction=")
+		b.WriteString(lo.Direction)
 	}
-	return baseURL
+	return b.String()
 }
 
 // Response represents a paginated GitHub API response
@@ -112,7 +128,7 @@ func (p *Paginator) SetMaxResults(max int) {
 }
 
 // FetchAll fetches all pages and returns a combined list
-func (p *Paginator) FetchAll(ctx context.Context, url string) ([]interface{}, error) {
+func (p *Paginator) FetchAll(ctx context.Context, urlStr string) ([]interface{}, error) {
 	var allItems []interface{}
 	page := p.opts.Page
 	perPage := p.opts.PerPage
@@ -123,8 +139,11 @@ func (p *Paginator) FetchAll(ctx context.Context, url string) ([]interface{}, er
 			break
 		}
 
-		// Build URL for this page
-		pageURL := fmt.Sprintf("%s?page=%d&per_page=%d", url, page, perPage)
+		// Build URL for this page, preserving existing query parameters
+		pageURL, err := addPageParams(urlStr, page, perPage)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build page URL: %w", err)
+		}
 
 		// Fetch page
 		req, err := p.client.NewRequest(ctx, "GET", pageURL, nil)
@@ -136,6 +155,12 @@ func (p *Paginator) FetchAll(ctx context.Context, url string) ([]interface{}, er
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch page %d: %w", page, err)
 		}
+		// Close response on error to avoid resource leak
+		defer func() {
+			if resp != nil {
+				_ = resp.Close()
+			}
+		}()
 
 		// Parse items from response
 		var items []interface{}
@@ -165,8 +190,12 @@ func (p *Paginator) FetchAll(ctx context.Context, url string) ([]interface{}, er
 }
 
 // FetchPage fetches a single page of results
-func (p *Paginator) FetchPage(ctx context.Context, url string, page int) (*PageResult, error) {
-	pageURL := fmt.Sprintf("%s?page=%d&per_page=%d", url, page, p.opts.PerPage)
+func (p *Paginator) FetchPage(ctx context.Context, urlStr string, page int) (*PageResult, error) {
+	// Build URL for this page, preserving existing query parameters
+	pageURL, err := addPageParams(urlStr, page, p.opts.PerPage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build page URL: %w", err)
+	}
 
 	req, err := p.client.NewRequest(ctx, "GET", pageURL, nil)
 	if err != nil {
@@ -359,12 +388,12 @@ func extractLinkRel(link string) (url, rel string) {
 }
 
 // extractPageFromURL extracts the page number from a URL
-func extractPageFromURL(url string) int {
+func extractPageFromURL(urlStr string) int {
 	// Parse page parameter from URL query string
-	for i := len(url) - 1; i >= 0; i-- {
-		if url[i] == '?' || url[i] == '&' {
-			if strings.HasPrefix(url[i+1:], "page=") {
-				pageStr := url[i+6:]
+	for i := len(urlStr) - 1; i >= 0; i-- {
+		if urlStr[i] == '?' || urlStr[i] == '&' {
+			if strings.HasPrefix(urlStr[i+1:], "page=") {
+				pageStr := urlStr[i+6:]
 				// Find end of parameter
 				for j := 0; j < len(pageStr); j++ {
 					if pageStr[j] == '&' {
@@ -376,8 +405,28 @@ func extractPageFromURL(url string) int {
 					return page
 				}
 			}
-			break
+			// Don't break - continue searching other parameters
 		}
 	}
 	return 0
+}
+
+// addPageParams adds page and per_page parameters to a URL, preserving existing query parameters
+func addPageParams(baseURL string, page, perPage int) (string, error) {
+	// Parse the base URL
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse URL: %w", err)
+	}
+
+	// Get existing query values or create new ones
+	q := u.Query()
+
+	// Set/update page and per_page parameters
+	q.Set("page", strconv.Itoa(page))
+	q.Set("per_page", strconv.Itoa(perPage))
+
+	// Encode query parameters back into URL
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
