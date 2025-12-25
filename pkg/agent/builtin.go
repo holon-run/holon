@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 // BuiltinAgent represents the default builtin agent configuration
@@ -30,6 +33,31 @@ func DefaultBuiltinAgent() *BuiltinAgent {
 func IsAutoInstallDisabled() bool {
 	disabled := os.Getenv("HOLON_NO_AUTO_INSTALL")
 	return strings.ToLower(disabled) == "1" || strings.ToLower(disabled) == "true"
+}
+
+// stalenessCheckRateLimiter implements rate limiting for staleness checks
+type stalenessCheckRateLimiter struct {
+	mu             sync.Mutex
+	lastCheckTime  time.Time
+	checkInterval  time.Duration
+}
+
+// Global rate limiter - checks once per hour by default
+var globalRateLimiter = &stalenessCheckRateLimiter{
+	checkInterval: 1 * time.Hour,
+}
+
+// shouldCheck returns true if a staleness check should be performed
+func (r *stalenessCheckRateLimiter) shouldCheck() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	if now.Sub(r.lastCheckTime) >= r.checkInterval {
+		r.lastCheckTime = now
+		return true
+	}
+	return false
 }
 
 // CheckBuiltinAgentStaleness checks if the builtin agent is stale compared to the latest release
@@ -58,3 +86,22 @@ func CheckBuiltinAgentStaleness(repo string) (bool, string, error) {
 	return false, latest.TagName, nil
 }
 
+// CheckBuiltinAgentStalenessWithLimit performs staleness check with rate limiting
+// Returns (isStale bool, latestVersion string, error)
+// If rate limited, returns (false, "", nil) - no error but no check performed
+func CheckBuiltinAgentStalenessWithLimit(ctx context.Context, repo string) (bool, string, error) {
+	// Check rate limit first
+	if !globalRateLimiter.shouldCheck() {
+		// Rate limited - skip the check silently
+		return false, "", nil
+	}
+
+	// Respect context cancellation
+	select {
+	case <-ctx.Done():
+		return false, "", ctx.Err()
+	default:
+	}
+
+	return CheckBuiltinAgentStaleness(repo)
+}

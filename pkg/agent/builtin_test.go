@@ -132,5 +132,3 @@ func TestCheckBuiltinAgentStaleness(t *testing.T) {
 	// which would make tests fragile and slow. In production, this is tested
 	// manually or through integration tests.
 }
-
-

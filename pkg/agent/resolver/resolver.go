@@ -368,10 +368,11 @@ func (r *BuiltinResolver) Resolve(ctx context.Context, ref string) (string, erro
 
 	// Check for staleness (best-effort, non-blocking)
 	// This runs in the background and logs warnings if the version is stale
-	go func() {
+	// Rate limited to once per hour to avoid hitting GitHub API rate limits
+	go func(ctx context.Context) {
 		const defaultRepo = "holon-run/holon"
-		_, _, _ = agent.CheckBuiltinAgentStaleness(defaultRepo)
-	}()
+		_, _, _ = agent.CheckBuiltinAgentStalenessWithLimit(ctx, defaultRepo)
+	}(ctx)
 
 	// Resolve the builtin agent URL with checksum - fix double prefix issue
 	checksum := strings.TrimPrefix(builtinAgent.Checksum, "sha256=")
