@@ -115,3 +115,20 @@ func TestDefaultBuiltinAgent_Consistency(t *testing.T) {
 	}
 }
 
+func TestCheckBuiltinAgentStaleness(t *testing.T) {
+	// Test with invalid repo (should error, not panic)
+	isStale, latestVersion, err := CheckBuiltinAgentStaleness("invalid/repo/that/does/not/exist")
+	if err == nil {
+		t.Error("Expected error for invalid repo, got nil")
+	}
+	if isStale {
+		t.Error("Should not be marked as stale when error occurs")
+	}
+	if latestVersion != "" {
+		t.Error("Latest version should be empty when error occurs")
+	}
+
+	// Note: We can't test the successful case without making actual network calls
+	// which would make tests fragile and slow. In production, this is tested
+	// manually or through integration tests.
+}

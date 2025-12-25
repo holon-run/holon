@@ -47,6 +47,13 @@ func WithTimeout(timeout time.Duration) ClientOption {
 	}
 }
 
+// WithHTTPClient sets a custom HTTP client
+func WithHTTPClient(client *http.Client) ClientOption {
+	return func(c *Client) {
+		c.httpClient = client
+	}
+}
+
 // WithRateLimitTracking enables rate limit tracking
 func WithRateLimitTracking(enabled bool) ClientOption {
 	return func(c *Client) {

@@ -122,3 +122,12 @@ type Status struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
+
+// NewPullRequest contains information for creating a new pull request
+type NewPullRequest struct {
+	Title               string `json:"title"`
+	Head                string `json:"head"`
+	Base                string `json:"base"`
+	Body                string `json:"body"`
+	MaintainerCanModify bool   `json:"maintainer_can_modify"`
+}

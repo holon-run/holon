@@ -454,3 +454,62 @@ func TestBackwardCompatibility(t *testing.T) {
 		}
 	})
 }
+
+// TestLegacyContractPathsIgnored verifies that the compiler ignores legacy contract paths
+// and only uses the new contracts/common.md path.
+func TestLegacyContractPathsIgnored(t *testing.T) {
+	t.Run("Compiler uses contracts/common.md not contract/v1.md", func(t *testing.T) {
+		mockFS := fstest.MapFS{
+			"manifest.yaml":           {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
+			"contracts/common.md":     {Data: []byte("NEW Common Contract Content")},
+			"contract/v1.md":          {Data: []byte("OLD Legacy Contract Content - SHOULD NOT APPEAR")},
+			"modes/solve/contract.md": {Data: []byte("Solve Mode")},
+			"roles/developer.md":      {Data: []byte("Developer Role")},
+		}
+
+		compiler := NewCompilerFromFS(mockFS)
+		prompt, err := compiler.CompileSystemPrompt(Config{WorkingDir: "/test"})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// Verify the NEW contract is used
+		if !strings.Contains(prompt, "NEW Common Contract Content") {
+			t.Errorf("Expected prompt to contain NEW common contract content, got: %s", prompt)
+		}
+
+		// Verify the OLD legacy contract is NOT used
+		if strings.Contains(prompt, "OLD Legacy Contract Content") {
+			t.Errorf("Prompt should NOT contain legacy contract/v1.md content, but it did: %s", prompt)
+		}
+
+		// Verify it still includes the other expected layers
+		if !strings.Contains(prompt, "Solve Mode") {
+			t.Errorf("Expected prompt to contain solve mode contract, got: %s", prompt)
+		}
+		if !strings.Contains(prompt, "Developer Role") {
+			t.Errorf("Expected prompt to contain developer role, got: %s", prompt)
+		}
+	})
+
+	t.Run("Compiler works without legacy contract path entirely", func(t *testing.T) {
+		mockFS := fstest.MapFS{
+			"manifest.yaml":           {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
+			"contracts/common.md":     {Data: []byte("Active Common Contract")},
+			"modes/solve/contract.md": {Data: []byte("Solve Mode")},
+			"roles/developer.md":      {Data: []byte("Developer Role")},
+			// NOTE: No contract/v1.md present at all
+		}
+
+		compiler := NewCompilerFromFS(mockFS)
+		prompt, err := compiler.CompileSystemPrompt(Config{WorkingDir: "/test"})
+		if err != nil {
+			t.Fatalf("Compiler should work without legacy contract path, got error: %v", err)
+		}
+
+		if !strings.Contains(prompt, "Active Common Contract") {
+			t.Errorf("Expected prompt to contain common contract, got: %s", prompt)
+		}
+	})
+}
+

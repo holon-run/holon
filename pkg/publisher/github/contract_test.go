@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/google/go-github/v68/github"
-	gh "github.com/holon-run/holon/pkg/github"
+	hghelper "github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/publisher"
 )
 
@@ -868,12 +867,9 @@ func copyFixtureToFile(t *testing.T, fixtureName, destDir, destName string) {
 }
 
 // newTestGitHubClient creates a GitHub client configured for the mock server
-func newTestGitHubClient(t *testing.T, mockServer *mockGitHubServer) *github.Client {
-	client := github.NewClient(nil)
-	// Ensure trailing slash for BaseURL (go-github requirement)
-	baseURL, _ := url.Parse(mockServer.server.URL + "/")
-	client.BaseURL = baseURL
-	return client
+func newTestGitHubClient(t *testing.T, mockServer *mockGitHubServer) *hghelper.Client {
+	// Create a client with a dummy token (not used in mock server)
+	return hghelper.NewClient("test-token", hghelper.WithBaseURL(mockServer.server.URL))
 }
 
 // ============================================================================
@@ -902,7 +898,7 @@ func TestVCRPublishSummaryComment(t *testing.T) {
 	}
 
 	// Create a VCR recorder
-	rec, err := gh.NewRecorder(t, "publisher/summary_comment_create")
+	rec, err := hghelper.NewRecorder(t, "publisher/summary_comment_create")
 	if err != nil {
 		// Skip gracefully if fixture doesn't exist (in replay mode)
 		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
@@ -910,7 +906,7 @@ func TestVCRPublishSummaryComment(t *testing.T) {
 	defer rec.Stop()
 
 	// Create GitHub client with recorder
-	client := github.NewClient(rec.HTTPClient())
+	client := hghelper.NewClient("", hghelper.WithHTTPClient(rec.HTTPClient()))
 
 	// Create publisher with test client
 	p := &GitHubPublisher{client: client}
@@ -970,13 +966,13 @@ func TestVCRPublishReviewReplies(t *testing.T) {
 		t.Skip("Skipping VCR test in short mode")
 	}
 
-	rec, err := gh.NewRecorder(t, "publisher/review_replies_post")
+	rec, err := hghelper.NewRecorder(t, "publisher/review_replies_post")
 	if err != nil {
 		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
 	}
 	defer rec.Stop()
 
-	client := github.NewClient(rec.HTTPClient())
+	client := hghelper.NewClient("", hghelper.WithHTTPClient(rec.HTTPClient()))
 	p := &GitHubPublisher{client: client}
 
 	tmpDir := t.TempDir()
@@ -1038,13 +1034,13 @@ func TestVCRPublishIdempotency(t *testing.T) {
 		t.Skip("Skipping VCR test in short mode")
 	}
 
-	rec, err := gh.NewRecorder(t, "publisher/review_replies_idempotent")
+	rec, err := hghelper.NewRecorder(t, "publisher/review_replies_idempotent")
 	if err != nil {
 		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
 	}
 	defer rec.Stop()
 
-	client := github.NewClient(rec.HTTPClient())
+	client := hghelper.NewClient("", hghelper.WithHTTPClient(rec.HTTPClient()))
 	p := &GitHubPublisher{client: client}
 
 	tmpDir := t.TempDir()
@@ -1112,13 +1108,13 @@ func TestVCRPublishBothSummaryAndReplies(t *testing.T) {
 		t.Skip("Skipping VCR test in short mode")
 	}
 
-	rec, err := gh.NewRecorder(t, "publisher/summary_and_replies_full")
+	rec, err := hghelper.NewRecorder(t, "publisher/summary_and_replies_full")
 	if err != nil {
 		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
 	}
 	defer rec.Stop()
 
-	client := github.NewClient(rec.HTTPClient())
+	client := hghelper.NewClient("", hghelper.WithHTTPClient(rec.HTTPClient()))
 	p := &GitHubPublisher{client: client}
 
 	tmpDir := t.TempDir()
@@ -1205,13 +1201,13 @@ func TestVCRResultStructContract(t *testing.T) {
 		t.Skip("Skipping VCR test in short mode")
 	}
 
-	rec, err := gh.NewRecorder(t, "publisher/result_contract")
+	rec, err := hghelper.NewRecorder(t, "publisher/result_contract")
 	if err != nil {
 		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
 	}
 	defer rec.Stop()
 
-	client := github.NewClient(rec.HTTPClient())
+	client := hghelper.NewClient("", hghelper.WithHTTPClient(rec.HTTPClient()))
 	p := &GitHubPublisher{client: client}
 
 	tmpDir := t.TempDir()
@@ -1278,13 +1274,13 @@ func TestVCRErrorHandling(t *testing.T) {
 	}
 
 	// Test with invalid PR number (will error from API)
-	rec, err := gh.NewRecorder(t, "publisher/error_handling")
+	rec, err := hghelper.NewRecorder(t, "publisher/error_handling")
 	if err != nil {
 		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
 	}
 	defer rec.Stop()
 
-	client := github.NewClient(rec.HTTPClient())
+	client := hghelper.NewClient("", hghelper.WithHTTPClient(rec.HTTPClient()))
 	p := &GitHubPublisher{client: client}
 
 	tmpDir := t.TempDir()
