@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// TestFetcher is a helper interface for test fetch operations
-type TestFetcher interface {
-	Fetch(ctx context.Context) error
-}
-
 // setupTestClient creates a test client with VCR recording
 func setupTestClient(t *testing.T, fixtureName string) (*Client, *Recorder) {
 	t.Helper()

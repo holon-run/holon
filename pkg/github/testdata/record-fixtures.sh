@@ -88,19 +88,21 @@ mkdir -p "$FIXTURES_DIR"
 # Set recording mode
 export HOLON_VCR_MODE=record
 
-# Build test command
-TEST_CMD="go test -v"
-if [ -n "$TEST_FILTER" ]; then
-    TEST_CMD="$TEST_CMD -run $TEST_FILTER"
-fi
-TEST_CMD="$TEST_CMD $PKG_DIR"
-
 # Print what we're about to do
 echo -e "${GREEN}Recording GitHub API fixtures${NC}"
 echo ""
 echo "Settings:"
 echo "  Mode:         record"
-echo "  Token:        ${GITHUB_TOKEN:0:10}...${GITHUB_TOKEN: -4}"
+
+# Display token safely (avoid bash 4.2+ negative index syntax)
+token_prefix="${GITHUB_TOKEN:0:10}"
+token_len=${#GITHUB_TOKEN}
+if [ "$token_len" -gt 4 ]; then
+    token_suffix="${GITHUB_TOKEN:$((token_len - 4)):4}"
+else
+    token_suffix="$GITHUB_TOKEN"
+fi
+echo "  Token:        ${token_prefix}...${token_suffix}"
 echo "  Fixtures dir: $FIXTURES_DIR"
 echo ""
 
@@ -111,10 +113,10 @@ fi
 echo ""
 echo -e "${YELLOW}Warning: This will make real API calls to GitHub${NC}"
 echo ""
-read -p "Continue? (y/N) " -n 1 -r
+read -p "Continue? (y/N) " -n 1 -r response
 echo ""
 
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+if [[ ! $response =~ ^[Yy]$ ]]; then
     echo "Aborted"
     exit 0
 fi
@@ -123,8 +125,12 @@ echo ""
 echo -e "${GREEN}Starting fixture recording...${NC}"
 echo ""
 
-# Run the tests
-eval $TEST_CMD
+# Run the tests without using eval to avoid command injection
+if [ -n "$TEST_FILTER" ]; then
+    go test -v "$PKG_DIR" -run "$TEST_FILTER"
+else
+    go test -v "$PKG_DIR"
+fi
 
 # Check if fixtures were created
 echo ""

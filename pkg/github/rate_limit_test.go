@@ -215,10 +215,6 @@ func TestRetryConfig_GetDelay(t *testing.T) {
 	for _, attempt := range attempts {
 		delay := config.GetDelay(attempt)
 
-		// Expected delay without jitter: BaseDelay * 2^attempt
-		expectedMin := config.BaseDelay * time.Duration(1<<uint(attempt))
-		_ = expectedMin // Used for range checking below
-
 		// Check delay is in reasonable range (with jitter)
 		if delay < 0 {
 			t.Errorf("Attempt %d: delay = %v, want >= 0", attempt, delay)

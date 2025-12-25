@@ -53,7 +53,7 @@ export GITHUB_TOKEN=your_token_here
 go test -v ./pkg/github/ -run TestFetchPRInfo
 
 # Or run all tests (will record/overwrite all fixtures)
-go test -v ./pkg/github/...
+go test -v ./pkg/github/
 ```
 
 ### Example: Recording a New Fixture
@@ -88,7 +88,7 @@ go test ./pkg/github/...
 go test -v ./pkg/github/ -run TestFetchPRInfo
 
 # Run in short mode (skips integration tests)
-go test -short ./pkg/github/...
+go test -short ./pkg/github/
 ```
 
 ## Updating Fixtures
