@@ -1,0 +1,21 @@
+{
+  "review_replies": [
+    {
+      "comment_id": 1234567890,
+      "status": "fixed",
+      "message": "Fixed the null pointer dereference by adding nil check",
+      "action_taken": "Added nil check before accessing pointer"
+    },
+    {
+      "comment_id": 1234567891,
+      "status": "wontfix",
+      "message": "This is a false positive from the linter"
+    },
+    {
+      "comment_id": 1234567892,
+      "status": "need-info",
+      "message": "Which configuration file should be modified?",
+      "action_taken": "Asked for clarification"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "threads": [
+    {
+      "id": 987654321,
+      "comments": [
+        {
+          "id": 1234567890,
+          "user": {
+            "login": "reviewer1"
+          },
+          "body": "Please fix the null pointer dereference here",
+          "created_at": "2024-01-15T10:30:00Z",
+          "in_reply_to": null
+        }
+      ]
+    },
+    {
+      "id": 987654322,
+      "comments": [
+        {
+          "id": 1234567891,
+          "user": {
+            "login": "reviewer2"
+          },
+          "body": "This linter warning seems incorrect",
+          "created_at": "2024-01-15T11:00:00Z",
+          "in_reply_to": null
+        }
+      ]
+    },
+    {
+      "id": 987654323,
+      "comments": [
+        {
+          "id": 1234567892,
+          "user": {
+            "login": "reviewer1"
+          },
+          "body": "Which config file needs updating?",
+          "created_at": "2024-01-15T11:30:00Z",
+          "in_reply_to": null
+        }
+      ]
+    }
+  ]
+}
