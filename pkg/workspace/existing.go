@@ -39,10 +39,11 @@ func (p *ExistingPreparer) Validate(req PrepareRequest) error {
 	return nil
 }
 
-// Prepare uses an existing directory as the workspace without modification.
+// Prepare uses an existing directory as the workspace.
 // This validates that dest contains a usable git repository or directory tree,
-// records metadata into workspace.manifest.json, and does not modify the content.
-// The Source parameter is used for metadata and origin tracking.
+// records metadata into workspace.manifest.json, and typically does not modify content.
+// If a Ref is explicitly requested, a git checkout will be performed which modifies
+// the working directory content. The Source parameter is used for metadata and origin tracking.
 // This strategy is useful for using already-prepared workspaces (e.g., GitHub Actions checkout).
 func (p *ExistingPreparer) Prepare(ctx context.Context, req PrepareRequest) (PrepareResult, error) {
 	if err := p.Validate(req); err != nil {
