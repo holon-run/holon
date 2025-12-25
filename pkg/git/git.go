@@ -1,0 +1,551 @@
+// Package git provides a shared utility layer for git operations.
+// It wraps system git commands, providing a consistent API for use across
+// workspace preparers and publishers. The design allows for future migration
+// to go-git or a hybrid approach without changing the consumer API.
+package git
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// Client represents a git client for operations on a repository.
+type Client struct {
+	// Dir is the working directory of the git repository.
+	Dir string
+
+	// AuthToken is the optional authentication token for push operations.
+	AuthToken string
+
+	// Options provides optional git configuration.
+	Options *ClientOptions
+}
+
+// ClientOptions holds configuration for git operations.
+type ClientOptions struct {
+	// UserName is the git user name for commits.
+	UserName string
+
+	// UserEmail is the git user email for commits.
+	UserEmail string
+
+	// Quiet suppresses output from git commands.
+	Quiet bool
+
+	// DryRun logs commands without executing them.
+	DryRun bool
+}
+
+// DefaultClientOptions returns the default client options.
+func DefaultClientOptions() *ClientOptions {
+	return &ClientOptions{
+		UserName:  "Holon Bot",
+		UserEmail: "bot@holon.run",
+		Quiet:     true,
+		DryRun:    false,
+	}
+}
+
+// NewClient creates a new git client for the given directory.
+func NewClient(dir string) *Client {
+	return &Client{
+		Dir:     dir,
+		Options: DefaultClientOptions(),
+	}
+}
+
+// NewClientWithToken creates a new git client with authentication.
+func NewClientWithToken(dir, token string) *Client {
+	return &Client{
+		Dir:       dir,
+		AuthToken: token,
+		Options:   DefaultClientOptions(),
+	}
+}
+
+// RepositoryInfo holds information about a git repository.
+type RepositoryInfo struct {
+	// HEAD is the current commit SHA.
+	HEAD string
+
+	// IsShallow indicates if the repository is a shallow clone.
+	IsShallow bool
+
+	// Branch is the current branch name (empty if detached HEAD).
+	Branch string
+
+	// Clean indicates if the working directory has no changes.
+	Clean bool
+}
+
+// CloneOptions specifies options for cloning a repository.
+type CloneOptions struct {
+	// Source is the repository URL or path to clone from.
+	Source string
+
+	// Dest is the destination directory.
+	Dest string
+
+	// Ref is the reference to checkout after clone (optional).
+	Ref string
+
+	// Depth specifies shallow clone depth (0 for full history).
+	Depth int
+
+	// Local indicates to use --local for local repositories.
+	Local bool
+
+	// Submodules indicates whether to initialize submodules.
+	Submodules bool
+
+	// Quiet suppresses output.
+	Quiet bool
+}
+
+// CloneResult holds the result of a clone operation.
+type CloneResult struct {
+	// HEAD is the checked out commit SHA.
+	HEAD string
+
+	// Branch is the checked out branch name.
+	Branch string
+
+	// IsShallow indicates if the clone is shallow.
+	IsShallow bool
+}
+
+// execCommand executes a git command with proper error handling.
+func (c *Client) execCommand(ctx context.Context, args ...string) ([]byte, error) {
+	return c.execCommandWithDir(ctx, c.Dir, args...)
+}
+
+// execCommandWithDir executes a git command in a specific directory.
+func (c *Client) execCommandWithDir(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if c.Options != nil && c.Options.DryRun {
+		return nil, fmt.Errorf("dry run: git %s (dir: %s)", strings.Join(args, " "), dir)
+	}
+
+	cmdArgs := []string{"-C", dir}
+	cmdArgs = append(cmdArgs, args...)
+
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+
+	return output, nil
+}
+
+// quietFlag returns the --quiet flag if enabled.
+func (c *Client) quietFlag() string {
+	if c.Options != nil && c.Options.Quiet {
+		return "--quiet"
+	}
+	return ""
+}
+
+// Clone clones a repository.
+func Clone(ctx context.Context, opts CloneOptions) (*CloneResult, error) {
+	// Build clone arguments
+	args := []string{"clone"}
+
+	if opts.Quiet {
+		args = append(args, "--quiet")
+	}
+
+	args = append(args, "--no-checkout")
+
+	// Handle depth for shallow clone
+	if opts.Depth > 0 {
+		args = append(args, "--depth", fmt.Sprintf("%d", opts.Depth))
+	}
+
+	// Use --local for local repositories
+	if opts.Local {
+		args = append(args, "--local")
+	}
+
+	// Source and destination
+	args = append(args, opts.Source, opts.Dest)
+
+	// Execute git clone
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git clone failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	// Verify the clone was created successfully
+	client := NewClient(opts.Dest)
+	if _, err := client.execCommand(ctx, "rev-parse", "--git-dir"); err != nil {
+		return nil, fmt.Errorf("git clone succeeded but destination is not a git repository")
+	}
+
+	// Determine ref to checkout
+	checkoutRef := opts.Ref
+	if checkoutRef == "" {
+		checkoutRef = "HEAD"
+	}
+
+	// Checkout the requested ref
+	if err := client.Checkout(ctx, checkoutRef); err != nil {
+		// Checkout failed - this is a warning, not a failure
+		// The caller can decide if this is critical
+		return nil, fmt.Errorf("checkout failed: %w", err)
+	}
+
+	// Handle submodules if requested
+	if opts.Submodules {
+		if err := client.InitSubmodules(ctx); err != nil {
+			return nil, fmt.Errorf("submodule init failed: %w", err)
+		}
+	}
+
+	// Get repository info
+	info, err := client.GetRepositoryInfo(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get repository info: %w", err)
+	}
+
+	return &CloneResult{
+		HEAD:     info.HEAD,
+		Branch:   info.Branch,
+		IsShallow: info.IsShallow,
+	}, nil
+}
+
+// IsRepo checks if the directory is a git repository.
+func (c *Client) IsRepo(ctx context.Context) bool {
+	_, err := c.execCommand(ctx, "rev-parse", "--git-dir")
+	return err == nil
+}
+
+// GetRepositoryInfo returns information about the repository.
+func (c *Client) GetRepositoryInfo(ctx context.Context) (*RepositoryInfo, error) {
+	info := &RepositoryInfo{}
+
+	// Get HEAD SHA
+	headSHA, err := c.execCommand(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HEAD SHA: %w", err)
+	}
+	info.HEAD = strings.TrimSpace(string(headSHA))
+
+	// Check if shallow
+	shallowOutput, err := c.execCommand(ctx, "rev-parse", "--is-shallow-repository")
+	if err == nil {
+		info.IsShallow = strings.TrimSpace(string(shallowOutput)) == "true"
+	}
+
+	// Get current branch
+	branch, err := c.execCommand(ctx, "rev-parse", "--abbrev-ref", "HEAD")
+	if err == nil {
+		info.Branch = strings.TrimSpace(string(branch))
+	}
+
+	// Check if working directory is clean
+	_, err = c.execCommand(ctx, "diff", "--quiet")
+	if err == nil {
+		info.Clean = true
+	} else {
+		// diff --quiet returns exit code 1 if there are differences
+		info.Clean = false
+	}
+
+	return info, nil
+}
+
+// GetHeadSHA returns the current HEAD SHA.
+func (c *Client) GetHeadSHA(ctx context.Context) (string, error) {
+	output, err := c.execCommand(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("failed to get HEAD SHA: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// IsShallowClone checks if the repository is a shallow clone.
+func (c *Client) IsShallowClone(ctx context.Context) (bool, error) {
+	output, err := c.execCommand(ctx, "rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return false, fmt.Errorf("failed to check shallow status: %w", err)
+	}
+	return strings.TrimSpace(string(output)) == "true", nil
+}
+
+// Checkout checks out a reference (branch, tag, or commit).
+func (c *Client) Checkout(ctx context.Context, ref string) error {
+	args := []string{"checkout", c.quietFlag()}
+	if ref != "" {
+		args = append(args, ref)
+	}
+	_, err := c.execCommand(ctx, args...)
+	return err
+}
+
+// Init initializes a new git repository.
+func (c *Client) Init(ctx context.Context) error {
+	_, err := c.execCommand(ctx, "init")
+	return err
+}
+
+// SetConfig sets a git configuration value.
+func (c *Client) SetConfig(ctx context.Context, key, value string) error {
+	_, err := c.execCommand(ctx, "config", key, value)
+	return err
+}
+
+// InitRepository initializes a git repository with default configuration.
+func (c *Client) InitRepository(ctx context.Context) error {
+	if err := c.Init(ctx); err != nil {
+		return fmt.Errorf("failed to init repository: %w", err)
+	}
+
+	// Set default user config
+	userName := c.Options.UserName
+	if userName == "" {
+		userName = "Holon"
+	}
+	if err := c.SetConfig(ctx, "user.name", userName); err != nil {
+		return fmt.Errorf("failed to set user.name: %w", err)
+	}
+
+	userEmail := c.Options.UserEmail
+	if userEmail == "" {
+		userEmail = "holon@holon.run"
+	}
+	if err := c.SetConfig(ctx, "user.email", userEmail); err != nil {
+		return fmt.Errorf("failed to set user.email: %w", err)
+	}
+
+	return nil
+}
+
+// Add stages files for commit.
+func (c *Client) Add(ctx context.Context, args ...string) error {
+	addArgs := append([]string{"add"}, args...)
+	_, err := c.execCommand(ctx, addArgs...)
+	return err
+}
+
+// AddAll stages all changes.
+func (c *Client) AddAll(ctx context.Context) error {
+	return c.Add(ctx, "-A")
+}
+
+// Commit creates a commit with the given message.
+func (c *Client) Commit(ctx context.Context, message string) (string, error) {
+	args := []string{"commit", "-m", message}
+	_, err := c.execCommand(ctx, args...)
+	if err != nil {
+		return "", fmt.Errorf("commit failed: %w", err)
+	}
+
+	// Return the commit SHA
+	headSHA, err := c.GetHeadSHA(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return headSHA, nil
+}
+
+// ApplyOptions specifies options for applying a patch.
+type ApplyOptions struct {
+	// PatchPath is the path to the patch file.
+	PatchPath string
+
+	// ThreeWay enables 3-way merge.
+	ThreeWay bool
+
+	// CheckOnly validates the patch without applying it.
+	CheckOnly bool
+}
+
+// Apply applies a patch file to the workspace.
+func (c *Client) Apply(ctx context.Context, opts ApplyOptions) error {
+	// Check if patch file exists
+	if _, err := os.Stat(opts.PatchPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("patch file not found: %s", opts.PatchPath)
+		}
+		return fmt.Errorf("failed to check patch file: %w", err)
+	}
+
+	// Build apply arguments
+	args := []string{"apply"}
+	if opts.ThreeWay {
+		args = append(args, "--3way")
+	}
+	if opts.CheckOnly {
+		args = append(args, "--check")
+	}
+	args = append(args, opts.PatchPath)
+
+	_, err := c.execCommand(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("git apply failed: %w", err)
+	}
+
+	return nil
+}
+
+// ApplyCheck checks if a patch can be applied without conflicts.
+func (c *Client) ApplyCheck(ctx context.Context, patchPath string, threeWay bool) error {
+	return c.Apply(ctx, ApplyOptions{
+		PatchPath: patchPath,
+		ThreeWay:  threeWay,
+		CheckOnly: true,
+	})
+}
+
+// InitSubmodules initializes git submodules.
+func (c *Client) InitSubmodules(ctx context.Context) error {
+	args := []string{"submodule", "update", "--init", "--recursive", c.quietFlag()}
+	_, err := c.execCommand(ctx, args...)
+	return err
+}
+
+// Branch creates a new branch or checks out an existing one.
+func (c *Client) Branch(ctx context.Context, name string, create bool) error {
+	args := []string{"checkout", c.quietFlag()}
+	if create {
+		args = append(args, "-b", name)
+	} else {
+		args = append(args, name)
+	}
+	_, err := c.execCommand(ctx, args...)
+	return err
+}
+
+// RemoteGetConfig retrieves a git configuration value.
+func RemoteGetConfig(ctx context.Context, key string) (string, error) {
+	cmd := exec.Command("git", "config", "--get", key)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git config --get %s failed: %w", key, err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// CommitAuthor represents the author of a commit.
+type CommitAuthor struct {
+	Name  string
+	Email string
+	When  time.Time
+}
+
+// CommitOptions specifies options for creating a commit.
+type CommitOptions struct {
+	// Message is the commit message.
+	Message string
+
+	// Author is the commit author (defaults to config).
+	Author *CommitAuthor
+
+	// AllowEmpty allows creating a commit with no changes.
+	AllowEmpty bool
+}
+
+// CommitWith creates a commit with options.
+func (c *Client) CommitWith(ctx context.Context, opts CommitOptions) (string, error) {
+	args := []string{"commit"}
+
+	if opts.AllowEmpty {
+		args = append(args, "--allow-empty")
+	}
+
+	// Set author if specified
+	if opts.Author != nil {
+		args = append(args, "--author", fmt.Sprintf("%s <%s>", opts.Author.Name, opts.Author.Email))
+	}
+
+	args = append(args, "-m", opts.Message)
+
+	output, err := c.execCommand(ctx, args...)
+	if err != nil {
+		return "", fmt.Errorf("commit failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	// Return the commit SHA
+	return c.GetHeadSHA(ctx)
+}
+
+// PushOptions specifies options for pushing to a remote.
+type PushOptions struct {
+	// Remote is the remote name (default: "origin").
+	Remote string
+
+	// Branch is the branch to push.
+	Branch string
+
+	// Force enables force push.
+	Force bool
+
+	// SetUpstream sets the upstream branch.
+	SetUpstream bool
+}
+
+// Push pushes commits to a remote repository.
+// Note: This requires git credentials to be configured for authentication.
+func (c *Client) Push(ctx context.Context, opts PushOptions) error {
+	if opts.Remote == "" {
+		opts.Remote = "origin"
+	}
+	if opts.Branch == "" {
+		return fmt.Errorf("branch name is required for push")
+	}
+
+	args := []string{"push"}
+
+	if opts.Force {
+		args = append(args, "--force")
+	}
+
+	if opts.SetUpstream {
+		args = append(args, "-u")
+	}
+
+	args = append(args, opts.Remote, opts.Branch)
+
+	_, err := c.execCommand(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("push failed: %w", err)
+	}
+
+	return nil
+}
+
+// IsClean returns true if the working directory has no uncommitted changes.
+func (c *Client) IsClean(ctx context.Context) bool {
+	info, err := c.GetRepositoryInfo(ctx)
+	if err != nil {
+		return false
+	}
+
+	// Check for untracked files
+	untrackedOutput, err := c.execCommand(ctx, "ls-files", "--others", "--exclude-standard")
+	if err == nil && len(untrackedOutput) > 0 {
+		return false
+	}
+
+	return info.Clean
+}
+
+// HasChanges returns true if there are uncommitted changes.
+func (c *Client) HasChanges(ctx context.Context) bool {
+	return !c.IsClean(ctx)
+}
+
+// ConfigGet gets a git configuration value.
+func (c *Client) ConfigGet(ctx context.Context, key string) (string, error) {
+	output, err := c.execCommand(ctx, "config", "--get", key)
+	if err != nil {
+		return "", fmt.Errorf("git config --get %s failed: %w", key, err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}

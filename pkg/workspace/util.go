@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/holon-run/holon/pkg/git"
 )
 
 // MkdirTempOutsideWorkspace creates a temporary directory outside of the given path
@@ -107,85 +109,59 @@ func copyDir(src string, dst string) error {
 }
 
 // IsGitRepo checks if the given directory is inside a git repository
+// Deprecated: Use git.Client.IsRepo() instead
 func IsGitRepo(dir string) bool {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--git-dir")
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return true
+	client := git.NewClient(dir)
+	return client.IsRepo(context.Background())
 }
 
 // IsGitRepoContext checks if the given directory is inside a git repository with context support
+// Deprecated: Use git.Client.IsRepo() instead
 func IsGitRepoContext(ctx context.Context, dir string) bool {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-dir")
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return true
+	client := git.NewClient(dir)
+	return client.IsRepo(ctx)
 }
 
 // getHeadSHA returns the current HEAD SHA of a git repository
+// Deprecated: Use git.Client.GetHeadSHA() instead
 func getHeadSHA(dir string) (string, error) {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get HEAD SHA: %w", err)
-	}
-	return strings.TrimSpace(string(output)), nil
+	client := git.NewClient(dir)
+	return client.GetHeadSHA(context.Background())
 }
 
 // getHeadSHAContext returns the current HEAD SHA of a git repository with context support
+// Deprecated: Use git.Client.GetHeadSHA() instead
 func getHeadSHAContext(ctx context.Context, dir string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get HEAD SHA: %w", err)
-	}
-	return strings.TrimSpace(string(output)), nil
+	client := git.NewClient(dir)
+	return client.GetHeadSHA(ctx)
 }
 
 // isShallowClone checks if a git repository is a shallow clone
+// Deprecated: Use git.Client.IsShallowClone() instead
 func isShallowClone(dir string) bool {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--is-shallow-repository")
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(output)) == "true"
+	client := git.NewClient(dir)
+	isShallow, _ := client.IsShallowClone(context.Background())
+	return isShallow
 }
 
 // isShallowCloneContext checks if a git repository is a shallow clone with context support
+// Deprecated: Use git.Client.IsShallowClone() instead
 func isShallowCloneContext(ctx context.Context, dir string) bool {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-shallow-repository")
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(output)) == "true"
+	client := git.NewClient(dir)
+	isShallow, _ := client.IsShallowClone(ctx)
+	return isShallow
 }
 
 // checkoutRef checks out a git reference in a repository
+// Deprecated: Use git.Client.Checkout() instead
 func checkoutRef(dir, ref string) error {
-	args := []string{"-C", dir, "checkout", "--quiet"}
-	if ref != "" {
-		args = append(args, ref)
-	}
-	cmd := exec.Command("git", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to checkout ref %s: %v, output: %s", ref, err, string(out))
-	}
-	return nil
+	client := git.NewClient(dir)
+	return client.Checkout(context.Background(), ref)
 }
 
 // checkoutRefContext checks out a git reference in a repository with context support
+// Deprecated: Use git.Client.Checkout() instead
 func checkoutRefContext(ctx context.Context, dir, ref string) error {
-	args := []string{"-C", dir, "checkout", "--quiet"}
-	if ref != "" {
-		args = append(args, ref)
-	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to checkout ref %s: %v, output: %s", ref, err, string(out))
-	}
-	return nil
+	client := git.NewClient(dir)
+	return client.Checkout(ctx, ref)
 }

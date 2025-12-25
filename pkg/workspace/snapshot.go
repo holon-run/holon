@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+
+	"github.com/holon-run/holon/pkg/git"
 )
 
 // SnapshotPreparer prepares a workspace by copying files without git history
@@ -80,7 +81,8 @@ func (p *SnapshotPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	headSHA := ""
 	if sourceIsGit {
 		// Try to get HEAD SHA from source
-		if sha, err := getHeadSHAContext(ctx, req.Source); err == nil {
+		sourceClient := git.NewClient(req.Source)
+		if sha, err := sourceClient.GetHeadSHA(ctx); err == nil {
 			headSHA = sha
 			result.HeadSHA = sha
 		}
@@ -122,39 +124,26 @@ func (p *SnapshotPreparer) Cleanup(dest string) error {
 // initMinimalGit initializes a minimal git repository for a snapshot
 // This allows git commands to work inside the container even without history
 func (p *SnapshotPreparer) initMinimalGit(ctx context.Context, dir string, headSHA string) error {
-	// Initialize git repo
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "init")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git init failed: %v, output: %s", err, string(out))
-	}
+	client := git.NewClient(dir)
 
-	// Configure user (required for commits)
-	cmd = exec.CommandContext(ctx, "git", "-C", dir, "config", "user.email", "holon@holon.run")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git config user.email failed: %w", err)
-	}
-
-	cmd = exec.CommandContext(ctx, "git", "-C", dir, "config", "user.name", "Holon")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git config user.name failed: %w", err)
+	// Initialize git repo with default configuration
+	if err := client.InitRepository(ctx); err != nil {
+		return fmt.Errorf("failed to initialize git repository: %w", err)
 	}
 
 	// Add all files
-	cmd = exec.CommandContext(ctx, "git", "-C", dir, "add", "-A")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git add failed: %v, output: %s", err, string(out))
+	if err := client.AddAll(ctx); err != nil {
+		return fmt.Errorf("failed to add files: %w", err)
 	}
 
 	// Create initial commit
+	commitMsg := "Holon snapshot"
 	if headSHA != "" {
-		// Try to preserve the original commit message if available
-		cmd = exec.CommandContext(ctx, "git", "-C", dir, "commit", "-m", fmt.Sprintf("Holon snapshot\n\nOriginal commit: %s", headSHA))
-	} else {
-		cmd = exec.CommandContext(ctx, "git", "-C", dir, "commit", "-m", "Holon snapshot")
+		commitMsg = fmt.Sprintf("Holon snapshot\n\nOriginal commit: %s", headSHA)
 	}
 
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git commit failed: %v, output: %s", err, string(out))
+	if _, err := client.Commit(ctx, commitMsg); err != nil {
+		return fmt.Errorf("failed to create initial commit: %w", err)
 	}
 
 	return nil

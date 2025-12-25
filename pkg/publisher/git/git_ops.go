@@ -1,17 +1,18 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
 	"time"
 
-	"github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
+
+	holonGit "github.com/holon-run/holon/pkg/git"
 )
 
 // GitClient handles Git operations.
@@ -50,24 +51,24 @@ func (g *GitClient) ApplyPatch(patchPath string) (bool, error) {
 		return false, nil
 	}
 
+	client := holonGit.NewClient(g.WorkspaceDir)
+	ctx := context.Background()
+
 	// Use git apply command with --3way for better merge behavior
-	checkCmd := exec.Command("git", "apply", "--check", "--3way", patchPath)
-	checkCmd.Dir = g.WorkspaceDir
-	if output, err := checkCmd.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("patch check failed: %w (the workspace may not be a git repository or patch may not apply): %s", err, strings.TrimSpace(string(output)))
+	if err := client.ApplyCheck(ctx, patchPath, true); err != nil {
+		return false, fmt.Errorf("patch check failed: %w (the workspace may not be a git repository or patch may not apply)", err)
 	}
 
-	applyCmd := exec.Command("git", "apply", "--3way", patchPath)
-	applyCmd.Dir = g.WorkspaceDir
-	if output, err := applyCmd.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("failed to apply patch: %w: %s", err, strings.TrimSpace(string(output)))
+	if err := client.Apply(ctx, holonGit.ApplyOptions{
+		PatchPath: patchPath,
+		ThreeWay:  true,
+	}); err != nil {
+		return false, fmt.Errorf("failed to apply patch: %w", err)
 	}
 
 	// Stage the applied changes so go-git can see them
-	addCmd := exec.Command("git", "add", "-A")
-	addCmd.Dir = g.WorkspaceDir
-	if output, err := addCmd.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("failed to stage changes after patch: %w: %s", err, strings.TrimSpace(string(output)))
+	if err := client.AddAll(ctx); err != nil {
+		return false, fmt.Errorf("failed to stage changes after patch: %w", err)
 	}
 
 	return true, nil
@@ -75,7 +76,7 @@ func (g *GitClient) ApplyPatch(patchPath string) (bool, error) {
 
 // CreateBranch creates a new branch or checks out an existing one.
 func (g *GitClient) CreateBranch(branchName string) error {
-	repo, err := git.PlainOpen(g.WorkspaceDir)
+	repo, err := gogit.PlainOpen(g.WorkspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -89,7 +90,7 @@ func (g *GitClient) CreateBranch(branchName string) error {
 			return fmt.Errorf("failed to get worktree: %w", err)
 		}
 
-		err = worktree.Checkout(&git.CheckoutOptions{
+		err = worktree.Checkout(&gogit.CheckoutOptions{
 			Branch: plumbing.NewBranchReferenceName(branchName),
 		})
 		if err != nil {
@@ -106,7 +107,7 @@ func (g *GitClient) CreateBranch(branchName string) error {
 	}
 
 	// Create and checkout new branch
-	err = worktree.Checkout(&git.CheckoutOptions{
+	err = worktree.Checkout(&gogit.CheckoutOptions{
 		Branch: plumbing.NewBranchReferenceName(branchName),
 		Create: true,
 	})
@@ -120,7 +121,7 @@ func (g *GitClient) CreateBranch(branchName string) error {
 // CommitChanges commits all changes with the given message.
 // Returns the commit hash if successful.
 func (g *GitClient) CommitChanges(message string) (string, error) {
-	repo, err := git.PlainOpen(g.WorkspaceDir)
+	repo, err := gogit.PlainOpen(g.WorkspaceDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -149,7 +150,7 @@ func (g *GitClient) CommitChanges(message string) (string, error) {
 	}
 
 	// Commit changes
-	commit, err := worktree.Commit(message, &git.CommitOptions{
+	commit, err := worktree.Commit(message, &gogit.CommitOptions{
 		Author: &object.Signature{
 			Name:  "Holon Bot",
 			Email: "bot@holon.run",
@@ -165,7 +166,7 @@ func (g *GitClient) CommitChanges(message string) (string, error) {
 
 // Push pushes the current branch to the specified remote.
 func (g *GitClient) Push(branchName, remoteName string) error {
-	repo, err := git.PlainOpen(g.WorkspaceDir)
+	repo, err := gogit.PlainOpen(g.WorkspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -177,7 +178,7 @@ func (g *GitClient) Push(branchName, remoteName string) error {
 	}
 
 	// Create push options
-	opts := &git.PushOptions{
+	opts := &gogit.PushOptions{
 		RemoteName: remoteName,
 		RefSpecs:   []config.RefSpec{config.RefSpec("refs/heads/" + branchName + ":refs/heads/" + branchName)},
 	}
@@ -201,9 +202,9 @@ func (g *GitClient) Push(branchName, remoteName string) error {
 
 // EnsureRepository ensures the workspace is a Git repository.
 func (g *GitClient) EnsureRepository() error {
-	_, err := git.PlainOpen(g.WorkspaceDir)
+	_, err := gogit.PlainOpen(g.WorkspaceDir)
 	if err != nil {
-		if err == git.ErrRepositoryNotExists {
+		if err == gogit.ErrRepositoryNotExists {
 			return fmt.Errorf("workspace is not a git repository")
 		}
 		return fmt.Errorf("failed to open repository: %w", err)
