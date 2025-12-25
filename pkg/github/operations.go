@@ -444,3 +444,117 @@ func convertFromGitHubCombinedStatus(cs *github.CombinedStatus) *CombinedStatus 
 		Statuses:   statuses,
 	}
 }
+
+// CreateIssueComment creates a new comment on an issue or PR
+func (c *Client) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) (int64, error) {
+	comment, _, err := c.GitHubClient().Issues.CreateComment(ctx, owner, repo, issueNumber, &github.IssueComment{Body: &body})
+	if err != nil {
+		return 0, fmt.Errorf("failed to create issue comment: %w", err)
+	}
+	return comment.GetID(), nil
+}
+
+// EditIssueComment edits an existing issue or PR comment
+func (c *Client) EditIssueComment(ctx context.Context, owner, repo string, commentID int64, body string) error {
+	_, _, err := c.GitHubClient().Issues.EditComment(ctx, owner, repo, commentID, &github.IssueComment{Body: &body})
+	if err != nil {
+		return fmt.Errorf("failed to edit issue comment: %w", err)
+	}
+	return nil
+}
+
+// ListIssueComments lists all issue/PR comments with pagination
+func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, issueNumber int) ([]IssueComment, error) {
+	return c.FetchIssueComments(ctx, owner, repo, issueNumber)
+}
+
+// CreatePullRequestComment creates a reply to a review comment
+func (c *Client) CreatePullRequestComment(ctx context.Context, owner, repo string, prNumber int, body string, inReplyTo int64) (int64, error) {
+	comment := &github.PullRequestComment{
+		Body:     &body,
+		InReplyTo: &inReplyTo,
+	}
+	createdComment, _, err := c.GitHubClient().PullRequests.CreateComment(ctx, owner, repo, prNumber, comment)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create pull request comment: %w", err)
+	}
+	return createdComment.GetID(), nil
+}
+
+// ListPullRequestComments lists all PR review comments with pagination
+func (c *Client) ListPullRequestComments(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestComment, error) {
+	opts := &github.PullRequestListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+
+	var allComments []*github.PullRequestComment
+	for {
+		comments, resp, err := c.GitHubClient().PullRequests.ListComments(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list pull request comments: %w", err)
+		}
+
+		allComments = append(allComments, comments...)
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return allComments, nil
+}
+
+// CreatePullRequest creates a new pull request
+func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, newPR *NewPullRequest) (*PRInfo, error) {
+	pr, _, err := c.GitHubClient().PullRequests.Create(ctx, owner, repo, &github.NewPullRequest{
+		Title:               &newPR.Title,
+		Head:                &newPR.Head,
+		Base:                &newPR.Base,
+		Body:                &newPR.Body,
+		MaintainerCanModify: github.Bool(newPR.MaintainerCanModify),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create pull request: %w", err)
+	}
+	return convertFromGitHubPR(pr), nil
+}
+
+// UpdatePullRequest updates an existing pull request
+func (c *Client) UpdatePullRequest(ctx context.Context, owner, repo string, prNumber int, title, body string) (*PRInfo, error) {
+	pr, _, err := c.GitHubClient().PullRequests.Edit(ctx, owner, repo, prNumber, &github.PullRequest{
+		Title: &title,
+		Body:  &body,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to update pull request: %w", err)
+	}
+	return convertFromGitHubPR(pr), nil
+}
+
+// ListPullRequests lists all pull requests with optional filters
+func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, state string) ([]*github.PullRequest, error) {
+	opts := &github.PullRequestListOptions{
+		State: state,
+		ListOptions: github.ListOptions{
+			PerPage: 100,
+		},
+	}
+
+	var allPRs []*github.PullRequest
+	for {
+		prs, resp, err := c.GitHubClient().PullRequests.List(ctx, owner, repo, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list pull requests: %w", err)
+		}
+
+		allPRs = append(allPRs, prs...)
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return allPRs, nil
+}

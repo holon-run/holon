@@ -8,9 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/go-github/v68/github"
+	hghelper "github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/publisher"
-	"golang.org/x/oauth2"
 )
 
 const (
@@ -29,7 +28,7 @@ type GitHubPublisher struct {
 	// client is the GitHub client to use. If nil, a new client will be created
 	// using the token from environment variables. This field is primarily for
 	// testing with mock servers.
-	client *github.Client
+	client *hghelper.Client
 }
 
 // NewGitHubPublisher creates a new GitHub publisher instance.
@@ -63,23 +62,16 @@ func (g *GitHubPublisher) Publish(req publisher.PublishRequest) (publisher.Publi
 	ctx := context.Background()
 
 	// Use provided client or create a new one
-	var client *github.Client
+	var client *hghelper.Client
 	if g.client != nil {
 		client = g.client
 	} else {
-		// Get GitHub token from environment
-		token := os.Getenv("GITHUB_TOKEN")
-		if token == "" {
-			token = os.Getenv("HOLON_GITHUB_TOKEN")
+		// Create client using shared helper (reads token from env vars)
+		var err error
+		client, err = hghelper.NewClientFromEnv()
+		if err != nil {
+			return publisher.PublishResult{}, fmt.Errorf("failed to create GitHub client: %w", err)
 		}
-		if token == "" {
-			return publisher.PublishResult{}, fmt.Errorf("GITHUB_TOKEN or HOLON_GITHUB_TOKEN environment variable is required")
-		}
-
-		// Create GitHub client
-		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
-		tc := oauth2.NewClient(ctx, ts)
-		client = github.NewClient(tc)
 	}
 
 	// Parse PR reference
@@ -169,7 +161,7 @@ func (g *GitHubPublisher) Publish(req publisher.PublishRequest) (publisher.Publi
 }
 
 // publishReviewReplies posts replies to review comments with idempotency.
-func (g *GitHubPublisher) publishReviewReplies(ctx context.Context, client *github.Client, prRef PRRef, replies []ReviewReply, botLogin string) (ReviewRepliesResult, error) {
+func (g *GitHubPublisher) publishReviewReplies(ctx context.Context, client *hghelper.Client, prRef PRRef, replies []ReviewReply, botLogin string) (ReviewRepliesResult, error) {
 	result := ReviewRepliesResult{
 		Total:   len(replies),
 		Posted:  0,
@@ -201,20 +193,9 @@ func (g *GitHubPublisher) publishReviewReplies(ctx context.Context, client *gith
 			continue
 		}
 
-		// Format and post the reply
+		// Format and post the reply using the helper
 		message := formatReviewReply(reply)
-		comment := &github.PullRequestComment{
-			Body:     &message,
-			InReplyTo: &reply.CommentID,
-		}
-		_, _, err = client.PullRequests.CreateComment(
-			ctx,
-			prRef.Owner,
-			prRef.Repo,
-			prRef.PRNumber,
-			comment,
-		)
-
+		_, err = client.CreatePullRequestComment(ctx, prRef.Owner, prRef.Repo, prRef.PRNumber, message, reply.CommentID)
 		if err != nil {
 			result.Failed++
 			result.Details = append(result.Details, ReplyResult{
@@ -236,7 +217,7 @@ func (g *GitHubPublisher) publishReviewReplies(ctx context.Context, client *gith
 }
 
 // publishSummaryComment posts or updates a PR-level summary comment.
-func (g *GitHubPublisher) publishSummaryComment(ctx context.Context, client *github.Client, prRef PRRef, summary string, botLogin string) (CommentResult, error) {
+func (g *GitHubPublisher) publishSummaryComment(ctx context.Context, client *hghelper.Client, prRef PRRef, summary string, botLogin string) (CommentResult, error) {
 	// Find existing summary comment
 	existing, err := findExistingSummaryComment(ctx, client, prRef, botLogin)
 	if err != nil {
@@ -247,107 +228,63 @@ func (g *GitHubPublisher) publishSummaryComment(ctx context.Context, client *git
 	body := fmt.Sprintf("%s\n%s", SummaryMarker, summary)
 
 	if existing != nil {
-		// Update existing comment
-		_, _, err = client.Issues.EditComment(
-			ctx,
-			prRef.Owner,
-			prRef.Repo,
-			*existing.ID,
-			&github.IssueComment{Body: &body},
-		)
+		// Update existing comment using the helper
+		err = client.EditIssueComment(ctx, prRef.Owner, prRef.Repo, existing.ID, body)
 		if err != nil {
 			return CommentResult{Posted: false, Updated: false, Error: err.Error()}, err
 		}
-		return CommentResult{Posted: true, Updated: true, CommentID: *existing.ID}, nil
+		return CommentResult{Posted: true, Updated: true, CommentID: existing.ID}, nil
 	}
 
-	// Create new comment
-	comment, _, err := client.Issues.CreateComment(
-		ctx,
-		prRef.Owner,
-		prRef.Repo,
-		prRef.PRNumber,
-		&github.IssueComment{Body: &body},
-	)
+	// Create new comment using the helper
+	commentID, err := client.CreateIssueComment(ctx, prRef.Owner, prRef.Repo, prRef.PRNumber, body)
 	if err != nil {
 		return CommentResult{Posted: false, Updated: false, Error: err.Error()}, err
 	}
 
-	return CommentResult{Posted: true, Updated: false, CommentID: comment.GetID()}, nil
+	return CommentResult{Posted: true, Updated: false, CommentID: commentID}, nil
 }
 
 // hasBotRepliedToComment checks if the bot has already replied to a review comment.
-func hasBotRepliedToComment(ctx context.Context, client *github.Client, prRef PRRef, commentID int64, botLogin string) (bool, error) {
-	// List all review comments for the PR, handling pagination
-	opts := &github.PullRequestListCommentsOptions{
-		ListOptions: github.ListOptions{PerPage: 100},
+func hasBotRepliedToComment(ctx context.Context, client *hghelper.Client, prRef PRRef, commentID int64, botLogin string) (bool, error) {
+	// Use the helper to list all review comments for the PR
+	comments, err := client.ListPullRequestComments(ctx, prRef.Owner, prRef.Repo, prRef.PRNumber)
+	if err != nil {
+		return false, fmt.Errorf("failed to list comments: %w", err)
 	}
 
-	for {
-		comments, resp, err := client.PullRequests.ListComments(
-			ctx,
-			prRef.Owner,
-			prRef.Repo,
-			prRef.PRNumber,
-			opts,
-		)
-		if err != nil {
-			return false, fmt.Errorf("failed to list comments: %w", err)
+	// Check if any reply is from the bot and in_reply_to matches commentID
+	for _, comment := range comments {
+		// InReplyTo contains the parent comment ID for replies
+		if comment.InReplyTo != nil && *comment.InReplyTo == commentID && comment.User.GetLogin() == botLogin {
+			return true, nil
 		}
-
-		// Check if any reply is from the bot and in_reply_to matches commentID
-		for _, comment := range comments {
-			// InReplyTo contains the parent comment ID for replies
-			if comment.InReplyTo != nil && *comment.InReplyTo == commentID && comment.User.GetLogin() == botLogin {
-				return true, nil
-			}
-		}
-
-		if resp == nil || resp.NextPage == 0 {
-			break
-		}
-
-		opts.Page = resp.NextPage
 	}
 
 	return false, nil
 }
 
+// existingComment represents an existing comment found during search
+type existingComment struct {
+	ID int64
+}
+
 // findExistingSummaryComment finds an existing summary comment by the bot.
-func findExistingSummaryComment(ctx context.Context, client *github.Client, prRef PRRef, botLogin string) (*github.IssueComment, error) {
-	// List all issue comments for the PR, handling pagination
-	opts := &github.IssueListCommentsOptions{
-		ListOptions: github.ListOptions{PerPage: 100},
+func findExistingSummaryComment(ctx context.Context, client *hghelper.Client, prRef PRRef, botLogin string) (*existingComment, error) {
+	// Use the helper to list all issue comments for the PR
+	comments, err := client.ListIssueComments(ctx, prRef.Owner, prRef.Repo, prRef.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list comments: %w", err)
 	}
 
-	var mostRecent *github.IssueComment
-
-	for {
-		comments, resp, err := client.Issues.ListComments(
-			ctx,
-			prRef.Owner,
-			prRef.Repo,
-			prRef.PRNumber,
-			opts,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list comments: %w", err)
-		}
-
-		// Find the most recent comment from the bot with the marker
-		for _, comment := range comments {
-			if comment.User.GetLogin() == botLogin && strings.Contains(comment.GetBody(), SummaryMarker) {
-				if mostRecent == nil || comment.GetID() > mostRecent.GetID() {
-					mostRecent = comment
-				}
+	// Find the most recent comment from the bot with the marker
+	var mostRecent *existingComment
+	for _, comment := range comments {
+		if comment.Author == botLogin && strings.Contains(comment.Body, SummaryMarker) {
+			if mostRecent == nil || comment.CommentID > mostRecent.ID {
+				mostRecent = &existingComment{ID: comment.CommentID}
 			}
 		}
-
-		if resp == nil || resp.NextPage == 0 {
-			break
-		}
-
-		opts.Page = resp.NextPage
 	}
 
 	return mostRecent, nil

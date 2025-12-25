@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/google/go-github/v68/github"
+	hghelper "github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/publisher"
 )
 
@@ -867,10 +867,7 @@ func copyFixtureToFile(t *testing.T, fixtureName, destDir, destName string) {
 }
 
 // newTestGitHubClient creates a GitHub client configured for the mock server
-func newTestGitHubClient(t *testing.T, mockServer *mockGitHubServer) *github.Client {
-	client := github.NewClient(nil)
-	// Ensure trailing slash for BaseURL (go-github requirement)
-	baseURL, _ := url.Parse(mockServer.server.URL + "/")
-	client.BaseURL = baseURL
-	return client
+func newTestGitHubClient(t *testing.T, mockServer *mockGitHubServer) *hghelper.Client {
+	// Create a client with a dummy token (not used in mock server)
+	return hghelper.NewClient("test-token", hghelper.WithBaseURL(mockServer.server.URL))
 }

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/go-github/v68/github"
+	hghelper "github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/publisher"
-	"golang.org/x/oauth2"
 )
 
 const (
@@ -73,13 +73,10 @@ func (p *PRPublisher) Validate(req publisher.PublishRequest) error {
 func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishResult, error) {
 	ctx := context.Background()
 
-	// Get GitHub token from environment
-	token := os.Getenv(TokenEnv)
-	if token == "" {
-		token = os.Getenv(LegacyTokenEnv)
-	}
-	if token == "" {
-		return publisher.PublishResult{}, fmt.Errorf("%s or %s environment variable is required", TokenEnv, LegacyTokenEnv)
+	// Create GitHub client using shared helper (reads token from env vars)
+	githubClient, err := hghelper.NewClientFromEnv()
+	if err != nil {
+		return publisher.PublishResult{}, fmt.Errorf("failed to create GitHub client: %w", err)
 	}
 
 	// Parse repository reference
@@ -130,6 +127,7 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 	}
 
 	// Step 2: Initialize Git client
+	token := githubClient.GetToken()
 	gitClient := NewGitClient(workspaceDir, token)
 
 	// Ensure workspace is clean
@@ -203,8 +201,7 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 		},
 	})
 
-	// Step 7: Create or update PR via GitHub API
-	githubClient := p.createGitHubClient(ctx, token)
+	// Step 7: Create or update PR via GitHub API using the helper
 	prBody := FormatPRBody(summary, config.IssueID)
 
 	// Check if PR already exists for this branch
@@ -217,11 +214,8 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 	}
 
 	if existingPR != nil {
-		// Update existing PR
-		updatedPR, _, err := githubClient.PullRequests.Edit(ctx, prRef.Owner, prRef.Repo, *existingPR.Number, &github.PullRequest{
-			Title: github.String(config.Title),
-			Body:  github.String(prBody),
-		})
+		// Update existing PR using the helper
+		updatedPR, err := githubClient.UpdatePullRequest(ctx, prRef.Owner, prRef.Repo, existingPR.Number, config.Title, prBody)
 		if err != nil {
 			wrappedErr := fmt.Errorf("failed to update PR: %w", err)
 			result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
@@ -231,20 +225,20 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 
 		result.Actions = append(result.Actions, publisher.PublishAction{
 			Type:        "updated_pr",
-			Description: fmt.Sprintf("Updated PR #%d", *existingPR.Number),
+			Description: fmt.Sprintf("Updated PR #%d", updatedPR.Number),
 			Metadata: map[string]string{
-				"pr_number": strconv.FormatInt(int64(*existingPR.Number), 10),
-				"pr_url":    updatedPR.GetHTMLURL(),
+				"pr_number": strconv.FormatInt(int64(updatedPR.Number), 10),
+				"pr_url":    updatedPR.URL,
 			},
 		})
 	} else {
-		// Create new PR
-		newPR, _, err := githubClient.PullRequests.Create(ctx, prRef.Owner, prRef.Repo, &github.NewPullRequest{
-			Title:               github.String(config.Title),
-			Head:                github.String(config.BranchName),
-			Base:                github.String(prRef.BaseBranch),
-			Body:                github.String(prBody),
-			MaintainerCanModify: github.Bool(true),
+		// Create new PR using the helper
+		newPR, err := githubClient.CreatePullRequest(ctx, prRef.Owner, prRef.Repo, &hghelper.NewPullRequest{
+			Title:               config.Title,
+			Head:                config.BranchName,
+			Base:                prRef.BaseBranch,
+			Body:                prBody,
+			MaintainerCanModify: true,
 		})
 		if err != nil {
 			wrappedErr := fmt.Errorf("failed to create PR: %w", err)
@@ -255,10 +249,10 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 
 		result.Actions = append(result.Actions, publisher.PublishAction{
 			Type:        "created_pr",
-			Description: fmt.Sprintf("Created PR #%d", *newPR.Number),
+			Description: fmt.Sprintf("Created PR #%d", newPR.Number),
 			Metadata: map[string]string{
-				"pr_number": strconv.FormatInt(int64(*newPR.Number), 10),
-				"pr_url":    newPR.GetHTMLURL(),
+				"pr_number": strconv.FormatInt(int64(newPR.Number), 10),
+				"pr_url":    newPR.URL,
 			},
 		})
 	}
@@ -268,43 +262,44 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 }
 
 // findPRByBranch finds an existing PR for the given head branch.
-func (p *PRPublisher) findPRByBranch(ctx context.Context, client *github.Client, prRef PRRef, branchName string) (*github.PullRequest, error) {
-	// List open PRs
-	opts := &github.PullRequestListOptions{
-		State: "open",
-		ListOptions: github.ListOptions{
-			PerPage: 100,
-		},
+func (p *PRPublisher) findPRByBranch(ctx context.Context, client *hghelper.Client, prRef PRRef, branchName string) (*hghelper.PRInfo, error) {
+	// Use the helper to list open PRs
+	prs, err := client.ListPullRequests(ctx, prRef.Owner, prRef.Repo, "open")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PRs: %w", err)
 	}
 
-	for {
-		prs, resp, err := client.PullRequests.List(ctx, prRef.Owner, prRef.Repo, opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list PRs: %w", err)
+	// Search for PR with matching head branch
+	for _, pr := range prs {
+		headRef := pr.GetHead()
+		if headRef != nil && headRef.GetRef() == branchName {
+			// Convert github.PullRequest to hghelper.PRInfo
+			return convertToPRInfo(pr), nil
 		}
-
-		// Search for PR with matching head branch
-		for _, pr := range prs {
-			headRef := pr.GetHead()
-			if headRef != nil && headRef.GetRef() == branchName {
-				return pr, nil
-			}
-		}
-
-		if resp.NextPage == 0 {
-			break
-		}
-		opts.Page = resp.NextPage
 	}
 
 	return nil, nil
 }
 
-// createGitHubClient creates a new GitHub client with the given token.
-func (p *PRPublisher) createGitHubClient(ctx context.Context, token string) *github.Client {
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
-	tc := oauth2.NewClient(ctx, ts)
-	return github.NewClient(tc)
+// convertToPRInfo converts a github.PullRequest to hghelper.PRInfo
+func convertToPRInfo(pr *github.PullRequest) *hghelper.PRInfo {
+	var baseRef, headRef string
+	if base := pr.GetBase(); base != nil {
+		baseRef = base.GetRef()
+	}
+	if head := pr.GetHead(); head != nil {
+		headRef = head.GetRef()
+	}
+
+	return &hghelper.PRInfo{
+		Number:  pr.GetNumber(),
+		Title:   pr.GetTitle(),
+		Body:    pr.GetBody(),
+		State:   pr.GetState(),
+		URL:     pr.GetHTMLURL(),
+		BaseRef: baseRef,
+		HeadRef: headRef,
+	}
 }
 
 // buildConfig builds publisher configuration from manifest metadata.
