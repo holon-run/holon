@@ -428,9 +428,22 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		cleanupMode = "auto" // Default to auto cleanup
 	}
 
-	if inputIsTemp && (cleanupMode == "auto" || cleanupMode == "all") {
+	// Validate cleanup mode
+	if cleanupMode != "auto" && cleanupMode != "none" && cleanupMode != "all" {
+		return fmt.Errorf("invalid cleanup mode: %q (must be one of: auto, none, all)", cleanupMode)
+	}
+
+	// Cleanup input directory based on mode and whether it's temp
+	// For temp input: clean on "auto" or "all"
+	// For user input: clean only on "all"
+	if (inputIsTemp && (cleanupMode == "auto" || cleanupMode == "all")) ||
+		(!inputIsTemp && cleanupMode == "all") {
 		defer func() {
-			fmt.Printf("Cleaning up temporary input directory: %s\n", inputDir)
+			if inputIsTemp {
+				fmt.Printf("Cleaning up temporary input directory: %s\n", inputDir)
+			} else {
+				fmt.Printf("Cleaning up input directory: %s\n", inputDir)
+			}
 			os.RemoveAll(inputDir)
 		}()
 	}
@@ -438,9 +451,6 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	// Create context subdirectory in input directory
 	contextDir := filepath.Join(inputDir, "context")
 	if err := os.MkdirAll(contextDir, 0755); err != nil {
-		if inputIsTemp {
-			os.RemoveAll(inputDir)
-		}
 		return fmt.Errorf("failed to create context directory: %w", err)
 	}
 
@@ -457,9 +467,6 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 			IncludeDiff:    true,
 		})
 		if err := prCollector.Collect(ctx); err != nil {
-			if inputIsTemp {
-				os.RemoveAll(inputDir)
-			}
 			return fmt.Errorf("failed to collect PR context: %w", err)
 		}
 		// Only override mode if user hasn't explicitly set it
@@ -476,9 +483,6 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 			OutputDir: contextDir,
 		})
 		if err := issueCollector.Collect(ctx); err != nil {
-			if inputIsTemp {
-				os.RemoveAll(inputDir)
-			}
 			return fmt.Errorf("failed to collect issue context: %w", err)
 		}
 		// Only override mode if user hasn't explicitly set it
@@ -553,6 +557,12 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 
 	if err := publishResults(ctx, solveRef, refType, outDir); err != nil {
 		return fmt.Errorf("failed to publish results: %w", err)
+	}
+
+	// Cleanup output directory if requested (after publishing completes)
+	if cleanupMode == "all" {
+		fmt.Printf("\nCleaning up output directory: %s\n", outDir)
+		os.RemoveAll(outDir)
 	}
 
 	fmt.Println("\n" + strings.Repeat("=", 60))
