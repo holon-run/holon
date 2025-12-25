@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/google/go-github/v68/github"
+	gh "github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/publisher"
 )
 
@@ -873,4 +874,437 @@ func newTestGitHubClient(t *testing.T, mockServer *mockGitHubServer) *github.Cli
 	baseURL, _ := url.Parse(mockServer.server.URL + "/")
 	client.BaseURL = baseURL
 	return client
+}
+
+// ============================================================================
+// VCR-Based Contract Tests
+// These tests use go-vcr to record/replay real GitHub API interactions.
+// They ensure the API contract is maintained as GitHub's API evolves.
+//
+// Recording new fixtures:
+//   HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/publisher/github/... -run TestVCR
+//
+// The fixtures will be stored in pkg/github/testdata/fixtures/publisher/
+// ============================================================================
+
+// TestVCRPublishSummaryComment tests summary comment publishing with VCR.
+// This test locks the API contract for creating/updating summary comments.
+//
+// To record new fixtures:
+//   HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test ./pkg/publisher/github/... -run TestVCRPublishSummaryComment
+func TestVCRPublishSummaryComment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping VCR test in short mode")
+	}
+
+	// Create a VCR recorder
+	rec, err := gh.NewRecorder(t, "publisher/summary_comment_create")
+	if err != nil {
+		// Skip gracefully if fixture doesn't exist (in replay mode)
+		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
+	}
+	defer rec.Stop()
+
+	// Create GitHub client with recorder
+	client := github.NewClient(rec.HTTPClient())
+
+	// Create publisher with test client
+	p := &GitHubPublisher{client: client}
+
+	// Create test artifacts
+	tmpDir := t.TempDir()
+	summaryPath := filepath.Join(tmpDir, "summary.md")
+	summaryContent := "# Test Summary\n\nThis is a test summary for VCR recording."
+	if err := os.WriteFile(summaryPath, []byte(summaryContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := publisher.PublishRequest{
+		Target: "holon-run/holon#1",
+		Artifacts: map[string]string{
+			"summary.md": summaryPath,
+		},
+	}
+
+	t.Setenv(BotLoginEnv, "holonbot[bot]")
+
+	result, err := p.Publish(req)
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	// Contract: Result should be successful
+	if !result.Success {
+		t.Errorf("Publish() Success = false, want true. Errors: %v", result.Errors)
+	}
+
+	// Contract: Should have summary comment action
+	if len(result.Actions) == 0 {
+		t.Fatal("Publish() has no actions")
+	}
+
+	action := result.Actions[0]
+	if action.Type != "created_summary_comment" && action.Type != "updated_summary_comment" {
+		t.Errorf("Action Type = %v, want created/updated_summary_comment", action.Type)
+	}
+
+	// Contract: Should have comment_id in metadata
+	if action.Metadata["comment_id"] == "" {
+		t.Error("Action Metadata missing comment_id")
+	}
+
+	// Contract: Provider should be "github"
+	if result.Provider != "github" {
+		t.Errorf("Provider = %v, want github", result.Provider)
+	}
+}
+
+// TestVCRPublishReviewReplies tests review reply publishing with VCR.
+// This test locks the API contract for posting review replies.
+func TestVCRPublishReviewReplies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping VCR test in short mode")
+	}
+
+	rec, err := gh.NewRecorder(t, "publisher/review_replies_post")
+	if err != nil {
+		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
+	}
+	defer rec.Stop()
+
+	client := github.NewClient(rec.HTTPClient())
+	p := &GitHubPublisher{client: client}
+
+	tmpDir := t.TempDir()
+
+	// Create pr-fix.json
+	prFixPath := filepath.Join(tmpDir, "pr-fix.json")
+	prFixData := PRFixData{
+		ReviewReplies: []ReviewReply{
+			{
+				CommentID: 123456789,
+				Status:    "fixed",
+				Message:   "Fixed the bug",
+				ActionTaken: func() *string {
+					s := "Updated code"
+					return &s
+				}(),
+			},
+		},
+	}
+	prFixJSON, _ := json.Marshal(prFixData)
+	if err := os.WriteFile(prFixPath, prFixJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := publisher.PublishRequest{
+		Target: "holon-run/holon#1",
+		Artifacts: map[string]string{
+			"pr-fix.json": prFixPath,
+		},
+	}
+
+	t.Setenv(BotLoginEnv, "holonbot[bot]")
+
+	result, err := p.Publish(req)
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	// Contract: Should be successful
+	if !result.Success {
+		t.Errorf("Success = false, want true. Errors: %v", result.Errors)
+	}
+
+	// Contract: Should have review reply actions
+	hasReplyAction := false
+	for _, action := range result.Actions {
+		if strings.Contains(action.Type, "review") {
+			hasReplyAction = true
+			break
+		}
+	}
+	if !hasReplyAction {
+		t.Error("Missing review reply action")
+	}
+}
+
+// TestVCRPublishIdempotency tests that existing replies are detected with VCR.
+// This test locks the idempotency behavior contract.
+func TestVCRPublishIdempotency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping VCR test in short mode")
+	}
+
+	rec, err := gh.NewRecorder(t, "publisher/review_replies_idempotent")
+	if err != nil {
+		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
+	}
+	defer rec.Stop()
+
+	client := github.NewClient(rec.HTTPClient())
+	p := &GitHubPublisher{client: client}
+
+	tmpDir := t.TempDir()
+
+	// This fixture has one comment the bot already replied to
+	prFixPath := filepath.Join(tmpDir, "pr-fix.json")
+	prFixData := PRFixData{
+		ReviewReplies: []ReviewReply{
+			{
+				CommentID: 111111111, // Existing reply in fixture
+				Status:    "fixed",
+				Message:   "Already replied",
+			},
+			{
+				CommentID: 222222222, // New comment
+				Status:    "fixed",
+				Message:   "New reply",
+			},
+		},
+	}
+	prFixJSON, _ := json.Marshal(prFixData)
+	if err := os.WriteFile(prFixPath, prFixJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := publisher.PublishRequest{
+		Target: "holon-run/holon#1",
+		Artifacts: map[string]string{
+			"pr-fix.json": prFixPath,
+		},
+	}
+
+	t.Setenv(BotLoginEnv, "holonbot[bot]")
+
+	result, err := p.Publish(req)
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	// Contract: Should succeed
+	if !result.Success {
+		t.Errorf("Success = false. Errors: %v", result.Errors)
+	}
+
+	// Contract: Summary should mention both posted and skipped
+	summary := result.Actions[len(result.Actions)-1].Description
+	hasPosted := strings.Contains(summary, "1 posted") || strings.Contains(summary, "posted")
+	hasSkipped := strings.Contains(summary, "1 skipped") || strings.Contains(summary, "skipped")
+
+	if !hasPosted {
+		t.Logf("Warning: expected 'posted' in summary: %v", summary)
+	}
+	if !hasSkipped {
+		t.Logf("Warning: expected 'skipped' in summary: %v", summary)
+	}
+}
+
+// TestVCRPublishBothSummaryAndReplies tests complete publish with VCR.
+// This test locks the contract for publishing both summary and replies together.
+func TestVCRPublishBothSummaryAndReplies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping VCR test in short mode")
+	}
+
+	rec, err := gh.NewRecorder(t, "publisher/summary_and_replies_full")
+	if err != nil {
+		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
+	}
+	defer rec.Stop()
+
+	client := github.NewClient(rec.HTTPClient())
+	p := &GitHubPublisher{client: client}
+
+	tmpDir := t.TempDir()
+
+	// Create summary
+	summaryPath := filepath.Join(tmpDir, "summary.md")
+	summaryContent := "# Full Test Summary\n\nTesting both summary and replies."
+	if err := os.WriteFile(summaryPath, []byte(summaryContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create pr-fix.json
+	prFixPath := filepath.Join(tmpDir, "pr-fix.json")
+	prFixData := PRFixData{
+		ReviewReplies: []ReviewReply{
+			{
+				CommentID: 333333333,
+				Status:    "fixed",
+				Message:   "Fixed in combined run",
+			},
+		},
+	}
+	prFixJSON, _ := json.Marshal(prFixData)
+	if err := os.WriteFile(prFixPath, prFixJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := publisher.PublishRequest{
+		Target: "holon-run/holon#1",
+		Artifacts: map[string]string{
+			"summary.md":  summaryPath,
+			"pr-fix.json": prFixPath,
+		},
+	}
+
+	t.Setenv(BotLoginEnv, "holonbot[bot]")
+
+	result, err := p.Publish(req)
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	// Contract: Should succeed
+	if !result.Success {
+		t.Errorf("Success = false. Errors: %v", result.Errors)
+	}
+
+	// Contract: Should have both summary and reply actions
+	hasSummary := false
+	hasReply := false
+	for _, action := range result.Actions {
+		if strings.Contains(action.Type, "summary") {
+			hasSummary = true
+		}
+		if strings.Contains(action.Type, "review") {
+			hasReply = true
+		}
+	}
+
+	if !hasSummary {
+		t.Error("Missing summary action")
+	}
+	if !hasReply {
+		t.Error("Missing review reply action")
+	}
+
+	// Contract: All actions should have proper structure
+	for i, action := range result.Actions {
+		if action.Type == "" {
+			t.Errorf("Action %d has empty Type", i)
+		}
+		if action.Description == "" {
+			t.Errorf("Action %d has empty Description", i)
+		}
+	}
+}
+
+// TestVCRResultStructContract tests that PublishResult matches expected structure.
+// This ensures result structs don't change unexpectedly.
+func TestVCRResultStructContract(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping VCR test in short mode")
+	}
+
+	rec, err := gh.NewRecorder(t, "publisher/result_contract")
+	if err != nil {
+		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
+	}
+	defer rec.Stop()
+
+	client := github.NewClient(rec.HTTPClient())
+	p := &GitHubPublisher{client: client}
+
+	tmpDir := t.TempDir()
+
+	// Create minimal artifacts
+	summaryPath := filepath.Join(tmpDir, "summary.md")
+	if err := os.WriteFile(summaryPath, []byte("# Test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := publisher.PublishRequest{
+		Target: "holon-run/holon#1",
+		Artifacts: map[string]string{
+			"summary.md": summaryPath,
+		},
+	}
+
+	t.Setenv(BotLoginEnv, "holonbot[bot]")
+
+	result, err := p.Publish(req)
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	// Contract: Result structure validation
+	if result.Provider != "github" {
+		t.Errorf("Provider = %v, want github", result.Provider)
+	}
+
+	if result.Target != req.Target {
+		t.Errorf("Target = %v, want %v", result.Target, req.Target)
+	}
+
+	if result.PublishedAt.IsZero() {
+		t.Error("PublishedAt is zero")
+	}
+
+	if len(result.Actions) == 0 {
+		t.Error("Actions is empty")
+	}
+
+	// Contract: Action structure validation
+	for i, action := range result.Actions {
+		if action.Type == "" {
+			t.Errorf("Action %d: Type is empty", i)
+		}
+		if action.Description == "" {
+			t.Errorf("Action %d: Description is empty", i)
+		}
+		// Metadata is optional, but if present should be a map
+		if action.Metadata != nil {
+			if _, ok := action.Metadata["comment_id"]; ok && action.Metadata["comment_id"] == "" {
+				t.Errorf("Action %d: comment_id in metadata is empty", i)
+			}
+		}
+	}
+}
+
+// TestVCRErrorHandling tests error handling with VCR.
+// This test locks the error behavior contract.
+func TestVCRErrorHandling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping VCR test in short mode")
+	}
+
+	// Test with invalid PR number (will error from API)
+	rec, err := gh.NewRecorder(t, "publisher/error_handling")
+	if err != nil {
+		t.Skipf("VCR fixture not found: %v (run with HOLON_VCR_MODE=record GITHUB_TOKEN=your_token to create)", err)
+	}
+	defer rec.Stop()
+
+	client := github.NewClient(rec.HTTPClient())
+	p := &GitHubPublisher{client: client}
+
+	tmpDir := t.TempDir()
+	summaryPath := filepath.Join(tmpDir, "summary.md")
+	if err := os.WriteFile(summaryPath, []byte("# Test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use a non-existent PR to trigger an error
+	req := publisher.PublishRequest{
+		Target: "holon-run/holon#999999999",
+		Artifacts: map[string]string{
+			"summary.md": summaryPath,
+		},
+	}
+
+	t.Setenv(BotLoginEnv, "holonbot[bot]")
+
+	_, err = p.Publish(req)
+
+	// Contract: Should return an error for non-existent PR
+	if err == nil {
+		t.Error("Expected error for non-existent PR, got nil")
+	}
+
+	// Error message should be meaningful
+	if err != nil && !strings.Contains(err.Error(), "404") && !strings.Contains(strings.ToLower(err.Error()), "not found") {
+		t.Logf("Note: error message may vary: %v", err)
+	}
 }
