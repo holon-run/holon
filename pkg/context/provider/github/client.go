@@ -2,16 +2,15 @@ package github
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"time"
+
+	ghhelper "github.com/holon-run/holon/pkg/github"
 )
 
 // Client provides methods to fetch GitHub PR and Issue context
 type Client struct {
+	helper     *ghhelper.Client
 	token      string
 	baseURL    string
 	httpClient *http.Client
@@ -19,7 +18,13 @@ type Client struct {
 
 // NewClient creates a new GitHub API client
 func NewClient(token string) *Client {
+	helper := ghhelper.NewClient(token,
+		ghhelper.WithBaseURL("https://api.github.com"),
+		ghhelper.WithTimeout(30*time.Second),
+	)
+
 	return &Client{
+		helper: helper,
 		token:   token,
 		baseURL: "https://api.github.com",
 		httpClient: &http.Client{
@@ -28,746 +33,199 @@ func NewClient(token string) *Client {
 	}
 }
 
+// SetBaseURL sets the base URL for both the client and the helper (for testing)
+func (c *Client) SetBaseURL(url string) {
+	c.baseURL = url
+	// Create a new helper with the new base URL
+	c.helper = ghhelper.NewClient(c.token,
+		ghhelper.WithBaseURL(url),
+		ghhelper.WithTimeout(30*time.Second),
+	)
+}
+
 // FetchPRInfo fetches basic PR information
 func (c *Client) FetchPRInfo(ctx context.Context, owner, repo string, prNumber int) (*PRInfo, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.baseURL, owner, repo, prNumber)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	info, err := c.helper.FetchPRInfo(ctx, owner, repo, prNumber)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
 
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch PR info: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var prData struct {
-		Number    int    `json:"number"`
-		Title     string `json:"title"`
-		Body      string `json:"body"`
-		State     string `json:"state"`
-		HTMLURL   string `json:"html_url"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-		Base      struct {
-			Ref  string `json:"ref"`
-			SHA  string `json:"sha"`
-			Repo struct {
-				FullName string `json:"full_name"`
-			} `json:"repo"`
-		} `json:"base"`
-		Head struct {
-			Ref string `json:"ref"`
-			SHA string `json:"sha"`
-		} `json:"head"`
-		User struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		MergeCommitSHA string `json:"merge_commit_sha"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&prData); err != nil {
-		return nil, fmt.Errorf("failed to decode PR data: %w", err)
-	}
-
-	var createdAt, updatedAt time.Time
-	if t, err := time.Parse(time.RFC3339, prData.CreatedAt); err == nil {
-		createdAt = t
-	}
-	if t, err := time.Parse(time.RFC3339, prData.UpdatedAt); err == nil {
-		updatedAt = t
-	}
-
+	// Convert from helper type to local type
 	return &PRInfo{
-		Number:      prData.Number,
-		Title:       prData.Title,
-		Body:        prData.Body,
-		State:       prData.State,
-		URL:         prData.HTMLURL,
-		BaseRef:     prData.Base.Ref,
-		HeadRef:     prData.Head.Ref,
-		BaseSHA:     prData.Base.SHA,
-		HeadSHA:     prData.Head.SHA,
-		Author:      prData.User.Login,
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
-		Repository:  prData.Base.Repo.FullName,
-		MergeCommit: prData.MergeCommitSHA,
+		Number:      info.Number,
+		Title:       info.Title,
+		Body:        info.Body,
+		State:       info.State,
+		URL:         info.URL,
+		BaseRef:     info.BaseRef,
+		HeadRef:     info.HeadRef,
+		BaseSHA:     info.BaseSHA,
+		HeadSHA:     info.HeadSHA,
+		Author:      info.Author,
+		CreatedAt:   info.CreatedAt,
+		UpdatedAt:   info.UpdatedAt,
+		Repository:  info.Repository,
+		MergeCommit: info.MergeCommit,
 	}, nil
 }
 
 // FetchIssueInfo fetches basic issue information
 func (c *Client) FetchIssueInfo(ctx context.Context, owner, repo string, issueNumber int) (*IssueInfo, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d", c.baseURL, owner, repo, issueNumber)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	info, err := c.helper.FetchIssueInfo(ctx, owner, repo, issueNumber)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
 
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch issue info: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var issueData struct {
-		Number    int    `json:"number"`
-		Title     string `json:"title"`
-		Body      string `json:"body"`
-		State     string `json:"state"`
-		HTMLURL   string `json:"html_url"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-		User      struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		Assignee *struct {
-			Login string `json:"login"`
-		} `json:"assignee"`
-		Labels []struct {
-			Name string `json:"name"`
-		} `json:"labels"`
-		Repository string `json:"repository"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&issueData); err != nil {
-		return nil, fmt.Errorf("failed to decode issue data: %w", err)
-	}
-
-	var createdAt, updatedAt time.Time
-	if t, err := time.Parse(time.RFC3339, issueData.CreatedAt); err == nil {
-		createdAt = t
-	}
-	if t, err := time.Parse(time.RFC3339, issueData.UpdatedAt); err == nil {
-		updatedAt = t
-	}
-
-	labels := make([]string, len(issueData.Labels))
-	for i, label := range issueData.Labels {
-		labels[i] = label.Name
-	}
-
-	assignee := ""
-	if issueData.Assignee != nil {
-		assignee = issueData.Assignee.Login
-	}
-
+	// Convert from helper type to local type
 	return &IssueInfo{
-		Number:     issueData.Number,
-		Title:      issueData.Title,
-		Body:       issueData.Body,
-		State:      issueData.State,
-		URL:        issueData.HTMLURL,
-		Author:     issueData.User.Login,
-		Assignee:   assignee,
-		CreatedAt:  createdAt,
-		UpdatedAt:  updatedAt,
-		Labels:     labels,
-		Repository: issueData.Repository,
+		Number:     info.Number,
+		Title:      info.Title,
+		Body:       info.Body,
+		State:      info.State,
+		URL:        info.URL,
+		Author:     info.Author,
+		Assignee:   info.Assignee,
+		CreatedAt:  info.CreatedAt,
+		UpdatedAt:  info.UpdatedAt,
+		Labels:     info.Labels,
+		Repository: info.Repository,
 	}, nil
 }
 
 // FetchIssueComments fetches comments for an issue
 func (c *Client) FetchIssueComments(ctx context.Context, owner, repo string, issueNumber int) ([]IssueComment, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", c.baseURL, owner, repo, issueNumber)
-
-	allComments, err := c.fetchAllIssueComments(ctx, url)
+	comments, err := c.helper.FetchIssueComments(ctx, owner, repo, issueNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	return allComments, nil
+	// Convert from helper type to local type
+	result := make([]IssueComment, len(comments))
+	for i, comment := range comments {
+		result[i] = IssueComment{
+			CommentID: comment.CommentID,
+			URL:       comment.URL,
+			Body:      comment.Body,
+			Author:    comment.Author,
+			CreatedAt: comment.CreatedAt,
+			UpdatedAt: comment.UpdatedAt,
+		}
+	}
+
+	return result, nil
 }
 
 // FetchReviewThreads fetches review comment threads for a PR
 func (c *Client) FetchReviewThreads(ctx context.Context, owner, repo string, prNumber int, unresolvedOnly bool) ([]ReviewThread, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/comments", c.baseURL, owner, repo, prNumber)
-
-	allComments, err := c.fetchAllComments(ctx, url)
+	threads, err := c.helper.FetchReviewThreads(ctx, owner, repo, prNumber, unresolvedOnly)
 	if err != nil {
 		return nil, err
 	}
 
-	// Group comments by thread (top-level comment + replies)
-	threads := c.groupCommentsIntoThreads(allComments)
+	// Convert from helper type to local type
+	result := make([]ReviewThread, len(threads))
+	for i, thread := range threads {
+		result[i] = ReviewThread{
+			CommentID:   thread.CommentID,
+			URL:         thread.URL,
+			Path:        thread.Path,
+			Line:        thread.Line,
+			Side:        thread.Side,
+			StartLine:   thread.StartLine,
+			StartSide:   thread.StartSide,
+			DiffHunk:    thread.DiffHunk,
+			Body:        thread.Body,
+			Author:      thread.Author,
+			CreatedAt:   thread.CreatedAt,
+			UpdatedAt:   thread.UpdatedAt,
+			Resolved:    thread.Resolved,
+			InReplyToID: thread.InReplyToID,
+			Position:    thread.Position,
+		}
 
-	// Filter unresolved if requested
-	if unresolvedOnly {
-		filtered := []ReviewThread{}
-		for _, thread := range threads {
-			if !thread.Resolved {
-				filtered = append(filtered, thread)
+		// Convert replies
+		result[i].Replies = make([]Reply, len(thread.Replies))
+		for j, reply := range thread.Replies {
+			result[i].Replies[j] = Reply{
+				CommentID:   reply.CommentID,
+				URL:         reply.URL,
+				Body:        reply.Body,
+				Author:      reply.Author,
+				CreatedAt:   reply.CreatedAt,
+				UpdatedAt:   reply.UpdatedAt,
+				InReplyToID: reply.InReplyToID,
 			}
 		}
-		threads = filtered
 	}
 
-	return threads, nil
+	return result, nil
 }
 
 // FetchPRDiff fetches the unified diff for a PR
 func (c *Client) FetchPRDiff(ctx context.Context, owner, repo string, prNumber int) (string, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.baseURL, owner, repo, prNumber)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Request diff format
-	req.Header.Set("Accept", "application/vnd.github.v3.diff")
-	if c.token != "" {
-		req.Header.Set("Authorization", "token "+c.token)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch PR diff: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	diff, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read diff: %w", err)
-	}
-
-	return string(diff), nil
-}
-
-// fetchAllComments fetches all PR review comments with pagination
-func (c *Client) fetchAllComments(ctx context.Context, url string) ([]map[string]interface{}, error) {
-	var allComments []map[string]interface{}
-	page := 1
-	perPage := 100
-
-	for {
-		pageURL := fmt.Sprintf("%s?page=%d&per_page=%d", url, page, perPage)
-
-		req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-
-		c.setHeaders(req)
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch comments: %w", err)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
-		}
-
-		var comments []map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("failed to decode comments: %w", err)
-		}
-		resp.Body.Close()
-
-		if len(comments) == 0 {
-			break
-		}
-
-		allComments = append(allComments, comments...)
-
-		if len(comments) < perPage {
-			break
-		}
-		page++
-	}
-
-	return allComments, nil
-}
-
-// fetchAllIssueComments fetches all issue comments with pagination
-func (c *Client) fetchAllIssueComments(ctx context.Context, url string) ([]IssueComment, error) {
-	var allComments []IssueComment
-	page := 1
-	perPage := 100
-
-	for {
-		pageURL := fmt.Sprintf("%s?page=%d&per_page=%d", url, page, perPage)
-
-		req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-
-		c.setHeaders(req)
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch comments: %w", err)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
-		}
-
-		var comments []struct {
-			ID        int64  `json:"id"`
-			HTMLURL   string `json:"html_url"`
-			Body      string `json:"body"`
-			CreatedAt string `json:"created_at"`
-			UpdatedAt string `json:"updated_at"`
-			User      struct {
-				Login string `json:"login"`
-			} `json:"user"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("failed to decode comments: %w", err)
-		}
-		resp.Body.Close()
-
-		if len(comments) == 0 {
-			break
-		}
-
-		for _, comment := range comments {
-			var createdAt, updatedAt time.Time
-			if t, err := time.Parse(time.RFC3339, comment.CreatedAt); err == nil {
-				createdAt = t
-			}
-			if t, err := time.Parse(time.RFC3339, comment.UpdatedAt); err == nil {
-				updatedAt = t
-			}
-
-			allComments = append(allComments, IssueComment{
-				CommentID: comment.ID,
-				URL:       comment.HTMLURL,
-				Body:      comment.Body,
-				Author:    comment.User.Login,
-				CreatedAt: createdAt,
-				UpdatedAt: updatedAt,
-			})
-		}
-
-		if len(comments) < perPage {
-			break
-		}
-		page++
-	}
-
-	return allComments, nil
-}
-
-// groupCommentsIntoThreads groups comments into threads (top-level + replies)
-func (c *Client) groupCommentsIntoThreads(comments []map[string]interface{}) []ReviewThread {
-	threadMap := make(map[int64]*ReviewThread)
-	var threadIDs []int64
-
-	// First pass: create all threads and identify top-level comments
-	for _, comment := range comments {
-		// Safe type assertion for comment ID
-		var commentID int64
-		if idVal, ok := comment["id"]; ok && idVal != nil {
-			if idFloat, ok := idVal.(float64); ok {
-				commentID = int64(idFloat)
-			} else {
-				continue // Skip if id is not a valid number
-			}
-		} else {
-			continue // Skip if id is missing
-		}
-
-		// Safe type assertion for in_reply_to_id
-		var inReplyToID int64
-		if replyTo, ok := comment["in_reply_to_id"]; ok && replyTo != nil {
-			if replyToFloat, ok := replyTo.(float64); ok {
-				inReplyToID = int64(replyToFloat)
-			}
-		}
-
-		if inReplyToID == 0 {
-			thread := c.commentToThread(comment)
-			threadMap[commentID] = &thread
-			threadIDs = append(threadIDs, commentID)
-		}
-	}
-
-	// Second pass: add replies to threads
-	for _, comment := range comments {
-		// Safe type assertion for in_reply_to_id
-		var inReplyToID int64
-		if replyTo, ok := comment["in_reply_to_id"]; ok && replyTo != nil {
-			if replyToFloat, ok := replyTo.(float64); ok {
-				inReplyToID = int64(replyToFloat)
-			}
-		}
-
-		if inReplyToID != 0 {
-			parentThread := c.findParentThread(threadMap, inReplyToID)
-			if parentThread != nil {
-				reply := c.commentToReply(comment)
-				parentThread.Replies = append(parentThread.Replies, reply)
-			}
-		}
-	}
-
-	threads := make([]ReviewThread, 0, len(threadIDs))
-	for _, id := range threadIDs {
-		threads = append(threads, *threadMap[id])
-	}
-
-	return threads
-}
-
-// findParentThread finds the root thread for a comment
-func (c *Client) findParentThread(threadMap map[int64]*ReviewThread, commentID int64) *ReviewThread {
-	if thread, ok := threadMap[commentID]; ok {
-		return thread
-	}
-
-	for _, thread := range threadMap {
-		for _, reply := range thread.Replies {
-			if reply.CommentID == commentID {
-				return thread
-			}
-		}
-	}
-
-	return nil
-}
-
-// commentToThread converts a GitHub API comment to a ReviewThread
-func (c *Client) commentToThread(comment map[string]interface{}) ReviewThread {
-	// Extract required fields with safe type assertions
-	commentID := int64(0)
-	if idVal, ok := comment["id"]; ok && idVal != nil {
-		if idFloat, ok := idVal.(float64); ok {
-			commentID = int64(idFloat)
-		}
-	}
-
-	url := ""
-	if urlVal, ok := comment["html_url"]; ok && urlVal != nil {
-		if urlStr, ok := urlVal.(string); ok {
-			url = urlStr
-		}
-	}
-
-	body := ""
-	if bodyVal, ok := comment["body"]; ok && bodyVal != nil {
-		if bodyStr, ok := bodyVal.(string); ok {
-			body = bodyStr
-		}
-	}
-
-	diffHunk := ""
-	if dh, ok := comment["diff_hunk"]; ok && dh != nil {
-		if dhStr, ok := dh.(string); ok {
-			diffHunk = dhStr
-		}
-	}
-
-	path := ""
-	if p, ok := comment["path"]; ok && p != nil {
-		if pStr, ok := p.(string); ok {
-			path = pStr
-		}
-	}
-
-	var line, startLine, position int
-	if l, ok := comment["line"]; ok && l != nil {
-		if lFloat, ok := l.(float64); ok {
-			line = int(lFloat)
-		}
-	}
-	if sl, ok := comment["start_line"]; ok && sl != nil {
-		if slFloat, ok := sl.(float64); ok {
-			startLine = int(slFloat)
-		}
-	}
-	if pos, ok := comment["position"]; ok && pos != nil {
-		if posFloat, ok := pos.(float64); ok {
-			position = int(posFloat)
-		}
-	}
-
-	side := ""
-	if s, ok := comment["side"]; ok && s != nil {
-		if sStr, ok := s.(string); ok {
-			side = sStr
-		}
-	}
-
-	startSide := ""
-	if ss, ok := comment["start_side"]; ok && ss != nil {
-		if ssStr, ok := ss.(string); ok {
-			startSide = ssStr
-		}
-	}
-
-	author := ""
-	if user, ok := comment["user"].(map[string]interface{}); ok && user != nil {
-		if loginVal, ok := user["login"]; ok && loginVal != nil {
-			if loginStr, ok := loginVal.(string); ok {
-				author = loginStr
-			}
-		}
-	}
-
-	var createdAt, updatedAt time.Time
-	if ca, ok := comment["created_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, ca); err == nil {
-			createdAt = t
-		}
-	}
-	if ua, ok := comment["updated_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, ua); err == nil {
-			updatedAt = t
-		}
-	}
-
-	return ReviewThread{
-		CommentID: commentID,
-		URL:       url,
-		Path:      path,
-		Line:      line,
-		Side:      side,
-		StartLine: startLine,
-		StartSide: startSide,
-		DiffHunk:  diffHunk,
-		Body:      body,
-		Author:    author,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
-		Resolved:  false,
-		Position:  position,
-		Replies:   []Reply{},
-	}
-}
-
-// commentToReply converts a GitHub API comment to a Reply
-func (c *Client) commentToReply(comment map[string]interface{}) Reply {
-	// Extract required fields with safe type assertions
-	commentID := int64(0)
-	if idVal, ok := comment["id"]; ok && idVal != nil {
-		if idFloat, ok := idVal.(float64); ok {
-			commentID = int64(idFloat)
-		}
-	}
-
-	url := ""
-	if urlVal, ok := comment["html_url"]; ok && urlVal != nil {
-		if urlStr, ok := urlVal.(string); ok {
-			url = urlStr
-		}
-	}
-
-	body := ""
-	if bodyVal, ok := comment["body"]; ok && bodyVal != nil {
-		if bodyStr, ok := bodyVal.(string); ok {
-			body = bodyStr
-		}
-	}
-
-	author := ""
-	if user, ok := comment["user"].(map[string]interface{}); ok && user != nil {
-		if loginVal, ok := user["login"]; ok && loginVal != nil {
-			if loginStr, ok := loginVal.(string); ok {
-				author = loginStr
-			}
-		}
-	}
-
-	var createdAt, updatedAt time.Time
-	if ca, ok := comment["created_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, ca); err == nil {
-			createdAt = t
-		}
-	}
-	if ua, ok := comment["updated_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, ua); err == nil {
-			updatedAt = t
-		}
-	}
-
-	var inReplyToID int64
-	if replyTo, ok := comment["in_reply_to_id"]; ok && replyTo != nil {
-		if replyToFloat, ok := replyTo.(float64); ok {
-			inReplyToID = int64(replyToFloat)
-		}
-	}
-
-	return Reply{
-		CommentID:   commentID,
-		URL:         url,
-		Body:        body,
-		Author:      author,
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
-		InReplyToID: inReplyToID,
-	}
-}
-
-// setHeaders sets common headers for GitHub API requests
-func (c *Client) setHeaders(req *http.Request) {
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "token "+c.token)
-	}
+	return c.helper.FetchPRDiff(ctx, owner, repo, prNumber)
 }
 
 // FetchCheckRuns fetches check runs for a commit ref
 // See: https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
 func (c *Client) FetchCheckRuns(ctx context.Context, owner, repo, ref string, maxResults int) ([]CheckRun, error) {
-	// Use the Check Runs API endpoint
-	url := fmt.Sprintf("%s/repos/%s/%s/commits/%s/check-runs", c.baseURL, owner, repo, ref)
-
-	var allCheckRuns []CheckRun
-	page := 1
-	perPage := 100
-
-	for {
-		pageURL := fmt.Sprintf("%s?page=%d&per_page=%d", url, page, perPage)
-
-		req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-
-		c.setHeaders(req)
-		// Note: setHeaders() already sets the Accept header to application/vnd.github.v3+json
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch check runs: %w", err)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
-		}
-
-		var response CheckRunsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("failed to decode check runs response: %w", err)
-		}
-		resp.Body.Close()
-
-		allCheckRuns = append(allCheckRuns, response.CheckRuns...)
-
-		// Check if we've reached max results
-		if maxResults > 0 && len(allCheckRuns) >= maxResults {
-			allCheckRuns = allCheckRuns[:maxResults]
-			break
-		}
-
-		// Check if we've fetched all check runs
-		if len(response.CheckRuns) < perPage {
-			break
-		}
-		page++
+	checkRuns, err := c.helper.FetchCheckRuns(ctx, owner, repo, ref, maxResults)
+	if err != nil {
+		return nil, err
 	}
 
-	return allCheckRuns, nil
+	// Convert from helper type to local type
+	result := make([]CheckRun, len(checkRuns))
+	for i, cr := range checkRuns {
+		result[i] = CheckRun{
+			ID:           cr.ID,
+			Name:         cr.Name,
+			HeadSHA:      cr.HeadSHA,
+			Status:       cr.Status,
+			Conclusion:   cr.Conclusion,
+			StartedAt:    cr.StartedAt,
+			CompletedAt:  cr.CompletedAt,
+			DetailsURL:   cr.DetailsURL,
+			AppSlug:      cr.AppSlug,
+			CheckSuiteID: cr.CheckSuiteID,
+			Output: CheckRunOutput{
+				Title:   cr.Output.Title,
+				Summary: cr.Output.Summary,
+				Text:    cr.Output.Text,
+			},
+		}
+	}
+
+	return result, nil
 }
 
 // FetchCombinedStatus fetches the combined status for a commit ref
 // See: https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference
 func (c *Client) FetchCombinedStatus(ctx context.Context, owner, repo, ref string) (*CombinedStatus, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/commits/%s/status", c.baseURL, owner, repo, ref)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	status, err := c.helper.FetchCombinedStatus(ctx, owner, repo, ref)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
 
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch combined status: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
+	// Convert from helper type to local type
+	result := &CombinedStatus{
+		SHA:        status.SHA,
+		State:      status.State,
+		TotalCount: status.TotalCount,
+		Statuses:   make([]Status, len(status.Statuses)),
 	}
 
-	var statusData struct {
-		SHA        string `json:"sha"`
-		State      string `json:"state"`
-		TotalCount int    `json:"total_count"`
-		Statuses   []struct {
-			ID          int64  `json:"id"`
-			Context     string `json:"context"`
-			State       string `json:"state"`
-			TargetURL   string `json:"target_url,omitempty"`
-			Description string `json:"description,omitempty"`
-			CreatedAt   string `json:"created_at"`
-			UpdatedAt   string `json:"updated_at"`
-		} `json:"statuses"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&statusData); err != nil {
-		return nil, fmt.Errorf("failed to decode combined status: %w", err)
-	}
-
-	// Convert statuses
-	statuses := make([]Status, len(statusData.Statuses))
-	for i, s := range statusData.Statuses {
-		var createdAt, updatedAt time.Time
-		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to parse status created_at timestamp %q: %v\n", s.CreatedAt, err)
-		} else {
-			createdAt = t
-		}
-		if t, err := time.Parse(time.RFC3339, s.UpdatedAt); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to parse status updated_at timestamp %q: %v\n", s.UpdatedAt, err)
-		} else {
-			updatedAt = t
-		}
-
-		statuses[i] = Status{
+	for i, s := range status.Statuses {
+		result.Statuses[i] = Status{
 			ID:          s.ID,
 			Context:     s.Context,
 			State:       s.State,
 			TargetURL:   s.TargetURL,
 			Description: s.Description,
-			CreatedAt:   createdAt,
-			UpdatedAt:   updatedAt,
+			CreatedAt:   s.CreatedAt,
+			UpdatedAt:   s.UpdatedAt,
 		}
 	}
 
-	return &CombinedStatus{
-		SHA:        statusData.SHA,
-		State:      statusData.State,
-		TotalCount: statusData.TotalCount,
-		Statuses:   statuses,
-	}, nil
+	return result, nil
 }

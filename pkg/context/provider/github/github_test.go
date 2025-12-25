@@ -291,7 +291,7 @@ func TestFetchCheckRuns(t *testing.T) {
 
 			// Create client with test server URL
 			client := NewClient("test-token")
-			client.baseURL = server.URL
+			client.SetBaseURL(server.URL)
 
 			// Fetch check runs
 			checkRuns, err := client.FetchCheckRuns(context.Background(), "owner", "repo", tt.ref, tt.maxResults)
@@ -420,7 +420,7 @@ func TestFetchCombinedStatus(t *testing.T) {
 
 			// Create client with test server URL
 			client := NewClient("test-token")
-			client.baseURL = server.URL
+			client.SetBaseURL(server.URL)
 
 			// Fetch combined status
 			status, err := client.FetchCombinedStatus(context.Background(), "owner", "repo", tt.ref)
