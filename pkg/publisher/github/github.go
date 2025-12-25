@@ -25,7 +25,12 @@ const (
 )
 
 // GitHubPublisher publishes Holon outputs to GitHub PRs.
-type GitHubPublisher struct{}
+type GitHubPublisher struct {
+	// client is the GitHub client to use. If nil, a new client will be created
+	// using the token from environment variables. This field is primarily for
+	// testing with mock servers.
+	client *github.Client
+}
 
 // NewGitHubPublisher creates a new GitHub publisher instance.
 func NewGitHubPublisher() *GitHubPublisher {
@@ -57,13 +62,24 @@ func (g *GitHubPublisher) Validate(req publisher.PublishRequest) error {
 func (g *GitHubPublisher) Publish(req publisher.PublishRequest) (publisher.PublishResult, error) {
 	ctx := context.Background()
 
-	// Get GitHub token from environment
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		token = os.Getenv("HOLON_GITHUB_TOKEN")
-	}
-	if token == "" {
-		return publisher.PublishResult{}, fmt.Errorf("GITHUB_TOKEN or HOLON_GITHUB_TOKEN environment variable is required")
+	// Use provided client or create a new one
+	var client *github.Client
+	if g.client != nil {
+		client = g.client
+	} else {
+		// Get GitHub token from environment
+		token := os.Getenv("GITHUB_TOKEN")
+		if token == "" {
+			token = os.Getenv("HOLON_GITHUB_TOKEN")
+		}
+		if token == "" {
+			return publisher.PublishResult{}, fmt.Errorf("GITHUB_TOKEN or HOLON_GITHUB_TOKEN environment variable is required")
+		}
+
+		// Create GitHub client
+		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+		tc := oauth2.NewClient(ctx, ts)
+		client = github.NewClient(tc)
 	}
 
 	// Parse PR reference
@@ -71,11 +87,6 @@ func (g *GitHubPublisher) Publish(req publisher.PublishRequest) (publisher.Publi
 	if err != nil {
 		return publisher.PublishResult{}, fmt.Errorf("invalid target: %w", err)
 	}
-
-	// Create GitHub client
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
-	tc := oauth2.NewClient(ctx, ts)
-	client := github.NewClient(tc)
 
 	// Get bot login for idempotency checks
 	botLogin := getBotLogin()
