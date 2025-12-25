@@ -1,0 +1,261 @@
+package git
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/holon-run/holon/pkg/publisher"
+	"github.com/go-git/go-git/v5"
+)
+
+const (
+	// DefaultCommitMessage is the default commit message.
+	DefaultCommitMessage = "Apply changes from Holon"
+
+	// DefaultRemote is the default remote name.
+	DefaultRemote = "origin"
+
+	// WorkspaceEnv is the environment variable for workspace directory.
+	WorkspaceEnv = "HOLON_WORKSPACE"
+
+	// GitTokenEnv is the environment variable for git authentication token.
+	GitTokenEnv = "GIT_TOKEN"
+)
+
+// Publisher publishes Holon outputs to git.
+type Publisher struct{}
+
+// NewPublisher creates a new git publisher instance.
+func NewPublisher() *Publisher {
+	return &Publisher{}
+}
+
+// Name returns the provider name.
+func (p *Publisher) Name() string {
+	return "git"
+}
+
+// Validate checks if the request is valid for this publisher.
+func (p *Publisher) Validate(req publisher.PublishRequest) error {
+	// Check for diff.patch artifact (it's ok if it doesn't exist or is empty)
+	// We'll handle that in Publish as a no-op
+
+	// If diff.patch exists, validate workspace is a git repository
+	if patchPath, ok := req.Artifacts["diff.patch"]; ok {
+		workspaceDir := p.getWorkspaceDir()
+		gitClient := NewGitClient(workspaceDir, "")
+
+		if err := gitClient.EnsureRepository(); err != nil {
+			return fmt.Errorf("workspace validation failed: %w", err)
+		}
+
+		// Check that patch file can be read (but don't fail if it doesn't exist)
+		if _, err := os.Stat(patchPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to access patch file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Publish sends Holon outputs to git.
+func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResult, error) {
+	startTime := time.Now()
+
+	// Build configuration from manifest metadata
+	config := p.buildConfig(req.Manifest)
+
+	// Get workspace directory
+	workspaceDir := p.getWorkspaceDir()
+	config.WorkspaceDir = workspaceDir
+
+	// Get authentication token (optional)
+	token := os.Getenv(GitTokenEnv)
+
+	// Initialize result
+	result := publisher.PublishResult{
+		Provider: p.Name(),
+		Target:   req.Target,
+		Actions:  []publisher.PublishAction{},
+		Errors:   []publisher.PublishError{},
+		Success:  true,
+	}
+
+	// Check if diff.patch exists
+	patchPath := req.Artifacts["diff.patch"]
+	if patchPath == "" {
+		// No patch file - this is a no-op
+		result.Actions = append(result.Actions, publisher.PublishAction{
+			Type:        "no_op",
+			Description: "No diff.patch artifact found, nothing to apply",
+		})
+		result.PublishedAt = time.Now()
+		return result, nil
+	}
+
+	// Initialize Git client
+	gitClient := NewGitClient(workspaceDir, token)
+
+	// Ensure workspace is a git repository
+	if err := gitClient.EnsureRepository(); err != nil {
+		wrappedErr := fmt.Errorf("workspace validation failed: %w", err)
+		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
+		result.Success = false
+		return result, wrappedErr
+	}
+
+	// Create/checkout branch FIRST (before applying patch)
+	// This avoids issues with staged changes being reset during branch checkout
+	if config.Branch != "" {
+		if err := gitClient.CreateBranch(config.Branch); err != nil {
+			wrappedErr := fmt.Errorf("failed to create branch: %w", err)
+			result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
+			result.Success = false
+			return result, wrappedErr
+		}
+
+		result.Actions = append(result.Actions, publisher.PublishAction{
+			Type:        "created_branch",
+			Description: fmt.Sprintf("Created/checked out branch: %s", config.Branch),
+			Metadata: map[string]string{
+				"branch": config.Branch,
+			},
+		})
+	}
+
+	// Apply patch
+	applied, err := gitClient.ApplyPatch(patchPath)
+	if err != nil {
+		wrappedErr := fmt.Errorf("failed to apply patch: %w", err)
+		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
+		result.Success = false
+		return result, wrappedErr
+	}
+
+	if !applied {
+		// Patch was empty or missing - no-op
+		if len(result.Actions) == 0 {
+			result.Actions = append(result.Actions, publisher.PublishAction{
+				Type:        "no_op",
+				Description: "diff.patch is empty or missing, nothing to apply",
+			})
+		}
+		result.PublishedAt = time.Now()
+		return result, nil
+	}
+
+	result.Actions = append(result.Actions, publisher.PublishAction{
+		Type:        "applied_patch",
+		Description: "Applied diff.patch to workspace",
+	})
+
+	// Commit changes if requested
+	if config.Commit {
+		commitMessage := config.CommitMessage
+		if commitMessage == "" {
+			commitMessage = DefaultCommitMessage
+		}
+
+		commitHash, err := gitClient.CommitChanges(commitMessage)
+		if err != nil {
+			wrappedErr := fmt.Errorf("failed to commit changes: %w", err)
+			result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
+			result.Success = false
+			return result, wrappedErr
+		}
+
+		result.Actions = append(result.Actions, publisher.PublishAction{
+			Type:        "committed",
+			Description: fmt.Sprintf("Committed changes: %s", commitHash),
+			Metadata: map[string]string{
+				"commit": commitHash,
+			},
+		})
+	}
+
+	// Push to remote if requested
+	if config.Push {
+		remoteName := config.Remote
+		if remoteName == "" {
+			remoteName = DefaultRemote
+		}
+
+		// Determine branch name for push
+		branchName := config.Branch
+		if branchName == "" {
+			// Get current branch name
+			repo, err := git.PlainOpen(workspaceDir)
+			if err != nil {
+				wrappedErr := fmt.Errorf("failed to open repository: %w", err)
+				result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
+				result.Success = false
+				return result, wrappedErr
+			}
+
+			head, err := repo.Head()
+			if err != nil {
+				wrappedErr := fmt.Errorf("failed to get HEAD: %w", err)
+				result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
+				result.Success = false
+				return result, wrappedErr
+			}
+
+			branchName = head.Name().Short()
+		}
+
+		if err := gitClient.Push(branchName, remoteName); err != nil {
+			wrappedErr := fmt.Errorf("failed to push: %w", err)
+			result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
+			result.Success = false
+			return result, wrappedErr
+		}
+
+		result.Actions = append(result.Actions, publisher.PublishAction{
+			Type:        "pushed",
+			Description: fmt.Sprintf("Pushed to %s/%s", remoteName, branchName),
+			Metadata: map[string]string{
+				"remote": remoteName,
+				"branch": branchName,
+			},
+		})
+	}
+
+	result.PublishedAt = startTime
+	return result, nil
+}
+
+// getWorkspaceDir gets the workspace directory from environment or uses current directory.
+func (p *Publisher) getWorkspaceDir() string {
+	workspaceDir := os.Getenv(WorkspaceEnv)
+	if workspaceDir == "" {
+		workspaceDir = "."
+	}
+	return workspaceDir
+}
+
+// buildConfig builds publisher configuration from manifest metadata.
+func (p *Publisher) buildConfig(manifest map[string]interface{}) GitPublisherConfig {
+	config := GitPublisherConfig{}
+
+	// Extract configuration from manifest metadata
+	if metadata, ok := manifest["metadata"].(map[string]interface{}); ok {
+		if branch, ok := metadata["branch"].(string); ok {
+			config.Branch = branch
+		}
+		if commitMsg, ok := metadata["commit_message"].(string); ok {
+			config.CommitMessage = commitMsg
+		}
+		if remote, ok := metadata["remote"].(string); ok {
+			config.Remote = remote
+		}
+		if commit, ok := metadata["commit"].(bool); ok {
+			config.Commit = commit
+		}
+		if push, ok := metadata["push"].(bool); ok {
+			config.Push = push
+		}
+	}
+
+	return config
+}
