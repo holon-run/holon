@@ -7,6 +7,13 @@ mkdir out
 mkdir input
 mkdir input/context
 
+# Initialize git in workspace (required for mock driver to generate diff.patch)
+exec git -C work init
+exec git -C work config user.email "test@example.com"
+exec git -C work config user.name "Test User"
+exec git -C work add pkg/context/loader.go
+exec git -C work commit -m 'initial commit'
+
 # Run holon in pr-fix mode with mock driver
 # The fixture file is provided as a txtar section below
 env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json HOLON_MODE=pr-fix
