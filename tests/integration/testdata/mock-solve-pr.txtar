@@ -1,0 +1,176 @@
+[!docker] skip 'docker not available'
+
+# Test the `holon solve` command in PR-fix mode end-to-end with mock agent and pre-populated context
+# This test verifies:
+# 1. PR context collection (simulated by pre-populating context directory)
+# 2. Agent execution in pr-fix mode with mock driver
+# 3. Output artifact generation including pr-fix.json
+
+# Create workspace and output directories
+mkdir work
+mkdir work/pkg
+mkdir work/pkg/handler
+mkdir out
+mkdir input
+mkdir input/context
+mkdir input/context/github
+
+# Initialize a git repo in workspace
+exec git -C work init
+exec git -C work config user.email "test@example.com"
+exec git -C work config user.name "Test User"
+
+# Create initial workspace file with issues
+echo 'package handler
+
+func ProcessData(data string) {
+    result := transform(data)
+    send(result)
+}
+
+func transform(s string) string {
+    return s + " processed"
+}
+
+func send(result string) {
+    // Send result somewhere
+}' > work/pkg/handler/process.go
+
+# Commit initial state
+exec git -C work add pkg/handler/process.go
+exec git -C work commit -m 'Initial commit'
+
+# Pre-populate context directory with mock GitHub PR data
+# This simulates what the PR collector would create
+cat > input/context/github/pr.json << 'EOF'
+{
+  "number": 456,
+  "title": "Add error handling to data processor",
+  "state": "open",
+  "author": "prauthor",
+  "body": "This PR adds error handling to the data processing pipeline.",
+  "url": "https://github.com/test/repo/pull/456",
+  "base_ref": "main",
+  "head_ref": "add-error-handling",
+  "base_sha": "abc123def456",
+  "head_sha": "def456abc123",
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
+}
+EOF
+
+cat > input/context/github/review_threads.json << 'EOF'
+[
+  {
+    "id": 789,
+    "path": "pkg/handler/process.go",
+    "line": 4,
+    "start_line": 4,
+    "side": "RIGHT",
+    "author": "reviewer1",
+    "body": "transform and send can fail - please add error handling",
+    "diff_hunk": "@@ -1,6 +1,10 @@\n func ProcessData(data string) {\n-    result := transform(data)\n+    result, err := transform(data)\n+    if err != nil {\n+        return err\n+    }\n     send(result)\n }",
+    "resolved": false,
+    "url": "https://github.com/test/repo/pull/456/comments/789",
+    "created_at": "2024-01-01T01:00:00Z",
+    "replies": []
+  }
+]
+EOF
+
+# Create mock PR diff
+cat > input/context/github/pr.diff << 'EOF'
+diff --git a/pkg/handler/process.go b/pkg/handler/process.go
+index abc123..def456 100644
+--- a/pkg/handler/process.go
++++ b/pkg/handler/process.go
+@@ -1,10 +1,15 @@
+ package handler
+
+-func ProcessData(data string) {
+-    result := transform(data)
++func ProcessData(data string) error {
++    result, err := transform(data)
++    if err != nil {
++        return err
++    }
+     send(result)
++    return nil
+ }
+
+-func transform(s string) string {
++func transform(s string) (string, error) {
+     return s + " processed"
+ }
+EOF
+
+# Copy pr-fix schema from assets
+exec cp /holon/workspace/pkg/prompt/assets/modes/pr-fix/pr-fix.schema.json input/context/pr-fix.schema.json
+
+# Create mock driver fixture for pr-fix mode
+cat > input/context/fixture.json << 'EOF'
+{
+  "version": "v1",
+  "description": "Fix PR review comments about error handling",
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "pkg/handler/process.go",
+      "content": "package handler\n\nimport (\n    \"errors\"\n    \"log\"\n)\n\nfunc ProcessData(data string) error {\n    result, err := transform(data)\n    if err != nil {\n        return err\n    }\n    if err := send(result); err != nil {\n        return err\n    }\n    return nil\n}\n\nfunc transform(s string) (string, error) {\n    if s == \"\" {\n        return \"\", errors.New(\"empty input\")\n    }\n    return s + \" processed\", nil\n}\n\nfunc send(result string) error {\n    if result == \"\" {\n        return errors.New(\"nothing to send\")\n    }\n    log.Printf(\"Sending: %s\", result)\n    return nil\n}\n"
+    },
+    {
+      "type": "write_output",
+      "path": "pr-fix.json",
+      "content": "{\"review_replies\":[{\"comment_id\":789,\"status\":\"fixed\",\"message\":\"Added error handling to both transform and send functions\",\"action_taken\":\"Modified ProcessData to return error, added error checks for transform() and send()\",\"suggested_code\":null}],\"checks\":[]}"
+    }
+  ],
+  "outcome": {
+    "success": true,
+    "result_text": "Fixed all review comments by adding comprehensive error handling",
+    "summary": "# Summary\n\nFixed all review comments by adding comprehensive error handling throughout the data processing pipeline.\n\n## Changes\n\n- Modified `ProcessData` to return `error`\n- Added error handling for `transform()` call\n- Added error handling for `send()` call\n- Modified `transform()` to return `(string, error)` with empty input validation\n- Modified `send()` to return `error` with empty result validation\n\n## Review Replies\n\n- Comment #789 (reviewer1): **Fixed** - Added error handling to both transform and send functions"
+  }
+}
+EOF
+
+# Set environment for mock driver and pr-fix mode
+env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json HOLON_MODE=pr-fix
+
+# Run holon run with the pre-populated PR context
+# This simulates what `holon solve pr` does internally
+exec holon run \
+  --agent default \
+  --goal 'Fix the review comments and issues in PR https://github.com/test/repo/pull/456. Address all unresolved review comments and make necessary code changes.' \
+  --workspace work \
+  --input input \
+  --out out \
+  --context input/context \
+  --image golang:1.22
+
+# Verify expected outputs
+exists out/manifest.json
+exists out/diff.patch
+exists out/summary.md
+exists out/pr-fix.json
+
+# Verify manifest contains expected fields
+exec grep -q '"status":"success"' out/manifest.json
+
+# Verify pr-fix.json structure and content
+exec python3 -m json.tool out/pr-fix.json
+exec grep -q '"review_replies"' out/pr-fix.json
+exec grep -q '"comment_id":789' out/pr-fix.json
+exec grep -q '"status":"fixed"' out/pr-fix.json
+exec grep -q '"message":' out/pr-fix.json
+
+# Verify diff.patch contains changes
+exec grep -q 'error)' out/diff.patch
+exec grep -q 'return nil' out/diff.patch
+
+# Verify summary.md mentions PR fixes
+exec grep -q 'review comments' out/summary.md
+exec grep -q 'error handling' out/summary.md
+
+# Verify workspace file was modified
+exec git -C work diff --exit-code pkg/handler/process.go
+stdout 'error\(|return nil|return err'
+stderr ''

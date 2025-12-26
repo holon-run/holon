@@ -1,0 +1,119 @@
+[!docker] skip 'docker not available'
+
+# Test the `holon solve` command end-to-end with mock agent and pre-populated context
+# This test verifies:
+# 1. Workspace preparation with local git repo
+# 2. Context collection (simulated by pre-populating context directory)
+# 3. Agent execution with mock driver
+# 4. Output artifact generation
+
+# Create workspace and output directories
+mkdir work
+mkdir out
+mkdir input
+mkdir input/context
+mkdir input/context/github
+
+# Initialize a git repo in workspace
+exec git -C work init
+exec git -C work config user.email "test@example.com"
+exec git -C work config user.name "Test User"
+
+# Create initial workspace file
+echo 'package main
+import "fmt"
+func main() {
+    fmt.Println("Hello, World!")
+}' > work/main.go
+
+# Commit initial state
+exec git -C work add main.go
+exec git -C work commit -m 'Initial commit'
+
+# Pre-populate context directory with mock GitHub issue data
+# This simulates what the issue collector would create
+cat > input/context/github/issue.json << 'EOF'
+{
+  "number": 123,
+  "title": "Add error handling to main function",
+  "state": "open",
+  "author": "testuser",
+  "body": "The main function needs proper error handling.",
+  "url": "https://github.com/test/repo/issues/123",
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
+}
+EOF
+
+cat > input/context/github/issue_comments.json << 'EOF'
+[
+  {
+    "id": 456,
+    "author": "commenter",
+    "body": "Please add error handling for all function calls",
+    "created_at": "2024-01-01T01:00:00Z"
+  }
+]
+EOF
+
+# Create mock driver fixture
+cat > input/context/fixture.json << 'EOF'
+{
+  "version": "v1",
+  "description": "Add error handling to main function",
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "main.go",
+      "content": "package main\n\nimport (\n    \"fmt\"\n    \"log\"\n)\n\nfunc main() {\n    if err := run(); err != nil {\n        log.Fatalf(\"Error: %v\", err)\n    }\n}\n\nfunc run() error {\n    fmt.Println(\"Hello, World!\")\n    return nil\n}\n"
+    }
+  ],
+  "outcome": {
+    "success": true,
+    "result_text": "Added error handling to main function",
+    "summary": "# Summary\n\nAdded proper error handling to the main function.\n\n## Changes\n\n- Created `run()` function that returns error\n- Added error logging in main\n- All function calls now properly handle errors"
+  }
+}
+EOF
+
+# Set environment for mock driver
+env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json
+
+# Run holon run with the pre-populated context
+# This simulates what `holon solve` does internally
+exec holon run \
+  --agent default \
+  --goal 'Implement error handling for the main function as described in https://github.com/test/repo/issues/123' \
+  --workspace work \
+  --input input \
+  --out out \
+  --context input/context \
+  --image golang:1.22
+
+# Verify expected outputs
+exists out/manifest.json
+exists out/diff.patch
+exists out/summary.md
+
+# Verify manifest contains expected fields
+exec grep -q '"status":"success"' out/manifest.json
+exec grep -q '"goal"' out/manifest.json
+
+# Verify diff.patch contains changes
+exec grep -q 'run()' out/diff.patch
+exec grep -q 'log.Fatalf' out/diff.patch
+
+# Verify summary.md
+exec grep -q 'error handling' out/summary.md
+
+# Verify workspace file was modified
+exec git -C work diff --exit-code main.go
+stdout 'run\(\)|log\.Fatal'
+stderr ''
+
+-- work/main.go --
+package main
+import "fmt"
+func main() {
+    fmt.Println("Hello, World!")
+}
