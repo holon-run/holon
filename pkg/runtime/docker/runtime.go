@@ -515,31 +515,11 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 
 // writeWorkspaceManifest writes the workspace manifest to the output directory
 func writeWorkspaceManifest(outDir string, result workspace.PrepareResult) error {
-	manifest := workspace.Manifest{
-		Strategy:   result.Strategy,
-		Source:     result.Source,
-		Ref:        result.Ref,
-		HeadSHA:    result.HeadSHA,
-		CreatedAt:  result.CreatedAt,
-		HasHistory: result.HasHistory,
-		IsShallow:  result.IsShallow,
-		Notes:      result.Notes,
-	}
-
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal workspace manifest: %w", err)
-	}
-
 	// Ensure output directory exists
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	manifestPath := filepath.Join(outDir, "workspace.manifest.json")
-	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
-		return fmt.Errorf("failed to write workspace manifest: %w", err)
-	}
-
-	return nil
+	// Delegate to the shared workspace manifest writer to avoid duplicating logic
+	return workspace.WriteManifest(outDir, result)
 }

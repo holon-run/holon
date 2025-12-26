@@ -1,8 +1,0 @@
-{
-  "strategy": "git-clone",
-  "source": "/home/runner/work/holon/holon",
-  "head_sha": "4045f4862be76a96d4d5c2c1cd060e63e7ee8a00",
-  "created_at": "2025-12-26T08:37:40.586673205Z",
-  "has_history": true,
-  "is_shallow": true
-}

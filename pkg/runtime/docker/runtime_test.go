@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -714,6 +715,191 @@ func runCmd(dir string, name string, args ...string) error {
 		return fmt.Errorf("command %s %v failed: %v, output: %s", name, args, err, string(out))
 	}
 	return nil
+}
+
+// TestWriteWorkspaceManifest tests the writeWorkspaceManifest helper function
+func TestWriteWorkspaceManifest(t *testing.T) {
+	tests := []struct {
+		name        string
+		outDir      string
+		result      workspace.PrepareResult
+		wantErr     bool
+		errContains string
+		verify      func(t *testing.T, outDir string)
+	}{
+		{
+			name:   "successfully writes manifest to output directory",
+			outDir: "",
+			result: workspace.PrepareResult{
+				Strategy:   "git-clone",
+				Source:     "/path/to/source",
+				HeadSHA:    "abc123",
+				HasHistory: true,
+				IsShallow:  false,
+				Notes:      []string{"test note"},
+			},
+			wantErr: false,
+			verify: func(t *testing.T, outDir string) {
+				manifestPath := filepath.Join(outDir, "workspace.manifest.json")
+				data, err := os.ReadFile(manifestPath)
+				if err != nil {
+					t.Fatalf("failed to read manifest: %v", err)
+				}
+				// Verify it's valid JSON
+				var manifest workspace.Manifest
+				if err := json.Unmarshal(data, &manifest); err != nil {
+					t.Fatalf("failed to unmarshal manifest: %v", err)
+				}
+				// Verify expected fields
+				if manifest.Strategy != "git-clone" {
+					t.Errorf("Strategy = %q, want %q", manifest.Strategy, "git-clone")
+				}
+				if manifest.Source != "/path/to/source" {
+					t.Errorf("Source = %q, want %q", manifest.Source, "/path/to/source")
+				}
+				if manifest.HeadSHA != "abc123" {
+					t.Errorf("HeadSHA = %q, want %q", manifest.HeadSHA, "abc123")
+				}
+				if !manifest.HasHistory {
+					t.Error("HasHistory = false, want true")
+				}
+				if manifest.IsShallow {
+					t.Error("IsShallow = true, want false")
+				}
+				if len(manifest.Notes) != 1 || manifest.Notes[0] != "test note" {
+					t.Errorf("Notes = %v, want [test note]", manifest.Notes)
+				}
+			},
+		},
+		{
+			name:   "creates output directory if it does not exist",
+			outDir: "",
+			result: workspace.PrepareResult{
+				Strategy: "snapshot",
+			},
+			wantErr: false,
+			verify: func(t *testing.T, outDir string) {
+				// Verify directory was created
+				info, err := os.Stat(outDir)
+				if err != nil {
+					t.Fatalf("output directory not created: %v", err)
+				}
+				if !info.IsDir() {
+					t.Error("output path is not a directory")
+				}
+				// Verify manifest was written
+				manifestPath := filepath.Join(outDir, "workspace.manifest.json")
+				if _, err := os.Stat(manifestPath); err != nil {
+					t.Errorf("manifest not created: %v", err)
+				}
+			},
+		},
+		{
+			name:   "handles empty prepare result",
+			outDir: "",
+			result: workspace.PrepareResult{
+				Strategy: "existing",
+			},
+			wantErr: false,
+			verify: func(t *testing.T, outDir string) {
+				manifestPath := filepath.Join(outDir, "workspace.manifest.json")
+				data, err := os.ReadFile(manifestPath)
+				if err != nil {
+					t.Fatalf("failed to read manifest: %v", err)
+				}
+				var manifest workspace.Manifest
+				if err := json.Unmarshal(data, &manifest); err != nil {
+					t.Fatalf("failed to unmarshal manifest: %v", err)
+				}
+				if manifest.Strategy != "existing" {
+					t.Errorf("Strategy = %q, want %q", manifest.Strategy, "existing")
+				}
+			},
+		},
+		{
+			name:        "returns error when output directory cannot be created",
+			outDir:      "",
+			result:      workspace.PrepareResult{Strategy: "test"},
+			wantErr:     true,
+			errContains: "failed to create output directory",
+		},
+		{
+			name:   "writes manifest with all optional fields",
+			outDir: "",
+			result: workspace.PrepareResult{
+				Strategy:   "git-clone",
+				Source:     "/source",
+				Ref:        "main",
+				HeadSHA:    "def456",
+				HasHistory: true,
+				IsShallow:  true,
+				Notes:      []string{"note1", "note2"},
+			},
+			wantErr: false,
+			verify: func(t *testing.T, outDir string) {
+				manifestPath := filepath.Join(outDir, "workspace.manifest.json")
+				data, err := os.ReadFile(manifestPath)
+				if err != nil {
+					t.Fatalf("failed to read manifest: %v", err)
+				}
+				var manifest workspace.Manifest
+				if err := json.Unmarshal(data, &manifest); err != nil {
+					t.Fatalf("failed to unmarshal manifest: %v", err)
+				}
+				if manifest.Ref != "main" {
+					t.Errorf("Ref = %q, want %q", manifest.Ref, "main")
+				}
+				if len(manifest.Notes) != 2 {
+					t.Errorf("Notes length = %d, want 2", len(manifest.Notes))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temp directory for test
+			tmpDir := t.TempDir()
+
+			// Setup outDir
+			outDir := tt.outDir
+			if outDir == "" {
+				outDir = filepath.Join(tmpDir, "output")
+			}
+
+			// For the error case with invalid path, use an invalid filename
+			if tt.errContains == "failed to create output directory" {
+				// Create a regular file and try to use it as a directory
+				filePath := filepath.Join(tmpDir, "not-a-dir")
+				if err := os.WriteFile(filePath, []byte("test"), 0644); err != nil {
+					t.Fatalf("failed to create test file: %v", err)
+				}
+				outDir = filePath
+			}
+
+			// Test the function
+			err := writeWorkspaceManifest(outDir, tt.result)
+
+			// Check error expectations
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("writeWorkspaceManifest expected error but got none")
+				} else if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("writeWorkspaceManifest error = %v, want error containing %q", err, tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("writeWorkspaceManifest unexpected error: %v", err)
+			}
+
+			// Run verification function if provided
+			if tt.verify != nil {
+				tt.verify(t, outDir)
+			}
+		})
+	}
 }
 
 // TestGitEnvVarPrecedence tests that project config git env vars take precedence over host git config
