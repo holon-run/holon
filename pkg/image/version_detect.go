@@ -10,6 +10,27 @@ import (
 	"strings"
 )
 
+// Package-level compiled regex patterns for performance.
+var (
+	// Go version patterns
+	reGoVersion = regexp.MustCompile(`^\s*go\s+(\d+(?:\.\d+)?)`)
+
+	// Python version patterns
+	reRequiresPython = regexp.MustCompile(`^\s*requires-python\s*=\s*["']([^"']+)["']`)
+	rePoetryPython   = regexp.MustCompile(`^\s*python\s*=\s*["']([^"']+)["']`)
+
+	// Java pom.xml patterns
+	rePomSource   = regexp.MustCompile(`<(?:maven\.compiler\.)?source>(\d+)</(?:maven\.compiler\.)?source>`)
+	rePomTarget   = regexp.MustCompile(`<(?:maven\.compiler\.)?target>(\d+)</(?:maven\.compiler\.)?target>`)
+	rePomRelease  = regexp.MustCompile(`<(?:maven\.compiler\.)?release>(\d+)</(?:maven\.compiler\.)?release>`)
+
+	// Java Gradle patterns
+	reGradleSourceCompat = regexp.MustCompile(`sourceCompatibility\s*=\s*["']?(\d+)["']?`)
+	reGradleTargetCompat = regexp.MustCompile(`targetCompatibility\s*=\s*["']?(\d+)["']?`)
+	reGradleToolchain    = regexp.MustCompile(`JavaLanguageVersion\.of\((\d+)\)`)
+	reGradleJavaVersion  = regexp.MustCompile(`javaVersion\s*=\s*["']?(\d+)["']?`)
+)
+
 // versionSource represents where a version was detected.
 type versionSource struct {
 	Version  string
@@ -44,12 +65,11 @@ func (d *goDetector) Detect(workspace string) *versionSource {
 
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
-	re := regexp.MustCompile(`^\s*go\s+(\d+(?:\.\d+)?)`)
 
 	for scanner.Scan() {
 		lineNum++
 		line := strings.TrimSpace(scanner.Text())
-		if matches := re.FindStringSubmatch(line); matches != nil {
+		if matches := reGoVersion.FindStringSubmatch(line); matches != nil {
 			return &versionSource{
 				Version:  matches[1],
 				File:     "go.mod",
@@ -237,26 +257,25 @@ func (d *pythonDetector) detectFromPyproject(workspace string) *versionSource {
 	// Look for requires-python or python version field
 	// Poetry: [tool.poetry.dependencies] python = "^3.11"
 	// PEP 621: project.requires-python = ">=3.11"
-	reRequiresPython := regexp.MustCompile(`^\s*requires-python\s*=\s*["']([^"']+)["']`)
-	rePoetryPython := regexp.MustCompile(`^\s*python\s*=\s*["']([^"']+)["']`)
 
 	inPoetryDeps := false
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
 
-		// Track if we're in [tool.poetry.dependencies] section
+		// Track if we're in [tool.poetry.dependencies] section (or its subtables)
 		if strings.Contains(line, "[tool.poetry.dependencies]") {
 			inPoetryDeps = true
 			continue
 		}
-		if strings.HasPrefix(line, "[") && inPoetryDeps {
+		// Exit poetry dependencies section only when encountering a different section
+		if inPoetryDeps && strings.HasPrefix(line, "[") && !strings.Contains(line, "[tool.poetry.dependencies") {
 			inPoetryDeps = false
 		}
 
 		// Try requires-python first
 		if matches := reRequiresPython.FindStringSubmatch(line); matches != nil {
-			normalized := NormalizeVersionRange(matches[1], "3.12")
+			normalized := NormalizeVersionRange(matches[1], "3.13")
 			if normalized != "" {
 				return &versionSource{
 					Version:  normalized,
@@ -271,7 +290,7 @@ func (d *pythonDetector) detectFromPyproject(workspace string) *versionSource {
 		// Try poetry python field if in dependencies section
 		if inPoetryDeps {
 			if matches := rePoetryPython.FindStringSubmatch(line); matches != nil {
-				normalized := NormalizeVersionRange(matches[1], "3.12")
+				normalized := NormalizeVersionRange(matches[1], "3.13")
 				if normalized != "" {
 					return &versionSource{
 						Version:  normalized,
@@ -304,7 +323,7 @@ func (d *pythonDetector) detectFromPythonVersion(workspace string) *versionSourc
 		return nil
 	}
 
-	normalized := NormalizeVersionRange(version, "3.12")
+	normalized := NormalizeVersionRange(version, "3.13")
 	if normalized != "" {
 		return &versionSource{
 			Version:  normalized,
@@ -333,7 +352,7 @@ func (d *pythonDetector) detectFromRuntimeTxt(workspace string) *versionSource {
 	line := strings.TrimSpace(string(content))
 	if strings.HasPrefix(line, "python-") {
 		version := strings.TrimPrefix(line, "python-")
-		normalized := NormalizeVersionRange(version, "3.12")
+		normalized := NormalizeVersionRange(version, "3.13")
 		if normalized != "" {
 			return &versionSource{
 				Version:  normalized,
@@ -349,9 +368,7 @@ func (d *pythonDetector) detectFromRuntimeTxt(workspace string) *versionSource {
 }
 
 // Java version detector
-type javaDetector struct {
-	buildSystem string // "maven" or "gradle"
-}
+type javaDetector struct{}
 
 // Detect Java version from multiple sources
 func (d *javaDetector) Detect(workspace string) *versionSource {
@@ -394,16 +411,12 @@ func (d *javaDetector) detectFromPomXml(path string) *versionSource {
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
 
-	reSource := regexp.MustCompile(`<(?:maven\.compiler\.)?source>(\d+)</(?:maven\.compiler\.)?source>`)
-	reTarget := regexp.MustCompile(`<(?:maven\.compiler\.)?target>(\d+)</(?:maven\.compiler\.)?target>`)
-	reRelease := regexp.MustCompile(`<(?:maven\.compiler\.)?release>(\d+)</(?:maven\.compiler\.)?release>`)
-
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
 
 		// Try release first (most specific)
-		if matches := reRelease.FindStringSubmatch(line); matches != nil {
+		if matches := rePomRelease.FindStringSubmatch(line); matches != nil {
 			return &versionSource{
 				Version:  matches[1],
 				File:     "pom.xml",
@@ -414,7 +427,7 @@ func (d *javaDetector) detectFromPomXml(path string) *versionSource {
 		}
 
 		// Try source
-		if matches := reSource.FindStringSubmatch(line); matches != nil {
+		if matches := rePomSource.FindStringSubmatch(line); matches != nil {
 			return &versionSource{
 				Version:  matches[1],
 				File:     "pom.xml",
@@ -425,7 +438,7 @@ func (d *javaDetector) detectFromPomXml(path string) *versionSource {
 		}
 
 		// Try target
-		if matches := reTarget.FindStringSubmatch(line); matches != nil {
+		if matches := rePomTarget.FindStringSubmatch(line); matches != nil {
 			return &versionSource{
 				Version:  matches[1],
 				File:     "pom.xml",
@@ -453,16 +466,12 @@ func (d *javaDetector) detectFromGradle(path string) *versionSource {
 	// sourceCompatibility = "11"
 	// targetCompatibility = "11"
 	// java.toolchain.languageVersion = JavaLanguageVersion.of(17)
-	reSourceCompat := regexp.MustCompile(`sourceCompatibility\s*=?\s*["']?(\d+)["']?`)
-	reTargetCompat := regexp.MustCompile(`targetCompatibility\s*=?\s*["']?(\d+)["']?`)
-	reToolchain := regexp.MustCompile(`JavaLanguageVersion\.of\((\d+)\)`)
-	reJavaVersion := regexp.MustCompile(`javaVersion\s*=?\s*["']?(\d+)["']?`)
 
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
 
-		if matches := reToolchain.FindStringSubmatch(line); matches != nil {
+		if matches := reGradleToolchain.FindStringSubmatch(line); matches != nil {
 			return &versionSource{
 				Version:  matches[1],
 				File:     filepath.Base(path),
@@ -472,7 +481,7 @@ func (d *javaDetector) detectFromGradle(path string) *versionSource {
 			}
 		}
 
-		if matches := reJavaVersion.FindStringSubmatch(line); matches != nil {
+		if matches := reGradleJavaVersion.FindStringSubmatch(line); matches != nil {
 			return &versionSource{
 				Version:  matches[1],
 				File:     filepath.Base(path),
@@ -482,7 +491,7 @@ func (d *javaDetector) detectFromGradle(path string) *versionSource {
 			}
 		}
 
-		if matches := reSourceCompat.FindStringSubmatch(line); matches != nil {
+		if matches := reGradleSourceCompat.FindStringSubmatch(line); matches != nil {
 			return &versionSource{
 				Version:  matches[1],
 				File:     filepath.Base(path),
@@ -492,7 +501,7 @@ func (d *javaDetector) detectFromGradle(path string) *versionSource {
 			}
 		}
 
-		if matches := reTargetCompat.FindStringSubmatch(line); matches != nil {
+		if matches := reGradleTargetCompat.FindStringSubmatch(line); matches != nil {
 			return &versionSource{
 				Version:  matches[1],
 				File:     filepath.Base(path),

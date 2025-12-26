@@ -110,7 +110,7 @@ func stripVersionRanges(version string) string {
 	version = strings.TrimSpace(version)
 
 	// Remove range operators and modifiers
-	prefixes := []string{"^", "~", ">=", ">", "<=", "<", "=", "~>", "v", "V"}
+	prefixes := []string{"^", "~>", "~", ">=", ">", "<=", "<", "=", "v", "V"}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(version, prefix) {
 			version = strings.TrimPrefix(version, prefix)

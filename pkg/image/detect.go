@@ -187,13 +187,14 @@ func buildVersionedImage(baseImage, lang, version string) string {
 	// Parse version to ensure it's valid
 	v, err := ParseVersion(version)
 	if err != nil {
-		// If parsing fails, use the version as-is
-		v = &Version{Major: 0, Minor: 0, Patch: 0, Original: version}
+		// If parsing fails, fall back to the original base image
+		return baseImage
 	}
 
-	// For Node.js, we typically use just the major version (e.g., node:22)
-	// For Go, Python, Java, we use major.minor (e.g., golang:1.22, python:3.13)
-	useMajorOnly := (lang == "node")
+	// For Node.js, we use just the major version (e.g., node:22).
+	// Java images also typically use a major-only version in the tag (e.g., eclipse-temurin:17-jdk).
+	// For Go and Python with minor versions, we use major.minor (e.g., golang:1.22, python:3.11).
+	useMajorOnly := (lang == "node" || lang == "java")
 	versionStr := v.ImageString(useMajorOnly)
 
 	// Replace version placeholder in image template
