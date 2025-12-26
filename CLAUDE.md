@@ -123,17 +123,41 @@ holon run --goal "Fix the bug" --log-level info
 Holon can automatically detect the appropriate Docker base image for your workspace by analyzing project files. This feature is enabled by default when no image is explicitly specified.
 
 **Detection Heuristics:**
-- `go.mod` → `golang:1.23`
-- `Cargo.toml` → `rust:1.83`
-- `pyproject.toml` → `python:3.13`
-- `requirements.txt` → `python:3.13`
-- `package.json` → `node:22`
-- `pom.xml` → `eclipse-temurin:21-jdk` (Maven)
-- `build.gradle` / `build.gradle.kts` → `eclipse-temurin:21-jdk` (Gradle)
-- `Gemfile` → `ruby:3.3`
-- `composer.json` → `php:8.3`
-- `*.csproj` → `mcr.microsoft.com/dotnet/sdk:8.0`
-- `Dockerfile` → `docker:24`
+- `go.mod` → `golang:1.23` (detects `go <version>` directive for version-specific images)
+- `Cargo.toml` → `rust:1.83` (version detection not implemented)
+- `pyproject.toml` → `python:3.13` (detects `requires-python` or Poetry `python` version)
+- `requirements.txt` → `python:3.13` (no version detection)
+- `package.json` → `node:22` (detects `engines.node` for version-specific images)
+- `.nvmrc` → detected but skipped (hidden file)
+- `.node-version` → detected but skipped (hidden file)
+- `pom.xml` → `eclipse-temurin:21-jdk` (detects `maven.compiler.source`, `target`, or `release`)
+- `build.gradle` / `build.gradle.kts` → `eclipse-temurin:21-jdk` (detects `sourceCompatibility` or `JavaLanguageVersion`)
+- `gradle.properties` → `eclipse-temurin:21-jdk` (detects Java version properties)
+- `Gemfile` → `ruby:3.3` (version detection not implemented)
+- `composer.json` → `php:8.3` (version detection not implemented)
+- `*.csproj` → `mcr.microsoft.com/dotnet/sdk:8.0` (version detection not implemented)
+- `Dockerfile` → `docker:24` (version detection not implemented)
+
+**Version Detection Details:**
+
+For supported languages (Go, Node.js, Python, Java), Holon attempts to parse version hints from project files and construct version-specific Docker images:
+
+| Language | Version Sources | Example Detection |
+|----------|----------------|-------------------|
+| **Go** | `go.mod`: `go 1.22` | `go.mod` with `go 1.22` → `golang:1.22` |
+| **Node.js** | `package.json`: `engines.node` field | `engines.node: ">=18.0.0"` → `node:18` |
+| **Python** | `pyproject.toml`: `requires-python` or Poetry `python` field | `requires-python = ">=3.11"` → `python:3.11` |
+| | `.python-version`: File content | `.python-version: "3.12"` → `python:3.12` |
+| | `runtime.txt`: Heroku format | `python-3.11.4` → `python:3.11` |
+| **Java** | `pom.xml`: `maven.compiler.source/target/release` | `<release>17</release>` → `eclipse-temurin:17-jdk` |
+| | `build.gradle`: `sourceCompatibility` or `JavaLanguageVersion` | `JavaLanguageVersion.of(21)` → `eclipse-temurin:21-jdk` |
+| | `gradle.properties`: Java version properties | `java.version=17` → `eclipse-temurin:17-jdk` |
+
+**Version Normalization:**
+- Range operators like `^`, `~`, `>=` are stripped (e.g., `^1.22` → `1.22`)
+- Wildcards (`1.x`, `*`, `any`) fall back to documented LTS versions per language
+- If no version hint is found, falls back to static defaults listed above
+- Detection results are logged with source file and field information
 
 **Precedence:**
 1. CLI `--image` flag (highest priority)
@@ -143,10 +167,17 @@ Holon can automatically detect the appropriate Docker base image for your worksp
 
 **Usage Examples:**
 ```bash
-# Auto-detect enabled (default)
+# Auto-detect enabled (default) with version detection
 holon run --goal "Fix the bug"
-# Output: Config: Detected image: golang:1.23 (signals: go.mod) - Detected Go module (go.mod)
-#         Config: base_image = "golang:1.23" (source: auto-detect)
+# Output: Config: Detected image: golang:1.24 (signals: go.mod) - Detected Go module (go.mod) (version: 1.24 (go.mod: go, line 3: 1.24))
+
+# Version detection with Python project
+holon run --goal "Run tests"
+# Output: Config: Detected image: python:3.11 (signals: pyproject.toml) - Detected Python project (pyproject.toml) (version: 3.11 (pyproject.toml: requires-python, line 2: ">=3.11"))
+
+# No version hint found - falls back to static default
+holon run --goal "Build"
+# Output: Config: Detected image: golang:1.23 (signals: go.mod) - Detected Go module (go.mod) (no version hint detected, using static default)
 
 # Disable auto-detection via CLI
 holon run --goal "Fix the bug" --image-auto-detect=false
@@ -155,11 +186,6 @@ holon run --goal "Fix the bug" --image-auto-detect=false
 # Explicit image overrides auto-detection
 holon run --goal "Fix the bug" --image python:3.13
 # Output: Config: base_image = "python:3.13" (source: cli)
-
-# Enable auto-detect via config file
-echo 'base_image: "auto"' > .holon/config.yaml
-holon run --goal "Fix the bug"
-# Output: Config: Detected image: node:22 (signals: package.json) - Detected Node.js project (package.json)
 ```
 
 **Project Config Examples:**
