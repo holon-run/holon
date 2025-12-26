@@ -954,6 +954,9 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 	})
 
 	t.Run("Local bundle found in expected location", func(t *testing.T) {
+		// Disable auto-install to test local bundle fallback behavior
+		t.Setenv("HOLON_NO_AUTO_INSTALL", "1")
+
 		tempDir := t.TempDir()
 
 		// Create bundle directory structure
@@ -993,6 +996,9 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 	})
 
 	t.Run("Build bundle when none exists", func(t *testing.T) {
+		// Disable auto-install to test local bundle fallback behavior
+		t.Setenv("HOLON_NO_AUTO_INSTALL", "1")
+
 		tempDir := t.TempDir()
 
 		// Create bundle directory structure but no bundle file
@@ -1033,6 +1039,9 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 	})
 
 	t.Run("Build bundle script fails", func(t *testing.T) {
+		// Disable auto-install to test local bundle fallback behavior
+		t.Setenv("HOLON_NO_AUTO_INSTALL", "1")
+
 		tempDir := t.TempDir()
 
 		// Create bundle directory structure but no bundle file
@@ -1074,6 +1083,9 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 	})
 
 	t.Run("No bundle and no build script", func(t *testing.T) {
+		// Disable auto-install to test local bundle fallback behavior
+		t.Setenv("HOLON_NO_AUTO_INSTALL", "1")
+
 		tempDir := t.TempDir()
 
 		cfg := RunnerConfig{
@@ -1087,6 +1099,9 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 	})
 
 	t.Run("Multiple bundles - selects latest", func(t *testing.T) {
+		// Disable auto-install to test local bundle fallback behavior
+		t.Setenv("HOLON_NO_AUTO_INSTALL", "1")
+
 		tempDir := t.TempDir()
 
 		// Create bundle directory structure
