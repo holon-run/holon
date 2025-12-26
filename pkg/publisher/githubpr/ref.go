@@ -74,10 +74,11 @@ func ExtractBranchFromSummary(summary string, issueID string) string {
 	}
 
 	// Generate default branch name
+	// Use simple format without slashes to avoid GitHub API confusion
 	if issueID != "" {
-		return fmt.Sprintf("holon/fix-%s", issueID)
+		return fmt.Sprintf("holon-fix-%s", issueID)
 	}
-	return "holon/auto-fix"
+	return "holon-auto-fix"
 }
 
 // ExtractTitleFromSummary extracts a PR title from summary.md content.

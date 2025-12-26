@@ -32,7 +32,7 @@ func NewGitClient(workspaceDir, token string) *GitClient {
 	}
 }
 
-// ApplyPatch applies a patch file to the workspace.
+// ApplyPatch applies a patch file to the workspace and stages all changes.
 func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) error {
 	// Verify patch file exists
 	if _, err := os.Stat(patchPath); err != nil {
@@ -53,7 +53,30 @@ func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) error {
 		return fmt.Errorf("failed to apply patch: %w", err)
 	}
 
+	// IMPORTANT: Stage changes immediately after applying patch
+	// This prevents CreateBranch's Checkout from discarding untracked files
+	repo, err := gogit.PlainOpen(g.WorkspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	if _, err := worktree.Add("."); err != nil {
+		return fmt.Errorf("failed to stage changes after patch: %w", err)
+	}
+
 	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // CreateBranch creates a new branch or checks out existing one.
@@ -112,7 +135,7 @@ func (g *GitClient) CommitChanges(message string) (string, error) {
 		return "", fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	// Stage all changes
+	// Force stage all changes (including untracked files)
 	_, err = worktree.Add(".")
 	if err != nil {
 		return "", fmt.Errorf("failed to stage changes: %w", err)
@@ -188,5 +211,27 @@ func (g *GitClient) EnsureCleanWorkspace() error {
 	// Only validate that it's a git repository, don't check for clean workspace
 	// Users may have uncommitted or untracked files that aren't part of this PR
 	_ = repo
+	return nil
+}
+
+// ResetHard performs a hard reset on the workspace, discarding all changes.
+func (g *GitClient) ResetHard() error {
+	repo, err := gogit.PlainOpen(g.WorkspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	// Reset to HEAD, discarding all changes
+	if err := worktree.Reset(&gogit.ResetOptions{
+		Mode: gogit.HardReset,
+	}); err != nil {
+		return fmt.Errorf("git reset --hard failed: %w", err)
+	}
+
 	return nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/holon-run/holon/pkg/git"
 	"github.com/holon-run/holon/pkg/workspace"
 )
 
@@ -50,35 +51,30 @@ type ContainerConfig struct {
 	AgentConfigMode string // Agent config mount mode: "auto", "yes", "no"
 }
 
-func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
+func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, error) {
 	// 1. Prepare Workspace using WorkspacePreparer
 	snapshotDir, preparer, err := prepareWorkspace(ctx, cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	// Set up cleanup function
-	cleanupSnapshot := func() error {
-		return preparer.Cleanup(snapshotDir)
-	}
-	defer func() {
-		if err := cleanupSnapshot(); err != nil {
-			fmt.Printf("Warning: failed to cleanup snapshot at %s: %v\n", snapshotDir, err)
-		}
-	}()
+	// Note: We do NOT cleanup snapshotDir here - it's the caller's responsibility
+	// This allows post-execution operations (like publish) to work with the actual workspace
+	// The caller should call preparer.Cleanup(snapshotDir) when done
+	_ = preparer // Keep preparer alive for potential future use
 
 	// 2. Prepare Image (Build-on-Run composition)
 	if cfg.AgentBundle == "" {
-		return fmt.Errorf("agent bundle is required")
+		return "", fmt.Errorf("agent bundle is required")
 	}
 	if cfg.BaseImage == "" {
-		return fmt.Errorf("base image is required")
+		return "", fmt.Errorf("base image is required")
 	}
 
 	fmt.Printf("Composing execution image for %s + agent bundle %s...\n", cfg.BaseImage, cfg.AgentBundle)
 	composedImage, err := r.buildComposedImageFromBundle(ctx, cfg.BaseImage, cfg.AgentBundle)
 	if err != nil {
-		return fmt.Errorf("failed to compose image: %w", err)
+		return "", fmt.Errorf("failed to compose image: %w", err)
 	}
 	finalImage := composedImage
 
@@ -204,13 +200,13 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		AutoRemove: true,
 	}, nil, nil, "")
 	if err != nil {
-		return fmt.Errorf("failed to create container: %w", err)
+		return "", fmt.Errorf("failed to create container: %w", err)
 	}
 
 	// 4. Start Container
 	fmt.Printf("Starting container %s...\n", resp.ID[:12])
 	if err := r.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return fmt.Errorf("failed to start container: %w", err)
+		return "", fmt.Errorf("failed to start container: %w", err)
 	}
 
 	// 4.5 Stream Logs
@@ -231,11 +227,11 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	select {
 	case err := <-errCh:
 		if err != nil {
-			return fmt.Errorf("container wait error: %w", err)
+			return "", fmt.Errorf("container wait error: %w", err)
 		}
 	case status := <-statusCh:
 		if status.StatusCode != 0 {
-			return fmt.Errorf("container failed with exit code %d", status.StatusCode)
+			return "", fmt.Errorf("container failed with exit code %d", status.StatusCode)
 		}
 	}
 
@@ -243,10 +239,10 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	// Read the spec to verify required artifacts, plus manifest.json
 	// For now, validate basic manifest.json requirement
 	if err := ValidateRequiredArtifacts(cfg.OutDir, nil); err != nil {
-		return err
+		return "", err
 	}
 
-	return nil
+	return snapshotDir, nil
 }
 
 func (r *Runtime) buildComposedImageFromBundle(ctx context.Context, baseImage, bundlePath string) (string, error) {
@@ -480,6 +476,23 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 	if err != nil {
 		os.RemoveAll(snapshotDir)
 		return "", nil, fmt.Errorf("failed to prepare workspace: %w", err)
+	}
+
+	// IMPORTANT: Fix the origin URL when cloning from a local git repo
+	// When using git clone --local, origin points to the local path
+	// We need to preserve the correct GitHub origin from the source workspace
+	if strategyName == "git-clone" && workspace.IsGitRepo(cfg.Workspace) {
+		sourceClient := git.NewClient(cfg.Workspace)
+		// Try to get the origin URL from the source workspace
+		if originURL, err := sourceClient.ConfigGet(ctx, "remote.origin.url"); err == nil && originURL != "" {
+			// Check if the source origin is a GitHub URL (not a local path)
+			if strings.HasPrefix(originURL, "https://github.com/") || strings.HasPrefix(originURL, "git@github.com:") {
+				snapshotClient := git.NewClient(snapshotDir)
+				if err := snapshotClient.SetRemote(ctx, "origin", originURL); err == nil {
+					fmt.Printf("  Preserved origin from source: %s\n", originURL)
+				}
+			}
+		}
 	}
 
 	// Log preparation details

@@ -560,3 +560,12 @@ func (c *Client) ConfigGet(ctx context.Context, key string) (string, error) {
 	}
 	return strings.TrimSpace(string(output)), nil
 }
+
+// SetRemote sets the URL for a remote.
+func (c *Client) SetRemote(ctx context.Context, name, url string) error {
+	_, err := c.execCommand(ctx, "remote", "set-url", name, url)
+	if err != nil {
+		return fmt.Errorf("failed to set remote %s to %s: %w", name, url, err)
+	}
+	return nil
+}
