@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +31,53 @@ const (
 	// DefaultTimeout is the default HTTP timeout
 	DefaultTimeout = 30 * time.Second
 )
+
+// ghAuthToken retrieves the GitHub token from the gh CLI.
+// It runs `gh auth token` and returns the token output.
+// Returns an empty string if gh is not available or the command fails.
+func ghAuthToken() string {
+	// Check if gh command exists
+	_, err := exec.LookPath("gh")
+	if err != nil {
+		return ""
+	}
+
+	// Run gh auth token
+	cmd := exec.Command("gh", "auth", "token")
+	output, err := cmd.Output()
+	if err != nil {
+		// gh auth token failed (likely not authenticated)
+		return ""
+	}
+
+	// Trim whitespace and return
+	token := strings.TrimSpace(string(output))
+	return token
+}
+
+// GetTokenFromEnv retrieves a GitHub token from environment variables or gh CLI.
+// It checks GITHUB_TOKEN and HOLON_GITHUB_TOKEN environment variables first.
+// If those are empty, it attempts to use `gh auth token` as a fallback.
+// Returns the token and a boolean indicating whether the token came from gh CLI.
+func GetTokenFromEnv() (string, bool) {
+	token := os.Getenv(TokenEnv)
+	if token != "" {
+		return token, false
+	}
+
+	token = os.Getenv(LegacyTokenEnv)
+	if token != "" {
+		return token, false
+	}
+
+	// Fallback to gh CLI
+	token = ghAuthToken()
+	if token != "" {
+		return token, true
+	}
+
+	return "", false
+}
 
 // ClientOption configures a Client
 type ClientOption func(*Client)
@@ -115,14 +164,18 @@ func NewClient(token string, opts ...ClientOption) *Client {
 	return c
 }
 
-// NewClientFromEnv creates a new client using token from environment variables
+// NewClientFromEnv creates a new client using token from environment variables or gh CLI.
+// It checks GITHUB_TOKEN and HOLON_GITHUB_TOKEN environment variables first.
+// If those are empty, it attempts to use `gh auth token` as a fallback.
 func NewClientFromEnv(opts ...ClientOption) (*Client, error) {
-	token := os.Getenv(TokenEnv)
+	token, fromGh := GetTokenFromEnv()
 	if token == "" {
-		token = os.Getenv(LegacyTokenEnv)
+		return nil, fmt.Errorf("%s or %s environment variable is required (or use 'gh auth login')", TokenEnv, LegacyTokenEnv)
 	}
-	if token == "" {
-		return nil, fmt.Errorf("%s or %s environment variable is required", TokenEnv, LegacyTokenEnv)
+
+	if fromGh {
+		// Log that we're using gh CLI for authentication (without exposing the token)
+		fmt.Fprintln(os.Stderr, "Using GitHub token from 'gh auth token' (GITHUB_TOKEN not set)")
 	}
 
 	return NewClient(token, opts...), nil
