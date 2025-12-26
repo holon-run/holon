@@ -89,7 +89,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: integration-test-artifacts
-        path: _testwork/
+        path: |
+          _testwork/
+          /tmp/go-test*/
         retention-days: 7
         if-no-files-found: ignore
 
@@ -114,11 +116,6 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '20'
-
-    - name: Build Agent Bundle
-      run: |
-        cd agents/claude
-        npm run bundle
 
     - name: Build
       run: make build
