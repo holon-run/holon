@@ -203,17 +203,30 @@ git:
 Holon can automatically detect the appropriate Docker base image for your workspace by analyzing project files. When no image is explicitly specified via CLI or config, Holon scans the workspace for language/framework indicators.
 
 **Detection heuristics:**
-- `go.mod` → `golang:1.23`
-- `Cargo.toml` → `rust:1.83`
-- `pyproject.toml` → `python:3.13`
-- `requirements.txt` → `python:3.13`
-- `package.json` → `node:22`
-- `pom.xml` → `eclipse-temurin:21-jdk` (Maven)
-- `build.gradle` / `build.gradle.kts` → `eclipse-temurin:21-jdk` (Gradle)
-- `Gemfile` → `ruby:3.3`
-- `composer.json` → `php:8.3`
-- `*.csproj` → `mcr.microsoft.com/dotnet/sdk:8.0`
-- `Dockerfile` → `docker:24`
+- `go.mod` → `golang:1.23` (detects `go <version>` directive for version-specific images)
+- `Cargo.toml` → `rust:1.83` (version detection not implemented)
+- `pyproject.toml` → `python:3.13` (detects `requires-python` or Poetry `python` version)
+- `requirements.txt` → `python:3.13` (no version detection)
+- `package.json` → `node:22` (detects `engines.node` for version-specific images)
+- `.nvmrc` → detected but skipped (hidden file)
+- `.node-version` → detected but skipped (hidden file)
+- `pom.xml` → `eclipse-temurin:21-jdk` (Maven; detects `maven.compiler.source`, `target`, or `release`)
+- `build.gradle` / `build.gradle.kts` → `eclipse-temurin:21-jdk` (Gradle; detects `sourceCompatibility` or `JavaLanguageVersion`)
+- `gradle.properties` → `eclipse-temurin:21-jdk` (detects Java version properties)
+- `Gemfile` → `ruby:3.3` (version detection not implemented)
+- `composer.json` → `php:8.3` (version detection not implemented)
+- `*.csproj` → `mcr.microsoft.com/dotnet/sdk:8.0` (version detection not implemented)
+- `Dockerfile` → `docker:24` (version detection not implemented)
+
+**Version Detection:**
+For supported languages (Go, Node.js, Python, Java), Holon attempts to parse version hints from project files:
+- **Go**: `go.mod` `go 1.22` → `golang:1.22`
+- **Node.js**: `package.json` `engines.node: ">=18"` → `node:18`
+- **Python**: `pyproject.toml` `requires-python = ">=3.11"` → `python:3.11`
+- **Python**: `.python-version` file → `python:3.12`
+- **Java**: `pom.xml` `<release>17</release>` → `eclipse-temurin:17-jdk`
+
+Version range operators (`^`, `~`, `>=`) are stripped. Wildcards (`1.x`, `*`) fall back to LTS versions. If no version hint is found, static defaults are used.
 
 For polyglot repos, the signal with the highest priority is selected. You can override auto-detection by:
 - Using `--image <image>` CLI flag
@@ -222,9 +235,9 @@ For polyglot repos, the signal with the highest priority is selected. You can ov
 
 **Example:**
 ```bash
-# Auto-detect from workspace
+# Auto-detect from workspace with version detection
 holon run --goal "Fix the bug"
-# Output: Config: Detected image: golang:1.23 (signals: go.mod) - Detected Go module (go.mod)
+# Output: Config: Detected image: golang:1.24 (signals: go.mod) - Detected Go module (go.mod) (version: 1.24 (go.mod: go, line 3: 1.24))
 
 # Disable auto-detection
 holon run --goal "Fix the bug" --image-auto-detect=false

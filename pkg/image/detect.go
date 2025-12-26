@@ -33,6 +33,7 @@ type DetectResult struct {
 
 // Detect analyzes the workspace to determine an appropriate base image.
 // If no strong signal is detected, returns a safe default.
+// Attempts to detect language versions from project files.
 func (d *Detector) Detect() *DetectResult {
 	signals := d.collectSignals()
 
@@ -47,10 +48,13 @@ func (d *Detector) Detect() *DetectResult {
 	// Score each signal by priority
 	bestSignal := d.scoreSignals(signals)
 
+	// Detect language version and update image accordingly
+	image, rationale := d.detectVersion(bestSignal)
+
 	return &DetectResult{
-		Image:     bestSignal.Image,
+		Image:     image,
 		Signals:   signalNames(signals),
-		Rationale: bestSignal.Rationale,
+		Rationale: rationale,
 	}
 }
 
@@ -58,9 +62,10 @@ func (d *Detector) Detect() *DetectResult {
 type signal struct {
 	Name      string   // Name of the signal (e.g., "go.mod")
 	Priority  int      // Higher = more specific/stronger signal
-	Image     string   // Associated Docker image
+	Image     string   // Associated Docker image (base template)
 	Rationale string   // Explanation for this choice
 	match     func(string, string, string) bool
+	lang      string   // Language for version detection (e.g., "go", "node")
 }
 
 // collectSignals scans the workspace for language/framework signals.
@@ -154,6 +159,59 @@ func signalNames(signals []signal) []string {
 	return names
 }
 
+// detectVersion attempts to detect the language version and updates the image accordingly.
+// Returns the final image and rationale.
+func (d *Detector) detectVersion(sig signal) (string, string) {
+	// If signal has no language association, return the static image
+	if sig.lang == "" {
+		return sig.Image, sig.Rationale
+	}
+
+	// Try to detect language version
+	versionSource := detectLanguageVersion(d.workspace, sig.lang)
+	if versionSource == nil || versionSource.Version == "" {
+		// No version detected, use static image with note
+		return sig.Image, fmt.Sprintf("%s (no version hint detected, using static default)", sig.Rationale)
+	}
+
+	// Build version-specific image
+	image := buildVersionedImage(sig.Image, sig.lang, versionSource.Version)
+	rationale := fmt.Sprintf("%s (version: %s)", sig.Rationale, formatVersionSource(versionSource))
+
+	return image, rationale
+}
+
+// buildVersionedImage constructs a Docker image with the detected version.
+// The base image template uses placeholders like "{{version}}".
+func buildVersionedImage(baseImage, lang, version string) string {
+	// Parse version to ensure it's valid
+	v, err := ParseVersion(version)
+	if err != nil {
+		// If parsing fails, use the version as-is
+		v = &Version{Major: 0, Minor: 0, Patch: 0, Original: version}
+	}
+
+	// For Node.js, we typically use just the major version (e.g., node:22)
+	// For Go, Python, Java, we use major.minor (e.g., golang:1.22, python:3.13)
+	useMajorOnly := (lang == "node")
+	versionStr := v.ImageString(useMajorOnly)
+
+	// Replace version placeholder in image template
+	// Most images follow pattern: "name:version"
+	parts := strings.Split(baseImage, ":")
+	if len(parts) == 2 {
+		tagParts := strings.Split(parts[1], "-")
+		if len(tagParts) > 1 {
+			// Handle special tags like "21-jdk" - replace version part
+			return fmt.Sprintf("%s:%s-%s", parts[0], versionStr, strings.Join(tagParts[1:], "-"))
+		}
+		return fmt.Sprintf("%s:%s", parts[0], versionStr)
+	}
+
+	// If no colon in image, append version
+	return fmt.Sprintf("%s:%s", baseImage, versionStr)
+}
+
 // knownSignals is the registry of all detectable language/framework signals.
 // Ordered by general priority (higher priority = more specific).
 var knownSignals = []signal{
@@ -163,12 +221,14 @@ var knownSignals = []signal{
 		Priority:  100,
 		Image:     "golang:1.23",
 		Rationale: "Detected Go module (go.mod)",
+		lang:      "go",
 		match: func(path, lowerPath, lowerFile string) bool {
 			return lowerFile == "go.mod"
 		},
 	},
 
 	// Rust - High priority (Cargo.toml is definitive)
+	// Note: Rust version detection not implemented yet
 	{
 		Name:      "Cargo.toml",
 		Priority:  100,
@@ -185,6 +245,7 @@ var knownSignals = []signal{
 		Priority:  90,
 		Image:     "python:3.13",
 		Rationale: "Detected Python project (pyproject.toml)",
+		lang:      "python",
 		match: func(path, lowerPath, lowerFile string) bool {
 			return lowerFile == "pyproject.toml"
 		},
@@ -194,6 +255,7 @@ var knownSignals = []signal{
 		Priority:  80,
 		Image:     "python:3.13",
 		Rationale: "Detected Python project (requirements.txt)",
+		lang:      "python",
 		match: func(path, lowerPath, lowerFile string) bool {
 			return lowerFile == "requirements.txt"
 		},
@@ -203,6 +265,7 @@ var knownSignals = []signal{
 		Priority:  70,
 		Image:     "python:3.13",
 		Rationale: "Detected Python project (setup.py)",
+		lang:      "python",
 		match: func(path, lowerPath, lowerFile string) bool {
 			return lowerFile == "setup.py"
 		},
@@ -214,6 +277,7 @@ var knownSignals = []signal{
 		Priority:  90,
 		Image:     "node:22",
 		Rationale: "Detected Node.js project (package.json)",
+		lang:      "node",
 		match: func(path, lowerPath, lowerFile string) bool {
 			return lowerFile == "package.json"
 		},
@@ -225,6 +289,7 @@ var knownSignals = []signal{
 		Priority:  90,
 		Image:     "eclipse-temurin:21-jdk",
 		Rationale: "Detected Maven project (pom.xml)",
+		lang:      "java",
 		match: func(path, lowerPath, lowerFile string) bool {
 			return lowerFile == "pom.xml"
 		},
@@ -234,6 +299,7 @@ var knownSignals = []signal{
 		Priority:  90,
 		Image:     "eclipse-temurin:21-jdk",
 		Rationale: "Detected Gradle project (build.gradle)",
+		lang:      "java",
 		match: func(path, lowerPath, lowerFile string) bool {
 			return lowerFile == "build.gradle"
 		},
@@ -243,6 +309,7 @@ var knownSignals = []signal{
 		Priority:  90,
 		Image:     "eclipse-temurin:21-jdk",
 		Rationale: "Detected Gradle project (build.gradle.kts)",
+		lang:      "java",
 		match: func(path, lowerPath, lowerFile string) bool {
 			return lowerFile == "build.gradle.kts"
 		},
