@@ -54,6 +54,21 @@ test-raw:
 	@echo "Running Go tests with plain output..."
 	go test ./... -v
 
+## test-unit: Run unit tests (non-integration) with structured output
+test-unit:
+	@echo "Running unit tests..."
+	@if command -v gotestfmt > /dev/null 2>&1; then \
+		go test $$(go list ./... | grep -v '^github.com/holon-run/holon/tests/') -short -json -v 2>&1 | gotestfmt; \
+	else \
+		echo "gotestfmt not found, using plain output (install: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest)"; \
+		go test $$(go list ./... | grep -v '^github.com/holon-run/holon/tests/') -short -v; \
+	fi
+
+## test-unit-raw: Run unit tests (non-integration) without gotestfmt
+test-unit-raw:
+	@echo "Running unit tests with plain output..."
+	go test $$(go list ./... | grep -v '^github.com/holon-run/holon/tests/') -short -v
+
 ## test-agent: Run agent TypeScript tests
 test-agent:
 	@echo "Running TypeScript agent tests..."
@@ -73,6 +88,7 @@ clean:
 	@echo "Cleaning up..."
 	rm -rf $(BIN_DIR)
 	rm -rf holon-output*
+	rm -rf _testwork
 
 ## test-integration: Run integration tests with structured output (requires Docker)
 test-integration: build
@@ -83,6 +99,17 @@ test-integration: build
 		echo "gotestfmt not found, using plain output (install: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest)"; \
 		go test ./tests/integration/... -v; \
 	fi
+
+## test-integration-raw: Run integration tests without gotestfmt (plain output)
+test-integration-raw: build
+	@echo "Running integration tests with plain output..."
+	go test ./tests/integration/... -v
+
+## test-integration-artifacts: Run integration tests and capture artifacts on failure
+test-integration-artifacts: build
+	@echo "Running integration tests with artifact capture..."
+	@mkdir -p _testwork
+	@go test ./tests/integration/... -v -work
 
 ## run-example: Run the fix-bug example (requires ANTHROPIC_API_KEY)
 run-example: build
