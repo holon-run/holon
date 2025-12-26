@@ -6,6 +6,8 @@ class Holon < Formula
   homepage "https://github.com/holon-run/holon"
   license "MIT"
 
+  version "0.1.0"
+
   # Auto-update configuration
   livecheck do
     url "https://github.com/holon-run/holon/releases/latest"

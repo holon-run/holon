@@ -62,14 +62,18 @@ jobs:
 
     - name: Update Homebrew Formula
       run: |
-        ./scripts/update-homebrew-formula.sh "${{ steps.version.outputs.version }}" "${{ steps.version.outputs.commit }}"
+        bash ./scripts/update-homebrew-formula.sh "${{ steps.version.outputs.version }}"
 
     - name: Push to Homebrew tap repository
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+      if: secrets.HOMEBREW_TAP_TOKEN != ''
       run: |
+        # Configure Git credentials using the token from the environment
+        git config --global credential.helper store
+        echo "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com" > ~/.git-credentials
+
         # Clone the tap repository
         cd /tmp
-        git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/holon-run/homebrew-tap.git
+        git clone https://github.com/holon-run/homebrew-tap.git
         cp /home/runner/work/holon/holon/homebrew-tap/Formula/holon.rb /tmp/homebrew-tap/Formula/holon.rb
         cd /tmp/homebrew-tap
 
@@ -81,16 +85,16 @@ jobs:
         git add Formula/holon.rb
         git diff --staged --quiet || git commit -m "Update formula for Holon ${{ steps.version.outputs.version }}"
         git push origin main
-      env:
-        HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       continue-on-error: true
 
     - name: Upload Homebrew formula as artifact
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: homebrew-formula
         path: homebrew-tap/Formula/holon.rb
         retention-days: 90
+      continue-on-error: true
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
@@ -104,16 +108,12 @@ jobs:
 
           ### Installation
 
-          **Option 1: Homebrew (Recommended for macOS and Linux)**
-
-          If you have the tap set up:
+          **Homebrew (Recommended for macOS and Linux):**
           ```bash
           brew install holon-run/tap/holon
           ```
 
-          To set up the tap for the first time, you'll need to create the homebrew-tap repository from the `homebrew-tap` directory in this repo.
-
-          **Option 2: Download Binary**
+          **Download Binary:**
 
           Download the binary for your platform:
 

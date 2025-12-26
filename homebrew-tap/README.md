@@ -41,7 +41,7 @@ The formula (`Formula/holon.rb`) is automatically updated during the Holon relea
 If you want to test changes to the formula locally:
 
 ```bash
-brew install --build-from-source ./Formula/holon.rb
+brew install ./Formula/holon.rb
 ```
 
 ### Updating the Formula

@@ -68,7 +68,7 @@ After each release, you need to update the formula with new URLs and SHA256 chec
 2. Or run the update script manually:
 
 ```bash
-./scripts/update-homebrew-formula.sh v0.1.0 abc123def
+./scripts/update-homebrew-formula.sh v0.1.0
 ```
 
 3. Commit and push the changes to the tap repository:
@@ -91,23 +91,17 @@ The release workflow (`.github/workflows/release.yml`) automatically:
 
 **To enable automatic updates:**
 
+The release workflow (`.github/workflows/release.yml`) already includes the logic to push to the tap repository. You only need to:
+
 1. Ensure the tap repository exists
 2. Add the `HOMEBREW_TAP_TOKEN` secret to the main repository
-3. Update the release workflow to push changes:
 
-```yaml
-- name: Clone tap repository
-  run: |
-    cd /tmp
-    git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/holon-run/homebrew-tap.git
-    cp /home/runner/work/holon/holon/homebrew-tap/Formula/holon.rb /tmp/homebrew-tap/Formula/holon.rb
-    cd /tmp/homebrew-tap
-    git config user.name "holon-bot"
-    git config user.email "holon-bot@holon-run.github.io"
-    git add Formula/holon.rb
-    git diff --staged --quiet || git commit -m "Update formula for Holon ${{ steps.version.outputs.version }}"
-    git push origin main
-```
+The workflow will automatically:
+- Clone the tap repository
+- Copy the updated formula
+- Commit and push the changes
+
+No manual workflow modifications are needed.
 
 ## Testing the Formula
 
@@ -115,7 +109,7 @@ Before releasing, you can test the formula locally:
 
 ```bash
 # From the homebrew-tap directory
-brew install --build-from-source ./Formula/holon.rb
+brew install ./Formula/holon.rb
 
 # Or from the tap (after pushing)
 brew install holon-run/tap/holon

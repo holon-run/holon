@@ -5,11 +5,10 @@ set -euo pipefail
 # This script is called during the GitHub release workflow
 
 VERSION="${1:-}"
-COMMIT_SHA="${2:-}"
 
-if [ -z "$VERSION" ] || [ -z "$COMMIT_SHA" ]; then
-  echo "Usage: $0 <version> <commit_sha>"
-  echo "Example: $0 v0.1.0 abc123def456"
+if [ -z "$VERSION" ]; then
+  echo "Usage: $0 <version>"
+  echo "Example: $0 v0.1.0"
   exit 1
 fi
 
@@ -17,6 +16,14 @@ fi
 VERSION="${VERSION#v}"
 
 echo "Updating Homebrew formula for version ${VERSION}..."
+
+# Verify that all required binary files exist
+for file in "bin/holon-darwin-amd64.tar.gz" "bin/holon-darwin-arm64.tar.gz" "bin/holon-linux-amd64.tar.gz"; do
+  if [ ! -f "$file" ]; then
+    echo "Error: Required file not found: $file"
+    exit 1
+  fi
+done
 
 # Calculate checksums for each binary
 INTEL_MAC_SHA256=$(sha256sum "bin/holon-darwin-amd64.tar.gz" | awk '{print $1}')
@@ -28,6 +35,9 @@ echo "  macOS (Intel):  ${INTEL_MAC_SHA256}"
 echo "  macOS (ARM):    ${ARM_MAC_SHA256}"
 echo "  Linux (amd64):  ${LINUX_SHA256}"
 
+# Ensure the Homebrew tap formula directory exists
+mkdir -p homebrew-tap/Formula
+
 # Create the updated formula
 cat > homebrew-tap/Formula/holon.rb << EOF
 # typed: strict
@@ -37,6 +47,8 @@ class Holon < Formula
   desc "Standardized runner for AI-driven software engineering"
   homepage "https://github.com/holon-run/holon"
   license "MIT"
+
+  version "${VERSION}"
 
   # Auto-update configuration
   livecheck do
