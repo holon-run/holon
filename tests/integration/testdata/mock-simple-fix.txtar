@@ -3,17 +3,20 @@
 mkdir work
 mkdir work/examples
 mkdir out
-mkdir bundle-src
+mkdir input
+mkdir input/context
 
-# Build and bundle the local agent (includes new mock driver code)
-# For now, skip this test since we need to build the agent bundle first
-# This will be properly tested once the agent is released
-skip 'needs agent bundle with mock driver code'
+# Initialize git in workspace (required for mock driver to generate diff.patch)
+exec git -C work init
+exec git -C work config user.email "test@example.com"
+exec git -C work config user.name "Test User"
+exec git -C work add examples/buggy.go
+exec git -C work commit -m 'initial commit'
 
-# Placeholder for when we can test with the new agent bundle
-# The fixture file is provided as a txtar section
+# Run holon with mock driver using the builtin default agent
+# The fixture file is provided as a txtar section below
 env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json
-exec holon run --agent bundle-src/agent-bundle.tar.gz --goal 'Fix the division by zero error' --workspace work --out out --image golang:1.22
+exec holon run --agent default --goal 'Fix the division by zero error' --workspace work --input input --out out --image golang:1.22
 
 # Verify outputs
 exists out/manifest.json
@@ -31,7 +34,7 @@ func divide(a, b int) int {
     return a / b
 }
 
--- fixture.json --
+-- input/context/fixture.json --
 {
   "version": "v1",
   "description": "Fix division by zero",

@@ -457,6 +457,20 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 		envVars["GH_TOKEN"] = token
 	}
 
+	// 1.6. Automatic Holon Configuration Injection (for testing and agent behavior)
+	// HOLON_CLAUDE_DRIVER: Select driver implementation (mock, real SDK, etc.)
+	if driver := os.Getenv("HOLON_CLAUDE_DRIVER"); driver != "" {
+		envVars["HOLON_CLAUDE_DRIVER"] = driver
+	}
+	// HOLON_CLAUDE_MOCK_FIXTURE: Path to mock driver fixture file
+	if fixture := os.Getenv("HOLON_CLAUDE_MOCK_FIXTURE"); fixture != "" {
+		envVars["HOLON_CLAUDE_MOCK_FIXTURE"] = fixture
+	}
+	// HOLON_MODE: Execution mode (solve, pr-fix, etc.)
+	if mode := os.Getenv("HOLON_MODE"); mode != "" {
+		envVars["HOLON_MODE"] = mode
+	}
+
 	// 2. Custom Env Vars from CLI (--env K=V) - highest priority
 	for _, pair := range cfg.EnvVarsList {
 		parts := strings.SplitN(pair, "=", 2)
