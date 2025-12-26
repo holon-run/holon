@@ -54,15 +54,20 @@ make install-gotestfmt
 
 ### Manual Testing
 
+When you use the Makefile test targets or `./scripts/test.sh`, stderr is already redirected into the formatter, so you do not need to add `2>&1` yourself. When running go test directly, you'll need to redirect stderr to capture all test output.
+
 ```bash
-# Run tests directly with gotestfmt
+# Run tests directly with gotestfmt (requires stderr redirection)
 go test ./... -json -v 2>&1 | gotestfmt
 
 # Test specific packages
 go test ./pkg/... -json -v 2>&1 | gotestfmt
 
-# Use the test wrapper script
+# Use the test wrapper script (handles redirection automatically)
 ./scripts/test.sh ./pkg/...
+
+# Or use flags directly (wrapper auto-detects them as test args)
+./scripts/test.sh -run TestMyFunc
 ```
 
 ## Reference Docs

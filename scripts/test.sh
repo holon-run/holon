@@ -8,8 +8,8 @@
 # Examples:
 #   ./scripts/test.sh                    # Test all packages
 #   ./scripts/test.sh ./pkg/...          # Test specific packages
-#   ./scripts/test.sh -v -run TestFoo    # Pass extra args to go test
-#   ./scripts/test.sh -- -count=1        # Extra args after --
+#   ./scripts/test.sh -- -run TestFoo    # Pass extra args to go test
+#   ./scripts/test.sh -- -v -count=1     # Multiple extra args after --
 #
 # Environment Variables:
 #   GOTESTFMT_OPTS  - Additional options for gotestfmt (e.g., "-nofail")
@@ -18,7 +18,6 @@
 set -euo pipefail
 
 # Colors for terminal output
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
@@ -26,8 +25,8 @@ NC='\033[0m' # No Color
 # Default packages to test
 DEFAULT_PKGS="./..."
 
-# Determine if we should use gotestfmt based on GOTESTFMT_OPTS
-# Default to enabled unless explicitly disabled with "-nofail" or similar
+# Determine if we should use gotestfmt based on its availability
+# Default to enabled and fall back to plain go test if gotestfmt is not installed
 use_gotestfmt=true
 
 # Parse command line arguments
@@ -41,7 +40,8 @@ if ! command -v gotestfmt &> /dev/null; then
     use_gotestfmt=false
 fi
 
-# Parse arguments
+# Parse arguments - everything after -- is a go test arg, everything before is a package
+# Packages must contain '/' or start with './' or '.' to be recognized as such
 while [[ $# -gt 0 ]]; do
     case $1 in
         --)
@@ -50,7 +50,13 @@ while [[ $# -gt 0 ]]; do
             break
             ;;
         *)
-            packages+=("$1")
+            # Check if argument looks like a package path (contains '/' or starts with '.')
+            if [[ "$1" == *"/"* ]] || [[ "$1" == "."* ]]; then
+                packages+=("$1")
+            else
+                # Treat as a go test argument (e.g., -v, -run, -count, etc.)
+                go_test_args+=("$1")
+            fi
             shift
             ;;
     esac
@@ -70,11 +76,19 @@ if [ "$use_gotestfmt" = true ]; then
     go_test_cmd+=("-json")
 fi
 
-# Add any extra test arguments
+# Add GO_TEST_OPTS if specified
+if [ -n "${GO_TEST_OPTS:-}" ]; then
+    # Split GO_TEST_OPTS by spaces and add to command
+    read -ra opts <<< "$GO_TEST_OPTS"
+    go_test_cmd+=("${opts[@]}")
+fi
+
+# Add any extra test arguments from command line
 go_test_cmd+=("${go_test_args[@]}")
 
 # Add verbose flag if not already specified (gotestfmt handles this well)
-if [[ ! " ${go_test_args[*]} " =~ " -v " ]] && [[ ! " ${go_test_args[*]} " =~ " -verbose " ]]; then
+# Check go_test_cmd for -v or -verbose flag
+if [[ ! " ${go_test_cmd[*]} " =~ " -v " ]] && [[ ! " ${go_test_cmd[*]} " =~ " -verbose " ]]; then
     go_test_cmd+=("-v")
 fi
 
@@ -84,7 +98,7 @@ echo -e "${GREEN}Running:${NC} ${go_test_cmd[*]}"
 # Run tests and pipe through gotestfmt if available
 if [ "$use_gotestfmt" = true ]; then
     # Use gotestfmt for structured output
-    "${go_test_cmd[@]}" 2>&1 | gotestfmt ${GOTESTFMT_OPTS:-}
+    "${go_test_cmd[@]}" 2>&1 | gotestfmt ${GOTESTFMT_OPTS:+"$GOTESTFMT_OPTS"}
 else
     # Fallback to plain output
     "${go_test_cmd[@]}"
