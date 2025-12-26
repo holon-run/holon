@@ -9,16 +9,7 @@ PR-Fix mode is designed for GitHub PR fix operations. The agent analyzes PR feed
   - `pr.diff`: The code changes being reviewed (optional but recommended)
   - `check_runs.json` / `checks.json`: CI/check run results (optional)
 
-**Your GitHub Identity:**
-- You are authenticated via a GitHub token that may represent a user account or a GitHub App bot
-{{if .ActorLogin}}
-- Your GitHub identity: {{.ActorLogin}} (type: {{.ActorType}}{{if .ActorAppSlug}}, app: {{.ActorAppSlug}}{{end}})
-- **Important**: Avoid replying to your own review comments or re-reviewing changes you made
-- When reviewing `review_threads.json`, check if the comment author matches your login ({{.ActorLogin}})
-- Skip responding to your own comments to avoid unnecessary noise
-{{else}}
-- No GitHub identity information available - proceed with caution and avoid potential self-replies
-{{end}}
+**Important:** When responding to review comments, use your GitHub identity (from common contract) to avoid replying to your own comments.
 
 **Required Outputs:**
 1. **`/holon/output/summary.md`**: Human-readable summary of your analysis and actions taken

@@ -809,8 +809,8 @@ func TestGetCurrentUser(t *testing.T) {
 		t.Errorf("Source = %q, want %q", actorInfo.Source, "token")
 	}
 
-	// Verify type is either User or Bot
-	if actorInfo.Type != "User" && actorInfo.Type != "Bot" {
-		t.Errorf("Type should be 'User' or 'Bot', got %q", actorInfo.Type)
+	// Verify type is either User or App (Bot is converted to App)
+	if actorInfo.Type != "User" && actorInfo.Type != "App" {
+		t.Errorf("Type should be 'User' or 'App', got %q", actorInfo.Type)
 	}
 }
