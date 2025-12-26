@@ -577,3 +577,29 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, state
 
 	return allPRs, nil
 }
+
+// GetActorIdentity resolves the authenticated identity (login and type) for the current token.
+// Returns ActorInfo with login and type ("user" for PAT, "app" for GitHub App installation).
+// Returns empty ActorInfo if identity lookup fails (doesn't break execution).
+func (c *Client) GetActorIdentity(ctx context.Context) ActorInfo {
+	// Try to get the authenticated user via /user endpoint
+	user, _, err := c.GitHubClient().Users.Get(ctx, "")
+	if err != nil {
+		// Silently return empty info on failure - don't break execution
+		return ActorInfo{}
+	}
+
+	login := user.GetLogin()
+	actorType := "user" // Default to "user" for PAT tokens
+
+	// Check if this is a GitHub App installation bot
+	// GitHub App bots have type == "Bot" in their response
+	if user.GetType() == "Bot" {
+		actorType = "app"
+	}
+
+	return ActorInfo{
+		Login: login,
+		Type:  actorType,
+	}
+}

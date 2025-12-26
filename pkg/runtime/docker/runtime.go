@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/workspace"
 )
 
@@ -127,6 +128,18 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		}
 		if cfg.Env["GIT_COMMITTER_EMAIL"] == "" {
 			cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
+		}
+	}
+
+	// Resolve GitHub actor identity (if token is available)
+	// This allows the agent to know its own GitHub login to avoid self-replies
+	token, _ := github.GetTokenFromEnv()
+	if token != "" {
+		ghClient := github.NewClient(token)
+		actorInfo := ghClient.GetActorIdentity(ctx)
+		if actorInfo.Login != "" {
+			cfg.Env["HOLON_ACTOR_LOGIN"] = actorInfo.Login
+			cfg.Env["HOLON_ACTOR_TYPE"] = actorInfo.Type
 		}
 	}
 

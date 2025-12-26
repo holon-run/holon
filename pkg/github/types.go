@@ -131,3 +131,9 @@ type NewPullRequest struct {
 	Body                string `json:"body"`
 	MaintainerCanModify bool   `json:"maintainer_can_modify"`
 }
+
+// ActorInfo contains information about the authenticated GitHub identity
+type ActorInfo struct {
+	Login string `json:"login"` // GitHub username/login
+	Type  string `json:"type"`  // "user" for PAT, "app" for GitHub App installation
+}

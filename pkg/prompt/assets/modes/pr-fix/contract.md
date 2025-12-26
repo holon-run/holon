@@ -21,6 +21,13 @@ PR-Fix mode is designed for GitHub PR fix operations. The agent analyzes PR feed
 - Address CI/check failures with clear fix summaries
 - If you cannot address an issue, explain why in your response
 
+**Self-Identity (Avoid Self-Replies):**
+- Check the environment variable `HOLON_ACTOR_LOGIN` for your GitHub username
+- If `HOLON_ACTOR_LOGIN` is set, **do not reply to your own review comments**
+- Skip review threads where `author` matches `HOLON_ACTOR_LOGIN`
+- This prevents you from replying to yourself in an infinite loop
+- Example: if `HOLON_ACTOR_LOGIN=holonbot` and a comment author is `holonbot`, skip that thread
+
 **PR-Fix JSON Format:**
 The `pr-fix.json` file contains three main sections:
 
