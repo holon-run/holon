@@ -75,12 +75,15 @@ func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig, wor
 		fmt.Printf("Config: %s\n", image.FormatResult(detectResult))
 	} else {
 		// Fall back to default
-		baseImageValue = "golang:1.22"
+		baseImageValue = image.DefaultImage
 		source = "default"
 	}
 
 	resolved.baseImage = baseImageValue
-	logConfigResolution("base_image", baseImageValue, source)
+	// Skip logging for auto-detect since FormatResult already logged detailed info
+	if source != "auto-detect" {
+		logConfigResolution("base_image", baseImageValue, source)
+	}
 
 	// Resolve agent: CLI > config > empty (will be handled by agent resolver)
 	// Only use CLI value if flag was explicitly changed

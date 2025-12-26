@@ -761,9 +761,8 @@ func resolveSolveBaseImage(workspace string) (string, error) {
 	// Check if auto-detect is disabled
 	if !solveImageAutoDetect && !projectCfg.ShouldAutoDetectImage() {
 		// Use default
-		defaultImage := "golang:1.22"
-		fmt.Printf("Config: base_image = %q (source: default)\n", defaultImage)
-		return defaultImage, nil
+		fmt.Printf("Config: base_image = %q (source: default)\n", image.DefaultImage)
+		return image.DefaultImage, nil
 	}
 
 	// Auto-detect from workspace

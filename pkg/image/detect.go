@@ -10,6 +10,9 @@ import (
 	"strings"
 )
 
+// DefaultImage is the fallback Docker image used when no language signal is detected.
+const DefaultImage = "golang:1.22"
+
 // Detector detects the appropriate Docker base image for a workspace.
 type Detector struct {
 	workspace string
@@ -22,7 +25,7 @@ func NewDetector(workspace string) *Detector {
 
 // DetectResult contains the detected image and detection rationale.
 type DetectResult struct {
-	Image     string   // Detected Docker image (e.g., "golang:1.22")
+	Image     string   // Detected Docker image (e.g., image.DefaultImage)
 	Signals   []string // List of signals that contributed to this detection
 	Rationale string   // Human-readable explanation of the detection
 	Disabled  bool     // True if auto-detection is disabled
@@ -35,7 +38,7 @@ func (d *Detector) Detect() *DetectResult {
 
 	if len(signals) == 0 {
 		return &DetectResult{
-			Image:     "golang:1.22",
+			Image:     DefaultImage,
 			Signals:   []string{},
 			Rationale: "No language signals detected, using default Go image",
 		}
