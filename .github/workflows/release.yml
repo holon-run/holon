@@ -60,6 +60,42 @@ jobs:
         cd bin
         sha256sum *.tar.gz > checksums.txt
 
+    - name: Update Homebrew Formula
+      run: |
+        bash ./scripts/update-homebrew-formula.sh "${{ steps.version.outputs.version }}"
+
+    - name: Push to Homebrew tap repository
+      if: secrets.HOMEBREW_TAP_TOKEN != ''
+      run: |
+        # Configure Git credentials using the token from the environment
+        git config --global credential.helper store
+        echo "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com" > ~/.git-credentials
+
+        # Clone the tap repository
+        cd /tmp
+        git clone https://github.com/holon-run/homebrew-tap.git
+        cp /home/runner/work/holon/holon/homebrew-tap/Formula/holon.rb /tmp/homebrew-tap/Formula/holon.rb
+        cd /tmp/homebrew-tap
+
+        # Configure git
+        git config user.name "holon-bot"
+        git config user.email "holon-bot@holon-run.github.io"
+
+        # Commit and push changes
+        git add Formula/holon.rb
+        git diff --staged --quiet || git commit -m "Update formula for Holon ${{ steps.version.outputs.version }}"
+        git push origin main
+      continue-on-error: true
+
+    - name: Upload Homebrew formula as artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: homebrew-formula
+        path: homebrew-tap/Formula/holon.rb
+        retention-days: 90
+      continue-on-error: true
+
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
@@ -71,6 +107,13 @@ jobs:
           ## Holon CLI ${{ steps.version.outputs.version }}
 
           ### Installation
+
+          **Homebrew (Recommended for macOS and Linux):**
+          ```bash
+          brew install holon-run/tap/holon
+          ```
+
+          **Download Binary:**
 
           Download the binary for your platform:
 
@@ -99,5 +142,18 @@ jobs:
           ```bash
           sha256sum -c checksums.txt
           ```
+
+          ### Upgrading
+
+          **Homebrew:**
+          ```bash
+          brew update && brew upgrade holon-run/tap/holon
+          ```
+
+          **Binary:**
+          Re-download the latest binary and replace the existing one.
+
+          ---
+          **For maintainers:** The updated Homebrew formula is available as a workflow artifact. Download it and commit to [holon-run/homebrew-tap](https://github.com/holon-run/homebrew-tap).
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
