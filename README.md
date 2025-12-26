@@ -30,7 +30,26 @@ Prereqs:
 - Go toolchain (this repo uses Go 1.24; see `go.mod`) - OR use prebuilt binaries
 - Anthropic API key: `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`)
 
-### Option 1: Using prebuilt binaries
+### Option 1: Homebrew (Recommended for macOS and Linux)
+
+**Install:**
+```bash
+brew install holon-run/tap/holon
+```
+
+**Upgrade:**
+```bash
+brew update && brew upgrade holon-run/tap/holon
+```
+
+**Uninstall:**
+```bash
+brew uninstall holon-run/tap/holon
+```
+
+> **Note:** The Homebrew tap is hosted at [holon-run/homebrew-tap](https://github.com/holon-run/homebrew-tap). The formula is automatically updated with each release.
+
+### Option 2: Using prebuilt binaries
 
 Download the latest release for your platform from [GitHub Releases](https://github.com/holon-run/holon/releases):
 
@@ -65,7 +84,7 @@ Check for newer releases:
 holon version --check
 ```
 
-### Option 2: Building from source
+### Option 3: Building from source
 
 Pick a base toolchain image that matches your repo (via `--image`). Holon composes it with the agent bundle at runtime.
 
