@@ -35,7 +35,7 @@ The `pr-fix.json` file contains three main sections:
    - `body`: Body/content of the issue in Markdown format
    - `deferred_comment_ids`: Array of comment IDs this issue addresses
    - `labels`: Suggested labels for the issue (optional)
-   - `issue_url`: URL of created issue if auto-created (optional)
+   - `issue_url`: URL if the agent successfully created the issue (optional, leave empty if creation failed)
 
 3. **`checks`**: Status updates for CI/check runs
    - `name`: Check run name (e.g., `ci/test`, `lint`)
@@ -122,10 +122,12 @@ When review comments request substantial refactoring, testing, or enhancements t
    - **DEFER appropriate improvements**: additional test coverage, refactoring for clarity, performance optimizations that aren't blocking, documentation enhancements
    - **Use `wontfix` for rejected suggestions**: requests that don't align with project goals or would be actively harmful
 
-5. **Configuration:**
-   - **`HOLON_PRFIX_AUTO_CREATE_ISSUES`**: Set to `true` to automatically create GitHub issues for deferred work (requires `GITHUB_TOKEN`)
-   - If not set or `false`, follow-up issues are included as drafts in `pr-fix.json` for manual filing
-   - Draft issues include `title` and `body` ready to file manually
+5. **Issue creation workflow:**
+   - The agent can optionally create GitHub issues directly (if it has token access)
+   - If the agent successfully creates an issue, populate `issue_url` with the URL
+   - If issue creation fails (e.g., token permissions), leave `issue_url` empty
+   - The publisher will automatically create any issues with empty `issue_url` fields
+   - This allows the publisher to act as a fallback, ensuring all deferred work gets tracked
 
 **Context Files:**
 Additional context files may be provided in `/holon/input/context/`. Read them if they contain relevant information for addressing the review comments or CI failures.

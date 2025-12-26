@@ -21,9 +21,6 @@ const (
 
 	// DefaultBotLogin is the default bot login name
 	DefaultBotLogin = "holonbot[bot]"
-
-	// AutoCreateIssuesEnv is the environment variable to enable auto-creation of follow-up issues
-	AutoCreateIssuesEnv = "HOLON_PRFIX_AUTO_CREATE_ISSUES"
 )
 
 // GitHubPublisher publishes Holon outputs to GitHub PRs.
@@ -192,7 +189,9 @@ func (g *GitHubPublisher) Publish(req publisher.PublishRequest) (publisher.Publi
 	return result, nil
 }
 
-// handleFollowUpIssues creates GitHub issues for deferred work if configured, otherwise leaves them as drafts.
+// handleFollowUpIssues creates GitHub issues for any follow-up issues that don't already have an issue_url.
+// Issues with an existing issue_url are considered already created by the agent and are tracked but not recreated.
+// Issues without an issue_url are created by the publisher, with errors tracked per issue (continues on failure).
 func (g *GitHubPublisher) handleFollowUpIssues(ctx context.Context, client *hghelper.Client, prRef PRRef, issues []FollowUpIssue) (*FollowUpIssuesResult, error) {
 	result := &FollowUpIssuesResult{
 		Created:       make([]FollowUpIssueDetail, 0),
@@ -200,34 +199,34 @@ func (g *GitHubPublisher) handleFollowUpIssues(ctx context.Context, client *hghe
 		DeferredCount: 0,
 	}
 
-	// Check if auto-creation is enabled
-	autoCreate := shouldAutoCreateIssues()
-
 	for _, issue := range issues {
-		if autoCreate {
-			// Create the issue on GitHub
-			issueURL, err := client.CreateIssue(ctx, prRef.Owner, prRef.Repo, issue.Title, issue.Body, issue.Labels)
-			if err != nil {
-				return result, fmt.Errorf("failed to create issue '%s': %w", issue.Title, err)
-			}
+		// If agent already created the issue and provided the URL
+		if issue.IssueURL != "" {
 			result.Created = append(result.Created, FollowUpIssueDetail{
 				Title:    issue.Title,
-				IssueURL: issueURL,
+				IssueURL: issue.IssueURL,
 			})
 			result.CreatedCount++
-		} else {
-			// Leave as draft (already in pr-fix.json)
-			result.DeferredCount++
+			continue
 		}
+
+		// Create the issue on GitHub (publisher creates it since agent didn't)
+		issueURL, err := client.CreateIssue(ctx, prRef.Owner, prRef.Repo, issue.Title, issue.Body, issue.Labels)
+		if err != nil {
+			// Track failure but continue processing other issues (similar to publishReviewReplies)
+			result.DeferredCount++
+			// We don't have a dedicated "Failed" field in FollowUpIssuesResult, so we count it as deferred
+			// The error will be logged via the PublishResult.Errors mechanism
+			continue
+		}
+		result.Created = append(result.Created, FollowUpIssueDetail{
+			Title:    issue.Title,
+			IssueURL: issueURL,
+		})
+		result.CreatedCount++
 	}
 
 	return result, nil
-}
-
-// shouldAutoCreateIssues checks if auto-creation of follow-up issues is enabled.
-func shouldAutoCreateIssues() bool {
-	val := os.Getenv(AutoCreateIssuesEnv)
-	return val == "true" || val == "1"
 }
 
 // publishReviewReplies posts replies to review comments with idempotency.

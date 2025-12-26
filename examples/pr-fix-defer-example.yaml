@@ -4,9 +4,6 @@ metadata:
   name: "pr-fix-with-defer"
 context:
   workspace: "/workspace"
-  env:
-    # Enable automatic creation of follow-up issues for deferred work
-    HOLON_PRFIX_AUTO_CREATE_ISSUES: "false"  # Set to "true" to auto-create GitHub issues
   files:
     - "pkg/prompt/assets/modes/pr-fix/contract.md"
     - "pkg/prompt/assets/modes/pr-fix/pr-fix.schema.json"
@@ -35,11 +32,13 @@ goal:
     2. `/holon/output/summary.md` - Human-readable summary explaining:
        - What was fixed immediately
        - What was deferred and why
-       - Links to follow-up issues (or mention they're included as drafts)
+       - Follow-up issue information
 
-    **Configuration:**
-    - `HOLON_PRFIX_AUTO_CREATE_ISSUES=false` (default): Follow-up issues are included as drafts in pr-fix.json
-    - `HOLON_PRFIX_AUTO_CREATE_ISSUES=true`: Publisher automatically creates GitHub issues
+    **Issue Creation Workflow:**
+    - The agent can optionally create GitHub issues directly (if it has token access)
+    - If agent creates an issue successfully, populate `issue_url` with the URL
+    - If creation fails (e.g., token permissions), leave `issue_url` empty
+    - The publisher will automatically create any issues with empty `issue_url` fields
 
     **Example Output (pr-fix.json):**
     ```json

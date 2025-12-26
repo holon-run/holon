@@ -59,10 +59,7 @@
             "type": "array",
             "description": "Array of comment IDs that this follow-up issue addresses. Links the deferred review comments to the issue.",
             "items": {
-              "oneOf": [
-                {"type": "integer"},
-                {"type": "string"}
-              ]
+              "type": "integer"
             }
           },
           "labels": {
@@ -74,7 +71,7 @@
           },
           "issue_url": {
             "type": "string",
-            "description": "URL of the created issue if auto-created (optional). Present only when HOLON_PRFIX_AUTO_CREATE_ISSUES=true and issue creation succeeds."
+            "description": "URL of the created issue (optional). If the agent successfully created a GitHub issue, populate this with the URL. If creation failed (e.g., due to token permissions), leave this empty and the publisher will attempt to create it."
           }
         },
         "additionalProperties": false
