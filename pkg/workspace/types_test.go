@@ -92,12 +92,6 @@ func TestGitClonePreparer(t *testing.T) {
 		if result.HeadSHA == "" {
 			t.Error("expected HeadSHA to be set")
 		}
-
-		// Verify workspace.manifest.json exists
-		manifestPath := filepath.Join(destDir, "workspace.manifest.json")
-		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-			t.Error("workspace.manifest.json was not created")
-		}
 	})
 
 	t.Run("Prepare with shallow history", func(t *testing.T) {
@@ -221,12 +215,6 @@ func TestSnapshotPreparer(t *testing.T) {
 			// (we now initialize a minimal git for compatibility)
 			t.Log("Note: .git exists (minimal git initialized for compatibility)")
 		}
-
-		// Verify workspace.manifest.json exists
-		manifestPath := filepath.Join(destDir, "workspace.manifest.json")
-		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-			t.Error("workspace.manifest.json was not created")
-		}
 	})
 
 	t.Run("Cleanup", func(t *testing.T) {
@@ -291,12 +279,6 @@ func TestExistingPreparer(t *testing.T) {
 		if result.Source != "/origin/repo" {
 			t.Errorf("expected source /origin/repo, got %s", result.Source)
 		}
-
-		// Verify workspace.manifest.json was written to dest
-		manifestPath := filepath.Join(destDir, "workspace.manifest.json")
-		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-			t.Error("workspace.manifest.json was not created")
-		}
 	})
 
 	t.Run("Cleanup is no-op", func(t *testing.T) {
@@ -359,24 +341,6 @@ func TestExistingPreparer(t *testing.T) {
 		if !result.HasHistory {
 			t.Error("expected HasHistory to be true for full git checkout")
 		}
-
-		// Verify workspace.manifest.json was written
-		manifestPath := filepath.Join(ghCheckoutDir, "workspace.manifest.json")
-		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-			t.Error("workspace.manifest.json was not created")
-		}
-
-		// Verify the manifest contains the correct information
-		manifest, err := ReadManifest(ghCheckoutDir)
-		if err != nil {
-			t.Fatalf("Failed to read manifest: %v", err)
-		}
-		if manifest.Strategy != "existing" {
-			t.Errorf("expected manifest strategy existing, got %s", manifest.Strategy)
-		}
-		if manifest.HeadSHA == "" {
-			t.Error("expected manifest HeadSHA to be set")
-		}
 	})
 
 	t.Run("Non-git directory tree (history=none)", func(t *testing.T) {
@@ -410,12 +374,6 @@ func TestExistingPreparer(t *testing.T) {
 		}
 		if result.HeadSHA != "" {
 			t.Error("expected HeadSHA to be empty for non-git directory")
-		}
-
-		// Manifest should still be written
-		manifestPath := filepath.Join(dirWithoutGit, "workspace.manifest.json")
-		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-			t.Error("workspace.manifest.json was not created")
 		}
 	})
 }

@@ -41,10 +41,11 @@ func (p *ExistingPreparer) Validate(req PrepareRequest) error {
 
 // Prepare uses an existing directory as the workspace.
 // This validates that dest contains a usable git repository or directory tree,
-// records metadata into workspace.manifest.json, and typically does not modify content.
+// and typically does not modify content.
 // If a Ref is explicitly requested, a git checkout will be performed which modifies
 // the working directory content. The Source parameter is used for metadata and origin tracking.
 // This strategy is useful for using already-prepared workspaces (e.g., GitHub Actions checkout).
+// Note: The workspace manifest is written to the output directory by the runtime, not here.
 func (p *ExistingPreparer) Prepare(ctx context.Context, req PrepareRequest) (PrepareResult, error) {
 	if err := p.Validate(req); err != nil {
 		return PrepareResult{}, fmt.Errorf("validation failed: %w", err)
@@ -82,11 +83,6 @@ func (p *ExistingPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	} else {
 		result.HasHistory = false
 		result.IsShallow = false
-	}
-
-	// Write workspace manifest
-	if err := WriteManifest(actualDest, result); err != nil {
-		return PrepareResult{}, fmt.Errorf("failed to write workspace manifest: %w", err)
 	}
 
 	return result, nil

@@ -79,7 +79,8 @@ type PrepareResult struct {
 	Notes []string `json:"notes,omitempty"`
 }
 
-// Manifest contains workspace metadata written to workspace.manifest.json
+// Manifest contains workspace metadata
+// The manifest is written to the output directory (not the workspace) by the runtime
 type Manifest struct {
 	// Strategy is the name of the strategy used
 	Strategy string `json:"strategy"`

@@ -502,5 +502,24 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 		fmt.Printf("  Note: %s\n", note)
 	}
 
+	// Write workspace manifest to output directory (not workspace)
+	// This avoids polluting the workspace with metadata files
+	if cfg.OutDir != "" {
+		if err := writeWorkspaceManifest(cfg.OutDir, result); err != nil {
+			fmt.Printf("Warning: failed to write workspace manifest: %v\n", err)
+		}
+	}
+
 	return snapshotDir, preparer, nil
+}
+
+// writeWorkspaceManifest writes the workspace manifest to the output directory
+func writeWorkspaceManifest(outDir string, result workspace.PrepareResult) error {
+	// Ensure output directory exists
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Delegate to the shared workspace manifest writer to avoid duplicating logic
+	return workspace.WriteManifest(outDir, result)
 }

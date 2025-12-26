@@ -36,6 +36,3 @@ dist
 
 # Exception: allow .claude in agents/claude (needed for agent development)
 !agents/claude/.claude/
-
-# Workspace manifest (generated artifact)
-workspace.manifest.json

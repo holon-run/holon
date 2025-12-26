@@ -108,11 +108,6 @@ func (p *SnapshotPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 		result.Notes = append(result.Notes, fmt.Sprintf("Note: ref '%s' was not checked out (no history available)", req.Ref))
 	}
 
-	// Write workspace manifest
-	if err := WriteManifest(req.Dest, result); err != nil {
-		return PrepareResult{}, fmt.Errorf("failed to write workspace manifest: %w", err)
-	}
-
 	return result, nil
 }
 
