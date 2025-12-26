@@ -109,12 +109,7 @@ test-integration-raw: build
 test-integration-artifacts: build
 	@echo "Running integration tests with artifact capture..."
 	@mkdir -p _testwork
-	@if command -v gotestfmt > /dev/null 2>&1; then \
-		go test ./tests/integration/... -json -v -work 2>&1 | grep -v "^WORK=" | gotestfmt; \
-	else \
-		echo "gotestfmt not found, using plain output (install: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest)"; \
-		go test ./tests/integration/... -v -work; \
-	fi
+	@go test ./tests/integration/... -v -work
 
 ## run-example: Run the fix-bug example (requires ANTHROPIC_API_KEY)
 run-example: build
