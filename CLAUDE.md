@@ -51,6 +51,68 @@ make clean
 ./bin/holon run --spec task.yaml --image python:3.11 --env VAR=value --log-level debug
 ```
 
+### Project Configuration File
+
+Holon supports project-level configuration via `.holon/config.yaml` to reduce repeated command-line flags. The config file is automatically searched for in the current directory and its parent directories.
+
+**Config File Format:**
+```yaml
+# .holon/config.yaml
+# Base container toolchain image (default: golang:1.22)
+base_image: "python:3.11"
+
+# Default agent bundle reference (path, URL, or alias)
+agent: "default"
+
+# Holon log level (debug, info, progress, minimal)
+log_level: "debug"
+
+# Git identity overrides for container operations
+git:
+  author_name: "Holon Bot"
+  author_email: "holon@example.com"
+```
+
+**Configuration Precedence** (highest to lowest):
+1. CLI flags (e.g., `--image`, `--agent`, `--log-level`)
+2. Project config file (`.holon/config.yaml`)
+3. Hardcoded defaults
+
+**Usage Examples:**
+```bash
+# Create config file in project root
+mkdir -p .holon
+cat > .holon/config.yaml << 'EOF'
+base_image: "python:3.11"
+log_level: "debug"
+git:
+  author_name: "My Bot"
+  author_email: "bot@example.com"
+EOF
+
+# Config is automatically loaded
+holon run --goal "Fix the bug"
+# Output: Config: base_image = "python:3.11" (source: config)
+#         Config: log_level = "debug" (source: config)
+
+# CLI flags override config
+holon run --goal "Fix the bug" --log-level info
+# Output: Config: base_image = "python:3.11" (source: config)
+#         Config: log_level = "info" (source: cli)
+```
+
+**Supported Fields:**
+- `base_image`: Default container toolchain image
+- `agent`: Default agent bundle reference
+- `log_level`: Default logging verbosity
+- `git.author_name`: Override git user.name for containers
+- `git.author_email`: Override git user.email for containers
+
+**Config Search Path:**
+- Holon searches upward from the current directory for `.holon/config.yaml`
+- First config file found is used
+- If no config file is found, defaults are used
+
 ### Key CLI Flags
 - `--spec` / `-s`: Path to holon spec file
 - `--goal` / `-g`: Goal description (alternative to spec)

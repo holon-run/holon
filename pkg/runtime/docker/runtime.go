@@ -98,7 +98,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 	}
 
 	// 3. Create Container
-	// Inject host git identity
+	// Inject host git identity (only if not already set by project config)
 	gitName, err := getGitConfig("user.name")
 	if err != nil {
 		fmt.Printf("Warning: failed to get host git config 'user.name': %v\n", err)
@@ -108,19 +108,26 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) error {
 		fmt.Printf("Warning: failed to get host git config 'user.email': %v\n", err)
 	}
 
-	if gitName != "" || gitEmail != "" {
-		if cfg.Env == nil {
-			cfg.Env = make(map[string]string)
-		}
+	if cfg.Env == nil {
+		cfg.Env = make(map[string]string)
 	}
 
+	// Only set from host git config if not already set by project config
 	if gitName != "" {
-		cfg.Env["GIT_AUTHOR_NAME"] = gitName
-		cfg.Env["GIT_COMMITTER_NAME"] = gitName
+		if cfg.Env["GIT_AUTHOR_NAME"] == "" {
+			cfg.Env["GIT_AUTHOR_NAME"] = gitName
+		}
+		if cfg.Env["GIT_COMMITTER_NAME"] == "" {
+			cfg.Env["GIT_COMMITTER_NAME"] = gitName
+		}
 	}
 	if gitEmail != "" {
-		cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
-		cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
+		if cfg.Env["GIT_AUTHOR_EMAIL"] == "" {
+			cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
+		}
+		if cfg.Env["GIT_COMMITTER_EMAIL"] == "" {
+			cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
+		}
 	}
 
 	env := BuildContainerEnv(&EnvConfig{

@@ -169,6 +169,59 @@ This will:
 3. Apply/push changes to the PR branch
 4. Post replies based on `pr-fix.json`
 
+### Project Configuration File
+
+You can create `.holon/config.yaml` in your project root to set defaults and reduce repeated flags:
+
+```yaml
+# .holon/config.yaml
+# Base container toolchain image
+base_image: "python:3.11"
+
+# Default agent bundle reference
+agent: "default"
+
+# Holon log level (debug, info, progress, minimal)
+log_level: "debug"
+
+# Git identity overrides for container operations
+git:
+  author_name: "My Bot"
+  author_email: "bot@example.com"
+```
+
+**Configuration Precedence** (highest to lowest):
+1. CLI flags (`--image`, `--agent`, etc.)
+2. Project config (`.holon/config.yaml`)
+3. Hardcoded defaults
+
+**Example:**
+```bash
+# Create config file
+mkdir -p .holon
+cat > .holon/config.yaml << 'EOF'
+base_image: "node:20"
+log_level: "debug"
+EOF
+
+# Config is automatically loaded
+holon run --goal "Fix the bug"
+# Uses node:20 (from config) and debug log level (from config)
+
+# CLI flags override config
+holon run --goal "Fix the bug" --log-level info
+# Uses node:20 (from config) but info log level (from CLI flag)
+```
+
+**Supported Fields:**
+- `base_image`: Default container toolchain image
+- `agent`: Default agent bundle reference
+- `log_level`: Default logging verbosity
+- `git.author_name`: Override git user.name for containers
+- `git.author_email`: Override git user.email for containers
+
+The config file is searched for in the current directory and parent directories.
+
 CLI flags (most used):
 - `--goal` / `--spec`: task input
 - `--image`: base toolchain image (e.g. `golang:1.22`, `node:20`, ...)

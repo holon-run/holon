@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/holon-run/holon/pkg/config"
 	_ "github.com/holon-run/holon/pkg/publisher/github"  // Register GitHub publisher
 	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher
 	_ "github.com/holon-run/holon/pkg/publisher/git"      // Register git publisher
@@ -29,6 +30,58 @@ var logLevel string
 var mode string
 var agentConfigMode string
 
+// resolvedConfig holds the resolved configuration values
+type resolvedConfig struct {
+	baseImage string
+	agent     string
+	logLevel  string
+}
+
+// resolveWithProjectConfig resolves configuration values with precedence:
+// CLI flags > project config > hardcoded defaults
+func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig) resolvedConfig {
+	resolved := resolvedConfig{}
+
+	// Resolve base image: CLI > config > default
+	// Only use CLI value if flag was explicitly changed
+	cliImage := baseImage
+	if !cmd.Flags().Changed("image") {
+		cliImage = ""
+	}
+	image, source := cfg.ResolveBaseImage(cliImage, "golang:1.22")
+	resolved.baseImage = image
+	logConfigResolution("base_image", image, source)
+
+	// Resolve agent: CLI > config > empty (will be handled by agent resolver)
+	// Only use CLI value if flag was explicitly changed
+	cliAgent := agentPath
+	if !cmd.Flags().Changed("agent") && !cmd.Flags().Changed("agent-bundle") {
+		cliAgent = ""
+	}
+	agent, source := cfg.ResolveAgent(cliAgent)
+	resolved.agent = agent
+	if agent != "" {
+		logConfigResolution("agent", agent, source)
+	}
+
+	// Resolve log level: CLI > config > default
+	// Only use CLI value if flag was explicitly changed
+	cliLogLevel := logLevel
+	if !cmd.Flags().Changed("log-level") {
+		cliLogLevel = ""
+	}
+	level, source := cfg.ResolveLogLevel(cliLogLevel, "progress")
+	resolved.logLevel = level
+	logConfigResolution("log_level", level, source)
+
+	return resolved
+}
+
+// logConfigResolution logs the resolved configuration value and its source
+func logConfigResolution(key, value, source string) {
+	fmt.Printf("Config: %s = %q (source: %s)\n", key, value, source)
+}
+
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run a Holon agent execution",
@@ -39,27 +92,39 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize runtime: %w", err)
 		}
 
+		// Load project config
+		projectCfg, err := config.LoadFromCurrentDir()
+		if err != nil {
+			return fmt.Errorf("failed to load project config: %w", err)
+		}
+
+		// Resolve agent bundle
 		if agentPath == "" {
 			agentPath = agentBundlePath
 		}
+
+		// Apply config with precedence: CLI flags > project config > defaults
+		resolved := resolveWithProjectConfig(cmd, projectCfg)
 
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{
 			SpecPath:        specPath,
 			GoalStr:         goalStr,
 			TaskName:        taskName,
-			BaseImage:       baseImage,
-			AgentBundle:     agentPath,
+			BaseImage:       resolved.baseImage,
+			AgentBundle:     resolved.agent,
 			WorkspacePath:   workspacePath,
 			ContextPath:     contextPath,
 			InputPath:       inputPath,
 			OutDir:          outDir,
 			RoleName:        roleName,
 			EnvVarsList:     envVarsList,
-			LogLevel:        logLevel,
+			LogLevel:        resolved.logLevel,
 			Mode:            mode,
 			Cleanup:         cleanupMode,
 			AgentConfigMode: agentConfigMode,
+			GitAuthorName:   projectCfg.GetGitAuthorName(),
+			GitAuthorEmail:  projectCfg.GetGitAuthorEmail(),
 		})
 	},
 }

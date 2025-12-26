@@ -40,6 +40,8 @@ type RunnerConfig struct {
 	Mode            string
 	Cleanup         string // Cleanup mode: "auto" (default), "none", "all"
 	AgentConfigMode string // Agent config mount mode: "auto", "yes", "no"
+	GitAuthorName   string // Optional: git author name override
+	GitAuthorEmail  string // Optional: git author email override
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -196,6 +198,19 @@ output:
 	envVars, err := r.collectEnvVars(cfg, absSpec)
 	if err != nil {
 		return err
+	}
+
+	// Apply git config overrides from project config
+	// These override host git config for container operations
+	if cfg.GitAuthorName != "" {
+		envVars["GIT_AUTHOR_NAME"] = cfg.GitAuthorName
+		envVars["GIT_COMMITTER_NAME"] = cfg.GitAuthorName
+		fmt.Printf("Config: git.author_name = %q (source: config)\n", cfg.GitAuthorName)
+	}
+	if cfg.GitAuthorEmail != "" {
+		envVars["GIT_AUTHOR_EMAIL"] = cfg.GitAuthorEmail
+		envVars["GIT_COMMITTER_EMAIL"] = cfg.GitAuthorEmail
+		fmt.Printf("Config: git.author_email = %q (source: config)\n", cfg.GitAuthorEmail)
 	}
 
 	// Populate Goal from Spec if not provided via flag

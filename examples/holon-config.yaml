@@ -1,0 +1,33 @@
+# Example Holon project configuration file
+# Copy this file to .holon/config.yaml in your project root
+#
+# This configuration provides project-level defaults that reduce the need for
+# repeated command-line flags. Values specified via CLI flags take precedence.
+#
+# Precedence order (highest to lowest):
+#   1. CLI flags (--image, --agent, --log-level, etc.)
+#   2. Project config (.holon/config.yaml)
+#   3. Hardcoded defaults
+
+# Base container toolchain image
+# Default: golang:1.22
+base_image: "golang:1.22"
+
+# Default agent bundle reference
+# Can be a path to .tar.gz file, URL, or installed alias
+# If not specified, Holon will use the builtin default agent or fall back to local build
+# agent: "default"
+
+# Holon log level
+# Options: debug, info, progress, minimal
+# Default: progress
+log_level: "progress"
+
+# Git identity overrides for container operations
+# These settings override the host's git config when running inside containers
+git:
+  # Override git config user.name for containers
+  # author_name: "Holon Bot"
+
+  # Override git config user.email for containers
+  # author_email: "holon@example.com"
