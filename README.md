@@ -60,6 +60,11 @@ Verify your installation:
 holon version
 ```
 
+Check for newer releases:
+```bash
+holon version --check
+```
+
 ### Option 2: Building from source
 
 Pick a base toolchain image that matches your repo (via `--image`). Holon composes it with the agent bundle at runtime.
@@ -103,10 +108,46 @@ CLI commands:
 - `run`: Run a Holon agent execution
 - `solve`: Solve a GitHub Issue or PR reference (high-level workflow)
 - `fix`: Alias for `solve` - resolve a GitHub Issue or PR reference
-- `version`: Show version information
+- `version`: Show version information (use `--check` to check for updates)
 - `agent`: Manage agent bundles and aliases (`install`, `list`, `remove`, `info`)
 - `context`: Context management
 - `publish`: Publishing functionality
+
+### Checking for updates
+
+Use `holon version --check` to detect newer Holon releases:
+
+```bash
+# Check if a newer version is available
+holon version --check
+
+# Quiet mode: suppress success message when up to date
+holon version --check --quiet
+```
+
+**Output examples:**
+
+When up to date:
+```
+holon version v0.1.0
+✓ You're running the latest version (v0.1.0)
+```
+
+When an update is available:
+```
+holon version v0.0.1
+
+⚠️  A newer version is available!
+   Current: v0.0.1
+   Latest:  v0.1.0
+
+Install instructions:
+   brew update && brew upgrade holon
+```
+
+**Configuration:**
+- Checks are cached for 24 hours to avoid unnecessary network calls
+- Set `HOLON_NO_VERSION_CHECK=1` to disable version checking (for CI/automation)
 
 ### `holon solve` - High-level GitHub workflow
 
