@@ -61,7 +61,7 @@ func (c *Client) FetchLatestRelease(ctx context.Context, owner, repo string) (*R
 }
 
 // FetchLatestHolonRelease fetches the latest Holon CLI release from GitHub
-// This filters out agent releases (agent-*) and returns only releases starting with 'v'
+// This filters out draft/prerelease releases and returns only releases starting with 'v'
 func (c *Client) FetchLatestHolonRelease(ctx context.Context, owner, repo string) (*ReleaseInfo, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/releases", c.baseURL, owner, repo)
 
@@ -194,38 +194,80 @@ func compareVersions(v1, v2 string) int {
 	}
 
 	for i := 0; i < maxLen; i++ {
-		var p1, p2 int
-
+		// Get the part from each version, treating missing parts as empty
+		var part1, part2 string
 		if i < len(parts1) {
-			_, err := fmt.Sscanf(parts1[i], "%d", &p1)
-			if err != nil {
-				// Non-numeric part, do string comparison
-				if strings.Compare(parts1[i], parts2[i]) > 0 {
-					return 1
-				} else if strings.Compare(parts1[i], parts2[i]) < 0 {
-					return -1
-				}
-				continue
-			}
+			part1 = parts1[i]
 		}
-
 		if i < len(parts2) {
-			_, err := fmt.Sscanf(parts2[i], "%d", &p2)
-			if err != nil {
-				// Non-numeric part, do string comparison
-				if strings.Compare(parts1[i], parts2[i]) > 0 {
-					return 1
-				} else if strings.Compare(parts1[i], parts2[i]) < 0 {
+			part2 = parts2[i]
+		}
+
+		// Both parts are missing (shouldn't happen with maxLen, but handle it)
+		if part1 == "" && part2 == "" {
+			continue
+		}
+
+		// One part is missing - treat it as 0 if the other is numeric
+		if part1 == "" {
+			// v1 is shorter, check if v2 is numeric
+			var p2 int
+			_, err2 := fmt.Sscanf(part2, "%d", &p2)
+			if err2 == nil {
+				// v2 has numeric part, v1 missing it means v1 has 0
+				// If v2's part is non-zero, v2 > v1
+				if p2 > 0 {
 					return -1
 				}
 				continue
 			}
+			// v2 has non-numeric part, v1 is shorter so v1 < v2
+			return -1
 		}
 
-		if p1 > p2 {
+		if part2 == "" {
+			// v2 is shorter, check if v1 is numeric
+			var p1 int
+			_, err1 := fmt.Sscanf(part1, "%d", &p1)
+			if err1 == nil {
+				// v1 has numeric part, v2 missing it means v2 has 0
+				// If v1's part is non-zero, v1 > v2
+				if p1 > 0 {
+					return 1
+				}
+				continue
+			}
+			// v1 has non-numeric part, v2 is shorter so v1 > v2
 			return 1
-		} else if p1 < p2 {
+		}
+
+		// Both parts exist - try to parse as numbers
+		var p1, p2 int
+		_, err1 := fmt.Sscanf(part1, "%d", &p1)
+		_, err2 := fmt.Sscanf(part2, "%d", &p2)
+
+		if err1 == nil && err2 == nil {
+			// Both numeric - compare numerically
+			if p1 > p2 {
+				return 1
+			} else if p1 < p2 {
+				return -1
+			}
+			// Equal, continue to next part
+		} else if err1 == nil && err2 != nil {
+			// v1 numeric, v2 non-numeric - numeric < non-numeric
 			return -1
+		} else if err1 != nil && err2 == nil {
+			// v1 non-numeric, v2 numeric - non-numeric > numeric
+			return 1
+		} else {
+			// Both non-numeric - compare as strings
+			cmp := strings.Compare(part1, part2)
+			if cmp > 0 {
+				return 1
+			} else if cmp < 0 {
+				return -1
+			}
 		}
 	}
 

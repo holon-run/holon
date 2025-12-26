@@ -27,6 +27,12 @@ func TestCompareVersions(t *testing.T) {
 		{"dev is latest", "dev", "1.0.0", 1},
 		{"dev is latest (reversed)", "1.0.0", "dev", -1},
 		{"complex versions", "2.10.0", "2.9.99", 1},
+		// Test non-numeric parts with different lengths (index out of bounds cases)
+		{"v1 with non-numeric suffix", "1.0.alpha", "1.0", 1},
+		{"v2 with non-numeric suffix", "1.0", "1.0.beta", -1},
+		// Note: Our simple version comparison doesn't properly handle "-rc#" suffixes
+		// It parses "0-rc1" as numeric 0, so both are equal
+		{"both with non-numeric suffixes", "1.0.0-rc1", "1.0.0-rc2", 0},
 		// Note: Our simple version comparison doesn't handle prerelease suffixes
 		// In semver, 1.0.0-rc1 < 1.0.0, but our parser treats "0-rc1" as a string
 		// This is acceptable for our use case since GitHub releases typically use version tags
@@ -141,9 +147,9 @@ func TestFetchLatestRelease_Integration(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient("")
 
-	release, err := client.FetchLatestRelease(ctx, HolonRepoOwner, HolonRepoName)
+	release, err := client.FetchLatestHolonRelease(ctx, HolonRepoOwner, HolonRepoName)
 	if err != nil {
-		t.Fatalf("Failed to fetch latest release: %v", err)
+		t.Fatalf("Failed to fetch latest Holon release: %v", err)
 	}
 
 	if release.TagName == "" {
@@ -154,7 +160,7 @@ func TestFetchLatestRelease_Integration(t *testing.T) {
 		t.Error("Expected HTML URL to be set")
 	}
 
-	t.Logf("Latest release: %s (%s)", release.TagName, release.HTMLURL)
+	t.Logf("Latest Holon release: %s (%s)", release.TagName, release.HTMLURL)
 }
 
 // TestCheckForUpdates_Integration tests the full update check flow.
@@ -173,8 +179,8 @@ func TestCheckForUpdates_Integration(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test with old version
-	release, upToDate, err := CheckForUpdates(ctx, "0.1.0")
+	// Test with old version (0.0.1 should be older than any release)
+	release, upToDate, err := CheckForUpdates(ctx, "0.0.1")
 	if err != nil {
 		t.Fatalf("Failed to check for updates: %v", err)
 	}
@@ -184,13 +190,13 @@ func TestCheckForUpdates_Integration(t *testing.T) {
 	}
 
 	if upToDate {
-		t.Error("Expected version 0.1.0 to be out of date")
+		t.Error("Expected version 0.0.1 to be out of date")
 	}
 
-	t.Logf("Current: 0.1.0, Latest: %s, Up to date: %v", release.TagName, upToDate)
+	t.Logf("Current: 0.0.1, Latest: %s, Up to date: %v", release.TagName, upToDate)
 
 	// Test cache by checking again
-	release2, upToDate2, err := CheckForUpdates(ctx, "0.1.0")
+	release2, upToDate2, err := CheckForUpdates(ctx, "0.0.1")
 	if err != nil {
 		t.Fatalf("Failed to check for updates (cached): %v", err)
 	}
@@ -206,9 +212,15 @@ func TestCheckForUpdates_Integration(t *testing.T) {
 
 // TestCheckForUpdates_Disabled tests that the environment variable works
 func TestCheckForUpdates_Disabled(t *testing.T) {
-	// Set the environment variable
-	oldValue := os.Getenv(VersionCheckEnvVar)
-	defer os.Setenv(VersionCheckEnvVar, oldValue)
+	// Save the old value and check if it was set
+	oldValue, wasSet := os.LookupEnv(VersionCheckEnvVar)
+	defer func() {
+		if wasSet {
+			_ = os.Setenv(VersionCheckEnvVar, oldValue)
+		} else {
+			_ = os.Unsetenv(VersionCheckEnvVar)
+		}
+	}()
 
 	os.Setenv(VersionCheckEnvVar, "1")
 

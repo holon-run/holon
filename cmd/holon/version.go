@@ -80,7 +80,7 @@ func checkForUpdates(ctx context.Context) error {
 	fmt.Printf("   Latest:  %s\n", release.TagName)
 	fmt.Printf("\nInstall instructions:\n")
 
-	// Check if user is on macOS with Homebrew
+	// Check if Homebrew is available on the system
 	if isHomebrewAvailable() {
 		fmt.Printf("   brew update && brew upgrade holon\n")
 	} else {
