@@ -369,7 +369,7 @@ func fetchRemoteUpdates(ctx context.Context, dir string) error {
 // resolveSolveOutDir resolves the output directory for solve command.
 // Precedence: CLI flag (--out) > temp directory.
 // Returns the output directory path, whether it's a default temp dir, and an error.
-func resolveSolveOutDir(workspace string) (string, bool, error) {
+func resolveSolveOutDir(_ string) (string, bool, error) {
 	// If user provided --out flag, use it directly
 	if solveOutDir != "" {
 		return solveOutDir, false, nil
@@ -558,7 +558,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 			absWorkspace, err := filepath.Abs(workspacePrep.path)
 			if err == nil {
 				relPath, err := filepath.Rel(absWorkspace, absOutDir)
-				if err == nil && !strings.HasPrefix(relPath, "..") {
+				if err == nil && !strings.HasPrefix(relPath, "..") && relPath != "." {
 					fmt.Printf("Output directory: %s (WARNING: inside workspace)\n", outDir)
 					fmt.Fprintf(os.Stderr, "Warning: Output directory is inside the workspace. Artifacts may appear in diffs.\n")
 				} else {
@@ -573,11 +573,12 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Cleanup output directory if it's a default temp dir and cleanup mode is "all"
-	outIsTemp := outIsDefault
-	if cleanupMode == "all" && outIsTemp {
+	if cleanupMode == "all" && outIsDefault {
 		defer func() {
 			fmt.Printf("Cleaning up temporary output directory: %s\n", outDir)
-			os.RemoveAll(outDir)
+			if err := os.RemoveAll(outDir); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to clean up temporary output directory %s: %v\n", outDir, err)
+			}
 		}()
 	}
 
