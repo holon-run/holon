@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+
+	hghelper "github.com/holon-run/holon/pkg/github"
 )
 
 // CollectorConfig holds configuration for collecting PR context
@@ -110,13 +112,14 @@ func CollectFromEnv(ctx context.Context, outputDir string) error {
 		return fmt.Errorf("failed to parse PR number: %w", err)
 	}
 
-	// Get token
-	token := os.Getenv("GITHUB_TOKEN")
+	// Get token (from env vars or gh CLI)
+	token, fromGh := hghelper.GetTokenFromEnv()
 	if token == "" {
-		token = os.Getenv("GH_TOKEN")
+		return fmt.Errorf("GITHUB_TOKEN or HOLON_GITHUB_TOKEN environment variable not set (or use 'gh auth login')")
 	}
-	if token == "" {
-		return fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable not set")
+
+	if fromGh {
+		fmt.Fprintln(os.Stderr, "Using GitHub token from 'gh auth token' (GITHUB_TOKEN not set)")
 	}
 
 	// Check if we should only include unresolved threads

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -624,6 +625,157 @@ func TestTypeConversions(t *testing.T) {
 
 		if thread.Replies[0].InReplyToID != 789 {
 			t.Error("InReplyToID not correct")
+		}
+	})
+}
+
+// TestGetTokenFromEnv tests the GetTokenFromEnv function
+func TestGetTokenFromEnv(t *testing.T) {
+	// Save original env vars and restore after test
+	origToken := os.Getenv(TokenEnv)
+	origLegacyToken := os.Getenv(LegacyTokenEnv)
+	defer func() {
+		if origToken != "" {
+			os.Setenv(TokenEnv, origToken)
+		} else {
+			os.Unsetenv(TokenEnv)
+		}
+		if origLegacyToken != "" {
+			os.Setenv(LegacyTokenEnv, origLegacyToken)
+		} else {
+			os.Unsetenv(LegacyTokenEnv)
+		}
+	}()
+
+	t.Run("GITHUB_TOKEN set", func(t *testing.T) {
+		os.Setenv(TokenEnv, "env-token-123")
+		os.Unsetenv(LegacyTokenEnv)
+
+		token, fromGh := GetTokenFromEnv()
+
+		if token != "env-token-123" {
+			t.Errorf("Token = %q, want %q", token, "env-token-123")
+		}
+		if fromGh {
+			t.Error("Expected fromGh to be false when GITHUB_TOKEN is set")
+		}
+	})
+
+	t.Run("HOLON_GITHUB_TOKEN set", func(t *testing.T) {
+		os.Unsetenv(TokenEnv)
+		os.Setenv(LegacyTokenEnv, "legacy-token-456")
+
+		token, fromGh := GetTokenFromEnv()
+
+		if token != "legacy-token-456" {
+			t.Errorf("Token = %q, want %q", token, "legacy-token-456")
+		}
+		if fromGh {
+			t.Error("Expected fromGh to be false when HOLON_GITHUB_TOKEN is set")
+		}
+	})
+
+	t.Run("both env vars set, GITHUB_TOKEN takes precedence", func(t *testing.T) {
+		os.Setenv(TokenEnv, "primary-token")
+		os.Setenv(LegacyTokenEnv, "legacy-token")
+
+		token, fromGh := GetTokenFromEnv()
+
+		if token != "primary-token" {
+			t.Errorf("Token = %q, want %q", token, "primary-token")
+		}
+		if fromGh {
+			t.Error("Expected fromGh to be false when GITHUB_TOKEN is set")
+		}
+	})
+
+	t.Run("no env vars, falls back to gh CLI if available", func(t *testing.T) {
+		os.Unsetenv(TokenEnv)
+		os.Unsetenv(LegacyTokenEnv)
+
+		token, fromGh := GetTokenFromEnv()
+
+		// If gh CLI is available and authenticated, we should get a token
+		// If gh CLI is not available, token should be empty
+		if token != "" && !fromGh {
+			t.Error("Expected fromGh to be true when token comes from gh CLI")
+		}
+		// We can't assert token == "" because gh might be available in the test environment
+		// This test verifies that when no env vars are set, the function attempts gh CLI fallback
+	})
+}
+
+// TestNewClientFromEnv tests the NewClientFromEnv function with various env states
+func TestNewClientFromEnv(t *testing.T) {
+	// Save original env vars and restore after test
+	origToken := os.Getenv(TokenEnv)
+	origLegacyToken := os.Getenv(LegacyTokenEnv)
+	defer func() {
+		if origToken != "" {
+			os.Setenv(TokenEnv, origToken)
+		} else {
+			os.Unsetenv(TokenEnv)
+		}
+		if origLegacyToken != "" {
+			os.Setenv(LegacyTokenEnv, origLegacyToken)
+		} else {
+			os.Unsetenv(LegacyTokenEnv)
+		}
+	}()
+
+	t.Run("with GITHUB_TOKEN set", func(t *testing.T) {
+		os.Setenv(TokenEnv, "test-token-123")
+		os.Unsetenv(LegacyTokenEnv)
+
+		client, err := NewClientFromEnv()
+		if err != nil {
+			t.Fatalf("NewClientFromEnv() error = %v", err)
+		}
+		if client == nil {
+			t.Fatal("Expected non-nil client")
+		}
+		if client.GetToken() != "test-token-123" {
+			t.Errorf("Token = %q, want %q", client.GetToken(), "test-token-123")
+		}
+	})
+
+	t.Run("with HOLON_GITHUB_TOKEN set", func(t *testing.T) {
+		os.Unsetenv(TokenEnv)
+		os.Setenv(LegacyTokenEnv, "legacy-token-456")
+
+		client, err := NewClientFromEnv()
+		if err != nil {
+			t.Fatalf("NewClientFromEnv() error = %v", err)
+		}
+		if client == nil {
+			t.Fatal("Expected non-nil client")
+		}
+		if client.GetToken() != "legacy-token-456" {
+			t.Errorf("Token = %q, want %q", client.GetToken(), "legacy-token-456")
+		}
+	})
+
+	t.Run("with no env vars, may use gh CLI if available", func(t *testing.T) {
+		os.Unsetenv(TokenEnv)
+		os.Unsetenv(LegacyTokenEnv)
+
+		client, err := NewClientFromEnv()
+		// If gh CLI is available and authenticated, this should succeed
+		// If gh CLI is not available, this should return an error
+		if err != nil {
+			// Expected when gh CLI is not available
+			if !strings.Contains(err.Error(), TokenEnv) && !strings.Contains(err.Error(), LegacyTokenEnv) {
+				t.Errorf("Error should mention env vars or gh login, got: %v", err)
+			}
+			return
+		}
+		// If we got here, gh CLI provided a token
+		if client == nil {
+			t.Fatal("Expected non-nil client when err is nil")
+		}
+		// Token should not be empty if client was created
+		if client.GetToken() == "" {
+			t.Error("Expected non-empty token from gh CLI")
 		}
 	})
 }
