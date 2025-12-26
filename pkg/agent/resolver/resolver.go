@@ -111,9 +111,6 @@ func NewRegistry(cacheDir string) *Registry {
 // Resolve resolves an agent reference to a local bundle path
 func (r *Registry) Resolve(ctx context.Context, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "", fmt.Errorf("empty agent reference")
-	}
 
 	for _, resolver := range r.resolvers {
 		if resolver.CanResolve(ref) {
@@ -121,6 +118,9 @@ func (r *Registry) Resolve(ctx context.Context, ref string) (string, error) {
 		}
 	}
 
+	if ref == "" {
+		return "", fmt.Errorf("no resolver found for empty agent reference (auto-install may be disabled)")
+	}
 	return "", fmt.Errorf("no resolver found for agent reference: %s", ref)
 }
 

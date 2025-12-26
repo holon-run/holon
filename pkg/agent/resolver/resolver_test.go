@@ -208,6 +208,7 @@ func TestRegistry(t *testing.T) {
 		name      string
 		ref       string
 		shouldErr bool
+		errContains string // Optional substring to check in error message
 	}{
 		{
 			name:      "local file",
@@ -220,9 +221,10 @@ func TestRegistry(t *testing.T) {
 			shouldErr: true,
 		},
 		{
-			name:      "empty string",
-			ref:       "",
-			shouldErr: true,
+			name:         "empty string with auto-install disabled",
+			ref:          "",
+			shouldErr:    true,
+			errContains:  "auto-install may be disabled",
 		},
 		{
 			name:      "unsupported protocol",
@@ -233,9 +235,21 @@ func TestRegistry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Disable auto-install for consistent testing
+			t.Setenv("HOLON_NO_AUTO_INSTALL", "1")
+
 			_, err := registry.Resolve(context.Background(), tt.ref)
 			if (err != nil) != tt.shouldErr {
 				t.Errorf("Resolve() error = %v, shouldErr %v", err, tt.shouldErr)
+				return
+			}
+
+			if tt.shouldErr && tt.errContains != "" {
+				if err == nil {
+					t.Errorf("Expected error containing %q, got nil", tt.errContains)
+				} else if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("Expected error containing %q, got %q", tt.errContains, err.Error())
+				}
 			}
 		})
 	}
@@ -285,5 +299,133 @@ func TestRegistryWithAlias(t *testing.T) {
 	}
 	if !foundExpected {
 		t.Errorf("Expected download-related error, got: %v", err)
+	}
+}
+
+func TestBuiltinResolver_CanResolve(t *testing.T) {
+	resolver := &BuiltinResolver{}
+
+	tests := []struct {
+		name           string
+		ref            string
+		disableAutoInstall bool
+		can            bool
+	}{
+		{
+			name:           "empty string with auto-install enabled",
+			ref:            "",
+			disableAutoInstall: false,
+			can:            true,
+		},
+		{
+			name:           "default alias with auto-install enabled",
+			ref:            "default",
+			disableAutoInstall: false,
+			can:            true,
+		},
+		{
+			name:           "empty string with auto-install disabled",
+			ref:            "",
+			disableAutoInstall: true,
+			can:            false,
+		},
+		{
+			name:           "default alias with auto-install disabled",
+			ref:            "default",
+			disableAutoInstall: true,
+			can:            false,
+		},
+		{
+			name:           "whitespace-only with auto-install enabled",
+			ref:            "   ",
+			disableAutoInstall: false,
+			can:            true,
+		},
+		{
+			name:           "non-empty non-default ref",
+			ref:            "someagent",
+			disableAutoInstall: false,
+			can:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set HOLON_NO_AUTO_INSTALL environment variable
+			if tt.disableAutoInstall {
+				t.Setenv("HOLON_NO_AUTO_INSTALL", "1")
+			} else {
+				t.Setenv("HOLON_NO_AUTO_INSTALL", "")
+			}
+
+			if got := resolver.CanResolve(tt.ref); got != tt.can {
+				t.Errorf("CanResolve() = %v, want %v", got, tt.can)
+			}
+		})
+	}
+}
+
+func TestRegistry_EmptyRef(t *testing.T) {
+	cacheDir, err := os.MkdirTemp("", "holon-test-cache-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp cache dir: %v", err)
+	}
+	defer os.RemoveAll(cacheDir)
+
+	registry := NewRegistry(cacheDir)
+
+	tests := []struct {
+		name           string
+		ref            string
+		disableAutoInstall bool
+		shouldErr      bool
+		errContains    string
+	}{
+		{
+			name:           "empty ref with auto-install enabled - should succeed",
+			ref:            "",
+			disableAutoInstall: false,
+			shouldErr:      false, // Builtin resolver downloads and caches agent
+			errContains:    "",
+		},
+		{
+			name:           "empty ref with auto-install disabled",
+			ref:            "",
+			disableAutoInstall: true,
+			shouldErr:      true,
+			errContains:    "auto-install may be disabled",
+		},
+		{
+			name:           "whitespace-only ref with auto-install disabled",
+			ref:            "   ",
+			disableAutoInstall: true,
+			shouldErr:      true,
+			errContains:    "auto-install may be disabled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set HOLON_NO_AUTO_INSTALL environment variable
+			if tt.disableAutoInstall {
+				t.Setenv("HOLON_NO_AUTO_INSTALL", "1")
+			} else {
+				t.Setenv("HOLON_NO_AUTO_INSTALL", "")
+			}
+
+			_, err := registry.Resolve(context.Background(), tt.ref)
+			if (err != nil) != tt.shouldErr {
+				t.Errorf("Resolve() error = %v, shouldErr %v", err, tt.shouldErr)
+				return
+			}
+
+			if tt.shouldErr && tt.errContains != "" {
+				if err == nil {
+					t.Errorf("Expected error containing %q, got nil", tt.errContains)
+				} else if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("Expected error containing %q, got %q", tt.errContains, err.Error())
+				}
+			}
+		})
 	}
 }
