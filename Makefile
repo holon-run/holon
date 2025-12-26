@@ -36,9 +36,22 @@ release-build:
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME)-darwin-arm64 ./cmd/holon
 	@echo "Release binaries built successfully"
 
-## test: Run all project tests
-test: test-agent
+## test: Run all project tests with structured output
+test: test-go
+
+## test-go: Run Go tests with structured output
+test-go:
 	@echo "Running Go tests..."
+	@if command -v gotestfmt > /dev/null 2>&1; then \
+		go test ./... -json -v 2>&1 | gotestfmt; \
+	else \
+		echo "gotestfmt not found, using plain output (install: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest)"; \
+		go test ./... -v; \
+	fi
+
+## test-raw: Run Go tests without gotestfmt (plain output)
+test-raw:
+	@echo "Running Go tests with plain output..."
 	go test ./... -v
 
 ## test-agent: Run agent TypeScript tests
@@ -46,16 +59,30 @@ test-agent:
 	@echo "Running TypeScript agent tests..."
 	cd $(AGENT_DIR) && npm install && npm run build && npm test
 
+## test-all: Run all project tests (Go + agent)
+test-all: test-agent test-go
+
+## install-gotestfmt: Install gotestfmt tool for structured test output
+install-gotestfmt:
+	@echo "Installing gotestfmt..."
+	@go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+	@echo "gotestfmt installed successfully"
+
 ## clean: Remove build artifacts
 clean:
 	@echo "Cleaning up..."
 	rm -rf $(BIN_DIR)
 	rm -rf holon-output*
 
-## test-integration: Run integration tests (requires Docker)
+## test-integration: Run integration tests with structured output (requires Docker)
 test-integration: build
 	@echo "Running integration tests..."
-	go test ./tests/integration/... -v
+	@if command -v gotestfmt > /dev/null 2>&1; then \
+		go test ./tests/integration/... -json -v 2>&1 | gotestfmt; \
+	else \
+		echo "gotestfmt not found, using plain output (install: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest)"; \
+		go test ./tests/integration/... -v; \
+	fi
 
 ## run-example: Run the fix-bug example (requires ANTHROPIC_API_KEY)
 run-example: build

@@ -22,11 +22,47 @@ make build
 # Run all tests (agent + Go)
 make test
 
+# Run Go tests only (with structured output)
+make test-go
+
 # Run integration tests (requires Docker)
 make test-integration
 
 # Build the Claude agent bundle
 cd agents/claude && npm run bundle
+```
+
+## Structured Test Output
+
+Holon uses [gotestfmt](https://github.com/gotesttools/gotestfmt) for structured, readable test output. The test targets automatically detect and use gotestfmt if available.
+
+### Installation
+
+```bash
+# Install gotestfmt
+go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+
+# Or use the Makefile target
+make install-gotestfmt
+```
+
+### Test Behavior
+
+- **With gotestfmt**: Tests run with `go test -json` and pipe to gotestfmt for formatted output
+- **Without gotestfmt**: Falls back to plain `go test -v` output
+- **Exit codes**: Properly preserved in both modes for CI/CD integration
+
+### Manual Testing
+
+```bash
+# Run tests directly with gotestfmt
+go test ./... -json -v 2>&1 | gotestfmt
+
+# Test specific packages
+go test ./pkg/... -json -v 2>&1 | gotestfmt
+
+# Use the test wrapper script
+./scripts/test.sh ./pkg/...
 ```
 
 ## Reference Docs
