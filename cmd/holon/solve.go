@@ -39,6 +39,7 @@ var (
 	solveWorkspaceHistory  string
 	solveWorkspaceRef      string
 	solveFetchRemote       bool
+	solveAgentConfigMode   string
 )
 
 // solveCmd is the parent solve command
@@ -541,18 +542,19 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 
 	runner := NewRunner(rt)
 	err = runner.Run(ctx, RunnerConfig{
-		GoalStr:       goal,
-		TaskName:      fmt.Sprintf("solve-%s-%d", refType, solveRef.Number),
-		BaseImage:     resolvedImage,
-		AgentBundle:   solveAgent,
-		WorkspacePath: workspacePrep.path,
-		ContextPath:   contextDir,
-		InputPath:     inputDir,
-		OutDir:        outDir,
-		RoleName:      solveRole,
-		LogLevel:      solveLogLevel,
-		Mode:          solveMode,
-		Cleanup:       cleanupMode,
+		GoalStr:         goal,
+		TaskName:        fmt.Sprintf("solve-%s-%d", refType, solveRef.Number),
+		BaseImage:       resolvedImage,
+		AgentBundle:     solveAgent,
+		WorkspacePath:   workspacePrep.path,
+		ContextPath:     contextDir,
+		InputPath:       inputDir,
+		OutDir:          outDir,
+		RoleName:        solveRole,
+		LogLevel:        solveLogLevel,
+		Mode:            solveMode,
+		Cleanup:         cleanupMode,
+		AgentConfigMode: solveAgentConfigMode,
 	})
 
 	if err != nil {
@@ -784,6 +786,7 @@ func init() {
 	solveCmd.Flags().StringVar(&solveMode, "mode", "", "Execution mode (default: auto-detect from ref type)")
 	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")
+	solveCmd.Flags().StringVar(&solveAgentConfigMode, "agent-config-mode", "auto", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount)")
 	solveCmd.Flags().BoolVar(&solveDryRun, "dry-run", false, "Validate without running (not yet implemented)")
 
 	// Workspace preparation flags

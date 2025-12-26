@@ -253,6 +253,9 @@ The `--agent-config-mode` flag controls whether Holon mounts your existing Claud
 
 # Config mount + custom API key (fills in missing values in mounted config)
 ANTHROPIC_API_KEY=sk-xxx ./bin/holon run --goal "Fix the bug" --agent-config-mode yes
+
+# With solve command
+./bin/holon solve holon-run/holon#123 --agent-config-mode no
 ```
 
 **How it works:**
