@@ -1,16 +1,16 @@
 [!docker] skip 'docker not available'
 
-# Skip test until new agent bundle with mock driver is released
-skip 'needs agent bundle with mock driver code'
-
 mkdir work
 mkdir work/pkg
 mkdir work/pkg/context
 mkdir out
+mkdir input
+mkdir input/context
 
 # Run holon in pr-fix mode with mock driver
+# The fixture file is provided as a txtar section below
 env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json HOLON_MODE=pr-fix
-exec holon run --agent default --goal 'Fix PR review comments' --workspace work --out out --image golang:1.22
+exec holon run --agent default --goal 'Fix PR review comments' --workspace work --input input --out out --image golang:1.22
 
 # Verify outputs
 exists out/manifest.json
@@ -29,7 +29,7 @@ func loadContext() *Context {
     return nil
 }
 
--- fixture.json --
+-- input/context/fixture.json --
 {
   "version": "v1",
   "description": "PR fix for review comments",
