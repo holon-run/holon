@@ -8,7 +8,9 @@ import (
 	"time"
 )
 
-// WriteManifest writes a workspace.manifest.json file to the workspace root
+// WriteManifest writes a workspace.manifest.json file to the specified directory
+// Note: This function is kept for backward compatibility and testing purposes.
+// The runtime now writes the manifest to the output directory instead of the workspace.
 func WriteManifest(dest string, result PrepareResult) error {
 	manifest := Manifest{
 		Strategy:   result.Strategy,
@@ -34,7 +36,7 @@ func WriteManifest(dest string, result PrepareResult) error {
 	return nil
 }
 
-// ReadManifest reads a workspace.manifest.json file from the workspace root
+// ReadManifest reads a workspace.manifest.json file from the specified directory
 func ReadManifest(dest string) (*Manifest, error) {
 	manifestPath := filepath.Join(dest, "workspace.manifest.json")
 	data, err := os.ReadFile(manifestPath)

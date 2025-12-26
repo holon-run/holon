@@ -502,5 +502,44 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 		fmt.Printf("  Note: %s\n", note)
 	}
 
+	// Write workspace manifest to output directory (not workspace)
+	// This avoids polluting the workspace with metadata files
+	if cfg.OutDir != "" {
+		if err := writeWorkspaceManifest(cfg.OutDir, result); err != nil {
+			fmt.Printf("Warning: failed to write workspace manifest: %v\n", err)
+		}
+	}
+
 	return snapshotDir, preparer, nil
+}
+
+// writeWorkspaceManifest writes the workspace manifest to the output directory
+func writeWorkspaceManifest(outDir string, result workspace.PrepareResult) error {
+	manifest := workspace.Manifest{
+		Strategy:   result.Strategy,
+		Source:     result.Source,
+		Ref:        result.Ref,
+		HeadSHA:    result.HeadSHA,
+		CreatedAt:  result.CreatedAt,
+		HasHistory: result.HasHistory,
+		IsShallow:  result.IsShallow,
+		Notes:      result.Notes,
+	}
+
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal workspace manifest: %w", err)
+	}
+
+	// Ensure output directory exists
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	manifestPath := filepath.Join(outDir, "workspace.manifest.json")
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write workspace manifest: %w", err)
+	}
+
+	return nil
 }

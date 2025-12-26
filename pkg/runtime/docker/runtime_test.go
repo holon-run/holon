@@ -668,12 +668,6 @@ func TestCreateClone(t *testing.T) {
 		t.Error("clone should not have alternates file (should have own object database)")
 	}
 
-	// Verify workspace.manifest.json was created
-	manifestPath := filepath.Join(clonePath, "workspace.manifest.json")
-	if _, err := os.Stat(manifestPath); err != nil {
-		t.Errorf("workspace.manifest.json not created: %v", err)
-	}
-
 	// Test git operations work correctly in the clone (this works in containers too!)
 	// Make a change, stage it, and verify it's tracked
 	modifiedFile := filepath.Join(clonePath, "test.txt")

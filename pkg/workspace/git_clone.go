@@ -90,11 +90,6 @@ func (p *GitClonePreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	result.HasHistory = req.History != HistoryNone
 	result.IsShallow = req.History == HistoryShallow || cloneResult.IsShallow
 
-	// Write workspace manifest
-	if err := WriteManifest(req.Dest, result); err != nil {
-		return PrepareResult{}, fmt.Errorf("failed to write workspace manifest: %w", err)
-	}
-
 	return result, nil
 }
 

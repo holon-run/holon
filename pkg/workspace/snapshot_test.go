@@ -51,22 +51,6 @@ func TestSnapshotPreparerGitDiff(t *testing.T) {
 		t.Error("expected HeadSHA to be set (captured from source)")
 	}
 
-	// Read and verify the manifest
-	manifest, err := ReadManifest(destDir)
-	if err != nil {
-		t.Fatalf("ReadManifest() failed: %v", err)
-	}
-
-	if manifest.HasHistory {
-		t.Error("manifest HasHistory should be false")
-	}
-	if manifest.IsShallow {
-		t.Error("manifest IsShallow should be false")
-	}
-	if manifest.Strategy != "snapshot" {
-		t.Errorf("manifest Strategy should be snapshot, got %s", manifest.Strategy)
-	}
-
 	// Verify git diff works - this is the key acceptance criterion
 	// First, make a change to a file
 	testFile1 := filepath.Join(destDir, "test1.txt")
@@ -207,19 +191,6 @@ func TestSnapshotPreparerNoNetwork(t *testing.T) {
 	if !strings.Contains(string(output), "modified content") {
 		t.Error("git diff should show the modification")
 	}
-
-	// Read and verify manifest
-	manifest, err := ReadManifest(destDir)
-	if err != nil {
-		t.Fatalf("ReadManifest() failed: %v", err)
-	}
-
-	if manifest.HasHistory {
-		t.Error("manifest HasHistory should be false for non-git-source snapshot")
-	}
-	if manifest.HeadSHA != "" {
-		t.Errorf("manifest HeadSHA should be empty for non-git-source, got %s", manifest.HeadSHA)
-	}
 }
 
 // TestSnapshotPreparerPreservesSourceSHA verifies that snapshot preserves the source commit SHA
@@ -253,17 +224,6 @@ func TestSnapshotPreparerPreservesSourceSHA(t *testing.T) {
 	// The HEAD SHA in result should match the source SHA
 	if result.HeadSHA != sourceSHA {
 		t.Errorf("expected HeadSHA %s (from source), got %s", sourceSHA, result.HeadSHA)
-	}
-
-	// The new snapshot repo will have a different SHA (new commit),
-	// but the manifest should record the original source SHA
-	manifest, err := ReadManifest(destDir)
-	if err != nil {
-		t.Fatalf("ReadManifest() failed: %v", err)
-	}
-
-	if manifest.HeadSHA != sourceSHA {
-		t.Errorf("manifest HeadSHA should be %s (original source), got %s", sourceSHA, manifest.HeadSHA)
 	}
 
 	// Verify the commit message mentions the original SHA
