@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -763,7 +764,7 @@ func TestNewClientFromEnv(t *testing.T) {
 		// If gh CLI is not available, this should return an error
 		if err != nil {
 			// Expected when gh CLI is not available
-			if !contains(err.Error(), TokenEnv) && !contains(err.Error(), LegacyTokenEnv) {
+			if !strings.Contains(err.Error(), TokenEnv) && !strings.Contains(err.Error(), LegacyTokenEnv) {
 				t.Errorf("Error should mention env vars or gh login, got: %v", err)
 			}
 			return
@@ -777,18 +778,4 @@ func TestNewClientFromEnv(t *testing.T) {
 			t.Error("Expected non-empty token from gh CLI")
 		}
 	})
-}
-
-// contains is a simple string contains helper
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && indexOf(s, substr) >= 0)
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

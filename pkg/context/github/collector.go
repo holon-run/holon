@@ -115,7 +115,7 @@ func CollectFromEnv(ctx context.Context, outputDir string) error {
 	// Get token (from env vars or gh CLI)
 	token, fromGh := hghelper.GetTokenFromEnv()
 	if token == "" {
-		return fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable not set (or use 'gh auth login')")
+		return fmt.Errorf("GITHUB_TOKEN or HOLON_GITHUB_TOKEN environment variable not set (or use 'gh auth login')")
 	}
 
 	if fromGh {

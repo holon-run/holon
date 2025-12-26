@@ -597,7 +597,7 @@ func determineRefType(ctx context.Context, ref *pkggithub.SolveRef, token string
 func getGitHubToken() (string, error) {
 	token, fromGh := pkggithub.GetTokenFromEnv()
 	if token == "" {
-		return "", fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable is required (or use 'gh auth login')")
+		return "", fmt.Errorf("GITHUB_TOKEN or HOLON_GITHUB_TOKEN environment variable is required (or use 'gh auth login')")
 	}
 	if fromGh {
 		fmt.Fprintln(os.Stderr, "Using GitHub token from 'gh auth token' (GITHUB_TOKEN not set)")
