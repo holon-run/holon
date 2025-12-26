@@ -514,7 +514,8 @@ func TestRunner_compilePrompts(t *testing.T) {
 	}
 
 	// This will use the real embedded assets, but still tests the logic
-	sysPrompt, userPrompt, promptTempDir, err := runner.compilePrompts(cfg, "")
+	envVars := make(map[string]string)
+	sysPrompt, userPrompt, promptTempDir, err := runner.compilePrompts(cfg, "", envVars)
 	if err != nil {
 		t.Errorf("Unexpected error compiling prompts: %v", err)
 	}

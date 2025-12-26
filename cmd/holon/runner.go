@@ -12,6 +12,7 @@ import (
 
 	v1 "github.com/holon-run/holon/pkg/api/v1"
 	"github.com/holon-run/holon/pkg/agent/resolver"
+	gh "github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"gopkg.in/yaml.v3"
@@ -244,7 +245,7 @@ output:
 	}
 
 	// Compile prompts
-	sysPrompt, userPrompt, promptTempDir, err := r.compilePrompts(cfg, absContext)
+	sysPrompt, userPrompt, promptTempDir, err := r.compilePrompts(cfg, absContext, envVars)
 	if err != nil {
 		return err
 	}
@@ -449,12 +450,36 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 	}
 
 	// 1.5. Automatic GitHub Secret Injection
+	var githubToken string
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		githubToken = token
 		envVars["GITHUB_TOKEN"] = token
 		envVars["GH_TOKEN"] = token
 	} else if token := os.Getenv("GH_TOKEN"); token != "" {
+		githubToken = token
 		envVars["GITHUB_TOKEN"] = token
 		envVars["GH_TOKEN"] = token
+	}
+
+	// 1.55. Resolve GitHub actor identity if token is available
+	// This allows the agent to know its own identity and avoid self-replies
+	if githubToken != "" {
+		actorInfo := r.resolveGitHubActorIdentity(context.Background(), githubToken)
+		if actorInfo != nil {
+			envVars["HOLON_ACTOR_LOGIN"] = actorInfo.Login
+			envVars["HOLON_ACTOR_TYPE"] = actorInfo.Type
+			if actorInfo.Source != "" {
+				envVars["HOLON_ACTOR_SOURCE"] = actorInfo.Source
+			}
+			if actorInfo.AppSlug != "" {
+				envVars["HOLON_ACTOR_APP_SLUG"] = actorInfo.AppSlug
+			}
+			// Log identity resolution (without exposing sensitive data)
+			fmt.Printf("Config: GitHub actor identity resolved: %s (type: %s)\n", actorInfo.Login, actorInfo.Type)
+		} else {
+			// Identity lookup failed - non-critical, log and continue
+			fmt.Println("Config: GitHub actor identity lookup failed, continuing without identity")
+		}
 	}
 
 	// 1.6. Automatic Holon Configuration Injection (for testing and agent behavior)
@@ -482,6 +507,21 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 	return envVars, nil
 }
 
+// resolveGitHubActorIdentity resolves the GitHub actor identity from a token
+// Returns nil if identity lookup fails (non-critical operation)
+func (r *Runner) resolveGitHubActorIdentity(ctx context.Context, token string) *gh.ActorInfo {
+	client := gh.NewClient(token)
+	actorInfo, err := client.GetCurrentUser(ctx)
+	if err != nil {
+		// Non-critical: log and return nil
+		// The error may be due to network issues, invalid token, or rate limiting
+		// We don't want to block execution for this
+		fmt.Printf("Warning: Failed to resolve GitHub actor identity: %v\n", err)
+		return nil
+	}
+	return actorInfo
+}
+
 // extractGoalFromSpec extracts the goal description from a spec file
 func (r *Runner) extractGoalFromSpec(absSpec string) (string, error) {
 	specData, err := os.ReadFile(absSpec)
@@ -498,7 +538,7 @@ func (r *Runner) extractGoalFromSpec(absSpec string) (string, error) {
 }
 
 // compilePrompts compiles system and user prompts
-func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string) (sysPrompt, userPrompt string, promptTempDir string, err error) {
+func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map[string]string) (sysPrompt, userPrompt string, promptTempDir string, err error) {
 	compiler := prompt.NewCompiler("")
 
 	// Extract context files for template
@@ -520,6 +560,11 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string) (sysPrompt,
 		Language:     "en", // TODO: Detect or flag
 		WorkingDir:   "/holon/workspace",
 		ContextFiles: contextFiles,
+		// Pass GitHub actor identity from environment variables
+		ActorLogin:   envVars["HOLON_ACTOR_LOGIN"],
+		ActorType:    envVars["HOLON_ACTOR_TYPE"],
+		ActorSource:  envVars["HOLON_ACTOR_SOURCE"],
+		ActorAppSlug: envVars["HOLON_ACTOR_APP_SLUG"],
 	})
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to compile system prompt: %w", err)

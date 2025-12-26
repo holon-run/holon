@@ -131,3 +131,11 @@ type NewPullRequest struct {
 	Body                string `json:"body"`
 	MaintainerCanModify bool   `json:"maintainer_can_modify"`
 }
+
+// ActorInfo represents the authenticated GitHub user or app
+type ActorInfo struct {
+	Login     string `json:"login"`              // Username or app name
+	Type      string `json:"type"`               // "User" or "App"
+	Source    string `json:"source,omitempty"`   // "token" or "app"
+	AppSlug   string `json:"app_slug,omitempty"` // App slug if type is "App"
+}

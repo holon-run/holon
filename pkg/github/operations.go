@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/google/go-github/v68/github"
 )
@@ -576,4 +577,32 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, state
 	}
 
 	return allPRs, nil
+}
+
+// GetCurrentUser retrieves the authenticated user's identity information
+// Returns ActorInfo with login and type (User or App)
+// Returns nil if the request fails (non-critical operation)
+func (c *Client) GetCurrentUser(ctx context.Context) (*ActorInfo, error) {
+	user, _, err := c.GitHubClient().Users.Get(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	info := &ActorInfo{
+		Login:  user.GetLogin(),
+		Type:   user.GetType(),
+		Source: "token",
+	}
+
+	// For GitHub Apps, try to get the app slug
+	if user.GetType() == "Bot" && info.Login != "" {
+		// Bot usernames end with "[bot]", extract the app slug
+		// e.g., "github-actions[bot]" -> "github-actions"
+		if idx := strings.Index(info.Login, "[bot]"); idx > 0 {
+			info.AppSlug = info.Login[:idx]
+			info.Type = "App"
+		}
+	}
+
+	return info, nil
 }

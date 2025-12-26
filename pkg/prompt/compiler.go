@@ -17,6 +17,11 @@ type Config struct {
 	Language     string
 	WorkingDir   string
 	ContextFiles []string
+	// GitHub actor identity fields (optional)
+	ActorLogin     string // GitHub username or bot name
+	ActorType      string // "User" or "App"
+	ActorSource    string // "token" or "app"
+	ActorAppSlug   string // App slug if type is "App"
 }
 
 // Manifest represents the structure of manifest.yaml

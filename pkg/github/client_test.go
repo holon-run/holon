@@ -779,3 +779,38 @@ func TestNewClientFromEnv(t *testing.T) {
 		}
 	})
 }
+
+// TestGetCurrentUser tests fetching the current user's identity
+func TestGetCurrentUser(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	client, rec := setupTestClient(t, "get_current_user")
+	defer rec.Stop()
+
+	ctx := context.Background()
+
+	actorInfo, err := client.GetCurrentUser(ctx)
+	if err != nil {
+		t.Fatalf("GetCurrentUser() error = %v", err)
+	}
+
+	// Verify basic fields
+	if actorInfo.Login == "" {
+		t.Error("Login should not be empty")
+	}
+
+	if actorInfo.Type == "" {
+		t.Error("Type should not be empty")
+	}
+
+	if actorInfo.Source != "token" {
+		t.Errorf("Source = %q, want %q", actorInfo.Source, "token")
+	}
+
+	// Verify type is either User or Bot
+	if actorInfo.Type != "User" && actorInfo.Type != "Bot" {
+		t.Errorf("Type should be 'User' or 'Bot', got %q", actorInfo.Type)
+	}
+}
