@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/holon-run/holon/pkg/config"
 	"github.com/holon-run/holon/pkg/context/issue"
 	prcontext "github.com/holon-run/holon/pkg/context/github"
 	"github.com/holon-run/holon/pkg/git"
 	pkggithub "github.com/holon-run/holon/pkg/github"
+	"github.com/holon-run/holon/pkg/image"
 	"github.com/holon-run/holon/pkg/publisher"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/workspace"
@@ -28,6 +30,7 @@ var (
 	solveCleanup         string
 	solveAgent           string
 	solveImage           string
+	solveImageAutoDetect bool
 	solveMode            string
 	solveRole            string
 	solveLogLevel        string
@@ -517,6 +520,12 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		return fmt.Errorf("failed to set HOLON_WORKSPACE environment variable: %w", err)
 	}
 
+	// Resolve base image with auto-detection support
+	resolvedImage, err := resolveSolveBaseImage(workspacePrep.path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve base image: %w", err)
+	}
+
 	// Determine goal from the reference
 	goal := buildGoal(solveRef, refType)
 
@@ -534,7 +543,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	err = runner.Run(ctx, RunnerConfig{
 		GoalStr:       goal,
 		TaskName:      fmt.Sprintf("solve-%s-%d", refType, solveRef.Number),
-		BaseImage:     solveImage,
+		BaseImage:     resolvedImage,
 		AgentBundle:   solveAgent,
 		WorkspacePath: workspacePrep.path,
 		ContextPath:   contextDir,
@@ -727,6 +736,42 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// resolveSolveBaseImage resolves the base image for solve command with auto-detection.
+// Precedence: CLI flag > project config > auto-detect > default.
+func resolveSolveBaseImage(workspace string) (string, error) {
+	// Load project config from workspace
+	projectCfg, err := config.Load(workspace)
+	if err != nil {
+		fmt.Printf("Warning: failed to load project config: %v\n", err)
+		projectCfg = &config.ProjectConfig{}
+	}
+
+	// Check CLI flag first
+	if solveImage != "" {
+		fmt.Printf("Config: base_image = %q (source: cli)\n", solveImage)
+		return solveImage, nil
+	}
+
+	// Check project config (if not auto-detect)
+	if projectCfg.BaseImage != "" && !projectCfg.ShouldAutoDetectImage() {
+		fmt.Printf("Config: base_image = %q (source: config)\n", projectCfg.BaseImage)
+		return projectCfg.BaseImage, nil
+	}
+
+	// Check if auto-detect is disabled
+	if !solveImageAutoDetect && !projectCfg.ShouldAutoDetectImage() {
+		// Use default
+		defaultImage := "golang:1.22"
+		fmt.Printf("Config: base_image = %q (source: default)\n", defaultImage)
+		return defaultImage, nil
+	}
+
+	// Auto-detect from workspace
+	detectResult := image.Detect(workspace)
+	fmt.Printf("Config: %s\n", image.FormatResult(detectResult))
+	return detectResult.Image, nil
+}
+
 func init() {
 	solveCmd.Flags().StringVar(&solveRepo, "repo", "", "Default repository in owner/repo format (for numeric references)")
 	solveCmd.Flags().StringVar(&solveBase, "base", "main", "Base branch for PR creation (issue mode only)")
@@ -735,7 +780,8 @@ func init() {
 	solveCmd.Flags().StringVar(&solveInput, "input", "", "Input directory path (default: creates temp dir, auto-cleaned)")
 	solveCmd.Flags().StringVar(&solveCleanup, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
 	solveCmd.Flags().StringVar(&solveAgent, "agent", "", "Agent bundle reference")
-	solveCmd.Flags().StringVarP(&solveImage, "image", "i", "golang:1.22", "Docker base image")
+	solveCmd.Flags().StringVarP(&solveImage, "image", "i", "", "Docker base image (default: auto-detect from workspace)")
+	solveCmd.Flags().BoolVar(&solveImageAutoDetect, "image-auto-detect", true, "Enable automatic base image detection (default: true)")
 	solveCmd.Flags().StringVar(&solveMode, "mode", "", "Execution mode (default: auto-detect from ref type)")
 	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")

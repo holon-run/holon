@@ -140,7 +140,8 @@ holon solve pr <ref>      # Force PR mode
 - `--repo <owner/repo>`: Default repository for numeric references
 - `--base <branch>`: Base branch for PR creation (default: `main`, issue mode only)
 - `--agent <bundle>`: Agent bundle reference
-- `--image <image>`: Docker base image (default: `golang:1.22`)
+- `--image <image>`: Docker base image (default: auto-detect)
+- `--image-auto-detect`: Enable automatic base image detection (default: `true`)
 - `--out <dir>`: Output directory (default: `./holon-output`)
 - `--role <role>`: Role to assume (e.g., `developer`, `reviewer`)
 - `--log-level <level>`: Log verbosity (default: `progress`)
@@ -176,6 +177,7 @@ You can create `.holon/config.yaml` in your project root to set defaults and red
 ```yaml
 # .holon/config.yaml
 # Base container toolchain image
+# Set to "auto" or "auto-detect" to enable automatic detection (default behavior)
 base_image: "python:3.11"
 
 # Default agent bundle reference
@@ -192,25 +194,41 @@ git:
 
 **Configuration Precedence** (highest to lowest):
 1. CLI flags (`--image`, `--agent`, etc.)
-2. Project config (`.holon/config.yaml`)
-3. Hardcoded defaults
+2. Project config file (`.holon/config.yaml`)
+3. Auto-detection (when no image is specified and not disabled)
+4. Hardcoded defaults
+
+### Automatic Base Image Detection
+
+Holon can automatically detect the appropriate Docker base image for your workspace by analyzing project files. When no image is explicitly specified via CLI or config, Holon scans the workspace for language/framework indicators.
+
+**Detection heuristics:**
+- `go.mod` → `golang:1.23`
+- `Cargo.toml` → `rust:1.83`
+- `pyproject.toml` → `python:3.13`
+- `requirements.txt` → `python:3.13`
+- `package.json` → `node:22`
+- `pom.xml` → `eclipse-temurin:21-jdk` (Maven)
+- `build.gradle` / `build.gradle.kts` → `eclipse-temurin:21-jdk` (Gradle)
+- `Gemfile` → `ruby:3.3`
+- `composer.json` → `php:8.3`
+- `*.csproj` → `mcr.microsoft.com/dotnet/sdk:8.0`
+- `Dockerfile` → `docker:24`
+
+For polyglot repos, the signal with the highest priority is selected. You can override auto-detection by:
+- Using `--image <image>` CLI flag
+- Setting `base_image: <image>` in `.holon/config.yaml`
+- Disabling with `--image-auto-detect=false`
 
 **Example:**
 ```bash
-# Create config file
-mkdir -p .holon
-cat > .holon/config.yaml << 'EOF'
-base_image: "node:20"
-log_level: "debug"
-EOF
-
-# Config is automatically loaded
+# Auto-detect from workspace
 holon run --goal "Fix the bug"
-# Uses node:20 (from config) and debug log level (from config)
+# Output: Config: Detected image: golang:1.23 (signals: go.mod) - Detected Go module (go.mod)
 
-# CLI flags override config
-holon run --goal "Fix the bug" --log-level info
-# Uses node:20 (from config) but info log level (from CLI flag)
+# Disable auto-detection
+holon run --goal "Fix the bug" --image-auto-detect=false
+# Output: Config: base_image = "golang:1.22" (source: default)
 ```
 
 **Supported Fields:**
@@ -224,7 +242,8 @@ The config file is searched for in the current directory and parent directories.
 
 CLI flags (most used):
 - `--goal` / `--spec`: task input
-- `--image`: base toolchain image (e.g. `golang:1.22`, `node:20`, ...)
+- `--image`: base toolchain image (default: auto-detect)
+- `--image-auto-detect`: Enable automatic base image detection (default: true)
 - `--agent`: agent bundle reference (`.tar.gz`)
 - `--agent-bundle`: deprecated alias for `--agent`
 - `--workspace`: repo/workspace path (default `.`)

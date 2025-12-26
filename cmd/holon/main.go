@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/holon-run/holon/pkg/config"
+	"github.com/holon-run/holon/pkg/image"
 	_ "github.com/holon-run/holon/pkg/publisher/github"  // Register GitHub publisher
 	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher
 	_ "github.com/holon-run/holon/pkg/publisher/git"      // Register git publisher
@@ -17,6 +19,7 @@ var specPath string
 var goalStr string
 var taskName string
 var baseImage string
+var imageAutoDetect bool
 var agentPath string
 var agentBundlePath string
 var workspacePath string
@@ -39,18 +42,45 @@ type resolvedConfig struct {
 
 // resolveWithProjectConfig resolves configuration values with precedence:
 // CLI flags > project config > hardcoded defaults
-func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig) resolvedConfig {
+func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig, workspace string) resolvedConfig {
 	resolved := resolvedConfig{}
 
-	// Resolve base image: CLI > config > default
+	// Resolve base image: CLI > config > default > auto-detect
 	// Only use CLI value if flag was explicitly changed
 	cliImage := baseImage
 	if !cmd.Flags().Changed("image") {
 		cliImage = ""
 	}
-	image, source := cfg.ResolveBaseImage(cliImage, "golang:1.22")
-	resolved.baseImage = image
-	logConfigResolution("base_image", image, source)
+
+	// Check if CLI explicitly disables auto-detection
+	autoDetectDisabled := false
+	if cmd.Flags().Changed("image-auto-detect") {
+		autoDetectDisabled = !imageAutoDetect
+	}
+
+	// First, check CLI flag
+	baseImageValue, source := "", ""
+	if cliImage != "" {
+		baseImageValue = cliImage
+		source = "cli"
+	} else if cfg.BaseImage != "" && !cfg.ShouldAutoDetectImage() {
+		// Then check project config (if not auto-detect)
+		baseImageValue = cfg.BaseImage
+		source = "config"
+	} else if !autoDetectDisabled && (cfg.ShouldAutoDetectImage() || cfg.BaseImage == "") {
+		// Auto-detect if enabled or if no image specified (and not explicitly disabled)
+		detectResult := image.Detect(workspace)
+		baseImageValue = detectResult.Image
+		source = "auto-detect"
+		fmt.Printf("Config: %s\n", image.FormatResult(detectResult))
+	} else {
+		// Fall back to default
+		baseImageValue = "golang:1.22"
+		source = "default"
+	}
+
+	resolved.baseImage = baseImageValue
+	logConfigResolution("base_image", baseImageValue, source)
 
 	// Resolve agent: CLI > config > empty (will be handled by agent resolver)
 	// Only use CLI value if flag was explicitly changed
@@ -92,6 +122,12 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize runtime: %w", err)
 		}
 
+		// Resolve workspace path early for auto-detection
+		absWorkspace, err := filepath.Abs(workspacePath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve workspace path: %w", err)
+		}
+
 		// Load project config
 		projectCfg, err := config.LoadFromCurrentDir()
 		if err != nil {
@@ -104,7 +140,7 @@ var runCmd = &cobra.Command{
 		}
 
 		// Apply config with precedence: CLI flags > project config > defaults
-		resolved := resolveWithProjectConfig(cmd, projectCfg)
+		resolved := resolveWithProjectConfig(cmd, projectCfg, absWorkspace)
 
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{
@@ -138,7 +174,8 @@ func init() {
 	runCmd.Flags().StringVarP(&specPath, "spec", "s", "", "Path to holon spec file")
 	runCmd.Flags().StringVarP(&goalStr, "goal", "g", "", "Goal description (alternative to --spec)")
 	runCmd.Flags().StringVarP(&taskName, "name", "n", "", "Task name (optional, defaults to auto-generated)")
-	runCmd.Flags().StringVarP(&baseImage, "image", "i", "golang:1.22", "Docker image for execution (Base toolchain)")
+	runCmd.Flags().StringVarP(&baseImage, "image", "i", "", "Docker image for execution (default: auto-detect from workspace)")
+	runCmd.Flags().BoolVar(&imageAutoDetect, "image-auto-detect", true, "Enable automatic base image detection (default: true)")
 	runCmd.Flags().StringVar(&agentPath, "agent", "", "Agent bundle reference (path to .tar.gz, URL, or alias)")
 	runCmd.Flags().StringVar(&agentBundlePath, "agent-bundle", "", "Deprecated: use --agent")
 	_ = runCmd.Flags().MarkDeprecated("agent-bundle", "use --agent instead")

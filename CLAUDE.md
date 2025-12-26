@@ -58,8 +58,12 @@ Holon supports project-level configuration via `.holon/config.yaml` to reduce re
 **Config File Format:**
 ```yaml
 # .holon/config.yaml
-# Base container toolchain image (default: golang:1.22)
+# Base container toolchain image
+# Set to "auto" or "auto-detect" to enable automatic detection (default behavior)
 base_image: "python:3.11"
+
+# Legacy field for auto-detection (deprecated; use base_image: "auto" instead)
+image_auto_detect: true
 
 # Default agent bundle reference (path, URL, or alias)
 agent: "default"
@@ -76,7 +80,8 @@ git:
 **Configuration Precedence** (highest to lowest):
 1. CLI flags (e.g., `--image`, `--agent`, `--log-level`)
 2. Project config file (`.holon/config.yaml`)
-3. Hardcoded defaults
+3. Auto-detection (when no image is specified and not disabled)
+4. Hardcoded defaults (golang:1.22)
 
 **Usage Examples:**
 ```bash
@@ -113,10 +118,76 @@ holon run --goal "Fix the bug" --log-level info
 - First config file found is used
 - If no config file is found, defaults are used
 
+### Automatic Base Image Detection
+
+Holon can automatically detect the appropriate Docker base image for your workspace by analyzing project files. This feature is enabled by default when no image is explicitly specified.
+
+**Detection Heuristics:**
+- `go.mod` → `golang:1.23`
+- `Cargo.toml` → `rust:1.83`
+- `pyproject.toml` → `python:3.13`
+- `requirements.txt` → `python:3.13`
+- `package.json` → `node:22`
+- `pom.xml` → `eclipse-temurin:21-jdk` (Maven)
+- `build.gradle` / `build.gradle.kts` → `eclipse-temurin:21-jdk` (Gradle)
+- `Gemfile` → `ruby:3.3`
+- `composer.json` → `php:8.3`
+- `*.csproj` → `mcr.microsoft.com/dotnet/sdk:8.0`
+- `Dockerfile` → `docker:24`
+
+**Precedence:**
+1. CLI `--image` flag (highest priority)
+2. Project config `base_image` setting
+3. Auto-detection (when no image specified and not disabled)
+4. Default fallback (`golang:1.22`)
+
+**Usage Examples:**
+```bash
+# Auto-detect enabled (default)
+holon run --goal "Fix the bug"
+# Output: Config: Detected image: golang:1.23 (signals: go.mod) - Detected Go module (go.mod)
+#         Config: base_image = "golang:1.23" (source: auto-detect)
+
+# Disable auto-detection via CLI
+holon run --goal "Fix the bug" --image-auto-detect=false
+# Output: Config: base_image = "golang:1.22" (source: default)
+
+# Explicit image overrides auto-detection
+holon run --goal "Fix the bug" --image python:3.13
+# Output: Config: base_image = "python:3.13" (source: cli)
+
+# Enable auto-detect via config file
+echo 'base_image: "auto"' > .holon/config.yaml
+holon run --goal "Fix the bug"
+# Output: Config: Detected image: node:22 (signals: package.json) - Detected Node.js project (package.json)
+```
+
+**Project Config Examples:**
+```yaml
+# .holon/config.yaml
+# Enable explicit auto-detection
+base_image: "auto"
+
+# Or use the legacy field (deprecated)
+image_auto_detect: true
+
+# Or leave empty to use auto-detection as default
+# base_image: ""
+```
+
+**Solve Command:**
+The `holon solve` command also supports auto-detection, analyzing the cloned/fetched repository workspace to select the appropriate base image:
+```bash
+# Auto-detect from remote repository
+holon solve holon-run/holon#123
+# Output: Config: Detected image: golang:1.23 (signals: go.mod) - Detected Go module (go.mod)
+```
+
 ### Key CLI Flags
 - `--spec` / `-s`: Path to holon spec file
 - `--goal` / `-g`: Goal description (alternative to spec)
-- `--image` / `-i`: Docker base image (default: golang:1.22)
+- `--image` / `-i`: Docker base image (default: auto-detect)
+- `--image-auto-detect`: Enable automatic base image detection (default: true)
 - `--agent`: Agent bundle reference (path to .tar.gz, URL, or alias)
 - `--agent-bundle`: Deprecated alias for `--agent`
 - `--workspace` / `-w`: Workspace path (default: .)
