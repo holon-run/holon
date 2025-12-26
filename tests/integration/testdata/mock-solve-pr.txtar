@@ -171,6 +171,8 @@ exec grep -q 'review comments' out/summary.md
 exec grep -q 'error handling' out/summary.md
 
 # Verify workspace file was modified
-exec git -C work diff --exit-code pkg/handler/process.go
-stdout 'error\(|return nil|return err'
+! exec git -C work diff --exit-code pkg/handler/process.go
+stdout 'error\('
+stdout 'return nil'
+stdout 'return err'
 stderr ''

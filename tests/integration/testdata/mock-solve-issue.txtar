@@ -107,8 +107,9 @@ exec grep -q 'log.Fatalf' out/diff.patch
 exec grep -q 'error handling' out/summary.md
 
 # Verify workspace file was modified
-exec git -C work diff --exit-code main.go
-stdout 'run\(\)|log\.Fatal'
+! exec git -C work diff --exit-code main.go
+stdout 'run\(\)'
+stdout 'log\.Fatal'
 stderr ''
 
 -- work/main.go --
