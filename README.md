@@ -8,7 +8,11 @@ Holon runs an AI coding agent inside a Docker sandbox and emits **standard artif
 - **Fits CI**: ship outputs as artifacts, post summaries to logs, and open/update PRs in workflows
 
 ## Outputs (artifacts)
-Holon writes to the directory specified by `--out` (default `./holon-output`). Common artifacts:
+Holon writes to the directory specified by `--out`:
+- For `holon run`: default is `./holon-output`
+- For `holon solve`: default creates a temporary directory (e.g., `/tmp/holon-solve-output-*`)
+
+Common artifacts:
 
 | Path | Purpose | Notes |
 | --- | --- | --- |
@@ -142,7 +146,7 @@ holon solve pr <ref>      # Force PR mode
 - `--agent <bundle>`: Agent bundle reference
 - `--image <image>`: Docker base image (default: auto-detect)
 - `--image-auto-detect`: Enable automatic base image detection (default: `true`)
-- `--out <dir>`: Output directory (default: `./holon-output`)
+- `--out <dir>`: Output directory (default: creates temp dir to avoid polluting workspace)
 - `--role <role>`: Role to assume (e.g., `developer`, `reviewer`)
 - `--log-level <level>`: Log verbosity (default: `progress`)
 

@@ -48,7 +48,7 @@
 建议以 `--mode` 作为主要参数：
 ```bash
 holon run --mode solve --spec spec.yaml
-holon run --mode plan --goal "..." --workspace . --out holon-output
+holon run --mode plan --goal "..." --workspace . --out ./holon-output
 holon run --mode review --spec spec.yaml
 ```
 说明：

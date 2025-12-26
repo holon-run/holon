@@ -366,6 +366,23 @@ func fetchRemoteUpdates(ctx context.Context, dir string) error {
 	return nil
 }
 
+// resolveSolveOutDir resolves the output directory for solve command.
+// Precedence: CLI flag (--out) > temp directory.
+// Returns the output directory path, whether it's a default temp dir, and an error.
+func resolveSolveOutDir(workspace string) (string, bool, error) {
+	// If user provided --out flag, use it directly
+	if solveOutDir != "" {
+		return solveOutDir, false, nil
+	}
+
+	// Default: create a temporary output directory
+	tempDir, err := os.MkdirTemp("", "holon-solve-output-*")
+	if err != nil {
+		return "", false, fmt.Errorf("failed to create temp output dir: %w", err)
+	}
+	return tempDir, true, nil
+}
+
 // runSolve implements the main solve logic
 func runSolve(ctx context.Context, refStr, explicitType string) error {
 	// Get GitHub token early for validation
@@ -400,15 +417,6 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	fmt.Printf("Detected type: %s\n", refType)
-
-	// Create output directory
-	outDir := solveOutDir
-	if outDir == "" {
-		outDir = "./holon-output"
-	}
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
-	}
 
 	// Create input directory (or use user-provided path)
 	inputDir := solveInput
@@ -530,6 +538,49 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	// Determine goal from the reference
 	goal := buildGoal(solveRef, refType)
 
+	// Resolve output directory with precedence: CLI flag > temp dir
+	// For solve command, we use a temp directory by default to avoid polluting the workspace
+	outDir, outIsDefault, err := resolveSolveOutDir(workspacePrep.path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve output directory: %w", err)
+	}
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Log the output directory
+	if outIsDefault {
+		fmt.Printf("Output directory: %s (default temp dir)\n", outDir)
+	} else {
+		// Check if output directory is inside workspace and warn if so
+		absOutDir, err := filepath.Abs(outDir)
+		if err == nil {
+			absWorkspace, err := filepath.Abs(workspacePrep.path)
+			if err == nil {
+				relPath, err := filepath.Rel(absWorkspace, absOutDir)
+				if err == nil && !strings.HasPrefix(relPath, "..") {
+					fmt.Printf("Output directory: %s (WARNING: inside workspace)\n", outDir)
+					fmt.Fprintf(os.Stderr, "Warning: Output directory is inside the workspace. Artifacts may appear in diffs.\n")
+				} else {
+					fmt.Printf("Output directory: %s\n", outDir)
+				}
+			} else {
+				fmt.Printf("Output directory: %s\n", outDir)
+			}
+		} else {
+			fmt.Printf("Output directory: %s\n", outDir)
+		}
+	}
+
+	// Cleanup output directory if it's a default temp dir and cleanup mode is "all"
+	outIsTemp := outIsDefault
+	if cleanupMode == "all" && outIsTemp {
+		defer func() {
+			fmt.Printf("Cleaning up temporary output directory: %s\n", outDir)
+			os.RemoveAll(outDir)
+		}()
+	}
+
 	// Run holon
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("Running Holon...")
@@ -568,12 +619,6 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 
 	if err := publishResults(ctx, solveRef, refType, outDir); err != nil {
 		return fmt.Errorf("failed to publish results: %w", err)
-	}
-
-	// Cleanup output directory if requested (after publishing completes)
-	if cleanupMode == "all" {
-		fmt.Printf("\nCleaning up output directory: %s\n", outDir)
-		os.RemoveAll(outDir)
 	}
 
 	fmt.Println("\n" + strings.Repeat("=", 60))
@@ -776,7 +821,7 @@ func resolveSolveBaseImage(workspace string) (string, error) {
 func init() {
 	solveCmd.Flags().StringVar(&solveRepo, "repo", "", "Default repository in owner/repo format (for numeric references)")
 	solveCmd.Flags().StringVar(&solveBase, "base", "main", "Base branch for PR creation (issue mode only)")
-	solveCmd.Flags().StringVarP(&solveOutDir, "out", "o", "./holon-output", "Output directory")
+	solveCmd.Flags().StringVarP(&solveOutDir, "out", "o", "", "Output directory (default: creates temp dir to avoid polluting workspace)")
 	solveCmd.Flags().StringVarP(&solveContext, "context", "c", "", "Additional context directory (deprecated)")
 	solveCmd.Flags().StringVar(&solveInput, "input", "", "Input directory path (default: creates temp dir, auto-cleaned)")
 	solveCmd.Flags().StringVar(&solveCleanup, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
