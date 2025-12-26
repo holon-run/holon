@@ -26,9 +26,9 @@ exists out/summary.md
 exists out/pr-fix.json
 
 # Verify pr-fix.json structure
-exec python3 -c "import json; json.load(open('out/pr-fix.json'))"
+exec python3 -m json.tool out/pr-fix.json
 grep '"review_replies"' out/pr-fix.json
-grep '"status": "fixed"' out/pr-fix.json
+grep '"status":"fixed"' out/pr-fix.json
 
 # Initial file (workspace snapshot)
 -- work/pkg/context/loader.go --
