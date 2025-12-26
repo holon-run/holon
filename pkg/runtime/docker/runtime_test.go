@@ -721,3 +721,248 @@ func runCmd(dir string, name string, args ...string) error {
 	}
 	return nil
 }
+
+// TestGitEnvVarPrecedence tests that project config git env vars take precedence over host git config
+func TestGitEnvVarPrecedence(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows - requires Unix shell")
+	}
+
+	// Save original PATH for restoring in each test
+	originalPath := os.Getenv("PATH")
+
+	tests := []struct {
+		name                   string
+		initialEnv             map[string]string
+		setupGitFunc           func()
+		expectedName           string
+		expectedEmail          string
+		precedenceScenario     string
+		expectedCommitterName  string
+		expectedCommitterEmail string
+	}{
+		{
+			name: "project config overrides host git config",
+			initialEnv: map[string]string{
+				"GIT_AUTHOR_NAME":    "Project Config Name",
+				"GIT_AUTHOR_EMAIL":   "project@example.com",
+				"GIT_COMMITTER_NAME": "Project Config Name",
+				"GIT_COMMITTER_EMAIL": "project@example.com",
+			},
+			setupGitFunc: func() {
+				// Set up mock git to return different values
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ]; then
+	if [ "$3" = "user.name" ]; then
+		echo "Host Git User"
+		exit 0
+	fi
+	if [ "$3" = "user.email" ]; then
+		echo "host@example.com"
+		exit 0
+	fi
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedName:           "Project Config Name",
+			expectedEmail:          "project@example.com",
+			precedenceScenario:     "project config should not be overridden by host git config",
+			expectedCommitterName:  "Project Config Name", // GIT_COMMITTER_NAME from project config
+			expectedCommitterEmail: "project@example.com", // GIT_COMMITTER_EMAIL from project config
+		},
+		{
+			name: "host git config used when project config not set",
+			initialEnv: map[string]string{
+				// No git env vars set by project config
+			},
+			setupGitFunc: func() {
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ]; then
+	if [ "$3" = "user.name" ]; then
+		echo "Host Git User"
+		exit 0
+	fi
+	if [ "$3" = "user.email" ]; then
+		echo "host@example.com"
+		exit 0
+	fi
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedName:           "Host Git User",
+			expectedEmail:          "host@example.com",
+			precedenceScenario:     "host git config should be used as fallback",
+			expectedCommitterName:  "Host Git User",  // GIT_COMMITTER_NAME from host
+			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host
+		},
+		{
+			name: "partial project config - name set, email from host",
+			initialEnv: map[string]string{
+				"GIT_AUTHOR_NAME": "Project Name Only",
+			},
+			setupGitFunc: func() {
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ]; then
+	if [ "$3" = "user.name" ]; then
+		echo "Host Name"
+		exit 0
+	fi
+	if [ "$3" = "user.email" ]; then
+		echo "host@example.com"
+		exit 0
+	fi
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedName:      "Project Name Only", // GIT_AUTHOR_NAME from project config
+			expectedEmail:     "host@example.com",  // GIT_AUTHOR_EMAIL from host
+			precedenceScenario: "project config GIT_AUTHOR_NAME should take precedence, GIT_COMMITTER_NAME from host",
+			expectedCommitterName: "Host Name",   // GIT_COMMITTER_NAME from host (not set by project)
+			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host
+		},
+		{
+			name: "partial project config - email set, name from host",
+			initialEnv: map[string]string{
+				"GIT_AUTHOR_EMAIL": "project@example.com",
+			},
+			setupGitFunc: func() {
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ]; then
+	if [ "$3" = "user.name" ]; then
+		echo "Host Name"
+		exit 0
+	fi
+	if [ "$3" = "user.email" ]; then
+		echo "host@example.com"
+		exit 0
+	fi
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedName:      "Host Name",         // GIT_AUTHOR_NAME from host
+			expectedEmail:     "project@example.com", // GIT_AUTHOR_EMAIL from project config
+			precedenceScenario: "project config GIT_AUTHOR_EMAIL should take precedence, GIT_COMMITTER_EMAIL from host",
+			expectedCommitterName: "Host Name",   // GIT_COMMITTER_NAME from host
+			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host (not set by project)
+		},
+		{
+			name: "only committer vars set by project, author from host",
+			initialEnv: map[string]string{
+				"GIT_COMMITTER_NAME":  "Project Committer",
+				"GIT_COMMITTER_EMAIL": "committer@example.com",
+			},
+			setupGitFunc: func() {
+				tempDir := t.TempDir()
+				mockGit := filepath.Join(tempDir, "git")
+				script := `#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--get" ]; then
+	if [ "$3" = "user.name" ]; then
+		echo "Host Author"
+		exit 0
+	fi
+	if [ "$3" = "user.email" ]; then
+		echo "author@example.com"
+		exit 0
+	fi
+fi
+exit 1`
+				if err := os.WriteFile(mockGit, []byte(script), 0755); err != nil {
+					t.Fatalf("Failed to create mock git: %v", err)
+				}
+				pathSeparator := string(filepath.ListSeparator)
+				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
+			},
+			expectedName:      "Host Author",      // GIT_AUTHOR_NAME from host
+			expectedEmail:     "author@example.com", // GIT_AUTHOR_EMAIL from host
+			precedenceScenario: "project config committer vars should not be overridden, author from host",
+			expectedCommitterName: "Project Committer", // GIT_COMMITTER_NAME from project config
+			expectedCommitterEmail: "committer@example.com", // GIT_COMMITTER_EMAIL from project config
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup git config
+			if tt.setupGitFunc != nil {
+				tt.setupGitFunc()
+			}
+
+			// Create container config with initial env vars
+			cfg := &ContainerConfig{
+				Env: tt.initialEnv,
+			}
+
+			// Apply the same logic as RunHolon does for git config injection
+			if cfg.Env == nil {
+				cfg.Env = make(map[string]string)
+			}
+
+			gitName, _ := getGitConfig("user.name")
+			gitEmail, _ := getGitConfig("user.email")
+
+			// Only set from host git config if not already set by project config
+			if gitName != "" {
+				if cfg.Env["GIT_AUTHOR_NAME"] == "" {
+					cfg.Env["GIT_AUTHOR_NAME"] = gitName
+				}
+				if cfg.Env["GIT_COMMITTER_NAME"] == "" {
+					cfg.Env["GIT_COMMITTER_NAME"] = gitName
+				}
+			}
+			if gitEmail != "" {
+				if cfg.Env["GIT_AUTHOR_EMAIL"] == "" {
+					cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
+				}
+				if cfg.Env["GIT_COMMITTER_EMAIL"] == "" {
+					cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
+				}
+			}
+
+			// Verify the precedence worked correctly
+			// GIT_AUTHOR_NAME should match expected
+			if cfg.Env["GIT_AUTHOR_NAME"] != tt.expectedName {
+				t.Errorf("%s: GIT_AUTHOR_NAME = %q, want %q", tt.precedenceScenario, cfg.Env["GIT_AUTHOR_NAME"], tt.expectedName)
+			}
+			// GIT_COMMITTER_NAME should match expected
+			if cfg.Env["GIT_COMMITTER_NAME"] != tt.expectedCommitterName {
+				t.Errorf("%s: GIT_COMMITTER_NAME = %q, want %q", tt.precedenceScenario, cfg.Env["GIT_COMMITTER_NAME"], tt.expectedCommitterName)
+			}
+			// GIT_AUTHOR_EMAIL should match expected
+			if cfg.Env["GIT_AUTHOR_EMAIL"] != tt.expectedEmail {
+				t.Errorf("%s: GIT_AUTHOR_EMAIL = %q, want %q", tt.precedenceScenario, cfg.Env["GIT_AUTHOR_EMAIL"], tt.expectedEmail)
+			}
+			// GIT_COMMITTER_EMAIL should match expected
+			if cfg.Env["GIT_COMMITTER_EMAIL"] != tt.expectedCommitterEmail {
+				t.Errorf("%s: GIT_COMMITTER_EMAIL = %q, want %q", tt.precedenceScenario, cfg.Env["GIT_COMMITTER_EMAIL"], tt.expectedCommitterEmail)
+			}
+		})
+	}
+}

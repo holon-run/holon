@@ -1140,3 +1140,90 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		}
 	})
 }
+
+// TestRunner_GitConfigOverride tests that GitAuthorName and GitAuthorEmail fields
+// are properly passed through to environment variables
+func TestRunner_GitConfigOverride(t *testing.T) {
+	_, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, outDir)
+
+	tests := []struct {
+		name           string
+		gitAuthorName  string
+		gitAuthorEmail string
+		expectedName   string
+		expectedEmail  string
+	}{
+		{
+			name:           "both git name and email set",
+			gitAuthorName:  "Holon Bot",
+			gitAuthorEmail: "holon@example.com",
+			expectedName:   "Holon Bot",
+			expectedEmail:  "holon@example.com",
+		},
+		{
+			name:           "only git name set",
+			gitAuthorName:  "Bot Name",
+			gitAuthorEmail: "",
+			expectedName:   "Bot Name",
+			expectedEmail:  "",
+		},
+		{
+			name:           "only git email set",
+			gitAuthorName:  "",
+			gitAuthorEmail: "bot@example.com",
+			expectedName:   "",
+			expectedEmail:  "bot@example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockRuntime := &MockRuntime{}
+			runner := NewRunner(mockRuntime)
+
+			cfg := RunnerConfig{
+				GoalStr:       "Test goal",
+				TaskName:      "test-git-config",
+				WorkspacePath: workspaceDir,
+				OutDir:        outDir,
+				BaseImage:     "test-image",
+				AgentBundle:   bundlePath,
+				GitAuthorName: tt.gitAuthorName,
+				GitAuthorEmail: tt.gitAuthorEmail,
+			}
+
+			err := runner.Run(context.Background(), cfg)
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+
+			calls := mockRuntime.GetCalls()
+			if len(calls) != 1 {
+				t.Fatalf("Expected 1 call to RunHolon, got %d", len(calls))
+			}
+
+			env := calls[0].cfg.Env
+
+			// Verify GIT_AUTHOR_NAME and GIT_COMMITTER_NAME
+			if tt.gitAuthorName != "" {
+				if env["GIT_AUTHOR_NAME"] != tt.expectedName {
+					t.Errorf("Expected GIT_AUTHOR_NAME to be %q, got %q", tt.expectedName, env["GIT_AUTHOR_NAME"])
+				}
+				if env["GIT_COMMITTER_NAME"] != tt.expectedName {
+					t.Errorf("Expected GIT_COMMITTER_NAME to be %q, got %q", tt.expectedName, env["GIT_COMMITTER_NAME"])
+				}
+			}
+
+			// Verify GIT_AUTHOR_EMAIL and GIT_COMMITTER_EMAIL
+			if tt.gitAuthorEmail != "" {
+				if env["GIT_AUTHOR_EMAIL"] != tt.expectedEmail {
+					t.Errorf("Expected GIT_AUTHOR_EMAIL to be %q, got %q", tt.expectedEmail, env["GIT_AUTHOR_EMAIL"])
+				}
+				if env["GIT_COMMITTER_EMAIL"] != tt.expectedEmail {
+					t.Errorf("Expected GIT_COMMITTER_EMAIL to be %q, got %q", tt.expectedEmail, env["GIT_COMMITTER_EMAIL"])
+				}
+			}
+		})
+	}
+}
