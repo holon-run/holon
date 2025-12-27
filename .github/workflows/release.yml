@@ -65,11 +65,13 @@ jobs:
         bash ./scripts/update-homebrew-formula.sh "${{ steps.version.outputs.version }}"
 
     - name: Push to Homebrew tap repository
-      if: secrets.HOMEBREW_TAP_TOKEN != ''
+      if: env.HOMEBREW_TAP_TOKEN != ''
+      env:
+        HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       run: |
         # Configure Git credentials using the token from the environment
         git config --global credential.helper store
-        echo "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com" > ~/.git-credentials
+        echo "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com" > ~/.git-credentials
 
         # Clone the tap repository
         cd /tmp

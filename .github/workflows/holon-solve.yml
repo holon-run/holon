@@ -5,8 +5,9 @@ on:
     inputs:
       issue_number:
         description: 'Issue or PR number'
-        required: true
+        required: false
         type: number
+        default: 0
       comment_body:
         description: 'Comment body (for auto mode detection)'
         required: false
@@ -37,8 +38,13 @@ on:
         required: false
         type: string
         default: '.'
+      input_dir:
+        description: 'Input directory path for artifact packaging (empty = temp dir, kept for debug)'
+        required: false
+        type: string
+        default: ''
       out_dir:
-        description: 'Output directory path for artifact packaging (empty = holon-output)'
+        description: 'Output directory path for artifact packaging (empty = temp dir, kept for debug)'
         required: false
         type: string
         default: ''
@@ -88,14 +94,175 @@ jobs:
       result: ${{ steps.result.outputs.result }}
       summary: ${{ steps.result.outputs.summary }}
     steps:
-      - name: Detect execution mode
-        id: detect
+      - name: Normalize context
+        id: ctx
         run: |
           set -euo pipefail
 
-          ISSUE_NUMBER="${{ inputs.issue_number }}"
-          COMMENT_BODY="${{ inputs.comment_body }}"
+          EVENT_NAME='${{ github.event_name }}'
+
+          ISSUE_NUMBER_INPUT='${{ inputs.issue_number }}'
+          if [ -n "$ISSUE_NUMBER_INPUT" ] && [ "$ISSUE_NUMBER_INPUT" != '0' ]; then
+            ISSUE_NUMBER="$ISSUE_NUMBER_INPUT"
+          else
+            ISSUE_NUMBER='${{ github.event.issue.number }}'
+            if [ -z "$ISSUE_NUMBER" ]; then
+              ISSUE_NUMBER='${{ github.event.pull_request.number }}'
+            fi
+          fi
+
+          if [ -z "$ISSUE_NUMBER" ] || [ "$ISSUE_NUMBER" = '0' ]; then
+            echo "::error::Unable to determine issue/PR number. Provide inputs.issue_number." >&2
+            exit 1
+          fi
+
+          IS_PR='false'
+          if [ -n '${{ github.event.issue.pull_request.url }}' ] || [ -n '${{ github.event.pull_request.number }}' ]; then
+            IS_PR='true'
+          fi
+
+          COMMENT_BODY="$INPUT_COMMENT_BODY"
+          if [ -z "$COMMENT_BODY" ] && [ "$EVENT_NAME" = 'issue_comment' ]; then
+            COMMENT_BODY="$EVENT_COMMENT_BODY"
+          fi
+
+          INPUT_DIR_INPUT='${{ inputs.input_dir }}'
+          if [ -n "$INPUT_DIR_INPUT" ]; then
+            INPUT_DIR="$INPUT_DIR_INPUT"
+            mkdir -p "$INPUT_DIR"
+          else
+            INPUT_DIR="$(mktemp -d -t holon-input-XXXXXX)"
+          fi
+
+          OUT_DIR_INPUT='${{ inputs.out_dir }}'
+          if [ -n "$OUT_DIR_INPUT" ]; then
+            OUT_DIR="$OUT_DIR_INPUT"
+            mkdir -p "$OUT_DIR"
+          else
+            OUT_DIR="$(mktemp -d -t holon-output-XXXXXX)"
+          fi
+
+          echo "INPUT_DIR=$INPUT_DIR" >> "$GITHUB_ENV"
+          echo "OUT_DIR=$OUT_DIR" >> "$GITHUB_ENV"
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+          echo "comment_body<<__HOLON_COMMENT__" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$COMMENT_BODY" >> "$GITHUB_OUTPUT"
+          echo "__HOLON_COMMENT__" >> "$GITHUB_OUTPUT"
+          echo "input_dir=$INPUT_DIR" >> "$GITHUB_OUTPUT"
+          echo "out_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_COMMENT_BODY: ${{ inputs.comment_body }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+
+      - name: Gate execution
+        id: gate
+        run: |
+          set -euo pipefail
+
+          SHOULD_RUN='false'
+          REASON='Not eligible'
+
+          # Avoid bot loops
+          if [ "$ACTOR" = 'holonbot[bot]' ]; then
+            REASON='Actor is holonbot[bot]'
+            echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+            echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$EVENT_NAME" = 'issue_comment' ] && [ "$EVENT_ACTION" = 'created' ]; then
+            FIRST_LINE="$(printf '%s\n' "$COMMENT_BODY" | head -n1 | xargs || true)"
+
+            if [ "$IS_PR" = 'true' ]; then
+              if [ "$FIRST_LINE" = '@holonbot fix' ] || [ "$FIRST_LINE" = '@holonbot pr-fix' ]; then
+                :
+              else
+                REASON="Comment command not recognized for PR: '$FIRST_LINE'"
+                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+
+              # Disallow fork PRs
+              IS_CROSS_REPO="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo 'true')"
+              if [ "$IS_CROSS_REPO" = 'true' ]; then
+                REASON='PR is from a fork/cross-repo head; not supported'
+                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            else
+              if [ "$FIRST_LINE" = '@holonbot fix' ] || [ "$FIRST_LINE" = '@holonbot solve' ]; then
+                :
+              else
+                REASON="Comment command not recognized for Issue: '$FIRST_LINE'"
+                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+
+            # Require write/maintain/admin permissions
+            PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo '')"
+            if [ "$PERMISSION" != 'admin' ] && [ "$PERMISSION" != 'maintain' ] && [ "$PERMISSION" != 'write' ]; then
+              REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
+              echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+              echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            SHOULD_RUN='true'
+            REASON='Comment gates passed'
+          elif [ "$EVENT_NAME" = 'issues' ]; then
+            if [ "$EVENT_ACTION" = 'labeled' ] && [ "$LABEL_NAME" = 'holon' ]; then
+              SHOULD_RUN='true'
+              REASON='Issue labeled holon'
+            elif [ "$EVENT_ACTION" = 'assigned' ] && [ "$ASSIGNEE_TYPE" = 'Bot' ]; then
+              SHOULD_RUN='true'
+              REASON='Issue assigned to Bot'
+            else
+              REASON='Issue event not eligible'
+            fi
+          elif [ "$EVENT_NAME" = 'pull_request' ] && [ "$EVENT_ACTION" = 'labeled' ]; then
+            if [ "$LABEL_NAME" = 'holon' ]; then
+              SHOULD_RUN='true'
+              REASON='PR labeled holon'
+            else
+              REASON='PR label not eligible'
+            fi
+          else
+            SHOULD_RUN='true'
+            REASON='Default allow'
+          fi
+
+          echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.github_token || github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          ISSUE_NUMBER: ${{ steps.ctx.outputs.issue_number }}
+          IS_PR: ${{ steps.ctx.outputs.is_pr }}
+          COMMENT_BODY: ${{ steps.ctx.outputs.comment_body }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          ASSIGNEE_TYPE: ${{ github.event.assignee.type }}
+
+      - name: Checkout repository
+        if: steps.gate.outputs.should_run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Detect execution mode
+        id: detect
+        if: steps.gate.outputs.should_run == 'true'
+        run: |
+          set -euo pipefail
+
           PROVIDED_MODE="${{ inputs.mode }}"
+
+          IS_PR='${{ steps.ctx.outputs.is_pr }}'
 
           # If mode is explicitly provided, use it
           if [ -n "$PROVIDED_MODE" ]; then
@@ -104,36 +271,70 @@ jobs:
             exit 0
           fi
 
-          # Auto-detect mode by checking if it's a PR
-          echo "Checking if #$ISSUE_NUMBER is a pull request..."
-          PR_DATA=$(gh api "repos/${{ github.repository }}/pulls/$ISSUE_NUMBER" 2>/dev/null || echo "")
-
-          if [ -n "$PR_DATA" ]; then
-            # It's a PR - check comment body for command
-            FIRST_LINE=$(echo "$COMMENT_BODY" | head -n1 | xargs || echo "")
-
-            if [ "$FIRST_LINE" = "@holonbot fix" ] || [ "$FIRST_LINE" = "@holonbot pr-fix" ]; then
-              echo "mode=pr-fix" >> $GITHUB_OUTPUT
-              echo "✅ Detected: PR with @holonbot fix command → mode=pr-fix"
-            else
-              echo "mode=solve" >> $GITHUB_OUTPUT
-              echo "✅ Detected: PR without fix command → mode=solve"
-            fi
+          if [ "$IS_PR" = 'true' ]; then
+            echo "mode=pr-fix" >> $GITHUB_OUTPUT
+            echo "✅ Detected: PR → mode=pr-fix"
           else
-            # It's an issue
             echo "mode=solve" >> $GITHUB_OUTPUT
             echo "✅ Detected: Issue → mode=solve"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.github_token || github.token }}
 
+      - name: Write input metadata
+        id: input-meta
+        if: always()
+        run: |
+          set -euo pipefail
+
+          INPUT_DIR='${{ steps.ctx.outputs.input_dir }}'
+          mkdir -p "$INPUT_DIR"
+
+          # Persist raw GitHub event payload for debugging/repro
+          if [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "$GITHUB_EVENT_PATH" ]; then
+            cp "$GITHUB_EVENT_PATH" "$INPUT_DIR/event.json"
+          fi
+
+          EVENT_NAME='${{ github.event_name }}'
+          EVENT_ACTION='${{ github.event.action }}'
+          ACTOR='${{ github.actor }}'
+          REPO='${{ github.repository }}'
+
+          ISSUE_NUMBER='${{ steps.ctx.outputs.issue_number }}'
+          IS_PR='${{ steps.ctx.outputs.is_pr }}'
+          SHOULD_RUN='${{ steps.gate.outputs.should_run }}'
+          REASON='${{ steps.gate.outputs.reason }}'
+
+          MODE=''
+          if [ "$SHOULD_RUN" = 'true' ]; then
+            MODE='${{ steps.detect.outputs.mode }}'
+          fi
+
+          jq -n \
+            --arg event_name "$EVENT_NAME" \
+            --arg event_action "$EVENT_ACTION" \
+            --arg actor "$ACTOR" \
+            --arg repository "$REPO" \
+            --arg issue_number "$ISSUE_NUMBER" \
+            --arg is_pr "$IS_PR" \
+            --arg should_run "$SHOULD_RUN" \
+            --arg reason "$REASON" \
+            --arg mode "$MODE" \
+            '{
+              event: {name: $event_name, action: $event_action, actor: $actor},
+              target: {repository: $repository, issue_number: $issue_number, is_pr: $is_pr},
+              gate: {should_run: $should_run, reason: $reason},
+              mode: $mode
+            }' > "$INPUT_DIR/workflow.json"
+
       - name: Run Holon
         id: run
+        if: steps.gate.outputs.should_run == 'true'
         uses: ./
         env:
           HOLON_MODEL: ${{ vars.HOLON_MODEL || 'claude-sonnet-4-5-20250929' }}
         with:
-          ref: "${{ github.repository }}#${{ inputs.issue_number }}"
+          ref: "${{ github.repository }}#${{ steps.ctx.outputs.issue_number }}"
           mode: ${{ steps.detect.outputs.mode }}
           base: ${{ inputs.base }}
           agent: ${{ inputs.agent }}
@@ -142,7 +343,8 @@ jobs:
           github_token: ${{ secrets.github_token || github.token }}
           log_level: ${{ inputs.log_level }}
           workspace: ${{ inputs.workspace }}
-          out_dir: ${{ inputs.out_dir }}
+          input_dir: ${{ steps.ctx.outputs.input_dir }}
+          out_dir: ${{ steps.ctx.outputs.out_dir }}
           version: ${{ inputs.version }}
           build_from_source: ${{ inputs.build_from_source }}
           holon_repository: ${{ inputs.holon_repository }}
@@ -151,7 +353,18 @@ jobs:
         id: result
         if: always()
         run: |
-          OUT_DIR="${{ inputs.out_dir }}"
+          OUT_DIR='${{ steps.ctx.outputs.out_dir }}'
+          SHOULD_RUN='${{ steps.gate.outputs.should_run }}'
+          REASON='${{ steps.gate.outputs.reason }}'
+
+          if [ "$SHOULD_RUN" != 'true' ]; then
+            {
+              echo "### Holon skipped"
+              echo "- Reason: $REASON"
+              echo "- Event: ${{ github.event_name }} (${{ github.event.action }})"
+              echo "- Target: #${{ steps.ctx.outputs.issue_number }}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           # Check for summary
           if [ -f "$OUT_DIR/summary.md" ]; then
@@ -162,12 +375,37 @@ jobs:
           fi
 
           # Set result based on job status
-          echo "result=${{ steps.run.outcome }}" >> $GITHUB_OUTPUT
+          if [ "$SHOULD_RUN" != 'true' ]; then
+            echo "result=skipped" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=${{ steps.run.outcome }}" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Upload Output Artifacts
+      - name: Bundle Holon Artifact (input + output)
+        id: bundle
+        if: always()
+        run: |
+          set -euo pipefail
+
+          INPUT_DIR='${{ steps.ctx.outputs.input_dir }}'
+          OUT_DIR='${{ steps.ctx.outputs.out_dir }}'
+
+          ARTIFACT_DIR="$(mktemp -d -t holon-artifact-XXXXXX)"
+          mkdir -p "$ARTIFACT_DIR/input" "$ARTIFACT_DIR/output"
+
+          if [ -d "$INPUT_DIR" ]; then
+            cp -a "$INPUT_DIR/." "$ARTIFACT_DIR/input/" || true
+          fi
+          if [ -d "$OUT_DIR" ]; then
+            cp -a "$OUT_DIR/." "$ARTIFACT_DIR/output/" || true
+          fi
+
+          echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Holon Artifact (input + output)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: holon-output-${{ inputs.issue_number }}
-          path: ${{ inputs.out_dir }}/
+          name: holon-artifact-${{ steps.ctx.outputs.issue_number }}
+          path: ${{ steps.bundle.outputs.artifact_dir }}/
           retention-days: 7

@@ -1,0 +1,33 @@
+name: Holon Trigger
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [labeled, assigned]
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: holon-${{ github.event_name }}-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.actor }}
+  cancel-in-progress: true
+
+jobs:
+  holon:
+    name: Run Holon (via holon-solve)
+    uses: ./.github/workflows/holon-solve.yml
+    with:
+      # Keep config minimal; holon-solve derives issue_number/comment_body/mode/out_dir from the event.
+      base: 'main'
+      log_level: 'debug'
+      build_from_source: true
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+      anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL }}
