@@ -107,11 +107,9 @@ func (r *Runner) Run(ctx context.Context, cfg RunnerConfig) error {
 		defer os.RemoveAll(inputDir)
 	}
 
-	// Cleanup output directory based on mode and whether it's temp
-	// For temp output: clean on "all" only (preserve by default for inspection)
-	// For user output: clean only on "all"
-	if (cfg.OutDirIsTemp && cleanupMode == "all") ||
-		(!cfg.OutDirIsTemp && cleanupMode == "all") {
+	// Cleanup output directory only when cleanup mode is "all"
+	// This applies to both temp and user-provided output directories
+	if cleanupMode == "all" {
 		defer os.RemoveAll(cfg.OutDir)
 	}
 
