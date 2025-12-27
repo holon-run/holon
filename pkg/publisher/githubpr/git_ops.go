@@ -32,7 +32,7 @@ func NewGitClient(workspaceDir, token string) *GitClient {
 	}
 }
 
-// ApplyPatch applies a patch file to the workspace.
+// ApplyPatch applies a patch file to the workspace and stages all changes.
 func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) error {
 	// Verify patch file exists
 	if _, err := os.Stat(patchPath); err != nil {
@@ -51,6 +51,22 @@ func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) error {
 		ThreeWay:  false,
 	}); err != nil {
 		return fmt.Errorf("failed to apply patch: %w", err)
+	}
+
+	// IMPORTANT: Stage changes immediately after applying patch
+	// This ensures all patch changes are tracked and preserved for subsequent Git operations.
+	repo, err := gogit.PlainOpen(g.WorkspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	if _, err := worktree.Add("."); err != nil {
+		return fmt.Errorf("failed to stage changes after patch: %w", err)
 	}
 
 	return nil
@@ -112,7 +128,7 @@ func (g *GitClient) CommitChanges(message string) (string, error) {
 		return "", fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	// Stage all changes
+	// Force stage all changes (including untracked files)
 	_, err = worktree.Add(".")
 	if err != nil {
 		return "", fmt.Errorf("failed to stage changes: %w", err)
@@ -190,3 +206,4 @@ func (g *GitClient) EnsureCleanWorkspace() error {
 	_ = repo
 	return nil
 }
+

@@ -129,29 +129,8 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 	token := githubClient.GetToken()
 	gitClient := NewGitClient(workspaceDir, token)
 
-	// Ensure workspace is clean
-	if err := gitClient.EnsureCleanWorkspace(); err != nil {
-		wrappedErr := fmt.Errorf("workspace validation failed: %w", err)
-		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
-		result.Success = false
-		return result, wrappedErr
-	}
-
-	// Step 3: Apply patch
-	patchPath := req.Artifacts["diff.patch"]
-	if err := gitClient.ApplyPatch(context.Background(), patchPath); err != nil {
-		wrappedErr := fmt.Errorf("failed to apply patch: %w", err)
-		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
-		result.Success = false
-		return result, wrappedErr
-	}
-
-	result.Actions = append(result.Actions, publisher.PublishAction{
-		Type:        "applied_patch",
-		Description: "Applied diff.patch to workspace",
-	})
-
-	// Step 4: Create or checkout branch
+	// Step 3: Create or checkout branch FIRST (before applying patch)
+	// This prevents Checkout from discarding patch-applied files
 	if err := gitClient.CreateBranch(config.BranchName); err != nil {
 		wrappedErr := fmt.Errorf("failed to create branch: %w", err)
 		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
@@ -165,6 +144,20 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 		Metadata: map[string]string{
 			"branch": config.BranchName,
 		},
+	})
+
+	// Step 4: Apply patch AFTER creating branch
+	patchPath := req.Artifacts["diff.patch"]
+	if err := gitClient.ApplyPatch(context.Background(), patchPath); err != nil {
+		wrappedErr := fmt.Errorf("failed to apply patch: %w", err)
+		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
+		result.Success = false
+		return result, wrappedErr
+	}
+
+	result.Actions = append(result.Actions, publisher.PublishAction{
+		Type:        "applied_patch",
+		Description: "Applied diff.patch to workspace",
 	})
 
 	// Step 5: Commit changes
@@ -290,7 +283,10 @@ func (p *PRPublisher) buildConfig(manifest map[string]interface{}) PRPublisherCo
 		if title, ok := metadata[TitleFlag].(string); ok {
 			config.Title = title
 		}
-		if issue, ok := metadata[IssueFlag].(string); ok {
+		// Prefer issue_id (plain number) over issue (full reference like "owner/repo#123")
+		if issueID, ok := metadata["issue_id"].(string); ok {
+			config.IssueID = issueID
+		} else if issue, ok := metadata[IssueFlag].(string); ok {
 			config.IssueID = issue
 		}
 	}

@@ -21,7 +21,7 @@ import (
 // Runtime interface defines the contract for running holon containers
 // This allows for easy mocking in tests
 type Runtime interface {
-	RunHolon(ctx context.Context, cfg *docker.ContainerConfig) error
+	RunHolon(ctx context.Context, cfg *docker.ContainerConfig) (string, error)
 }
 
 // RunnerConfig holds the configuration for the Run function
@@ -286,10 +286,23 @@ output:
 	}
 
 	fmt.Printf("Running Holon: %s with base image %s (agent: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AgentBundle)
-	if err := r.runtime.RunHolon(ctx, containerCfg); err != nil {
+	snapshotDir, err := r.runtime.RunHolon(ctx, containerCfg)
+	if err != nil {
 		return fmt.Errorf("execution failed: %w", err)
 	}
 	fmt.Println("Holon execution completed.")
+
+	// Set HOLON_WORKSPACE to point to the actual workspace that was modified
+	// This is critical for post-execution operations like publish
+	if snapshotDir != "" {
+		if err := os.Setenv("HOLON_WORKSPACE", snapshotDir); err != nil {
+			return fmt.Errorf("failed to set HOLON_WORKSPACE environment variable: %w", err)
+		}
+		// Export snapshotDir via environment variable for caller to clean up
+		if err := os.Setenv("HOLON_SNAPSHOT_DIR", snapshotDir); err != nil {
+			fmt.Printf("Warning: failed to set HOLON_SNAPSHOT_DIR: %v\n", err)
+		}
+	}
 
 	// NOTE: Output directory cleanup is intentionally not performed here.
 	// It is handled at a higher level (e.g., after results have been published)

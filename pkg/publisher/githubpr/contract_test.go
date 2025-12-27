@@ -283,16 +283,16 @@ func TestVCRPRPublisher_ActionMetadataContract(t *testing.T) {
 func TestVCRPRPublisher_PublishActionsOrder(t *testing.T) {
 	// Contract: Actions should be in a specific order
 	expectedOrder := []string{
-		"applied_patch",
 		"created_branch",
+		"applied_patch",
 		"created_commit",
 		"pushed_branch",
 		"created_pr", // or "updated_pr"
 	}
 
 	// This is a documentation test - the expected order is:
-	// 1. Apply patch
-	// 2. Create branch
+	// 1. Create branch (must be before patch to apply to correct branch)
+	// 2. Apply patch
 	// 3. Commit changes
 	// 4. Push branch
 	// 5. Create or update PR
@@ -442,15 +442,15 @@ func TestVCRPRPublisher_ResultStructContract(t *testing.T) {
 		Success:    true,
 		Actions: []publisher.PublishAction{
 			{
-				Type:        "applied_patch",
-				Description: "Applied diff.patch to workspace",
-			},
-			{
 				Type:        "created_branch",
 				Description: "Created branch: test-branch",
 				Metadata: map[string]string{
 					"branch": "test-branch",
 				},
+			},
+			{
+				Type:        "applied_patch",
+				Description: "Applied diff.patch to workspace",
 			},
 			{
 				Type:        "created_commit",
@@ -488,7 +488,7 @@ func TestVCRPRPublisher_ResultStructContract(t *testing.T) {
 	}
 
 	// Contract: Actions should be in correct order
-	expectedOrder := []string{"applied_patch", "created_branch", "created_commit", "pushed_branch", "created_pr"}
+	expectedOrder := []string{"created_branch", "applied_patch", "created_commit", "pushed_branch", "created_pr"}
 	for i, action := range result.Actions {
 		if action.Type != expectedOrder[i] {
 			t.Errorf("Action %d type = %v, want %v", i, action.Type, expectedOrder[i])

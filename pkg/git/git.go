@@ -560,3 +560,36 @@ func (c *Client) ConfigGet(ctx context.Context, key string) (string, error) {
 	}
 	return strings.TrimSpace(string(output)), nil
 }
+
+// SetRemote ensures that a remote with the given name points to the provided URL.
+// If the remote already exists, its URL is updated. If it does not exist, the
+// remote is created with the given URL.
+func (c *Client) SetRemote(ctx context.Context, name, url string) error {
+	// List existing remotes to determine whether the named remote already exists.
+	output, err := c.execCommand(ctx, "remote")
+	if err != nil {
+		return fmt.Errorf("failed to list git remotes: %w", err)
+	}
+
+	exists := false
+	for _, remote := range strings.Fields(string(output)) {
+		if remote == name {
+			exists = true
+			break
+		}
+	}
+
+	if exists {
+		_, err = c.execCommand(ctx, "remote", "set-url", name, url)
+		if err != nil {
+			return fmt.Errorf("failed to set remote %s to %s: %w", name, url, err)
+		}
+	} else {
+		_, err = c.execCommand(ctx, "remote", "add", name, url)
+		if err != nil {
+			return fmt.Errorf("failed to add remote %s with URL %s: %w", name, url, err)
+		}
+	}
+
+	return nil
+}

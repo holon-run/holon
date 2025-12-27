@@ -232,6 +232,17 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 				os.RemoveAll(workspacePath)
 				return nil, fmt.Errorf("failed to prepare workspace using git-clone from local repo: %w", err)
 			}
+
+			// IMPORTANT: Fix the origin URL after local clone
+			// When using git clone --local, origin points to the local path
+			// We need to set it to the GitHub URL so pushes work correctly
+			githubURL := fmt.Sprintf("https://github.com/%s/%s.git", solveRef.Owner, solveRef.Repo)
+			client := git.NewClient(workspacePath)
+			if err := client.SetRemote(ctx, "origin", githubURL); err != nil {
+				os.RemoveAll(workspacePath)
+				return nil, fmt.Errorf("failed to set origin URL after local clone: %w", err)
+			}
+			fmt.Printf("  Fixed origin to: %s\n", githubURL)
 		} else {
 			// Decision 3: Clone from remote repository
 			source = fmt.Sprintf("https://github.com/%s/%s.git", solveRef.Owner, solveRef.Repo)
@@ -523,12 +534,6 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		}()
 	}
 
-	// Set HOLON_WORKSPACE environment variable for publishers
-	// This needs to be set before running holon so it's available in the environment
-	if err := os.Setenv("HOLON_WORKSPACE", workspacePrep.path); err != nil {
-		return fmt.Errorf("failed to set HOLON_WORKSPACE environment variable: %w", err)
-	}
-
 	// Resolve base image with auto-detection support
 	resolvedImage, err := resolveSolveBaseImage(workspacePrep.path)
 	if err != nil {
@@ -613,6 +618,9 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		return fmt.Errorf("holon execution failed: %w", err)
 	}
 
+	// Get snapshot directory for cleanup after publish
+	snapshotDir := os.Getenv("HOLON_SNAPSHOT_DIR")
+
 	// Publish results
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("Publishing results...")
@@ -620,6 +628,14 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 
 	if err := publishResults(ctx, solveRef, refType, outDir); err != nil {
 		return fmt.Errorf("failed to publish results: %w", err)
+	}
+
+	// Cleanup snapshot directory after publish is complete
+	if snapshotDir != "" {
+		fmt.Printf("Cleaning up snapshot directory: %s\n", snapshotDir)
+		if err := os.RemoveAll(snapshotDir); err != nil {
+			fmt.Printf("Warning: failed to cleanup snapshot directory %s: %v\n", snapshotDir, err)
+		}
 	}
 
 	fmt.Println("\n" + strings.Repeat("=", 60))
@@ -667,7 +683,7 @@ func buildGoal(ref *pkggithub.SolveRef, refType string) string {
 	if refType == "pr" {
 		return fmt.Sprintf("Fix the review comments and issues in PR %s. Address all unresolved review comments and make necessary code changes.", ref.URL())
 	}
-	return fmt.Sprintf("Implement a solution for the issue described in %s. Create a PR with your changes.", ref.URL())
+	return fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. Focus on implementing the solution; the system will handle committing changes and creating any pull requests.", ref.URL())
 }
 
 // publishResults publishes the holon execution results
