@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -48,6 +49,15 @@ func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) (bool, err
 	// Check if patch file is empty
 	if info.Size() == 0 {
 		// Empty patch file - this is a no-op case
+		return false, nil
+	}
+
+	// Guard against whitespace-only patches (git apply treats them as invalid)
+	payload, err := os.ReadFile(patchPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to read patch file: %w", err)
+	}
+	if strings.TrimSpace(string(payload)) == "" {
 		return false, nil
 	}
 

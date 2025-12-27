@@ -523,6 +523,11 @@ async function runAgent(): Promise<void> {
   runCommand("git", ["config", "--global", "user.name", gitName], { allowFailure: true });
   runCommand("git", ["config", "--global", "user.email", gitEmail], { allowFailure: true });
 
+  // Docker bind-mounts (especially on macOS) can surface filemode/permission bits differently
+  // than the underlying repo expects, which makes `git add -A` stage the entire tree.
+  // Disable filemode tracking so diffs reflect content changes only.
+  runCommand("git", ["config", "core.filemode", "false"], { cwd: workspacePath, allowFailure: true });
+
   const hasGit = fs.existsSync(path.join(workspacePath, ".git"));
   if (!hasGit) {
     logger.info("No git repo found in workspace. Initializing temporary baseline...");
@@ -606,23 +611,77 @@ async function runAgent(): Promise<void> {
     logger.progress("Generating patch file");
     const diffResult = runCommand(
       "git",
-      ["diff", "--cached", "--patch", "--binary", "--full-index"],
+      ["--no-pager", "diff", "--cached", "--patch", "--binary", "--full-index", "--no-color", "--no-ext-diff"],
       { cwd: workspacePath, allowFailure: true }
     );
 
     const patchContent = diffResult.stdout;
 
-    // Warn if patch is unexpectedly empty while we have staged files
-    if (patchContent.length === 0 && stagedFiles.length > 0) {
-      console.log(`⚠️  Warning: ${stagedFiles.length} files are staged but diff is empty. This may indicate a git worktree issue.`);
-      logger.info(`Staged files with empty diff - checking worktree status`);
+    // Fail fast if patch is unexpectedly empty while we have staged files.
+    // Continuing would produce a broken/empty diff.patch that later fails `git apply`.
+    if (stagedFiles.length > 0 && patchContent.trim().length === 0) {
+      const diagnosticsPath = path.join(evidenceDir, "git-diagnostics.txt");
 
-      // Additional debug: check current HEAD
+      const diagnostics: string[] = [];
+      diagnostics.push("Holon git diagnostics");
+      diagnostics.push(`Workspace: ${workspacePath}`);
+      diagnostics.push(`StagedFilesCount: ${stagedFiles.length}`);
+      diagnostics.push(`DiffExitCode: ${diffResult.status}`);
+      if (diffResult.stderr?.trim()) {
+        diagnostics.push("\n--- git diff stderr ---");
+        diagnostics.push(diffResult.stderr.trim());
+      }
+
+      diagnostics.push("\n--- env ---");
+      diagnostics.push(`GIT_EXTERNAL_DIFF=${process.env.GIT_EXTERNAL_DIFF || ""}`);
+      diagnostics.push(`GIT_PAGER=${process.env.GIT_PAGER || ""}`);
+      diagnostics.push(`PAGER=${process.env.PAGER || ""}`);
+
+      const revParseInside = runCommand("git", ["rev-parse", "--is-inside-work-tree"], { cwd: workspacePath, allowFailure: true });
+      diagnostics.push("\n--- git rev-parse --is-inside-work-tree ---");
+      diagnostics.push(revParseInside.stdout.trim() || revParseInside.stderr.trim() || "(no output)");
+
+      const revParseGitDir = runCommand("git", ["rev-parse", "--git-dir"], { cwd: workspacePath, allowFailure: true });
+      diagnostics.push("\n--- git rev-parse --git-dir ---");
+      diagnostics.push(revParseGitDir.stdout.trim() || revParseGitDir.stderr.trim() || "(no output)");
+
       const headResult = runCommand("git", ["rev-parse", "HEAD"], { cwd: workspacePath, allowFailure: true });
-      logger.debug(`Current HEAD: ${headResult.stdout.trim()}`);
+      diagnostics.push("\n--- git rev-parse HEAD ---");
+      diagnostics.push(headResult.stdout.trim() || headResult.stderr.trim() || "(no output)");
 
       const branchResult = runCommand("git", ["branch", "--show-current"], { cwd: workspacePath, allowFailure: true });
-      logger.debug(`Current branch: ${branchResult.stdout.trim()}`);
+      diagnostics.push("\n--- git branch --show-current ---");
+      diagnostics.push(branchResult.stdout.trim() || branchResult.stderr.trim() || "(no output)");
+
+      const statusV1 = runCommand("git", ["status", "--porcelain=v1", "-uall"], { cwd: workspacePath, allowFailure: true });
+      diagnostics.push("\n--- git status --porcelain=v1 -uall ---");
+      diagnostics.push(statusV1.stdout.trim() || statusV1.stderr.trim() || "(no output)");
+
+      const cachedNameStatus = runCommand("git", ["diff", "--cached", "--name-status"], { cwd: workspacePath, allowFailure: true });
+      diagnostics.push("\n--- git diff --cached --name-status ---");
+      diagnostics.push(cachedNameStatus.stdout.trim() || cachedNameStatus.stderr.trim() || "(no output)");
+
+      const coreFilemode = runCommand("git", ["config", "--get", "core.filemode"], { cwd: workspacePath, allowFailure: true });
+      diagnostics.push("\n--- git config core.filemode ---");
+      diagnostics.push(coreFilemode.stdout.trim() || coreFilemode.stderr.trim() || "(unset)");
+
+      const diffExternal = runCommand("git", ["config", "--get", "diff.external"], { cwd: workspacePath, allowFailure: true });
+      diagnostics.push("\n--- git config diff.external ---");
+      diagnostics.push(diffExternal.stdout.trim() || diffExternal.stderr.trim() || "(unset)");
+
+      const pagerDiff = runCommand("git", ["config", "--get", "pager.diff"], { cwd: workspacePath, allowFailure: true });
+      diagnostics.push("\n--- git config pager.diff ---");
+      diagnostics.push(pagerDiff.stdout.trim() || pagerDiff.stderr.trim() || "(unset)");
+
+      const colorUI = runCommand("git", ["config", "--get", "color.ui"], { cwd: workspacePath, allowFailure: true });
+      diagnostics.push("\n--- git config color.ui ---");
+      diagnostics.push(colorUI.stdout.trim() || colorUI.stderr.trim() || "(unset)");
+
+      fs.writeFileSync(diagnosticsPath, diagnostics.join("\n") + "\n");
+
+      throw new Error(
+        `Patch generation failed: ${stagedFiles.length} files are staged but diff is empty. See evidence: ${diagnosticsPath}`
+      );
     }
 
     logger.progress(`Generated patch: ${patchContent.length} characters`);

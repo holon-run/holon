@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -35,8 +36,21 @@ func NewGitClient(workspaceDir, token string) *GitClient {
 // ApplyPatch applies a patch file to the workspace and stages all changes.
 func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) error {
 	// Verify patch file exists
-	if _, err := os.Stat(patchPath); err != nil {
+	info, err := os.Stat(patchPath)
+	if err != nil {
 		return fmt.Errorf("patch file not found: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+
+	// Guard against whitespace-only patches (git apply treats them as invalid)
+	payload, err := os.ReadFile(patchPath)
+	if err != nil {
+		return fmt.Errorf("failed to read patch file: %w", err)
+	}
+	if strings.TrimSpace(string(payload)) == "" {
+		return nil
 	}
 
 	client := holonGit.NewClient(g.WorkspaceDir)
@@ -79,15 +93,28 @@ func (g *GitClient) CreateBranch(branchName string) error {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
 
+	// Clean working tree before branch operations to avoid "worktree contains unstaged changes" errors
+	// This is particularly important in CI environments where file metadata or permissions may differ
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	// Reset any unstaged changes to ensure clean working tree
+	// Use Force to discard all changes (similar to git reset --hard HEAD)
+	err = worktree.Reset(&gogit.ResetOptions{
+		Mode: gogit.HardReset,
+	})
+	if err != nil {
+		// Log warning but continue - reset failure shouldn't block branch creation
+		// This might happen if there are no changes to reset
+		fmt.Printf("Warning: failed to reset worktree (continuing anyway): %v\n", err)
+	}
+
 	// Check if branch already exists
 	_, err = repo.Branch(branchName)
 	if err == nil {
 		// Branch exists, checkout it
-		worktree, err := repo.Worktree()
-		if err != nil {
-			return fmt.Errorf("failed to get worktree: %w", err)
-		}
-
 		err = worktree.Checkout(&gogit.CheckoutOptions{
 			Branch: plumbing.NewBranchReferenceName(branchName),
 		})
@@ -99,11 +126,6 @@ func (g *GitClient) CreateBranch(branchName string) error {
 	}
 
 	// Branch doesn't exist, create it
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
-	}
-
 	// Create and checkout new branch
 	err = worktree.Checkout(&gogit.CheckoutOptions{
 		Branch: plumbing.NewBranchReferenceName(branchName),
@@ -206,4 +228,3 @@ func (g *GitClient) EnsureCleanWorkspace() error {
 	_ = repo
 	return nil
 }
-

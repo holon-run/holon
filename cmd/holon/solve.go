@@ -535,13 +535,18 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Ensure cleanup happens for temporary workspaces
+	// DISABLED: Temporarily disabled for debugging Docker for Mac file sync issues
+	// if workspacePrep != nil && workspacePrep.cleanupNeeded {
+	// 	defer func() {
+	// 		fmt.Printf("\nCleaning up temporary workspace: %s\n", workspacePrep.path)
+	// 		if err := workspacePrep.preparer.Cleanup(workspacePrep.path); err != nil {
+	// 			fmt.Printf("Warning: failed to cleanup workspace: %v\n", err)
+	// 		}
+	// 	}()
+	// }
+	// Instead, just log the workspace path for manual inspection
 	if workspacePrep != nil && workspacePrep.cleanupNeeded {
-		defer func() {
-			fmt.Printf("\nCleaning up temporary workspace: %s\n", workspacePrep.path)
-			if err := workspacePrep.preparer.Cleanup(workspacePrep.path); err != nil {
-				fmt.Printf("Warning: failed to cleanup workspace: %v\n", err)
-			}
-		}()
+		fmt.Printf("\nNOTE: Workspace will be preserved for debugging: %s\n", workspacePrep.path)
 	}
 
 	// Resolve base image with auto-detection support
