@@ -23,6 +23,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Lint workflows
-        uses: rhysd/actionlint@v1
+        uses: rhysd/actionlint@v1.7.9
         with:
           args: -shellcheck=
