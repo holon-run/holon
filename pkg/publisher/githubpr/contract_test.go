@@ -89,9 +89,9 @@ func TestVCRPRPublisher_BuildConfigContract(t *testing.T) {
 			name: "with metadata configuration",
 			manifest: map[string]interface{}{
 				"metadata": map[string]interface{}{
-					"branch": "feature/test-branch",
-					"title":  "Test PR Title",
-					"issue":  "123",
+					"branch":    "feature/test-branch",
+					"title":     "Test PR Title",
+					"issue_id":  "123",
 				},
 			},
 			want: PRPublisherConfig{
@@ -115,7 +115,7 @@ func TestVCRPRPublisher_BuildConfigContract(t *testing.T) {
 			name: "metadata overrides goal",
 			manifest: map[string]interface{}{
 				"metadata": map[string]interface{}{
-					"issue": "789",
+					"issue_id": "789",
 				},
 				"goal": map[string]interface{}{
 					"issue_id": "456",

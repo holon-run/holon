@@ -706,10 +706,8 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 		manifestMap["metadata"] = make(map[string]interface{})
 	}
 	metadata := manifestMap["metadata"].(map[string]interface{})
-	metadata["issue"] = fmt.Sprintf("%s/%s#%d", ref.Owner, ref.Repo, ref.Number)
-	if refType == "issue" {
-		metadata["issue_id"] = fmt.Sprintf("%d", ref.Number)
-	}
+	// Set issue_id as plain number for both issues and PRs
+	metadata["issue_id"] = fmt.Sprintf("%d", ref.Number)
 
 	// Read artifacts
 	artifacts := make(map[string]string)

@@ -130,9 +130,9 @@ func TestPRPublisherBuildConfig(t *testing.T) {
 			name: "with metadata",
 			manifest: map[string]interface{}{
 				"metadata": map[string]interface{}{
-					"branch": "custom/branch",
-					"title":  "Custom Title",
-					"issue":  "123",
+					"branch":   "custom/branch",
+					"title":    "Custom Title",
+					"issue_id": "123",
 				},
 			},
 			want: PRPublisherConfig{
@@ -156,7 +156,7 @@ func TestPRPublisherBuildConfig(t *testing.T) {
 			name: "metadata overrides goal",
 			manifest: map[string]interface{}{
 				"metadata": map[string]interface{}{
-					"issue": "789",
+					"issue_id": "789",
 				},
 				"goal": map[string]interface{}{
 					"issue_id": "456",
