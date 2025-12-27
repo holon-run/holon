@@ -38,7 +38,7 @@ on:
         type: string
         default: '.'
       out_dir:
-        description: 'Output directory path for artifact packaging'
+        description: 'Output directory path for artifact packaging (empty = holon-output)'
         required: false
         type: string
         default: ''
@@ -88,9 +88,6 @@ jobs:
       result: ${{ steps.result.outputs.result }}
       summary: ${{ steps.result.outputs.summary }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Detect execution mode
         id: detect
         run: |

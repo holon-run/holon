@@ -148,7 +148,7 @@ This repo ships two ways to run Holon in GitHub Actions:
 
 See `.github/workflows/holon-issue.yml` and `.github/workflows/holonbot-fix.yml` for complete examples.
 
-### Migration Guide (v0.x)
+### Migration Guide
 
 The action has been refactored to wrap `holon solve` instead of `holon run`.
 
@@ -172,8 +172,8 @@ The action has been refactored to wrap `holon solve` instead of `holon run`.
 
 ### Removed Inputs
 - `goal` - Use `ref` instead (solve builds goal from issue/PR)
-- `spec` - Not supported
-- `context` - solve collects context automatically
+- `spec` - Not supported. v2 infers requirements from the issue/PR description and repository context instead of requiring a separate spec file. Migrate any previous spec content into issue descriptions or rely on automatic detection.
+- `context` - solve collects context automatically from issue/PR and repository
 
 ### New Required Inputs
 - `ref` - GitHub Issue or PR reference (required)
@@ -183,8 +183,10 @@ The action has been refactored to wrap `holon solve` instead of `holon run`.
 - `build_from_source` - Build holon from source (default: false, download from releases)
 - `holon_repository` - Holon repository for building from source (default: holon-run/holon)
 - `input_dir` - Input directory for artifact packaging (default: temp)
-- `workspace` - Workspace path (default: .)
 - `out_dir` - Output directory for artifact packaging (default: temp)
+
+### Retained Inputs
+- `workspace` - Workspace path (default: .)
 
 ### Usage Examples
 

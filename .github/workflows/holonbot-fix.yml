@@ -109,20 +109,31 @@ jobs:
 
   run-holon-fix:
     name: Run Holon Fix
+    runs-on: ubuntu-latest
     needs: parse-and-gate
     if: needs.parse-and-gate.outputs.should_run == 'true'
-    uses: ./.github/workflows/holon-solve.yml
-    with:
-      issue_number: ${{ needs.parse-and-gate.outputs.pr_number }}
-      comment_body: ${{ github.event.comment.body }}
-      # mode will be auto-detected as pr-fix
-      log_level: 'debug'
-      workspace: '.'
-      out_dir: './holon-output'
-    secrets:
-      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-      github_token: ${{ secrets.GITHUB_TOKEN }}
-      anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Call Holon Solve
+        uses: ./.github/workflows/holon-solve.yml
+        with:
+          issue_number: ${{ needs.parse-and-gate.outputs.pr_number }}
+          comment_body: ${{ github.event.comment.body }}
+          # mode will be auto-detected as pr-fix
+          log_level: 'debug'
+          workspace: '.'
+          out_dir: './holon-output'
+        secrets:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
 
   skip-execution:
     name: Skip Execution (Gates Failed)

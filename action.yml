@@ -48,7 +48,7 @@ inputs:
     required: false
     default: 'latest'
   build_from_source:
-    description: 'Build holon from source before running (default: false, download from releases)'
+    description: 'Build holon from source before running (default: false, download from releases). Requires Go toolchain - add "actions/setup-go@v5" step before this action when enabled.'
     required: false
     default: 'false'
   holon_repository:
@@ -148,10 +148,16 @@ runs:
           ARCH="arm64"
         fi
 
-        # Determine version
+        # Determine version and URL path
         VERSION="${{ inputs.version }}"
+
+        # GitHub releases URL pattern differs for 'latest' vs specific versions
+        # Latest: releases/latest/download/...
+        # Versioned: releases/download/v0.1.0/...
         if [ "$VERSION" = "latest" ]; then
-          VERSION="latest"
+          RELEASE_PATH="latest/download"
+        else
+          RELEASE_PATH="download/$VERSION"
         fi
 
         # Create temp directory
@@ -159,7 +165,7 @@ runs:
 
         # Download and extract
         echo "Downloading holon $VERSION for $PLATFORM-$ARCH..."
-        curl -fsSL "https://github.com/holon-run/holon/releases/$VERSION/download/holon-$PLATFORM-$ARCH.tar.gz" | \
+        curl -fsSL "https://github.com/holon-run/holon/releases/$RELEASE_PATH/holon-$PLATFORM-$ARCH.tar.gz" | \
           tar -xz -C "$RUNNER_TEMP/holon/bin"
         chmod +x "$RUNNER_TEMP/holon/bin/holon"
 
