@@ -47,6 +47,7 @@ type ContainerConfig struct {
 	WorkspaceStrategy string                 // Workspace preparation strategy (e.g., "git-clone", "snapshot")
 	WorkspaceHistory  workspace.HistoryMode // How much git history to include
 	WorkspaceRef      string                 // Git ref to checkout (optional)
+	WorkspaceIsTemporary bool                // true if workspace is a temporary directory (vs user-provided)
 
 	// Agent config mount mode
 	AgentConfigMode string // Agent config mount mode: "auto", "yes", "no"
@@ -430,6 +431,16 @@ func copyFile(src, dst string) error {
 
 // prepareWorkspace prepares the workspace using the configured strategy
 func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, workspace.Preparer, error) {
+	// If the workspace is already a temporary directory (created by solve),
+	// use it directly instead of creating another snapshot.
+	// This optimization avoids double cloning when solve creates a temp workspace.
+	if cfg.WorkspaceIsTemporary {
+		holonlog.Info("using temporary workspace directly (no snapshot needed)", "workspace", cfg.Workspace)
+
+		// Return the workspace as-is with an existing preparer (no-op cleanup)
+		return cfg.Workspace, workspace.NewExistingPreparer(), nil
+	}
+
 	// Create snapshot directory outside workspace
 	snapshotDir, err := workspace.MkdirTempOutsideWorkspace(cfg.Workspace, "holon-workspace-*")
 	if err != nil {

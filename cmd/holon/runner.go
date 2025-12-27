@@ -44,6 +44,7 @@ type RunnerConfig struct {
 	AgentConfigMode string // Agent config mount mode: "auto", "yes", "no"
 	GitAuthorName   string // Optional: git author name override
 	GitAuthorEmail  string // Optional: git author email override
+	WorkspaceIsTemporary bool // true if workspace is a temporary directory (vs user-provided)
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -277,13 +278,14 @@ output:
 	}
 
 	containerCfg := &docker.ContainerConfig{
-		BaseImage:       cfg.BaseImage,
-		AgentBundle:     agentBundlePath,
-		Workspace:       absWorkspace,
-		InputPath:       absInputDir,
-		OutDir:          absOut,
-		Env:             envVars,
-		AgentConfigMode: cfg.AgentConfigMode,
+		BaseImage:          cfg.BaseImage,
+		AgentBundle:        agentBundlePath,
+		Workspace:          absWorkspace,
+		InputPath:          absInputDir,
+		OutDir:             absOut,
+		Env:                envVars,
+		AgentConfigMode:    cfg.AgentConfigMode,
+		WorkspaceIsTemporary: cfg.WorkspaceIsTemporary,
 	}
 
 	holonlog.Progress("running holon", "spec", cfg.SpecPath, "base_image", cfg.BaseImage, "agent", containerCfg.AgentBundle)

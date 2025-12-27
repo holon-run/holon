@@ -150,6 +150,7 @@ type workspacePreparation struct {
 	path       string
 	preparer   workspace.Preparer
 	cleanupNeeded bool
+	isTemp        bool // true if solve created a temporary workspace (vs user-provided)
 }
 
 // prepareWorkspaceForSolve prepares a workspace based on the solve reference and flags
@@ -189,110 +190,118 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 		if err != nil {
 			return nil, fmt.Errorf("failed to prepare workspace using existing strategy: %w", err)
 		}
-	} else {
-		// Decision 2: Check if current directory matches the ref owner/repo
-		currentDir, err := os.Getwd()
+
+		// User-provided workspace is not temporary
+		return &workspacePreparation{
+			path:         workspacePath,
+			preparer:     preparer,
+			cleanupNeeded: false,
+			isTemp:        false,
+		}, nil
+	}
+
+	// Decision 2: Check if current directory matches the ref owner/repo
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	currentDirRepo, err := getGitRepoOrigin(ctx, currentDir)
+	if err == nil && currentDirRepo == fmt.Sprintf("%s/%s", solveRef.Owner, solveRef.Repo) {
+		// Current dir matches the ref repo - use git-clone with --local from current repo
+		source = currentDir
+
+		// Create a temp directory for the workspace
+		tempDir, err := os.MkdirTemp("", "holon-solve-workspace-*")
 		if err != nil {
-			return nil, fmt.Errorf("failed to get current directory: %w", err)
+			return nil, fmt.Errorf("failed to create temp workspace directory: %w", err)
+		}
+		workspacePath = tempDir
+		preparer = workspace.NewGitClonePreparer()
+		cleanupNeeded = true
+
+		fmt.Printf("Workspace mode: git-clone (from local repo matching ref)\n")
+		fmt.Printf("  Source: %s\n", source)
+		fmt.Printf("  Dest: %s\n", workspacePath)
+
+		// Determine history mode
+		historyMode := solveWorkspaceHistory
+		if historyMode == "" {
+			historyMode = "full" // Default to full for local clones
 		}
 
-		currentDirRepo, err := getGitRepoOrigin(ctx, currentDir)
-		if err == nil && currentDirRepo == fmt.Sprintf("%s/%s", solveRef.Owner, solveRef.Repo) {
-			// Current dir matches the ref repo - use git-clone with --local from current repo
-			source = currentDir
+		// Prepare using git-clone strategy
+		_, err = preparer.Prepare(ctx, workspace.PrepareRequest{
+			Source:  source,
+			Dest:    workspacePath,
+			Ref:     solveWorkspaceRef,
+			History: workspace.HistoryMode(historyMode),
+			CleanDest: true,
+		})
+		if err != nil {
+			os.RemoveAll(workspacePath)
+			return nil, fmt.Errorf("failed to prepare workspace using git-clone from local repo: %w", err)
+		}
 
-			// Create a temp directory for the workspace
-			tempDir, err := os.MkdirTemp("", "holon-solve-workspace-*")
-			if err != nil {
-				return nil, fmt.Errorf("failed to create temp workspace directory: %w", err)
-			}
-			workspacePath = tempDir
-			preparer = workspace.NewGitClonePreparer()
-			cleanupNeeded = true
+		// IMPORTANT: Fix the origin URL after local clone
+		// When using git clone --local, origin points to the local path
+		// We need to set it to the GitHub URL so pushes work correctly
+		githubURL := fmt.Sprintf("https://github.com/%s/%s.git", solveRef.Owner, solveRef.Repo)
+		client := git.NewClient(workspacePath)
+		if err := client.SetRemote(ctx, "origin", githubURL); err != nil {
+			os.RemoveAll(workspacePath)
+			return nil, fmt.Errorf("failed to set origin URL after local clone: %w", err)
+		}
+		fmt.Printf("  Fixed origin to: %s\n", githubURL)
+	} else {
+		// Decision 3: Clone from remote repository
+		source = fmt.Sprintf("https://github.com/%s/%s.git", solveRef.Owner, solveRef.Repo)
 
-			fmt.Printf("Workspace mode: git-clone (from local repo matching ref)\n")
-			fmt.Printf("  Source: %s\n", source)
-			fmt.Printf("  Dest: %s\n", workspacePath)
+		// Create a temp directory for the workspace
+		tempDir, err := os.MkdirTemp("", "holon-solve-workspace-*")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create temp workspace directory: %w", err)
+		}
+		workspacePath = tempDir
+		preparer = workspace.NewGitClonePreparer()
+		cleanupNeeded = true
 
-			// Determine history mode
-			historyMode := solveWorkspaceHistory
-			if historyMode == "" {
-				historyMode = "full" // Default to full for local clones
-			}
+		fmt.Printf("Workspace mode: git-clone (from remote)\n")
+		fmt.Printf("  Source: %s\n", source)
+		fmt.Printf("  Dest: %s\n", workspacePath)
 
-			// Prepare using git-clone strategy
-			_, err = preparer.Prepare(ctx, workspace.PrepareRequest{
-				Source:  source,
-				Dest:    workspacePath,
-				Ref:     solveWorkspaceRef,
-				History: workspace.HistoryMode(historyMode),
-				CleanDest: true,
-			})
-			if err != nil {
-				os.RemoveAll(workspacePath)
-				return nil, fmt.Errorf("failed to prepare workspace using git-clone from local repo: %w", err)
-			}
+		// Determine history mode
+		historyMode := solveWorkspaceHistory
+		if historyMode == "" {
+			historyMode = "shallow" // Default to shallow for remote clones
+		}
 
-			// IMPORTANT: Fix the origin URL after local clone
-			// When using git clone --local, origin points to the local path
-			// We need to set it to the GitHub URL so pushes work correctly
-			githubURL := fmt.Sprintf("https://github.com/%s/%s.git", solveRef.Owner, solveRef.Repo)
-			client := git.NewClient(workspacePath)
-			if err := client.SetRemote(ctx, "origin", githubURL); err != nil {
-				os.RemoveAll(workspacePath)
-				return nil, fmt.Errorf("failed to set origin URL after local clone: %w", err)
-			}
-			fmt.Printf("  Fixed origin to: %s\n", githubURL)
-		} else {
-			// Decision 3: Clone from remote repository
-			source = fmt.Sprintf("https://github.com/%s/%s.git", solveRef.Owner, solveRef.Repo)
+		// Prepare using git-clone strategy
+		result, err := preparer.Prepare(ctx, workspace.PrepareRequest{
+			Source:  source,
+			Dest:    workspacePath,
+			Ref:     solveWorkspaceRef,
+			History: workspace.HistoryMode(historyMode),
+			CleanDest: true,
+		})
+		if err != nil {
+			os.RemoveAll(workspacePath)
+			return nil, fmt.Errorf("failed to prepare workspace using git-clone from remote: %w", err)
+		}
 
-			// Create a temp directory for the workspace
-			tempDir, err := os.MkdirTemp("", "holon-solve-workspace-*")
-			if err != nil {
-				return nil, fmt.Errorf("failed to create temp workspace directory: %w", err)
-			}
-			workspacePath = tempDir
-			preparer = workspace.NewGitClonePreparer()
-			cleanupNeeded = true
-
-			fmt.Printf("Workspace mode: git-clone (from remote)\n")
-			fmt.Printf("  Source: %s\n", source)
-			fmt.Printf("  Dest: %s\n", workspacePath)
-
-			// Determine history mode
-			historyMode := solveWorkspaceHistory
-			if historyMode == "" {
-				historyMode = "shallow" // Default to shallow for remote clones
-			}
-
-			// Prepare using git-clone strategy
-			result, err := preparer.Prepare(ctx, workspace.PrepareRequest{
-				Source:  source,
-				Dest:    workspacePath,
-				Ref:     solveWorkspaceRef,
-				History: workspace.HistoryMode(historyMode),
-				CleanDest: true,
-			})
-			if err != nil {
-				os.RemoveAll(workspacePath)
-				return nil, fmt.Errorf("failed to prepare workspace using git-clone from remote: %w", err)
-			}
-
-			// Log preparation details
-			fmt.Printf("  Strategy: %s\n", result.Strategy)
-			if result.HeadSHA != "" {
-				fmt.Printf("  HEAD: %s\n", result.HeadSHA)
-			}
-			if result.HasHistory {
-				if result.IsShallow {
-					fmt.Printf("  History: shallow\n")
-				} else {
-					fmt.Printf("  History: full\n")
-				}
+		// Log preparation details
+		fmt.Printf("  Strategy: %s\n", result.Strategy)
+		if result.HeadSHA != "" {
+			fmt.Printf("  HEAD: %s\n", result.HeadSHA)
+		}
+		if result.HasHistory {
+			if result.IsShallow {
+				fmt.Printf("  History: shallow\n")
 			} else {
-				fmt.Printf("  History: none\n")
+				fmt.Printf("  History: full\n")
 			}
+		} else {
+			fmt.Printf("  History: none\n")
 		}
 	}
 
@@ -308,6 +317,7 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 		path:         workspacePath,
 		preparer:     preparer,
 		cleanupNeeded: cleanupNeeded,
+		isTemp:        true, // Both local clone and remote clone create temporary workspaces
 	}, nil
 }
 
@@ -599,19 +609,20 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 
 	runner := NewRunner(rt)
 	err = runner.Run(ctx, RunnerConfig{
-		GoalStr:         goal,
-		TaskName:        fmt.Sprintf("solve-%s-%d", refType, solveRef.Number),
-		BaseImage:       resolvedImage,
-		AgentBundle:     solveAgent,
-		WorkspacePath:   workspacePrep.path,
-		ContextPath:     contextDir,
-		InputPath:       inputDir,
-		OutDir:          outDir,
-		RoleName:        solveRole,
-		LogLevel:        solveLogLevel,
-		Mode:            solveMode,
-		Cleanup:         cleanupMode,
-		AgentConfigMode: solveAgentConfigMode,
+		GoalStr:           goal,
+		TaskName:          fmt.Sprintf("solve-%s-%d", refType, solveRef.Number),
+		BaseImage:         resolvedImage,
+		AgentBundle:       solveAgent,
+		WorkspacePath:     workspacePrep.path,
+		ContextPath:       contextDir,
+		InputPath:         inputDir,
+		OutDir:            outDir,
+		RoleName:          solveRole,
+		LogLevel:          solveLogLevel,
+		Mode:              solveMode,
+		Cleanup:           cleanupMode,
+		AgentConfigMode:   solveAgentConfigMode,
+		WorkspaceIsTemporary: workspacePrep.isTemp,
 	})
 
 	if err != nil {
