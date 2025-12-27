@@ -262,6 +262,6 @@ func TestPublishWithoutToken(t *testing.T) {
 	if !strings.Contains(err.Error(), "GITHUB_TOKEN") && !strings.Contains(err.Error(), "HOLON_GITHUB_TOKEN") &&
 	   !strings.Contains(err.Error(), "authentication") && !strings.Contains(err.Error(), "credentials") &&
 	   !strings.Contains(err.Error(), "push") {
-		t.Logf("Warning: Error should mention authentication/credential issues, got: %v", err)
+		t.Errorf("Warning: Error should mention authentication/credential issues, got: %v", err)
 	}
 }

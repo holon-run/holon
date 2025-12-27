@@ -490,6 +490,8 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 				if err := snapshotClient.SetRemote(ctx, "origin", originURL); err == nil {
 					fmt.Printf("  Preserved origin from source: %s\n", originURL)
 				} else {
+					fmt.Printf("Warning: failed to preserve origin from source (%s): %v\n", originURL, err)
+				} else {
 					fmt.Printf("  Warning: failed to preserve origin from source (%s): %v\n", originURL, err)
 				}
 			}

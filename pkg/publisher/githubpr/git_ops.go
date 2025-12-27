@@ -54,7 +54,7 @@ func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) error {
 	}
 
 	// IMPORTANT: Stage changes immediately after applying patch
-	// This prevents CreateBranch's Checkout from discarding untracked files
+	// This ensures all patch changes are tracked and preserved for subsequent Git operations.
 	repo, err := gogit.PlainOpen(g.WorkspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
@@ -207,24 +207,3 @@ func (g *GitClient) EnsureCleanWorkspace() error {
 	return nil
 }
 
-// ResetHard performs a hard reset on the workspace, discarding all changes.
-func (g *GitClient) ResetHard() error {
-	repo, err := gogit.PlainOpen(g.WorkspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to open repository: %w", err)
-	}
-
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
-	}
-
-	// Reset to HEAD, discarding all changes
-	if err := worktree.Reset(&gogit.ResetOptions{
-		Mode: gogit.HardReset,
-	}); err != nil {
-		return fmt.Errorf("git reset --hard failed: %w", err)
-	}
-
-	return nil
-}
