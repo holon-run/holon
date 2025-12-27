@@ -51,6 +51,45 @@ make clean
 ./bin/holon run --spec task.yaml --image python:3.11 --env VAR=value --log-level debug
 ```
 
+### Logging
+
+Holon uses structured logging with zap, providing consistent, leveled console output. The logger supports multiple levels for different verbosity needs.
+
+**Log Levels:**
+- `debug`: Detailed debugging information (most verbose)
+- `info`: General informational messages
+- `progress`: Progress and status updates (default)
+- `minimal` or `warn`: Warnings and errors only
+- `error`: Error messages only
+
+**Setting Log Level:**
+```bash
+# Via CLI flag
+holon run --goal "Fix the bug" --log-level debug
+
+# Via project config
+cat > .holon/config.yaml << 'EOF'
+log_level: "debug"
+EOF
+
+# Default level is "progress"
+```
+
+**Logging in Code:**
+```go
+import holonlog "github.com/holon-run/holon/pkg/log"
+
+// Initialize logger (usually done in main)
+holonlog.Init(holonlog.Config{Level: holonlog.LevelDebug})
+
+// Use leveled logging
+holonlog.Debug("detailed debug info", "key", "value")
+holonlog.Info("general info", "item", "data")
+holonlog.Progress("operation progress", "percent", 50)
+holonlog.Warn("warning message", "issue", "description")
+holonlog.Error("error occurred", "error", err)
+```
+
 ### Project Configuration File
 
 Holon supports project-level configuration via `.holon/config.yaml` to reduce repeated command-line flags. The config file is automatically searched for in the current directory and its parent directories.
@@ -97,7 +136,7 @@ EOF
 
 # Config is automatically loaded
 holon run --goal "Fix the bug"
-# Output: Config: base_image = "python:3.11" (source: config)
+# Output with structured logging shows config resolution
 #         Config: log_level = "debug" (source: config)
 
 # CLI flags override config

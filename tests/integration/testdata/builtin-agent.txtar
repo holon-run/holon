@@ -13,8 +13,8 @@ stdout 'Auto-install: DISABLED'
 # Test that default agent is tried when no agent specified
 # This should attempt to download the builtin agent and fail gracefully
 ! exec holon run --goal "test goal" --workspace /tmp
-stdout 'No agent specified, trying builtin default agent'
-stdout 'Builtin agent not available'
+stdout 'no agent specified'
+stdout 'falling back to local build system'
 
 # Test with explicit default agent
 ! exec holon run --agent default --goal "test goal" --workspace /tmp

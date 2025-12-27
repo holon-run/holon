@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	holonlog "github.com/holon-run/holon/pkg/log"
 )
 
 // Cache manages agent bundle storage and aliases
@@ -76,7 +78,7 @@ func (c *Cache) StoreBundle(url, checksum string, reader io.Reader, size int64) 
 	if err != nil {
 		if removeErr := os.RemoveAll(bundleDir); removeErr != nil {
 			// Log the cleanup error but don't mask the original error
-			fmt.Printf("Warning: failed to cleanup bundle directory: %v\n", removeErr)
+			holonlog.Warn("failed to cleanup bundle directory", "error", removeErr)
 		}
 		return "", fmt.Errorf("failed to write bundle file: %w", err)
 	}
@@ -85,7 +87,7 @@ func (c *Cache) StoreBundle(url, checksum string, reader io.Reader, size int64) 
 	if written != size {
 		if removeErr := os.RemoveAll(bundleDir); removeErr != nil {
 			// Log the cleanup error but don't mask the original error
-			fmt.Printf("Warning: failed to cleanup bundle directory: %v\n", removeErr)
+			holonlog.Warn("failed to cleanup bundle directory", "error", removeErr)
 		}
 		return "", fmt.Errorf("incomplete write: expected %d bytes, wrote %d", size, written)
 	}
