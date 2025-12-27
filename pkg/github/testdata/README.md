@@ -40,7 +40,7 @@ The following fixtures are referenced in tests:
 1. A valid GitHub token with appropriate permissions
 2. Access to the target repository (default: `holon-run/holon`)
 
-### Recording Fixtures
+### Recording Fixtures Locally
 
 To record new fixtures or update existing ones:
 
@@ -55,6 +55,21 @@ go test -v ./pkg/github/ -run TestFetchPRInfo
 # Or run all tests (will record/overwrite all fixtures)
 go test -v ./pkg/github/
 ```
+
+### Recording Fixtures Using Holon
+
+You can also record fixtures using holon in a containerized environment:
+
+```bash
+# Use holon to run tests in record mode with the token from the container
+holon run --goal "Record GitHub VCR fixtures" \
+  --env HOLON_VCR_MODE=record \
+  --env GITHUB_TOKEN \
+  --image golang:1.24 \
+  --workspace .
+```
+
+The token from the host's `GITHUB_TOKEN` environment variable will be passed to the container and used for recording.
 
 ### Example: Recording a New Fixture
 

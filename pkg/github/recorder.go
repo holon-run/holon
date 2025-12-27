@@ -1,6 +1,7 @@
 package github
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -58,7 +59,8 @@ func NewRecorder(t *testing.T, name string) (*Recorder, error) {
 	mode := getRecorderMode()
 
 	// Determine fixture path
-	fixturePath := filepath.Join("testdata", "fixtures", name+".yaml")
+	// Note: go-vcr automatically adds ".yaml" extension, so don't include it here
+	fixturePath := filepath.Join("testdata", "fixtures", name)
 
 	// Determine VCR mode
 	var vcrMode vcr.Mode
@@ -71,6 +73,10 @@ func NewRecorder(t *testing.T, name string) (*Recorder, error) {
 	// Create recorder
 	r, err := vcr.NewAsMode(fixturePath, vcrMode, nil)
 	if err != nil {
+		// Wrap cassette not found error as os.ErrNotExist for easier error checking
+		if errors.Is(err, cassette.ErrCassetteNotFound) {
+			return nil, fmt.Errorf("cassette %q not found: %w", fixturePath, os.ErrNotExist)
+		}
 		return nil, fmt.Errorf("failed to create recorder: %w", err)
 	}
 
@@ -93,7 +99,9 @@ type Recorder struct {
 // Stop stops the recorder
 func (r *Recorder) Stop() error {
 	if r.recorder != nil {
-		return r.recorder.Stop()
+		if err := r.recorder.Stop(); err != nil {
+			return fmt.Errorf("failed to stop recorder: %w", err)
+		}
 	}
 	return nil
 }

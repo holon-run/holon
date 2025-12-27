@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,15 +24,27 @@ func setupTestClient(t *testing.T, fixtureName string) (*Client, *Recorder) {
 	rec, err := NewRecorder(t, fixtureName)
 	if err != nil {
 		// If cassette not found and we're in replay mode, skip the test
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			t.Skipf("fixture %q not found. To record it, run: HOLON_VCR_MODE=record GITHUB_TOKEN=your_token go test -v ./pkg/github/ -run %s", fixtureName, t.Name())
 		}
 		t.Fatalf("failed to create recorder: %v", err)
 	}
 
 	// Create test client with recorder's HTTP client
-	// Use a dummy token - it will be filtered from recordings
-	testClient := NewClient("test-token",
+	// Use a real token when recording, dummy token when replaying
+	var token string
+	if rec.IsRecording() {
+		// Use actual GitHub token from environment for recording
+		token = os.Getenv("GITHUB_TOKEN")
+		if token == "" {
+			t.Fatal("GITHUB_TOKEN environment variable must be set when recording fixtures")
+		}
+	} else {
+		// Use dummy token for replay mode (it will be filtered from recordings)
+		token = "test-token"
+	}
+
+	testClient := NewClient(token,
 		WithTimeout(10*time.Second),
 	)
 

@@ -213,8 +213,24 @@ func (c *Client) GitHubClient() *github.Client {
 	if c.githubClient == nil {
 		ctx := context.Background()
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: c.token})
-		tc := oauth2.NewClient(ctx, ts)
-		c.githubClient = github.NewClient(tc)
+
+		// Use custom HTTP client if provided (e.g., for VCR recording)
+		// We need to wrap the oauth2 transport with the custom client's transport
+		if c.httpClient != nil && c.httpClient.Transport != nil {
+			// Create oauth2 transport that uses the custom transport (e.g., VCR recorder)
+			tc := &http.Client{
+				Transport: &oauth2.Transport{
+					Source: ts,
+					Base:   c.httpClient.Transport,
+				},
+				Timeout: c.httpClient.Timeout,
+			}
+			c.githubClient = github.NewClient(tc)
+		} else {
+			// Create default oauth2 client
+			tc := oauth2.NewClient(ctx, ts)
+			c.githubClient = github.NewClient(tc)
+		}
 
 		// Set custom base URL if configured (for testing)
 		if c.baseURL != DefaultBaseURL && c.baseURL != "" {
