@@ -124,25 +124,32 @@ runs:
 
     - name: Checkout holon repository (for building)
       if: inputs.build_from_source == 'true'
-      uses: actions/checkout@v4
-      with:
-        repository: ${{ inputs.holon_repository }}
-        path: holon-source
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        HOLON_SRC_DIR='${{ runner.temp }}/holon-source'
+        rm -rf "$HOLON_SRC_DIR"
+
+        echo "Cloning holon source to $HOLON_SRC_DIR ..."
+        git clone --depth 1 "https://github.com/${{ inputs.holon_repository }}.git" "$HOLON_SRC_DIR"
 
     - name: Setup Go (for building)
       if: inputs.build_from_source == 'true'
       uses: actions/setup-go@v5
       with:
-        go-version-file: holon-source/go.mod
+        go-version-file: ${{ runner.temp }}/holon-source/go.mod
         cache: true
-        cache-dependency-path: holon-source/go.sum
+        cache-dependency-path: ${{ runner.temp }}/holon-source/go.sum
 
     - name: Build from source (if enabled)
       if: inputs.build_from_source == 'true'
       shell: bash
       run: |
+        set -euo pipefail
+
         # Build in separate directory
-        cd holon-source
+        cd "${{ runner.temp }}/holon-source"
         echo "Building holon from source..."
         make build
 
