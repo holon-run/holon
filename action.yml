@@ -183,6 +183,14 @@ runs:
         # Add holon to PATH
         export PATH="$RUNNER_TEMP/holon/bin:$PATH"
 
+        # Determine output directory
+        OUT_DIR="${{ inputs.out_dir }}"
+        if [ -z "$OUT_DIR" ]; then
+          # Create temp directory to avoid polluting workspace
+          OUT_DIR=$(mktemp -d -t holon-output-XXXXXX)
+          echo "✅ Using temporary output directory: $OUT_DIR"
+        fi
+
         # Build solve command arguments
         SOLVE_ARGS=()
         if [ -n "${{ inputs.repo }}" ]; then
@@ -206,9 +214,9 @@ runs:
         if [ -n "${{ inputs.input_dir }}" ]; then
           SOLVE_ARGS+=(--input "${{ inputs.input_dir }}")
         fi
-        if [ -n "${{ inputs.out_dir }}" ]; then
-          SOLVE_ARGS+=(--out "${{ inputs.out_dir }}")
-        fi
+
+        # Always add out directory (either user-specified or temp)
+        SOLVE_ARGS+=(--out "$OUT_DIR")
 
         # Run holon solve
         echo "Running: holon solve ${{ inputs.ref }} ${SOLVE_ARGS[*]} --log-level ${{ inputs.log_level }}"
