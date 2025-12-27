@@ -1146,3 +1146,158 @@ exit 1`
 		})
 	}
 }
+
+// TestPrepareWorkspace_TemporaryWorkspace tests the WorkspaceIsTemporary flag behavior
+func TestPrepareWorkspace_TemporaryWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows - requires Unix shell")
+	}
+
+	// Create a temporary git repository to use as a temporary workspace
+	tempWorkspace := t.TempDir()
+	if err := runCmd(tempWorkspace, "git", "init"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if err := runCmd(tempWorkspace, "git", "config", "user.email", "test@example.com"); err != nil {
+		t.Fatalf("git config failed: %v", err)
+	}
+	if err := runCmd(tempWorkspace, "git", "config", "user.name", "Test User"); err != nil {
+		t.Fatalf("git config failed: %v", err)
+	}
+
+	// Create and commit a file so we have a HEAD SHA
+	testFile := filepath.Join(tempWorkspace, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("write test file failed: %v", err)
+	}
+	if err := runCmd(tempWorkspace, "git", "add", "test.txt"); err != nil {
+		t.Fatalf("git add failed: %v", err)
+	}
+	if err := runCmd(tempWorkspace, "git", "commit", "-m", "initial commit"); err != nil {
+		t.Fatalf("git commit failed: %v", err)
+	}
+
+	// Get the HEAD SHA for verification
+	headShaBytes, err := exec.Command("git", "-C", tempWorkspace, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse failed: %v", err)
+	}
+	expectedHeadSHA := strings.TrimSpace(string(headShaBytes))
+
+	// Create output directory for manifest
+	outDir := t.TempDir()
+
+	tests := []struct {
+		name                    string
+		workspaceIsTemporary    bool
+		wantStrategy            string
+		wantWorkspacePath       string
+		wantManifestWritten     bool
+		wantNoSnapshotCreated   bool
+	}{
+		{
+			name:                  "WorkspaceIsTemporary true - uses workspace directly, writes manifest",
+			workspaceIsTemporary:  true,
+			wantStrategy:          "existing",
+			wantWorkspacePath:     tempWorkspace,
+			wantManifestWritten:   true,
+			wantNoSnapshotCreated: true,
+		},
+		{
+			name:                  "WorkspaceIsTemporary false - creates snapshot, writes manifest",
+			workspaceIsTemporary:  false,
+			wantStrategy:          "git-clone",
+			wantWorkspacePath:     "", // Will be snapshot path, different from tempWorkspace
+			wantManifestWritten:   true,
+			wantNoSnapshotCreated: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			cfg := &ContainerConfig{
+				Workspace:            tempWorkspace,
+				WorkspaceIsTemporary: tt.workspaceIsTemporary,
+				OutDir:               outDir,
+			}
+
+			// Call prepareWorkspace
+			resultPath, preparer, err := prepareWorkspace(ctx, cfg)
+			if err != nil {
+				t.Fatalf("prepareWorkspace failed: %v", err)
+			}
+
+			// Verify the preparer is of the correct type
+			if tt.workspaceIsTemporary {
+				if _, ok := preparer.(*workspace.ExistingPreparer); !ok {
+					t.Errorf("Expected ExistingPreparer, got %T", preparer)
+				}
+			} else {
+				if _, ok := preparer.(*workspace.GitClonePreparer); !ok {
+					t.Errorf("Expected GitClonePreparer, got %T", preparer)
+				}
+			}
+
+			// For temporary workspace, the returned path should be the same as input
+			if tt.workspaceIsTemporary {
+				if resultPath != tt.wantWorkspacePath {
+					t.Errorf("Workspace path = %q, want %q (should use workspace directly)", resultPath, tt.wantWorkspacePath)
+				}
+			} else {
+				// For non-temporary, the result should be a snapshot (different path)
+				if resultPath == tt.wantWorkspacePath {
+					t.Errorf("Workspace path = %q, should be different from input (snapshot created)", resultPath)
+				}
+				// Clean up the snapshot
+				defer os.RemoveAll(resultPath)
+			}
+
+			// Verify workspace manifest was written
+			manifestPath := filepath.Join(outDir, "workspace.manifest.json")
+			manifestData, err := os.ReadFile(manifestPath)
+			if err != nil {
+				if tt.wantManifestWritten {
+					t.Fatalf("Failed to read workspace manifest: %v", err)
+				}
+			} else if !tt.wantManifestWritten {
+				t.Error("Workspace manifest was written, but expected it not to be")
+			}
+
+			if tt.wantManifestWritten {
+				var manifest workspace.Manifest
+				if err := json.Unmarshal(manifestData, &manifest); err != nil {
+					t.Fatalf("Failed to unmarshal manifest: %v", err)
+				}
+
+				// Verify the strategy in manifest
+				if manifest.Strategy != tt.wantStrategy {
+					t.Errorf("Manifest strategy = %q, want %q", manifest.Strategy, tt.wantStrategy)
+				}
+
+				// Verify HEAD SHA is present for git repos
+				if manifest.HeadSHA == "" {
+					t.Error("Manifest HEAD SHA is empty")
+				} else if manifest.HeadSHA != expectedHeadSHA {
+					t.Errorf("Manifest HEAD SHA = %q, want %q", manifest.HeadSHA, expectedHeadSHA)
+				}
+
+				// Verify has_history is true for non-shallow repos
+				if !manifest.HasHistory {
+					t.Error("Manifest HasHistory = false, want true (full history repo)")
+				}
+
+				// Verify is_shallow is false for full history repos
+				if manifest.IsShallow {
+					t.Error("Manifest IsShallow = true, want false (not a shallow clone)")
+				}
+			}
+
+			// Cleanup preparer if it implements Cleanup
+			if preparer != nil {
+				preparer.Cleanup(resultPath)
+			}
+		})
+	}
+}

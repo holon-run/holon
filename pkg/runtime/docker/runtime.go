@@ -437,8 +437,38 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 	if cfg.WorkspaceIsTemporary {
 		holonlog.Info("using temporary workspace directly (no snapshot needed)", "workspace", cfg.Workspace)
 
+		// Use an ExistingPreparer to prepare the temporary workspace and
+		// still write the workspace manifest so downstream consumers see
+		// consistent metadata regardless of how the workspace was created.
+		preparer := workspace.NewExistingPreparer()
+
+		// Determine history mode for manifest generation
+		historyMode := cfg.WorkspaceHistory
+		if historyMode == "" {
+			historyMode = workspace.HistoryFull // Default to full history
+		}
+
+		prepareResult, err := preparer.Prepare(ctx, workspace.PrepareRequest{
+			Source:     cfg.Workspace,
+			Dest:       cfg.Workspace,
+			Ref:        cfg.WorkspaceRef,
+			History:    historyMode,
+			Submodules: workspace.SubmodulesNone,
+			CleanDest:  false,
+		})
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to prepare temporary workspace: %w", err)
+		}
+
+		// Write workspace manifest to output directory if specified
+		if cfg.OutDir != "" {
+			if err := writeWorkspaceManifest(cfg.OutDir, prepareResult); err != nil {
+				return "", nil, fmt.Errorf("failed to write workspace manifest: %w", err)
+			}
+		}
+
 		// Return the workspace as-is with an existing preparer (no-op cleanup)
-		return cfg.Workspace, workspace.NewExistingPreparer(), nil
+		return cfg.Workspace, preparer, nil
 	}
 
 	// Create snapshot directory outside workspace
