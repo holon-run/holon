@@ -73,7 +73,7 @@ func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig, wor
 		detectResult := image.Detect(workspace)
 		baseImageValue = detectResult.Image
 		source = "auto-detect"
-		holonlog.Info(image.FormatResult(detectResult))
+		holonlog.Info("config image auto-detect", "result", image.FormatResult(detectResult))
 	} else {
 		// Fall back to default
 		baseImageValue = image.DefaultImage
