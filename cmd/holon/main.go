@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/holon-run/holon/pkg/config"
 	"github.com/holon-run/holon/pkg/image"
@@ -116,6 +117,23 @@ func logConfigResolution(key, value, source string) {
 	holonlog.Info("config", "key", key, "value", value, "source", source)
 }
 
+// resolveOutDir resolves the output directory for run command.
+// Precedence: CLI flag (--output/--out) > temp directory.
+// Returns the output directory path, whether it's a default temp dir, and an error.
+func resolveOutDir(workspace string) (string, bool, error) {
+	// If user provided --output or --out flag, use it directly
+	if outDir != "" {
+		return outDir, false, nil
+	}
+
+	// Default: create a temporary output directory
+	tempDir, err := os.MkdirTemp("", "holon-output-*")
+	if err != nil {
+		return "", false, fmt.Errorf("failed to create temp output dir: %w", err)
+	}
+	return tempDir, true, nil
+}
+
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run a Holon agent execution",
@@ -152,6 +170,28 @@ var runCmd = &cobra.Command{
 		}
 		defer holonlog.Sync()
 
+		// Resolve output directory
+		resolvedOutDir, outIsTemp, err := resolveOutDir(absWorkspace)
+		if err != nil {
+			return fmt.Errorf("failed to resolve output directory: %w", err)
+		}
+
+		// Log output directory choice
+		if outIsTemp {
+			holonlog.Info("config", "key", "output", "value", resolvedOutDir, "source", "temp")
+		} else {
+			holonlog.Info("config", "key", "output", "value", resolvedOutDir, "source", "cli")
+
+			// Warn if output directory is inside workspace
+			absOut, err := filepath.Abs(resolvedOutDir)
+			if err == nil {
+				relToWorkspace, err := filepath.Rel(absWorkspace, absOut)
+				if err == nil && !strings.HasPrefix(relToWorkspace, "..") {
+					holonlog.Warn("output directory is inside workspace", "path", resolvedOutDir)
+				}
+			}
+		}
+
 		rt, err := docker.NewRuntime()
 		if err != nil {
 			return fmt.Errorf("failed to initialize runtime: %w", err)
@@ -167,7 +207,8 @@ var runCmd = &cobra.Command{
 			WorkspacePath:   workspacePath,
 			ContextPath:     contextPath,
 			InputPath:       inputPath,
-			OutDir:          outDir,
+			OutDir:          resolvedOutDir,
+			OutDirIsTemp:    outIsTemp,
 			RoleName:        roleName,
 			EnvVarsList:     envVarsList,
 			LogLevel:        resolved.logLevel,
@@ -197,7 +238,9 @@ func init() {
 	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVar(&inputPath, "input", "", "Path to input directory (default: creates temp dir, auto-cleaned)")
-	runCmd.Flags().StringVarP(&outDir, "out", "o", "./holon-output", "Path to output directory")
+	runCmd.Flags().StringVarP(&outDir, "output", "O", "", "Path to output directory (default: creates temp dir to avoid polluting workspace)")
+	_ = runCmd.Flags().MarkDeprecated("out", "use --output instead")
+	runCmd.Flags().StringVarP(&outDir, "out", "o", "", "Deprecated: use --output")
 	runCmd.Flags().StringVar(&cleanupMode, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
 	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. developer, reviewer)")
 	runCmd.Flags().StringVar(&mode, "mode", "solve", "Execution mode: solve, pr-fix, plan, review")

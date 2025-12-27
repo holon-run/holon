@@ -8,9 +8,10 @@ Holon runs an AI coding agent inside a Docker sandbox and emits **standard artif
 - **Fits CI**: ship outputs as artifacts, post summaries to logs, and open/update PRs in workflows
 
 ## Outputs (artifacts)
-Holon writes to the directory specified by `--out`:
-- For `holon run`: default is `./holon-output`
-- For `holon solve`: default creates a temporary directory (e.g., `/tmp/holon-solve-output-*`)
+Holon writes to the directory specified by `--output`:
+- Default creates a temporary directory (e.g., `$TMPDIR/holon-output-*`) to avoid polluting your workspace
+- Use `--output <dir>` to specify a custom location
+- `--out` is accepted as a deprecated alias
 
 Common artifacts:
 
@@ -94,7 +95,7 @@ export ANTHROPIC_API_KEY=...
 make build
 (cd agents/claude && npm run bundle)
 BUNDLE_PATH=$(ls -t agents/claude/dist/agent-bundles/*.tar.gz | head -n 1)
-./bin/holon run --spec examples/fix-bug.yaml --image golang:1.22 --agent "$BUNDLE_PATH" --workspace . --out ./holon-output
+./bin/holon run --spec examples/fix-bug.yaml --image golang:1.22 --agent "$BUNDLE_PATH" --workspace . --output ./holon-output
 ```
 
 Apply the patch to your working tree (explicit, outside the sandbox):
@@ -104,7 +105,7 @@ git apply --3way holon-output/diff.patch
 
 Run with an ad-hoc goal (no spec file needed):
 ```bash
-./bin/holon run --goal "Fix the bug in foo.go" --workspace . --out ./holon-output
+./bin/holon run --goal "Fix the bug in foo.go" --workspace . --output ./holon-output
 ```
 
 ## Quickstart (GitHub Actions)
@@ -206,7 +207,8 @@ holon solve pr <ref>      # Force PR mode
 - `--agent <bundle>`: Agent bundle reference
 - `--image <image>`: Docker base image (default: auto-detect)
 - `--image-auto-detect`: Enable automatic base image detection (default: `true`)
-- `--out <dir>`: Output directory (default: creates temp dir to avoid polluting workspace)
+- `--output <dir>`: Output directory (default: creates temp dir to avoid polluting workspace)
+- `--out <dir>`: Deprecated alias for `--output`
 - `--role <role>`: Role to assume (e.g., `developer`, `reviewer`)
 - `--log-level <level>`: Log verbosity (default: `progress`)
 

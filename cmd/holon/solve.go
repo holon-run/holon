@@ -388,10 +388,10 @@ func fetchRemoteUpdates(ctx context.Context, dir string) error {
 }
 
 // resolveSolveOutDir resolves the output directory for solve command.
-// Precedence: CLI flag (--out) > temp directory.
+// Precedence: CLI flag (--output/--out) > temp directory.
 // Returns the output directory path, whether it's a default temp dir, and an error.
 func resolveSolveOutDir(_ string) (string, bool, error) {
-	// If user provided --out flag, use it directly
+	// If user provided --output or --out flag, use it directly
 	if solveOutDir != "" {
 		return solveOutDir, false, nil
 	}
@@ -847,7 +847,9 @@ func resolveSolveBaseImage(workspace string) (string, error) {
 func init() {
 	solveCmd.Flags().StringVar(&solveRepo, "repo", "", "Default repository in owner/repo format (for numeric references)")
 	solveCmd.Flags().StringVar(&solveBase, "base", "main", "Base branch for PR creation (issue mode only)")
-	solveCmd.Flags().StringVarP(&solveOutDir, "out", "o", "", "Output directory (default: creates temp dir to avoid polluting workspace)")
+	solveCmd.Flags().StringVarP(&solveOutDir, "output", "O", "", "Output directory (default: creates temp dir to avoid polluting workspace)")
+	_ = solveCmd.Flags().MarkDeprecated("out", "use --output instead")
+	solveCmd.Flags().StringVarP(&solveOutDir, "out", "o", "", "Deprecated: use --output")
 	solveCmd.Flags().StringVarP(&solveContext, "context", "c", "", "Additional context directory (deprecated)")
 	solveCmd.Flags().StringVar(&solveInput, "input", "", "Input directory path (default: creates temp dir, auto-cleaned)")
 	solveCmd.Flags().StringVar(&solveCleanup, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")

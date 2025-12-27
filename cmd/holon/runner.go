@@ -36,6 +36,7 @@ type RunnerConfig struct {
 	ContextPath     string
 	InputPath       string // Optional: path to input directory (if empty, creates temp dir)
 	OutDir          string
+	OutDirIsTemp    bool   // true if output dir is a temporary directory (vs user-provided)
 	RoleName        string
 	EnvVarsList     []string
 	LogLevel        string
@@ -104,6 +105,14 @@ func (r *Runner) Run(ctx context.Context, cfg RunnerConfig) error {
 	if (inputIsTemp && (cleanupMode == "auto" || cleanupMode == "all")) ||
 		(!inputIsTemp && cleanupMode == "all") {
 		defer os.RemoveAll(inputDir)
+	}
+
+	// Cleanup output directory based on mode and whether it's temp
+	// For temp output: clean on "all" only (preserve by default for inspection)
+	// For user output: clean only on "all"
+	if (cfg.OutDirIsTemp && cleanupMode == "all") ||
+		(!cfg.OutDirIsTemp && cleanupMode == "all") {
+		defer os.RemoveAll(cfg.OutDir)
 	}
 
 	// Create input subdirectories
