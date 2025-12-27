@@ -23,7 +23,7 @@ jobs:
     name: Run Holon (via holon-solve)
     uses: ./.github/workflows/holon-solve.yml
     with:
-      # Keep config minimal; holon-solve derives issue_number/comment_body/mode/out_dir from the event.
+      # Keep config minimal; holon-solve derives issue_number/comment_body/mode/output_dir from the event.
       base: 'main'
       log_level: 'debug'
       build_from_source: true

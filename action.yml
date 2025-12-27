@@ -63,8 +63,8 @@ inputs:
     description: 'Input directory path for artifact packaging (default: temp dir, auto-cleaned)'
     required: false
     default: ''
-  out_dir:
-    description: 'Output directory path for artifact packaging (default: temp dir, auto-cleaned)'
+  output_dir:
+    description: 'Output directory path for artifact packaging (preferred; default: temp dir, auto-cleaned)'
     required: false
     default: ''
 
@@ -183,8 +183,11 @@ runs:
         # Add holon to PATH
         export PATH="$RUNNER_TEMP/holon/bin:$PATH"
 
-        # Determine output directory
-        OUT_DIR="${{ inputs.out_dir }}"
+        # Determine output directory (prefer output_dir)
+        OUT_DIR="${{ inputs.output_dir }}"
+        if [ -z "$OUT_DIR" ]; then
+          OUT_DIR="${{ inputs.out_dir }}"
+        fi
         if [ -z "$OUT_DIR" ]; then
           # When used directly without reusable workflow, create temp dir to avoid polluting workspace
           OUT_DIR=$(mktemp -d -t holon-output-XXXXXX)

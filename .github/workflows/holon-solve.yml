@@ -43,7 +43,7 @@ on:
         required: false
         type: string
         default: ''
-      out_dir:
+      output_dir:
         description: 'Output directory path for artifact packaging (empty = temp dir, kept for debug)'
         required: false
         type: string
@@ -134,23 +134,27 @@ jobs:
             INPUT_DIR="$(mktemp -d -t holon-input-XXXXXX)"
           fi
 
-          OUT_DIR_INPUT='${{ inputs.out_dir }}'
-          if [ -n "$OUT_DIR_INPUT" ]; then
-            OUT_DIR="$OUT_DIR_INPUT"
-            mkdir -p "$OUT_DIR"
+          OUTPUT_DIR_INPUT='${{ inputs.output_dir }}'
+          OUT_DIR_DEPRECATED='${{ inputs.out_dir }}'
+          if [ -n "$OUTPUT_DIR_INPUT" ]; then
+            OUTPUT_DIR="$OUTPUT_DIR_INPUT"
+            mkdir -p "$OUTPUT_DIR"
+          elif [ -n "$OUT_DIR_DEPRECATED" ]; then
+            OUTPUT_DIR="$OUT_DIR_DEPRECATED"
+            mkdir -p "$OUTPUT_DIR"
           else
-            OUT_DIR="$(mktemp -d -t holon-output-XXXXXX)"
+            OUTPUT_DIR="$(mktemp -d -t holon-output-XXXXXX)"
           fi
 
           echo "INPUT_DIR=$INPUT_DIR" >> "$GITHUB_ENV"
-          echo "OUT_DIR=$OUT_DIR" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$OUTPUT_DIR" >> "$GITHUB_ENV"
           echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
           echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
           echo "comment_body<<__HOLON_COMMENT__" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$COMMENT_BODY" >> "$GITHUB_OUTPUT"
           echo "__HOLON_COMMENT__" >> "$GITHUB_OUTPUT"
           echo "input_dir=$INPUT_DIR" >> "$GITHUB_OUTPUT"
-          echo "out_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
+          echo "output_dir=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
         env:
           INPUT_COMMENT_BODY: ${{ inputs.comment_body }}
           EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
@@ -344,7 +348,7 @@ jobs:
           log_level: ${{ inputs.log_level }}
           workspace: ${{ inputs.workspace }}
           input_dir: ${{ steps.ctx.outputs.input_dir }}
-          out_dir: ${{ steps.ctx.outputs.out_dir }}
+          out_dir: ${{ steps.ctx.outputs.output_dir }}
           version: ${{ inputs.version }}
           build_from_source: ${{ inputs.build_from_source }}
           holon_repository: ${{ inputs.holon_repository }}
@@ -353,7 +357,7 @@ jobs:
         id: result
         if: always()
         run: |
-          OUT_DIR='${{ steps.ctx.outputs.out_dir }}'
+          OUTPUT_DIR='${{ steps.ctx.outputs.output_dir }}'
           SHOULD_RUN='${{ steps.gate.outputs.should_run }}'
           REASON='${{ steps.gate.outputs.reason }}'
 
@@ -367,9 +371,9 @@ jobs:
           fi
 
           # Check for summary
-          if [ -f "$OUT_DIR/summary.md" ]; then
-            cat "$OUT_DIR/summary.md" >> $GITHUB_STEP_SUMMARY
-            echo "summary=$OUT_DIR/summary.md" >> $GITHUB_OUTPUT
+          if [ -f "$OUTPUT_DIR/summary.md" ]; then
+            cat "$OUTPUT_DIR/summary.md" >> $GITHUB_STEP_SUMMARY
+            echo "summary=$OUTPUT_DIR/summary.md" >> $GITHUB_OUTPUT
           else
             echo "summary=" >> $GITHUB_OUTPUT
           fi
@@ -388,7 +392,7 @@ jobs:
           set -euo pipefail
 
           INPUT_DIR='${{ steps.ctx.outputs.input_dir }}'
-          OUT_DIR='${{ steps.ctx.outputs.out_dir }}'
+          OUTPUT_DIR='${{ steps.ctx.outputs.output_dir }}'
 
           ARTIFACT_DIR="$(mktemp -d -t holon-artifact-XXXXXX)"
           mkdir -p "$ARTIFACT_DIR/input" "$ARTIFACT_DIR/output"
@@ -396,8 +400,8 @@ jobs:
           if [ -d "$INPUT_DIR" ]; then
             cp -a "$INPUT_DIR/." "$ARTIFACT_DIR/input/" || true
           fi
-          if [ -d "$OUT_DIR" ]; then
-            cp -a "$OUT_DIR/." "$ARTIFACT_DIR/output/" || true
+          if [ -d "$OUTPUT_DIR" ]; then
+            cp -a "$OUTPUT_DIR/." "$ARTIFACT_DIR/output/" || true
           fi
 
           echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
