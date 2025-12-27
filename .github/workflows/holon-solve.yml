@@ -67,8 +67,8 @@ on:
       anthropic_api_key:
         description: 'Anthropic API Key'
         required: true
-      github_token:
-        description: 'GitHub Token'
+      holon_github_token:
+        description: 'GitHub Token (optional; defaults to github.token)'
         required: false
       anthropic_base_url:
         description: 'Anthropic Base URL'
@@ -239,7 +239,7 @@ jobs:
           echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
           echo "reason=$REASON" >> "$GITHUB_OUTPUT"
         env:
-          GH_TOKEN: ${{ secrets.github_token || github.token }}
+          GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
           REPO: ${{ github.repository }}
@@ -271,7 +271,7 @@ jobs:
 
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
         env:
-          GH_TOKEN: ${{ secrets.github_token || github.token }}
+          GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
           REPO: ${{ github.repository }}
           INPUT_BASE: ${{ inputs.base }}
           EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -299,7 +299,7 @@ jobs:
 
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
         env:
-          GH_TOKEN: ${{ secrets.github_token || github.token }}
+          GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
           REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ steps.ctx.outputs.issue_number }}
           EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -336,7 +336,7 @@ jobs:
             echo "✅ Detected: Issue → mode=solve"
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.github_token || github.token }}
+          GITHUB_TOKEN: ${{ secrets.holon_github_token || github.token }}
 
       - name: Write input metadata
         id: input-meta
@@ -397,7 +397,7 @@ jobs:
           agent: ${{ inputs.agent }}
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
           anthropic_base_url: ${{ secrets.anthropic_base_url || 'https://api.anthropic.com' }}
-          github_token: ${{ secrets.github_token || github.token }}
+          github_token: ${{ secrets.holon_github_token }}
           log_level: ${{ inputs.log_level }}
           workspace: ${{ inputs.workspace }}
           input_dir: ${{ steps.ctx.outputs.input_dir }}

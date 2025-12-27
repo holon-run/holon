@@ -24,9 +24,9 @@ inputs:
     required: false
     default: 'https://api.anthropic.com'
   github_token:
-    description: 'GitHub Token'
+    description: 'Explicit GitHub Token override (highest priority). Leave empty to use Holonbot token (if available) or fall back to github.token.'
     required: false
-    default: ${{ github.token }}
+    default: ''
   holonbot_broker_url:
     description: 'URL of the Holonbot Token Broker'
     required: false
@@ -75,27 +75,43 @@ runs:
       id: get_token
       shell: bash
       run: |
+        # Token precedence:
+        # 1) Explicit user-provided token (inputs.github_token)
+        # 2) Holonbot App token via broker exchange (requires id-token permission)
+        # 3) GitHub Actions runtime token (github.token)
+
+        if [ -n "${{ inputs.github_token }}" ]; then
+          echo "Using explicit github_token input."
+          echo "token=${{ inputs.github_token }}" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
         if [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
           echo "Fetching OIDC token from GitHub Actions runtime..."
           OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r '.value')
 
           if [ -n "$OIDC_TOKEN" ] && [ "$OIDC_TOKEN" != "null" ]; then
-            echo "Sending OIDC token to broker: ${{ inputs.holonbot_broker_url }}"
-            RESPONSE=$(curl -s -X POST "${{ inputs.holonbot_broker_url }}" \
+            if [ -z "${{ inputs.holonbot_broker_url }}" ]; then
+              echo "Skipping token exchange: holonbot_broker_url is empty."
+            else
+              echo "Sending OIDC token to broker: ${{ inputs.holonbot_broker_url }}"
+              RESPONSE=$(curl -s -X POST "${{ inputs.holonbot_broker_url }}" \
               -H "Authorization: Bearer $OIDC_TOKEN" \
               -H "Content-Type: application/json")
-            echo "Broker response: $RESPONSE"
 
-            BOT_TOKEN=$(echo $RESPONSE | jq -r '.token // empty')
+              # Do not echo full broker response (may contain token).
 
-            if [ -n "$BOT_TOKEN" ]; then
-              echo "Successfully obtained Holonbot token."
-              echo "token=$BOT_TOKEN" >> $GITHUB_OUTPUT
-              exit 0
-            else
-              ERROR=$(echo $RESPONSE | jq -r '.error // "Unknown error"')
-              MSG=$(echo $RESPONSE | jq -r '.message // "No message provided"')
-              echo "::warning title=Holonbot Auth::Token exchange failed: $ERROR ($MSG). Falling back to providing github.token."
+              BOT_TOKEN=$(echo $RESPONSE | jq -r '.token // empty')
+
+              if [ -n "$BOT_TOKEN" ]; then
+                echo "Successfully obtained Holonbot token."
+                echo "token=$BOT_TOKEN" >> $GITHUB_OUTPUT
+                exit 0
+              else
+                ERROR=$(echo $RESPONSE | jq -r '.error // "Unknown error"')
+                MSG=$(echo $RESPONSE | jq -r '.message // "No message provided"')
+                echo "::warning title=Holonbot Auth::Token exchange failed: $ERROR ($MSG). Falling back to github.token."
+              fi
             fi
           else
             echo "::warning title=Holonbot Auth::Failed to fetch OIDC token. Ensure 'permissions: id-token: write' is set if you want to use Holonbot identity."
@@ -103,7 +119,8 @@ runs:
         else
           echo "Skipping token exchange: id-token permission not granted or holonbot_broker_url is empty."
         fi
-        echo "token=${{ inputs.github_token }}" >> $GITHUB_OUTPUT
+
+        echo "token=${{ github.token }}" >> $GITHUB_OUTPUT
 
     - name: Checkout holon repository (for building)
       if: inputs.build_from_source == 'true'
