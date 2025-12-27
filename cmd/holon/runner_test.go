@@ -14,14 +14,14 @@ import (
 
 // MockRuntime is a mock implementation of the Runtime interface for testing
 type MockRuntime struct {
-	RunHolonFunc func(ctx context.Context, cfg *docker.ContainerConfig) error
+	RunHolonFunc func(ctx context.Context, cfg *docker.ContainerConfig) (string, error)
 	calls        []struct {
 		ctx context.Context
 		cfg *docker.ContainerConfig
 	}
 }
 
-func (m *MockRuntime) RunHolon(ctx context.Context, cfg *docker.ContainerConfig) error {
+func (m *MockRuntime) RunHolon(ctx context.Context, cfg *docker.ContainerConfig) (string, error) {
 	// Always record the call
 	m.calls = append(m.calls, struct {
 		ctx context.Context
@@ -31,7 +31,7 @@ func (m *MockRuntime) RunHolon(ctx context.Context, cfg *docker.ContainerConfig)
 	if m.RunHolonFunc != nil {
 		return m.RunHolonFunc(ctx, cfg)
 	}
-	return nil
+	return "", nil
 }
 
 func (m *MockRuntime) GetCalls() []struct {
@@ -120,13 +120,13 @@ func TestRunner_Run_RequiresSpecOrGoal(t *testing.T) {
 
 func TestRunner_Run_WithGoalOnly(t *testing.T) {
 	mockRuntime := &MockRuntime{
-		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) error {
+		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) (string, error) {
 			// Verify that the spec file exists in input directory
 			specPath := filepath.Join(cfg.InputPath, "spec.yaml")
 			if _, err := os.Stat(specPath); os.IsNotExist(err) {
 				t.Errorf("Expected spec file to exist at %s", specPath)
 			}
-			return nil
+			return "", nil
 		},
 	}
 	runner := NewRunner(mockRuntime)
@@ -572,7 +572,7 @@ func TestRunner_writeDebugPrompts(t *testing.T) {
 // Integration test to verify the complete flow
 func TestRunner_Integration(t *testing.T) {
 	mockRuntime := &MockRuntime{
-		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) error {
+		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) (string, error) {
 			// Verify all expected values are in the config
 			if cfg.BaseImage != "golang:1.22" {
 				t.Errorf("Expected BaseImage to be 'golang:1.22', got %q", cfg.BaseImage)
@@ -581,7 +581,7 @@ func TestRunner_Integration(t *testing.T) {
 				t.Errorf("Expected AgentBundle to be set")
 			}
 			// WorkingDir is hardcoded to "/holon/workspace" in the docker runtime
-			return nil
+			return "", nil
 		},
 	}
 
