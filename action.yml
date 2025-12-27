@@ -183,16 +183,13 @@ runs:
         # Add holon to PATH
         export PATH="$RUNNER_TEMP/holon/bin:$PATH"
 
-        # Determine output directory (prefer output_dir)
+        # Determine output directory
         OUT_DIR="${{ inputs.output_dir }}"
-        if [ -z "$OUT_DIR" ]; then
-          OUT_DIR="${{ inputs.out_dir }}"
-        fi
         if [ -z "$OUT_DIR" ]; then
           # When used directly without reusable workflow, create temp dir to avoid polluting workspace
           OUT_DIR=$(mktemp -d -t holon-output-XXXXXX)
-          echo "⚠️  No out_dir specified - using temp directory: $OUT_DIR"
-          echo "   Consider specifying out_dir to enable artifact uploads"
+          echo "⚠️  No output_dir specified - using temp directory: $OUT_DIR"
+          echo "   Consider specifying output_dir to enable artifact uploads"
         fi
 
         # Build solve command arguments
@@ -219,8 +216,8 @@ runs:
           SOLVE_ARGS+=(--input "${{ inputs.input_dir }}")
         fi
 
-        # Always add out directory (either user-specified or temp)
-        SOLVE_ARGS+=(--out "$OUT_DIR")
+        # Always add output directory (either user-specified or temp)
+        SOLVE_ARGS+=(--output "$OUT_DIR")
 
         # Run holon solve
         echo "Running: holon solve ${{ inputs.ref }} ${SOLVE_ARGS[*]} --log-level ${{ inputs.log_level }}"
