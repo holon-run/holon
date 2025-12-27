@@ -129,23 +129,6 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 	token := githubClient.GetToken()
 	gitClient := NewGitClient(workspaceDir, token)
 
-	// Reset workspace to clean state before applying patch
-	// This removes any files that the agent may have created during execution
-	if err := gitClient.ResetHard(); err != nil {
-		wrappedErr := fmt.Errorf("failed to reset workspace: %w", err)
-		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
-		result.Success = false
-		return result, wrappedErr
-	}
-
-	// Ensure workspace is clean
-	if err := gitClient.EnsureCleanWorkspace(); err != nil {
-		wrappedErr := fmt.Errorf("workspace validation failed: %w", err)
-		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
-		result.Success = false
-		return result, wrappedErr
-	}
-
 	// Step 3: Create or checkout branch FIRST (before applying patch)
 	// This prevents Checkout from discarding patch-applied files
 	if err := gitClient.CreateBranch(config.BranchName); err != nil {
