@@ -186,9 +186,10 @@ runs:
         # Determine output directory
         OUT_DIR="${{ inputs.out_dir }}"
         if [ -z "$OUT_DIR" ]; then
-          # Create temp directory to avoid polluting workspace
+          # When used directly without reusable workflow, create temp dir to avoid polluting workspace
           OUT_DIR=$(mktemp -d -t holon-output-XXXXXX)
-          echo "✅ Using temporary output directory: $OUT_DIR"
+          echo "⚠️  No out_dir specified - using temp directory: $OUT_DIR"
+          echo "   Consider specifying out_dir to enable artifact uploads"
         fi
 
         # Build solve command arguments

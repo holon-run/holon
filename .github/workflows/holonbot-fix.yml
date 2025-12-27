@@ -121,6 +121,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Create output directory
+        run: |
+          # Use temp directory to avoid polluting workspace
+          echo "OUTPUT_DIR=$(mktemp -d -t holon-output-XXXXXX)" >> $GITHUB_ENV
+          echo "✅ Created output directory: $OUTPUT_DIR"
+
       - name: Call Holon Solve
         uses: ./.github/workflows/holon-solve.yml
         with:
@@ -129,11 +135,23 @@ jobs:
           # mode will be auto-detected as pr-fix
           log_level: 'debug'
           workspace: '.'
-          out_dir: './holon-output'
+          out_dir: ${{ env.OUTPUT_DIR }}
         secrets:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
+
+      - name: Upload workspace snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: holon-input-${{ needs.parse-and-gate.outputs.pr_number }}
+          path: |
+            ./
+            !.git/
+            !.gitignore
+            !holon-output*/
+          retention-days: 7
 
   skip-execution:
     name: Skip Execution (Gates Failed)

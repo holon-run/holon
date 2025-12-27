@@ -151,16 +151,7 @@ jobs:
         id: result
         if: always()
         run: |
-          # Determine output directory
-          # If user specified out_dir, use it; otherwise assume holon solve created temp dir
           OUT_DIR="${{ inputs.out_dir }}"
-          if [ -z "$OUT_DIR" ]; then
-            # When out_dir is empty, action creates temp dir, but we don't know its path
-            # Skip summary/artifact upload in this case - user should specify out_dir if needed
-            echo "⚠️  No out_dir specified - skipping summary and artifacts (to avoid workspace pollution)"
-            echo "result=${{ steps.run.outcome }}" >> $GITHUB_OUTPUT
-            exit 0
-          fi
 
           # Check for summary
           if [ -f "$OUT_DIR/summary.md" ]; then
@@ -173,8 +164,8 @@ jobs:
           # Set result based on job status
           echo "result=${{ steps.run.outcome }}" >> $GITHUB_OUTPUT
 
-      - name: Upload Holon Artifacts
-        if: always() && inputs.out_dir != ''
+      - name: Upload Output Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: holon-output-${{ inputs.issue_number }}
