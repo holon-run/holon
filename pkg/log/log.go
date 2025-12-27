@@ -49,13 +49,39 @@ func DefaultConfig() Config {
 // Init initializes the global logger with the given configuration
 func Init(cfg Config) error {
 	// Map log level to zap level
-	zapLevel, err := mapLevelToZapLevel(cfg.Level)
-	if err != nil {
-		return err
-	}
+	zapLevel := mapLevelToZapLevel(cfg.Level)
 
-	// Build encoder config for human-readable console output
-	encoderConfig := zapcore.EncoderConfig{
+	logger := createLoggerWithLevel(zapLevel)
+
+	globalMutex.Lock()
+	defer globalMutex.Unlock()
+	globalLogger = logger.Sugar()
+	return nil
+}
+
+// mapLevelToZapLevel maps our log level to zap level
+func mapLevelToZapLevel(level LogLevel) zapcore.Level {
+	switch level {
+	case LevelDebug:
+		return zapcore.DebugLevel
+	case LevelInfo:
+		return zapcore.InfoLevel
+	case LevelProgress:
+		// Progress maps to Info level for now
+		// We could create a custom level in the future
+		return zapcore.InfoLevel
+	case LevelMinimal, LevelWarn:
+		return zapcore.WarnLevel
+	case LevelError:
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel
+	}
+}
+
+// buildEncoderConfig creates the encoder configuration for console output
+func buildEncoderConfig() zapcore.EncoderConfig {
+	return zapcore.EncoderConfig{
 		TimeKey:        "T",
 		LevelKey:       "L",
 		NameKey:        "N",
@@ -68,43 +94,6 @@ func Init(cfg Config) error {
 		EncodeTime:     zapcore.ISO8601TimeEncoder,
 		EncodeDuration: zapcore.StringDurationEncoder,
 		EncodeCaller:   zapcore.ShortCallerEncoder,
-	}
-
-	// Create console encoder
-	encoder := zapcore.NewConsoleEncoder(encoderConfig)
-
-	// Write to stdout
-	writeSyncer := zapcore.AddSync(os.Stdout)
-
-	// Create core
-	core := zapcore.NewCore(encoder, writeSyncer, zapLevel)
-
-	// Create logger
-	logger := zap.New(core, zap.AddCallerSkip(1), zap.AddStacktrace(zapcore.ErrorLevel))
-
-	globalMutex.Lock()
-	defer globalMutex.Unlock()
-	globalLogger = logger.Sugar()
-	return nil
-}
-
-// mapLevelToZapLevel maps our log level to zap level
-func mapLevelToZapLevel(level LogLevel) (zapcore.Level, error) {
-	switch level {
-	case LevelDebug:
-		return zapcore.DebugLevel, nil
-	case LevelInfo:
-		return zapcore.InfoLevel, nil
-	case LevelProgress:
-		// Progress maps to Info level for now
-		// We could create a custom level in the future
-		return zapcore.InfoLevel, nil
-	case LevelMinimal, LevelWarn:
-		return zapcore.WarnLevel, nil
-	case LevelError:
-		return zapcore.ErrorLevel, nil
-	default:
-		return zapcore.InfoLevel, nil
 	}
 }
 
@@ -139,23 +128,14 @@ func Get() *zap.SugaredLogger {
 // createLogger creates a new logger with the given config without acquiring locks
 // This is used internally by Get() to avoid deadlock
 func createLogger(cfg Config) *zap.SugaredLogger {
-	zapLevel, _ := mapLevelToZapLevel(cfg.Level)
+	zapLevel := mapLevelToZapLevel(cfg.Level)
+	return createLoggerWithLevel(zapLevel).Sugar()
+}
 
+// createLoggerWithLevel creates a new logger with the given zap level
+func createLoggerWithLevel(zapLevel zapcore.Level) *zap.Logger {
 	// Build encoder config for human-readable console output
-	encoderConfig := zapcore.EncoderConfig{
-		TimeKey:        "T",
-		LevelKey:       "L",
-		NameKey:        "N",
-		CallerKey:      "C",
-		FunctionKey:    zapcore.OmitKey,
-		MessageKey:     "M",
-		StacktraceKey:  "S",
-		LineEnding:     zapcore.DefaultLineEnding,
-		EncodeLevel:    zapcore.CapitalColorLevelEncoder,
-		EncodeTime:     zapcore.ISO8601TimeEncoder,
-		EncodeDuration: zapcore.StringDurationEncoder,
-		EncodeCaller:   zapcore.ShortCallerEncoder,
-	}
+	encoderConfig := buildEncoderConfig()
 
 	// Create console encoder
 	encoder := zapcore.NewConsoleEncoder(encoderConfig)
@@ -166,10 +146,10 @@ func createLogger(cfg Config) *zap.SugaredLogger {
 	// Create core
 	core := zapcore.NewCore(encoder, writeSyncer, zapLevel)
 
-	// Create logger
-	logger := zap.New(core, zap.AddCallerSkip(1), zap.AddStacktrace(zapcore.ErrorLevel))
+	// Create logger with caller tracking enabled
+	logger := zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1), zap.AddStacktrace(zapcore.ErrorLevel))
 
-	return logger.Sugar()
+	return logger
 }
 
 // Debug logs a debug message

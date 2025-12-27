@@ -21,7 +21,7 @@ func TestMapLevelToZapLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			zapLevel, _ := mapLevelToZapLevel(tt.level)
+			zapLevel := mapLevelToZapLevel(tt.level)
 			if zapLevel.String() != tt.expected {
 				t.Errorf("mapLevelToZapLevel() = %v, want %v", zapLevel.String(), tt.expected)
 			}

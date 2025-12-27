@@ -136,13 +136,15 @@ EOF
 
 # Config is automatically loaded
 holon run --goal "Fix the bug"
-# Output with structured logging shows config resolution
-#         Config: log_level = "debug" (source: config)
+# Output with structured logging shows config resolution (simplified representation)
+# [timestamp] INFO config base_image=python:3.11 source=config
+# [timestamp] INFO config log_level=debug source=config
 
 # CLI flags override config
 holon run --goal "Fix the bug" --log-level info
-# Output: Config: base_image = "python:3.11" (source: config)
-#         Config: log_level = "info" (source: cli)
+# Output: Config values are logged with structured fields
+# [timestamp] INFO config base_image=python:3.11 source=config
+# [timestamp] INFO config log_level=info source=cli
 ```
 
 **Supported Fields:**
