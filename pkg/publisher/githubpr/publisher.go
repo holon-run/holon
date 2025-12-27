@@ -24,7 +24,7 @@ const (
 	// TitleFlag is the flag name for PR title configuration.
 	TitleFlag = "title"
 
-	// IssueFlag is the flag name for issue reference.
+	// IssueFlag is the flag name for issue ID reference.
 	IssueFlag = "issue_id"
 )
 
