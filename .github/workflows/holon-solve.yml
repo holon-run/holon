@@ -1,0 +1,183 @@
+name: Holon Solve (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        description: 'Issue or PR number'
+        required: true
+        type: number
+      comment_body:
+        description: 'Comment body (for auto mode detection)'
+        required: false
+        type: string
+        default: ''
+      mode:
+        description: 'Execution mode (solve, pr-fix, plan, review). Empty = auto-detect'
+        required: false
+        type: string
+        default: ''
+      base:
+        description: 'Base branch for PR creation (default: main)'
+        required: false
+        type: string
+        default: 'main'
+      agent:
+        description: 'Agent bundle reference'
+        required: false
+        type: string
+        default: ''
+      log_level:
+        description: 'Log level (debug, info, progress, minimal)'
+        required: false
+        type: string
+        default: 'progress'
+      workspace:
+        description: 'Workspace path (default: .)'
+        required: false
+        type: string
+        default: '.'
+      out_dir:
+        description: 'Output directory path for artifact packaging'
+        required: false
+        type: string
+        default: ''
+      version:
+        description: 'Holon version to download from releases'
+        required: false
+        type: string
+        default: 'latest'
+      build_from_source:
+        description: 'Build holon from source'
+        required: false
+        type: boolean
+        default: false
+      holon_repository:
+        description: 'Holon repository for building from source'
+        required: false
+        type: string
+        default: 'holon-run/holon'
+    secrets:
+      anthropic_api_key:
+        description: 'Anthropic API Key'
+        required: true
+      github_token:
+        description: 'GitHub Token'
+        required: false
+      anthropic_base_url:
+        description: 'Anthropic Base URL'
+        required: false
+
+    outputs:
+      result:
+        description: 'Execution result'
+        value: ${{ jobs.holon-solve.outputs.result }}
+      summary:
+        description: 'Execution summary path'
+        value: ${{ jobs.holon-solve.outputs.summary }}
+
+jobs:
+  holon-solve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    outputs:
+      result: ${{ steps.result.outputs.result }}
+      summary: ${{ steps.result.outputs.summary }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect execution mode
+        id: detect
+        run: |
+          set -euo pipefail
+
+          ISSUE_NUMBER="${{ inputs.issue_number }}"
+          COMMENT_BODY="${{ inputs.comment_body }}"
+          PROVIDED_MODE="${{ inputs.mode }}"
+
+          # If mode is explicitly provided, use it
+          if [ -n "$PROVIDED_MODE" ]; then
+            echo "mode=$PROVIDED_MODE" >> $GITHUB_OUTPUT
+            echo "✅ Using provided mode: $PROVIDED_MODE"
+            exit 0
+          fi
+
+          # Auto-detect mode by checking if it's a PR
+          echo "Checking if #$ISSUE_NUMBER is a pull request..."
+          PR_DATA=$(gh api "repos/${{ github.repository }}/pulls/$ISSUE_NUMBER" 2>/dev/null || echo "")
+
+          if [ -n "$PR_DATA" ]; then
+            # It's a PR - check comment body for command
+            FIRST_LINE=$(echo "$COMMENT_BODY" | head -n1 | xargs || echo "")
+
+            if [ "$FIRST_LINE" = "@holonbot fix" ] || [ "$FIRST_LINE" = "@holonbot pr-fix" ]; then
+              echo "mode=pr-fix" >> $GITHUB_OUTPUT
+              echo "✅ Detected: PR with @holonbot fix command → mode=pr-fix"
+            else
+              echo "mode=solve" >> $GITHUB_OUTPUT
+              echo "✅ Detected: PR without fix command → mode=solve"
+            fi
+          else
+            # It's an issue
+            echo "mode=solve" >> $GITHUB_OUTPUT
+            echo "✅ Detected: Issue → mode=solve"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.github_token || github.token }}
+
+      - name: Run Holon
+        id: run
+        uses: ./
+        env:
+          HOLON_MODEL: ${{ vars.HOLON_MODEL || 'claude-sonnet-4-5-20250929' }}
+        with:
+          ref: "${{ github.repository }}#${{ inputs.issue_number }}"
+          mode: ${{ steps.detect.outputs.mode }}
+          base: ${{ inputs.base }}
+          agent: ${{ inputs.agent }}
+          anthropic_api_key: ${{ secrets.anthropic_api_key }}
+          anthropic_base_url: ${{ secrets.anthropic_base_url || 'https://api.anthropic.com' }}
+          github_token: ${{ secrets.github_token || github.token }}
+          log_level: ${{ inputs.log_level }}
+          workspace: ${{ inputs.workspace }}
+          out_dir: ${{ inputs.out_dir }}
+          version: ${{ inputs.version }}
+          build_from_source: ${{ inputs.build_from_source }}
+          holon_repository: ${{ inputs.holon_repository }}
+
+      - name: Post Summary
+        id: result
+        if: always()
+        run: |
+          OUT_DIR="${{ inputs.out_dir }}"
+          if [ -z "$OUT_DIR" ]; then
+            OUT_DIR="holon-output"
+          fi
+
+          # Check for summary
+          if [ -f "$OUT_DIR/summary.md" ]; then
+            cat "$OUT_DIR/summary.md" >> $GITHUB_STEP_SUMMARY
+            echo "summary=$OUT_DIR/summary.md" >> $GITHUB_OUTPUT
+          else
+            echo "summary=" >> $GITHUB_OUTPUT
+          fi
+
+          # Set result based on job status
+          if [ "${{ steps.run.outcome }}" = "success" ]; then
+            echo "result=success" >> $GITHUB_OUTPUT
+          else
+            echo "result=${{ steps.run.outcome }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Holon Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: holon-output-${{ inputs.issue_number }}
+          path: ${{ inputs.out_dir != '' && inputs.out_dir || 'holon-output' }}/
+          retention-days: 7

@@ -1,13 +1,21 @@
 name: 'Holon Runner'
-description: 'Run a Holon agent execution to resolve an issue'
+description: 'Run Holon solve to resolve a GitHub Issue or PR'
 inputs:
-  image:
-    description: 'The base toolchain image to use'
+  ref:
+    description: 'GitHub Issue or PR reference (URL, owner/repo#n, or #n with --repo)'
+    required: true
+  repo:
+    description: 'Repository hint for numeric references (owner/repo format)'
     required: false
-    default: 'golang:1.22'
+    default: ''
+  base:
+    description: 'Base branch for PR creation (default: main)'
+    required: false
+    default: 'main'
   agent:
-    description: 'Agent bundle reference (path to .tar.gz)'
+    description: 'Agent bundle reference (optional, uses builtin if not provided)'
     required: false
+    default: ''
   anthropic_api_key:
     description: 'Anthropic API Key (or ANTHROPIC_AUTH_TOKEN)'
     required: true
@@ -19,18 +27,6 @@ inputs:
     description: 'GitHub Token'
     required: false
     default: ${{ github.token }}
-  workspace:
-    description: 'Path to workspace'
-    required: false
-    default: '.'
-  out_dir:
-    description: 'Path to output directory'
-    required: false
-    default: './holon-output'
-  context:
-    description: 'Path to context directory'
-    required: false
-    default: ''
   holonbot_broker_url:
     description: 'URL of the Holonbot Token Broker'
     required: false
@@ -40,29 +36,37 @@ inputs:
     required: false
     default: 'progress'
   mode:
-    description: 'Execution mode: solve, pr-fix, plan, review (default: solve)'
-    required: false
-    default: 'solve'
-  goal:
-    description: 'Goal description (used when spec is not provided, takes precedence over issue event extraction)'
-    required: false
-    default: ''
-  spec:
-    description: 'Path to holon spec file (takes precedence over goal)'
+    description: 'Execution mode: solve, pr-fix, plan, review (default: auto-detect from ref type)'
     required: false
     default: ''
   role:
     description: 'Role to assume (e.g. developer, reviewer)'
     required: false
     default: ''
-
-outputs:
-  token:
-    description: 'The GitHub token used (either Holonbot token or input github_token)'
-    value: ${{ steps.get_token.outputs.token }}
-  diff_exists:
-    description: 'Whether a non-empty diff.patch exists in the output directory'
-    value: ${{ steps.detect_outputs.outputs.diff_exists }}
+  version:
+    description: 'Holon version to download from releases (default: latest)'
+    required: false
+    default: 'latest'
+  build_from_source:
+    description: 'Build holon from source before running (default: false, download from releases)'
+    required: false
+    default: 'false'
+  holon_repository:
+    description: 'Holon repository for building from source (default: holon-run/holon)'
+    required: false
+    default: 'holon-run/holon'
+  workspace:
+    description: 'Workspace path (default: ., assumes workflow already checked out code)'
+    required: false
+    default: '.'
+  input_dir:
+    description: 'Input directory path for artifact packaging (default: temp dir, auto-cleaned)'
+    required: false
+    default: ''
+  out_dir:
+    description: 'Output directory path for artifact packaging (default: temp dir, auto-cleaned)'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -74,16 +78,16 @@ runs:
         if [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
           echo "Fetching OIDC token from GitHub Actions runtime..."
           OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r '.value')
-          
+
           if [ -n "$OIDC_TOKEN" ] && [ "$OIDC_TOKEN" != "null" ]; then
             echo "Sending OIDC token to broker: ${{ inputs.holonbot_broker_url }}"
             RESPONSE=$(curl -s -X POST "${{ inputs.holonbot_broker_url }}" \
               -H "Authorization: Bearer $OIDC_TOKEN" \
               -H "Content-Type: application/json")
             echo "Broker response: $RESPONSE"
-            
+
             BOT_TOKEN=$(echo $RESPONSE | jq -r '.token // empty')
-            
+
             if [ -n "$BOT_TOKEN" ]; then
               echo "Successfully obtained Holonbot token."
               echo "token=$BOT_TOKEN" >> $GITHUB_OUTPUT
@@ -101,115 +105,107 @@ runs:
         fi
         echo "token=${{ inputs.github_token }}" >> $GITHUB_OUTPUT
 
-    - name: Run Holon
-      id: run_holon
+    - name: Checkout holon repository (for building)
+      if: inputs.build_from_source == 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.holon_repository }}
+        path: holon-source
+
+    - name: Build from source (if enabled)
+      if: inputs.build_from_source == 'true'
+      shell: bash
+      run: |
+        # Setup Go if needed
+        if ! command -v go &> /dev/null; then
+          echo "Error: Go not found. Please add 'actions/setup-go@v5' before this action when build_from_source is true."
+          exit 1
+        fi
+
+        # Build in separate directory
+        cd holon-source
+        echo "Building holon from source..."
+        make build
+
+        # Copy to temp location
+        mkdir -p "$RUNNER_TEMP/holon/bin"
+        cp bin/holon "$RUNNER_TEMP/holon/bin/holon"
+
+        echo "✅ Holon built and copied to $RUNNER_TEMP/holon/bin/holon"
+
+    - name: Download Holon binary
+      if: inputs.build_from_source != 'true'
+      shell: bash
+      run: |
+        # Detect platform
+        PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+
+        # Map to release naming
+        if [ "$ARCH" = "x86_64" ]; then
+          ARCH="amd64"
+        elif [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+          ARCH="arm64"
+        fi
+
+        # Determine version
+        VERSION="${{ inputs.version }}"
+        if [ "$VERSION" = "latest" ]; then
+          VERSION="latest"
+        fi
+
+        # Create temp directory
+        mkdir -p "$RUNNER_TEMP/holon/bin"
+
+        # Download and extract
+        echo "Downloading holon $VERSION for $PLATFORM-$ARCH..."
+        curl -fsSL "https://github.com/holon-run/holon/releases/$VERSION/download/holon-$PLATFORM-$ARCH.tar.gz" | \
+          tar -xz -C "$RUNNER_TEMP/holon/bin"
+        chmod +x "$RUNNER_TEMP/holon/bin/holon"
+
+        echo "✅ Holon binary downloaded to $RUNNER_TEMP/holon/bin/holon"
+
+    - name: Run Holon Solve
       shell: bash
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         GITHUB_TOKEN: ${{ steps.get_token.outputs.token }}
       run: |
-        OUT_DIR="${{ inputs.out_dir }}"
+        set -euo pipefail
 
-        AGENT_REF="${{ inputs.agent }}"
-        if [ -z "$AGENT_REF" ]; then
-          AGENT_REF="${HOLON_AGENT:-${HOLON_AGENT_BUNDLE:-}}"
-        fi
-        # Verify holon binary exists (workflow should have built it)
-        if [ ! -f bin/holon ]; then
-          echo "Error: holon binary not found at bin/holon"
-          echo "Workflow must build holon before calling this action"
-          echo "See holonbot-fix.yml or holon-issue.yml for examples"
-          exit 1
-        fi
-        if [ -z "$AGENT_REF" ]; then
-          echo "Building agent bundle..."
-          (cd agents/claude && npm run bundle)
-          AGENT_REF=$(ls -t agents/claude/dist/agent-bundles/*.tar.gz | head -n 1)
-        fi
+        # Add holon to PATH
+        export PATH="$RUNNER_TEMP/holon/bin:$PATH"
 
-        # Build base command arguments
-        CONTEXT_ARGS=()
-        if [ -n "${{ inputs.context }}" ]; then
-          CONTEXT_ARGS=(--context "${{ inputs.context }}")
+        # Build solve command arguments
+        SOLVE_ARGS=()
+        if [ -n "${{ inputs.repo }}" ]; then
+          SOLVE_ARGS+=(--repo "${{ inputs.repo }}")
         fi
-
-        MODE_ARGS=(--mode "${{ inputs.mode }}")
-
-        ROLE_ARGS=()
+        if [ -n "${{ inputs.base }}" ]; then
+          SOLVE_ARGS+=(--base "${{ inputs.base }}")
+        fi
+        if [ -n "${{ inputs.agent }}" ]; then
+          SOLVE_ARGS+=(--agent "${{ inputs.agent }}")
+        fi
+        if [ -n "${{ inputs.mode }}" ]; then
+          SOLVE_ARGS+=(--mode "${{ inputs.mode }}")
+        fi
         if [ -n "${{ inputs.role }}" ]; then
-          ROLE_ARGS=(--role "${{ inputs.role }}")
+          SOLVE_ARGS+=(--role "${{ inputs.role }}")
+        fi
+        if [ -n "${{ inputs.workspace }}" ]; then
+          SOLVE_ARGS+=(--workspace "${{ inputs.workspace }}")
+        fi
+        if [ -n "${{ inputs.input_dir }}" ]; then
+          SOLVE_ARGS+=(--input "${{ inputs.input_dir }}")
+        fi
+        if [ -n "${{ inputs.out_dir }}" ]; then
+          SOLVE_ARGS+=(--out "${{ inputs.out_dir }}")
         fi
 
-        # Determine goal: use explicit inputs, or extract from issue event
-        if [ -n "${{ inputs.spec }}" ]; then
-          # Spec mode - explicit spec file takes precedence
-          echo "Using explicit spec file: ${{ inputs.spec }}"
-          ./bin/holon run \
-            --spec "${{ inputs.spec }}" \
-            --image "${{ inputs.image }}" \
-            --agent "$AGENT_REF" \
-            --workspace "${{ inputs.workspace }}" \
-            --out "$OUT_DIR" \
-            "${MODE_ARGS[@]}" \
-            "${ROLE_ARGS[@]}" \
-            "${CONTEXT_ARGS[@]}" \
-            --log-level "${{ inputs.log_level }}"
-        elif [ -n "${{ inputs.goal }}" ]; then
-          # Goal mode - explicit goal takes precedence
-          echo "Using explicit goal: ${{ inputs.goal }}"
-          ./bin/holon run \
-            --goal "${{ inputs.goal }}" \
-            --image "${{ inputs.image }}" \
-            --agent "$AGENT_REF" \
-            --workspace "${{ inputs.workspace }}" \
-            --out "$OUT_DIR" \
-            "${MODE_ARGS[@]}" \
-            "${ROLE_ARGS[@]}" \
-            "${CONTEXT_ARGS[@]}" \
-            --log-level "${{ inputs.log_level }}"
-        elif [ -f "$GITHUB_EVENT_PATH" ]; then
-          # Fall back to extracting from issue event (backward compatibility)
-          TITLE=$(jq -r '.issue.title // empty' "$GITHUB_EVENT_PATH")
-          BODY=$(jq -r '.issue.body // empty' "$GITHUB_EVENT_PATH")
-
-          if [ -n "$TITLE" ]; then
-            GOAL="Issue Title: $TITLE\n\nIssue Description:\n$BODY"
-            echo "Extracting goal from issue event: $TITLE"
-            ./bin/holon run \
-              --goal "$GOAL" \
-              --image "${{ inputs.image }}" \
-              --agent "$AGENT_REF" \
-              --workspace "${{ inputs.workspace }}" \
-              --out "$OUT_DIR" \
-              "${MODE_ARGS[@]}" \
-              "${ROLE_ARGS[@]}" \
-              "${CONTEXT_ARGS[@]}" \
-              --log-level "${{ inputs.log_level }}"
-          else
-            echo "Error: No spec, goal, or issue event title available."
-            exit 1
-          fi
-        else
-          echo "Error: No spec, goal provided, and GITHUB_EVENT_PATH not found."
-          exit 1
-        fi
-
-    - name: Detect Holon Outputs
-      id: detect_outputs
-      shell: bash
-      run: |
-        OUT_DIR="${{ inputs.out_dir }}"
-
-        if [ -e "$OUT_DIR/diff.patch" ]; then
-          if [ -s "$OUT_DIR/diff.patch" ]; then
-            echo "Non-empty diff.patch detected in $OUT_DIR."
-            echo "diff_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "diff.patch exists in $OUT_DIR but is empty."
-            echo "diff_exists=false" >> "$GITHUB_OUTPUT"
-          fi
-        else
-          echo "diff.patch not found in $OUT_DIR."
-          echo "diff_exists=false" >> "$GITHUB_OUTPUT"
-        fi
+        # Run holon solve
+        echo "Running: holon solve ${{ inputs.ref }} ${SOLVE_ARGS[*]} --log-level ${{ inputs.log_level }}"
+        holon solve "${{ inputs.ref }}" \
+          "${SOLVE_ARGS[@]}" \
+          --log-level "${{ inputs.log_level }}"

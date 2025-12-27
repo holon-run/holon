@@ -109,18 +109,164 @@ Run with an ad-hoc goal (no spec file needed):
 ```
 
 ## Quickstart (GitHub Actions)
-This repo ships a composite action (`action.yml`) that:
-1) extracts the Issue title/body from the event
-2) runs `holon run --goal ...`
-3) outputs artifacts under `holon-output/`
 
-See `.github/workflows/holon-issue.yml` for a working end-to-end flow that applies `diff.patch` and creates/updates a PR.
+This repo ships two ways to run Holon in GitHub Actions:
+1. **Composite Action** (`action.yml`) - Simple, direct integration
+2. **Reusable Workflow** (`.github/workflows/holon-solve.yml`) - Full-featured with auto mode detection
 
-Minimal usage:
+**Basic usage (issue resolution):**
 ```yaml
 - uses: holon-run/holon@main
   with:
+    ref: "${{ github.repository }}#${{ github.event.issue.number }}"
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**With artifact packaging:**
+```yaml
+- uses: holon-run/holon@main
+  with:
+    ref: "${{ github.repository }}#${{ github.event.issue.number }}"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    out_dir: './holon-output'
+- uses: actions/upload-artifact@v4
+  with:
+    name: holon-output
+    path: holon-output/
+```
+
+**Build from source (for latest development version):**
+```yaml
+- uses: actions/checkout@v4
+- uses: actions/setup-go@v5
+- uses: holon-run/holon@main
+  with:
+    ref: "${{ github.repository }}#${{ github.event.issue.number }}"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    build_from_source: 'true'
+```
+
+See `.github/workflows/holon-issue.yml` and `.github/workflows/holonbot-fix.yml` for complete examples.
+
+### Migration Guide (v0.x)
+
+The action has been refactored to wrap `holon solve` instead of `holon run`.
+
+**Before (old action):**
+```yaml
+- uses: holon-run/holon@v1
+  with:
+    goal: "Fix the bug"
+    workspace: '.'
+    context: './context'
+```
+
+**After (new action):**
+```yaml
+- uses: holon-run/holon@v2
+  with:
+    ref: "owner/repo#123"
+    workspace: '.'
+    out_dir: './holon-output'
+```
+
+### Removed Inputs
+- `goal` - Use `ref` instead (solve builds goal from issue/PR)
+- `spec` - Not supported
+- `context` - solve collects context automatically
+
+### New Required Inputs
+- `ref` - GitHub Issue or PR reference (required)
+
+### New Optional Inputs
+- `version` - Holon version to download from releases (default: latest)
+- `build_from_source` - Build holon from source (default: false, download from releases)
+- `holon_repository` - Holon repository for building from source (default: holon-run/holon)
+- `input_dir` - Input directory for artifact packaging (default: temp)
+- `workspace` - Workspace path (default: .)
+- `out_dir` - Output directory for artifact packaging (default: temp)
+
+### Usage Examples
+
+**Basic usage (downloads latest release):**
+```yaml
+- uses: holon-run/holon@v2
+  with:
+    ref: "${{ github.repository }}#${{ github.event.issue.number }}"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**Using specific version:**
+```yaml
+- uses: holon-run/holon@v2
+  with:
+    ref: "owner/repo#123"
+    version: 'v0.1.0'
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**Build from source (for latest development version):**
+```yaml
+- uses: actions/checkout@v4
+- uses: actions/setup-go@v5
+- uses: holon-run/holon@v2
+  with:
+    ref: "${{ github.repository }}#${{ github.event.issue.number }}"
+    build_from_source: 'true'
+    holon_repository: 'holon-run/holon'
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**With artifact packaging:**
+```yaml
+- uses: holon-run/holon@v2
+  with:
+    ref: "owner/repo#123"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    out_dir: './holon-output'
+- uses: actions/upload-artifact@v4
+  with:
+    name: holon-output
+    path: holon-output/
+```
+
+### Using Reusable Workflow
+
+For advanced usage with automatic mode detection, use the reusable workflow:
+
+```yaml
+jobs:
+  call-holon-solve:
+    uses: holon-run/holon/.github/workflows/holon-solve.yml@main
+    with:
+      issue_number: ${{ github.event.issue.number }}
+      # mode: auto-detected from issue type (optional)
+      # comment_body: for pr-fix mode detection (optional)
+      log_level: 'debug'
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**Reusable workflow advantages:**
+- Auto-detects execution mode (solve vs pr-fix) from issue/PR type
+- Built-in summary posting and artifact uploads
+- Consistent behavior across all workflows
+- Easy to customize with different trigger conditions
+
+**Example: Custom trigger with reusable workflow**
+```yaml
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  run-holon:
+    uses: holon-run/holon/.github/workflows/holon-solve.yml@main
+    with:
+      issue_number: ${{ github.event.pull_request.number }}
+      mode: 'review'
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 ## Configuration
