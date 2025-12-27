@@ -3,11 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	holonlog "github.com/holon-run/holon/pkg/log"
 )
 
 // BuiltinAgent represents the default builtin agent configuration
@@ -69,20 +70,20 @@ func CheckBuiltinAgentStaleness(repo string) (bool, string, error) {
 	// Fetch latest release from GitHub
 	latest, err := GetLatestAgentRelease(repo)
 	if err != nil {
-		log.Printf("[warn] failed to fetch latest agent release from GitHub: %v", err)
-		log.Printf("[warn] builtin agent version %s could not be verified against latest release", builtin.Version)
+		holonlog.Warn("failed to fetch latest agent release from GitHub", "error", err)
+		holonlog.Warn("builtin agent version could not be verified against latest release", "version", builtin.Version)
 		return false, "", fmt.Errorf("failed to fetch latest release: %w", err)
 	}
 
 	// Compare versions
 	if latest.TagName != builtin.Version {
-		log.Printf("[warn] builtin agent version %s is behind latest release %s", builtin.Version, latest.TagName)
-		log.Printf("[info] consider updating DefaultBuiltinAgent() to use %s", latest.TagName)
+		holonlog.Warn("builtin agent version is behind latest release", "current", builtin.Version, "latest", latest.TagName)
+		holonlog.Info("consider updating DefaultBuiltinAgent() to use latest version", "version", latest.TagName)
 		return true, latest.TagName, nil
 	}
 
 	// Version is current
-	log.Printf("[info] builtin agent version %s is up to date", builtin.Version)
+	holonlog.Info("builtin agent version is up to date", "version", builtin.Version)
 	return false, latest.TagName, nil
 }
 

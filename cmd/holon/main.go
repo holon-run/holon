@@ -8,6 +8,7 @@ import (
 
 	"github.com/holon-run/holon/pkg/config"
 	"github.com/holon-run/holon/pkg/image"
+	holonlog "github.com/holon-run/holon/pkg/log"
 	_ "github.com/holon-run/holon/pkg/publisher/github"  // Register GitHub publisher
 	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher
 	_ "github.com/holon-run/holon/pkg/publisher/git"      // Register git publisher
@@ -72,7 +73,7 @@ func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig, wor
 		detectResult := image.Detect(workspace)
 		baseImageValue = detectResult.Image
 		source = "auto-detect"
-		fmt.Printf("Config: %s\n", image.FormatResult(detectResult))
+		holonlog.Info(image.FormatResult(detectResult))
 	} else {
 		// Fall back to default
 		baseImageValue = image.DefaultImage
@@ -112,7 +113,7 @@ func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig, wor
 
 // logConfigResolution logs the resolved configuration value and its source
 func logConfigResolution(key, value, source string) {
-	fmt.Printf("Config: %s = %q (source: %s)\n", key, value, source)
+	holonlog.Info("config", "key", key, "value", value, "source", source)
 }
 
 var runCmd = &cobra.Command{
@@ -120,10 +121,6 @@ var runCmd = &cobra.Command{
 	Short: "Run a Holon agent execution",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
-		rt, err := docker.NewRuntime()
-		if err != nil {
-			return fmt.Errorf("failed to initialize runtime: %w", err)
-		}
 
 		// Resolve workspace path early for auto-detection
 		absWorkspace, err := filepath.Abs(workspacePath)
@@ -144,6 +141,21 @@ var runCmd = &cobra.Command{
 
 		// Apply config with precedence: CLI flags > project config > defaults
 		resolved := resolveWithProjectConfig(cmd, projectCfg, absWorkspace)
+
+		// Initialize logger with resolved log level
+		logCfg := holonlog.Config{
+			Level:  holonlog.LogLevel(resolved.logLevel),
+			Format: "console",
+		}
+		if err := holonlog.Init(logCfg); err != nil {
+			return fmt.Errorf("failed to initialize logger: %w", err)
+		}
+		defer holonlog.Sync()
+
+		rt, err := docker.NewRuntime()
+		if err != nil {
+			return fmt.Errorf("failed to initialize runtime: %w", err)
+		}
 
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{

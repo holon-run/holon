@@ -13,6 +13,7 @@ import (
 	v1 "github.com/holon-run/holon/pkg/api/v1"
 	"github.com/holon-run/holon/pkg/agent/resolver"
 	gh "github.com/holon-run/holon/pkg/github"
+	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"gopkg.in/yaml.v3"
@@ -206,12 +207,12 @@ output:
 	if cfg.GitAuthorName != "" {
 		envVars["GIT_AUTHOR_NAME"] = cfg.GitAuthorName
 		envVars["GIT_COMMITTER_NAME"] = cfg.GitAuthorName
-		fmt.Printf("Config: git.author_name = %q (source: config)\n", cfg.GitAuthorName)
+		holonlog.Info("git config", "author_name", cfg.GitAuthorName, "source", "config")
 	}
 	if cfg.GitAuthorEmail != "" {
 		envVars["GIT_AUTHOR_EMAIL"] = cfg.GitAuthorEmail
 		envVars["GIT_COMMITTER_EMAIL"] = cfg.GitAuthorEmail
-		fmt.Printf("Config: git.author_email = %q (source: config)\n", cfg.GitAuthorEmail)
+		holonlog.Info("git config", "author_email", cfg.GitAuthorEmail, "source", "config")
 	}
 
 	// Populate Goal from Spec if not provided via flag
@@ -219,7 +220,7 @@ output:
 		goal, err := r.extractGoalFromSpec(absSpec)
 		if err != nil {
 			// Non-fatal error, just warn
-			fmt.Printf("Warning: Failed to extract goal from spec: %v\n", err)
+			holonlog.Warn("failed to extract goal from spec", "error", err)
 		} else {
 			cfg.GoalStr = goal
 		}
@@ -261,7 +262,7 @@ output:
 
 	// Write debug prompts to output directory
 	if err := r.writeDebugPrompts(absOut, sysPrompt, userPrompt); err != nil {
-		fmt.Printf("Warning: Failed to write debug prompts: %v\n", err)
+		holonlog.Warn("failed to write debug prompts", "error", err)
 	}
 
 	// Resolve input directory to absolute path
@@ -285,12 +286,12 @@ output:
 		AgentConfigMode: cfg.AgentConfigMode,
 	}
 
-	fmt.Printf("Running Holon: %s with base image %s (agent: %s)\n", cfg.SpecPath, cfg.BaseImage, containerCfg.AgentBundle)
+	holonlog.Progress("running holon", "spec", cfg.SpecPath, "base_image", cfg.BaseImage, "agent", containerCfg.AgentBundle)
 	snapshotDir, err := r.runtime.RunHolon(ctx, containerCfg)
 	if err != nil {
 		return fmt.Errorf("execution failed: %w", err)
 	}
-	fmt.Println("Holon execution completed.")
+	holonlog.Progress("holon execution completed")
 
 	// Set HOLON_WORKSPACE to point to the actual workspace that was modified
 	// This is critical for post-execution operations like publish
@@ -300,7 +301,7 @@ output:
 		}
 		// Export snapshotDir via environment variable for caller to clean up
 		if err := os.Setenv("HOLON_SNAPSHOT_DIR", snapshotDir); err != nil {
-			fmt.Printf("Warning: failed to set HOLON_SNAPSHOT_DIR: %v\n", err)
+			holonlog.Warn("failed to set HOLON_SNAPSHOT_DIR", "error", err)
 		}
 	}
 
@@ -330,16 +331,16 @@ func (r *Runner) resolveAgentBundle(ctx context.Context, cfg RunnerConfig, works
 	}
 
 	// Try builtin agent (auto-install) first
-	fmt.Println("No agent specified, trying builtin default agent...")
+	holonlog.Info("no agent specified, trying builtin default agent")
 	resolvedPath, err := r.resolver.Resolve(ctx, "") // Empty string triggers builtin resolver
 	if err == nil {
-		fmt.Printf("Successfully resolved builtin agent: %s\n", resolvedPath)
+		holonlog.Info("successfully resolved builtin agent", "path", resolvedPath)
 		return resolvedPath, nil
 	}
 
 	// If builtin agent failed (e.g., auto-install disabled), fall back to local build system
-	fmt.Printf("Builtin agent not available: %v\n", err)
-	fmt.Println("Falling back to local build system...")
+	holonlog.Debug("builtin agent not available", "error", err)
+	holonlog.Info("falling back to local build system")
 
 	scriptPath := filepath.Join(workspace, "agents", "claude", "scripts", "build-bundle.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
@@ -352,7 +353,7 @@ func (r *Runner) resolveAgentBundle(ctx context.Context, cfg RunnerConfig, works
 		return "", err
 	}
 	if bundlePath == "" {
-		fmt.Println("Agent bundle not found. Building local bundle...")
+		holonlog.Info("agent bundle not found, building local bundle")
 		if err := buildAgentBundle(scriptPath, workspace); err != nil {
 			return "", err
 		}
@@ -488,10 +489,10 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 				envVars["HOLON_ACTOR_APP_SLUG"] = actorInfo.AppSlug
 			}
 			// Log identity resolution (without exposing sensitive data)
-			fmt.Printf("Config: GitHub actor identity resolved: %s (type: %s)\n", actorInfo.Login, actorInfo.Type)
+			holonlog.Info("github actor identity resolved", "login", actorInfo.Login, "type", actorInfo.Type)
 		} else {
 			// Identity lookup failed - non-critical, log and continue
-			fmt.Println("Config: GitHub actor identity lookup failed, continuing without identity")
+			holonlog.Info("github actor identity lookup failed, continuing without identity")
 		}
 	}
 
@@ -529,7 +530,7 @@ func (r *Runner) resolveGitHubActorIdentity(ctx context.Context, token string) *
 		// Non-critical: log and return nil
 		// The error may be due to network issues, invalid token, or rate limiting
 		// We don't want to block execution for this
-		fmt.Printf("Warning: Failed to resolve GitHub actor identity: %v\n", err)
+		holonlog.Warn("failed to resolve github actor identity", "error", err)
 		return nil
 	}
 	return actorInfo
@@ -559,7 +560,7 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	if cfg.ContextPath != "" {
 		files, err := os.ReadDir(absContext)
 		if err != nil {
-			fmt.Printf("Warning: Failed to read context directory: %v\n", err)
+			holonlog.Warn("failed to read context directory", "error", err)
 		} else {
 			for _, f := range files {
 				contextFiles = append(contextFiles, f.Name())
@@ -601,7 +602,7 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	if cfg.ContextPath != "" {
 		files, err := os.ReadDir(absContext)
 		if err != nil {
-			fmt.Printf("Warning: Failed to read context directory for user prompt: %v\n", err)
+			holonlog.Warn("failed to read context directory for user prompt", "error", err)
 		} else {
 			for _, f := range files {
 				if !f.IsDir() {

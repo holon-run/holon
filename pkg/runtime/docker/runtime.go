@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/git"
 	"github.com/holon-run/holon/pkg/workspace"
 )
@@ -70,7 +71,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		return "", fmt.Errorf("base image is required")
 	}
 
-	fmt.Printf("Composing execution image for %s + agent bundle %s...\n", cfg.BaseImage, cfg.AgentBundle)
+	holonlog.Progress("composing execution image", "base_image", cfg.BaseImage, "agent_bundle", cfg.AgentBundle)
 	composedImage, err := r.buildComposedImageFromBundle(ctx, cfg.BaseImage, cfg.AgentBundle)
 	if err != nil {
 		return "", fmt.Errorf("failed to compose image: %w", err)
@@ -80,27 +81,27 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	// Pull final image if not present locally
 	_, err = r.cli.ImageInspect(ctx, finalImage)
 	if err != nil {
-		fmt.Printf("Image %s not found locally, attempting to pull...\n", finalImage)
+		holonlog.Info("image not found locally, attempting to pull", "image", finalImage)
 		reader, err := r.cli.ImagePull(ctx, finalImage, image.PullOptions{})
 		if err != nil {
-			fmt.Printf("Warning: failed to pull image %s: %v\n", finalImage, err)
+			holonlog.Warn("failed to pull image", "image", finalImage, "error", err)
 		} else {
 			defer reader.Close()
 			io.Copy(io.Discard, reader)
 		}
 	} else {
-		fmt.Printf("Image %s found locally.\n", finalImage)
+		holonlog.Debug("image found locally", "image", finalImage)
 	}
 
 	// 3. Create Container
 	// Inject host git identity (only if not already set by project config)
 	gitName, err := getGitConfig("user.name")
 	if err != nil {
-		fmt.Printf("Warning: failed to get host git config 'user.name': %v\n", err)
+		holonlog.Warn("failed to get host git config 'user.name'", "error", err)
 	}
 	gitEmail, err := getGitConfig("user.email")
 	if err != nil {
-		fmt.Printf("Warning: failed to get host git config 'user.email': %v\n", err)
+		holonlog.Warn("failed to get host git config 'user.email'", "error", err)
 	}
 
 	if cfg.Env == nil {
@@ -141,7 +142,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	// Parse the config mode, default to "auto" if empty or invalid
 	configMode, err := ParseAgentConfigMode(cfg.AgentConfigMode)
 	if err != nil {
-		fmt.Printf("Warning: invalid agent config mode %q, defaulting to 'auto': %v\n", cfg.AgentConfigMode, err)
+		holonlog.Warn("invalid agent config mode, defaulting to 'auto'", "mode", cfg.AgentConfigMode, "error", err)
 		configMode = AgentConfigModeAuto
 	}
 
@@ -149,7 +150,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	if configMode != AgentConfigModeNo {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			fmt.Printf("Warning: failed to get home directory: %v\n", err)
+			holonlog.Warn("failed to get home directory", "error", err)
 		} else {
 			claudeDir := filepath.Join(homeDir, ".claude")
 			dirExists := true
@@ -157,7 +158,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 				if os.IsNotExist(err) {
 					dirExists = false
 				} else {
-					fmt.Printf("Warning: failed to stat ~/.claude: %v\n", err)
+					holonlog.Warn("failed to stat ~/.claude", "error", err)
 					dirExists = false
 				}
 			}
@@ -167,17 +168,15 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 			shouldWarn := configMode.WarnIfMissing() && !dirExists
 
 			if shouldWarn {
-				fmt.Printf("Warning: --agent-config-mode=yes specified, but ~/.claude does not exist\n")
+				holonlog.Warn("--agent-config-mode=yes specified, but ~/.claude does not exist")
 			}
 
 			if shouldMount && dirExists {
 				// Mount the config directory
 				mountConfig.LocalClaudeConfigDir = claudeDir
-				fmt.Println("============================================================")
-				fmt.Println("WARNING: Mounting host ~/.claude into container")
-				fmt.Println("This exposes your personal Claude login and session to the container.")
-				fmt.Println("Do NOT use this in CI or shared environments.")
-				fmt.Println("============================================================")
+				holonlog.Warn("mounting host ~/.claude into container")
+				holonlog.Warn("this exposes your personal Claude login and session to the container")
+				holonlog.Warn("do NOT use this in CI or shared environments")
 				// Set environment variable to indicate mounted config is available
 				// Add directly to env slice since BuildContainerEnv was already called
 				env = append(env, "HOLON_MOUNTED_CLAUDE_CONFIG=1")
@@ -187,7 +186,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 
 	mounts := BuildContainerMounts(mountConfig)
 
-	fmt.Printf("Creating container from image %s...\n", finalImage)
+	holonlog.Progress("creating container", "image", finalImage)
 	resp, err := r.cli.ContainerCreate(ctx, &container.Config{
 		Image:      finalImage,
 		Cmd:        cfg.Cmd,
@@ -203,13 +202,13 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	}
 
 	// 4. Start Container
-	fmt.Printf("Starting container %s...\n", resp.ID[:12])
+	holonlog.Progress("starting container", "id", resp.ID[:12])
 	if err := r.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		return "", fmt.Errorf("failed to start container: %w", err)
 	}
 
 	// 4.5 Stream Logs
-	fmt.Println("Streaming container logs...")
+	holonlog.Debug("streaming container logs", "id", resp.ID[:12])
 	out, err := r.cli.ContainerLogs(ctx, resp.ID, container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -221,7 +220,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	}
 
 	// 5. Wait for completion
-	fmt.Println("Waiting for container completion...")
+	holonlog.Progress("waiting for container completion", "id", resp.ID[:12])
 	statusCh, errCh := r.cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
 	select {
 	case err := <-errCh:
@@ -462,7 +461,7 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 	}
 
 	// Prepare the workspace
-	fmt.Printf("Preparing workspace using %s strategy...\n", strategyName)
+	holonlog.Progress("preparing workspace", "strategy", strategyName)
 	result, err := preparer.Prepare(ctx, workspace.PrepareRequest{
 		Source:     cfg.Workspace,
 		Dest:       snapshotDir,
@@ -488,39 +487,27 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 			if strings.HasPrefix(originURL, "https://github.com/") || strings.HasPrefix(originURL, "git@github.com:") {
 				snapshotClient := git.NewClient(snapshotDir)
 				if err := snapshotClient.SetRemote(ctx, "origin", originURL); err == nil {
-					fmt.Printf("  Preserved origin from source: %s\n", originURL)
+					holonlog.Info("preserved origin from source", "url", originURL)
 				} else {
-					fmt.Printf("  Warning: failed to preserve origin from source (%s): %v\n", originURL, err)
+					holonlog.Warn("failed to preserve origin from source", "url", originURL, "error", err)
 				}
 			}
 		}
 	}
 
 	// Log preparation details
-	fmt.Printf("  Strategy: %s\n", result.Strategy)
-	if result.HeadSHA != "" {
-		fmt.Printf("  HEAD: %s\n", result.HeadSHA)
-	}
-	if result.HasHistory {
-		if result.IsShallow {
-			fmt.Printf("  History: shallow\n")
-		} else {
-			fmt.Printf("  History: full\n")
-		}
-	} else {
-		fmt.Printf("  History: none\n")
-	}
+	holonlog.Info("workspace prepared", "strategy", result.Strategy, "head", result.HeadSHA, "has_history", result.HasHistory, "is_shallow", result.IsShallow)
 
 	// Log any notes
 	for _, note := range result.Notes {
-		fmt.Printf("  Note: %s\n", note)
+		holonlog.Info("workspace note", "note", note)
 	}
 
 	// Write workspace manifest to output directory (not workspace)
 	// This avoids polluting the workspace with metadata files
 	if cfg.OutDir != "" {
 		if err := writeWorkspaceManifest(cfg.OutDir, result); err != nil {
-			fmt.Printf("Warning: failed to write workspace manifest: %v\n", err)
+			holonlog.Warn("failed to write workspace manifest", "error", err)
 		}
 	}
 
