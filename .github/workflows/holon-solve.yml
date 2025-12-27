@@ -19,10 +19,10 @@ on:
         type: string
         default: ''
       base:
-        description: 'Base branch for PR creation (default: main)'
+        description: 'Base branch for PR creation (empty = repository default branch)'
         required: false
         type: string
-        default: 'main'
+        default: ''
       agent:
         description: 'Agent bundle reference'
         required: false
@@ -135,12 +135,8 @@ jobs:
           fi
 
           OUTPUT_DIR_INPUT='${{ inputs.output_dir }}'
-          OUT_DIR_DEPRECATED='${{ inputs.out_dir }}'
           if [ -n "$OUTPUT_DIR_INPUT" ]; then
             OUTPUT_DIR="$OUTPUT_DIR_INPUT"
-            mkdir -p "$OUTPUT_DIR"
-          elif [ -n "$OUT_DIR_DEPRECATED" ]; then
-            OUTPUT_DIR="$OUT_DIR_DEPRECATED"
             mkdir -p "$OUTPUT_DIR"
           else
             OUTPUT_DIR="$(mktemp -d -t holon-output-XXXXXX)"
@@ -254,9 +250,66 @@ jobs:
           LABEL_NAME: ${{ github.event.label.name }}
           ASSIGNEE_TYPE: ${{ github.event.assignee.type }}
 
-      - name: Checkout repository
+      - name: Resolve base branch
+        id: base
         if: steps.gate.outputs.should_run == 'true'
+        run: |
+          set -euo pipefail
+
+          BASE="$INPUT_BASE"
+          if [ -z "$BASE" ]; then
+            BASE="$EVENT_DEFAULT_BRANCH"
+          fi
+          if [ -z "$BASE" ]; then
+            BASE="$(gh api "repos/$REPO" --jq '.default_branch')"
+          fi
+
+          if [ -z "$BASE" ] || [ "$BASE" = 'null' ]; then
+            echo "::warning::Unable to resolve repository default branch; falling back to 'main'" >&2
+            BASE='main'
+          fi
+
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.github_token || github.token }}
+          REPO: ${{ github.repository }}
+          INPUT_BASE: ${{ inputs.base }}
+          EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+      - name: Checkout repository
+        if: steps.gate.outputs.should_run == 'true' && steps.ctx.outputs.is_pr != 'true'
         uses: actions/checkout@v4
+
+      - name: Resolve PR checkout ref
+        id: pr-ref
+        if: steps.gate.outputs.should_run == 'true' && steps.ctx.outputs.is_pr == 'true'
+        run: |
+          set -euo pipefail
+
+          if [ -n "${EVENT_PR_HEAD_SHA:-}" ]; then
+            echo "ref=$EVENT_PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          REF="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.sha')"
+          if [ -z "$REF" ] || [ "$REF" = 'null' ]; then
+            echo "::error::Unable to resolve PR head sha for $REPO#$ISSUE_NUMBER" >&2
+            exit 1
+          fi
+
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.github_token || github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ steps.ctx.outputs.issue_number }}
+          EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+      - name: Checkout repository (PR head)
+        if: steps.gate.outputs.should_run == 'true' && steps.ctx.outputs.is_pr == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-ref.outputs.ref }}
+          fetch-depth: 0
 
       - name: Detect execution mode
         id: detect
@@ -340,7 +393,7 @@ jobs:
         with:
           ref: "${{ github.repository }}#${{ steps.ctx.outputs.issue_number }}"
           mode: ${{ steps.detect.outputs.mode }}
-          base: ${{ inputs.base }}
+          base: ${{ steps.base.outputs.base }}
           agent: ${{ inputs.agent }}
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
           anthropic_base_url: ${{ secrets.anthropic_base_url || 'https://api.anthropic.com' }}
@@ -348,7 +401,7 @@ jobs:
           log_level: ${{ inputs.log_level }}
           workspace: ${{ inputs.workspace }}
           input_dir: ${{ steps.ctx.outputs.input_dir }}
-          out_dir: ${{ steps.ctx.outputs.output_dir }}
+          output_dir: ${{ steps.ctx.outputs.output_dir }}
           version: ${{ inputs.version }}
           build_from_source: ${{ inputs.build_from_source }}
           holon_repository: ${{ inputs.holon_repository }}
