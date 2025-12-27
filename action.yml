@@ -48,7 +48,7 @@ inputs:
     required: false
     default: 'latest'
   build_from_source:
-    description: 'Build holon from source before running (default: false, download from releases). Requires Go toolchain - add "actions/setup-go@v5" step before this action when enabled.'
+    description: 'Build holon from source before running (default: false, download from releases). When enabled, this action will set up Go automatically.'
     required: false
     default: 'false'
   holon_repository:
@@ -112,16 +112,18 @@ runs:
         repository: ${{ inputs.holon_repository }}
         path: holon-source
 
+    - name: Setup Go (for building)
+      if: inputs.build_from_source == 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: holon-source/go.mod
+        cache: true
+        cache-dependency-path: holon-source/go.sum
+
     - name: Build from source (if enabled)
       if: inputs.build_from_source == 'true'
       shell: bash
       run: |
-        # Setup Go if needed
-        if ! command -v go &> /dev/null; then
-          echo "Error: Go not found. Please add 'actions/setup-go@v5' before this action when build_from_source is true."
-          exit 1
-        fi
-
         # Build in separate directory
         cd holon-source
         echo "Building holon from source..."
