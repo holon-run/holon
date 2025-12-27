@@ -72,13 +72,6 @@ func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) error {
 	return nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // CreateBranch creates a new branch or checks out existing one.
 func (g *GitClient) CreateBranch(branchName string) error {
 	repo, err := gogit.PlainOpen(g.WorkspaceDir)

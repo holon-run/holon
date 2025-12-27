@@ -53,15 +53,14 @@ type ContainerConfig struct {
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, error) {
 	// 1. Prepare Workspace using WorkspacePreparer
-	snapshotDir, preparer, err := prepareWorkspace(ctx, cfg)
+	snapshotDir, _, err := prepareWorkspace(ctx, cfg)
 	if err != nil {
 		return "", err
 	}
 
-	// Note: We do NOT cleanup snapshotDir here - it's the caller's responsibility
-	// This allows post-execution operations (like publish) to work with the actual workspace
-	// The caller should call preparer.Cleanup(snapshotDir) when done
-	_ = preparer // Keep preparer alive for potential future use
+	// Note: We do NOT cleanup snapshotDir here.
+	// This allows post-execution operations (like publish) to work with the actual workspace.
+	// Workspace cleanup must be handled elsewhere.
 
 	// 2. Prepare Image (Build-on-Run composition)
 	if cfg.AgentBundle == "" {
@@ -490,6 +489,8 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 				snapshotClient := git.NewClient(snapshotDir)
 				if err := snapshotClient.SetRemote(ctx, "origin", originURL); err == nil {
 					fmt.Printf("  Preserved origin from source: %s\n", originURL)
+				} else {
+					fmt.Printf("  Warning: failed to preserve origin from source (%s): %v\n", originURL, err)
 				}
 			}
 		}

@@ -683,7 +683,7 @@ func buildGoal(ref *pkggithub.SolveRef, refType string) string {
 	if refType == "pr" {
 		return fmt.Sprintf("Fix the review comments and issues in PR %s. Address all unresolved review comments and make necessary code changes.", ref.URL())
 	}
-	return fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. DO NOT commit changes or create a PR - only implement the solution.", ref.URL())
+	return fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. Focus on implementing the solution; the system will handle committing changes and creating any pull requests.", ref.URL())
 }
 
 // publishResults publishes the holon execution results
