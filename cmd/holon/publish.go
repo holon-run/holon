@@ -172,7 +172,9 @@ its name and capabilities.`,
 func init() {
 	publishCmd.Flags().StringVar(&publishProvider, "provider", "", "Publisher name (required)")
 	publishCmd.Flags().StringVar(&publishTarget, "target", "", "Publish target (required)")
-	publishCmd.Flags().StringVar(&publishOutDir, "out", "./holon-output", "Output directory")
+	publishCmd.Flags().StringVarP(&publishOutDir, "output", "O", "./holon-output", "Output directory")
+	_ = publishCmd.Flags().MarkDeprecated("out", "use --output instead")
+	publishCmd.Flags().StringVarP(&publishOutDir, "out", "o", "./holon-output", "Deprecated: use --output")
 	publishCmd.Flags().BoolVar(&publishDryRun, "dry-run", false, "Validate without publishing")
 
 	publishCmd.AddCommand(publishListCmd)

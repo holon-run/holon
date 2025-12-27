@@ -42,7 +42,7 @@ make clean
 ### Running Holon
 ```bash
 # Basic usage with spec file
-./bin/holon run --spec examples/fix-bug.yaml --workspace . --out ./holon-output
+./bin/holon run --spec examples/fix-bug.yaml --workspace . --output ./holon-output
 
 # Quick goal-based execution
 ./bin/holon run --goal "Fix the division by zero error in examples/buggy.go" --image golang:1.22
@@ -258,7 +258,8 @@ holon solve holon-run/holon#123
 - `--agent`: Agent bundle reference (path to .tar.gz, URL, or alias)
 - `--agent-bundle`: Deprecated alias for `--agent`
 - `--workspace` / `-w`: Workspace path (default: .)
-- `--out` / `-o`: Output directory (default: ./holon-output)
+- `--output` / `-O`: Output directory (default: creates temp dir to avoid polluting workspace)
+- `--out` / `-o`: Deprecated alias for `--output`
 - `--env` / `-e`: Environment variables (K=V format)
 - `--log-level`: Logging verbosity (debug, info, progress, minimal)
 - `--agent-config-mode`: Agent config mount mode (default: auto)
@@ -510,7 +511,7 @@ export HOLON_CLAUDE_DRIVER=mock
 export HOLON_CLAUDE_MOCK_FIXTURE=/path/to/fixture.json
 
 # Run holon (no API key needed)
-holon run --goal "Fix the bug" --workspace . --out ./test-output
+holon run --goal "Fix the bug" --workspace . --output ./test-output
 ```
 
 **Fixture File Format:**
@@ -596,14 +597,14 @@ Holon includes a publish system for publishing Holon execution outputs to extern
 holon publish list
 
 # Publish to existing PR (comments/replies)
-holon publish --provider github --target holon-run/holon/pr/123 --out ./holon-output
+holon publish --provider github --target holon-run/holon/pr/123 --output ./holon-output
 
 # Create/update PR from diff
 export GITHUB_TOKEN=ghp_xxx
-holon publish --provider github-pr --target holon-run/holon:main --out ./holon-output
+holon publish --provider github-pr --target holon-run/holon:main --output ./holon-output
 
 # Dry-run (validate without publishing)
-holon publish --provider github-pr --target holon-run/holon --dry-run --out ./holon-output
+holon publish --provider github-pr --target holon-run/holon --dry-run --output ./holon-output
 ```
 
 **Publisher Registry**:

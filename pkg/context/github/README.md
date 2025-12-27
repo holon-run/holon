@@ -41,10 +41,10 @@ holon context collect-pr \
   --repo holon \
   --pr 42 \
   --token $GITHUB_TOKEN \
-  --out ./context
+  --output ./context
 
 # From GitHub Actions environment
-holon context collect-pr --from-env --out ./holon-input/context
+holon context collect-pr --from-env --output ./holon-input/context
 ```
 
 ## Output Structure
@@ -93,7 +93,7 @@ The package is designed to work seamlessly with GitHub Actions:
       --repo "${{ github.event.repository.name }}" \
       --pr "${{ github.event.number }}" \
       --token "${{ secrets.GITHUB_TOKEN }}" \
-      --out "./holon-input/context"
+      --output "./holon-input/context"
 ```
 
 ## Environment Variables
