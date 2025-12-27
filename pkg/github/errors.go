@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // APIError represents a GitHub API error response
@@ -55,9 +56,17 @@ func IsRateLimitError(err error) bool {
 
 // IsNotFoundError returns true if the error is a not found error
 func IsNotFoundError(err error) bool {
+	// Check our custom APIError type
 	if apiErr, ok := err.(*APIError); ok {
 		return apiErr.StatusCode == http.StatusNotFound
 	}
+
+	// Check go-github's ErrorResponse type by checking the error message
+	// go-github returns errors with status code in the message
+	if err != nil && strings.Contains(err.Error(), "404") {
+		return true
+	}
+
 	return false
 }
 

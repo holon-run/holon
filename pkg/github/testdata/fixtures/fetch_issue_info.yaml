@@ -1,0 +1,73 @@
+---
+version: 1
+interactions:
+    - request:
+        body: ""
+        form: {}
+        headers:
+            Accept:
+                - application/vnd.github.squirrel-girl-preview
+            User-Agent:
+                - go-github/v68.0.0
+            X-Github-Api-Version:
+                - "2022-11-28"
+        url: https://api.github.com/repos/holon-run/holon/issues/289
+        method: GET
+      response:
+        body: '{"url":"https://api.github.com/repos/holon-run/holon/issues/289","repository_url":"https://api.github.com/repos/holon-run/holon","labels_url":"https://api.github.com/repos/holon-run/holon/issues/289/labels{/name}","comments_url":"https://api.github.com/repos/holon-run/holon/issues/289/comments","events_url":"https://api.github.com/repos/holon-run/holon/issues/289/events","html_url":"https://github.com/holon-run/holon/issues/289","id":3764221198,"node_id":"I_kwDOQrCIAs7gXXUO","number":289,"title":"Refactor: Remove redundant ''issue'' field in favor of ''issue_id''","user":{"login":"jolestar","id":77268,"node_id":"MDQ6VXNlcjc3MjY4","avatar_url":"https://avatars.githubusercontent.com/u/77268?v=4","gravatar_id":"","url":"https://api.github.com/users/jolestar","html_url":"https://github.com/jolestar","followers_url":"https://api.github.com/users/jolestar/followers","following_url":"https://api.github.com/users/jolestar/following{/other_user}","gists_url":"https://api.github.com/users/jolestar/gists{/gist_id}","starred_url":"https://api.github.com/users/jolestar/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/jolestar/subscriptions","organizations_url":"https://api.github.com/users/jolestar/orgs","repos_url":"https://api.github.com/users/jolestar/repos","events_url":"https://api.github.com/users/jolestar/events{/privacy}","received_events_url":"https://api.github.com/users/jolestar/received_events","type":"User","user_view_type":"public","site_admin":false},"labels":[{"id":9852572028,"node_id":"LA_kwDOQrCIAs8AAAACS0JRfA","url":"https://api.github.com/repos/holon-run/holon/labels/holon","name":"holon","color":"5319e7","default":false,"description":"Trigger Holon AI resolution"}],"state":"closed","locked":false,"assignee":null,"assignees":[],"milestone":null,"comments":1,"created_at":"2025-12-27T02:12:06Z","updated_at":"2025-12-27T05:14:13Z","closed_at":"2025-12-27T05:14:13Z","author_association":"MEMBER","type":null,"active_lock_reason":null,"sub_issues_summary":{"total":0,"completed":0,"percent_completed":0},"issue_dependencies_summary":{"blocked_by":0,"total_blocked_by":0,"blocking":0,"total_blocking":0},"body":"## Problem\n\nThe GitHub PR publisher currently uses two fields to represent issue references:\n- `issue`: Full reference format like `\"owner/repo#123\"` (legacy)\n- `issue_id`: Plain number format like `\"123\"` (preferred)\n\nThis causes confusion because:\n1. It''s unclear why two fields exist\n2. The preference logic needs documentation\n3. It adds unnecessary complexity\n\n## Current Behavior\n\nIn `cmd/holon/solve.go`:\n```go\n// Line 709: Always set for both issues and PRs\nmetadata[\"issue\"] = fmt.Sprintf(\"%s/%s#%d\", ref.Owner, ref.Repo, ref.Number)\n\n// Line 710-712: Only set for issues\nif refType == \"issue\" {\n    metadata[\"issue_id\"] = fmt.Sprintf(\"%d\", ref.Number)\n}\n```\n\nIn `pkg/publisher/githubpr/publisher.go`:\n```go\n// Line 286-291: Prefer issue_id over issue\n// Prefer issue_id (plain number) over issue (full reference like \"owner/repo#123\")\nif issueID, ok := metadata[\"issue_id\"].(string); ok {\n    config.IssueID = issueID\n} else if issue, ok := metadata[IssueFlag].(string); ok {\n    config.IssueID = issue\n}\n```\n\n## Proposed Solution\n\n**Option 1: Remove `issue` field entirely (recommended)**\n\nSince `issue_id` is:\n- Simpler (plain number vs full reference)\n- Already used in `FormatPRBody` as `Fixes #%s`\n- Only set when actually dealing with issues (not PRs)\n\nWe can:\n1. Remove the `issue` field from `solve.go`\n2. Remove the fallback logic from `buildConfig`\n3. Update `IssueFlag` constant to point to `issue_id`\n\n**Option 2: Improve naming and documentation**\n\nIf backward compatibility is a concern:\n1. Rename `issue` → `issue_ref` (clearer intent)\n2. Keep `issue_id` as is\n3. Add comprehensive documentation explaining when to use each\n\n## Files to Modify\n\n- `cmd/holon/solve.go:709-712`\n- `pkg/publisher/githubpr/publisher.go:28-29` (IssueFlag constant)\n- `pkg/publisher/githubpr/publisher.go:286-291` (buildConfig method)\n- `pkg/publisher/githubpr/contract_test.go` (update test cases)\n- `pkg/publisher/githubpr/publisher_test.go` (update test cases)\n\n## Related Code\n\n- `pkg/publisher/githubpr/ref.go:109-118` - FormatPRBody uses issueID\n- All test files that use `\"issue\": \"123\"` format\n\n## Priority\n\nLow - This is a code quality improvement, not a functional bug. The current code works correctly, just has unnecessary complexity.\n\n## Labels\n\nenhancement, refactoring, technical-debt","closed_by":{"login":"jolestar","id":77268,"node_id":"MDQ6VXNlcjc3MjY4","avatar_url":"https://avatars.githubusercontent.com/u/77268?v=4","gravatar_id":"","url":"https://api.github.com/users/jolestar","html_url":"https://github.com/jolestar","followers_url":"https://api.github.com/users/jolestar/followers","following_url":"https://api.github.com/users/jolestar/following{/other_user}","gists_url":"https://api.github.com/users/jolestar/gists{/gist_id}","starred_url":"https://api.github.com/users/jolestar/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/jolestar/subscriptions","organizations_url":"https://api.github.com/users/jolestar/orgs","repos_url":"https://api.github.com/users/jolestar/repos","events_url":"https://api.github.com/users/jolestar/events{/privacy}","received_events_url":"https://api.github.com/users/jolestar/received_events","type":"User","user_view_type":"public","site_admin":false},"reactions":{"url":"https://api.github.com/repos/holon-run/holon/issues/289/reactions","total_count":0,"+1":0,"-1":0,"laugh":0,"hooray":0,"confused":0,"heart":0,"rocket":0,"eyes":0},"timeline_url":"https://api.github.com/repos/holon-run/holon/issues/289/timeline","performed_via_github_app":null,"state_reason":"completed"}'
+        headers:
+            Access-Control-Allow-Origin:
+                - '*'
+            Access-Control-Expose-Headers:
+                - ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset
+            Cache-Control:
+                - private, max-age=60, s-maxage=60
+            Content-Security-Policy:
+                - default-src 'none'
+            Content-Type:
+                - application/json; charset=utf-8
+            Date:
+                - Sat, 27 Dec 2025 05:28:47 GMT
+            Etag:
+                - W/"86568a10a622b5520c0e5b3be81d3941d42b1d29c29420830bece235dc472b5d"
+            Last-Modified:
+                - Sat, 27 Dec 2025 05:14:13 GMT
+            Referrer-Policy:
+                - origin-when-cross-origin, strict-origin-when-cross-origin
+            Server:
+                - github.com
+            Strict-Transport-Security:
+                - max-age=31536000; includeSubdomains; preload
+            Vary:
+                - Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With
+            X-Accepted-Oauth-Scopes:
+                - repo
+            X-Content-Type-Options:
+                - nosniff
+            X-Frame-Options:
+                - deny
+            X-Github-Api-Version-Selected:
+                - "2022-11-28"
+            X-Github-Media-Type:
+                - github.v3; param=squirrel-girl-preview
+            X-Github-Request-Id:
+                - 7435:3429B0:277E87:379C9D:694F6E8E
+            X-Oauth-Client-Id:
+                - 178c6fc778ccc68e1d6a
+            X-Oauth-Scopes:
+                - gist, read:org, repo, workflow
+            X-Ratelimit-Limit:
+                - "5000"
+            X-Ratelimit-Remaining:
+                - "4982"
+            X-Ratelimit-Reset:
+                - "1766815725"
+            X-Ratelimit-Resource:
+                - core
+            X-Ratelimit-Used:
+                - "18"
+            X-Xss-Protection:
+                - "0"
+        status: 200 OK
+        code: 200
+        duration: 450.221351ms

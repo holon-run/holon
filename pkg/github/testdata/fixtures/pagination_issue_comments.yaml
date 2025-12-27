@@ -1,0 +1,71 @@
+---
+version: 1
+interactions:
+    - request:
+        body: ""
+        form: {}
+        headers:
+            Accept:
+                - application/vnd.github.squirrel-girl-preview
+            User-Agent:
+                - go-github/v68.0.0
+            X-Github-Api-Version:
+                - "2022-11-28"
+        url: https://api.github.com/repos/holon-run/holon/issues/289/comments?per_page=100
+        method: GET
+      response:
+        body: '[{"url":"https://api.github.com/repos/holon-run/holon/issues/comments/3693672549","html_url":"https://github.com/holon-run/holon/issues/289#issuecomment-3693672549","issue_url":"https://api.github.com/repos/holon-run/holon/issues/289","id":3693672549,"node_id":"IC_kwDOQrCIAs7cKPhl","user":{"login":"jolestar","id":77268,"node_id":"MDQ6VXNlcjc3MjY4","avatar_url":"https://avatars.githubusercontent.com/u/77268?v=4","gravatar_id":"","url":"https://api.github.com/users/jolestar","html_url":"https://github.com/jolestar","followers_url":"https://api.github.com/users/jolestar/followers","following_url":"https://api.github.com/users/jolestar/following{/other_user}","gists_url":"https://api.github.com/users/jolestar/gists{/gist_id}","starred_url":"https://api.github.com/users/jolestar/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/jolestar/subscriptions","organizations_url":"https://api.github.com/users/jolestar/orgs","repos_url":"https://api.github.com/users/jolestar/repos","events_url":"https://api.github.com/users/jolestar/events{/privacy}","received_events_url":"https://api.github.com/users/jolestar/received_events","type":"User","user_view_type":"public","site_admin":false},"created_at":"2025-12-27T04:50:37Z","updated_at":"2025-12-27T04:50:37Z","body":"Use Option 1 Remove issue field entirely","author_association":"MEMBER","reactions":{"url":"https://api.github.com/repos/holon-run/holon/issues/comments/3693672549/reactions","total_count":0,"+1":0,"-1":0,"laugh":0,"hooray":0,"confused":0,"heart":0,"rocket":0,"eyes":0},"performed_via_github_app":null}]'
+        headers:
+            Access-Control-Allow-Origin:
+                - '*'
+            Access-Control-Expose-Headers:
+                - ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset
+            Cache-Control:
+                - private, max-age=60, s-maxage=60
+            Content-Security-Policy:
+                - default-src 'none'
+            Content-Type:
+                - application/json; charset=utf-8
+            Date:
+                - Sat, 27 Dec 2025 05:29:02 GMT
+            Etag:
+                - W/"7cb58bf7aec9756a99e460c4355dbddedc4ff6c1fbdcaab5f0d0660879145eb9"
+            Referrer-Policy:
+                - origin-when-cross-origin, strict-origin-when-cross-origin
+            Server:
+                - github.com
+            Strict-Transport-Security:
+                - max-age=31536000; includeSubdomains; preload
+            Vary:
+                - Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With
+            X-Accepted-Oauth-Scopes:
+                - ""
+            X-Content-Type-Options:
+                - nosniff
+            X-Frame-Options:
+                - deny
+            X-Github-Api-Version-Selected:
+                - "2022-11-28"
+            X-Github-Media-Type:
+                - github.v3; param=squirrel-girl-preview
+            X-Github-Request-Id:
+                - 7435:3429B0:2782B8:37A25D:694F6E9D
+            X-Oauth-Client-Id:
+                - 178c6fc778ccc68e1d6a
+            X-Oauth-Scopes:
+                - gist, read:org, repo, workflow
+            X-Ratelimit-Limit:
+                - "5000"
+            X-Ratelimit-Remaining:
+                - "4972"
+            X-Ratelimit-Reset:
+                - "1766815725"
+            X-Ratelimit-Resource:
+                - core
+            X-Ratelimit-Used:
+                - "28"
+            X-Xss-Protection:
+                - "0"
+        status: 200 OK
+        code: 200
+        duration: 453.399702ms

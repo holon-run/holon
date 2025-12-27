@@ -122,14 +122,14 @@ func TestFetchIssueInfo(t *testing.T) {
 
 	ctx := context.Background()
 
-	issueInfo, err := client.FetchIssueInfo(ctx, "holon-run", "holon", 456)
+	issueInfo, err := client.FetchIssueInfo(ctx, "holon-run", "holon", 289)
 	if err != nil {
 		t.Fatalf("FetchIssueInfo() error = %v", err)
 	}
 
 	// Verify basic fields
-	if issueInfo.Number != 456 {
-		t.Errorf("Number = %v, want %v", issueInfo.Number, 456)
+	if issueInfo.Number != 289 {
+		t.Errorf("Number = %v, want %v", issueInfo.Number, 289)
 	}
 
 	if issueInfo.Title == "" {
@@ -165,7 +165,7 @@ func TestFetchIssueComments(t *testing.T) {
 
 	ctx := context.Background()
 
-	comments, err := client.FetchIssueComments(ctx, "holon-run", "holon", 456)
+	comments, err := client.FetchIssueComments(ctx, "holon-run", "holon", 289)
 	if err != nil {
 		t.Fatalf("FetchIssueComments() error = %v", err)
 	}
@@ -228,7 +228,7 @@ func TestFetchReviewThreads(t *testing.T) {
 
 			ctx := context.Background()
 
-			threads, err := client.FetchReviewThreads(ctx, "holon-run", "holon", 789, tt.unresolvedOnly)
+			threads, err := client.FetchReviewThreads(ctx, "holon-run", "holon", 123, tt.unresolvedOnly)
 			if err != nil {
 				t.Fatalf("FetchReviewThreads() error = %v", err)
 			}
@@ -321,7 +321,7 @@ func TestFetchCheckRuns(t *testing.T) {
 
 			ctx := context.Background()
 
-			checkRuns, err := client.FetchCheckRuns(ctx, "holon-run", "holon", "abc123def456", tt.maxResults)
+			checkRuns, err := client.FetchCheckRuns(ctx, "holon-run", "holon", "44c152d51cb6991d33e53552726fb00086c4c478", tt.maxResults)
 			if err != nil {
 				t.Fatalf("FetchCheckRuns() error = %v", err)
 			}
@@ -368,7 +368,7 @@ func TestFetchCombinedStatus(t *testing.T) {
 
 	ctx := context.Background()
 
-	status, err := client.FetchCombinedStatus(ctx, "holon-run", "holon", "abc123def456")
+	status, err := client.FetchCombinedStatus(ctx, "holon-run", "holon", "44c152d51cb6991d33e53552726fb00086c4c478")
 	if err != nil {
 		t.Fatalf("FetchCombinedStatus() error = %v", err)
 	}
@@ -493,7 +493,7 @@ func TestPaginationTests(t *testing.T) {
 		ctx := context.Background()
 
 		// This fixture should have multiple pages
-		comments, err := client.FetchIssueComments(ctx, "holon-run", "holon", 456)
+		comments, err := client.FetchIssueComments(ctx, "holon-run", "holon", 289)
 		if err != nil {
 			t.Fatalf("FetchIssueComments() error = %v", err)
 		}
@@ -510,7 +510,7 @@ func TestPaginationTests(t *testing.T) {
 
 		ctx := context.Background()
 
-		threads, err := client.FetchReviewThreads(ctx, "holon-run", "holon", 789, false)
+		threads, err := client.FetchReviewThreads(ctx, "holon-run", "holon", 123, false)
 		if err != nil {
 			t.Fatalf("FetchReviewThreads() error = %v", err)
 		}
