@@ -1,0 +1,71 @@
+[!docker] skip 'docker not available'
+
+# Test that gh CLI is available in composed images
+# This test verifies issue #306 - gh CLI should be installed in all composed images
+
+mkdir work
+mkdir out
+mkdir bundle-src
+mkdir bundle-src/bin
+
+exec chmod +x bundle-src/bin/agent
+exec tar -czf agent-bundle.tar.gz -C bundle-src .
+
+# Test with Debian-based image
+exec holon run --goal 'test gh' --workspace work --out out --image debian:bookworm-slim --agent agent-bundle.tar.gz --log-level minimal
+
+exists out/manifest.json
+
+# Clean up for next test
+exec rm -rf out
+
+# Test with RHEL/Fedora-based image (uses dnf)
+exec holon run --goal 'test gh' --workspace work --out out --image fedora:latest --agent agent-bundle.tar.gz --log-level minimal
+
+exists out/manifest.json
+
+# Clean up for next test
+exec rm -rf out
+
+# Test with Ubuntu-based image
+exec holon run --goal 'test gh' --workspace work --out out --image ubuntu:22.04 --agent agent-bundle.tar.gz --log-level minimal
+
+exists out/manifest.json
+
+-- bundle-src/manifest.json --
+{
+  "bundleVersion": "1",
+  "name": "agent-stub",
+  "version": "0.0.0",
+  "entry": "bin/agent",
+  "platform": "linux",
+  "arch": "amd64",
+  "libc": "glibc",
+  "runtime": {
+    "type": "node",
+    "version": "20"
+  }
+}
+
+-- bundle-src/bin/agent --
+#!/bin/sh
+set -eu
+
+# Verify gh CLI is available
+if ! command -v gh >/dev/null 2>&1; then
+    echo "ERROR: gh CLI not found in container" >&2
+    exit 1
+fi
+
+# Verify gh --version works
+if ! gh_version=$(gh --version 2>&1); then
+    echo "ERROR: gh --version failed" >&2
+    exit 1
+fi
+
+echo "gh CLI available: $gh_version"
+
+# Create required outputs
+mkdir -p /holon/output
+echo '{"version":"v1"}' > /holon/output/manifest.json
+echo 'gh CLI test passed' > /holon/output/summary.md

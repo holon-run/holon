@@ -305,10 +305,19 @@ RUN set -e; \
         dnf install -y curl ca-certificates git; \
         curl -fsSL https://rpm.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
         dnf install -y nodejs; \
+        if ! command -v gh >/dev/null 2>&1; then \
+            curl -o /etc/yum.repos.d/gh-cli.repo https://cli.github.com/packages/rpm/gh-cli.repo; \
+            dnf install -y gh || true; \
+        fi; \
     elif command -v yum >/dev/null 2>&1; then \
         yum install -y curl ca-certificates git; \
         curl -fsSL https://rpm.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
         yum install -y nodejs; \
+        if ! command -v gh >/dev/null 2>&1; then \
+            yum install -y yum-utils; \
+            yum-config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo; \
+            yum install -y gh || true; \
+        fi; \
     else \
         echo "Unsupported base image: no apt-get, dnf, or yum detected." >&2; \
         exit 1; \
