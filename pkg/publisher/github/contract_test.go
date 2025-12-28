@@ -131,7 +131,11 @@ func (m *mockGitHubServer) handleCreateComment(w http.ResponseWriter, r *http.Re
 		InReplyTo int64  `json:"in_reply_to,omitempty"` // For CreateCommentInReplyTo
 	}
 
-	bodyBytes, _ := io.ReadAll(r.Body)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -139,7 +143,10 @@ func (m *mockGitHubServer) handleCreateComment(w http.ResponseWriter, r *http.Re
 
 	// Check for the wrong field (in_reply_to_id) which causes 422 in real GitHub API
 	var rawPayload map[string]interface{}
-	json.Unmarshal(bodyBytes, &rawPayload)
+	if err := json.Unmarshal(bodyBytes, &rawPayload); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if _, hasWrongField := rawPayload["in_reply_to_id"]; hasWrongField {
 		// Real GitHub API returns 422 for this
 		w.Header().Set("Content-Type", "application/json")
