@@ -10,6 +10,10 @@ type PublishRequest struct {
 	// OutputDir is the path to the Holon output directory containing artifacts
 	OutputDir string
 
+	// InputDir is the path to the Holon input directory containing collected context
+	// This is used by publishers to access context information (e.g., for PR title generation)
+	InputDir string
+
 	// Manifest is the execution manifest from the Holon run
 	Manifest map[string]interface{}
 
