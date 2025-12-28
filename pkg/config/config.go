@@ -24,12 +24,8 @@ const (
 // It provides defaults that can be overridden by CLI flags.
 type ProjectConfig struct {
 	// BaseImage is the default container toolchain image (e.g., "golang:1.22")
-	// Set to "auto-detect" to enable automatic detection based on workspace files.
+	// Set to "auto" or "auto-detect" to enable automatic detection based on workspace files.
 	BaseImage string `yaml:"base_image,omitempty"`
-
-	// ImageAutoDetect enables automatic base image detection when BaseImage is not set.
-	// This is a legacy field; prefer setting base_image to "auto-detect" directly.
-	ImageAutoDetect bool `yaml:"image_auto_detect,omitempty"`
 
 	// Agent is the default agent bundle reference (path, URL, or alias)
 	Agent string `yaml:"agent,omitempty"`
@@ -158,17 +154,13 @@ func (c *ProjectConfig) HasGitConfig() bool {
 }
 
 // ShouldAutoDetectImage returns true if auto-detection is enabled.
-// Auto-detection is enabled if base_image is "auto" or "auto-detect",
-// or if the legacy image_auto_detect field is true.
+// Auto-detection is enabled if base_image is "auto" or "auto-detect".
 func (c *ProjectConfig) ShouldAutoDetectImage() bool {
-	if c.BaseImage == "auto" || c.BaseImage == "auto-detect" {
-		return true
-	}
-	return c.ImageAutoDetect
+	return c.BaseImage == "auto" || c.BaseImage == "auto-detect"
 }
 
 // IsImageAutoDetectEnabled returns true if auto-detection is explicitly
 // configured in the project config (vs. default behavior).
 func (c *ProjectConfig) IsImageAutoDetectEnabled() bool {
-	return c.ImageAutoDetect || c.BaseImage == "auto" || c.BaseImage == "auto-detect"
+	return c.BaseImage == "auto" || c.BaseImage == "auto-detect"
 }

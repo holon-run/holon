@@ -24,7 +24,6 @@ var taskName string
 var baseImage string
 var imageAutoDetect bool
 var agentPath string
-var agentBundlePath string
 var workspacePath string
 var contextPath string
 var inputPath string
@@ -92,7 +91,7 @@ func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig, wor
 	// Resolve agent: CLI > config > empty (will be handled by agent resolver)
 	// Only use CLI value if flag was explicitly changed
 	cliAgent := agentPath
-	if !cmd.Flags().Changed("agent") && !cmd.Flags().Changed("agent-bundle") {
+	if !cmd.Flags().Changed("agent") {
 		cliAgent = ""
 	}
 	agent, source := cfg.ResolveAgent(cliAgent)
@@ -120,10 +119,10 @@ func logConfigResolution(key, value, source string) {
 }
 
 // resolveOutDir resolves the output directory for run command.
-// Precedence: CLI flag (--output/--out) > temp directory.
+// Precedence: CLI flag (--output) > temp directory.
 // Returns the output directory path, whether it's a default temp dir, and an error.
 func resolveOutDir(workspace string) (string, bool, error) {
-	// If user provided --output or --out flag, use it directly
+	// If user provided --output flag, use it directly
 	if outDir != "" {
 		return outDir, false, nil
 	}
@@ -152,11 +151,6 @@ var runCmd = &cobra.Command{
 		projectCfg, err := config.LoadFromCurrentDir()
 		if err != nil {
 			return fmt.Errorf("failed to load project config: %w", err)
-		}
-
-		// Resolve agent bundle
-		if agentPath == "" {
-			agentPath = agentBundlePath
 		}
 
 		// Apply config with precedence: CLI flags > project config > defaults
@@ -250,14 +244,10 @@ func init() {
 	runCmd.Flags().StringVarP(&baseImage, "image", "i", "", "Docker image for execution (default: auto-detect from workspace)")
 	runCmd.Flags().BoolVar(&imageAutoDetect, "image-auto-detect", true, "Enable automatic base image detection (default: true)")
 	runCmd.Flags().StringVar(&agentPath, "agent", "", "Agent bundle reference (path to .tar.gz, URL, or alias)")
-	runCmd.Flags().StringVar(&agentBundlePath, "agent-bundle", "", "Deprecated: use --agent")
-	_ = runCmd.Flags().MarkDeprecated("agent-bundle", "use --agent instead")
 	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVar(&inputPath, "input", "", "Path to input directory (default: creates temp dir, auto-cleaned)")
 	runCmd.Flags().StringVarP(&outDir, "output", "O", "", "Path to output directory (default: creates temp dir to avoid polluting workspace)")
-	_ = runCmd.Flags().MarkDeprecated("out", "use --output instead")
-	runCmd.Flags().StringVarP(&outDir, "out", "o", "", "Deprecated: use --output")
 	runCmd.Flags().StringVar(&cleanupMode, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
 	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. developer, reviewer)")
 	runCmd.Flags().StringVar(&mode, "mode", "solve", "Execution mode: solve, pr-fix, plan, review")

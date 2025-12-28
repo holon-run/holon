@@ -333,9 +333,6 @@ func (r *Runner) resolveAgentBundle(ctx context.Context, cfg RunnerConfig, works
 	if agentRef == "" {
 		agentRef = strings.TrimSpace(os.Getenv("HOLON_AGENT"))
 	}
-	if agentRef == "" {
-		agentRef = strings.TrimSpace(os.Getenv("HOLON_AGENT_BUNDLE"))
-	}
 
 	// If we have an explicit reference, try to resolve it using the resolver system
 	if agentRef != "" {
@@ -360,7 +357,7 @@ func (r *Runner) resolveAgentBundle(ctx context.Context, cfg RunnerConfig, works
 
 	scriptPath := filepath.Join(workspace, "agents", "claude", "scripts", "build-bundle.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
-		return "", fmt.Errorf("agent bundle not found; set --agent/HOLON_AGENT (legacy: --agent-bundle/HOLON_AGENT_BUNDLE) or enable auto-install")
+		return "", fmt.Errorf("agent bundle not found; set --agent/HOLON_AGENT or enable auto-install")
 	}
 
 	bundleDir := filepath.Join(workspace, "agents", "claude", "dist", "agent-bundles")
