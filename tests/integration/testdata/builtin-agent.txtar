@@ -22,4 +22,4 @@ stderr 'failed to resolve agent bundle'
 
 # Test that auto-install can be disabled
 ! exec holon run --goal "test goal" --workspace /tmp --skip-checks
-stderr 'agent bundle not found; set --agent/HOLON_AGENT'
+stderr 'agent bundle not found; set --agent/HOLON_AGENT or enable auto-install'
