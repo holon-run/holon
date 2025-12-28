@@ -462,11 +462,9 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 	// 1. Automatic Secret Injection (v0.1: Anthropic Key & URL)
 	// Priority: ANTHROPIC_AUTH_TOKEN > ANTHROPIC_API_KEY (legacy)
 	anthropicKey := os.Getenv("ANTHROPIC_AUTH_TOKEN")
-	usedLegacyKey := false
 	if anthropicKey == "" {
 		anthropicKey = os.Getenv("ANTHROPIC_API_KEY")
 		if anthropicKey != "" {
-			usedLegacyKey = true
 			holonlog.Warn("using legacy ANTHROPIC_API_KEY; consider migrating to ANTHROPIC_AUTH_TOKEN")
 		}
 	}
