@@ -242,6 +242,7 @@ func TestBuildContainerMounts(t *testing.T) {
 					Type:   mount.TypeBind,
 					Source: inputDir,
 					Target: "/holon/input",
+					ReadOnly: true,
 				},
 				{
 					Type:   mount.TypeBind,

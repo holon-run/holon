@@ -21,9 +21,9 @@ type MountConfig struct {
 
 // EnvConfig represents the environment configuration for a container
 type EnvConfig struct {
-	UserEnv     map[string]string
-	HostUID     int
-	HostGID     int
+	UserEnv map[string]string
+	HostUID int
+	HostGID int
 }
 
 // BuildContainerMounts assembles the Docker mounts configuration
@@ -36,9 +36,10 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 			Target: "/holon/workspace",
 		},
 		{
-			Type:   mount.TypeBind,
-			Source: cfg.InputPath,
-			Target: "/holon/input",
+			Type:     mount.TypeBind,
+			Source:   cfg.InputPath,
+			Target:   "/holon/input",
+			ReadOnly: true,
 		},
 		{
 			Type:   mount.TypeBind,

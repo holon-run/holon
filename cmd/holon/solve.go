@@ -691,6 +691,13 @@ func getGitHubToken() (string, error) {
 	}
 	if fromGh {
 		fmt.Fprintln(os.Stderr, "Using GitHub token from 'gh auth token' (GITHUB_TOKEN not set)")
+		// Propagate gh auth token into environment so the agent container can use gh CLI.
+		if os.Getenv("GITHUB_TOKEN") == "" {
+			os.Setenv("GITHUB_TOKEN", token)
+		}
+		if os.Getenv("GH_TOKEN") == "" {
+			os.Setenv("GH_TOKEN", token)
+		}
 	}
 	return token, nil
 }
