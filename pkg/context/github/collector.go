@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	hghelper "github.com/holon-run/holon/pkg/github"
 )
@@ -70,6 +71,11 @@ func (c *Collector) Collect(ctx context.Context) error {
 	fmt.Printf("Writing context files to %s...\n", c.config.OutputDir)
 	if err := WriteContext(c.config.OutputDir, prInfo, reviewThreads, diff); err != nil {
 		return fmt.Errorf("failed to write context: %w", err)
+	}
+
+	// Verify that context files are non-empty; if empty, fail fast to avoid silent truncation.
+	if err := verifyContextFiles(c.config.OutputDir); err != nil {
+		return err
 	}
 
 	fmt.Println("Context collection complete!")
@@ -140,4 +146,24 @@ func CollectFromEnv(ctx context.Context, outputDir string) error {
 
 	collector := NewCollector(config)
 	return collector.Collect(ctx)
+}
+
+// verifyContextFiles ensures required context files are non-empty.
+func verifyContextFiles(outputDir string) error {
+	paths := []string{
+		filepath.Join(outputDir, "github", "pr.json"),
+		filepath.Join(outputDir, "github", "review_threads.json"),
+		filepath.Join(outputDir, "github", "review.md"),
+		filepath.Join(outputDir, "pr-fix.schema.json"),
+	}
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("context file missing: %s: %w", p, err)
+		}
+		if info.Size() == 0 {
+			return fmt.Errorf("context file is empty: %s (check GitHub token and network)", p)
+		}
+	}
+	return nil
 }
