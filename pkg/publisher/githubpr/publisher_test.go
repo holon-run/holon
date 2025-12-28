@@ -272,3 +272,293 @@ func TestPublishWithoutToken(t *testing.T) {
 		t.Logf("Warning: Error should mention authentication/credential issues, got: %v", err)
 	}
 }
+
+func TestGenerateDeterministicTitle(t *testing.T) {
+	p := NewPRPublisher()
+
+	t.Run("returns empty when title already exists in manifest", func(t *testing.T) {
+		outDir := t.TempDir()
+		manifest := map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"title": "Existing Title",
+			},
+		}
+
+		title, err := p.generateDeterministicTitle(outDir, manifest)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if title != "" {
+			t.Errorf("expected empty title when already set, got %q", title)
+		}
+	})
+
+	t.Run("returns empty when no context manifest exists", func(t *testing.T) {
+		outDir := t.TempDir()
+		manifest := map[string]interface{}{}
+
+		title, err := p.generateDeterministicTitle(outDir, manifest)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if title != "" {
+			t.Errorf("expected empty title without context, got %q", title)
+		}
+	})
+
+	t.Run("generates issue title from context", func(t *testing.T) {
+		outDir := t.TempDir()
+		contextDir := filepath.Join(outDir, "context", "github")
+		if err := os.MkdirAll(contextDir, 0o755); err != nil {
+			t.Fatalf("failed to create context dir: %v", err)
+		}
+
+		// Write context manifest
+		contextManifest := `{
+  "provider": "github",
+  "kind": "issue",
+  "ref": "holon-run/holon#123",
+  "owner": "holon-run",
+  "repo": "holon",
+  "number": 123
+}`
+		if err := os.WriteFile(filepath.Join(outDir, "context", "manifest.json"), []byte(contextManifest), 0o644); err != nil {
+			t.Fatalf("failed to write context manifest: %v", err)
+		}
+
+		// Write issue.json
+		issueData := `{
+  "number": 123,
+  "title": "Add deterministic PR titles"
+}`
+		if err := os.WriteFile(filepath.Join(contextDir, "issue.json"), []byte(issueData), 0o644); err != nil {
+			t.Fatalf("failed to write issue.json: %v", err)
+		}
+
+		manifest := map[string]interface{}{}
+		title, err := p.generateDeterministicTitle(outDir, manifest)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "Fix: Add deterministic PR titles"
+		if title != expected {
+			t.Errorf("expected title %q, got %q", expected, title)
+		}
+	})
+
+	t.Run("generates PR fix title from context", func(t *testing.T) {
+		outDir := t.TempDir()
+		contextDir := filepath.Join(outDir, "context", "github")
+		if err := os.MkdirAll(contextDir, 0o755); err != nil {
+			t.Fatalf("failed to create context dir: %v", err)
+		}
+
+		// Write context manifest
+		contextManifest := `{
+  "provider": "github",
+  "kind": "pr",
+  "ref": "holon-run/holon#45",
+  "owner": "holon-run",
+  "repo": "holon",
+  "number": 45
+}`
+		if err := os.WriteFile(filepath.Join(outDir, "context", "manifest.json"), []byte(contextManifest), 0o644); err != nil {
+			t.Fatalf("failed to write context manifest: %v", err)
+		}
+
+		// Write pr.json
+		prData := `{
+  "number": 45,
+  "title": "Refactor title generation"
+}`
+		if err := os.WriteFile(filepath.Join(contextDir, "pr.json"), []byte(prData), 0o644); err != nil {
+			t.Fatalf("failed to write pr.json: %v", err)
+		}
+
+		manifest := map[string]interface{}{}
+		title, err := p.generateDeterministicTitle(outDir, manifest)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "Address review comments on #45: Refactor title generation"
+		if title != expected {
+			t.Errorf("expected title %q, got %q", expected, title)
+		}
+	})
+
+	t.Run("returns empty for non-GitHub provider", func(t *testing.T) {
+		outDir := t.TempDir()
+		contextDir := filepath.Join(outDir, "context")
+		if err := os.MkdirAll(contextDir, 0o755); err != nil {
+			t.Fatalf("failed to create context dir: %v", err)
+		}
+
+		// Write context manifest for non-GitHub provider
+		contextManifest := `{
+  "provider": "gitlab",
+  "kind": "issue",
+  "ref": "123",
+  "owner": "owner",
+  "repo": "repo",
+  "number": 123
+}`
+		if err := os.WriteFile(filepath.Join(contextDir, "manifest.json"), []byte(contextManifest), 0o644); err != nil {
+			t.Fatalf("failed to write context manifest: %v", err)
+		}
+
+		manifest := map[string]interface{}{}
+		title, err := p.generateDeterministicTitle(outDir, manifest)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if title != "" {
+			t.Errorf("expected empty title for non-GitHub provider, got %q", title)
+		}
+	})
+
+	t.Run("handles missing issue.json gracefully", func(t *testing.T) {
+		outDir := t.TempDir()
+		contextDir := filepath.Join(outDir, "context")
+		if err := os.MkdirAll(contextDir, 0o755); err != nil {
+			t.Fatalf("failed to create context dir: %v", err)
+		}
+
+		// Write context manifest without issue.json
+		contextManifest := `{
+  "provider": "github",
+  "kind": "issue",
+  "ref": "holon-run/holon#123",
+  "owner": "holon-run",
+  "repo": "holon",
+  "number": 123
+}`
+		if err := os.WriteFile(filepath.Join(contextDir, "manifest.json"), []byte(contextManifest), 0o644); err != nil {
+			t.Fatalf("failed to write context manifest: %v", err)
+		}
+
+		manifest := map[string]interface{}{}
+		_, err := p.generateDeterministicTitle(outDir, manifest)
+		if err == nil {
+			t.Error("expected error when issue.json is missing")
+		}
+	})
+
+	t.Run("handles empty issue title", func(t *testing.T) {
+		outDir := t.TempDir()
+		contextDir := filepath.Join(outDir, "context", "github")
+		if err := os.MkdirAll(contextDir, 0o755); err != nil {
+			t.Fatalf("failed to create context dir: %v", err)
+		}
+
+		// Write context manifest
+		contextManifest := `{
+  "provider": "github",
+  "kind": "issue",
+  "ref": "holon-run/holon#123",
+  "owner": "holon-run",
+  "repo": "holon",
+  "number": 123
+}`
+		if err := os.WriteFile(filepath.Join(outDir, "context", "manifest.json"), []byte(contextManifest), 0o644); err != nil {
+			t.Fatalf("failed to write context manifest: %v", err)
+		}
+
+		// Write issue.json with empty title
+		issueData := `{
+  "number": 123,
+  "title": ""
+}`
+		if err := os.WriteFile(filepath.Join(contextDir, "issue.json"), []byte(issueData), 0o644); err != nil {
+			t.Fatalf("failed to write issue.json: %v", err)
+		}
+
+		manifest := map[string]interface{}{}
+		_, err := p.generateDeterministicTitle(outDir, manifest)
+		if err == nil {
+			t.Error("expected error when issue title is empty")
+		}
+	})
+}
+
+func TestGenerateIssueTitle(t *testing.T) {
+	p := NewPRPublisher()
+
+	t.Run("generates correct title format", func(t *testing.T) {
+		outDir := t.TempDir()
+		contextDir := filepath.Join(outDir, "context", "github")
+		if err := os.MkdirAll(contextDir, 0o755); err != nil {
+			t.Fatalf("failed to create context dir: %v", err)
+		}
+
+		issueData := `{
+  "number": 42,
+  "title": "Test issue title"
+}`
+		if err := os.WriteFile(filepath.Join(contextDir, "issue.json"), []byte(issueData), 0o644); err != nil {
+			t.Fatalf("failed to write issue.json: %v", err)
+		}
+
+		title, err := p.generateIssueTitle(outDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "Fix: Test issue title"
+		if title != expected {
+			t.Errorf("expected %q, got %q", expected, title)
+		}
+	})
+}
+
+func TestGeneratePRFixTitle(t *testing.T) {
+	p := NewPRPublisher()
+
+	t.Run("generates correct title format", func(t *testing.T) {
+		outDir := t.TempDir()
+		contextDir := filepath.Join(outDir, "context", "github")
+		if err := os.MkdirAll(contextDir, 0o755); err != nil {
+			t.Fatalf("failed to create context dir: %v", err)
+		}
+
+		prData := `{
+  "number": 78,
+  "title": "Original PR title"
+}`
+		if err := os.WriteFile(filepath.Join(contextDir, "pr.json"), []byte(prData), 0o644); err != nil {
+			t.Fatalf("failed to write pr.json: %v", err)
+		}
+
+		title, err := p.generatePRFixTitle(outDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "Address review comments on #78: Original PR title"
+		if title != expected {
+			t.Errorf("expected %q, got %q", expected, title)
+		}
+	})
+
+	t.Run("handles empty PR title", func(t *testing.T) {
+		outDir := t.TempDir()
+		contextDir := filepath.Join(outDir, "context", "github")
+		if err := os.MkdirAll(contextDir, 0o755); err != nil {
+			t.Fatalf("failed to create context dir: %v", err)
+		}
+
+		prData := `{
+  "number": 78,
+  "title": ""
+}`
+		if err := os.WriteFile(filepath.Join(contextDir, "pr.json"), []byte(prData), 0o644); err != nil {
+			t.Fatalf("failed to write pr.json: %v", err)
+		}
+
+		title, err := p.generatePRFixTitle(outDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "Address review comments on #78: pull request"
+		if title != expected {
+			t.Errorf("expected %q, got %q", expected, title)
+		}
+	})
+}
