@@ -24,7 +24,7 @@ exec tar -czf agent-bundle.tar.gz -C bundle-src .
 
 # Run holon with mock driver
 env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixtures/fix.json
-exec holon run --agent agent-bundle.tar.gz --goal 'Fix the division by zero error' --workspace work --out out --image golang:1.22
+exec holon run --agent agent-bundle.tar.gz --goal 'Fix the division by zero error' --workspace work --output out --image golang:1.22
 
 # Verify outputs exist
 exists out/manifest.json
