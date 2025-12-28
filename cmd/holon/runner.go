@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	v1 "github.com/holon-run/holon/pkg/api/v1"
 	"github.com/holon-run/holon/pkg/agent/resolver"
+	v1 "github.com/holon-run/holon/pkg/api/v1"
 	gh "github.com/holon-run/holon/pkg/github"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/prompt"
@@ -27,25 +27,25 @@ type Runtime interface {
 
 // RunnerConfig holds the configuration for the Run function
 type RunnerConfig struct {
-	SpecPath        string
-	GoalStr         string
-	TaskName        string
-	BaseImage       string
-	AgentBundle     string
-	WorkspacePath   string
-	ContextPath     string
-	InputPath       string // Optional: path to input directory (if empty, creates temp dir)
-	OutDir          string
-	OutDirIsTemp    bool   // true if output dir is a temporary directory (vs user-provided)
-	RoleName        string
-	EnvVarsList     []string
-	LogLevel        string
-	Mode            string
-	Cleanup         string // Cleanup mode: "auto" (default), "none", "all"
-	AgentConfigMode string // Agent config mount mode: "auto", "yes", "no"
-	GitAuthorName   string // Optional: git author name override
-	GitAuthorEmail  string // Optional: git author email override
-	WorkspaceIsTemporary bool // true if workspace is a temporary directory (vs user-provided)
+	SpecPath             string
+	GoalStr              string
+	TaskName             string
+	BaseImage            string
+	AgentBundle          string
+	WorkspacePath        string
+	ContextPath          string
+	InputPath            string // Optional: path to input directory (if empty, creates temp dir)
+	OutDir               string
+	OutDirIsTemp         bool // true if output dir is a temporary directory (vs user-provided)
+	RoleName             string
+	EnvVarsList          []string
+	LogLevel             string
+	Mode                 string
+	Cleanup              string // Cleanup mode: "auto" (default), "none", "all"
+	AgentConfigMode      string // Agent config mount mode: "auto", "yes", "no"
+	GitAuthorName        string // Optional: git author name override
+	GitAuthorEmail       string // Optional: git author email override
+	WorkspaceIsTemporary bool   // true if workspace is a temporary directory (vs user-provided)
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -279,19 +279,23 @@ output:
 		return fmt.Errorf("failed to resolve input path: %w", err)
 	}
 
+	// Log context sizes just before container start to catch unexpected truncation.
+	contextDir := filepath.Join(absInputDir, "context")
+	printContextSnapshot(contextDir)
+
 	agentBundlePath, err := r.resolveAgentBundle(ctx, cfg, absWorkspace)
 	if err != nil {
 		return err
 	}
 
 	containerCfg := &docker.ContainerConfig{
-		BaseImage:          cfg.BaseImage,
-		AgentBundle:        agentBundlePath,
-		Workspace:          absWorkspace,
-		InputPath:          absInputDir,
-		OutDir:             absOut,
-		Env:                envVars,
-		AgentConfigMode:    cfg.AgentConfigMode,
+		BaseImage:            cfg.BaseImage,
+		AgentBundle:          agentBundlePath,
+		Workspace:            absWorkspace,
+		InputPath:            absInputDir,
+		OutDir:               absOut,
+		Env:                  envVars,
+		AgentConfigMode:      cfg.AgentConfigMode,
 		WorkspaceIsTemporary: cfg.WorkspaceIsTemporary,
 	}
 
