@@ -276,16 +276,19 @@ func TestExtractBranchFromSummaryUniqueness(t *testing.T) {
 	// on retries/parallel runs.
 	summary := "Fix the bug\n\nDetails here."
 
-	t.Run("with issue ID produces unique names", func(t *testing.T) {
-		issueID := "123"
+	// Helper function to test branch uniqueness with a given issue ID and pattern
+	testBranchUniqueness := func(t *testing.T, issueID string, pattern string) {
+		t.Helper()
 
 		// Generate multiple branch names in rapid succession
-		branches := make([]string, 10)
+		// Using 3 iterations with slightly longer sleeps (1100ms) to ensure
+		// second-level timestamp advancement while keeping tests fast
+		branches := make([]string, 3)
 		for i := 0; i < len(branches); i++ {
 			branches[i] = ExtractBranchFromSummary(summary, issueID)
 			// Small delay to ensure time advancement (1 second resolution)
 			if i < len(branches)-1 {
-				time.Sleep(time.Second)
+				time.Sleep(1100 * time.Millisecond)
 			}
 		}
 
@@ -298,12 +301,12 @@ func TestExtractBranchFromSummaryUniqueness(t *testing.T) {
 			uniqueBranches[branch] = true
 
 			// Also verify format matches expected pattern
-			matched, err := regexp.MatchString(`^holon/fix-123-\d{8}-\d{6}$`, branch)
+			matched, err := regexp.MatchString(pattern, branch)
 			if err != nil {
 				t.Fatalf("invalid regex: %v", err)
 			}
 			if !matched {
-				t.Errorf("ExtractBranchFromSummary() = %v, want to match pattern ^holon/fix-123-\\d{8}-\\d{6}$", branch)
+				t.Errorf("ExtractBranchFromSummary() = %v, want to match pattern %s", branch, pattern)
 			}
 		}
 
@@ -311,52 +314,24 @@ func TestExtractBranchFromSummaryUniqueness(t *testing.T) {
 		if len(uniqueBranches) != len(branches) {
 			t.Errorf("Expected %d unique branches, got %d", len(branches), len(uniqueBranches))
 		}
+	}
+
+	t.Run("with issue ID produces unique names", func(t *testing.T) {
+		testBranchUniqueness(t, "123", `^holon/fix-123-\d{8}-\d{6}$`)
 	})
 
 	t.Run("without issue ID produces unique names", func(t *testing.T) {
-		// Generate multiple branch names in rapid succession
-		branches := make([]string, 10)
-		for i := 0; i < len(branches); i++ {
-			branches[i] = ExtractBranchFromSummary(summary, "")
-			// Small delay to ensure time advancement (1 second resolution)
-			if i < len(branches)-1 {
-				time.Sleep(time.Second)
-			}
-		}
-
-		// Check that all branches are unique
-		uniqueBranches := make(map[string]bool)
-		for _, branch := range branches {
-			if uniqueBranches[branch] {
-				t.Errorf("ExtractBranchFromSummary() returned duplicate branch: %s", branch)
-			}
-			uniqueBranches[branch] = true
-
-			// Also verify format matches expected pattern
-			matched, err := regexp.MatchString(`^holon/auto-fix-\d{8}-\d{6}$`, branch)
-			if err != nil {
-				t.Fatalf("invalid regex: %v", err)
-			}
-			if !matched {
-				t.Errorf("ExtractBranchFromSummary() = %v, want to match pattern ^holon/auto-fix-\\d{8}-\\d{6}$", branch)
-			}
-		}
-
-		// Ensure we got the expected number of unique branches
-		if len(uniqueBranches) != len(branches) {
-			t.Errorf("Expected %d unique branches, got %d", len(branches), len(uniqueBranches))
-		}
+		testBranchUniqueness(t, "", `^holon/auto-fix-\d{8}-\d{6}$`)
 	})
 
 	t.Run("explicit branch marker is always deterministic", func(t *testing.T) {
 		// With an explicit branch marker, the result should be deterministic
 		summaryWithBranch := "Branch: custom/branch-123\n\nFix the bug."
 
-		// Call multiple times
+		// Call multiple times (no sleep needed since explicit markers are deterministic)
 		branches := make([]string, 5)
 		for i := 0; i < len(branches); i++ {
 			branches[i] = ExtractBranchFromSummary(summaryWithBranch, "456")
-			time.Sleep(10 * time.Millisecond)
 		}
 
 		// All should be identical (deterministic)
