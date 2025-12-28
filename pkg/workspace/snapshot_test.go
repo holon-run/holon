@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/holon-run/holon/pkg/git"
 )
 
 // TestSnapshotPreparerGitDiff verifies that a snapshot workspace can generate diffs

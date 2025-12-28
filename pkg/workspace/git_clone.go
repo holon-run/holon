@@ -62,7 +62,7 @@ func (p *GitClonePreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	}
 
 	// Build git clone options based on history mode
-	opts := p.buildCloneOptions(req)
+	opts := p.buildCloneOptions(ctx, req)
 
 	// Execute git clone
 	cloneResult, err := git.Clone(ctx, opts)
@@ -99,7 +99,7 @@ func (p *GitClonePreparer) Cleanup(dest string) error {
 }
 
 // buildCloneOptions constructs the git clone options based on the request
-func (p *GitClonePreparer) buildCloneOptions(req PrepareRequest) git.CloneOptions {
+func (p *GitClonePreparer) buildCloneOptions(ctx context.Context, req PrepareRequest) git.CloneOptions {
 	opts := git.CloneOptions{
 		Source: req.Source,
 		Dest:   req.Dest,
@@ -123,7 +123,7 @@ func (p *GitClonePreparer) buildCloneOptions(req PrepareRequest) git.CloneOption
 		// Full history is the default for git clone
 		// When source is a local repo, git clone --local is more efficient
 		client := git.NewClient(req.Source)
-		if client.IsRepo(context.Background()) {
+		if client.IsRepo(ctx) {
 			opts.Local = true
 		}
 	}
