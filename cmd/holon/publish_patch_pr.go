@@ -67,6 +67,16 @@ func publishPatchToPR(ctx context.Context, pubWorkspace, inputDir, diffPath stri
 	}
 
 	gitPub := pubgit.NewPublisher()
+
+	// Ensure git publisher has a token if available.
+	if os.Getenv(pubgit.GitTokenEnv) == "" {
+		if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+			_ = os.Setenv(pubgit.GitTokenEnv, tok)
+		} else if tok := os.Getenv("GH_TOKEN"); tok != "" {
+			_ = os.Setenv(pubgit.GitTokenEnv, tok)
+		}
+	}
+
 	if err := gitPub.Validate(req); err != nil {
 		return fmt.Errorf("git publish validation failed: %w", err)
 	}
