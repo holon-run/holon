@@ -2,8 +2,10 @@ package githubpr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -27,6 +29,39 @@ const (
 	// IssueFlag is the flag name for issue ID reference.
 	IssueFlag = "issue_id"
 )
+
+// githubContextInfo represents the context information collected from GitHub
+type githubContextInfo struct {
+	// Provider is the context provider (e.g., "github")
+	Provider string `json:"provider"`
+
+	// Kind is the context type ("issue" or "pr")
+	Kind string `json:"kind"`
+
+	// Ref is the reference that was collected
+	Ref string `json:"ref"`
+
+	// Owner is the repository owner
+	Owner string `json:"owner"`
+
+	// Repo is the repository name
+	Repo string `json:"repo"`
+
+	// Number is the issue or PR number
+	Number int `json:"number"`
+}
+
+// issueInfo represents minimal issue information from context
+type issueInfo struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+}
+
+// prInfo represents minimal PR information from context
+type prInfo struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+}
 
 // PRPublisher publishes Holon outputs as GitHub PRs.
 type PRPublisher struct{}
@@ -91,7 +126,31 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 		workspaceDir = "."
 	}
 
-	// Build configuration from manifest metadata
+	// Step 0: Generate deterministic title from context if not already in manifest
+	// This ensures PR titles are derived from context (issue/PR metadata) rather than LLM output
+	deterministicTitle, err := p.generateDeterministicTitle(req.OutputDir, req.Manifest)
+	if err != nil {
+		// Non-fatal: log and continue with existing title logic
+		fmt.Fprintf(os.Stderr, "Warning: failed to generate deterministic title: %v\n", err)
+	} else if deterministicTitle != "" {
+		// Inject the deterministic title into the manifest metadata
+		rawMetadata := req.Manifest["metadata"]
+		metadata, ok := rawMetadata.(map[string]interface{})
+		if !ok || metadata == nil {
+			metadata = make(map[string]interface{})
+			req.Manifest["metadata"] = metadata
+		}
+		if _, exists := metadata[TitleFlag]; !exists {
+			metadata[TitleFlag] = deterministicTitle
+			// Write the updated manifest back to disk so it persists
+			if err := p.writeManifestWithTitle(req.OutputDir, req.Manifest); err != nil {
+				// Non-fatal: log and continue
+				fmt.Fprintf(os.Stderr, "Warning: failed to write manifest with title: %v\n", err)
+			}
+		}
+	}
+
+	// Build configuration from manifest metadata (now with deterministic title if generated)
 	config := p.buildConfig(req.Manifest)
 
 	// Initialize result
@@ -296,4 +355,103 @@ func (p *PRPublisher) buildConfig(manifest map[string]interface{}) PRPublisherCo
 	}
 
 	return config
+}
+
+// generateDeterministicTitle generates a deterministic PR title from context files.
+// Returns empty string if context is not available or title cannot be generated.
+func (p *PRPublisher) generateDeterministicTitle(outputDir string, manifest map[string]interface{}) (string, error) {
+	// Check if title is already set in manifest metadata
+	if metadata, ok := manifest["metadata"].(map[string]interface{}); ok {
+		if title, ok := metadata[TitleFlag].(string); ok && title != "" {
+			// Title already exists, don't override
+			return "", nil
+		}
+	}
+
+	// Try to read context manifest to determine context type
+	contextManifestPath := filepath.Join(outputDir, "context", "manifest.json")
+	var contextInfo githubContextInfo
+
+	contextData, err := os.ReadFile(contextManifestPath)
+	if err != nil {
+		// No context manifest available, return empty title (will use fallback)
+		return "", nil
+	}
+
+	if err := json.Unmarshal(contextData, &contextInfo); err != nil {
+		return "", fmt.Errorf("failed to parse context manifest: %w", err)
+	}
+
+	// Only generate deterministic title for GitHub context
+	if contextInfo.Provider != "github" {
+		return "", nil
+	}
+
+	// Generate title based on context kind
+	switch contextInfo.Kind {
+	case "issue":
+		return p.generateIssueTitle(outputDir)
+	case "pr":
+		return p.generatePRFixTitle(outputDir)
+	default:
+		return "", nil
+	}
+}
+
+// generateIssueTitle generates a deterministic title for issue-based PRs.
+// Format: "Fix: <issue title>"
+func (p *PRPublisher) generateIssueTitle(outputDir string) (string, error) {
+	issuePath := filepath.Join(outputDir, "context", "github", "issue.json")
+	data, err := os.ReadFile(issuePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read issue.json: %w", err)
+	}
+
+	var info issueInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return "", fmt.Errorf("failed to parse issue.json: %w", err)
+	}
+
+	if info.Title == "" {
+		return "", fmt.Errorf("issue title is empty")
+	}
+
+	return fmt.Sprintf("Fix: %s", info.Title), nil
+}
+
+// generatePRFixTitle generates a deterministic title for PR-fix mode PRs.
+// Format: "Address review comments on #<pr_number>: <pr title>"
+func (p *PRPublisher) generatePRFixTitle(outputDir string) (string, error) {
+	prPath := filepath.Join(outputDir, "context", "github", "pr.json")
+	data, err := os.ReadFile(prPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read pr.json: %w", err)
+	}
+
+	var info prInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return "", fmt.Errorf("failed to parse pr.json: %w", err)
+	}
+
+	title := info.Title
+	if title == "" {
+		title = "pull request"
+	}
+
+	return fmt.Sprintf("Address review comments on #%d: %s", info.Number, title), nil
+}
+
+// writeManifestWithTitle writes the updated manifest (with injected title) back to disk.
+func (p *PRPublisher) writeManifestWithTitle(outputDir string, manifest map[string]interface{}) error {
+	manifestPath := filepath.Join(outputDir, "manifest.json")
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal manifest: %w", err)
+	}
+
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+
+	return nil
 }
