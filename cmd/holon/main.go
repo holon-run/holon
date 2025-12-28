@@ -10,6 +10,7 @@ import (
 	"github.com/holon-run/holon/pkg/config"
 	"github.com/holon-run/holon/pkg/image"
 	holonlog "github.com/holon-run/holon/pkg/log"
+	"github.com/holon-run/holon/pkg/preflight"
 	_ "github.com/holon-run/holon/pkg/publisher/github"  // Register GitHub publisher
 	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher
 	_ "github.com/holon-run/holon/pkg/publisher/git"      // Register git publisher
@@ -34,6 +35,7 @@ var envVarsList []string
 var logLevel string
 var mode string
 var agentConfigMode string
+var skipPreflight bool
 
 // resolvedConfig holds the resolved configuration values
 type resolvedConfig struct {
@@ -192,6 +194,21 @@ var runCmd = &cobra.Command{
 			}
 		}
 
+		// Run preflight checks before execution
+		checker := preflight.NewChecker(preflight.Config{
+			Skip:                  skipPreflight,
+			Quiet:                 false,
+			RequireDocker:         true,
+			RequireGit:            true,
+			RequireGitHubToken:    false,
+			RequireAnthropicToken: false,
+			WorkspacePath:         absWorkspace,
+			OutputPath:            resolvedOutDir,
+		})
+		if err := checker.Run(ctx); err != nil {
+			return fmt.Errorf("preflight checks failed: %w", err)
+		}
+
 		rt, err := docker.NewRuntime()
 		if err != nil {
 			return fmt.Errorf("failed to initialize runtime: %w", err)
@@ -247,6 +264,8 @@ func init() {
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	runCmd.Flags().StringVar(&agentConfigMode, "agent-config-mode", "no", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount, default)")
+	runCmd.Flags().BoolVar(&skipPreflight, "no-preflight", false, "Skip preflight checks (not recommended)")
+	runCmd.Flags().BoolVar(&skipPreflight, "skip-checks", false, "Skip preflight checks (alias for --no-preflight, not recommended)")
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(contextCmd)

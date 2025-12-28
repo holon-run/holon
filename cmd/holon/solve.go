@@ -14,7 +14,9 @@ import (
 	"github.com/holon-run/holon/pkg/context/provider/github"
 	"github.com/holon-run/holon/pkg/git"
 	pkggithub "github.com/holon-run/holon/pkg/github"
+	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/image"
+	"github.com/holon-run/holon/pkg/preflight"
 	"github.com/holon-run/holon/pkg/publisher"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/workspace"
@@ -40,6 +42,7 @@ var (
 	solveWorkspaceRef     string
 	solveFetchRemote      bool
 	solveAgentConfigMode  string
+	solveSkipPreflight    bool
 )
 
 // solveCmd is the parent solve command
@@ -607,6 +610,23 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		}()
 	}
 
+	// Run preflight checks before execution
+	holonlog.Progress("running preflight checks")
+
+	checker := preflight.NewChecker(preflight.Config{
+		Skip:                  solveSkipPreflight,
+		Quiet:                 false,
+		RequireDocker:         true,
+		RequireGit:            true,
+		RequireGitHubToken:    true, // solve command always needs GitHub token
+		RequireAnthropicToken: false,
+		WorkspacePath:         workspacePrep.path,
+		OutputPath:            outDir,
+	})
+	if err := checker.Run(ctx); err != nil {
+		return fmt.Errorf("preflight checks failed: %w", err)
+	}
+
 	// Run holon
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("Running Holon...")
@@ -906,6 +926,8 @@ func init() {
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")
 	solveCmd.Flags().StringVar(&solveAgentConfigMode, "agent-config-mode", "no", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount, default)")
 	solveCmd.Flags().BoolVar(&solveDryRun, "dry-run", false, "Validate without running (not yet implemented)")
+	solveCmd.Flags().BoolVar(&solveSkipPreflight, "no-preflight", false, "Skip preflight checks (not recommended)")
+	solveCmd.Flags().BoolVar(&solveSkipPreflight, "skip-checks", false, "Skip preflight checks (alias for --no-preflight, not recommended)")
 
 	// Workspace preparation flags
 	solveCmd.Flags().StringVar(&solveWorkspace, "workspace", "", "Workspace path (uses existing directory, no cloning)")
