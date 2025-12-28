@@ -8,6 +8,11 @@ on:
         required: false
         type: number
         default: 0
+      comment_id:
+        description: 'Comment ID for feedback reactions and replies'
+        required: false
+        type: number
+        default: 0
       comment_body:
         description: 'Comment body (for auto mode detection)'
         required: false
@@ -250,6 +255,22 @@ jobs:
           LABEL_NAME: ${{ github.event.label.name }}
           ASSIGNEE_TYPE: ${{ github.event.assignee.type }}
 
+      - name: Add initial reaction (eyes)
+        if: steps.gate.outputs.should_run == 'true' && inputs.comment_id != 0
+        run: |
+          set -euo pipefail
+
+          COMMENT_ID='${{ inputs.comment_id }}'
+          REPO='${{ github.repository }}'
+
+          # Add eyes reaction idempotently (skip if already present)
+          if ! gh api --silent -f content='eyes' "repos/$REPO/issues/comments/$COMMENT_ID/reactions" 2>/dev/null; then
+            # Reaction already exists or API error - silently continue
+            :
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
+
       - name: Resolve base branch
         id: base
         if: steps.gate.outputs.should_run == 'true'
@@ -437,6 +458,38 @@ jobs:
           else
             echo "result=${{ steps.run.outcome }}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Post completion feedback
+        if: always() && inputs.comment_id != 0 && steps.gate.outputs.should_run == 'true'
+        run: |
+          set -euo pipefail
+
+          COMMENT_ID='${{ inputs.comment_id }}'
+          ISSUE_NUMBER='${{ steps.ctx.outputs.issue_number }}'
+          IS_PR='${{ steps.ctx.outputs.is_pr }}'
+          RESULT='${{ steps.result.outputs.result }}'
+          REPO='${{ github.repository }}'
+          RUN_URL='${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+
+          # Determine reaction and message based on result
+          if [ "$RESULT" = 'success' ]; then
+            REACTION_CONTENT='rocket'
+            STATUS_TEXT="Holon completed successfully."
+          else
+            REACTION_CONTENT='x'
+            STATUS_TEXT="Holon failed: $RESULT"
+          fi
+
+          # Add reaction idempotently (ignore errors if already present)
+          gh api --silent -f content="$REACTION_CONTENT" "repos/$REPO/issues/comments/$COMMENT_ID/reactions" 2>/dev/null || true
+
+          # Post reply comment with run URL and status
+          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+            -f body="$STATUS_TEXT
+
+          Run: $RUN_URL"
+        env:
+          GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
 
       - name: Bundle Holon Artifact (input + output)
         id: bundle

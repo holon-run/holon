@@ -26,6 +26,7 @@ jobs:
       # Keep config minimal; holon-solve derives issue_number/comment_body/mode/output_dir from the event.
       log_level: 'debug'
       build_from_source: true
+      comment_id: ${{ github.event.comment.id }}
     secrets:
       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
       holon_github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}
