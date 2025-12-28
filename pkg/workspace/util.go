@@ -91,7 +91,22 @@ func isSubpath(candidate, parent string) bool {
 }
 
 // copyDir copies a directory recursively using cp -a (Unix) or xcopy (Windows)
+// Returns early if src and dst are the same path to prevent self-copy truncation
 func copyDir(src string, dst string) error {
+	// Guard against self-copy: if src and dst resolve to the same path, skip copy
+	// This prevents truncation bugs when copying a directory onto itself
+	srcAbs, err := cleanAbs(src)
+	if err != nil {
+		return fmt.Errorf("failed to resolve source path: %w", err)
+	}
+	dstAbs, err := cleanAbs(dst)
+	if err != nil {
+		return fmt.Errorf("failed to resolve destination path: %w", err)
+	}
+	if srcAbs == dstAbs {
+		return nil
+	}
+
 	if runtime.GOOS == "windows" {
 		// Windows: Use xcopy for recursive directory copy
 		cmd := exec.Command("xcopy", src+"\\*", dst, "/E", "/I", "/H", "/Y", "/Q")

@@ -1157,6 +1157,192 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 	})
 }
 
+// TestRunner_ContextHandling_SelfCopy tests that context files remain intact
+// when ContextPath points to the same input/context dir (fixes #309)
+func TestRunner_ContextHandling_SelfCopy(t *testing.T) {
+	mockRuntime := &MockRuntime{
+		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) (string, error) {
+			// Verify that the context directory exists in input
+			contextDir := filepath.Join(cfg.InputPath, "context")
+			if _, err := os.Stat(contextDir); os.IsNotExist(err) {
+				t.Errorf("Expected context directory to exist at %s", contextDir)
+			}
+			return "", nil
+		},
+	}
+	runner := NewRunner(mockRuntime)
+
+	tempDir, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, tempDir)
+
+	// Create a context directory with test files
+	contextDir := filepath.Join(tempDir, "context")
+	if err := os.MkdirAll(contextDir, 0755); err != nil {
+		t.Fatalf("Failed to create context dir: %v", err)
+	}
+
+	// Create test files with known content
+	testFile1 := filepath.Join(contextDir, "test1.txt")
+	testFile2 := filepath.Join(contextDir, "test2.txt")
+	content1 := []byte("This is test file 1 with some content")
+	content2 := []byte("This is test file 2 with different content")
+
+	if err := os.WriteFile(testFile1, content1, 0644); err != nil {
+		t.Fatalf("Failed to create test file 1: %v", err)
+	}
+	if err := os.WriteFile(testFile2, content2, 0644); err != nil {
+		t.Fatalf("Failed to create test file 2: %v", err)
+	}
+
+	// Record file sizes before running
+	info1Before, _ := os.Stat(testFile1)
+	info2Before, _ := os.Stat(testFile2)
+	size1Before := info1Before.Size()
+	size2Before := info2Before.Size()
+
+	// Set InputPath to point to a directory where context will be a subdirectory
+	// Simulate the scenario where context path might be confused with input/context
+	inputDir := filepath.Join(tempDir, "holon-input")
+	if err := os.MkdirAll(inputDir, 0755); err != nil {
+		t.Fatalf("Failed to create input dir: %v", err)
+	}
+
+	// Copy context to input/context (simulating pre-existing context)
+	inputContextDir := filepath.Join(inputDir, "context")
+	if err := os.MkdirAll(inputContextDir, 0755); err != nil {
+		t.Fatalf("Failed to create input/context dir: %v", err)
+	}
+	if err := copyFile(testFile1, filepath.Join(inputContextDir, "test1.txt")); err != nil {
+		t.Fatalf("Failed to copy test1.txt: %v", err)
+	}
+	if err := copyFile(testFile2, filepath.Join(inputContextDir, "test2.txt")); err != nil {
+		t.Fatalf("Failed to copy test2.txt: %v", err)
+	}
+
+	cfg := RunnerConfig{
+		GoalStr:       "Test goal with context",
+		TaskName:      "test-context",
+		WorkspacePath: workspaceDir,
+		ContextPath:   inputContextDir, // Point to input/context directly
+		InputPath:     inputDir,         // Use the same parent directory
+		OutDir:        outDir,
+		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
+	}
+
+	err := runner.Run(context.Background(), cfg)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	// Verify that original context files were not truncated
+	info1After, err := os.Stat(testFile1)
+	if err != nil {
+		t.Errorf("Failed to stat test1.txt after run: %v", err)
+	} else if info1After.Size() != size1Before {
+		t.Errorf("File test1.txt was truncated: expected size %d, got %d", size1Before, info1After.Size())
+	}
+
+	info2After, err := os.Stat(testFile2)
+	if err != nil {
+		t.Errorf("Failed to stat test2.txt after run: %v", err)
+	} else if info2After.Size() != size2Before {
+		t.Errorf("File test2.txt was truncated: expected size %d, got %d", size2Before, info2After.Size())
+	}
+
+	// Verify file content is unchanged
+	actualContent1, err := os.ReadFile(testFile1)
+	if err != nil {
+		t.Errorf("Failed to read test1.txt after run: %v", err)
+	} else if string(actualContent1) != string(content1) {
+		t.Errorf("File test1.txt content was modified")
+	}
+
+	actualContent2, err := os.ReadFile(testFile2)
+	if err != nil {
+		t.Errorf("Failed to read test2.txt after run: %v", err)
+	} else if string(actualContent2) != string(content2) {
+		t.Errorf("File test2.txt content was modified")
+	}
+}
+
+// TestRunner_ContextHandling_NormalCopy tests that context files are copied
+// when ContextPath points to a different directory
+func TestRunner_ContextHandling_NormalCopy(t *testing.T) {
+	mockRuntime := &MockRuntime{
+		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) (string, error) {
+			// Verify that the context directory exists in input
+			contextDir := filepath.Join(cfg.InputPath, "context")
+			if _, err := os.Stat(contextDir); os.IsNotExist(err) {
+				t.Errorf("Expected context directory to exist at %s", contextDir)
+			}
+			// Verify files were copied
+			testFile1 := filepath.Join(contextDir, "test1.txt")
+			testFile2 := filepath.Join(contextDir, "test2.txt")
+			if _, err := os.Stat(testFile1); os.IsNotExist(err) {
+				t.Errorf("Expected test1.txt to exist in input context")
+			}
+			if _, err := os.Stat(testFile2); os.IsNotExist(err) {
+				t.Errorf("Expected test2.txt to exist in input context")
+			}
+			return "", nil
+		},
+	}
+	runner := NewRunner(mockRuntime)
+
+	tempDir, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, tempDir)
+
+	// Create a context directory with test files in a separate location
+	contextDir := filepath.Join(tempDir, "my-context")
+	if err := os.MkdirAll(contextDir, 0755); err != nil {
+		t.Fatalf("Failed to create context dir: %v", err)
+	}
+
+	// Create test files
+	testFile1 := filepath.Join(contextDir, "test1.txt")
+	testFile2 := filepath.Join(contextDir, "test2.txt")
+	content1 := []byte("This is test file 1 with some content")
+	content2 := []byte("This is test file 2 with different content")
+
+	if err := os.WriteFile(testFile1, content1, 0644); err != nil {
+		t.Fatalf("Failed to create test file 1: %v", err)
+	}
+	if err := os.WriteFile(testFile2, content2, 0644); err != nil {
+		t.Fatalf("Failed to create test file 2: %v", err)
+	}
+
+	cfg := RunnerConfig{
+		GoalStr:       "Test goal with context",
+		TaskName:      "test-context-normal",
+		WorkspacePath: workspaceDir,
+		ContextPath:   contextDir, // Different directory from input/context
+		OutDir:        outDir,
+		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
+	}
+
+	err := runner.Run(context.Background(), cfg)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	// Verify that original context files still exist and are unchanged
+	info1, err := os.Stat(testFile1)
+	if err != nil {
+		t.Errorf("Failed to stat original test1.txt: %v", err)
+	} else if int(info1.Size()) != len(content1) {
+		t.Errorf("Original file test1.txt size changed")
+	}
+
+	info2, err := os.Stat(testFile2)
+	if err != nil {
+		t.Errorf("Failed to stat original test2.txt: %v", err)
+	} else if int(info2.Size()) != len(content2) {
+		t.Errorf("Original file test2.txt size changed")
+	}
+}
+
 // TestRunner_GitConfigOverride tests that GitAuthorName and GitAuthorEmail fields
 // are properly passed through to environment variables
 func TestRunner_GitConfigOverride(t *testing.T) {

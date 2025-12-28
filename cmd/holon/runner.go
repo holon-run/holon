@@ -691,7 +691,14 @@ func copyFile(src, dst string) error {
 
 // copyDir recursively copies a directory tree from src to dst
 // Handles regular files, directories, and symbolic links
+// Returns early if src and dst are the same path
 func copyDir(src, dst string) error {
+	// Guard against self-copy: if src and dst are the same, skip copy
+	// This prevents truncation bugs when copying a directory onto itself
+	if samePath(src, dst) {
+		return nil
+	}
+
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		return fmt.Errorf("failed to read source directory: %w", err)
