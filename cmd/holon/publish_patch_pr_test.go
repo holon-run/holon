@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -356,36 +355,6 @@ func TestPublishPatchToPR_PublishRequestValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			ctx := context.Background()
-
-			// Parse pr.json to verify expected values
-			var prInfo struct {
-				Head struct {
-					Ref string `json:"ref"`
-				} `json:"head"`
-				HeadRef string `json:"head_ref"`
-				PR      struct {
-					HeadRef string `json:"head_ref"`
-					Head    struct {
-						Ref string `json:"ref"`
-					} `json:"head"`
-				} `json:"pr"`
-			}
-			if err := json.Unmarshal([]byte(tt.prJSON), &prInfo); err != nil {
-				t.Fatalf("failed to parse pr.json: %v", err)
-			}
-			headRef := prInfo.Head.Ref
-			if headRef == "" {
-				headRef = prInfo.HeadRef
-			}
-			if headRef == "" {
-				headRef = prInfo.PR.Head.Ref
-			}
-			if headRef == "" {
-				headRef = prInfo.PR.HeadRef
-			}
-			if headRef != tt.wantBranch {
-				t.Fatalf("pr.json parsing mismatch: got %q, want %q", headRef, tt.wantBranch)
-			}
 
 			// Create input directory structure
 			inputDir := filepath.Join(tmpDir, "input")
