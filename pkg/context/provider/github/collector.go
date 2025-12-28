@@ -146,10 +146,12 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 
 	// Mark trigger comment if provided
 	if req.Options.TriggerCommentID > 0 {
+		found := false
 		for i := range reviewThreads {
 			if reviewThreads[i].CommentID == req.Options.TriggerCommentID {
 				reviewThreads[i].IsTrigger = true
 				fmt.Printf("  Marked review thread comment #%d as trigger\n", req.Options.TriggerCommentID)
+				found = true
 				break
 			}
 			// Also check replies
@@ -157,8 +159,12 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 				if reviewThreads[i].Replies[j].CommentID == req.Options.TriggerCommentID {
 					reviewThreads[i].Replies[j].IsTrigger = true
 					fmt.Printf("  Marked review reply #%d as trigger\n", req.Options.TriggerCommentID)
+					found = true
 					break
 				}
+			}
+			if found {
+				break
 			}
 		}
 	}

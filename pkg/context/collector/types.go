@@ -58,9 +58,6 @@ type Options struct {
 
 	// TriggerCommentID is the ID of the comment that triggered holon (for marking is_trigger)
 	TriggerCommentID int64
-
-	// TriggerGoalHint is the trailing text from a free-form trigger (e.g., "@holonbot fix this bug" -> "fix this bug")
-	TriggerGoalHint string
 }
 
 // FileInfo represents metadata about a collected file

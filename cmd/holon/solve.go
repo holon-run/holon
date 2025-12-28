@@ -492,18 +492,25 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 
 	// Read workflow.json for trigger metadata (if exists)
 	// This is populated by the holon-solve workflow when triggered by comments
-	var triggerCommentID int64
+	// We read it once and pass the data to buildGoal to avoid duplicate reads
+	type workflowMetadata struct {
+		TriggerCommentID int64
+		TriggerGoalHint  string
+	}
+	var workflowMeta workflowMetadata
 	workflowPath := filepath.Join(inputDir, "workflow.json")
 	if workflowData, err := os.ReadFile(workflowPath); err == nil {
 		var workflow struct {
 			Trigger struct {
-				CommentID int64 `json:"comment_id"`
+				CommentID int64  `json:"comment_id"`
+				GoalHint  string `json:"goal_hint"`
 			} `json:"trigger"`
 		}
 		if err := json.Unmarshal(workflowData, &workflow); err == nil {
-			triggerCommentID = workflow.Trigger.CommentID
-			if triggerCommentID > 0 {
-				fmt.Printf("Found trigger comment ID: %d\n", triggerCommentID)
+			workflowMeta.TriggerCommentID = workflow.Trigger.CommentID
+			workflowMeta.TriggerGoalHint = workflow.Trigger.GoalHint
+			if workflowMeta.TriggerCommentID > 0 {
+				fmt.Printf("Found trigger comment ID: %d\n", workflowMeta.TriggerCommentID)
 			}
 		}
 	}
@@ -523,7 +530,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 				IncludeChecks:   true,
 				ChecksOnlyFailed: false,
 				ChecksMax:       200,
-				TriggerCommentID: triggerCommentID,
+				TriggerCommentID: workflowMeta.TriggerCommentID,
 			},
 		}
 		if _, err := prov.Collect(ctx, req); err != nil {
@@ -541,7 +548,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 			OutputDir: contextDir,
 			Options: collector.Options{
 				Token:           token,
-				TriggerCommentID: triggerCommentID,
+				TriggerCommentID: workflowMeta.TriggerCommentID,
 			},
 		}
 		if _, err := prov.Collect(ctx, req); err != nil {
@@ -584,7 +591,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Determine goal from the reference
-	goal := buildGoal(inputDir, solveRef, refType)
+	goal := buildGoal(inputDir, solveRef, refType, workflowMeta.TriggerGoalHint)
 
 	// Resolve output directory with precedence: CLI flag > temp dir
 	// For solve command, we use a temp directory by default to avoid polluting the workspace
@@ -749,7 +756,8 @@ func getGitHubToken() (string, error) {
 }
 
 // buildGoal builds a goal description from the reference
-func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string) string {
+// triggerGoalHint is the optional goal hint from free-form triggers (e.g., "@holonbot fix this bug")
+func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, triggerGoalHint string) string {
 	baseGoal := ""
 	if refType == "pr" {
 		baseGoal = fmt.Sprintf("Fix the review comments and issues in PR %s. Address all unresolved review comments and make necessary code changes.", ref.URL())
@@ -757,20 +765,9 @@ func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string) string 
 		baseGoal = fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. Focus on implementing the solution; the system will handle committing changes and creating any pull requests.", ref.URL())
 	}
 
-	// Try to read workflow.json for goal hint from free-form triggers
-	workflowPath := filepath.Join(inputDir, "workflow.json")
-	if workflowData, err := os.ReadFile(workflowPath); err == nil {
-		var workflow struct {
-			Trigger struct {
-				GoalHint string `json:"goal_hint"`
-			} `json:"trigger"`
-		}
-		if err := json.Unmarshal(workflowData, &workflow); err == nil {
-			if workflow.Trigger.GoalHint != "" {
-				// Append goal hint as additional context
-				return fmt.Sprintf("%s\n\nUser intent: %s", baseGoal, workflow.Trigger.GoalHint)
-			}
-		}
+	// Append goal hint from free-form triggers if provided
+	if triggerGoalHint != "" {
+		return fmt.Sprintf("%s\n\nUser intent: %s", baseGoal, triggerGoalHint)
 	}
 
 	return baseGoal
