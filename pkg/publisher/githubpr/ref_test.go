@@ -1,15 +1,16 @@
 package githubpr
 
 import (
+	"regexp"
 	"testing"
 )
 
 func TestParsePRRef(t *testing.T) {
 	tests := []struct {
-		name     string
-		target   string
-		want     *PRRef
-		wantErr  bool
+		name    string
+		target  string
+		want    *PRRef
+		wantErr bool
 	}{
 		{
 			name:   "simple owner/repo",
@@ -145,9 +146,9 @@ func TestPRRefGitCloneURLWithToken(t *testing.T) {
 
 func TestExtractTitleFromSummary(t *testing.T) {
 	tests := []struct {
-		name     string
-		summary  string
-		want     string
+		name    string
+		summary string
+		want    string
 	}{
 		{
 			name:    "empty summary",
@@ -187,47 +188,52 @@ func TestExtractTitleFromSummary(t *testing.T) {
 
 func TestExtractBranchFromSummary(t *testing.T) {
 	tests := []struct {
-		name     string
-		summary  string
-		issueID  string
-		want     string
+		name    string
+		summary string
+		issueID string
+		wantRx  string
 	}{
 		{
 			name:    "no branch marker, with issue",
 			summary: "Fix the bug\n\nDetails here.",
 			issueID: "123",
-			want:    "holon/fix-123",
+			wantRx:  "^holon/fix-123-\\d{8}-\\d{6}$",
 		},
 		{
 			name:    "no branch marker, no issue",
 			summary: "Fix the bug\n\nDetails here.",
 			issueID: "",
-			want:    "holon/auto-fix",
+			wantRx:  "^holon/auto-fix-\\d{8}-\\d{6}$",
 		},
 		{
 			name:    "with branch marker",
 			summary: "Branch: custom/branch-123\n\nFix the bug.",
 			issueID: "456",
-			want:    "custom/branch-123",
+			wantRx:  "^custom/branch-123$",
 		},
 		{
 			name:    "with lowercase branch marker",
 			summary: "branch: feat/new-feature\n\nAdd feature.",
 			issueID: "789",
-			want:    "feat/new-feature",
+			wantRx:  "^feat/new-feature$",
 		},
 		{
 			name:    "branch marker with spaces",
 			summary: "Branch:  test/branch  \n\nFix.",
 			issueID: "100",
-			want:    "test/branch",
+			wantRx:  "^test/branch$",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ExtractBranchFromSummary(tt.summary, tt.issueID); got != tt.want {
-				t.Errorf("ExtractBranchFromSummary() = %v, want %v", got, tt.want)
+			got := ExtractBranchFromSummary(tt.summary, tt.issueID)
+			matched, err := regexp.MatchString(tt.wantRx, got)
+			if err != nil {
+				t.Fatalf("invalid regex %q: %v", tt.wantRx, err)
+			}
+			if !matched {
+				t.Errorf("ExtractBranchFromSummary() = %v, want to match %v", got, tt.wantRx)
 			}
 		})
 	}

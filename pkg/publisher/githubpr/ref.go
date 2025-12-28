@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // PRRef formats:
@@ -73,11 +74,12 @@ func ExtractBranchFromSummary(summary string, issueID string) string {
 		}
 	}
 
-	// Generate default branch name
+	// Generate default branch name with a timestamp suffix to avoid collisions
+	suffix := time.Now().UTC().Format("20060102-150405")
 	if issueID != "" {
-		return fmt.Sprintf("holon/fix-%s", issueID)
+		return fmt.Sprintf("holon/fix-%s-%s", issueID, suffix)
 	}
-	return "holon/auto-fix"
+	return fmt.Sprintf("holon/auto-fix-%s", suffix)
 }
 
 // ExtractTitleFromSummary extracts a PR title from summary.md content.
