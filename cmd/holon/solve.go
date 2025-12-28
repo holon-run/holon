@@ -898,7 +898,7 @@ func init() {
 	solveCmd.Flags().StringVar(&solveMode, "mode", "", "Execution mode (default: auto-detect from ref type)")
 	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")
-	solveCmd.Flags().StringVar(&solveAgentConfigMode, "agent-config-mode", "auto", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount)")
+	solveCmd.Flags().StringVar(&solveAgentConfigMode, "agent-config-mode", "no", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount, default)")
 	solveCmd.Flags().BoolVar(&solveDryRun, "dry-run", false, "Validate without running (not yet implemented)")
 
 	// Workspace preparation flags

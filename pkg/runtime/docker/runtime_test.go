@@ -1301,3 +1301,126 @@ func TestPrepareWorkspace_TemporaryWorkspace(t *testing.T) {
 		})
 	}
 }
+
+// TestIsIncompatibleClaudeConfig tests the isIncompatibleClaudeConfig function
+func TestIsIncompatibleClaudeConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings map[string]interface{}
+		want     bool
+	}{
+		{
+			name:     "compatible config - empty settings",
+			settings: map[string]interface{}{},
+			want:     false,
+		},
+		{
+			name:     "compatible config - normal settings",
+			settings: map[string]interface{}{"api_key": "sk-xxx", "model": "claude-3-5-sonnet"},
+			want:     false,
+		},
+		{
+			name:     "incompatible - container=true",
+			settings: map[string]interface{}{"container": true},
+			want:     true,
+		},
+		{
+			name:     "incompatible - headless=true",
+			settings: map[string]interface{}{"headless": true},
+			want:     true,
+		},
+		{
+			name:     "incompatible - IS_SANDBOX=1",
+			settings: map[string]interface{}{"IS_SANDBOX": "1"},
+			want:     true,
+		},
+		{
+			name:     "incompatible - multiple markers",
+			settings: map[string]interface{}{"container": true, "headless": true},
+			want:     true,
+		},
+		{
+			name:     "compatible - container=false",
+			settings: map[string]interface{}{"container": false},
+			want:     false,
+		},
+		{
+			name:     "compatible - headless=false",
+			settings: map[string]interface{}{"headless": false},
+			want:     false,
+		},
+		{
+			name:     "compatible - IS_SANDBOX=0",
+			settings: map[string]interface{}{"IS_SANDBOX": "0"},
+			want:     false,
+		},
+		{
+			name:     "compatible - container as string",
+			settings: map[string]interface{}{"container": "true"},
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary directory for test
+			tmpDir, err := os.MkdirTemp("", "claude-config-test-*")
+			if err != nil {
+				t.Fatalf("Failed to create temp dir: %v", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			// Create settings.json file
+			settingsPath := filepath.Join(tmpDir, "settings.json")
+			data, err := json.Marshal(tt.settings)
+			if err != nil {
+				t.Fatalf("Failed to marshal settings: %v", err)
+			}
+			if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+				t.Fatalf("Failed to write settings.json: %v", err)
+			}
+
+			// Test the function
+			got := isIncompatibleClaudeConfig(tmpDir)
+			if got != tt.want {
+				t.Errorf("isIncompatibleClaudeConfig() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// Test missing settings.json file
+	t.Run("missing settings.json", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "claude-config-test-*")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		// Don't create settings.json - it's missing
+		got := isIncompatibleClaudeConfig(tmpDir)
+		if got != false {
+			t.Errorf("isIncompatibleClaudeConfig() with missing file = %v, want false", got)
+		}
+	})
+
+	// Test invalid JSON
+	t.Run("invalid JSON", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "claude-config-test-*")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		// Create invalid JSON file
+		settingsPath := filepath.Join(tmpDir, "settings.json")
+		if err := os.WriteFile(settingsPath, []byte("{invalid json}"), 0644); err != nil {
+			t.Fatalf("Failed to write settings.json: %v", err)
+		}
+
+		got := isIncompatibleClaudeConfig(tmpDir)
+		if got != false {
+			t.Errorf("isIncompatibleClaudeConfig() with invalid JSON = %v, want false", got)
+		}
+	})
+}
+

@@ -11,15 +11,18 @@ import (
 type AgentConfigMode string
 
 const (
-	// AgentConfigModeAuto automatically mounts host config if it exists,
-	// and silently skips if it doesn't exist. This is the default behavior.
+	// AgentConfigModeAuto automatically mounts host config if it exists
+	// and appears compatible (not headless/container Claude),
+	// and silently skips if it doesn't exist or is incompatible.
 	AgentConfigModeAuto AgentConfigMode = "auto"
 
 	// AgentConfigModeYes always attempts to mount the host config,
 	// and emits a warning if the config directory doesn't exist.
+	// Use with caution as it may mount incompatible configs.
 	AgentConfigModeYes AgentConfigMode = "yes"
 
 	// AgentConfigModeNo never mounts the host config.
+	// This is the default behavior to prevent accidental credential exposure.
 	AgentConfigModeNo AgentConfigMode = "no"
 )
 
