@@ -67,7 +67,13 @@ Examples:
 		artifacts := make(map[string]string)
 		for _, artifactPath := range manifest.Artifacts {
 			fullPath := filepath.Join(publishOutDir, artifactPath)
-			artifacts[artifactPath] = fullPath
+			// Convert to absolute path to handle cases where working directory changes
+			absPath, err := filepath.Abs(fullPath)
+			if err != nil {
+				// Fallback to relative path if absolute path conversion fails
+				absPath = fullPath
+			}
+			artifacts[artifactPath] = absPath
 		}
 
 		// Convert manifest to map[string]interface{} for request

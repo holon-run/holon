@@ -694,7 +694,7 @@ async function runAgent(): Promise<void> {
       },
       status: "completed",
       outcome: success ? "success" : "failure",
-      duration: durationSeconds,
+      duration: `${durationSeconds.toFixed(1)}s`,
       artifacts: [
         { name: "diff.patch", path: "diff.patch" },
         { name: "summary.md", path: "summary.md" },
@@ -736,6 +736,7 @@ async function runAgent(): Promise<void> {
       },
       status: "completed",
       outcome: "failure",
+      duration: `${durationSeconds.toFixed(1)}s`,
       error: String(error),
     };
     fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
