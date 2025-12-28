@@ -212,8 +212,8 @@ func Clone(ctx context.Context, opts CloneOptions) (*CloneResult, error) {
 	}
 
 	return &CloneResult{
-		HEAD:     info.HEAD,
-		Branch:   info.Branch,
+		HEAD:      info.HEAD,
+		Branch:    info.Branch,
 		IsShallow: info.IsShallow,
 	}, nil
 }
@@ -288,6 +288,45 @@ func (c *Client) Checkout(ctx context.Context, ref string) error {
 	}
 	_, err := c.execCommand(ctx, args...)
 	return err
+}
+
+// AddWorktree adds a new worktree at the given path, optionally checking out a ref.
+func (c *Client) AddWorktree(ctx context.Context, path, ref string, detach bool) error {
+	args := []string{"worktree", "add"}
+	if q := c.quietFlag(); q != "" {
+		args = append(args, q)
+	}
+	if detach {
+		args = append(args, "--detach")
+	}
+	args = append(args, path)
+	if ref != "" {
+		args = append(args, ref)
+	}
+
+	_, err := c.execCommand(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("failed to add worktree at %s: %w", path, err)
+	}
+	return nil
+}
+
+// RemoveWorktree removes an existing worktree.
+func (c *Client) RemoveWorktree(ctx context.Context, path string, force bool) error {
+	args := []string{"worktree", "remove"}
+	if q := c.quietFlag(); q != "" {
+		args = append(args, q)
+	}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, path)
+
+	_, err := c.execCommand(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("failed to remove worktree at %s: %w", path, err)
+	}
+	return nil
 }
 
 // Init initializes a new git repository.
