@@ -3,6 +3,7 @@ package github
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -122,21 +123,51 @@ func (m *mockGitHubServer) handleCreateComment(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var comment github.PullRequestComment
-	if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
+	// Decode request body - GitHub API expects either:
+	// 1. Full PullRequestComment with in_reply_to_id (old way, causes 422)
+	// 2. Simple body + in_reply_to (new way via CreateCommentInReplyTo)
+	var payload struct {
+		Body      string `json:"body"`
+		InReplyTo int64  `json:"in_reply_to,omitempty"` // For CreateCommentInReplyTo
+	}
+
+	bodyBytes, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Assign ID to new comment
+	// Check for the wrong field (in_reply_to_id) which causes 422 in real GitHub API
+	var rawPayload map[string]interface{}
+	json.Unmarshal(bodyBytes, &rawPayload)
+	if _, hasWrongField := rawPayload["in_reply_to_id"]; hasWrongField {
+		// Real GitHub API returns 422 for this
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		errorResp := map[string]interface{}{
+			"message": "Validation Failed",
+			"errors": []map[string]string{
+				{"code": "invalid", "field": "in_reply_to_id", "message": "in_reply_to_id is not a permitted key"},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(errorResp); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Create response comment
+	comment := &github.PullRequestComment{
+		Body: github.String(payload.Body),
+	}
 	m.nextCommentID++
 	comment.ID = github.Int64(m.nextCommentID)
 	comment.User = &github.User{Login: github.String("holonbot[bot]")}
-
-	// Store if it's a reply
-	if comment.InReplyTo != nil {
-		parentID := *comment.InReplyTo
-		m.comments[parentID] = append(m.comments[parentID], &comment)
+	// Set InReplyTo for idempotency checks (mock internal representation)
+	if payload.InReplyTo > 0 {
+		comment.InReplyTo = github.Int64(payload.InReplyTo)
+		// Store if it's a reply
+		m.comments[payload.InReplyTo] = append(m.comments[payload.InReplyTo], comment)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1424,6 +1455,61 @@ func TestContractReviewRepliesFailure(t *testing.T) {
 		// Contract: Should have attempted to create all 3 comments (all failed)
 		if mockServer.createCommentCalls != 3 {
 			t.Errorf("Expected 3 create comment calls (all failed), got %d", mockServer.createCommentCalls)
+		}
+	})
+}
+
+// TestContractReviewRepliesCorrectPayload tests that replies use correct JSON payload
+func TestContractReviewRepliesCorrectPayload(t *testing.T) {
+	t.Run("use in_reply_to field, not in_reply_to_id", func(t *testing.T) {
+		mockServer := newMockGitHubServer(t)
+		defer mockServer.close()
+
+		tempDir := t.TempDir()
+		prFixContent := `{
+			"review_replies": [
+				{
+					"comment_id": 1234567890,
+					"status": "fixed",
+					"message": "Fixed with correct payload"
+				}
+			]
+		}`
+		prFixPath := filepath.Join(tempDir, "pr-fix.json")
+		if err := os.WriteFile(prFixPath, []byte(prFixContent), 0644); err != nil {
+			t.Fatalf("Failed to write pr-fix.json: %v", err)
+		}
+
+		p := NewGitHubPublisher()
+		p.client = newTestGitHubClient(t, mockServer)
+
+		req := publisher.PublishRequest{
+			Target: "testowner/testrepo/pr/123",
+			Artifacts: map[string]string{
+				"pr-fix.json": prFixPath,
+			},
+		}
+
+		t.Setenv(BotLoginEnv, "holonbot[bot]")
+
+		result, err := p.Publish(req)
+		if err != nil {
+			t.Fatalf("Publish() error = %v", err)
+		}
+
+		// Contract: Should succeed without 422 error
+		if !result.Success {
+			t.Errorf("Expected success=true when using correct payload, got false. Errors: %v", result.Errors)
+		}
+
+		// Contract: Should create exactly 1 comment
+		if mockServer.createCommentCalls != 1 {
+			t.Errorf("Expected 1 create comment call, got %d", mockServer.createCommentCalls)
+		}
+
+		// Contract: No errors should be reported
+		if len(result.Errors) > 0 {
+			t.Errorf("Expected no errors, got: %+v", result.Errors)
 		}
 	})
 }

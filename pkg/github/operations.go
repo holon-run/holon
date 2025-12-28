@@ -487,11 +487,7 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, issu
 
 // CreatePullRequestComment creates a reply to a review comment
 func (c *Client) CreatePullRequestComment(ctx context.Context, owner, repo string, prNumber int, body string, inReplyTo int64) (int64, error) {
-	comment := &github.PullRequestComment{
-		Body:     &body,
-		InReplyTo: &inReplyTo,
-	}
-	createdComment, _, err := c.GitHubClient().PullRequests.CreateComment(ctx, owner, repo, prNumber, comment)
+	createdComment, _, err := c.GitHubClient().PullRequests.CreateCommentInReplyTo(ctx, owner, repo, prNumber, body, inReplyTo)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create pull request comment: %w", err)
 	}
