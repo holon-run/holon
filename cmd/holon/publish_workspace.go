@@ -41,7 +41,11 @@ func preparePublishWorkspace(ctx context.Context, outDir string) (*publishWorksp
 		if ref == "" {
 			ref = "HEAD"
 		}
-		return newWorktreeFromLocal(ctx, liveWS, ref)
+		ws, err := newWorktreeFromLocal(ctx, liveWS, ref)
+		if err == nil {
+			return ws, nil
+		}
+		holonlog.Warn("failed to prepare publish workspace from HOLON_WORKSPACE, falling back to manifest source", "error", err)
 	}
 
 	sourceValue := manifest.Source
@@ -66,7 +70,11 @@ func preparePublishWorkspace(ctx context.Context, outDir string) (*publishWorksp
 
 	// If the source is a git repo, create a worktree for a clean publish base.
 	if workspace.IsGitRepo(sourcePath) {
-		return newWorktreeFromLocal(ctx, sourcePath, ref)
+		ws, err := newWorktreeFromLocal(ctx, sourcePath, ref)
+		if err == nil {
+			return ws, nil
+		}
+		holonlog.Warn("failed to prepare publish workspace from local source, falling back to clone", "error", err)
 	}
 
 	return nil, fmt.Errorf("publish requires a git workspace; manifest source %q is not a git repository", sourcePath)
@@ -119,6 +127,12 @@ func newWorktreeFromLocal(ctx context.Context, sourcePath, ref string) (*publish
 	}
 
 	client := git.NewClient(sourcePath)
+
+	// Ensure the repository has a HEAD commit before creating a worktree.
+	if _, err := client.GetHeadSHA(ctx); err != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("failed to read HEAD in source repo: %w", err)
+	}
 
 	// For shallow repos, try to fetch/deepen so the ref is available.
 	if shallow, _ := client.IsShallowClone(ctx); shallow {
