@@ -780,31 +780,35 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 		Artifacts: artifacts,
 	}
 
+	if refType == "pr" {
+		// In PR mode, optionally apply/commit/push diff.patch to the PR head branch before posting replies/comments.
+		if diffPath, ok := artifacts["diff.patch"]; ok {
+			if err := publishPatchToPR(ctx, pubWS.path, outDir, diffPath); err != nil {
+				return fmt.Errorf("publish failed during patch push: %w", err)
+			}
+		}
+	}
+
+	// Determine target and publisher
 	var target string
+	var pub publisher.Publisher
 	if refType == "pr" {
 		target = fmt.Sprintf("%s/%s/pr/%d", ref.Owner, ref.Repo, ref.Number)
+		pub = publisher.Get("github")
 	} else {
-		// For issues, target is the repo for creating a PR
 		if solveBase != "" {
 			target = fmt.Sprintf("%s/%s:%s", ref.Owner, ref.Repo, solveBase)
 		} else {
 			target = fmt.Sprintf("%s/%s:main", ref.Owner, ref.Repo)
 		}
-	}
-
-	req.Target = target
-
-	// Get publisher
-	var pub publisher.Publisher
-	if refType == "pr" {
-		pub = publisher.Get("github")
-	} else {
 		pub = publisher.Get("github-pr")
 	}
 
 	if pub == nil {
 		return fmt.Errorf("publisher '%s' not found", map[string]string{"pr": "github", "issue": "github-pr"}[refType])
 	}
+
+	req.Target = target
 
 	// Validate
 	if err := pub.Validate(req); err != nil {
