@@ -175,7 +175,7 @@ jobs:
             FIRST_LINE="$(printf '%s\n' "$COMMENT_BODY" | head -n1 | xargs || true)"
 
             if [ "$IS_PR" = 'true' ]; then
-              if [ "$FIRST_LINE" = '@holonbot fix' ] || [ "$FIRST_LINE" = '@holonbot pr-fix' ]; then
+              if [ "$FIRST_LINE" = '@holonbot fix' ] || [ "$FIRST_LINE" = '@holonbot solve' ]; then
                 :
               else
                 REASON="Comment command not recognized for PR: '$FIRST_LINE'"
@@ -323,16 +323,16 @@ jobs:
 
           # If mode is explicitly provided, use it
           if [ -n "$PROVIDED_MODE" ]; then
-            echo "mode=$PROVIDED_MODE" >> $GITHUB_OUTPUT
+            echo "mode=$PROVIDED_MODE" >> "$GITHUB_OUTPUT"
             echo "✅ Using provided mode: $PROVIDED_MODE"
             exit 0
           fi
 
           if [ "$IS_PR" = 'true' ]; then
-            echo "mode=pr-fix" >> $GITHUB_OUTPUT
+            echo "mode=pr-fix" >> "$GITHUB_OUTPUT"
             echo "✅ Detected: PR → mode=pr-fix"
           else
-            echo "mode=solve" >> $GITHUB_OUTPUT
+            echo "mode=solve" >> "$GITHUB_OUTPUT"
             echo "✅ Detected: Issue → mode=solve"
           fi
         env:
@@ -425,10 +425,10 @@ jobs:
 
           # Check for summary
           if [ -f "$OUTPUT_DIR/summary.md" ]; then
-            cat "$OUTPUT_DIR/summary.md" >> $GITHUB_STEP_SUMMARY
-            echo "summary=$OUTPUT_DIR/summary.md" >> $GITHUB_OUTPUT
+            cat "$OUTPUT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            echo "summary=$OUTPUT_DIR/summary.md" >> "$GITHUB_OUTPUT"
           else
-            echo "summary=" >> $GITHUB_OUTPUT
+            echo "summary=" >> "$GITHUB_OUTPUT"
           fi
 
           # Set result based on job status
