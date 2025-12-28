@@ -49,17 +49,13 @@ func preparePublishWorkspace(ctx context.Context, outDir string) (*publishWorksp
 			return nil, fmt.Errorf("failed to create temp publish workspace: %w", err)
 		}
 
-		depth := 0
-		if manifest.IsShallow {
-			depth = 1
-		}
-
 		_, err = git.Clone(ctx, git.CloneOptions{
 			Source: sourceValue,
 			Dest:   tempDir,
 			Ref:    ref,
-			Depth:  depth,
-			Quiet:  true,
+			// Always fetch full history for publish to ensure the referenced commit/ref exists.
+			Depth: 0,
+			Quiet: true,
 		})
 		if err != nil {
 			os.RemoveAll(tempDir)

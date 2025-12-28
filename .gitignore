@@ -11,6 +11,7 @@ holon-output-fix/
 vendor/
 *.test
 *.out
+.gocache/
 
 # Python artifacts
 __pycache__/
