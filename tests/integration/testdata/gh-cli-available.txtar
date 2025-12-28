@@ -17,7 +17,7 @@ exec holon run --goal 'test gh' --workspace work --out out --image debian:bookwo
 exists out/manifest.json
 
 # Clean up for next test
-rm -rf out
+exec rm -rf out
 
 # Test with RHEL/Fedora-based image (uses dnf)
 exec holon run --goal 'test gh' --workspace work --out out --image fedora:latest --agent agent-bundle.tar.gz --log-level minimal
@@ -25,7 +25,7 @@ exec holon run --goal 'test gh' --workspace work --out out --image fedora:latest
 exists out/manifest.json
 
 # Clean up for next test
-rm -rf out
+exec rm -rf out
 
 # Test with Ubuntu-based image
 exec holon run --goal 'test gh' --workspace work --out out --image ubuntu:22.04 --agent agent-bundle.tar.gz --log-level minimal
@@ -58,8 +58,7 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 
 # Verify gh --version works
-gh_version=$(gh --version 2>&1)
-if [ $? -ne 0 ]; then
+if ! gh_version=$(gh --version 2>&1); then
     echo "ERROR: gh --version failed" >&2
     exit 1
 fi
