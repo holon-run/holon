@@ -16,9 +16,13 @@ inputs:
     description: 'Agent bundle reference (optional, uses builtin if not provided)'
     required: false
     default: ''
+  anthropic_auth_token:
+    description: 'Anthropic Auth Token (legacy: anthropic_api_key is also supported)'
+    required: false
   anthropic_api_key:
-    description: 'Anthropic API Key (or ANTHROPIC_AUTH_TOKEN)'
-    required: true
+    description: 'Legacy alias for anthropic_auth_token (deprecated)'
+    required: false
+    deprecationMessage: 'Use anthropic_auth_token instead'
   anthropic_base_url:
     description: 'Anthropic Base URL'
     required: false
@@ -200,7 +204,7 @@ runs:
     - name: Run Holon Solve
       shell: bash
       env:
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        ANTHROPIC_AUTH_TOKEN: ${{ inputs.anthropic_auth_token || inputs.anthropic_api_key }}
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         GITHUB_TOKEN: ${{ steps.get_token.outputs.token }}
       run: |

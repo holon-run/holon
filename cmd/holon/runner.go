@@ -460,23 +460,27 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 	}
 
 	// 1. Automatic Secret Injection (v0.1: Anthropic Key & URL)
-	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+	// Priority: ANTHROPIC_AUTH_TOKEN > ANTHROPIC_API_KEY (legacy)
+	anthropicKey := os.Getenv("ANTHROPIC_AUTH_TOKEN")
 	if anthropicKey == "" {
-		anthropicKey = os.Getenv("ANTHROPIC_AUTH_TOKEN")
+		anthropicKey = os.Getenv("ANTHROPIC_API_KEY")
+		if anthropicKey != "" {
+			holonlog.Warn("using legacy ANTHROPIC_API_KEY; consider migrating to ANTHROPIC_AUTH_TOKEN")
+		}
 	}
 	if anthropicKey != "" {
-		envVars["ANTHROPIC_API_KEY"] = anthropicKey
 		envVars["ANTHROPIC_AUTH_TOKEN"] = anthropicKey
+		envVars["ANTHROPIC_API_KEY"] = anthropicKey // For backward compatibility
 	}
 
-	// Support both ANTHROPIC_BASE_URL (new) and ANTHROPIC_API_URL (alias for convenience)
+	// Support both ANTHROPIC_BASE_URL (standard) and ANTHROPIC_API_URL (alias for convenience)
 	anthropicURL := os.Getenv("ANTHROPIC_BASE_URL")
 	if anthropicURL == "" {
 		anthropicURL = os.Getenv("ANTHROPIC_API_URL")
 	}
 	if anthropicURL != "" {
 		envVars["ANTHROPIC_BASE_URL"] = anthropicURL
-		envVars["ANTHROPIC_API_URL"] = anthropicURL
+		envVars["ANTHROPIC_API_URL"] = anthropicURL // For backward compatibility
 	}
 
 	// 1.5. Automatic GitHub Secret Injection

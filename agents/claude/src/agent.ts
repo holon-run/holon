@@ -241,7 +241,7 @@ async function syncClaudeSettings(logger: ProgressLogger, authToken: string | un
 }
 
 async function connectivityCheck(logger: ProgressLogger, baseUrl: string): Promise<void> {
-  logger.minimal(`Checking environment: ANTHROPIC_API_KEY present: ${Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)}`);
+  logger.minimal(`Checking environment: ANTHROPIC_AUTH_TOKEN present: ${Boolean(process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY)}`);
   logger.minimal(`Testing connectivity to ${baseUrl}...`);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);

@@ -31,8 +31,8 @@ go test ./... -v
 # Build agent bundle (required before first run)
 cd agents/claude && npm run bundle
 
-# Run example with ANTHROPIC_API_KEY set
-export ANTHROPIC_API_KEY=your_key_here
+# Run example with ANTHROPIC_AUTH_TOKEN set
+export ANTHROPIC_AUTH_TOKEN=your_key_here
 make run-example
 
 # Clean build artifacts
@@ -473,7 +473,8 @@ make test-agent
 ## Environment Setup
 
 ### Required Environment Variables
-- `ANTHROPIC_API_KEY`: Claude API authentication (required for execution)
+- `ANTHROPIC_AUTH_TOKEN`: Claude API authentication (required for execution)
+  - Legacy: `ANTHROPIC_API_KEY` is also supported for backward compatibility
 - Optional: `HOLON_SNAPSHOT_BASE`: Custom snapshot location
 - Optional: `HOLON_CACHE_DIR`: Custom cache directory (default: `~/.holon/cache`)
 - Optional: `HOLON_AGENT`: Default agent bundle reference

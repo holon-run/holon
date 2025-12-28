@@ -295,25 +295,41 @@ func (c *AnthropicTokenCheck) Name() string {
 }
 
 func (c *AnthropicTokenCheck) Run(ctx context.Context) CheckResult {
-	// Check environment variables
-	token := os.Getenv("ANTHROPIC_API_KEY")
-	if token == "" {
-		token = os.Getenv("ANTHROPIC_AUTH_TOKEN")
+	// Check environment variables with priority: ANTHROPIC_AUTH_TOKEN > ANTHROPIC_API_KEY
+	authToken := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+
+	var token string
+	var usedLegacyVar bool
+
+	if authToken != "" {
+		token = authToken
+	} else if apiKey != "" {
+		token = apiKey
+		usedLegacyVar = true
 	}
 
 	if token == "" {
 		return CheckResult{
 			Name:    c.Name(),
 			Level:   LevelError,
-			Message: "Anthropic API key not found. Set ANTHROPIC_API_KEY environment variable",
-			Error:   fmt.Errorf("no Anthropic API key found"),
+			Message: "Anthropic auth token not found. Set ANTHROPIC_AUTH_TOKEN environment variable",
+			Error:   fmt.Errorf("no Anthropic auth token found"),
+		}
+	}
+
+	if usedLegacyVar {
+		return CheckResult{
+			Name:    c.Name(),
+			Level:   LevelWarn,
+			Message: "Anthropic auth token available (using ANTHROPIC_API_KEY; consider migrating to ANTHROPIC_AUTH_TOKEN)",
 		}
 	}
 
 	return CheckResult{
 		Name:    c.Name(),
 		Level:   LevelInfo,
-		Message: "Anthropic API key available",
+		Message: "Anthropic auth token available",
 	}
 }
 
