@@ -3,6 +3,7 @@ package githubpr
 import (
 	"regexp"
 	"testing"
+	"time"
 )
 
 func TestParsePRRef(t *testing.T) {
@@ -267,4 +268,103 @@ func TestFormatPRBody(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExtractBranchFromSummaryUniqueness(t *testing.T) {
+	// Test that successive calls yield different branch names when no explicit
+	// branch marker is provided. This ensures timestamped naming avoids collisions
+	// on retries/parallel runs.
+	summary := "Fix the bug\n\nDetails here."
+
+	t.Run("with issue ID produces unique names", func(t *testing.T) {
+		issueID := "123"
+
+		// Generate multiple branch names in rapid succession
+		branches := make([]string, 10)
+		for i := 0; i < len(branches); i++ {
+			branches[i] = ExtractBranchFromSummary(summary, issueID)
+			// Small delay to ensure time advancement (1 second resolution)
+			if i < len(branches)-1 {
+				time.Sleep(time.Second)
+			}
+		}
+
+		// Check that all branches are unique
+		uniqueBranches := make(map[string]bool)
+		for _, branch := range branches {
+			if uniqueBranches[branch] {
+				t.Errorf("ExtractBranchFromSummary() returned duplicate branch: %s", branch)
+			}
+			uniqueBranches[branch] = true
+
+			// Also verify format matches expected pattern
+			matched, err := regexp.MatchString(`^holon/fix-123-\d{8}-\d{6}$`, branch)
+			if err != nil {
+				t.Fatalf("invalid regex: %v", err)
+			}
+			if !matched {
+				t.Errorf("ExtractBranchFromSummary() = %v, want to match pattern ^holon/fix-123-\\d{8}-\\d{6}$", branch)
+			}
+		}
+
+		// Ensure we got the expected number of unique branches
+		if len(uniqueBranches) != len(branches) {
+			t.Errorf("Expected %d unique branches, got %d", len(branches), len(uniqueBranches))
+		}
+	})
+
+	t.Run("without issue ID produces unique names", func(t *testing.T) {
+		// Generate multiple branch names in rapid succession
+		branches := make([]string, 10)
+		for i := 0; i < len(branches); i++ {
+			branches[i] = ExtractBranchFromSummary(summary, "")
+			// Small delay to ensure time advancement (1 second resolution)
+			if i < len(branches)-1 {
+				time.Sleep(time.Second)
+			}
+		}
+
+		// Check that all branches are unique
+		uniqueBranches := make(map[string]bool)
+		for _, branch := range branches {
+			if uniqueBranches[branch] {
+				t.Errorf("ExtractBranchFromSummary() returned duplicate branch: %s", branch)
+			}
+			uniqueBranches[branch] = true
+
+			// Also verify format matches expected pattern
+			matched, err := regexp.MatchString(`^holon/auto-fix-\d{8}-\d{6}$`, branch)
+			if err != nil {
+				t.Fatalf("invalid regex: %v", err)
+			}
+			if !matched {
+				t.Errorf("ExtractBranchFromSummary() = %v, want to match pattern ^holon/auto-fix-\\d{8}-\\d{6}$", branch)
+			}
+		}
+
+		// Ensure we got the expected number of unique branches
+		if len(uniqueBranches) != len(branches) {
+			t.Errorf("Expected %d unique branches, got %d", len(branches), len(uniqueBranches))
+		}
+	})
+
+	t.Run("explicit branch marker is always deterministic", func(t *testing.T) {
+		// With an explicit branch marker, the result should be deterministic
+		summaryWithBranch := "Branch: custom/branch-123\n\nFix the bug."
+
+		// Call multiple times
+		branches := make([]string, 5)
+		for i := 0; i < len(branches); i++ {
+			branches[i] = ExtractBranchFromSummary(summaryWithBranch, "456")
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		// All should be identical (deterministic)
+		expected := "custom/branch-123"
+		for _, branch := range branches {
+			if branch != expected {
+				t.Errorf("ExtractBranchFromSummary() with explicit marker = %v, want %v", branch, expected)
+			}
+		}
+	})
 }
