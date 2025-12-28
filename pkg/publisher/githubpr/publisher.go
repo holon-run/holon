@@ -134,10 +134,12 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 		fmt.Fprintf(os.Stderr, "Warning: failed to generate deterministic title: %v\n", err)
 	} else if deterministicTitle != "" {
 		// Inject the deterministic title into the manifest metadata
-		if req.Manifest["metadata"] == nil {
-			req.Manifest["metadata"] = make(map[string]interface{})
+		rawMetadata := req.Manifest["metadata"]
+		metadata, ok := rawMetadata.(map[string]interface{})
+		if !ok || metadata == nil {
+			metadata = make(map[string]interface{})
+			req.Manifest["metadata"] = metadata
 		}
-		metadata := req.Manifest["metadata"].(map[string]interface{})
 		if _, exists := metadata[TitleFlag]; !exists {
 			metadata[TitleFlag] = deterministicTitle
 			// Write the updated manifest back to disk so it persists
@@ -447,7 +449,7 @@ func (p *PRPublisher) writeManifestWithTitle(outputDir string, manifest map[stri
 		return fmt.Errorf("failed to marshal manifest: %w", err)
 	}
 
-	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write manifest: %w", err)
 	}
 
