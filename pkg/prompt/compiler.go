@@ -12,16 +12,17 @@ import (
 
 // Config represents the prompt configuration
 type Config struct {
-	Mode         string
-	Role         string
-	Language     string
-	WorkingDir   string
-	ContextFiles []string
+	Mode           string
+	Role           string
+	Language       string
+	WorkingDir     string
+	ContextFiles   []string
+	ContextEntries []ContextEntry
 	// GitHub actor identity fields (optional)
-	ActorLogin     string // GitHub username or bot name
-	ActorType      string // "User" or "App"
-	ActorSource    string // "token" or "app"
-	ActorAppSlug   string // App slug if type is "App"
+	ActorLogin   string // GitHub username or bot name
+	ActorType    string // "User" or "App"
+	ActorSource  string // "token" or "app"
+	ActorAppSlug string // App slug if type is "App"
 }
 
 // Manifest represents the structure of manifest.yaml
@@ -34,6 +35,12 @@ type Manifest struct {
 		// external tools. It is intentionally not used by the current compiler.
 		Contract string `yaml:"contract"`
 	} `yaml:"defaults"`
+}
+
+// ContextEntry represents a context file with optional description
+type ContextEntry struct {
+	Path        string
+	Description string
 }
 
 // Compiler handles the assembly of prompts
@@ -136,7 +143,15 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		return "", err
 	}
 
-	// 8. Load Role Overlay (optional layer for selected role only)
+	// 8. Load Mode Context (optional layer, uses ContextEntries)
+	var modeContextData []byte
+	modeContextPath := fmt.Sprintf("modes/%s/context.md", mode)
+	modeContextData, err = readOptionalFile(c.assets, modeContextPath)
+	if err != nil {
+		return "", err
+	}
+
+	// 9. Load Role Overlay (optional layer for selected role only)
 	var roleOverlayData []byte
 	roleOverlayPath := fmt.Sprintf("modes/%s/overlays/%s.md", mode, role)
 	roleOverlayData, err = readOptionalFile(c.assets, roleOverlayPath)
@@ -144,7 +159,7 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		return "", err
 	}
 
-	// 9. Combine layers in order: common + role + mode contract + mode overlay + role overlay
+	// 10. Combine layers in order: common + role + mode contract + mode overlay + mode context + role overlay
 	fullTemplate := string(commonData)
 
 	fullTemplate += "\n\n" + string(roleData)
@@ -157,11 +172,15 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		fullTemplate += "\n\n" + string(modeOverlayData)
 	}
 
+	if modeContextData != nil {
+		fullTemplate += "\n\n" + string(modeContextData)
+	}
+
 	if roleOverlayData != nil {
 		fullTemplate += "\n\n" + string(roleOverlayData)
 	}
 
-	// 10. Template Execution
+	// 11. Template Execution
 	tmpl, err := template.New("system").Parse(fullTemplate)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse template: %w", err)

@@ -127,7 +127,7 @@ func TestCompileSystemPromptErrors(t *testing.T) {
 			mockFS: fstest.MapFS{
 				"manifest.yaml":           {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
 				"modes/solve/contract.md": {Data: []byte("Solve mode")},
-				"roles/developer.md":        {Data: []byte("Role content")},
+				"roles/developer.md":      {Data: []byte("Role content")},
 			},
 			cfg:           Config{WorkingDir: "/test"},
 			expectedError: "failed to read common contract",
@@ -182,28 +182,28 @@ func TestCompileUserPrompt(t *testing.T) {
 		expected     string
 	}{
 		{
-			name: "Goal only",
-			goal: "Implement a new feature",
+			name:         "Goal only",
+			goal:         "Implement a new feature",
 			contextFiles: []string{},
-			expected: "### TASK GOAL\nImplement a new feature\n",
+			expected:     "### TASK GOAL\nImplement a new feature\n",
 		},
 		{
-			name: "Goal with single context file",
-			goal: "Fix the bug in main.go",
+			name:         "Goal with single context file",
+			goal:         "Fix the bug in main.go",
 			contextFiles: []string{"main.go"},
-			expected: "### TASK GOAL\nFix the bug in main.go\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at /holon/input/context/:\n- main.go\n",
+			expected:     "### TASK GOAL\nFix the bug in main.go\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at /holon/input/context/:\n- main.go\n",
 		},
 		{
-			name: "Goal with multiple context files",
-			goal: "Refactor the module",
+			name:         "Goal with multiple context files",
+			goal:         "Refactor the module",
 			contextFiles: []string{"file1.go", "file2.go", "config.yaml"},
-			expected: "### TASK GOAL\nRefactor the module\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at /holon/input/context/:\n- file1.go\n- file2.go\n- config.yaml\n",
+			expected:     "### TASK GOAL\nRefactor the module\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at /holon/input/context/:\n- file1.go\n- file2.go\n- config.yaml\n",
 		},
 		{
-			name: "Empty goal with context files",
-			goal: "",
+			name:         "Empty goal with context files",
+			goal:         "",
 			contextFiles: []string{"test.go"},
-			expected: "### TASK GOAL\n\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at /holon/input/context/:\n- test.go\n",
+			expected:     "### TASK GOAL\n\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at /holon/input/context/:\n- test.go\n",
 		},
 	}
 
@@ -306,10 +306,10 @@ func TestCompileSystemPromptFallbacks(t *testing.T) {
 // TestModeOverlayLoading tests mode-specific contract loading
 func TestModeOverlayLoading(t *testing.T) {
 	tests := []struct {
-		name              string
-		mockFS            fstest.MapFS
-		cfg               Config
-		expectedInPrompt  []string
+		name                string
+		mockFS              fstest.MapFS
+		cfg                 Config
+		expectedInPrompt    []string
 		notExpectedInPrompt []string
 	}{
 		{
@@ -320,32 +320,32 @@ func TestModeOverlayLoading(t *testing.T) {
 				"modes/solve/contract.md": {Data: []byte("Solve Mode Overlay")},
 				"roles/developer.md":      {Data: []byte("Developer Role")},
 			},
-			cfg: Config{WorkingDir: "/test"},
+			cfg:              Config{WorkingDir: "/test"},
 			expectedInPrompt: []string{"Common Contract", "Solve Mode Overlay", "Developer Role"},
 		},
 		{
 			name: "PR-fix mode loads pr-fix contract",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":              {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
-				"contracts/common.md":        {Data: []byte("Common Contract")},
-				"modes/pr-fix/contract.md":   {Data: []byte("PR-Fix Mode Overlay")},
-				"modes/solve/contract.md":    {Data: []byte("Solve Mode Overlay")},
-				"roles/developer.md":         {Data: []byte("Developer Role")},
+				"manifest.yaml":            {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
+				"contracts/common.md":      {Data: []byte("Common Contract")},
+				"modes/pr-fix/contract.md": {Data: []byte("PR-Fix Mode Overlay")},
+				"modes/solve/contract.md":  {Data: []byte("Solve Mode Overlay")},
+				"roles/developer.md":       {Data: []byte("Developer Role")},
 			},
-			cfg: Config{Mode: "pr-fix", WorkingDir: "/test"},
-			expectedInPrompt: []string{"Common Contract", "PR-Fix Mode Overlay", "Developer Role"},
+			cfg:                 Config{Mode: "pr-fix", WorkingDir: "/test"},
+			expectedInPrompt:    []string{"Common Contract", "PR-Fix Mode Overlay", "Developer Role"},
 			notExpectedInPrompt: []string{"Solve Mode Overlay"},
 		},
 		{
 			name: "Mode overlay is layered after mode contract",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":             {Data: []byte("version: 1.0.0\ndefaults:\n  mode: pr-fix\n  role: developer\n")},
-				"contracts/common.md":       {Data: []byte("Common Contract")},
-				"modes/pr-fix/contract.md":  {Data: []byte("PR-Fix Mode Contract")},
-				"modes/pr-fix/overlay.md":   {Data: []byte("PR-Fix Mode Overlay")},
-				"roles/developer.md":        {Data: []byte("Developer Role")},
+				"manifest.yaml":            {Data: []byte("version: 1.0.0\ndefaults:\n  mode: pr-fix\n  role: developer\n")},
+				"contracts/common.md":      {Data: []byte("Common Contract")},
+				"modes/pr-fix/contract.md": {Data: []byte("PR-Fix Mode Contract")},
+				"modes/pr-fix/overlay.md":  {Data: []byte("PR-Fix Mode Overlay")},
+				"roles/developer.md":       {Data: []byte("Developer Role")},
 			},
-			cfg: Config{WorkingDir: "/test"},
+			cfg:              Config{WorkingDir: "/test"},
 			expectedInPrompt: []string{"Common Contract", "Developer Role", "PR-Fix Mode Contract", "PR-Fix Mode Overlay"},
 		},
 		{
@@ -355,32 +355,32 @@ func TestModeOverlayLoading(t *testing.T) {
 				"contracts/common.md": {Data: []byte("Common Contract")},
 				"roles/developer.md":  {Data: []byte("Developer Role")},
 			},
-			cfg: Config{Mode: "missing-mode", WorkingDir: "/test"},
+			cfg:              Config{Mode: "missing-mode", WorkingDir: "/test"},
 			expectedInPrompt: []string{"Common Contract", "Developer Role"},
 		},
 		{
 			name: "Role overlay layers on top of base role",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":             {Data: []byte("version: 1.0.0\ndefaults:\n  mode: pr-fix\n  role: developer\n")},
-				"contracts/common.md":       {Data: []byte("Common Contract")},
-				"modes/pr-fix/contract.md":  {Data: []byte("PR-Fix Mode")},
+				"manifest.yaml":                      {Data: []byte("version: 1.0.0\ndefaults:\n  mode: pr-fix\n  role: developer\n")},
+				"contracts/common.md":                {Data: []byte("Common Contract")},
+				"modes/pr-fix/contract.md":           {Data: []byte("PR-Fix Mode")},
 				"modes/pr-fix/overlays/developer.md": {Data: []byte("PR-Fix Developer Overlay")},
-				"roles/developer.md":        {Data: []byte("Base Developer Role")},
+				"roles/developer.md":                 {Data: []byte("Base Developer Role")},
 			},
-			cfg: Config{WorkingDir: "/test"},
+			cfg:              Config{WorkingDir: "/test"},
 			expectedInPrompt: []string{"Common Contract", "Base Developer Role", "PR-Fix Mode", "PR-Fix Developer Overlay"},
 		},
 		{
 			name: "Role overlay is only loaded for selected role",
 			mockFS: fstest.MapFS{
-				"manifest.yaml":             {Data: []byte("version: 1.0.0\ndefaults:\n  mode: pr-fix\n  role: developer\n")},
-				"contracts/common.md":       {Data: []byte("Common Contract")},
+				"manifest.yaml":                      {Data: []byte("version: 1.0.0\ndefaults:\n  mode: pr-fix\n  role: developer\n")},
+				"contracts/common.md":                {Data: []byte("Common Contract")},
 				"modes/pr-fix/overlays/developer.md": {Data: []byte("Developer Overlay")},
 				"modes/pr-fix/overlays/architect.md": {Data: []byte("Architect Overlay")},
-				"roles/developer.md":        {Data: []byte("Base Developer Role")},
+				"roles/developer.md":                 {Data: []byte("Base Developer Role")},
 			},
-			cfg: Config{WorkingDir: "/test"},
-			expectedInPrompt: []string{"Common Contract", "Base Developer Role", "Developer Overlay"},
+			cfg:                 Config{WorkingDir: "/test"},
+			expectedInPrompt:    []string{"Common Contract", "Base Developer Role", "Developer Overlay"},
 			notExpectedInPrompt: []string{"Architect Overlay"},
 		},
 	}
@@ -406,6 +406,51 @@ func TestModeOverlayLoading(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestModeContextLoading(t *testing.T) {
+	t.Run("mode context loads and renders entries", func(t *testing.T) {
+		mockFS := fstest.MapFS{
+			"manifest.yaml":            {Data: []byte("version: 1.0.0\ndefaults:\n  mode: pr-fix\n  role: developer\n")},
+			"contracts/common.md":      {Data: []byte("Common")},
+			"roles/developer.md":       {Data: []byte("Developer")},
+			"modes/pr-fix/contract.md": {Data: []byte("PR-Fix Contract")},
+			"modes/pr-fix/overlay.md":  {Data: []byte("PR-Fix Overlay")},
+			"modes/pr-fix/context.md":  {Data: []byte("Context Files: {{range .ContextEntries}}{{.Path}} {{.Description}};{{end}}")},
+		}
+		compiler := NewCompilerFromFS(mockFS)
+		cfg := Config{
+			WorkingDir: "/test",
+			ContextEntries: []ContextEntry{
+				{Path: "github/issue.json", Description: "Issue metadata"},
+			},
+		}
+		prompt, err := compiler.CompileSystemPrompt(cfg)
+		if err != nil {
+			t.Fatalf("compile failed: %v", err)
+		}
+		if !strings.Contains(prompt, "Context Files: github/issue.json Issue metadata;") {
+			t.Fatalf("expected context entries rendered, got prompt: %s", prompt)
+		}
+		overlayIdx := strings.Index(prompt, "PR-Fix Overlay")
+		contextIdx := strings.Index(prompt, "Context Files")
+		if overlayIdx == -1 || contextIdx == -1 || overlayIdx > contextIdx {
+			t.Fatalf("expected overlay to appear before context block; prompt: %s", prompt)
+		}
+	})
+
+	t.Run("missing mode context handled gracefully", func(t *testing.T) {
+		mockFS := fstest.MapFS{
+			"manifest.yaml":            {Data: []byte("version: 1.0.0\ndefaults:\n  mode: pr-fix\n  role: developer\n")},
+			"contracts/common.md":      {Data: []byte("Common")},
+			"roles/developer.md":       {Data: []byte("Developer")},
+			"modes/pr-fix/contract.md": {Data: []byte("PR-Fix Contract")},
+		}
+		compiler := NewCompilerFromFS(mockFS)
+		if _, err := compiler.CompileSystemPrompt(Config{WorkingDir: "/test"}); err != nil {
+			t.Fatalf("compile should succeed without context file: %v", err)
+		}
+	})
 }
 
 // TestBackwardCompatibility tests that old behavior still works
@@ -512,4 +557,3 @@ func TestLegacyContractPathsIgnored(t *testing.T) {
 		}
 	})
 }
-
