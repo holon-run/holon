@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/holon-run/holon/pkg/config"
-	prcontext "github.com/holon-run/holon/pkg/context/github"
-	"github.com/holon-run/holon/pkg/context/issue"
+	"github.com/holon-run/holon/pkg/context/collector"
+	"github.com/holon-run/holon/pkg/context/provider/github"
 	"github.com/holon-run/holon/pkg/git"
 	pkggithub "github.com/holon-run/holon/pkg/github"
 	"github.com/holon-run/holon/pkg/image"
@@ -488,18 +488,23 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Collect context based on type
+	prov := github.NewProvider()
 	if refType == "pr" {
 		// Collect PR context
-		prCollector := prcontext.NewCollector(prcontext.CollectorConfig{
-			Owner:          solveRef.Owner,
-			Repo:           solveRef.Repo,
-			PRNumber:       solveRef.Number,
-			Token:          token,
-			OutputDir:      contextDir,
-			UnresolvedOnly: true,
-			IncludeDiff:    true,
-		})
-		if err := prCollector.Collect(ctx); err != nil {
+		req := collector.CollectRequest{
+			Kind:      collector.KindPR,
+			Ref:       fmt.Sprintf("%s/%s#%d", solveRef.Owner, solveRef.Repo, solveRef.Number),
+			OutputDir: contextDir,
+			Options: collector.Options{
+				Token:           token,
+				IncludeDiff:     true,
+				UnresolvedOnly:  true,
+				IncludeChecks:   true,
+				ChecksOnlyFailed: false,
+				ChecksMax:       200,
+			},
+		}
+		if _, err := prov.Collect(ctx, req); err != nil {
 			return fmt.Errorf("failed to collect PR context: %w", err)
 		}
 		// Only override mode if user hasn't explicitly set it
@@ -508,14 +513,15 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		}
 	} else {
 		// Collect issue context
-		issueCollector := issue.NewCollector(issue.CollectorConfig{
-			Owner:     solveRef.Owner,
-			Repo:      solveRef.Repo,
-			IssueNum:  solveRef.Number,
-			Token:     token,
+		req := collector.CollectRequest{
+			Kind:      collector.KindIssue,
+			Ref:       fmt.Sprintf("%s/%s#%d", solveRef.Owner, solveRef.Repo, solveRef.Number),
 			OutputDir: contextDir,
-		})
-		if err := issueCollector.Collect(ctx); err != nil {
+			Options: collector.Options{
+				Token: token,
+			},
+		}
+		if _, err := prov.Collect(ctx, req); err != nil {
 			return fmt.Errorf("failed to collect issue context: %w", err)
 		}
 		// Only override mode if user hasn't explicitly set it

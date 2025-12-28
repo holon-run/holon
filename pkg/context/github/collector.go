@@ -1,3 +1,20 @@
+// Package github provides legacy PR context collection for GitHub.
+//
+// Deprecated: This package is deprecated. Use github.com/holon-run/holon/pkg/context/provider/github instead.
+// The new provider supports CI/checks collection and uses the unified collector.Collector interface.
+// Migration:
+//
+//	Old (deprecated):
+//	  import prcontext "github.com/holon-run/holon/pkg/context/github"
+//	  prCollector := prcontext.NewCollector(prcontext.CollectorConfig{...})
+//	  prCollector.Collect(ctx)
+//
+//	New (recommended):
+//	  import "github.com/holon-run/holon/pkg/context/provider/github"
+//	  import "github.com/holon-run/holon/pkg/context/collector"
+//	  prov := github.NewProvider()
+//	  req := collector.CollectRequest{...}
+//	  prov.Collect(ctx, req)
 package github
 
 import (
@@ -10,6 +27,8 @@ import (
 )
 
 // CollectorConfig holds configuration for collecting PR context
+//
+// Deprecated: Use collector.CollectRequest with github.NewProvider() instead.
 type CollectorConfig struct {
 	Owner          string
 	Repo           string
@@ -21,12 +40,16 @@ type CollectorConfig struct {
 }
 
 // Collector orchestrates the collection of PR context
+//
+// Deprecated: Use github.NewProvider() with collector.CollectRequest instead.
 type Collector struct {
 	client *Client
 	config CollectorConfig
 }
 
 // NewCollector creates a new Collector
+//
+// Deprecated: Use github.NewProvider() and collector.CollectRequest instead.
 func NewCollector(config CollectorConfig) *Collector {
 	return &Collector{
 		client: NewClient(config.Token),
@@ -35,6 +58,8 @@ func NewCollector(config CollectorConfig) *Collector {
 }
 
 // Collect gathers all PR context and writes it to the output directory
+//
+// Deprecated: Use github.NewProvider().Collect(ctx, req) instead.
 func (c *Collector) Collect(ctx context.Context) error {
 	fmt.Printf("Collecting PR context for %s/%s#%d...\n", c.config.Owner, c.config.Repo, c.config.PRNumber)
 
@@ -93,6 +118,8 @@ func (c *Collector) Collect(ctx context.Context) error {
 
 // CollectFromEnv collects PR context using environment variables
 // This is useful for GitHub Actions integration
+//
+// Deprecated: Use github.NewProvider() with collector.CollectRequest instead.
 func CollectFromEnv(ctx context.Context, outputDir string) error {
 	// Parse repository from GITHUB_REPOSITORY env var
 	repo := os.Getenv("GITHUB_REPOSITORY")
