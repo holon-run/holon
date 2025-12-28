@@ -62,8 +62,6 @@ func (c *Collector) Collect(ctx context.Context) error {
 		if err != nil {
 			fmt.Printf("  Warning: failed to fetch diff: %v\n", err)
 			// Don't fail - diff is optional
-		} else {
-			fmt.Printf("  Fetched diff (%d bytes)\n", len(diff))
 		}
 	}
 
@@ -77,7 +75,6 @@ func (c *Collector) Collect(ctx context.Context) error {
 	if err := verifyContextFiles(c.config.OutputDir); err != nil {
 		return err
 	}
-	printContextFileSizes(c.config.OutputDir)
 
 	fmt.Println("Context collection complete!")
 	fmt.Printf("  Output directory: %s/\n", c.config.OutputDir)
@@ -167,23 +164,4 @@ func verifyContextFiles(outputDir string) error {
 		}
 	}
 	return nil
-}
-
-func printContextFileSizes(outputDir string) {
-	files := []string{
-		filepath.Join(outputDir, "github", "pr.json"),
-		filepath.Join(outputDir, "github", "review_threads.json"),
-		filepath.Join(outputDir, "github", "pr.diff"),
-		filepath.Join(outputDir, "github", "review.md"),
-		filepath.Join(outputDir, "pr-fix.schema.json"),
-	}
-	fmt.Println("  Context file sizes:")
-	for _, f := range files {
-		info, err := os.Stat(f)
-		if err != nil {
-			fmt.Printf("    - %s: error: %v\n", f, err)
-			continue
-		}
-		fmt.Printf("    - %s: %d bytes\n", f, info.Size())
-	}
 }

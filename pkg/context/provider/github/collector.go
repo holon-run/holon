@@ -147,8 +147,6 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 		if err != nil {
 			fmt.Printf("  Warning: failed to fetch diff: %v\n", err)
 			// Don't fail - diff is optional
-		} else {
-			fmt.Printf("  Fetched diff (%d bytes)\n", len(diff))
 		}
 	}
 

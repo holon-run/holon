@@ -283,10 +283,6 @@ output:
 		return fmt.Errorf("failed to resolve input path: %w", err)
 	}
 
-	// Log context sizes just before container start to catch unexpected truncation.
-	contextDir := filepath.Join(absInputDir, "context")
-	printContextSnapshot(contextDir)
-
 	agentBundlePath, err := r.resolveAgentBundle(ctx, cfg, absWorkspace)
 	if err != nil {
 		return err
