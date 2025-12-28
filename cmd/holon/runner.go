@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/holon-run/holon/pkg/agent/resolver"
 	v1 "github.com/holon-run/holon/pkg/api/v1"
+	"github.com/holon-run/holon/pkg/context/collector"
 	gh "github.com/holon-run/holon/pkg/github"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/prompt"
@@ -568,25 +571,15 @@ func (r *Runner) extractGoalFromSpec(absSpec string) (string, error) {
 func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map[string]string) (sysPrompt, userPrompt string, promptTempDir string, err error) {
 	compiler := prompt.NewCompiler("")
 
-	// Extract context files for template
-	contextFiles := []string{}
-	if cfg.ContextPath != "" {
-		files, err := os.ReadDir(absContext)
-		if err != nil {
-			holonlog.Warn("failed to read context directory", "error", err)
-		} else {
-			for _, f := range files {
-				contextFiles = append(contextFiles, f.Name())
-			}
-		}
-	}
+	contextEntries, contextFileNames := collectContextEntries(absContext)
 
 	sysPrompt, err = compiler.CompileSystemPrompt(prompt.Config{
-		Mode:         cfg.Mode,
-		Role:         cfg.RoleName,
-		Language:     "en", // TODO: Detect or flag
-		WorkingDir:   "/holon/workspace",
-		ContextFiles: contextFiles,
+		Mode:           cfg.Mode,
+		Role:           cfg.RoleName,
+		Language:       "en", // TODO: Detect or flag
+		WorkingDir:     "/holon/workspace",
+		ContextFiles:   contextFileNames,
+		ContextEntries: contextEntries,
 		// Pass GitHub actor identity from environment variables
 		ActorLogin:   envVars["HOLON_ACTOR_LOGIN"],
 		ActorType:    envVars["HOLON_ACTOR_TYPE"],
@@ -611,20 +604,6 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	}
 
 	// Compile User Prompt
-	var contextFileNames []string
-	if cfg.ContextPath != "" {
-		files, err := os.ReadDir(absContext)
-		if err != nil {
-			holonlog.Warn("failed to read context directory for user prompt", "error", err)
-		} else {
-			for _, f := range files {
-				if !f.IsDir() {
-					contextFileNames = append(contextFileNames, f.Name())
-				}
-			}
-		}
-	}
-
 	userPrompt, err = compiler.CompileUserPrompt(cfg.GoalStr, contextFileNames)
 	if err != nil {
 		os.RemoveAll(promptTempDir)
@@ -639,6 +618,52 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	}
 
 	return sysPrompt, userPrompt, promptTempDir, nil
+}
+
+func collectContextEntries(absContext string) ([]prompt.ContextEntry, []string) {
+	if absContext == "" {
+		return nil, nil
+	}
+
+	entries := []prompt.ContextEntry{}
+	fileNames := []string{}
+
+	// Prefer manifest if present
+	manifestPath := filepath.Join(absContext, "manifest.json")
+	if data, err := os.ReadFile(manifestPath); err == nil {
+		var manifest collector.CollectResult
+		if err := json.Unmarshal(data, &manifest); err == nil {
+			for _, f := range manifest.Files {
+				entries = append(entries, prompt.ContextEntry{
+					Path:        f.Path,
+					Description: f.Description,
+				})
+				fileNames = append(fileNames, f.Path)
+			}
+			sort.Strings(fileNames)
+			return entries, fileNames
+		}
+	}
+
+	// Fallback: recursive walk of context directory
+	filepath.WalkDir(absContext, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(absContext, path)
+		if err != nil {
+			return nil
+		}
+		entries = append(entries, prompt.ContextEntry{Path: rel})
+		fileNames = append(fileNames, rel)
+		return nil
+	})
+
+	sort.Strings(fileNames)
+	return entries, fileNames
 }
 
 // writeDebugPrompts writes the compiled prompts to the output directory for debugging
