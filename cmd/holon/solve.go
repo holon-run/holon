@@ -641,7 +641,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	fmt.Println("Publishing results...")
 	fmt.Println(strings.Repeat("=", 60))
 
-	if err := publishResults(ctx, solveRef, refType, outDir, cleanupMode); err != nil {
+	if err := publishResults(ctx, solveRef, refType, inputDir, outDir, cleanupMode); err != nil {
 		return fmt.Errorf("failed to publish results: %w", err)
 	}
 
@@ -711,7 +711,7 @@ func buildGoal(ref *pkggithub.SolveRef, refType string) string {
 }
 
 // publishResults publishes the holon execution results
-func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string, outDir string, cleanupMode string) error {
+func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string, inputDir string, outDir string, cleanupMode string) error {
 	// Prepare a clean workspace for publishing from manifest so that patches are
 	// applied to a baseline rather than an already-modified tree.
 	pubWS, err := preparePublishWorkspace(ctx, outDir)
@@ -783,7 +783,7 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 	if refType == "pr" {
 		// In PR mode, optionally apply/commit/push diff.patch to the PR head branch before posting replies/comments.
 		if diffPath, ok := artifacts["diff.patch"]; ok {
-			if err := publishPatchToPR(ctx, pubWS.path, solveInput, diffPath); err != nil {
+			if err := publishPatchToPR(ctx, pubWS.path, inputDir, diffPath); err != nil {
 				return fmt.Errorf("publish failed during patch push: %w", err)
 			}
 		}

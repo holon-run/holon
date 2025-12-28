@@ -31,7 +31,7 @@ func publishPatchToPR(ctx context.Context, pubWorkspace, inputDir, diffPath stri
 	}
 	headRef := prInfo.Head.Ref
 	if headRef == "" {
-		return fmt.Errorf("pr.json missing head.ref; cannot determine target branch for patch publish")
+		return fmt.Errorf("pr.json missing head.ref; cannot determine target branch for patch publish (looked in %s)", prJSON)
 	}
 
 	// Build a PublishRequest for git publisher.
