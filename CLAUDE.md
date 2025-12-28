@@ -116,6 +116,31 @@ git:
   author_email: "holon@example.com"
 ```
 
+### Preflight Checks
+
+Holon includes preflight checks that run before execution to verify prerequisites are available. These checks help surface issues early rather than failing mid-execution.
+
+**Default Checks (run command):**
+- `docker`: Verifies Docker is installed and the daemon is reachable
+- `git`: Verifies Git is installed
+- `workspace`: Verifies workspace path is accessible
+- `output`: Verifies output directory is writable
+
+**Additional Checks (solve command):**
+- `github-token`: Verifies GitHub token is available (from `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`)
+
+**Skipping Preflight Checks:**
+```bash
+# Skip all preflight checks (not recommended)
+holon run --goal "Fix the bug" --no-preflight
+holon solve holon-run/holon#123 --skip-checks
+```
+
+**Check Levels:**
+- `error`: Critical failure that prevents execution
+- `warn`: Warning that should be addressed but doesn't block execution
+- `info`: Informational output
+
 **Configuration Precedence** (highest to lowest):
 1. CLI flags (e.g., `--image`, `--agent`, `--log-level`)
 2. Project config file (`.holon/config.yaml`)
@@ -262,6 +287,7 @@ holon solve holon-run/holon#123
 - `--out` / `-o`: Deprecated alias for `--output`
 - `--env` / `-e`: Environment variables (K=V format)
 - `--log-level`: Logging verbosity (debug, info, progress, minimal)
+- `--no-preflight` / `--skip-checks`: Skip preflight checks (not recommended)
 - `--agent-config-mode`: Agent config mount mode (default: no)
   - `no`: Never mount (default, safest for CI/container use)
   - `auto`: Mount host ~/.claude if it exists and is compatible, silent skip if not
@@ -385,19 +411,29 @@ output:
       required: true
 ```
 
+**Preflight System**: `pkg/preflight/`
+- `NewChecker()`: Creates a new preflight checker with configurable checks
+- `DockerCheck`: Verifies Docker is installed and daemon is reachable
+- `GitCheck`: Verifies Git is installed
+- `GitHubTokenCheck`: Verifies GitHub token (from env or gh CLI)
+- `AnthropicTokenCheck`: Verifies Anthropic API key
+- `WorkspaceCheck`: Verifies workspace path is accessible
+- `OutputCheck`: Verifies output directory is writable
+
 **TypeScript Agent**: `agents/claude/`
 - Entry point inside composed image: `/holon/agent/bin/agent`
 - Claude Code runtime installed during composition
 - Standardized I/O paths: `/holon/input/`, `/holon/workspace/`, `/holon/output/`
 
 ### Execution Flow
-1. **Agent Resolution**: Resolve agent bundle reference (local file, URL, or alias)
-2. **Bundle Download/Cache**: Download remote bundles and cache locally with integrity verification
-3. **Workspace Snapshot**: Copy workspace to isolated location
-4. **Image Composition**: Build composed image from base + agent bundle
-5. **Container Creation**: Start container with mounted volumes
-6. **Agent Execution**: Run Claude Agent SDK agent with injected prompts
-7. **Artifact Validation**: Verify required outputs exist
+1. **Preflight Checks**: Verify prerequisites (Docker, Git, tokens, paths) - can be skipped with `--no-preflight`
+2. **Agent Resolution**: Resolve agent bundle reference (local file, URL, or alias)
+3. **Bundle Download/Cache**: Download remote bundles and cache locally with integrity verification
+4. **Workspace Snapshot**: Copy workspace to isolated location
+5. **Image Composition**: Build composed image from base + agent bundle
+6. **Container Creation**: Start container with mounted volumes
+7. **Agent Execution**: Run Claude Agent SDK agent with injected prompts
+8. **Artifact Validation**: Verify required outputs exist
 
 ### Directory Structure
 ```
@@ -407,6 +443,7 @@ pkg/                # Core Go libraries
   ├── agent/        # Agent resolver and cache system
   │   ├── resolver/ # Bundle resolution logic
   │   └── cache/    # Bundle caching and alias management
+  ├── preflight/    # Preflight check system
   ├── publisher/    # Publisher system for publishing outputs
   │   ├── github/   # GitHub PR comment/reply publisher
   │   └── githubpr/ # GitHub PR creation/update publisher
