@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -575,8 +576,8 @@ func TestVerifyContextFiles(t *testing.T) {
 	// Helper function to create test context files
 	createTestFiles := func(dir string, files map[string]string) error {
 		for path, content := range files {
-			fullPath := dir + "/" + path
-			if err := os.MkdirAll(fullPath[:len(fullPath)-len(filepath.Base(fullPath))], 0755); err != nil {
+			fullPath := filepath.Join(dir, path)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 				return err
 			}
 			if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
@@ -744,7 +745,7 @@ func TestVerifyContextFiles(t *testing.T) {
 					t.Errorf("expected error containing %q, got nil", tt.errContains)
 					return
 				}
-				if !containsString(err.Error(), tt.errContains) {
+				if !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("expected error containing %q, got %q", tt.errContains, err.Error())
 				}
 			}
@@ -794,21 +795,7 @@ func TestVerifyContextFilesNetworkFailureSimulation(t *testing.T) {
 	}
 
 	// Check that error message mentions checking token and network
-	if !containsString(err.Error(), "check token and network connectivity") {
+	if !strings.Contains(err.Error(), "check token and network connectivity") {
 		t.Errorf("expected error message to mention checking token/network, got: %v", err)
 	}
-}
-
-// containsString is a helper to check if a string contains a substring
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || indexOfString(s, substr) >= 0)
-}
-
-func indexOfString(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

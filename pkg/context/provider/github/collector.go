@@ -107,22 +107,20 @@ func (p *Provider) Collect(ctx context.Context, req collector.CollectRequest) (c
 	}
 
 	result.Files = files
-	result.Success = true
 
 	// Verify context files are non-empty before returning success
 	if err := verifyContextFiles(req.OutputDir, req.Kind); err != nil {
 		result.Error = fmt.Sprintf("context verification failed: %v", err)
-		result.Success = false
 		return result, err
 	}
 
 	// Write manifest
 	if err := WriteManifest(req.OutputDir, result); err != nil {
 		result.Error = fmt.Sprintf("failed to write manifest: %v", err)
-		result.Success = false
 		return result, err
 	}
 
+	result.Success = true
 	return result, nil
 }
 
