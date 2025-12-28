@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -29,10 +28,10 @@ const (
 
 // CheckResult represents the result of a single preflight check
 type CheckResult struct {
-	Name    string    // Check name
- Level   CheckLevel // Severity level
-	Message string    // Human-readable message
-	Error   error     // Underlying error (if any)
+	Name    string     // Check name
+	Level   CheckLevel // Severity level
+	Message string     // Human-readable message
+	Error   error      // Underlying error (if any)
 }
 
 // Check represents a single preflight check
@@ -413,7 +412,7 @@ func (c *OutputCheck) Run(ctx context.Context) CheckResult {
 	}
 
 	// Check if path exists
-	_, err = os.Stat(absPath)
+	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Try to create the directory
@@ -432,6 +431,16 @@ func (c *OutputCheck) Run(ctx context.Context) CheckResult {
 				Level:   LevelError,
 				Message: fmt.Sprintf("cannot access output path: %s", absPath),
 				Error:   err,
+			}
+		}
+	} else {
+		// Path exists, check if it's a directory
+		if !info.IsDir() {
+			return CheckResult{
+				Name:    c.Name(),
+				Level:   LevelError,
+				Message: fmt.Sprintf("output path is not a directory: %s", absPath),
+				Error:   fmt.Errorf("not a directory"),
 			}
 		}
 	}
@@ -502,7 +511,11 @@ func (c *NetworkCheck) Run(ctx context.Context) CheckResult {
 	}
 	defer resp.Body.Close()
 	// Drain body
-	io.Copy(io.Discard, resp.Body)
+	_, err = io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		// Log the error but don't fail - this is just body draining
+		holonlog.Debug("failed to drain response body", "error", err)
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 		return CheckResult{
@@ -521,9 +534,10 @@ func (c *NetworkCheck) Run(ctx context.Context) CheckResult {
 }
 
 // DiskSpaceCheck checks if there's sufficient disk space
+// Note: MinBytes is for future use; the check uses a fixed 10MB test file for practical verification
 type DiskSpaceCheck struct {
-	Path      string
-	MinBytes  int64 // Minimum required bytes (default: 1GB)
+	Path     string
+	MinBytes int64 // Minimum required bytes (for future use; currently writes a 10MB test file)
 }
 
 func (c *DiskSpaceCheck) Name() string {
@@ -536,45 +550,40 @@ func (c *DiskSpaceCheck) Run(ctx context.Context) CheckResult {
 		path = os.TempDir()
 	}
 
-	minBytes := c.MinBytes
-	if minBytes == 0 {
-		minBytes = 1 * 1024 * 1024 * 1024 // 1GB default
+	// MinBytes is reserved for future use
+	// Currently, we use a fixed 10MB test size for practical disk space verification
+	_ = c.MinBytes
+
+	// Try to write a 10MB test file to verify disk space
+	// This works cross-platform on Windows, Unix, and macOS
+	testFile := filepath.Join(path, fmt.Sprintf(".holon-dspace-test-%d", os.Getpid()))
+	f, err := os.Create(testFile)
+	if err != nil {
+		return CheckResult{
+			Name:    c.Name(),
+			Level:   LevelWarn,
+			Message: "cannot verify disk space (write test failed)",
+			Error:   err,
+		}
 	}
 
-	// Get disk space info
-	// On Unix systems, we can use syscall.Statfs
-	// For cross-platform simplicity, we'll do a best-effort check
-	if runtime.GOOS != "windows" {
-		// Try to write a 10MB test file
-		testFile := filepath.Join(path, fmt.Sprintf(".holon-dspace-test-%d", os.Getpid()))
-		f, err := os.Create(testFile)
+	// Try to allocate 10MB
+	chunk := make([]byte, 1024*1024) // 1MB chunks
+	for i := 0; i < 10; i++ {
+		_, err := f.Write(chunk)
 		if err != nil {
+			f.Close()
+			_ = os.Remove(testFile)
 			return CheckResult{
 				Name:    c.Name(),
 				Level:   LevelWarn,
-				Message: "cannot verify disk space (write test failed)",
+				Message: "low disk space detected",
 				Error:   err,
 			}
 		}
-
-		// Try to allocate 10MB
-		chunk := make([]byte, 1024*1024) // 1MB chunks
-		for i := 0; i < 10; i++ {
-			_, err := f.Write(chunk)
-			if err != nil {
-				f.Close()
-				_ = os.Remove(testFile)
-				return CheckResult{
-					Name:    c.Name(),
-					Level:   LevelWarn,
-					Message: "low disk space detected",
-					Error:   err,
-				}
-			}
-		}
-		f.Close()
-		_ = os.Remove(testFile)
 	}
+	f.Close()
+	_ = os.Remove(testFile)
 
 	return CheckResult{
 		Name:    c.Name(),

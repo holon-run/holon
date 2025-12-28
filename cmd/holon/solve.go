@@ -14,6 +14,7 @@ import (
 	"github.com/holon-run/holon/pkg/context/provider/github"
 	"github.com/holon-run/holon/pkg/git"
 	pkggithub "github.com/holon-run/holon/pkg/github"
+	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/image"
 	"github.com/holon-run/holon/pkg/preflight"
 	"github.com/holon-run/holon/pkg/publisher"
@@ -610,9 +611,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Run preflight checks before execution
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("Running preflight checks...")
-	fmt.Println(strings.Repeat("=", 60))
+	holonlog.Progress("running preflight checks")
 
 	checker := preflight.NewChecker(preflight.Config{
 		Skip:                  solveSkipPreflight,

@@ -3,7 +3,6 @@ package preflight
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -301,8 +300,3 @@ func TestCheckerWithInvalidOutput(t *testing.T) {
 	t.Logf("Expected error: %v", err)
 }
 
-// Helper function to check if a command exists
-func commandExists(cmd string) bool {
-	_, err := exec.LookPath(cmd)
-	return err == nil
-}
