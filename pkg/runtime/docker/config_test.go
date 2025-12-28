@@ -204,7 +204,6 @@ func TestAgentConfigModeWarnIfMissing(t *testing.T) {
 	}
 }
 
-
 func TestBuildContainerMounts(t *testing.T) {
 	// Create temporary directories for testing
 	tmpDir := t.TempDir()
@@ -239,9 +238,9 @@ func TestBuildContainerMounts(t *testing.T) {
 					Target: "/holon/workspace",
 				},
 				{
-					Type:   mount.TypeBind,
-					Source: inputDir,
-					Target: "/holon/input",
+					Type:     mount.TypeBind,
+					Source:   inputDir,
+					Target:   "/holon/input",
 					ReadOnly: true,
 				},
 				{
@@ -506,4 +505,110 @@ func TestValidateMountTargets(t *testing.T) {
 			t.Error("ValidateMountTargets() expected error for empty input path, got nil")
 		}
 	})
+}
+
+func TestInputMountReadOnly(t *testing.T) {
+	// Test that input directory is mounted read-only to prevent modification of context files
+	// This is a security feature to ensure PR context cannot be overwritten by the agent
+	tmpDir := t.TempDir()
+	inputDir := filepath.Join(tmpDir, "input")
+	outDir := filepath.Join(tmpDir, "output")
+	snapshotDir := filepath.Join(tmpDir, "snapshot")
+
+	// Create required directories
+	if err := os.MkdirAll(inputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &MountConfig{
+		SnapshotDir: snapshotDir,
+		InputPath:   inputDir,
+		OutDir:      outDir,
+	}
+
+	mounts := BuildContainerMounts(cfg)
+
+	// Find the input mount
+	var inputMount *mount.Mount
+	for i := range mounts {
+		if mounts[i].Target == "/holon/input" {
+			inputMount = &mounts[i]
+			break
+		}
+	}
+
+	if inputMount == nil {
+		t.Fatal("BuildContainerMounts() did not create /holon/input mount")
+	}
+
+	// Verify that the input mount is read-only
+	if !inputMount.ReadOnly {
+		t.Error("BuildContainerMounts() input mount is not read-only. Input directory must be mounted read-only to prevent context modification")
+	}
+
+	// Verify mount type is bind
+	if inputMount.Type != mount.TypeBind {
+		t.Errorf("BuildContainerMounts() input mount type = %v, want %v", inputMount.Type, mount.TypeBind)
+	}
+
+	// Verify source is correct
+	if inputMount.Source != inputDir {
+		t.Errorf("BuildContainerMounts() input mount source = %v, want %v", inputMount.Source, inputDir)
+	}
+}
+
+func TestWorkspaceAndOutputMountsReadWrite(t *testing.T) {
+	// Test that workspace and output mounts are read-write
+	// This ensures the agent can write code changes and outputs
+	tmpDir := t.TempDir()
+	inputDir := filepath.Join(tmpDir, "input")
+	outDir := filepath.Join(tmpDir, "output")
+	snapshotDir := filepath.Join(tmpDir, "snapshot")
+
+	// Create required directories
+	if err := os.MkdirAll(inputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &MountConfig{
+		SnapshotDir: snapshotDir,
+		InputPath:   inputDir,
+		OutDir:      outDir,
+	}
+
+	mounts := BuildContainerMounts(cfg)
+
+	// Find workspace and output mounts
+	var workspaceMount, outputMount *mount.Mount
+	for i := range mounts {
+		if mounts[i].Target == "/holon/workspace" {
+			workspaceMount = &mounts[i]
+		}
+		if mounts[i].Target == "/holon/output" {
+			outputMount = &mounts[i]
+		}
+	}
+
+	if workspaceMount == nil {
+		t.Fatal("BuildContainerMounts() did not create /holon/workspace mount")
+	}
+	if outputMount == nil {
+		t.Fatal("BuildContainerMounts() did not create /holon/output mount")
+	}
+
+	// Verify workspace mount is read-write
+	if workspaceMount.ReadOnly {
+		t.Error("BuildContainerMounts() workspace mount is read-only. Workspace must be read-write for code changes")
+	}
+
+	// Verify output mount is read-write
+	if outputMount.ReadOnly {
+		t.Error("BuildContainerMounts() output mount is read-only. Output must be read-write for artifact creation")
+	}
 }

@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/holon-run/holon/pkg/context/collector"
 )
 
 func TestParseRef(t *testing.T) {
@@ -62,14 +67,14 @@ func TestParseRef(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:     "invalid URL - missing parts",
-			ref:      "https://github.com/owner",
-			wantErr:  true,
+			name:    "invalid URL - missing parts",
+			ref:     "https://github.com/owner",
+			wantErr: true,
 		},
 		{
-			name:     "invalid ref format",
-			ref:      "invalid-format",
-			wantErr:  true,
+			name:    "invalid ref format",
+			ref:     "invalid-format",
+			wantErr: true,
 		},
 	}
 
@@ -179,8 +184,8 @@ func TestFetchCheckRuns(t *testing.T) {
 		wantErr      bool
 	}{
 		{
-			name:   "fetch check runs successfully",
-			ref:    "abc123",
+			name:       "fetch check runs successfully",
+			ref:        "abc123",
 			maxResults: 0, // no limit
 			responseBody: `{
 				"total_count": 2,
@@ -220,8 +225,8 @@ func TestFetchCheckRuns(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:   "fetch with max results limit",
-			ref:    "abc123",
+			name:       "fetch with max results limit",
+			ref:        "abc123",
 			maxResults: 1,
 			responseBody: `{
 				"total_count": 2,
@@ -246,8 +251,8 @@ func TestFetchCheckRuns(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:   "empty check runs response",
-			ref:    "abc123",
+			name:       "empty check runs response",
+			ref:        "abc123",
 			maxResults: 0,
 			responseBody: `{
 				"total_count": 0,
@@ -257,12 +262,12 @@ func TestFetchCheckRuns(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:        "API error",
-			ref:         "abc123",
-			maxResults:  0,
+			name:         "API error",
+			ref:          "abc123",
+			maxResults:   0,
 			responseBody: `{"message": "Not Found"}`,
-			wantCount:   0,
-			wantErr:     true,
+			wantCount:    0,
+			wantErr:      true,
 		},
 	}
 
@@ -343,8 +348,8 @@ func TestFetchCombinedStatus(t *testing.T) {
 		wantErr      bool
 	}{
 		{
-			name:  "fetch combined status successfully",
-			ref:   "abc123",
+			name: "fetch combined status successfully",
+			ref:  "abc123",
 			responseBody: `{
 				"state": "success",
 				"sha": "abc123",
@@ -374,8 +379,8 @@ func TestFetchCombinedStatus(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:  "empty status response",
-			ref:   "abc123",
+			name: "empty status response",
+			ref:  "abc123",
 			responseBody: `{
 				"state": "pending",
 				"sha": "abc123",
@@ -387,12 +392,12 @@ func TestFetchCombinedStatus(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:        "API error",
-			ref:         "abc123",
+			name:         "API error",
+			ref:          "abc123",
 			responseBody: `{"message": "Not Found"}`,
-			wantState:   "",
-			wantCount:   0,
-			wantErr:     true,
+			wantState:    "",
+			wantCount:    0,
+			wantErr:      true,
 		},
 	}
 
@@ -564,5 +569,233 @@ func TestCombinedStatusMarshaling(t *testing.T) {
 		if unmarshaled.Statuses[0].Context != status.Statuses[0].Context {
 			t.Errorf("Context mismatch: got %s, want %s", unmarshaled.Statuses[0].Context, status.Statuses[0].Context)
 		}
+	}
+}
+
+func TestVerifyContextFiles(t *testing.T) {
+	// Helper function to create test context files
+	createTestFiles := func(dir string, files map[string]string) error {
+		for path, content := range files {
+			fullPath := filepath.Join(dir, path)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	tests := []struct {
+		name        string
+		kind        collector.Kind
+		files       map[string]string // path -> content (empty string = empty file)
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid PR context - all files non-empty",
+			kind: collector.KindPR,
+			files: map[string]string{
+				"github/pr.json":             `{"number": 123}`,
+				"github/review_threads.json": `[]`,
+				"github/review.md":           "# Review",
+				"pr-fix.schema.json":         `{}`,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid issue context - all files non-empty",
+			kind: collector.KindIssue,
+			files: map[string]string{
+				"github/issue.json":    `{"number": 123}`,
+				"github/comments.json": `[]`,
+				"github/issue.md":      "# Issue",
+			},
+			wantErr: false,
+		},
+		{
+			name: "PR context - missing pr.json",
+			kind: collector.KindPR,
+			files: map[string]string{
+				"github/review_threads.json": `[]`,
+				"github/review.md":           "# Review",
+				"pr-fix.schema.json":         `{}`,
+			},
+			wantErr:     true,
+			errContains: "context file missing",
+		},
+		{
+			name: "PR context - empty pr.json",
+			kind: collector.KindPR,
+			files: map[string]string{
+				"github/pr.json":             "",
+				"github/review_threads.json": `[]`,
+				"github/review.md":           "# Review",
+				"pr-fix.schema.json":         `{}`,
+			},
+			wantErr:     true,
+			errContains: "context file is empty",
+		},
+		{
+			name: "PR context - missing review.md",
+			kind: collector.KindPR,
+			files: map[string]string{
+				"github/pr.json":             `{"number": 123}`,
+				"github/review_threads.json": `[]`,
+				"pr-fix.schema.json":         `{}`,
+			},
+			wantErr:     true,
+			errContains: "context file missing",
+		},
+		{
+			name: "PR context - empty review.md",
+			kind: collector.KindPR,
+			files: map[string]string{
+				"github/pr.json":             `{"number": 123}`,
+				"github/review_threads.json": `[]`,
+				"github/review.md":           "",
+				"pr-fix.schema.json":         `{}`,
+			},
+			wantErr:     true,
+			errContains: "context file is empty",
+		},
+		{
+			name: "PR context - missing pr-fix.schema.json",
+			kind: collector.KindPR,
+			files: map[string]string{
+				"github/pr.json":             `{"number": 123}`,
+				"github/review_threads.json": `[]`,
+				"github/review.md":           "# Review",
+			},
+			wantErr:     true,
+			errContains: "context file missing",
+		},
+		{
+			name: "issue context - missing issue.json",
+			kind: collector.KindIssue,
+			files: map[string]string{
+				"github/comments.json": `[]`,
+				"github/issue.md":      "# Issue",
+			},
+			wantErr:     true,
+			errContains: "context file missing",
+		},
+		{
+			name: "issue context - empty issue.json",
+			kind: collector.KindIssue,
+			files: map[string]string{
+				"github/issue.json":    "",
+				"github/comments.json": `[]`,
+				"github/issue.md":      "# Issue",
+			},
+			wantErr:     true,
+			errContains: "context file is empty",
+		},
+		{
+			name: "issue context - missing issue.md",
+			kind: collector.KindIssue,
+			files: map[string]string{
+				"github/issue.json":    `{"number": 123}`,
+				"github/comments.json": `[]`,
+			},
+			wantErr:     true,
+			errContains: "context file missing",
+		},
+		{
+			name: "network error simulation - all files empty",
+			kind: collector.KindPR,
+			files: map[string]string{
+				"github/pr.json":             "",
+				"github/review_threads.json": "",
+				"github/review.md":           "",
+				"pr-fix.schema.json":         "",
+			},
+			wantErr:     true,
+			errContains: "empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temp directory
+			tmpDir, err := os.MkdirTemp("", "holon-test-verify-*")
+			if err != nil {
+				t.Fatalf("failed to create temp dir: %v", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			// Create test files
+			if err := createTestFiles(tmpDir, tt.files); err != nil {
+				t.Fatalf("failed to create test files: %v", err)
+			}
+
+			// Run verification
+			err = verifyContextFiles(tmpDir, tt.kind)
+
+			// Check results
+			if (err != nil) != tt.wantErr {
+				t.Errorf("verifyContextFiles() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr && tt.errContains != "" {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errContains)
+					return
+				}
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("expected error containing %q, got %q", tt.errContains, err.Error())
+				}
+			}
+		})
+	}
+}
+
+func TestVerifyContextFilesNetworkFailureSimulation(t *testing.T) {
+	// This test simulates what happens when GitHub API calls fail
+	// and result in empty context files being written
+
+	tmpDir, err := os.MkdirTemp("", "holon-test-network-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Simulate failed API response by creating empty files
+	// This is what could happen if the token is invalid or network fails
+	githubDir := filepath.Join(tmpDir, "github")
+	if err := os.MkdirAll(githubDir, 0755); err != nil {
+		t.Fatalf("failed to create github dir: %v", err)
+	}
+
+	// Create empty files (simulating failed fetch that wrote empty files)
+	emptyFiles := []string{
+		"github/pr.json",
+		"github/review_threads.json",
+		"github/review.md",
+	}
+	for _, file := range emptyFiles {
+		path := filepath.Join(tmpDir, file)
+		if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+			t.Fatalf("failed to create empty file: %v", err)
+		}
+	}
+	// Also create empty schema file
+	if err := os.WriteFile(filepath.Join(tmpDir, "pr-fix.schema.json"), []byte(""), 0644); err != nil {
+		t.Fatalf("failed to create empty schema file: %v", err)
+	}
+
+	// Verify should fail with empty file error
+	err = verifyContextFiles(tmpDir, collector.KindPR)
+	if err == nil {
+		t.Error("expected error for empty context files, got nil")
+		return
+	}
+
+	// Check that error message mentions checking token and network
+	if !strings.Contains(err.Error(), "check token and network connectivity") {
+		t.Errorf("expected error message to mention checking token/network, got: %v", err)
 	}
 }
