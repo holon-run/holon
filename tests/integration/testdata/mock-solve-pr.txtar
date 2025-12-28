@@ -32,7 +32,7 @@ env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixt
 
 # Run holon run with the pre-populated PR context
 # This simulates what `holon solve pr` does internally
-exec holon run --agent default --goal 'Fix the review comments and issues in PR https://github.com/test/repo/pull/456. Address all unresolved review comments and make necessary code changes.' --workspace work --input input --out out --image golang:1.22
+exec holon run --agent default --goal 'Fix the review comments and issues in PR https://github.com/test/repo/pull/456. Address all unresolved review comments and make necessary code changes.' --workspace work --input input --output out --image golang:1.22
 
 # Verify expected outputs
 exists out/manifest.json

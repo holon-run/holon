@@ -88,12 +88,32 @@ func TestAnthropicTokenCheck(t *testing.T) {
 		t.Errorf("expected LevelError when token not set, got %v", result.Level)
 	}
 
-	// Test with token set
+	// Test with legacy ANTHROPIC_API_KEY set (should return warning for deprecated usage)
+	os.Unsetenv("ANTHROPIC_AUTH_TOKEN")
+	os.Unsetenv("ANTHROPIC_API_KEY")
 	os.Setenv("ANTHROPIC_API_KEY", "test-key-12345")
 	result = check.Run(ctx)
 
+	if result.Level != LevelWarn {
+		t.Errorf("expected LevelWarn when legacy token set, got %v", result.Level)
+	}
+
+	// Test with new ANTHROPIC_AUTH_TOKEN set (should return info level)
+	os.Unsetenv("ANTHROPIC_API_KEY")
+	os.Setenv("ANTHROPIC_AUTH_TOKEN", "test-token-12345")
+	result = check.Run(ctx)
+
 	if result.Level != LevelInfo {
-		t.Errorf("expected LevelInfo when token set, got %v", result.Level)
+		t.Errorf("expected LevelInfo when AUTH_TOKEN set, got %v", result.Level)
+	}
+
+	// Test priority: when both are set, ANTHROPIC_AUTH_TOKEN should take precedence (info, not warn)
+	os.Setenv("ANTHROPIC_API_KEY", "test-key-12345")
+	os.Setenv("ANTHROPIC_AUTH_TOKEN", "test-token-12345")
+	result = check.Run(ctx)
+
+	if result.Level != LevelInfo {
+		t.Errorf("expected LevelInfo when both tokens set (AUTH_TOKEN takes precedence), got %v", result.Level)
 	}
 }
 
@@ -186,12 +206,12 @@ func TestChecker(t *testing.T) {
 	tempDir := t.TempDir()
 
 	cfg := Config{
-		RequireDocker:        false, // Disable for CI
-		RequireGit:           true,
-		RequireGitHubToken:   false,
+		RequireDocker:         false, // Disable for CI
+		RequireGit:            true,
+		RequireGitHubToken:    false,
 		RequireAnthropicToken: false,
-		WorkspacePath:        tempDir,
-		OutputPath:           tempDir,
+		WorkspacePath:         tempDir,
+		OutputPath:            tempDir,
 	}
 
 	checker := NewChecker(cfg)
@@ -230,9 +250,9 @@ func TestCheckerWithMissingGit(t *testing.T) {
 	os.Setenv("PATH", "")
 
 	cfg := Config{
-		RequireGit:     true,
-		RequireDocker:  false,
-		Skip:           false,
+		RequireGit:    true,
+		RequireDocker: false,
+		Skip:          false,
 	}
 
 	checker := NewChecker(cfg)
@@ -250,11 +270,11 @@ func TestCheckerWithMissingGit(t *testing.T) {
 
 func TestCheckerWithInvalidWorkspace(t *testing.T) {
 	cfg := Config{
-		RequireGit:           false,
-		RequireDocker:        false,
-		RequireGitHubToken:   false,
+		RequireGit:            false,
+		RequireDocker:         false,
+		RequireGitHubToken:    false,
 		RequireAnthropicToken: false,
-		WorkspacePath:        "/nonexistent/workspace/path",
+		WorkspacePath:         "/nonexistent/workspace/path",
 	}
 
 	checker := NewChecker(cfg)
@@ -280,11 +300,11 @@ func TestCheckerWithInvalidOutput(t *testing.T) {
 	tempFile.Close()
 
 	cfg := Config{
-		RequireGit:           false,
-		RequireDocker:        false,
-		RequireGitHubToken:   false,
+		RequireGit:            false,
+		RequireDocker:         false,
+		RequireGitHubToken:    false,
 		RequireAnthropicToken: false,
-		OutputPath:           tempFile.Name(), // File instead of directory
+		OutputPath:            tempFile.Name(), // File instead of directory
 	}
 
 	checker := NewChecker(cfg)
@@ -299,4 +319,3 @@ func TestCheckerWithInvalidOutput(t *testing.T) {
 
 	t.Logf("Expected error: %v", err)
 }
-

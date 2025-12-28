@@ -11,7 +11,7 @@ env TMPDIR=work/tmp
 
 exec chmod +x bundle-src/bin/agent
 exec tar -czf agent-bundle.tar.gz -C bundle-src .
-exec holon run --goal 'integration test' --name it --workspace work --out out --image debian:bookworm-slim --agent agent-bundle.tar.gz --log-level minimal
+exec holon run --goal 'integration test' --name it --workspace work --output out --image debian:bookworm-slim --agent agent-bundle.tar.gz --log-level minimal
 
 exists out/manifest.json
 exists out/diff.patch

@@ -31,8 +31,8 @@ go test ./... -v
 # Build agent bundle (required before first run)
 cd agents/claude && npm run bundle
 
-# Run example with ANTHROPIC_API_KEY set
-export ANTHROPIC_API_KEY=your_key_here
+# Run example with ANTHROPIC_AUTH_TOKEN set
+export ANTHROPIC_AUTH_TOKEN=your_key_here
 make run-example
 
 # Clean build artifacts
@@ -100,9 +100,6 @@ Holon supports project-level configuration via `.holon/config.yaml` to reduce re
 # Base container toolchain image
 # Set to "auto" or "auto-detect" to enable automatic detection (default behavior)
 base_image: "python:3.11"
-
-# Legacy field for auto-detection (deprecated; use base_image: "auto" instead)
-image_auto_detect: true
 
 # Default agent bundle reference (path, URL, or alias)
 agent: "default"
@@ -260,9 +257,6 @@ holon run --goal "Fix the bug" --image python:3.13
 # Enable explicit auto-detection
 base_image: "auto"
 
-# Or use the legacy field (deprecated)
-image_auto_detect: true
-
 # Or leave empty to use auto-detection as default
 # base_image: ""
 ```
@@ -281,10 +275,8 @@ holon solve holon-run/holon#123
 - `--image` / `-i`: Docker base image (default: auto-detect)
 - `--image-auto-detect`: Enable automatic base image detection (default: true)
 - `--agent`: Agent bundle reference (path to .tar.gz, URL, or alias)
-- `--agent-bundle`: Deprecated alias for `--agent`
 - `--workspace` / `-w`: Workspace path (default: .)
 - `--output` / `-O`: Output directory (default: creates temp dir to avoid polluting workspace)
-- `--out` / `-o`: Deprecated alias for `--output`
 - `--env` / `-e`: Environment variables (K=V format)
 - `--log-level`: Logging verbosity (debug, info, progress, minimal)
 - `--no-preflight` / `--skip-checks`: Skip preflight checks (not recommended)
@@ -473,11 +465,11 @@ make test-agent
 ## Environment Setup
 
 ### Required Environment Variables
-- `ANTHROPIC_API_KEY`: Claude API authentication (required for execution)
+- `ANTHROPIC_AUTH_TOKEN`: Claude API authentication (required for execution)
+  - Legacy: `ANTHROPIC_API_KEY` is also supported for backward compatibility
 - Optional: `HOLON_SNAPSHOT_BASE`: Custom snapshot location
 - Optional: `HOLON_CACHE_DIR`: Custom cache directory (default: `~/.holon/cache`)
 - Optional: `HOLON_AGENT`: Default agent bundle reference
-- Optional: `HOLON_AGENT_BUNDLE`: Legacy default agent bundle (deprecated)
 - Optional: `HOLON_NO_AUTO_INSTALL`: Disable builtin agent auto-install (set to "1" or "true")
 
 ### Development Prerequisites

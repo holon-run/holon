@@ -11,7 +11,6 @@ Holon runs an AI coding agent inside a Docker sandbox and emits **standard artif
 Holon writes to the directory specified by `--output`:
 - Default creates a temporary directory (e.g., `$TMPDIR/holon-output-*`) to avoid polluting your workspace
 - Use `--output <dir>` to specify a custom location
-- `--out` is accepted as a deprecated alias
 
 Common artifacts:
 
@@ -29,7 +28,7 @@ See `rfc/0002-agent-scheme.md` for the agent artifact contract.
 Prereqs:
 - Docker
 - Go toolchain (this repo uses Go 1.24; see `go.mod`) - OR use prebuilt binaries
-- Anthropic API key: `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`)
+- Anthropic auth token: `ANTHROPIC_AUTH_TOKEN` (legacy: `ANTHROPIC_API_KEY` is also supported)
 
 ### Option 1: Homebrew (Recommended for macOS and Linux)
 
@@ -91,7 +90,7 @@ Pick a base toolchain image that matches your repo (via `--image`). Holon compos
 
 Run the included example:
 ```bash
-export ANTHROPIC_API_KEY=...
+export ANTHROPIC_AUTH_TOKEN=...
 make build
 (cd agents/claude && npm run bundle)
 BUNDLE_PATH=$(ls -t agents/claude/dist/agent-bundles/*.tar.gz | head -n 1)
@@ -119,7 +118,7 @@ This repo ships two ways to run Holon in GitHub Actions:
 - uses: holon-run/holon@main
   with:
     ref: "${{ github.repository }}#${{ github.event.issue.number }}"
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
 ```
 
 **With artifact packaging:**
@@ -127,7 +126,7 @@ This repo ships two ways to run Holon in GitHub Actions:
 - uses: holon-run/holon@main
   with:
     ref: "${{ github.repository }}#${{ github.event.issue.number }}"
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
     out_dir: './holon-output'
 - uses: actions/upload-artifact@v4
   with:
@@ -142,7 +141,7 @@ This repo ships two ways to run Holon in GitHub Actions:
 - uses: holon-run/holon@main
   with:
     ref: "${{ github.repository }}#${{ github.event.issue.number }}"
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
     build_from_source: 'true'
 ```
 
@@ -195,7 +194,7 @@ The action has been refactored to wrap `holon solve` instead of `holon run`.
 - uses: holon-run/holon@v2
   with:
     ref: "${{ github.repository }}#${{ github.event.issue.number }}"
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
 ```
 
 **Using specific version:**
@@ -204,7 +203,7 @@ The action has been refactored to wrap `holon solve` instead of `holon run`.
   with:
     ref: "owner/repo#123"
     version: 'v0.1.0'
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
 ```
 
 **Build from source (for latest development version):**
@@ -216,7 +215,7 @@ The action has been refactored to wrap `holon solve` instead of `holon run`.
     ref: "${{ github.repository }}#${{ github.event.issue.number }}"
     build_from_source: 'true'
     holon_repository: 'holon-run/holon'
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
 ```
 
 **With artifact packaging:**
@@ -224,7 +223,7 @@ The action has been refactored to wrap `holon solve` instead of `holon run`.
 - uses: holon-run/holon@v2
   with:
     ref: "owner/repo#123"
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
     out_dir: './holon-output'
 - uses: actions/upload-artifact@v4
   with:
@@ -246,7 +245,7 @@ jobs:
       # comment_body: for pr-fix mode detection (optional)
       log_level: 'debug'
     secrets:
-      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
 ```
 
 **Reusable workflow advantages:**
@@ -268,7 +267,7 @@ jobs:
       issue_number: ${{ github.event.pull_request.number }}
       mode: 'review'
     secrets:
-      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
 ```
 
 ## Configuration
@@ -356,14 +355,13 @@ holon solve pr <ref>      # Force PR mode
 - `--image <image>`: Docker base image (default: auto-detect)
 - `--image-auto-detect`: Enable automatic base image detection (default: `true`)
 - `--output <dir>`: Output directory (default: creates temp dir to avoid polluting workspace)
-- `--out <dir>`: Deprecated alias for `--output`
 - `--role <role>`: Role to assume (e.g., `developer`, `reviewer`)
 - `--log-level <level>`: Log verbosity (default: `progress`)
 
 **Example: Issue resolution**
 ```bash
 export GITHUB_TOKEN=ghp_xxx
-export ANTHROPIC_API_KEY=sk-ant-xxx
+export ANTHROPIC_AUTH_TOKEN=sk-ant-xxx
 holon solve holon-run/holon#123
 ```
 
@@ -472,7 +470,6 @@ CLI flags (most used):
 - `--image`: base toolchain image (default: auto-detect)
 - `--image-auto-detect`: Enable automatic base image detection (default: true)
 - `--agent`: agent bundle reference (`.tar.gz`)
-- `--agent-bundle`: deprecated alias for `--agent`
 - `--workspace`: repo/workspace path (default `.`)
 - `--context`: extra context dir mounted at `/holon/input/context`
 - `--role`: prompt persona (`developer`, `reviewer`)
@@ -481,7 +478,6 @@ CLI flags (most used):
 
 Agent selection env vars (optional):
 - `HOLON_AGENT`: agent bundle reference (`.tar.gz`)
-- `HOLON_AGENT_BUNDLE`: deprecated alias for `HOLON_AGENT`
 
 Claude agent env (optional):
 - `HOLON_MODEL`, `HOLON_FALLBACK_MODEL`

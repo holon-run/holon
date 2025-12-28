@@ -114,7 +114,7 @@ test-integration-artifacts: build
 ## run-example: Run the fix-bug example (requires ANTHROPIC_API_KEY)
 run-example: build
 	@echo "Running fix-bug example..."
-	./$(BIN_DIR)/$(BINARY_NAME) run --spec examples/fix-bug.yaml --image golang:1.22 --workspace . --out ./holon-output-fix
+	./$(BIN_DIR)/$(BINARY_NAME) run --spec examples/fix-bug.yaml --image golang:1.22 --workspace . --output ./holon-output-fix
 
 ## help: Display help information
 help:

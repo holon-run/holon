@@ -12,7 +12,7 @@ exec chmod +x bundle-src/bin/agent
 exec tar -czf agent-bundle.tar.gz -C bundle-src .
 
 # Test with Debian-based image
-exec holon run --goal 'test gh' --workspace work --out out --image debian:bookworm-slim --agent agent-bundle.tar.gz --log-level minimal
+exec holon run --goal 'test gh' --workspace work --output out --image debian:bookworm-slim --agent agent-bundle.tar.gz --log-level minimal
 
 exists out/manifest.json
 
@@ -20,7 +20,7 @@ exists out/manifest.json
 exec rm -rf out
 
 # Test with RHEL/Fedora-based image (uses dnf)
-exec holon run --goal 'test gh' --workspace work --out out --image fedora:latest --agent agent-bundle.tar.gz --log-level minimal
+exec holon run --goal 'test gh' --workspace work --output out --image fedora:latest --agent agent-bundle.tar.gz --log-level minimal
 
 exists out/manifest.json
 
@@ -28,7 +28,7 @@ exists out/manifest.json
 exec rm -rf out
 
 # Test with Ubuntu-based image
-exec holon run --goal 'test gh' --workspace work --out out --image ubuntu:22.04 --agent agent-bundle.tar.gz --log-level minimal
+exec holon run --goal 'test gh' --workspace work --output out --image ubuntu:22.04 --agent agent-bundle.tar.gz --log-level minimal
 
 exists out/manifest.json
 

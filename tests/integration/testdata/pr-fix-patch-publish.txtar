@@ -56,7 +56,7 @@ env HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json
 env HOLON_MODE=pr-fix
 
 # Run holon run with the pre-populated PR context
-exec holon run --agent default --goal 'Fix the review comments in PR https://github.com/test/repo/pull/456' --workspace work --input input --out out --image golang:1.22
+exec holon run --agent default --goal 'Fix the review comments in PR https://github.com/test/repo/pull/456' --workspace work --input input --output out --image golang:1.22
 
 # Verify outputs exist
 exists out/manifest.json

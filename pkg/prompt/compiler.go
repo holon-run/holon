@@ -31,9 +31,6 @@ type Manifest struct {
 	Defaults struct {
 		Mode string `yaml:"mode"`
 		Role string `yaml:"role"`
-		// Contract is kept for backward compatibility with existing manifests and
-		// external tools. It is intentionally not used by the current compiler.
-		Contract string `yaml:"contract"`
 	} `yaml:"defaults"`
 }
 

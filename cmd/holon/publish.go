@@ -29,7 +29,7 @@ and publishes them using the specified provider.
 
 Examples:
   holon publish --provider github --target holon-run/holon/pr/123
-  holon publish --provider git --target origin/main --out ./holon-output
+  holon publish --provider git --target origin/main --output ./holon-output
   holon publish --provider github --target holon-run/holon/pr/123 --dry-run`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Validate required flags
@@ -179,8 +179,6 @@ func init() {
 	publishCmd.Flags().StringVar(&publishProvider, "provider", "", "Publisher name (required)")
 	publishCmd.Flags().StringVar(&publishTarget, "target", "", "Publish target (required)")
 	publishCmd.Flags().StringVarP(&publishOutDir, "output", "O", "./holon-output", "Output directory")
-	_ = publishCmd.Flags().MarkDeprecated("out", "use --output instead")
-	publishCmd.Flags().StringVarP(&publishOutDir, "out", "o", "./holon-output", "Deprecated: use --output")
 	publishCmd.Flags().BoolVar(&publishDryRun, "dry-run", false, "Validate without publishing")
 
 	publishCmd.AddCommand(publishListCmd)

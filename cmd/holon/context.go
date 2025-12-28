@@ -148,16 +148,16 @@ Provider selection:
 
 Examples:
   # Collect PR context using URL
-  holon context collect pr https://github.com/holon-run/holon/pull/42 --out ./context
+  holon context collect pr https://github.com/holon-run/holon/pull/42 --output ./context
 
   # Collect issue context using owner/repo format
-  holon context collect issue holon-run/holon#123 --out ./context
+  holon context collect issue holon-run/holon#123 --output ./context
 
   # Collect with explicit provider and repo
-  holon context collect pr "#42" --repo holon-run/holon --provider github --out ./context
+  holon context collect pr "#42" --repo holon-run/holon --provider github --output ./context
 
   # Collect from environment variables (GitHub Actions)
-  holon context collect pr --from-env --out ./holon-input/context
+  holon context collect pr --from-env --output ./holon-input/context
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
@@ -166,7 +166,7 @@ Examples:
 		if cmd.Flags().Changed("from-env") && contextFromEnv {
 			// Validate that no positional arguments are provided with --from-env
 			if len(args) > 0 {
-				return fmt.Errorf("positional arguments are not allowed when using --from-env\n\nUsage: holon context collect --from-env --out ./holon-input/context")
+				return fmt.Errorf("positional arguments are not allowed when using --from-env\n\nUsage: holon context collect --from-env --output ./holon-input/context")
 			}
 
 			// Parse environment variables and build request
@@ -176,7 +176,7 @@ Examples:
 			}
 
 			// Override output directory if explicitly set via flag
-			if cmd.Flags().Changed("out") {
+			if cmd.Flags().Changed("output") {
 				req.OutputDir = collectOut
 				outDir = collectOut
 			}
@@ -294,8 +294,6 @@ func init() {
 	collectCmd.Flags().StringVarP(&collectProvider, "provider", "p", "", "Provider name (default: auto-detect from ref)")
 	collectCmd.Flags().StringVar(&collectToken, "token", "", "Authentication token (defaults to GITHUB_TOKEN env var)")
 	collectCmd.Flags().StringVarP(&collectOut, "output", "O", "./holon-input/context", "Output directory for context files")
-	_ = collectCmd.Flags().MarkDeprecated("out", "use --output instead")
-	collectCmd.Flags().StringVarP(&collectOut, "out", "o", "./holon-input/context", "Deprecated: use --output")
 	collectCmd.Flags().BoolVar(&collectNoDiff, "no-diff", false, "Exclude PR diff")
 	collectCmd.Flags().BoolVar(&collectUnresolved, "unresolved-only", false, "Only collect unresolved review threads")
 	collectCmd.Flags().BoolVar(&collectNoChecks, "no-checks", false, "Exclude CI/check results")

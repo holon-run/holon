@@ -391,10 +391,10 @@ func fetchRemoteUpdates(ctx context.Context, dir string) error {
 }
 
 // resolveSolveOutDir resolves the output directory for solve command.
-// Precedence: CLI flag (--output/--out) > temp directory.
+// Precedence: CLI flag (--output) > temp directory.
 // Returns the output directory path, whether it's a default temp dir, and an error.
 func resolveSolveOutDir(_ string) (string, bool, error) {
-	// If user provided --output or --out flag, use it directly
+	// If user provided --output flag, use it directly
 	if solveOutDir != "" {
 		return solveOutDir, false, nil
 	}

@@ -927,7 +927,6 @@ func Test_buildAgentBundle(t *testing.T) {
 func TestRunner_resolveAgentBundle(t *testing.T) {
 	runner := NewRunner(&MockRuntime{})
 	t.Setenv("HOLON_AGENT", "")
-	t.Setenv("HOLON_AGENT_BUNDLE", "")
 
 	t.Run("Direct bundle path provided", func(t *testing.T) {
 		tempDir := t.TempDir()
@@ -961,30 +960,6 @@ func TestRunner_resolveAgentBundle(t *testing.T) {
 		}
 
 		t.Setenv("HOLON_AGENT", bundlePath)
-
-		cfg := RunnerConfig{
-			WorkspacePath: tempDir,
-		}
-
-		resolvedPath, err := runner.resolveAgentBundle(context.Background(), cfg, tempDir)
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-
-		if resolvedPath != bundlePath {
-			t.Errorf("Expected resolved path to be %q, got %q", bundlePath, resolvedPath)
-		}
-	})
-
-	t.Run("Agent bundle resolved from HOLON_AGENT_BUNDLE (legacy)", func(t *testing.T) {
-		tempDir := t.TempDir()
-		bundlePath := filepath.Join(tempDir, "legacy-bundle.tar.gz")
-		if err := os.WriteFile(bundlePath, []byte("bundle content"), 0644); err != nil {
-			t.Fatalf("Failed to create bundle: %v", err)
-		}
-
-		t.Setenv("HOLON_AGENT", "")
-		t.Setenv("HOLON_AGENT_BUNDLE", bundlePath)
 
 		cfg := RunnerConfig{
 			WorkspacePath: tempDir,
