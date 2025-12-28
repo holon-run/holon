@@ -25,11 +25,27 @@ func publishPatchToPR(ctx context.Context, pubWorkspace, inputDir, diffPath stri
 		Head struct {
 			Ref string `json:"ref"`
 		} `json:"head"`
+		HeadRef string `json:"head_ref"`
+		PR      struct {
+			HeadRef string `json:"head_ref"`
+			Head    struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
+		} `json:"pr"`
 	}
 	if err := json.Unmarshal(data, &prInfo); err != nil {
 		return fmt.Errorf("failed to parse pr.json: %w", err)
 	}
 	headRef := prInfo.Head.Ref
+	if headRef == "" {
+		headRef = prInfo.HeadRef
+	}
+	if headRef == "" {
+		headRef = prInfo.PR.Head.Ref
+	}
+	if headRef == "" {
+		headRef = prInfo.PR.HeadRef
+	}
 	if headRef == "" {
 		return fmt.Errorf("pr.json missing head.ref; cannot determine target branch for patch publish (looked in %s)", prJSON)
 	}
