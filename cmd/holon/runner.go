@@ -129,8 +129,12 @@ func (r *Runner) Run(ctx context.Context, cfg RunnerConfig) error {
 		}
 		// Copy context to input directory
 		inputContextDir := filepath.Join(inputDir, "context")
-		if err := copyDir(absContext, inputContextDir); err != nil {
-			return fmt.Errorf("failed to copy context to input dir: %w", err)
+		if samePath(absContext, inputContextDir) {
+			holonlog.Debug("context path already in input dir; skipping copy", "path", inputContextDir)
+		} else {
+			if err := copyDir(absContext, inputContextDir); err != nil {
+				return fmt.Errorf("failed to copy context to input dir: %w", err)
+			}
 		}
 		absContext = inputContextDir
 	}
