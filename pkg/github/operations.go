@@ -577,27 +577,67 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, state
 
 // GetCurrentUser retrieves the authenticated user's identity information
 // Returns ActorInfo with login and type (User or App)
+// Handles both PAT/user tokens (via /user endpoint) and GitHub App tokens (via /app endpoint)
 // Returns nil if the request fails (non-critical operation)
 func (c *Client) GetCurrentUser(ctx context.Context) (*ActorInfo, error) {
-	user, _, err := c.GitHubClient().Users.Get(ctx, "")
+	// First, try the /user endpoint (works for PAT and user tokens)
+	user, resp, err := c.GitHubClient().Users.Get(ctx, "")
+	if err == nil {
+		info := &ActorInfo{
+			Login:  user.GetLogin(),
+			Type:   user.GetType(),
+			Source: "token",
+		}
+
+		// For GitHub Apps, try to get the app slug
+		if user.GetType() == "Bot" && info.Login != "" {
+			// Bot usernames end with "[bot]", extract the app slug
+			// e.g., "github-actions[bot]" -> "github-actions"
+			if idx := strings.Index(info.Login, "[bot]"); idx > 0 {
+				info.AppSlug = info.Login[:idx]
+				info.Type = "App"
+			}
+		}
+
+		return info, nil
+	}
+
+	// Check if this is a 403 error indicating an App installation token
+	// GitHub App tokens get "403 Resource not accessible by integration" when calling /user
+	if resp != nil && resp.StatusCode == 403 {
+		// This is likely an App installation token, try the /app endpoint
+		return c.getCurrentApp(ctx)
+	}
+
+	// For other errors, return the error
+	return nil, fmt.Errorf("failed to get current user: %w", err)
+}
+
+// getCurrentApp retrieves the authenticated GitHub App's identity information
+// Called as a fallback when /user returns 403 for App installation tokens
+func (c *Client) getCurrentApp(ctx context.Context) (*ActorInfo, error) {
+	app, resp, err := c.GitHubClient().Apps.Get(ctx, "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get current user: %w", err)
+		// If /app also fails, return a minimal ActorInfo for App tokens
+		// This handles the case where we have an App installation token but can't call /app
+		if resp != nil && resp.StatusCode == 403 {
+			// Return minimal ActorInfo for App installation token
+			return &ActorInfo{
+				Type:   "App",
+				Source: "app",
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to get current app: %w", err)
 	}
 
 	info := &ActorInfo{
-		Login:  user.GetLogin(),
-		Type:   user.GetType(),
-		Source: "token",
+		Login:  app.GetSlug(),
+		Type:   "App",
+		Source: "app",
 	}
 
-	// For GitHub Apps, try to get the app slug
-	if user.GetType() == "Bot" && info.Login != "" {
-		// Bot usernames end with "[bot]", extract the app slug
-		// e.g., "github-actions[bot]" -> "github-actions"
-		if idx := strings.Index(info.Login, "[bot]"); idx > 0 {
-			info.AppSlug = info.Login[:idx]
-			info.Type = "App"
-		}
+	if app.GetName() != "" {
+		info.AppSlug = app.GetSlug()
 	}
 
 	return info, nil

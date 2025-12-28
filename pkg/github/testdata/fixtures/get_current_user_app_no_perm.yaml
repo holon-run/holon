@@ -1,0 +1,83 @@
+---
+version: 1
+interactions:
+    - request:
+        body: ""
+        form: {}
+        headers:
+            Accept:
+                - application/vnd.github.v3+json
+            User-Agent:
+                - go-github/v68.0.0
+            X-Github-Api-Version:
+                - "2022-11-28"
+        url: https://api.github.com/user
+        method: GET
+      response:
+        body: '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}'
+        headers:
+            Access-Control-Allow-Origin:
+                - '*'
+            Access-Control-Expose-Headers:
+                - ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset
+            Content-Security-Policy:
+                - default-src 'none'
+            Content-Type:
+                - application/json; charset=utf-8
+            Date:
+                - Sat, 28 Dec 2025 15:00:00 GMT
+            X-Github-Api-Version-Selected:
+                - "2022-11-28"
+            X-Github-Media-Type:
+                - github.v3; format=json
+            X-Ratelimit-Limit:
+                - "5000"
+            X-Ratelimit-Remaining:
+                - "4999"
+            X-Ratelimit-Reset:
+                - "1766815725"
+            X-Ratelimit-Resource:
+                - core
+        status: 403 Forbidden
+        code: 403
+        duration: 100ms
+    - request:
+        body: ""
+        form: {}
+        headers:
+            Accept:
+                - application/vnd.github.v3+json
+            User-Agent:
+                - go-github/v68.0.0
+            X-Github-Api-Version:
+                - "2022-11-28"
+        url: https://api.github.com/app
+        method: GET
+      response:
+        body: '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}'
+        headers:
+            Access-Control-Allow-Origin:
+                - '*'
+            Access-Control-Expose-Headers:
+                - ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset
+            Content-Security-Policy:
+                - default-src 'none'
+            Content-Type:
+                - application/json; charset=utf-8
+            Date:
+                - Sat, 28 Dec 2025 15:00:01 GMT
+            X-Github-Api-Version-Selected:
+                - "2022-11-28"
+            X-Github-Media-Type:
+                - github.v3; format=json
+            X-Ratelimit-Limit:
+                - "5000"
+            X-Ratelimit-Remaining:
+                - "4998"
+            X-Ratelimit-Reset:
+                - "1766815725"
+            X-Ratelimit-Resource:
+                - core
+        status: 403 Forbidden
+        code: 403
+        duration: 100ms
