@@ -53,17 +53,21 @@ func preparePublishWorkspace(ctx context.Context, outDir string) (*publishWorksp
 	}
 
 	// Prefer the live HOLON_WORKSPACE (agent runtime workspace) when available.
-	if liveWS := strings.TrimSpace(os.Getenv("HOLON_WORKSPACE")); liveWS != "" && workspace.IsGitRepo(liveWS) {
-		holonlog.Info("preparing publish workspace from HOLON_WORKSPACE via local clone", "source", liveWS, "ref", ref)
-		ws, err := newClonePublishWorkspace(ctx, liveWS, ref, true)
-		if err == nil {
-			return ws, nil
+	if liveWS := strings.TrimSpace(os.Getenv("HOLON_WORKSPACE")); liveWS != "" {
+		client := git.NewClient(liveWS)
+		if client.IsRepo(ctx) {
+			holonlog.Info("preparing publish workspace from HOLON_WORKSPACE via local clone", "source", liveWS, "ref", ref)
+			ws, err := newClonePublishWorkspace(ctx, liveWS, ref, true)
+			if err == nil {
+				return ws, nil
+			}
+			holonlog.Warn("failed to prepare publish workspace from HOLON_WORKSPACE, falling back to manifest source", "error", err)
 		}
-		holonlog.Warn("failed to prepare publish workspace from HOLON_WORKSPACE, falling back to manifest source", "error", err)
 	}
 
 	// If the source is a git repo, clone it locally for a clean publish base.
-	if workspace.IsGitRepo(sourcePath) {
+	client := git.NewClient(sourcePath)
+	if client.IsRepo(ctx) {
 		holonlog.Info("preparing publish workspace from manifest source via local clone", "source", sourcePath, "ref", ref)
 		ws, err := newClonePublishWorkspace(ctx, sourcePath, ref, true)
 		if err == nil {

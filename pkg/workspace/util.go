@@ -1,15 +1,12 @@
 package workspace
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-
-	"github.com/holon-run/holon/pkg/git"
 )
 
 // MkdirTempOutsideWorkspace creates a temporary directory outside of the given path
@@ -121,62 +118,4 @@ func copyDir(src string, dst string) error {
 		return fmt.Errorf("cp failed: %v, output: %s", err, string(out))
 	}
 	return nil
-}
-
-// IsGitRepo checks if the given directory is inside a git repository
-// Deprecated: Use git.Client.IsRepo() instead
-func IsGitRepo(dir string) bool {
-	client := git.NewClient(dir)
-	return client.IsRepo(context.Background())
-}
-
-// IsGitRepoContext checks if the given directory is inside a git repository with context support
-// Deprecated: Use git.Client.IsRepo() instead
-func IsGitRepoContext(ctx context.Context, dir string) bool {
-	client := git.NewClient(dir)
-	return client.IsRepo(ctx)
-}
-
-// getHeadSHA returns the current HEAD SHA of a git repository
-// Deprecated: Use git.Client.GetHeadSHA() instead
-func getHeadSHA(dir string) (string, error) {
-	client := git.NewClient(dir)
-	return client.GetHeadSHA(context.Background())
-}
-
-// getHeadSHAContext returns the current HEAD SHA of a git repository with context support
-// Deprecated: Use git.Client.GetHeadSHA() instead
-func getHeadSHAContext(ctx context.Context, dir string) (string, error) {
-	client := git.NewClient(dir)
-	return client.GetHeadSHA(ctx)
-}
-
-// isShallowClone checks if a git repository is a shallow clone
-// Deprecated: Use git.Client.IsShallowClone() instead
-func isShallowClone(dir string) bool {
-	client := git.NewClient(dir)
-	isShallow, _ := client.IsShallowClone(context.Background())
-	return isShallow
-}
-
-// isShallowCloneContext checks if a git repository is a shallow clone with context support
-// Deprecated: Use git.Client.IsShallowClone() instead
-func isShallowCloneContext(ctx context.Context, dir string) bool {
-	client := git.NewClient(dir)
-	isShallow, _ := client.IsShallowClone(ctx)
-	return isShallow
-}
-
-// checkoutRef checks out a git reference in a repository
-// Deprecated: Use git.Client.Checkout() instead
-func checkoutRef(dir, ref string) error {
-	client := git.NewClient(dir)
-	return client.Checkout(context.Background(), ref)
-}
-
-// checkoutRefContext checks out a git reference in a repository with context support
-// Deprecated: Use git.Client.Checkout() instead
-func checkoutRefContext(ctx context.Context, dir, ref string) error {
-	client := git.NewClient(dir)
-	return client.Checkout(ctx, ref)
 }

@@ -122,7 +122,8 @@ func (p *GitClonePreparer) buildCloneOptions(req PrepareRequest) git.CloneOption
 	case HistoryFull:
 		// Full history is the default for git clone
 		// When source is a local repo, git clone --local is more efficient
-		if IsGitRepo(req.Source) {
+		client := git.NewClient(req.Source)
+		if client.IsRepo(context.Background()) {
 			opts.Local = true
 		}
 	}

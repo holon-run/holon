@@ -497,7 +497,8 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 	strategyName := cfg.WorkspaceStrategy
 	if strategyName == "" {
 		// Auto-detect: use git-clone for git repos, snapshot otherwise
-		if workspace.IsGitRepo(cfg.Workspace) {
+		client := git.NewClient(cfg.Workspace)
+		if client.IsRepo(ctx) {
 			strategyName = "git-clone"
 		} else {
 			strategyName = "snapshot"
@@ -536,17 +537,19 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 	// IMPORTANT: Fix the origin URL when cloning from a local git repo
 	// When using git clone --local, origin points to the local path
 	// We need to preserve the correct GitHub origin from the source workspace
-	if strategyName == "git-clone" && workspace.IsGitRepo(cfg.Workspace) {
+	if strategyName == "git-clone" {
 		sourceClient := git.NewClient(cfg.Workspace)
-		// Try to get the origin URL from the source workspace
-		if originURL, err := sourceClient.ConfigGet(ctx, "remote.origin.url"); err == nil && originURL != "" {
-			// Check if the source origin is a GitHub URL (not a local path)
-			if strings.HasPrefix(originURL, "https://github.com/") || strings.HasPrefix(originURL, "git@github.com:") {
-				snapshotClient := git.NewClient(snapshotDir)
-				if err := snapshotClient.SetRemote(ctx, "origin", originURL); err == nil {
-					holonlog.Info("preserved origin from source", "url", originURL)
-				} else {
-					holonlog.Warn("failed to preserve origin from source", "url", originURL, "error", err)
+		if sourceClient.IsRepo(ctx) {
+			// Try to get the origin URL from the source workspace
+			if originURL, err := sourceClient.ConfigGet(ctx, "remote.origin.url"); err == nil && originURL != "" {
+				// Check if the source origin is a GitHub URL (not a local path)
+				if strings.HasPrefix(originURL, "https://github.com/") || strings.HasPrefix(originURL, "git@github.com:") {
+					snapshotClient := git.NewClient(snapshotDir)
+					if err := snapshotClient.SetRemote(ctx, "origin", originURL); err == nil {
+						holonlog.Info("preserved origin from source", "url", originURL)
+					} else {
+						holonlog.Warn("failed to preserve origin from source", "url", originURL, "error", err)
+					}
 				}
 			}
 		}

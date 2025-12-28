@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+
+	"github.com/holon-run/holon/pkg/git"
 )
 
 // ExistingPreparer uses an existing directory as the workspace without modification
@@ -59,23 +61,26 @@ func (p *ExistingPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	actualDest := req.Dest
 
 	// Get git information if available
-	if IsGitRepo(actualDest) {
+	client := git.NewClient(actualDest)
+	if client.IsRepo(ctx) {
 		// Get HEAD SHA
-		if headSHA, err := getHeadSHAContext(ctx, actualDest); err == nil {
+		if headSHA, err := client.GetHeadSHA(ctx); err == nil {
 			result.HeadSHA = headSHA
 		}
 
 		// Check if shallow
-		result.IsShallow = isShallowCloneContext(ctx, actualDest)
-		result.HasHistory = !result.IsShallow
+		if isShallow, err := client.IsShallowClone(ctx); err == nil {
+			result.IsShallow = isShallow
+			result.HasHistory = !isShallow
+		}
 
 		// Handle ref checkout if requested
 		if req.Ref != "" {
-			if err := checkoutRefContext(ctx, actualDest, req.Ref); err != nil {
+			if err := client.Checkout(ctx, req.Ref); err != nil {
 				result.Notes = append(result.Notes, fmt.Sprintf("Warning: failed to checkout ref '%s': %v", req.Ref, err))
 			} else {
 				// Update HEAD SHA after checkout
-				if headSHA, err := getHeadSHAContext(ctx, actualDest); err == nil {
+				if headSHA, err := client.GetHeadSHA(ctx); err == nil {
 					result.HeadSHA = headSHA
 				}
 			}

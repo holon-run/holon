@@ -77,11 +77,11 @@ func (p *SnapshotPreparer) Prepare(ctx context.Context, req PrepareRequest) (Pre
 	}
 
 	// If source was a git repo, try to get the HEAD SHA before we lose the git dir
-	sourceIsGit := IsGitRepo(req.Source)
+	sourceClient := git.NewClient(req.Source)
+	sourceIsGit := sourceClient.IsRepo(ctx)
 	headSHA := ""
 	if sourceIsGit {
 		// Try to get HEAD SHA from source
-		sourceClient := git.NewClient(req.Source)
 		if sha, err := sourceClient.GetHeadSHA(ctx); err == nil {
 			headSHA = sha
 			result.HeadSHA = sha

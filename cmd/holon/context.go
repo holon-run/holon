@@ -101,14 +101,7 @@ func printCollectionSummary(result collector.CollectResult, outputDir string) {
 }
 
 var (
-	contextOwner          string
-	contextRepo           string
-	contextPRNumber       int
-	contextToken          string
-	contextOutputDir      string
-	contextUnresolvedOnly bool
-	contextIncludeDiff    bool
-	contextFromEnv        bool
+	contextFromEnv bool
 
 	// New collect command flags
 	collectKind       string
@@ -289,114 +282,6 @@ Examples:
 	},
 }
 
-// collectPRCmd is the legacy command for backward compatibility
-var collectPRCmd = &cobra.Command{
-	Use:   "collect-pr",
-	Short: "Collect GitHub PR review context (legacy)",
-	Long: `Collect GitHub PR context including review threads and diff.
-
-This command fetches PR information, review comments, and optionally the diff,
-and writes them to a standardized directory structure for use by Holon agents.
-
-The output directory will contain:
-  - manifest.json: Collection metadata
-  - github/pr.json: Pull request metadata
-  - github/review_threads.json: Review comment threads
-  - github/pr.diff: Unified diff (optional)
-  - github/review.md: Human-readable summary
-  - pr-fix.schema.json: PR-fix output schema
-
-Examples:
-  # Collect context for a specific PR
-  holon context collect-pr --owner holon-run --repo holon --pr 42 --token $GITHUB_TOKEN --out ./context
-
-  # Collect context from GitHub Actions environment
-  holon context collect-pr --from-env --out ./holon-input/context
-
-  # Collect only unresolved review threads
-  holon context collect-pr --owner holon-run --repo holon --pr 42 --unresolved-only --out ./context
-
-Note: This is a legacy command. Use 'holon context collect' for new workflows.
-`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
-
-		// Use the new provider abstraction for consistent output (including manifest.json)
-		prov := registry.Get("github")
-		if prov == nil {
-			return fmt.Errorf("github provider not found in registry")
-		}
-
-		var ref string
-		var includeDiff, unresolvedOnly bool
-
-		if contextFromEnv {
-			// Use environment variables (GitHub Actions mode)
-			reqFromEnv, outDirFromEnv, err := collectFromEnv()
-			if err != nil {
-				return err
-			}
-
-			// Extract values from the request
-			ref = reqFromEnv.Ref
-			contextToken = reqFromEnv.Options.Token
-			includeDiff = reqFromEnv.Options.IncludeDiff
-			unresolvedOnly = reqFromEnv.Options.UnresolvedOnly
-
-			// Use output directory from env unless explicitly overridden
-			if contextOutputDir == "./holon-input/context" {
-				contextOutputDir = outDirFromEnv
-			}
-		} else {
-			// Validate required flags
-			if contextOwner == "" {
-				return fmt.Errorf("--owner is required")
-			}
-			if contextRepo == "" {
-				return fmt.Errorf("--repo is required")
-			}
-			if contextPRNumber == 0 {
-				return fmt.Errorf("--pr is required")
-			}
-			if contextToken == "" {
-				return fmt.Errorf("--token is required (or use --from-env)")
-			}
-
-			// Build reference from owner/repo/PR number
-			ref = fmt.Sprintf("%s/%s#%d", contextOwner, contextRepo, contextPRNumber)
-			includeDiff = contextIncludeDiff
-			unresolvedOnly = contextUnresolvedOnly
-		}
-
-		req := collector.CollectRequest{
-			Kind:      collector.KindPR,
-			Ref:       ref,
-			OutputDir: contextOutputDir,
-			Options: collector.Options{
-				Token:          contextToken,
-				IncludeDiff:    includeDiff,
-				UnresolvedOnly: unresolvedOnly,
-			},
-		}
-
-		// Validate request
-		if err := prov.Validate(req); err != nil {
-			return fmt.Errorf("validation failed: %w", err)
-		}
-
-		// Collect
-		result, err := prov.Collect(ctx, req)
-		if err != nil {
-			return fmt.Errorf("collection failed: %w", err)
-		}
-
-		// Print summary
-		printCollectionSummary(result, contextOutputDir)
-
-		return nil
-	},
-}
-
 func init() {
 	// Register built-in providers
 	githubProvider := github.NewProvider()
@@ -419,18 +304,4 @@ func init() {
 	collectCmd.Flags().BoolVar(&contextFromEnv, "from-env", false, "Read configuration from environment variables (GitHub Actions mode)")
 
 	contextCmd.AddCommand(collectCmd)
-
-	// collect-pr command flags (legacy, for backward compatibility)
-	collectPRCmd.Flags().StringVar(&contextOwner, "owner", "", "GitHub repository owner")
-	collectPRCmd.Flags().StringVar(&contextRepo, "repo", "", "GitHub repository name")
-	collectPRCmd.Flags().IntVar(&contextPRNumber, "pr", 0, "Pull request number")
-	collectPRCmd.Flags().StringVar(&contextToken, "token", "", "GitHub token")
-	collectPRCmd.Flags().StringVarP(&contextOutputDir, "output", "O", "./holon-input/context", "Output directory for context files")
-	_ = collectPRCmd.Flags().MarkDeprecated("out", "use --output instead")
-	collectPRCmd.Flags().StringVarP(&contextOutputDir, "out", "o", "./holon-input/context", "Deprecated: use --output")
-	collectPRCmd.Flags().BoolVar(&contextUnresolvedOnly, "unresolved-only", false, "Only collect unresolved review threads")
-	collectPRCmd.Flags().BoolVar(&contextIncludeDiff, "include-diff", true, "Include PR diff")
-	collectPRCmd.Flags().BoolVar(&contextFromEnv, "from-env", false, "Read configuration from environment variables (GitHub Actions mode)")
-
-	contextCmd.AddCommand(collectPRCmd)
 }
