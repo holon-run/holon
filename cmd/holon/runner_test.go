@@ -1175,15 +1175,23 @@ func TestRunner_ContextHandling_SelfCopy(t *testing.T) {
 	tempDir, workspaceDir, outDir := setupTestEnv(t)
 	bundlePath := createDummyBundle(t, tempDir)
 
-	// Create a context directory with test files
-	contextDir := filepath.Join(tempDir, "context")
-	if err := os.MkdirAll(contextDir, 0755); err != nil {
-		t.Fatalf("Failed to create context dir: %v", err)
+	// Set InputPath to point to a directory where context will be a subdirectory
+	// Simulate the scenario where context path might be confused with input/context
+	inputDir := filepath.Join(tempDir, "holon-input")
+	if err := os.MkdirAll(inputDir, 0755); err != nil {
+		t.Fatalf("Failed to create input dir: %v", err)
 	}
 
-	// Create test files with known content
-	testFile1 := filepath.Join(contextDir, "test1.txt")
-	testFile2 := filepath.Join(contextDir, "test2.txt")
+	// Create context directory with test files directly in input/context
+	// This is the directory that ContextPath will point to
+	inputContextDir := filepath.Join(inputDir, "context")
+	if err := os.MkdirAll(inputContextDir, 0755); err != nil {
+		t.Fatalf("Failed to create input/context dir: %v", err)
+	}
+
+	// Create test files with known content directly in inputContextDir
+	testFile1 := filepath.Join(inputContextDir, "test1.txt")
+	testFile2 := filepath.Join(inputContextDir, "test2.txt")
 	content1 := []byte("This is test file 1 with some content")
 	content2 := []byte("This is test file 2 with different content")
 
@@ -1195,29 +1203,16 @@ func TestRunner_ContextHandling_SelfCopy(t *testing.T) {
 	}
 
 	// Record file sizes before running
-	info1Before, _ := os.Stat(testFile1)
-	info2Before, _ := os.Stat(testFile2)
+	info1Before, err := os.Stat(testFile1)
+	if err != nil {
+		t.Fatalf("Failed to stat test file 1 before run: %v", err)
+	}
+	info2Before, err := os.Stat(testFile2)
+	if err != nil {
+		t.Fatalf("Failed to stat test file 2 before run: %v", err)
+	}
 	size1Before := info1Before.Size()
 	size2Before := info2Before.Size()
-
-	// Set InputPath to point to a directory where context will be a subdirectory
-	// Simulate the scenario where context path might be confused with input/context
-	inputDir := filepath.Join(tempDir, "holon-input")
-	if err := os.MkdirAll(inputDir, 0755); err != nil {
-		t.Fatalf("Failed to create input dir: %v", err)
-	}
-
-	// Copy context to input/context (simulating pre-existing context)
-	inputContextDir := filepath.Join(inputDir, "context")
-	if err := os.MkdirAll(inputContextDir, 0755); err != nil {
-		t.Fatalf("Failed to create input/context dir: %v", err)
-	}
-	if err := copyFile(testFile1, filepath.Join(inputContextDir, "test1.txt")); err != nil {
-		t.Fatalf("Failed to copy test1.txt: %v", err)
-	}
-	if err := copyFile(testFile2, filepath.Join(inputContextDir, "test2.txt")); err != nil {
-		t.Fatalf("Failed to copy test2.txt: %v", err)
-	}
 
 	cfg := RunnerConfig{
 		GoalStr:       "Test goal with context",
@@ -1230,12 +1225,12 @@ func TestRunner_ContextHandling_SelfCopy(t *testing.T) {
 		AgentBundle:   bundlePath,
 	}
 
-	err := runner.Run(context.Background(), cfg)
+	err = runner.Run(context.Background(), cfg)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
-	// Verify that original context files were not truncated
+	// Verify that files in inputContextDir were not truncated
 	info1After, err := os.Stat(testFile1)
 	if err != nil {
 		t.Errorf("Failed to stat test1.txt after run: %v", err)
