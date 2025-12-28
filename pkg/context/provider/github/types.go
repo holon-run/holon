@@ -38,6 +38,7 @@ type ReviewThread struct {
 	InReplyToID int64     `json:"in_reply_to_id,omitempty"`
 	Position    int       `json:"position,omitempty"`
 	Replies     []Reply   `json:"replies,omitempty"`
+	IsTrigger   bool      `json:"is_trigger,omitempty"` // true if this comment triggered holon
 }
 
 // Reply represents a reply to a review comment
@@ -49,6 +50,7 @@ type Reply struct {
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	InReplyToID int64     `json:"in_reply_to_id"`
+	IsTrigger   bool      `json:"is_trigger,omitempty"` // true if this reply triggered holon
 }
 
 // IssueInfo contains basic issue information
@@ -74,6 +76,7 @@ type IssueComment struct {
 	Author    string    `json:"author"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	IsTrigger bool      `json:"is_trigger,omitempty"` // true if this comment triggered holon
 }
 
 // CheckRun represents a GitHub check run

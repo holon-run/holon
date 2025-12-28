@@ -169,43 +169,45 @@ jobs:
 
           SHOULD_RUN='false'
           REASON='Not eligible'
+          GOAL_HINT=''
 
           # Avoid bot loops
           if [ "$ACTOR" = 'holonbot[bot]' ]; then
             REASON='Actor is holonbot[bot]'
             echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
             echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+            echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if [ "$EVENT_NAME" = 'issue_comment' ] && [ "$EVENT_ACTION" = 'created' ]; then
             FIRST_LINE="$(printf '%s\n' "$COMMENT_BODY" | head -n1 | xargs || true)"
 
-            if [ "$IS_PR" = 'true' ]; then
-              if [ "$FIRST_LINE" = '@holonbot fix' ] || [ "$FIRST_LINE" = '@holonbot solve' ]; then
-                :
-              else
-                REASON="Comment command not recognized for PR: '$FIRST_LINE'"
-                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
+            # Check if the comment starts with "@holonbot " (with trailing space for free-form triggers)
+            # This pattern matches "@holonbot " followed by any text, including "fix" and "solve"
+            # The xargs command trims trailing whitespace, so multiple spaces are normalized to one
+            if [[ "$FIRST_LINE" == "@holonbot "* ]]; then
+              # Extract trailing text after "@holonbot " (with space)
+              # If comment is exactly "@holonbot ", GOAL_HINT will be empty (acceptable)
+              GOAL_HINT="${FIRST_LINE#@holonbot }"
+              echo "✅ Trigger path: free-form command"
+              echo "   Goal hint: $GOAL_HINT"
+            else
+              REASON="Comment command not recognized: '$FIRST_LINE'"
+              echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+              echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+              echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
 
+            if [ "$IS_PR" = 'true' ]; then
               # Disallow fork PRs
               IS_CROSS_REPO="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo 'true')"
               if [ "$IS_CROSS_REPO" = 'true' ]; then
                 REASON='PR is from a fork/cross-repo head; not supported'
                 echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
                 echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-            else
-              if [ "$FIRST_LINE" = '@holonbot fix' ] || [ "$FIRST_LINE" = '@holonbot solve' ]; then
-                :
-              else
-                REASON="Comment command not recognized for Issue: '$FIRST_LINE'"
-                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
             fi
@@ -216,6 +218,7 @@ jobs:
               REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
               echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
               echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+              echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
@@ -245,6 +248,7 @@ jobs:
 
           echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
           echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+          echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
           EVENT_NAME: ${{ github.event_name }}
@@ -381,6 +385,14 @@ jobs:
           IS_PR='${{ steps.ctx.outputs.is_pr }}'
           SHOULD_RUN='${{ steps.gate.outputs.should_run }}'
           REASON='${{ steps.gate.outputs.reason }}'
+          GOAL_HINT='${{ steps.gate.outputs.goal_hint }}'
+
+          # Get comment_id from input (if available)
+          # Default to 0 if empty to ensure valid JSON for --argjson
+          COMMENT_ID='${{ inputs.comment_id }}'
+          if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = '' ]; then
+            COMMENT_ID='0'
+          fi
 
           MODE=''
           if [ "$SHOULD_RUN" = 'true' ]; then
@@ -397,11 +409,14 @@ jobs:
             --arg should_run "$SHOULD_RUN" \
             --arg reason "$REASON" \
             --arg mode "$MODE" \
+            --arg goal_hint "$GOAL_HINT" \
+            --argjson comment_id "$COMMENT_ID" \
             '{
               event: {name: $event_name, action: $event_action, actor: $actor},
-              target: {repository: $repository, issue_number: $issue_number, is_pr: $is_pr},
-              gate: {should_run: $should_run, reason: $reason},
-              mode: $mode
+              target: {repository: $repository, issue_number: ($issue_number | tonumber), is_pr: ($is_pr == "true")},
+              gate: {should_run: ($should_run == "true"), reason: $reason},
+              mode: $mode,
+              trigger: {goal_hint: $goal_hint, comment_id: $comment_id}
             }' > "$INPUT_DIR/workflow.json"
 
       - name: Run Holon
