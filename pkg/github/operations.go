@@ -631,13 +631,10 @@ func (c *Client) getCurrentApp(ctx context.Context) (*ActorInfo, error) {
 	}
 
 	info := &ActorInfo{
-		Login:  app.GetSlug(),
-		Type:   "App",
-		Source: "app",
-	}
-
-	if app.GetName() != "" {
-		info.AppSlug = app.GetSlug()
+		Login:   app.GetSlug(),
+		Type:    "App",
+		Source:  "app",
+		AppSlug: app.GetSlug(),
 	}
 
 	return info, nil
