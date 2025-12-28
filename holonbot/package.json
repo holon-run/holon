@@ -7,8 +7,7 @@
     "start": "probot run ./lib/bot-handler.js",
     "dev": "probot run ./lib/bot-handler.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "deploy": "vercel --prod",
-    "publisher": "node publisher-cli.js"
+    "deploy": "vercel --prod"
   },
   "keywords": [
     "github",

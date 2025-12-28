@@ -164,7 +164,7 @@ export default async function botHandler(app) {
       // The actual processing can be done in the workflow itself
       // or we can add extraction logic here
 
-      app.log.info('Holon output artifact found - publisher workflow should process it');
+      app.log.info('Holon output artifact found - processed by holon solve workflow');
 
     } catch (error) {
       app.log.error('Error processing workflow_run event:', error);
