@@ -827,3 +827,72 @@ func TestGetCurrentUser(t *testing.T) {
 		t.Errorf("Type should be 'User' or 'App', got %q", actorInfo.Type)
 	}
 }
+
+// TestGetCurrentUserAppToken tests fetching the current app's identity when using an App installation token
+func TestGetCurrentUserAppToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	client, rec := setupTestClient(t, "get_current_user_app")
+	defer rec.Stop()
+
+	ctx := context.Background()
+
+	actorInfo, err := client.GetCurrentUser(ctx)
+	if err != nil {
+		t.Fatalf("GetCurrentUser() error = %v", err)
+	}
+
+	// Verify basic fields
+	if actorInfo.Login != "my-github-app" {
+		t.Errorf("Login = %q, want %q", actorInfo.Login, "my-github-app")
+	}
+
+	if actorInfo.Type != "App" {
+		t.Errorf("Type = %q, want %q", actorInfo.Type, "App")
+	}
+
+	if actorInfo.Source != "app" {
+		t.Errorf("Source = %q, want %q", actorInfo.Source, "app")
+	}
+
+	if actorInfo.AppSlug != "my-github-app" {
+		t.Errorf("AppSlug = %q, want %q", actorInfo.AppSlug, "my-github-app")
+	}
+}
+
+// TestGetCurrentUserAppTokenNoPerm tests fetching identity when using an App installation token without /app permission
+func TestGetCurrentUserAppTokenNoPerm(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	client, rec := setupTestClient(t, "get_current_user_app_no_perm")
+	defer rec.Stop()
+
+	ctx := context.Background()
+
+	actorInfo, err := client.GetCurrentUser(ctx)
+	if err != nil {
+		t.Fatalf("GetCurrentUser() error = %v", err)
+	}
+
+	// Verify minimal fields - should still return ActorInfo even without /app permission
+	if actorInfo.Type != "App" {
+		t.Errorf("Type = %q, want %q", actorInfo.Type, "App")
+	}
+
+	if actorInfo.Source != "app" {
+		t.Errorf("Source = %q, want %q", actorInfo.Source, "app")
+	}
+
+	// Login and AppSlug should be empty when we can't access /app
+	if actorInfo.Login != "" {
+		t.Errorf("Login = %q, want empty string", actorInfo.Login)
+	}
+
+	if actorInfo.AppSlug != "" {
+		t.Errorf("AppSlug = %q, want empty string", actorInfo.AppSlug)
+	}
+}
