@@ -263,11 +263,8 @@ jobs:
           COMMENT_ID='${{ inputs.comment_id }}'
           REPO='${{ github.repository }}'
 
-          # Add eyes reaction idempotently (skip if already present)
-          if ! gh api --silent -f content='eyes' "repos/$REPO/issues/comments/$COMMENT_ID/reactions" 2>/dev/null; then
-            # Reaction already exists or API error - silently continue
-            :
-          fi
+          # Add eyes reaction idempotently (ignore errors if already present)
+          gh api --silent -f content='eyes' "repos/$REPO/issues/comments/$COMMENT_ID/reactions" 2>/dev/null || true
         env:
           GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
 
@@ -466,14 +463,13 @@ jobs:
 
           COMMENT_ID='${{ inputs.comment_id }}'
           ISSUE_NUMBER='${{ steps.ctx.outputs.issue_number }}'
-          IS_PR='${{ steps.ctx.outputs.is_pr }}'
           RESULT='${{ steps.result.outputs.result }}'
           REPO='${{ github.repository }}'
           RUN_URL='${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
 
           # Determine reaction and message based on result
           if [ "$RESULT" = 'success' ]; then
-            REACTION_CONTENT='rocket'
+            REACTION_CONTENT='white_check_mark'
             STATUS_TEXT="Holon completed successfully."
           else
             REACTION_CONTENT='x'
