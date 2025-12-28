@@ -58,7 +58,7 @@ Workspace Preparation:
   The workspace is prepared automatically based on the context:
   - If --workspace PATH is provided: uses the existing directory (no cloning)
   - If current directory matches the ref repo: creates a clean temp workspace via git-clone (using --local)
-  - Otherwise: clones from the remote repository into a temp directory (shallow by default)
+  - Otherwise: clones from the remote repository into a temp directory (full history by default)
 
   Temporary workspaces are automatically cleaned up after execution.
 
@@ -273,7 +273,7 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 		// Determine history mode
 		historyMode := solveWorkspaceHistory
 		if historyMode == "" {
-			historyMode = "shallow" // Default to shallow for remote clones
+			historyMode = "full" // Default to full for remote clones so publish has history
 		}
 
 		// Prepare using git-clone strategy

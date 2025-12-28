@@ -131,9 +131,10 @@ func newClonePublishWorkspace(ctx context.Context, sourceValue, ref string, useL
 	}
 
 	// If we cloned locally, restore a usable origin remote so push/pr works.
+	var originURL string
 	if useLocal {
 		sourceClient := git.NewClient(sourceValue)
-		originURL, _ := sourceClient.ConfigGet(ctx, "remote.origin.url")
+		originURL, _ = sourceClient.ConfigGet(ctx, "remote.origin.url")
 		if originURL == "" {
 			// Best effort: derive from manifest source path if it looks like owner/repo.
 			if derived := deriveGitHubURL(sourceValue); derived != "" {
@@ -145,6 +146,21 @@ func newClonePublishWorkspace(ctx context.Context, sourceValue, ref string, useL
 			if err := targetClient.SetRemote(ctx, "origin", originURL); err != nil {
 				holonlog.Warn("failed to set origin on publish workspace", "path", tempDir, "origin", originURL, "error", err)
 			}
+		}
+	}
+
+	// Ensure publish workspace is not shallow; unshallow if possible.
+	targetClient := git.NewClient(tempDir)
+	if shallow, _ := targetClient.IsShallowClone(ctx); shallow {
+		if originURL == "" {
+			return nil, fmt.Errorf("publish workspace is shallow and origin is unknown; cannot fetch full history")
+		}
+		holonlog.Info("publish workspace is shallow, attempting to fetch full history", "origin", originURL)
+		if _, err := targetClient.ExecCommand(ctx, "fetch", "--unshallow"); err != nil {
+			return nil, fmt.Errorf("publish workspace is shallow; failed to unshallow from origin %s: %w", originURL, err)
+		}
+		if ref != "" && ref != "HEAD" {
+			_, _ = targetClient.ExecCommand(ctx, "fetch", "origin", ref)
 		}
 	}
 
