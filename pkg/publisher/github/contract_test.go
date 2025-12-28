@@ -28,6 +28,7 @@ type mockGitHubServer struct {
 	listIssueCommentsCalls   int
 	nextCommentID            int64
 	nextIssueCommentID       int64
+	failCreateComments       bool // When true, return error for comment creation
 }
 
 // newMockGitHubServer creates a new mock GitHub server with expected handlers
@@ -106,6 +107,20 @@ func (m *mockGitHubServer) handleListComments(w http.ResponseWriter, r *http.Req
 // handleCreateComment handles POST /repos/:owner/:repo/pulls/:number/comments
 func (m *mockGitHubServer) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	m.createCommentCalls++
+
+	// Simulate API error if enabled
+	if m.failCreateComments {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		errorResp := map[string]interface{}{
+			"message": "Validation Failed",
+			"errors":  []string{"Resource not accessible"},
+		}
+		if err := json.NewEncoder(w).Encode(errorResp); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
 
 	var comment github.PullRequestComment
 	if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
@@ -1311,4 +1326,104 @@ func TestVCRErrorHandling(t *testing.T) {
 	if err != nil && !strings.Contains(err.Error(), "404") && !strings.Contains(strings.ToLower(err.Error()), "not found") {
 		t.Logf("Note: error message format may vary: %v", err)
 	}
+}
+
+// TestContractReviewRepliesFailure tests error handling when review replies fail
+func TestContractReviewRepliesFailure(t *testing.T) {
+	t.Run("log and track individual reply failures", func(t *testing.T) {
+		mockServer := newMockGitHubServer(t)
+		mockServer.failCreateComments = true // Simulate API errors
+		defer mockServer.close()
+
+		// Create temporary directory for artifacts
+		tempDir := t.TempDir()
+		prFixContent := `{
+			"review_replies": [
+				{
+					"comment_id": 1234567890,
+					"status": "fixed",
+					"message": "Fixed first issue"
+				},
+				{
+					"comment_id": 1234567891,
+					"status": "wontfix",
+					"message": "Won't fix second issue"
+				},
+				{
+					"comment_id": 1234567892,
+					"status": "fixed",
+					"message": "Fixed third issue"
+				}
+			]
+		}`
+		prFixPath := filepath.Join(tempDir, "pr-fix.json")
+		if err := os.WriteFile(prFixPath, []byte(prFixContent), 0644); err != nil {
+			t.Fatalf("Failed to write pr-fix.json: %v", err)
+		}
+
+		p := NewGitHubPublisher()
+		p.client = newTestGitHubClient(t, mockServer)
+
+		req := publisher.PublishRequest{
+			Target: "testowner/testrepo/pr/123",
+			Artifacts: map[string]string{
+				"pr-fix.json": prFixPath,
+			},
+		}
+
+		t.Setenv(BotLoginEnv, "holonbot[bot]")
+
+		result, err := p.Publish(req)
+		if err != nil {
+			t.Fatalf("Publish() error = %v", err)
+		}
+
+		// Contract: Overall result should indicate failure
+		if result.Success {
+			t.Errorf("Expected success=false when all replies fail, got true")
+		}
+
+		// Contract: Individual errors should be captured in result.Errors
+		if len(result.Errors) != 3 {
+			t.Errorf("Expected 3 errors (one per failed reply), got %d. Errors: %+v", len(result.Errors), result.Errors)
+		}
+
+		// Contract: Each error should have meaningful details
+		for i, e := range result.Errors {
+			if e.Message == "" {
+				t.Errorf("Error %d: Message is empty", i)
+			}
+			if e.Action != "publish_review_replies" {
+				t.Errorf("Error %d: Expected action='publish_review_replies', got '%s'", i, e.Action)
+			}
+			if e.Details == nil {
+				t.Errorf("Error %d: Details map is nil", i)
+			} else if e.Details["comment_id"] == "" {
+				t.Errorf("Error %d: comment_id not in details", i)
+			}
+		}
+
+		// Contract: Summary action should show correct counts
+		foundSummary := false
+		for _, action := range result.Actions {
+			if action.Type == "review_replies_summary" {
+				foundSummary = true
+				if !strings.Contains(action.Description, "0 posted") {
+					t.Errorf("Expected summary to show '0 posted', got: %s", action.Description)
+				}
+				if !strings.Contains(action.Description, "3 failed") {
+					t.Errorf("Expected summary to show '3 failed', got: %s", action.Description)
+				}
+				break
+			}
+		}
+		if !foundSummary {
+			t.Errorf("Expected review_replies_summary action, got: %+v", result.Actions)
+		}
+
+		// Contract: Should have attempted to create all 3 comments (all failed)
+		if mockServer.createCommentCalls != 3 {
+			t.Errorf("Expected 3 create comment calls (all failed), got %d", mockServer.createCommentCalls)
+		}
+	})
 }

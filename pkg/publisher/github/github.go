@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	hghelper "github.com/holon-run/holon/pkg/github"
+	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/publisher"
 )
 
@@ -118,6 +119,20 @@ func (g *GitHubPublisher) Publish(req publisher.PublishRequest) (publisher.Publi
 									"comment_id": strconv.FormatInt(detail.CommentID, 10),
 								},
 							})
+						}
+					}
+
+					// Add individual errors to result for failed replies
+					for _, detail := range replyResult.Details {
+						if detail.Status == "failed" {
+							result.Errors = append(result.Errors, publisher.PublishError{
+								Message: detail.Reason,
+								Action:  "publish_review_replies",
+								Details: map[string]string{
+									"comment_id": strconv.FormatInt(detail.CommentID, 10),
+								},
+							})
+							result.Success = false
 						}
 					}
 
@@ -244,11 +259,13 @@ func (g *GitHubPublisher) publishReviewReplies(ctx context.Context, client *hghe
 		hasReplied, err := hasBotRepliedToComment(ctx, client, prRef, reply.CommentID, botLogin)
 		if err != nil {
 			result.Failed++
+			reason := fmt.Sprintf("Failed to check existing replies: %v", err)
 			result.Details = append(result.Details, ReplyResult{
 				CommentID: reply.CommentID,
 				Status:    "failed",
-				Reason:    fmt.Sprintf("Failed to check existing replies: %v", err),
+				Reason:    reason,
 			})
+			holonlog.Error("Failed to check existing replies for review comment", "comment_id", reply.CommentID, "error", err)
 			continue
 		}
 
@@ -267,11 +284,13 @@ func (g *GitHubPublisher) publishReviewReplies(ctx context.Context, client *hghe
 		_, err = client.CreatePullRequestComment(ctx, prRef.Owner, prRef.Repo, prRef.PRNumber, message, reply.CommentID)
 		if err != nil {
 			result.Failed++
+			reason := fmt.Sprintf("API error: %v", err)
 			result.Details = append(result.Details, ReplyResult{
 				CommentID: reply.CommentID,
 				Status:    "failed",
-				Reason:    fmt.Sprintf("API error: %v", err),
+				Reason:    reason,
 			})
+			holonlog.Error("Failed to post review reply", "comment_id", reply.CommentID, "error", err)
 			continue
 		}
 
