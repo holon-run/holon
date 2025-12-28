@@ -306,8 +306,7 @@ RUN set -e; \
         curl -fsSL https://rpm.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
         dnf install -y nodejs; \
         if ! command -v gh >/dev/null 2>&1; then \
-            dnf install -y 'dnf-command(config-manager)'; \
-            dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo; \
+            curl -o /etc/yum.repos.d/gh-cli.repo https://cli.github.com/packages/rpm/gh-cli.repo; \
             dnf install -y gh || true; \
         fi; \
     elif command -v yum >/dev/null 2>&1; then \
