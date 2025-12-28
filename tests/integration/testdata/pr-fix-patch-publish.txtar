@@ -28,25 +28,16 @@ exec git -C work config user.name "Test User"
 exec git -C work remote add origin ../remote
 
 # Create initial file and commit to main branch
-echo 'package handler
-
-func ProcessData(data string) {
-    result := transform(data)
-    send(result)
-}' > work/pkg/process.go
 exec git -C work add pkg/process.go
 exec git -C work commit -m 'initial commit'
+# Rename master to main for consistency
+exec git -C work branch -M main
 exec git -C work push -u origin main
 
 # Create the PR head branch
 exec git -C work checkout -b feature/add-error-handling
-echo 'package handler
-
-func ProcessData(data string) {
-    // TODO: add error handling
-    result := transform(data)
-    send(result)
-}' > work/pkg/process.go
+# Modify the file to add TODO comment for PR
+exec sh -c 'printf "package handler\n\nfunc ProcessData(data string) {\n    // TODO: add error handling\n    result := transform(data)\n    send(result)\n}\n" > work/pkg/process.go'
 exec git -C work add pkg/process.go
 exec git -C work commit -m 'add error handling placeholder'
 exec git -C work push -u origin feature/add-error-handling
@@ -58,114 +49,6 @@ exec git -C remote branch
 mkdir input
 mkdir input/context
 mkdir input/context/github
-
-# Create pr.json fixture with head_ref information
-cat > input/context/github/pr.json << 'EOF'
-{
-  "number": 456,
-  "title": "Add error handling",
-  "state": "open",
-  "author": "prauthor",
-  "body": "This PR adds error handling.",
-  "url": "https://github.com/test/repo/pull/456",
-  "base_ref": "main",
-  "head": {
-    "ref": "feature/add-error-handling"
-  },
-  "base_sha": "abc123",
-  "head_sha": "def456",
-  "created_at": "2024-01-01T00:00:00Z",
-  "updated_at": "2024-01-01T00:00:00Z"
-}
-EOF
-
-# Create review_threads.json fixture
-cat > input/context/github/review_threads.json << 'EOF'
-[
-  {
-    "id": 789,
-    "path": "pkg/process.go",
-    "line": 4,
-    "start_line": 4,
-    "side": "RIGHT",
-    "author": "reviewer1",
-    "body": "Please add actual error handling instead of TODO",
-    "diff_hunk": "@@ -1,6 +1,10 @@\n func ProcessData(data string) {\n+    // TODO: add error handling\n     result := transform(data)\n     send(result)\n }",
-    "resolved": false,
-    "url": "https://github.com/test/repo/pull/456/comments/789",
-    "created_at": "2024-01-01T01:00:00Z",
-    "replies": []
-  }
-]
-EOF
-
-# Create the PR diff fixture
-cat > input/context/github/pr.diff << 'EOF'
-diff --git a/pkg/process.go b/pkg/process.go
-index abc123..def456 100644
---- a/pkg/process.go
-+++ b/pkg/process.go
-@@ -1,6 +1,10 @@
- package handler
-
- func ProcessData(data string) {
--    // TODO: add error handling
-+    result, err := transform(data)
-+    if err != nil {
-+        return err
-+    }
-     send(result)
- }
-EOF
-
-# Create schema fixture
-cat > input/context/pr-fix.schema.json << 'EOF'
-{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "PR Fix Output",
-  "type": "object",
-  "properties": {
-    "review_replies": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "comment_id": { "type": "number" },
-          "status": { "type": "string" },
-          "message": { "type": "string" },
-          "action_taken": { "type": "string" }
-        },
-        "required": ["comment_id", "status"]
-      }
-    }
-  }
-}
-EOF
-
-# Create mock fixture that outputs diff.patch and pr-fix.json
-cat > input/context/fixture.json << 'EOF'
-{
-  "version": "v1",
-  "description": "Fix PR review comments about error handling",
-  "operations": [
-    {
-      "type": "write_file",
-      "path": "pkg/process.go",
-      "content": "package handler\n\nimport (\n    \"errors\"\n)\n\nfunc ProcessData(data string) error {\n    result, err := transform(data)\n    if err != nil {\n        return err\n    }\n    return send(result)\n}\n\nfunc transform(data string) (string, error) {\n    if data == \"\" {\n        return \"\", errors.New(\"empty input\")\n    }\n    return data + \" processed\", nil\n}\n\nfunc send(result string) error {\n    if result == \"\" {\n        return errors.New(\"nothing to send\")\n    }\n    return nil\n}\n"
-    },
-    {
-      "type": "write_output",
-      "path": "pr-fix.json",
-      "content": "{\"review_replies\":[{\"comment_id\":789,\"status\":\"fixed\",\"message\":\"Added error handling with proper validation\",\"action_taken\":\"Implemented error handling for transform and send functions\"}]}"
-    }
-  ],
-  "outcome": {
-    "success": true,
-    "result_text": "Fixed error handling in PR",
-    "summary": "# Summary\n\nFixed error handling as requested in review comments."
-  }
-}
-EOF
 
 # Set environment for mock driver and pr-fix mode
 env HOLON_CLAUDE_DRIVER=mock
@@ -216,18 +99,128 @@ env GITHUB_TOKEN=test_token_123
 
 # Test the git publisher with apply/commit/push
 # This should: 1) checkout the branch, 2) apply the patch, 3) commit, 4) push
-stdout holon publish --provider git --target origin/feature/add-error-handling --output out
+# NOTE: The manifest.json consumed by `holon publish` is generated earlier in this
+# test (via fixtures / holon run) and must include the git publisher metadata
+# fields (branch, commit, and push configuration) as expected by
+# pkg/publisher/git/publisher.go:260-283.
+exec holon publish --provider git --target origin/feature/add-error-handling --output out
 
 # Verify the changes were applied to the workspace
 exec grep -q 'errors.New' publish-workspace/pkg/process.go
 exec grep -q 'func ProcessData(data string) error' publish-workspace/pkg/process.go
 
 # Verify a commit was created with the changes
-stdout git -C publish-workspace log --oneline -1
-stdout git -C publish-workspace show --stat HEAD
+exec git -C publish-workspace log --oneline -1
+exec git -C publish-workspace show --stat HEAD
 
 # Verify the commit exists in the remote bare repository
 exec git -C remote log feature/add-error-handling --oneline
 
 # Verify the branch was updated in the remote
 exec git -C remote branch
+
+-- work/pkg/process.go --
+package handler
+
+func ProcessData(data string) {
+    result := transform(data)
+    send(result)
+}
+
+-- input/context/github/pr.json --
+{
+  "number": 456,
+  "title": "Add error handling",
+  "state": "open",
+  "author": "prauthor",
+  "body": "This PR adds error handling.",
+  "url": "https://github.com/test/repo/pull/456",
+  "base_ref": "main",
+  "head": {
+    "ref": "feature/add-error-handling"
+  },
+  "base_sha": "abc123",
+  "head_sha": "def456",
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
+}
+
+-- input/context/github/review_threads.json --
+[
+  {
+    "id": 789,
+    "path": "pkg/process.go",
+    "line": 4,
+    "start_line": 4,
+    "side": "RIGHT",
+    "author": "reviewer1",
+    "body": "Please add actual error handling instead of TODO",
+    "diff_hunk": "@@ -1,6 +1,10 @@\n func ProcessData(data string) {\n+    // TODO: add error handling\n     result := transform(data)\n     send(result)\n }",
+    "resolved": false,
+    "url": "https://github.com/test/repo/pull/456/comments/789",
+    "created_at": "2024-01-01T01:00:00Z",
+    "replies": []
+  }
+]
+
+-- input/context/github/pr.diff --
+diff --git a/pkg/process.go b/pkg/process.go
+index abc123..def456 100644
+--- a/pkg/process.go
++++ b/pkg/process.go
+@@ -1,6 +1,10 @@
+ package handler
+
+ func ProcessData(data string) {
+-    // TODO: add error handling
++    result, err := transform(data)
++    if err != nil {
++        return err
++    }
+     send(result)
+ }
+
+-- input/context/pr-fix.schema.json --
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PR Fix Output",
+  "type": "object",
+  "properties": {
+    "review_replies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "comment_id": { "type": "number" },
+          "status": { "type": "string" },
+          "message": { "type": "string" },
+          "action_taken": { "type": "string" }
+        },
+        "required": ["comment_id", "status"]
+      }
+    }
+  }
+}
+
+-- input/context/fixture.json --
+{
+  "version": "v1",
+  "description": "Fix PR review comments about error handling",
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "pkg/process.go",
+      "content": "package handler\n\nimport (\n    \"errors\"\n)\n\nfunc ProcessData(data string) error {\n    result, err := transform(data)\n    if err != nil {\n        return err\n    }\n    return send(result)\n}\n\nfunc transform(data string) (string, error) {\n    if data == \"\" {\n        return \"\", errors.New(\"empty input\")\n    }\n    return data + \" processed\", nil\n}\n\nfunc send(result string) error {\n    if result == \"\" {\n        return errors.New(\"nothing to send\")\n    }\n    return nil\n}\n"
+    },
+    {
+      "type": "write_output",
+      "path": "pr-fix.json",
+      "content": "{\"review_replies\":[{\"comment_id\":789,\"status\":\"fixed\",\"message\":\"Added error handling with proper validation\",\"action_taken\":\"Implemented error handling for transform and send functions\"}]}"
+    }
+  ],
+  "outcome": {
+    "success": true,
+    "result_text": "Fixed error handling in PR",
+    "summary": "# Summary\n\nFixed error handling as requested in review comments."
+  }
+}
