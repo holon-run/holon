@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -107,6 +108,13 @@ func (p *Provider) Collect(ctx context.Context, req collector.CollectRequest) (c
 
 	result.Files = files
 	result.Success = true
+
+	// Verify context files are non-empty before returning success
+	if err := verifyContextFiles(req.OutputDir, req.Kind); err != nil {
+		result.Error = fmt.Sprintf("context verification failed: %v", err)
+		result.Success = false
+		return result, err
+	}
 
 	// Write manifest
 	if err := WriteManifest(req.OutputDir, result); err != nil {
@@ -342,4 +350,41 @@ func parseNumber(s string) (int, error) {
 	var num int
 	_, err := fmt.Sscanf(s, "%d", &num)
 	return num, err
+}
+
+// verifyContextFiles verifies that all required context files are non-empty
+// This is a fail-fast check to ensure that missing tokens or network issues
+// don't result in silent empty context files being passed to the agent
+func verifyContextFiles(outputDir string, kind collector.Kind) error {
+	var paths []string
+
+	// Add kind-specific required files
+	if kind == collector.KindPR {
+		paths = []string{
+			filepath.Join(outputDir, "github", "pr.json"),
+			filepath.Join(outputDir, "github", "review_threads.json"),
+			filepath.Join(outputDir, "github", "review.md"),
+			filepath.Join(outputDir, "pr-fix.schema.json"),
+		}
+	} else if kind == collector.KindIssue {
+		paths = []string{
+			filepath.Join(outputDir, "github", "issue.json"),
+			filepath.Join(outputDir, "github", "comments.json"),
+			filepath.Join(outputDir, "github", "issue.md"),
+		}
+	}
+
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("context file missing: %s (check token and network connectivity)", p)
+			}
+			return fmt.Errorf("failed to stat context file %s: %w", p, err)
+		}
+		if info.Size() == 0 {
+			return fmt.Errorf("context file is empty: %s (check token and network connectivity)", p)
+		}
+	}
+	return nil
 }
