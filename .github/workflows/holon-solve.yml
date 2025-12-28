@@ -167,43 +167,56 @@ jobs:
 
           SHOULD_RUN='false'
           REASON='Not eligible'
+          TRIGGER_KIND='none'
+          GOAL_HINT=''
 
           # Avoid bot loops
           if [ "$ACTOR" = 'holonbot[bot]' ]; then
             REASON='Actor is holonbot[bot]'
             echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
             echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+            echo "trigger_kind=$TRIGGER_KIND" >> "$GITHUB_OUTPUT"
+            echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if [ "$EVENT_NAME" = 'issue_comment' ] && [ "$EVENT_ACTION" = 'created' ]; then
             FIRST_LINE="$(printf '%s\n' "$COMMENT_BODY" | head -n1 | xargs || true)"
 
-            if [ "$IS_PR" = 'true' ]; then
-              if [ "$FIRST_LINE" = '@holonbot fix' ] || [ "$FIRST_LINE" = '@holonbot solve' ]; then
-                :
+            # Check if the comment starts with @holonbot (with space after for free-form triggers)
+            if [[ "$FIRST_LINE" == "@holonbot "* ]] || [ "$FIRST_LINE" = '@holonbot fix' ] || [ "$FIRST_LINE" = '@holonbot solve' ]; then
+              # Parse trigger kind and extract goal hint
+              if [ "$FIRST_LINE" = '@holonbot fix' ]; then
+                TRIGGER_KIND='fix'
+                echo "✅ Trigger path: structured command (fix)"
+              elif [ "$FIRST_LINE" = '@holonbot solve' ]; then
+                TRIGGER_KIND='solve'
+                echo "✅ Trigger path: structured command (solve)"
               else
-                REASON="Comment command not recognized for PR: '$FIRST_LINE'"
-                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-                exit 0
+                TRIGGER_KIND='freeform'
+                # Extract trailing text after "@holonbot " (with space)
+                GOAL_HINT="${FIRST_LINE#@holonbot }"
+                echo "✅ Trigger path: free-form command"
+                echo "   Goal hint: $GOAL_HINT"
               fi
+            else
+              REASON="Comment command not recognized: '$FIRST_LINE'"
+              echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+              echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+              echo "trigger_kind=$TRIGGER_KIND" >> "$GITHUB_OUTPUT"
+              echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
 
+            if [ "$IS_PR" = 'true' ]; then
               # Disallow fork PRs
               IS_CROSS_REPO="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo 'true')"
               if [ "$IS_CROSS_REPO" = 'true' ]; then
                 REASON='PR is from a fork/cross-repo head; not supported'
                 echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
                 echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-            else
-              if [ "$FIRST_LINE" = '@holonbot fix' ] || [ "$FIRST_LINE" = '@holonbot solve' ]; then
-                :
-              else
-                REASON="Comment command not recognized for Issue: '$FIRST_LINE'"
-                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                echo "trigger_kind=$TRIGGER_KIND" >> "$GITHUB_OUTPUT"
+                echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
             fi
@@ -214,6 +227,8 @@ jobs:
               REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
               echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
               echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+              echo "trigger_kind=$TRIGGER_KIND" >> "$GITHUB_OUTPUT"
+              echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
@@ -222,9 +237,11 @@ jobs:
           elif [ "$EVENT_NAME" = 'issues' ]; then
             if [ "$EVENT_ACTION" = 'labeled' ] && [ "$LABEL_NAME" = 'holon' ]; then
               SHOULD_RUN='true'
+              TRIGGER_KIND='label'
               REASON='Issue labeled holon'
             elif [ "$EVENT_ACTION" = 'assigned' ] && [ "$ASSIGNEE_TYPE" = 'Bot' ]; then
               SHOULD_RUN='true'
+              TRIGGER_KIND='assign'
               REASON='Issue assigned to Bot'
             else
               REASON='Issue event not eligible'
@@ -232,6 +249,7 @@ jobs:
           elif [ "$EVENT_NAME" = 'pull_request' ] && [ "$EVENT_ACTION" = 'labeled' ]; then
             if [ "$LABEL_NAME" = 'holon' ]; then
               SHOULD_RUN='true'
+              TRIGGER_KIND='label'
               REASON='PR labeled holon'
             else
               REASON='PR label not eligible'
@@ -243,6 +261,8 @@ jobs:
 
           echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
           echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+          echo "trigger_kind=$TRIGGER_KIND" >> "$GITHUB_OUTPUT"
+          echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
           EVENT_NAME: ${{ github.event_name }}
@@ -379,6 +399,11 @@ jobs:
           IS_PR='${{ steps.ctx.outputs.is_pr }}'
           SHOULD_RUN='${{ steps.gate.outputs.should_run }}'
           REASON='${{ steps.gate.outputs.reason }}'
+          TRIGGER_KIND='${{ steps.gate.outputs.trigger_kind }}'
+          GOAL_HINT='${{ steps.gate.outputs.goal_hint }}'
+
+          # Get comment_id from input (if available)
+          COMMENT_ID='${{ inputs.comment_id }}'
 
           MODE=''
           if [ "$SHOULD_RUN" = 'true' ]; then
@@ -395,11 +420,15 @@ jobs:
             --arg should_run "$SHOULD_RUN" \
             --arg reason "$REASON" \
             --arg mode "$MODE" \
+            --arg trigger_kind "$TRIGGER_KIND" \
+            --arg goal_hint "$GOAL_HINT" \
+            --argjson comment_id "$COMMENT_ID" \
             '{
               event: {name: $event_name, action: $event_action, actor: $actor},
-              target: {repository: $repository, issue_number: $issue_number, is_pr: $is_pr},
-              gate: {should_run: $should_run, reason: $reason},
-              mode: $mode
+              target: {repository: $repository, issue_number: ($issue_number | tonumber), is_pr: ($is_pr == "true")},
+              gate: {should_run: ($should_run == "true"), reason: $reason},
+              mode: $mode,
+              trigger: {kind: $trigger_kind, goal_hint: $goal_hint, comment_id: $comment_id}
             }' > "$INPUT_DIR/workflow.json"
 
       - name: Run Holon

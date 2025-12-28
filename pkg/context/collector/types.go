@@ -55,6 +55,12 @@ type Options struct {
 	// ChecksMax is the maximum number of check runs to fetch (for PRs)
 	// 0 or negative means no limit
 	ChecksMax int
+
+	// TriggerCommentID is the ID of the comment that triggered holon (for marking is_trigger)
+	TriggerCommentID int64
+
+	// TriggerGoalHint is the trailing text from a free-form trigger (e.g., "@holonbot fix this bug" -> "fix this bug")
+	TriggerGoalHint string
 }
 
 // FileInfo represents metadata about a collected file
