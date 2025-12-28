@@ -783,7 +783,7 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 	if refType == "pr" {
 		// In PR mode, optionally apply/commit/push diff.patch to the PR head branch before posting replies/comments.
 		if diffPath, ok := artifacts["diff.patch"]; ok {
-			if err := publishPatchToPR(ctx, pubWS.path, outDir, diffPath); err != nil {
+			if err := publishPatchToPR(ctx, pubWS.path, solveInput, diffPath); err != nil {
 				return fmt.Errorf("publish failed during patch push: %w", err)
 			}
 		}

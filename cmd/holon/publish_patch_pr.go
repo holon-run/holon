@@ -12,10 +12,10 @@ import (
 )
 
 // publishPatchToPR applies/commits/pushes diff.patch to the PR head branch using the git publisher.
-// It reads pr.json from the input context to discover the head branch. The publish workspace
+// It reads pr.json from the *input* context to discover the head branch. The publish workspace
 // (pubWorkspace) should already be prepared and pointed to by HOLON_WORKSPACE.
-func publishPatchToPR(ctx context.Context, pubWorkspace, outDir, diffPath string) error {
-	prJSON := filepath.Join(outDir, "context", "github", "pr.json")
+func publishPatchToPR(ctx context.Context, pubWorkspace, inputDir, diffPath string) error {
+	prJSON := filepath.Join(inputDir, "context", "github", "pr.json")
 	data, err := os.ReadFile(prJSON)
 	if err != nil {
 		return fmt.Errorf("failed to read pr.json for patch publish: %w", err)
