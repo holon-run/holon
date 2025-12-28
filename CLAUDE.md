@@ -281,7 +281,7 @@ The `--agent-config-mode` flag controls whether Holon mounts your existing Claud
 
 **Compatibility Guard:**
 
-Holon includes a compatibility guard to prevent mounting incompatible configurations. The `auto` mode will skip mounting and log a warning if your `~/.claude` config contains indicators of headless/container Claude (e.g., `"container":true`, `"headless":true`, or `IS_SANDBOX` settings). This prevents failures that can occur when container-specific configs are mounted into containers.
+Holon includes a compatibility guard to prevent mounting incompatible configurations. The `auto` mode will skip mounting and log a warning if your `~/.claude` config contains indicators of headless/container Claude in its settings.json file (e.g., `"container": true`, `"headless": true`, or `"IS_SANDBOX": "1"`). This prevents failures that can occur when container-specific configs are mounted into containers.
 
 To force mount even with an incompatible config, use `--agent-config-mode=yes`.
 

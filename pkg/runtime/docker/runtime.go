@@ -173,10 +173,11 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 			}
 
 			if shouldMount && dirExists {
-				// Check if the config is compatible (skip if it appears to be headless/container Claude)
-				if isIncompatibleClaudeConfig(claudeDir) {
+				// For "auto" mode, check if the config is compatible before mounting
+				// For "yes" mode, skip the compatibility check and force mount
+				if configMode == AgentConfigModeAuto && isIncompatibleClaudeConfig(claudeDir) {
 					holonlog.Warn("skipping mount of ~/.claude: config appears incompatible (likely headless/container Claude)")
-					holonlog.Info("to force mount, use --agent-config-mode=yes with compatible config")
+					holonlog.Info("to force mount anyway, use --agent-config-mode=yes (use with caution)")
 				} else {
 					// Mount the config directory
 					mountConfig.LocalClaudeConfigDir = claudeDir
@@ -587,25 +588,26 @@ func isIncompatibleClaudeConfig(claudeDir string) bool {
 		return false
 	}
 
-	// Check for headless/container Claude indicators
-	// These indicate the config is meant for headless/container Claude
-	// and should not be mounted into a container
-	configStr := string(data)
+	// Parse JSON to check for headless/container Claude indicators
+	// This is more robust than string matching and handles formatting variations
+	var config map[string]interface{}
+	if err := json.Unmarshal(data, &config); err != nil {
+		// If JSON parsing fails, assume it's compatible
+		// (don't block mount on parse errors)
+		return false
+	}
 
 	// Check for "container" or "headless" mode indicators
 	// These are the most common markers of incompatible configs
-	incompatibleMarkers := []string{
-		`"container":true`,
-		`"headless":true`,
-		`"IS_SANDBOX":"1"`,
-		`"IS_SANDBOX": "1"`,
-		`"IS_SANDBOX":'1'`,
+	if container, ok := config["container"].(bool); ok && container {
+		return true
 	}
-
-	for _, marker := range incompatibleMarkers {
-		if strings.Contains(configStr, marker) {
-			return true
-		}
+	if headless, ok := config["headless"].(bool); ok && headless {
+		return true
+	}
+	// Check for IS_SANDBOX environment variable indicator
+	if isSandbox, ok := config["IS_SANDBOX"].(string); ok && isSandbox == "1" {
+		return true
 	}
 
 	return false
