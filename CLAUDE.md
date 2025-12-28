@@ -262,10 +262,10 @@ holon solve holon-run/holon#123
 - `--out` / `-o`: Deprecated alias for `--output`
 - `--env` / `-e`: Environment variables (K=V format)
 - `--log-level`: Logging verbosity (debug, info, progress, minimal)
-- `--agent-config-mode`: Agent config mount mode (default: auto)
-  - `auto`: Mount host ~/.claude if it exists, silent skip if not
+- `--agent-config-mode`: Agent config mount mode (default: no)
+  - `no`: Never mount (default, safest for CI/container use)
+  - `auto`: Mount host ~/.claude if it exists and is compatible, silent skip if not
   - `yes`: Always attempt to mount, warn if missing
-  - `no`: Never mount
 
 ### Agent Config Mounting
 
@@ -275,38 +275,58 @@ The `--agent-config-mode` flag controls whether Holon mounts your existing Claud
 
 **Modes:**
 
-- **`auto`** (default): If `~/.claude` exists on the host, mount it read-only into the container at `/root/.claude`. If it doesn't exist, silently skip mounting and use env-based config instead.
-- **`yes`**: Always attempt to mount. Emits a warning if `~/.claude` doesn't exist.
-- **`no`**: Never mount, always use environment-based configuration.
+- **`no`** (default): Never mount. Always use environment-based configuration. This is the safest default for CI/container environments and prevents accidental credential exposure.
+- **`auto`**: If `~/.claude` exists on the host AND appears compatible (not headless/container Claude), mount it read-only into the container at `/root/.claude`. Skips mounting with a warning if the config appears incompatible.
+- **`yes`**: Always attempt to mount, even if the config appears incompatible. Emits a warning if `~/.claude` doesn't exist.
+
+**Compatibility Guard:**
+
+Holon includes a compatibility guard to prevent mounting incompatible configurations. The `auto` mode will skip mounting and log a warning if your `~/.claude` config contains indicators of headless/container Claude (e.g., `"container":true`, `"headless":true`, or `IS_SANDBOX` settings). This prevents failures that can occur when container-specific configs are mounted into containers.
+
+To force mount even with an incompatible config, use `--agent-config-mode=yes`.
 
 **Usage:**
 ```bash
-# Default auto mode: mount if ~/.claude exists
+# Default: never mount (safest for CI and container use)
 ./bin/holon run --goal "Fix the bug"
 
-# Explicit auto mode
+# Explicit auto mode: mount if compatible, skip with warning if not
 ./bin/holon run --goal "Fix the bug" --agent-config-mode auto
 
-# Force mount (warn if missing)
+# Force mount (even if config appears incompatible)
 ./bin/holon run --goal "Fix the bug" --agent-config-mode yes
 
-# Never mount (always use env vars)
+# Explicitly disable mounting (same as default)
 ./bin/holon run --goal "Fix the bug" --agent-config-mode no
 
-# Config mount + custom API key (fills in missing values in mounted config)
-ANTHROPIC_API_KEY=sk-xxx ./bin/holon run --goal "Fix the bug" --agent-config-mode yes
+# With solve command (default: no mount)
+./bin/holon solve holon-run/holon#123
 
-# With solve command
-./bin/holon solve holon-run/holon#123 --agent-config-mode no
+# Solve with config mounting enabled
+./bin/holon solve holon-run/holon#123 --agent-config-mode auto
 ```
 
 **How it works:**
-1. Holon checks `--agent-config-mode` setting
+1. Holon checks `--agent-config-mode` setting (default: `no`)
 2. For `auto`/`yes` modes: checks if `~/.claude` exists on the host
-3. If found and mounting is enabled: mounts it read-only into the container
-4. Sets `HOLON_MOUNTED_CLAUDE_CONFIG=1` environment variable
-5. Agent detects this variable and skips settings sync
-6. Mounted config is used first, env vars as fallback
+3. For `auto` mode: checks if config appears compatible (skips if incompatible)
+4. If mounting is enabled and compatible: mounts it read-only into the container
+5. Sets `HOLON_MOUNTED_CLAUDE_CONFIG=1` environment variable
+6. Agent detects this variable and skips settings sync
+7. Mounted config is used first, env vars as fallback
+
+**When to use mounting:**
+
+Use `--agent-config-mode=auto` or `yes` when:
+- You want to use your existing Claude Code settings (API keys, preferences)
+- Running locally for development (NOT in CI or shared environments)
+- You understand the security implications of mounting credentials
+
+Use the default `no` mode when:
+- Running in CI environments (GitHub Actions, etc.)
+- Running in shared or untrusted environments
+- You prefer explicit environment variable configuration
+- You want to avoid any chance of credential exposure
 
 **Agent-agnostic design:**
 - Flag is named `--agent-config-mode` (not Claude-specific) for future extensibility

@@ -140,11 +140,11 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	}
 
 	// Handle agent config mounting based on mode
-	// Parse the config mode, default to "auto" if empty or invalid
+	// Parse the config mode, default to "no" if empty or invalid
 	configMode, err := ParseAgentConfigMode(cfg.AgentConfigMode)
 	if err != nil {
-		holonlog.Warn("invalid agent config mode, defaulting to 'auto'", "mode", cfg.AgentConfigMode, "error", err)
-		configMode = AgentConfigModeAuto
+		holonlog.Warn("invalid agent config mode, defaulting to 'no'", "mode", cfg.AgentConfigMode, "error", err)
+		configMode = AgentConfigModeNo
 	}
 
 	// For "no" mode, skip entirely
@@ -173,14 +173,20 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 			}
 
 			if shouldMount && dirExists {
-				// Mount the config directory
-				mountConfig.LocalClaudeConfigDir = claudeDir
-				holonlog.Warn("mounting host ~/.claude into container")
-				holonlog.Warn("this exposes your personal Claude login and session to the container")
-				holonlog.Warn("do NOT use this in CI or shared environments")
-				// Set environment variable to indicate mounted config is available
-				// Add directly to env slice since BuildContainerEnv was already called
-				env = append(env, "HOLON_MOUNTED_CLAUDE_CONFIG=1")
+				// Check if the config is compatible (skip if it appears to be headless/container Claude)
+				if isIncompatibleClaudeConfig(claudeDir) {
+					holonlog.Warn("skipping mount of ~/.claude: config appears incompatible (likely headless/container Claude)")
+					holonlog.Info("to force mount, use --agent-config-mode=yes with compatible config")
+				} else {
+					// Mount the config directory
+					mountConfig.LocalClaudeConfigDir = claudeDir
+					holonlog.Warn("mounting host ~/.claude into container")
+					holonlog.Warn("this exposes your personal Claude login and session to the container")
+					holonlog.Warn("do NOT use this in CI or shared environments")
+					// Set environment variable to indicate mounted config is available
+					// Add directly to env slice since BuildContainerEnv was already called
+					env = append(env, "HOLON_MOUNTED_CLAUDE_CONFIG=1")
+				}
 			}
 		}
 	}
@@ -564,4 +570,43 @@ func writeWorkspaceManifest(outDir string, result workspace.PrepareResult) error
 
 	// Delegate to the shared workspace manifest writer to avoid duplicating logic
 	return workspace.WriteManifest(outDir, result)
+}
+
+// isIncompatibleClaudeConfig checks if a ~/.claude config directory appears
+// incompatible with mounting into a container. This detects headless/container
+// Claude configs that may cause failures when mounted.
+//
+// Returns true if the config appears incompatible (should skip mount).
+func isIncompatibleClaudeConfig(claudeDir string) bool {
+	// Check for settings.json - the main Claude config file
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		// If we can't read the file, assume it's compatible
+		// (don't block mount on read errors)
+		return false
+	}
+
+	// Check for headless/container Claude indicators
+	// These indicate the config is meant for headless/container Claude
+	// and should not be mounted into a container
+	configStr := string(data)
+
+	// Check for "container" or "headless" mode indicators
+	// These are the most common markers of incompatible configs
+	incompatibleMarkers := []string{
+		`"container":true`,
+		`"headless":true`,
+		`"IS_SANDBOX":"1"`,
+		`"IS_SANDBOX": "1"`,
+		`"IS_SANDBOX":'1'`,
+	}
+
+	for _, marker := range incompatibleMarkers {
+		if strings.Contains(configStr, marker) {
+			return true
+		}
+	}
+
+	return false
 }
