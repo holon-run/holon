@@ -11,7 +11,6 @@ Holon runs an AI coding agent inside a Docker sandbox and emits **standard artif
 Holon writes to the directory specified by `--output`:
 - Default creates a temporary directory (e.g., `$TMPDIR/holon-output-*`) to avoid polluting your workspace
 - Use `--output <dir>` to specify a custom location
-- `--out` is accepted as a deprecated alias
 
 Common artifacts:
 
@@ -356,7 +355,6 @@ holon solve pr <ref>      # Force PR mode
 - `--image <image>`: Docker base image (default: auto-detect)
 - `--image-auto-detect`: Enable automatic base image detection (default: `true`)
 - `--output <dir>`: Output directory (default: creates temp dir to avoid polluting workspace)
-- `--out <dir>`: Deprecated alias for `--output`
 - `--role <role>`: Role to assume (e.g., `developer`, `reviewer`)
 - `--log-level <level>`: Log verbosity (default: `progress`)
 
