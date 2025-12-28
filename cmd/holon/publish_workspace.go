@@ -89,6 +89,27 @@ func isGitURL(src string) bool {
 		strings.HasPrefix(lower, "file://")
 }
 
+// deriveGitHubURL best-effort converts a path or owner/repo string to a https GitHub URL.
+func deriveGitHubURL(src string) string {
+	trimmed := strings.TrimSpace(src)
+	if trimmed == "" {
+		return ""
+	}
+	// Already a URL
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") || strings.HasPrefix(trimmed, "git@") {
+		return trimmed
+	}
+	parts := strings.Split(trimmed, "/")
+	if len(parts) >= 2 {
+		owner := parts[len(parts)-2]
+		repo := strings.TrimSuffix(parts[len(parts)-1], ".git")
+		if owner != "" && repo != "" {
+			return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+		}
+	}
+	return ""
+}
+
 func newClonePublishWorkspace(ctx context.Context, sourceValue, ref string, useLocal bool) (*publishWorkspace, error) {
 	tempDir, err := os.MkdirTemp("", "holon-publish-clone-*")
 	if err != nil {
@@ -107,6 +128,24 @@ func newClonePublishWorkspace(ctx context.Context, sourceValue, ref string, useL
 	if err != nil {
 		os.RemoveAll(tempDir)
 		return nil, fmt.Errorf("failed to clone publish workspace: %w", err)
+	}
+
+	// If we cloned locally, restore a usable origin remote so push/pr works.
+	if useLocal {
+		sourceClient := git.NewClient(sourceValue)
+		originURL, _ := sourceClient.ConfigGet(ctx, "remote.origin.url")
+		if originURL == "" {
+			// Best effort: derive from manifest source path if it looks like owner/repo.
+			if derived := deriveGitHubURL(sourceValue); derived != "" {
+				originURL = derived
+			}
+		}
+		if originURL != "" {
+			targetClient := git.NewClient(tempDir)
+			if err := targetClient.SetRemote(ctx, "origin", originURL); err != nil {
+				holonlog.Warn("failed to set origin on publish workspace", "path", tempDir, "origin", originURL, "error", err)
+			}
+		}
 	}
 
 	cleanup := func() {
