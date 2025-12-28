@@ -123,6 +123,11 @@ func (c *Client) execCommand(ctx context.Context, args ...string) ([]byte, error
 	return c.execCommandWithDir(ctx, c.Dir, args...)
 }
 
+// ExecCommand is a safe wrapper to allow callers to run arbitrary git commands.
+func (c *Client) ExecCommand(ctx context.Context, args ...string) ([]byte, error) {
+	return c.execCommand(ctx, args...)
+}
+
 // execCommandWithDir executes a git command in a specific directory.
 func (c *Client) execCommandWithDir(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	if c.Options != nil && c.Options.DryRun {

@@ -32,6 +32,18 @@ func preparePublishWorkspace(ctx context.Context, outDir string) (*publishWorksp
 		return nil, fmt.Errorf("workspace manifest is missing source; cannot prepare publish workspace")
 	}
 
+	// Prefer the live HOLON_WORKSPACE (agent runtime workspace) when available.
+	if liveWS := strings.TrimSpace(os.Getenv("HOLON_WORKSPACE")); liveWS != "" && workspace.IsGitRepo(liveWS) {
+		ref := manifest.HeadSHA
+		if ref == "" {
+			ref = manifest.Ref
+		}
+		if ref == "" {
+			ref = "HEAD"
+		}
+		return newWorktreeFromLocal(ctx, liveWS, ref)
+	}
+
 	sourceValue := manifest.Source
 
 	ref := manifest.HeadSHA
@@ -44,31 +56,7 @@ func preparePublishWorkspace(ctx context.Context, outDir string) (*publishWorksp
 
 	// If the source is a git URL, clone a clean workspace first.
 	if isGitURL(sourceValue) {
-		tempDir, err := os.MkdirTemp("", "holon-publish-clone-*")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create temp publish workspace: %w", err)
-		}
-
-		_, err = git.Clone(ctx, git.CloneOptions{
-			Source: sourceValue,
-			Dest:   tempDir,
-			Ref:    ref,
-			// Always fetch full history for publish to ensure the referenced commit/ref exists.
-			Depth: 0,
-			Quiet: true,
-		})
-		if err != nil {
-			os.RemoveAll(tempDir)
-			return nil, fmt.Errorf("failed to clone publish workspace: %w", err)
-		}
-
-		cleanup := func() {
-			if err := os.RemoveAll(tempDir); err != nil {
-				holonlog.Warn("failed to clean publish clone", "path", tempDir, "error", err)
-			}
-		}
-
-		return &publishWorkspace{path: tempDir, cleanup: cleanup}, nil
+		return newClonePublishWorkspace(ctx, sourceValue, ref)
 	}
 
 	sourcePath, err := filepath.Abs(sourceValue)
@@ -78,27 +66,7 @@ func preparePublishWorkspace(ctx context.Context, outDir string) (*publishWorksp
 
 	// If the source is a git repo, create a worktree for a clean publish base.
 	if workspace.IsGitRepo(sourcePath) {
-		tempDir, err := os.MkdirTemp("", "holon-publish-worktree-*")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create temp publish workspace: %w", err)
-		}
-
-		client := git.NewClient(sourcePath)
-		if err := client.AddWorktree(ctx, tempDir, ref, true); err != nil {
-			os.RemoveAll(tempDir)
-			return nil, fmt.Errorf("failed to create publish worktree: %w", err)
-		}
-
-		cleanup := func() {
-			if err := client.RemoveWorktree(context.Background(), tempDir, true); err != nil {
-				holonlog.Warn("failed to remove publish worktree", "path", tempDir, "error", err)
-			}
-			if err := os.RemoveAll(tempDir); err != nil {
-				holonlog.Warn("failed to clean publish worktree", "path", tempDir, "error", err)
-			}
-		}
-
-		return &publishWorkspace{path: tempDir, cleanup: cleanup}, nil
+		return newWorktreeFromLocal(ctx, sourcePath, ref)
 	}
 
 	return nil, fmt.Errorf("publish requires a git workspace; manifest source %q is not a git repository", sourcePath)
@@ -114,4 +82,66 @@ func isGitURL(src string) bool {
 		strings.HasPrefix(lower, "git@") ||
 		strings.HasPrefix(lower, "ssh://") ||
 		strings.HasPrefix(lower, "file://")
+}
+
+func newClonePublishWorkspace(ctx context.Context, sourceValue, ref string) (*publishWorkspace, error) {
+	tempDir, err := os.MkdirTemp("", "holon-publish-clone-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp publish workspace: %w", err)
+	}
+
+	_, err = git.Clone(ctx, git.CloneOptions{
+		Source: sourceValue,
+		Dest:   tempDir,
+		Ref:    ref,
+		// Always fetch full history for publish to ensure the referenced commit/ref exists.
+		Depth: 0,
+		Quiet: true,
+	})
+	if err != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("failed to clone publish workspace: %w", err)
+	}
+
+	cleanup := func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			holonlog.Warn("failed to clean publish clone", "path", tempDir, "error", err)
+		}
+	}
+
+	return &publishWorkspace{path: tempDir, cleanup: cleanup}, nil
+}
+
+func newWorktreeFromLocal(ctx context.Context, sourcePath, ref string) (*publishWorkspace, error) {
+	tempDir, err := os.MkdirTemp("", "holon-publish-worktree-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp publish workspace: %w", err)
+	}
+
+	client := git.NewClient(sourcePath)
+
+	// For shallow repos, try to fetch/deepen so the ref is available.
+	if shallow, _ := client.IsShallowClone(ctx); shallow {
+		// Best effort: fetch the specific ref; if it fails, continue and let AddWorktree surface error.
+		_, _ = client.ExecCommand(ctx, "fetch", "--deepen=100", "--update-shallow")
+		if ref != "" && ref != "HEAD" {
+			_, _ = client.ExecCommand(ctx, "fetch", "origin", ref)
+		}
+	}
+
+	if err := client.AddWorktree(ctx, tempDir, ref, true); err != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("failed to create publish worktree: %w", err)
+	}
+
+	cleanup := func() {
+		if err := client.RemoveWorktree(context.Background(), tempDir, true); err != nil {
+			holonlog.Warn("failed to remove publish worktree", "path", tempDir, "error", err)
+		}
+		if err := os.RemoveAll(tempDir); err != nil {
+			holonlog.Warn("failed to clean publish worktree", "path", tempDir, "error", err)
+		}
+	}
+
+	return &publishWorkspace{path: tempDir, cleanup: cleanup}, nil
 }
