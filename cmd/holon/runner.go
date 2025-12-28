@@ -638,9 +638,14 @@ func collectContextEntries(absContext string) ([]prompt.ContextEntry, []string) 
 					Path:        f.Path,
 					Description: f.Description,
 				})
-				fileNames = append(fileNames, f.Path)
 			}
-			sort.Strings(fileNames)
+			sort.Slice(entries, func(i, j int) bool {
+				return entries[i].Path < entries[j].Path
+			})
+			fileNames = make([]string, len(entries))
+			for i, e := range entries {
+				fileNames[i] = e.Path
+			}
 			return entries, fileNames
 		}
 	}
@@ -653,16 +658,24 @@ func collectContextEntries(absContext string) ([]prompt.ContextEntry, []string) 
 		if d.IsDir() {
 			return nil
 		}
+		if d.Name() == "manifest.json" {
+			return nil
+		}
 		rel, err := filepath.Rel(absContext, path)
 		if err != nil {
 			return nil
 		}
 		entries = append(entries, prompt.ContextEntry{Path: rel})
-		fileNames = append(fileNames, rel)
 		return nil
 	})
 
-	sort.Strings(fileNames)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Path < entries[j].Path
+	})
+	fileNames = make([]string, len(entries))
+	for i, e := range entries {
+		fileNames[i] = e.Path
+	}
 	return entries, fileNames
 }
 

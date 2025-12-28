@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/holon-run/holon/pkg/context/collector"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 )
 
@@ -533,6 +535,79 @@ func TestRunner_compilePrompts(t *testing.T) {
 	if !strings.Contains(userPrompt, "Test goal") {
 		t.Error("User prompt doesn't contain the goal")
 	}
+}
+
+func Test_collectContextEntries(t *testing.T) {
+	t.Run("empty context path", func(t *testing.T) {
+		entries, names := collectContextEntries("")
+		if entries != nil || names != nil {
+			t.Fatalf("expected nil slices for empty context, got entries=%v names=%v", entries, names)
+		}
+	})
+
+	t.Run("manifest present and parsed", func(t *testing.T) {
+		dir := t.TempDir()
+		manifest := collector.CollectResult{
+			Files: []collector.FileInfo{
+				{Path: "github/issue.json", Description: "Issue metadata"},
+				{Path: "github/issue.md", Description: "Issue description"},
+			},
+		}
+		data, _ := json.Marshal(manifest)
+		if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0o644); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+
+		entries, names := collectContextEntries(dir)
+		if got, want := len(entries), 2; got != want {
+			t.Fatalf("expected %d entries, got %d", want, got)
+		}
+		if names[0] != "github/issue.json" || names[1] != "github/issue.md" {
+			t.Fatalf("unexpected names order: %v", names)
+		}
+		if entries[0].Description != "Issue metadata" {
+			t.Fatalf("description not preserved: %+v", entries[0])
+		}
+	})
+
+	t.Run("manifest invalid falls back to walk", func(t *testing.T) {
+		dir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), []byte("{invalid"), 0o644)
+		if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+			t.Fatalf("mkdir nested: %v", err)
+		}
+		files := []string{"a.txt", filepath.Join("nested", "b.txt")}
+		for _, f := range files {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+				t.Fatalf("write file %s: %v", f, err)
+			}
+		}
+
+		entries, names := collectContextEntries(dir)
+		if got, want := len(entries), 2; got != want {
+			t.Fatalf("expected %d entries, got %d", want, got)
+		}
+		if names[0] != "a.txt" || names[1] != "nested/b.txt" {
+			t.Fatalf("unexpected sorted names: %v", names)
+		}
+		for _, e := range entries {
+			if e.Path == "manifest.json" {
+				t.Fatalf("manifest.json should be skipped in fallback")
+			}
+		}
+	})
+
+	t.Run("fallback walk without manifest", func(t *testing.T) {
+		dir := t.TempDir()
+		want := []string{"c.txt"}
+		if err := os.WriteFile(filepath.Join(dir, want[0]), []byte("y"), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		entries, names := collectContextEntries(dir)
+		if len(entries) != 1 || len(names) != 1 || entries[0].Path != want[0] || names[0] != want[0] {
+			t.Fatalf("unexpected entries/names: entries=%v names=%v", entries, names)
+		}
+	})
 }
 
 func TestRunner_writeDebugPrompts(t *testing.T) {
@@ -1219,7 +1294,7 @@ func TestRunner_ContextHandling_SelfCopy(t *testing.T) {
 		TaskName:      "test-context",
 		WorkspacePath: workspaceDir,
 		ContextPath:   inputContextDir, // Point to input/context directly
-		InputPath:     inputDir,         // Use the same parent directory
+		InputPath:     inputDir,        // Use the same parent directory
 		OutDir:        outDir,
 		BaseImage:     "test-image",
 		AgentBundle:   bundlePath,
@@ -1380,13 +1455,13 @@ func TestRunner_GitConfigOverride(t *testing.T) {
 			runner := NewRunner(mockRuntime)
 
 			cfg := RunnerConfig{
-				GoalStr:       "Test goal",
-				TaskName:      "test-git-config",
-				WorkspacePath: workspaceDir,
-				OutDir:        outDir,
-				BaseImage:     "test-image",
-				AgentBundle:   bundlePath,
-				GitAuthorName: tt.gitAuthorName,
+				GoalStr:        "Test goal",
+				TaskName:       "test-git-config",
+				WorkspacePath:  workspaceDir,
+				OutDir:         outDir,
+				BaseImage:      "test-image",
+				AgentBundle:    bundlePath,
+				GitAuthorName:  tt.gitAuthorName,
 				GitAuthorEmail: tt.gitAuthorEmail,
 			}
 
