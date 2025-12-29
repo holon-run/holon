@@ -109,10 +109,12 @@ func (d *Detector) DetectDebug() *DebugDetectResult {
 	// Determine scan mode
 	scanMode := "full-recursive"
 	if len(signals) > 0 {
-		// Check if all signals are at root level
+		// Check if all signals are at root level (with non-empty paths)
+		// Signals with empty paths (e.g., monorepo signals) indicate full-recursive scan
 		allRoot := true
 		for _, sig := range signals {
-			if sig.path != "" && filepath.Dir(sig.path) != "." {
+			// Empty path or nested path means we didn't do a root-only scan
+			if sig.path == "" || filepath.Dir(sig.path) != "." {
 				allRoot = false
 				break
 			}

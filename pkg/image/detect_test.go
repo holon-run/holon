@@ -661,14 +661,7 @@ func TestDetect_RootFirstStrategy_RootSignalsPriority(t *testing.T) {
 	createFile(t, dir, "pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n")
 
 	result := Detect(dir)
-	// Should detect node:22 from pnpm-workspace.yaml (even though go.mod has priority 100)
-	// Wait, actually go.mod (priority 100) > pnpm-workspace.yaml (priority 95)
-	// But root-first means we only scan root, so we should get all three and pick highest priority
-	// which is go.mod at 100
-	// Actually based on the issue, pnpm-workspace should have higher priority
-	// Let me check what the issue says about priority adjustment
-	// The issue mentions increasing pnpm-workspace.yaml priority to 105
-	// But for now, the code has it at 95, so go.mod will win
+	// With root-first scanning, both signals are at the root; go.mod (priority 100) should win over pnpm-workspace.yaml (priority 95).
 	if result.Image != "golang:1.23" {
 		t.Errorf("Expected golang:1.23 (highest priority at root), got %s", result.Image)
 	}
