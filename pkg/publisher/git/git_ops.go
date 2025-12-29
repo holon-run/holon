@@ -249,37 +249,49 @@ func (g *GitClient) configureGitCredentials(ctx context.Context) error {
 		return fmt.Errorf("failed to get remote URL: %w", err)
 	}
 
-	currentURL := string(remoteURL)
+	currentURL := strings.TrimSpace(string(remoteURL))
 	holonlog.Debug("current remote URL", "url", currentURL)
 
 	// Check if URL already has token embedded
-	if strings.Contains(currentURL, "@") {
-		// URL already has embedded token (e.g., https://user:pass@host/repo.git)
-		holonlog.Debug("remote URL already has embedded credentials", "url_prefix", currentURL[:30]+"...")
-		return nil
+	// Look for the pattern "://credentials@" which indicates embedded auth
+	if strings.Contains(currentURL, "://") && strings.Contains(currentURL, "@") {
+		// Find the position of "://" and "@" to verify there's something between them
+		schemeEnd := strings.Index(currentURL, "://")
+		atPos := strings.Index(currentURL, "@")
+		if schemeEnd != -1 && atPos != -1 && atPos > schemeEnd+3 {
+			// Has embedded credentials
+			holonlog.Debug("remote URL already has embedded credentials", "url_prefix", safeTruncate(currentURL, 30))
+			return nil
+		}
 	}
 
 	// Embed token in URL
-	// Handle both HTTPS and Git protocol URLs
+	// Support any HTTPS/HTTP GitHub URL (not just github.com)
 	var tokenEmbeddedURL string
 	if strings.HasPrefix(currentURL, "https://") {
-		// HTTPS URL: https://github.com/owner/repo.git -> https://x-access-token:TOKEN@github.com/owner/repo.git
+		// HTTPS URL: https://HOST/PATH -> https://x-access-token:TOKEN@HOST/PATH
+		// This works for github.com, GitHub Enterprise, and compatible services
 		tokenEmbeddedURL = strings.Replace(currentURL, "https://", fmt.Sprintf("https://x-access-token:%s@", g.Token), 1)
 	} else if strings.HasPrefix(currentURL, "http://") {
-		// HTTP URL (less common)
+		// HTTP URL (less common, but supported)
 		tokenEmbeddedURL = strings.Replace(currentURL, "http://", fmt.Sprintf("http://x-access-token:%s@", g.Token), 1)
 	} else if strings.HasPrefix(currentURL, "git@") {
-		// SSH URL: git@github.com:owner/repo.git -> can't embed token, need to switch to HTTPS
-		// Extract repo path and convert to HTTPS with token
-		repoPath := strings.TrimPrefix(currentURL, "git@github.com:")
-		repoPath = strings.TrimSuffix(repoPath, ".git")
-		tokenEmbeddedURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s.git", g.Token, repoPath)
-		holonlog.Debug("converted SSH URL to HTTPS with token", "repo_path", repoPath)
+		// SSH URL: git@github.com:owner/repo.git
+		// Parse and convert to HTTPS with embedded token
+		sshPart := strings.TrimPrefix(currentURL, "git@")
+		hostAndPath := strings.SplitN(sshPart, ":", 2)
+		if len(hostAndPath) != 2 {
+			return fmt.Errorf("unsupported SSH remote URL format: %s", currentURL)
+		}
+		host := hostAndPath[0]
+		repoPath := strings.TrimSuffix(hostAndPath[1], ".git")
+		tokenEmbeddedURL = fmt.Sprintf("https://x-access-token:%s@%s/%s.git", g.Token, host, repoPath)
+		holonlog.Debug("converted SSH URL to HTTPS with token", "host", host, "repo_path", repoPath)
 	} else {
-		return fmt.Errorf("unsupported remote URL format: %s", currentURL)
+		return fmt.Errorf("unsupported remote URL format: %s (expected HTTPS, HTTP, or SSH)", currentURL)
 	}
 
-	holonlog.Debug("updating remote URL with embedded token", "url_prefix", tokenEmbeddedURL[:40]+"...")
+	holonlog.Debug("updating remote URL with embedded token", "url_prefix", safeTruncate(tokenEmbeddedURL, 40))
 
 	// Update the remote URL
 	_, err = client.ExecCommand(ctx, "config", "--local", "remote.origin.url", tokenEmbeddedURL)
@@ -292,16 +304,21 @@ func (g *GitClient) configureGitCredentials(ctx context.Context) error {
 	if err != nil {
 		holonlog.Warn("failed to verify remote URL update", "error", err)
 	} else {
-		verifyStr := string(verifyURL)
+		verifyStr := strings.TrimSpace(string(verifyURL))
 		// Truncate for logging to avoid exposing full token
-		prefixLen := 50
-		if len(verifyStr) < prefixLen {
-			prefixLen = len(verifyStr)
-		}
-		holonlog.Debug("remote URL updated successfully", "url_prefix", verifyStr[:prefixLen]+"...")
+		holonlog.Debug("remote URL updated successfully", "url_prefix", safeTruncate(verifyStr, 50))
 	}
 
 	return nil
+}
+
+// safeTruncate safely truncates a string to the specified length for logging.
+// If the string is shorter than maxLength, returns the entire string.
+func safeTruncate(s string, maxLength int) string {
+	if len(s) < maxLength {
+		return s
+	}
+	return s[:maxLength] + "..."
 }
 
 // EnsureRepository ensures the workspace is a Git repository.
