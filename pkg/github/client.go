@@ -178,7 +178,7 @@ func NewClient(token string, opts ...ClientOption) *Client {
 func NewClientFromEnv(opts ...ClientOption) (*Client, error) {
 	token, fromGh := GetTokenFromEnv()
 	if token == "" {
-		return nil, fmt.Errorf("%s or %s environment variable is required (or use 'gh auth login')", HolonTokenEnv, TokenEnv)
+		return nil, fmt.Errorf("%s or %s environment variable is required (or use 'gh auth login')", TokenEnv, HolonTokenEnv)
 	}
 
 	if fromGh {

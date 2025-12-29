@@ -256,7 +256,13 @@ func (g *GitClient) configureGitCredentials(ctx context.Context) error {
 	if err != nil {
 		holonlog.Warn("failed to verify git credential configuration", "error", err)
 	} else {
-		holonlog.Debug("git credentials configured successfully", "header_prefix", string(verifyOutput)[:20]+"...")
+		// Safely truncate output for logging (avoid panic if output < 20 chars)
+		verifyStr := string(verifyOutput)
+		prefixLen := 20
+		if len(verifyStr) < prefixLen {
+			prefixLen = len(verifyStr)
+		}
+		holonlog.Debug("git credentials configured successfully", "header_prefix", verifyStr[:prefixLen]+"...")
 	}
 
 	return nil

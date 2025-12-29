@@ -224,7 +224,7 @@ func (g *GitClient) configureGitCredentials(ctx context.Context) error {
 
 	// Validate token is not empty
 	if g.Token == "" {
-		return fmt.Errorf("github token is empty: please set GITHUB_TOKEN environment variable")
+		return fmt.Errorf("github token is empty: please set HOLON_GITHUB_TOKEN or GITHUB_TOKEN environment variable")
 	}
 
 	// Configure git to use the token via the extraheader
@@ -245,7 +245,13 @@ func (g *GitClient) configureGitCredentials(ctx context.Context) error {
 	if err != nil {
 		holonlog.Warn("failed to verify git credential configuration", "error", err)
 	} else {
-		holonlog.Debug("git credentials configured successfully", "header_prefix", string(verifyOutput)[:20]+"...")
+		// Safely truncate output for logging (avoid panic if output < 20 chars)
+		verifyStr := string(verifyOutput)
+		prefixLen := 20
+		if len(verifyStr) < prefixLen {
+			prefixLen = len(verifyStr)
+		}
+		holonlog.Debug("git credentials configured successfully", "header_prefix", verifyStr[:prefixLen]+"...")
 	}
 
 	return nil
