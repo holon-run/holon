@@ -133,3 +133,291 @@ When review comments request substantial refactoring, testing, or enhancements t
 
 **Context Files:**
 Additional context files may be provided in `/holon/input/context/`. Read them if they contain relevant information for addressing the review comments or CI failures.
+
+**Test Failure Diagnosis and Reproduction:**
+
+When CI tests fail, follow this proactive workflow:
+
+### Decision Tree
+
+```
+Test failure detected
+  ↓
+Are CI logs sufficient?
+  ↓ YES
+  ↓
+Analyze logs → Determine relevance → Fix or not-applicable
+  ↓ NO
+  ↓
+Attempt to reproduce locally
+  ↓ Can run test?
+  ↓ YES
+  ↓
+Run test → Can reproduce?
+  ↓ YES
+  ↓
+Analyze error → Determine relevance → Fix or not-applicable
+  ↓ NO
+  ↓
+Investigate environment differences → Can explain?
+  ↓ YES
+  ↓
+Fix environment issue or document
+  ↓ NO
+  ↓
+Mark as unfixed with explanation
+  ↓
+↓ NO (cannot run test)
+↓
+Check if test requires unavailable resources
+  ↓ Requires unavailable resources?
+  ↓ YES
+  ↓
+Mark as unfixed with explanation
+```
+
+### Step 1: Check Available Information
+
+1. **Read CI logs** (if available):
+   ```bash
+   cat /holon/input/context/github/test-failure-logs.txt 2>/dev/null || echo "No test failure logs available"
+
+   # Search for specific failures
+   grep -i "FAIL" /holon/input/context/github/test-failure-logs.txt 2>/dev/null || true
+   grep -i "error" /holon/input/context/github/test-failure-logs.txt 2>/dev/null || true
+   ```
+
+2. **Read check_runs.json** for test names and failure details:
+   ```bash
+   cat /holon/input/context/github/check_runs.json
+   ```
+
+3. **If logs are complete and clear**:
+   - Analyze the error message
+   - Check stack trace for file/line information
+   - Determine if failure relates to PR changes
+   - Proceed with fix or mark as not-applicable
+
+4. **If logs are incomplete or missing**:
+   - Proceed to Step 2 (attempt reproduction)
+
+### Step 2: Attempt Local Reproduction
+
+Before marking a check as `unfixed`, always try to reproduce the failure:
+
+#### 2.1. Identify the test
+
+From CI logs or check_runs.json:
+- Test name: e.g., `TestRunner_Run_EnvVariablePrecedence`
+- Package/module: e.g., `cmd/holon/runner_test.go`
+- Language: Go, JavaScript/TypeScript, Python, etc.
+
+#### 2.2. Run the test locally
+
+**Go tests**:
+```bash
+# Run specific test
+go test -v -run TestRunner_Run_EnvVariablePrecedence ./cmd/holon/
+
+# Run all tests in package
+go test -v ./cmd/holon/
+
+# Run with race detector
+go test -race -v ./cmd/holon/
+
+# Run specific test with verbose output
+go test -v -run TestName ./path/to/package
+```
+
+**JavaScript/TypeScript (Jest)**:
+```bash
+# Run specific test file
+npm test -- path/to/test.test.ts
+
+# Run with coverage
+npm test -- --coverage
+
+# Run in watch mode for debugging
+npm test -- --watch
+
+# Run specific test
+npm test -- -t "test name"
+```
+
+**Python (pytest)**:
+```bash
+# Run specific test
+pytest tests/test_api.py::test_create_user -v
+
+# Run all tests in directory
+pytest tests/ -v
+
+# Run with pdb debugger
+pytest tests/test_api.py::test_create_user --pdb
+
+# Run with verbose output
+pytest tests/ -vv
+```
+
+**Rust**:
+```bash
+# Run specific test
+cargo test test_name
+
+# Run tests in package
+cargo test -p package_name
+
+# Run with output
+cargo test -- --nocapture
+```
+
+**Java (Maven)**:
+```bash
+# Run specific test
+mvn test -Dtest=TestClass#testMethod
+
+# Run all tests
+mvn test
+
+# Run with debug output
+mvn test -X
+```
+
+**Java (Gradle)**:
+```bash
+# Run specific test
+./gradlew test --tests TestClass.testMethod
+
+# Run all tests
+./gradlew test
+
+# Run with info logging
+./gradlew test --info
+```
+
+#### 2.3. Analyze the result
+
+**If reproduction succeeds** (test fails locally):
+
+1. Read the error message carefully
+2. Examine the stack trace
+3. Identify which file/line is failing
+4. Check if PR modified that file or related code
+5. **Decision**:
+   - **Related to PR changes** → Fix it and mark as `fixed`
+   - **Not related to PR changes** → Mark as `not-applicable`
+   - **Uncertain** → Investigate further (check imports, dependencies, test setup)
+
+**If reproduction fails** (test passes locally):
+
+1. Check for environment differences:
+   ```bash
+   # Check language versions
+   go version      # Go
+   node --version  # JavaScript/TypeScript
+   python --version # Python
+
+   # Check environment variables
+   env | grep -i anthropic
+
+   # Check for test isolation issues
+   # (does test pass when run alone vs with other tests?)
+   ```
+
+2. Review PR changes for:
+   - Version-specific code
+   - Conditional logic based on environment
+   - Platform-specific behavior
+   - Time/date dependencies
+
+3. **Decision**:
+   - **Can explain difference** → Fix environment compatibility or document
+   - **Cannot explain** → Mark as `unfixed` with detailed explanation
+
+### Step 3: When to Mark as `unfixed`
+
+Only mark as `unfixed` when **all** of the following are true:
+
+**Condition A: Unable to reproduce**
+1. Test passes locally despite efforts
+2. Cannot explain CI failure (environment differences unclear)
+3. No available workaround or diagnostic access
+
+OR
+
+**Condition B: Cannot run test**
+1. Test requires unavailable resources:
+   - External database (PostgreSQL, MongoDB, etc.)
+   - External API/services
+   - Specific hardware or environment
+   - Proprietary dependencies
+   - Network access not available in container
+
+**Always include detailed explanation** in the `message` field:
+
+```json
+{
+  "name": "ci/integration-tests",
+  "conclusion": "failure",
+  "fix_status": "unfixed",
+  "message": "**Test**: `TestDatabaseIntegration`\n\n**Attempts**:\n1. Checked CI logs: Insufficient error details\n2. Tried running locally: Failed - requires PostgreSQL database\n3. Checked for Docker compose: No permissions to start services\n4. Reviewed PR changes: Only README.md modified\n\n**Conclusion**:\nCannot reproduce or diagnose without database access. README changes are extremely unlikely to affect database integration tests.\n\n**Recommendation**:\nRequires manual review with database environment access or access to CI environment for debugging."
+}
+```
+
+### Step 4: Common Scenarios and Examples
+
+#### Scenario 1: Logs Complete + Reproducible
+
+```
+CI logs: Clear error message and stack trace
+Local run: Same error
+Analysis: Related to PR changes
+Action: Fix the code, mark as "fixed"
+```
+
+#### Scenario 2: Logs Incomplete + Reproducible
+
+```
+CI logs: "Test failed" (no details)
+Local run: "expected X, got Y" with clear error
+Analysis: Error message clarifies the issue, related to PR changes
+Action: Fix based on local error, mark as "fixed"
+```
+
+#### Scenario 3: Logs Complete + Not Reproducible
+
+```
+CI logs: "Timeout after 5min"
+Local run: Passes immediately
+Investigation: CI uses slower machines, test has timing dependency
+Analysis: Flaky test or environment-specific issue
+Action: Mark as "unfixed" with explanation about environment differences
+```
+
+#### Scenario 4: Cannot Run Test
+
+```
+Test: Requires database
+Environment: Container without DB
+Attempt: Cannot start database
+Action: Mark as "unfixed"
+Explanation: "Test requires PostgreSQL database which is unavailable in container environment. Reviewed PR changes and confirmed no database-related code was modified."
+```
+
+#### Scenario 5: Unrelated Test Failure
+
+```
+Test: Fails with error in package X
+PR changes: Only modifies package Y
+Local run: Same failure (pre-existing issue)
+Analysis: Test failure existed before PR changes
+Action: Mark as "not-applicable" with explanation that this is a pre-existing issue
+```
+
+### Key Principles
+
+1. **Active over passive**: Try to reproduce before giving up
+2. **Local execution preferred**: Running tests provides more information than reading logs
+3. **Transparent decisions**: Always document your reasoning and attempts
+4. **Last resort unfixed**: Only mark as `unfixed` when truly unable to diagnose or fix
+5. **Check test relevance**: Verify the failing test relates to PR changes before marking as `fixed`
