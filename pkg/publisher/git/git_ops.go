@@ -239,30 +239,66 @@ func (g *GitClient) configureGitCredentials(ctx context.Context) error {
 		return fmt.Errorf("git token is empty: please set GIT_TOKEN or repository token")
 	}
 
-	// Configure git to use the token via a generic HTTP extra header
-	// Note: This persists credentials in .git/config. A more secure approach would use
-	// GIT_ASKPASS with temporary helpers, which is deferred to a follow-up improvement.
-	authHeader := fmt.Sprintf("Authorization: Bearer %s", g.Token)
-	holonlog.Debug("configuring git credentials", "header_prefix", "Authorization: Bearer ***")
+	// Configure git credentials by updating the remote URL to include the token.
+	// This is more reliable than http.extraheader for git push operations.
+	// Format: https://x-access-token:TOKEN@github.com/owner/repo.git
 
-	output, err := client.ExecCommand(ctx, "config", "--local", "http.extraheader", authHeader)
+	// Get the current remote URL
+	remoteURL, err := client.ExecCommand(ctx, "config", "--local", "--get", "remote.origin.url")
 	if err != nil {
-		// This is a fatal error - push will fail without credentials
-		return fmt.Errorf("failed to configure git credential helper: %w (output: %s)", err, string(output))
+		return fmt.Errorf("failed to get remote URL: %w", err)
 	}
 
-	// Verify the configuration was set
-	verifyOutput, err := client.ExecCommand(ctx, "config", "--local", "--get", "http.extraheader")
-	if err != nil {
-		holonlog.Warn("failed to verify git credential configuration", "error", err)
+	currentURL := string(remoteURL)
+	holonlog.Debug("current remote URL", "url", currentURL)
+
+	// Check if URL already has token embedded
+	if strings.Contains(currentURL, "@") {
+		// URL already has embedded token (e.g., https://user:pass@host/repo.git)
+		holonlog.Debug("remote URL already has embedded credentials", "url_prefix", currentURL[:30]+"...")
+		return nil
+	}
+
+	// Embed token in URL
+	// Handle both HTTPS and Git protocol URLs
+	var tokenEmbeddedURL string
+	if strings.HasPrefix(currentURL, "https://") {
+		// HTTPS URL: https://github.com/owner/repo.git -> https://x-access-token:TOKEN@github.com/owner/repo.git
+		tokenEmbeddedURL = strings.Replace(currentURL, "https://", fmt.Sprintf("https://x-access-token:%s@", g.Token), 1)
+	} else if strings.HasPrefix(currentURL, "http://") {
+		// HTTP URL (less common)
+		tokenEmbeddedURL = strings.Replace(currentURL, "http://", fmt.Sprintf("http://x-access-token:%s@", g.Token), 1)
+	} else if strings.HasPrefix(currentURL, "git@") {
+		// SSH URL: git@github.com:owner/repo.git -> can't embed token, need to switch to HTTPS
+		// Extract repo path and convert to HTTPS with token
+		repoPath := strings.TrimPrefix(currentURL, "git@github.com:")
+		repoPath = strings.TrimSuffix(repoPath, ".git")
+		tokenEmbeddedURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s.git", g.Token, repoPath)
+		holonlog.Debug("converted SSH URL to HTTPS with token", "repo_path", repoPath)
 	} else {
-		// Safely truncate output for logging (avoid panic if output < 20 chars)
-		verifyStr := string(verifyOutput)
-		prefixLen := 20
+		return fmt.Errorf("unsupported remote URL format: %s", currentURL)
+	}
+
+	holonlog.Debug("updating remote URL with embedded token", "url_prefix", tokenEmbeddedURL[:40]+"...")
+
+	// Update the remote URL
+	_, err = client.ExecCommand(ctx, "config", "--local", "remote.origin.url", tokenEmbeddedURL)
+	if err != nil {
+		return fmt.Errorf("failed to update remote URL with token: %w", err)
+	}
+
+	// Verify the URL was updated
+	verifyURL, err := client.ExecCommand(ctx, "config", "--local", "--get", "remote.origin.url")
+	if err != nil {
+		holonlog.Warn("failed to verify remote URL update", "error", err)
+	} else {
+		verifyStr := string(verifyURL)
+		// Truncate for logging to avoid exposing full token
+		prefixLen := 50
 		if len(verifyStr) < prefixLen {
 			prefixLen = len(verifyStr)
 		}
-		holonlog.Debug("git credentials configured successfully", "header_prefix", verifyStr[:prefixLen]+"...")
+		holonlog.Debug("remote URL updated successfully", "url_prefix", verifyStr[:prefixLen]+"...")
 	}
 
 	return nil

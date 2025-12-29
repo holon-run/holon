@@ -227,31 +227,49 @@ func (g *GitClient) configureGitCredentials(ctx context.Context) error {
 		return fmt.Errorf("github token is empty: please set HOLON_GITHUB_TOKEN or GITHUB_TOKEN environment variable")
 	}
 
-	// Configure git to use the token via the extraheader
-	// This is a common pattern for GitHub authentication.
-	// Note: This persists credentials in .git/config. A more secure approach would use
-	// GIT_ASKPASS with temporary helpers, which is deferred to a follow-up improvement.
-	authHeader := fmt.Sprintf("Authorization: Bearer %s", g.Token)
-	holonlog.Debug("configuring git credentials", "header_prefix", "Authorization: Bearer ***")
+	// Configure git credentials by updating the remote URL to include the token.
+	// This is more reliable than http.extraheader for git push operations.
+	// Format: https://x-access-token:TOKEN@github.com/owner/repo.git
 
-	output, err := client.ExecCommand(ctx, "config", "--local", "http.https://github.com/.extraheader", authHeader)
+	// Get the current remote URL
+	remoteURL, err := client.ExecCommand(ctx, "config", "--local", "--get", "remote.origin.url")
 	if err != nil {
-		// This is a fatal error - push will fail without credentials
-		return fmt.Errorf("failed to configure git credential helper: %w (output: %s)", err, string(output))
+		return fmt.Errorf("failed to get remote URL: %w", err)
 	}
 
-	// Verify the configuration was set
-	verifyOutput, err := client.ExecCommand(ctx, "config", "--local", "--get", "http.https://github.com/.extraheader")
+	currentURL := string(remoteURL)
+	holonlog.Debug("current remote URL", "url", currentURL)
+
+	// Check if URL already has token embedded
+	if strings.Contains(currentURL, "@github.com/") {
+		holonlog.Debug("remote URL already has embedded token", "url_prefix", currentURL[:30]+"...")
+		return nil
+	}
+
+	// Embed token in URL: https://github.com/owner/repo.git -> https://x-access-token:TOKEN@github.com/owner/repo.git
+	// This pattern works for both push and fetch operations
+	tokenEmbeddedURL := strings.Replace(currentURL, "https://github.com/", fmt.Sprintf("https://x-access-token:%s@github.com/", g.Token), 1)
+
+	holonlog.Debug("updating remote URL with embedded token", "url_prefix", tokenEmbeddedURL[:40]+"...")
+
+	// Update the remote URL
+	_, err = client.ExecCommand(ctx, "config", "--local", "remote.origin.url", tokenEmbeddedURL)
 	if err != nil {
-		holonlog.Warn("failed to verify git credential configuration", "error", err)
+		return fmt.Errorf("failed to update remote URL with token: %w", err)
+	}
+
+	// Verify the URL was updated
+	verifyURL, err := client.ExecCommand(ctx, "config", "--local", "--get", "remote.origin.url")
+	if err != nil {
+		holonlog.Warn("failed to verify remote URL update", "error", err)
 	} else {
-		// Safely truncate output for logging (avoid panic if output < 20 chars)
-		verifyStr := string(verifyOutput)
-		prefixLen := 20
+		verifyStr := string(verifyURL)
+		// Truncate for logging to avoid exposing full token
+		prefixLen := 50
 		if len(verifyStr) < prefixLen {
 			prefixLen = len(verifyStr)
 		}
-		holonlog.Debug("git credentials configured successfully", "header_prefix", verifyStr[:prefixLen]+"...")
+		holonlog.Debug("remote URL updated successfully", "url_prefix", verifyStr[:prefixLen]+"...")
 	}
 
 	return nil
