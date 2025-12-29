@@ -22,11 +22,11 @@ exec sh -c 'tar -tzf bin/holon-darwin-arm64.tar.gz'
 stdout '^holon$'
 
 # Verify extraction produces 'holon' directly
-exec sh -c 'mkdir -p test-extract && tar -xzf bin/holon-linux-amd64.tar.gz -C test-extract && ls test-extract/holon'
-stdout 'test-extract/holon'
+exec sh -c 'mkdir -p test-extract && tar -xzf bin/holon-linux-amd64.tar.gz -C test-extract && test -f test-extract/holon'
+stdout ''
 
-! exec sh -c 'ls test-extract/holon-linux-amd64'
-stderr 'No such file or directory'
+# Verify platform-suffixed binary does NOT exist
+! exec sh -c 'test -f test-extract/holon-linux-amd64'
 
 # Cleanup
 exec rm -rf bin test-extract
