@@ -149,6 +149,14 @@ body {
     margin-bottom: var(--spacing-md);
     border: 1px solid var(--border-color);
     backdrop-filter: blur(10px);
+    text-decoration: none;
+    transition: all 0.2s ease;
+}
+
+.badge:hover {
+    background: rgba(255, 255, 255, 0.15);
+    border-color: var(--accent-light);
+    transform: translateY(-1px);
 }
 
 /* Header */

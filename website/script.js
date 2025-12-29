@@ -36,9 +36,32 @@ const initTheme = () => {
     });
 };
 
-// Tab switching functionality
+// Update version badge from GitHub
+const updateVersionBadge = async () => {
+    const badge = document.getElementById('version-badge');
+    if (!badge) return;
+
+    try {
+        const response = await fetch('https://api.github.com/repos/holon-run/holon/releases/latest');
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
+
+        if (data.tag_name) {
+            badge.textContent = `${data.tag_name} Public Preview`;
+        }
+        if (data.html_url) {
+            badge.href = data.html_url;
+        }
+    } catch (error) {
+        console.error('Failed to fetch latest release:', error);
+        // Fallback to static content already in HTML
+    }
+};
+
+// Main initialization
 document.addEventListener('DOMContentLoaded', () => {
     initTheme();
+    updateVersionBadge();
     const tabButtons = document.querySelectorAll('.tab-button');
     const tabContents = document.querySelectorAll('.tab-content');
 
