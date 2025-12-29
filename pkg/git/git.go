@@ -138,6 +138,11 @@ func (c *Client) execCommandWithDir(ctx context.Context, dir string, args ...str
 	cmdArgs = append(cmdArgs, args...)
 
 	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
+
+	// Disable terminal prompts to prevent hanging on credential prompts
+	// When authentication fails, git should return an error instead of prompting
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
