@@ -1294,9 +1294,9 @@ func TestClient_InitRepository_CustomConfig(t *testing.T) {
 	}
 }
 
-// TestClient_InitRepository_PreservesExistingConfig tests that InitRepository
-// doesn't overwrite existing git configuration.
-func TestClient_InitRepository_PreservesExistingConfig(t *testing.T) {
+// TestClient_InitRepository_OverwritesExistingConfig documents that InitRepository
+// currently overwrites existing git configuration instead of preserving it.
+func TestClient_InitRepository_OverwritesExistingConfig(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 

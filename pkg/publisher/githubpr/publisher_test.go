@@ -638,8 +638,12 @@ func TestGitClient_CommitChangesWithoutPreconfiguredGit(t *testing.T) {
 
 	// Now REMOVE the git config to simulate a fresh clone where git config is not set
 	// This is the key scenario from the bug
-	exec.Command("git", "-C", tmpDir, "config", "--unset", "user.name").Run()
-	exec.Command("git", "-C", tmpDir, "config", "--unset", "user.email").Run()
+	if err := exec.Command("git", "-C", tmpDir, "config", "--unset", "user.name").Run(); err != nil {
+		t.Logf("warning: failed to unset git user.name: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "config", "--unset", "user.email").Run(); err != nil {
+		t.Logf("warning: failed to unset git user.email: %v", err)
+	}
 
 	// Verify git config is not set
 	cmd := exec.Command("git", "-C", tmpDir, "config", "--local", "--get", "user.name")
@@ -791,8 +795,12 @@ func TestGitClient_CommitChanges_WithCustomAuthor(t *testing.T) {
 	}
 
 	// Remove config to simulate fresh clone
-	exec.Command("git", "-C", tmpDir, "config", "--unset", "user.name").Run()
-	exec.Command("git", "-C", tmpDir, "config", "--unset", "user.email").Run()
+	if err := exec.Command("git", "-C", tmpDir, "config", "--unset", "user.name").Run(); err != nil {
+		t.Logf("Warning: failed to unset git config user.name: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "config", "--unset", "user.email").Run(); err != nil {
+		t.Logf("Warning: failed to unset git config user.email: %v", err)
+	}
 
 	// Create GitClient with custom author info
 	gitClient := NewGitClient(tmpDir, "", "My Author", "myauthor@example.com")
