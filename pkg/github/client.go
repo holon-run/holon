@@ -25,10 +25,10 @@ const (
 	// TokenEnv is the environment variable for GitHub token
 	TokenEnv = "GITHUB_TOKEN"
 
-	// LegacyTokenEnv is the environment variable for Holon-specific GitHub token
+	// HolonTokenEnv is the environment variable for Holon-specific GitHub token
 	// This has higher priority than GITHUB_TOKEN to allow overriding CI's GITHUB_TOKEN
 	// with a token that has higher permissions (e.g., holonbot app token).
-	LegacyTokenEnv = "HOLON_GITHUB_TOKEN"
+	HolonTokenEnv = "HOLON_GITHUB_TOKEN"
 
 	// DefaultTimeout is the default HTTP timeout
 	DefaultTimeout = 30 * time.Second
@@ -67,7 +67,7 @@ func ghAuthToken() string {
 func GetTokenFromEnv() (string, bool) {
 	// Check HOLON_GITHUB_TOKEN first (highest priority)
 	// This allows overriding the CI's GITHUB_TOKEN with a higher-permission token
-	token := os.Getenv(LegacyTokenEnv)
+	token := os.Getenv(HolonTokenEnv)
 	if token != "" {
 		return token, false
 	}
@@ -173,12 +173,12 @@ func NewClient(token string, opts ...ClientOption) *Client {
 }
 
 // NewClientFromEnv creates a new client using token from environment variables or gh CLI.
-// It checks GITHUB_TOKEN and HOLON_GITHUB_TOKEN environment variables first.
+// It checks HOLON_GITHUB_TOKEN and GITHUB_TOKEN environment variables first.
 // If those are empty, it attempts to use `gh auth token` as a fallback.
 func NewClientFromEnv(opts ...ClientOption) (*Client, error) {
 	token, fromGh := GetTokenFromEnv()
 	if token == "" {
-		return nil, fmt.Errorf("%s or %s environment variable is required (or use 'gh auth login')", TokenEnv, LegacyTokenEnv)
+		return nil, fmt.Errorf("%s or %s environment variable is required (or use 'gh auth login')", HolonTokenEnv, TokenEnv)
 	}
 
 	if fromGh {

@@ -189,8 +189,8 @@ func TestTokenEnvVars(t *testing.T) {
 	if TokenEnv != "GITHUB_TOKEN" {
 		t.Errorf("TokenEnv = %v, want %v", TokenEnv, "GITHUB_TOKEN")
 	}
-	if LegacyTokenEnv != "HOLON_GITHUB_TOKEN" {
-		t.Errorf("LegacyTokenEnv = %v, want %v", LegacyTokenEnv, "HOLON_GITHUB_TOKEN")
+	if HolonTokenEnv != "HOLON_GITHUB_TOKEN" {
+		t.Errorf("HolonTokenEnv = %v, want %v", HolonTokenEnv, "HOLON_GITHUB_TOKEN")
 	}
 }
 

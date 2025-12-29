@@ -18,8 +18,9 @@ const (
 	// TokenEnv is the environment variable for GitHub token.
 	TokenEnv = "GITHUB_TOKEN"
 
-	// LegacyTokenEnv is the legacy environment variable for GitHub token.
-	LegacyTokenEnv = "HOLON_GITHUB_TOKEN"
+	// HolonTokenEnv is the environment variable for Holon-specific GitHub token.
+	// This has higher priority than GITHUB_TOKEN.
+	HolonTokenEnv = "HOLON_GITHUB_TOKEN"
 
 	// BranchFlag is the flag name for branch configuration.
 	BranchFlag = "branch"
