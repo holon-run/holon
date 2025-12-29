@@ -839,6 +839,7 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 
 	req := publisher.PublishRequest{
 		OutputDir: outDir,
+		InputDir:  inputDir,
 		Manifest:  manifestMap,
 		Artifacts: artifacts,
 	}

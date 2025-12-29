@@ -284,7 +284,11 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 			},
 		}
 
-		title, err := p.generateDeterministicTitle(outDir, manifest)
+		req := publisher.PublishRequest{
+			OutputDir: outDir,
+			Manifest:  manifest,
+		}
+		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -297,7 +301,11 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 		outDir := t.TempDir()
 		manifest := map[string]interface{}{}
 
-		title, err := p.generateDeterministicTitle(outDir, manifest)
+		req := publisher.PublishRequest{
+			OutputDir: outDir,
+			Manifest:  manifest,
+		}
+		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -336,7 +344,11 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 		}
 
 		manifest := map[string]interface{}{}
-		title, err := p.generateDeterministicTitle(outDir, manifest)
+		req := publisher.PublishRequest{
+			OutputDir: outDir,
+			Manifest:  manifest,
+		}
+		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -376,7 +388,11 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 		}
 
 		manifest := map[string]interface{}{}
-		title, err := p.generateDeterministicTitle(outDir, manifest)
+		req := publisher.PublishRequest{
+			OutputDir: outDir,
+			Manifest:  manifest,
+		}
+		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -407,7 +423,11 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 		}
 
 		manifest := map[string]interface{}{}
-		title, err := p.generateDeterministicTitle(outDir, manifest)
+		req := publisher.PublishRequest{
+			OutputDir: outDir,
+			Manifest:  manifest,
+		}
+		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -437,7 +457,11 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 		}
 
 		manifest := map[string]interface{}{}
-		_, err := p.generateDeterministicTitle(outDir, manifest)
+		req := publisher.PublishRequest{
+			OutputDir: outDir,
+			Manifest:  manifest,
+		}
+		_, err := p.generateDeterministicTitle(req)
 		if err == nil {
 			t.Error("expected error when issue.json is missing")
 		}
@@ -473,7 +497,11 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 		}
 
 		manifest := map[string]interface{}{}
-		_, err := p.generateDeterministicTitle(outDir, manifest)
+		req := publisher.PublishRequest{
+			OutputDir: outDir,
+			Manifest:  manifest,
+		}
+		_, err := p.generateDeterministicTitle(req)
 		if err == nil {
 			t.Error("expected error when issue title is empty")
 		}
@@ -498,7 +526,8 @@ func TestGenerateIssueTitle(t *testing.T) {
 			t.Fatalf("failed to write issue.json: %v", err)
 		}
 
-		title, err := p.generateIssueTitle(outDir)
+		// Pass the context directory, not outDir
+		title, err := p.generateIssueTitle(filepath.Join(outDir, "context"))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -527,7 +556,8 @@ func TestGeneratePRFixTitle(t *testing.T) {
 			t.Fatalf("failed to write pr.json: %v", err)
 		}
 
-		title, err := p.generatePRFixTitle(outDir)
+		// Pass the context directory, not outDir
+		title, err := p.generatePRFixTitle(filepath.Join(outDir, "context"))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -552,7 +582,8 @@ func TestGeneratePRFixTitle(t *testing.T) {
 			t.Fatalf("failed to write pr.json: %v", err)
 		}
 
-		title, err := p.generatePRFixTitle(outDir)
+		// Pass the context directory, not outDir
+		title, err := p.generatePRFixTitle(filepath.Join(outDir, "context"))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

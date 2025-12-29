@@ -10,6 +10,7 @@ import (
 	"time"
 
 	hghelper "github.com/holon-run/holon/pkg/github"
+	"github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/publisher"
 )
 
@@ -128,7 +129,7 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 
 	// Step 0: Generate deterministic title from context if not already in manifest
 	// This ensures PR titles are derived from context (issue/PR metadata) rather than LLM output
-	deterministicTitle, err := p.generateDeterministicTitle(req.OutputDir, req.Manifest)
+	deterministicTitle, err := p.generateDeterministicTitle(req)
 	if err != nil {
 		// Non-fatal: log and continue with existing title logic
 		fmt.Fprintf(os.Stderr, "Warning: failed to generate deterministic title: %v\n", err)
@@ -359,22 +360,36 @@ func (p *PRPublisher) buildConfig(manifest map[string]interface{}) PRPublisherCo
 
 // generateDeterministicTitle generates a deterministic PR title from context files.
 // Returns empty string if context is not available or title cannot be generated.
-func (p *PRPublisher) generateDeterministicTitle(outputDir string, manifest map[string]interface{}) (string, error) {
+func (p *PRPublisher) generateDeterministicTitle(req publisher.PublishRequest) (string, error) {
 	// Check if title is already set in manifest metadata
-	if metadata, ok := manifest["metadata"].(map[string]interface{}); ok {
+	if metadata, ok := req.Manifest["metadata"].(map[string]interface{}); ok {
 		if title, ok := metadata[TitleFlag].(string); ok && title != "" {
 			// Title already exists, don't override
 			return "", nil
 		}
 	}
 
+	// Determine context directory path: use InputDir/context
+	var contextDir string
+	var contextSource string // Tracks where context was found for logging
+
+	if req.InputDir != "" {
+		contextDir = filepath.Join(req.InputDir, "context")
+		contextSource = fmt.Sprintf("InputDir (%s)", contextDir)
+	} else {
+		// For backward compatibility with direct `holon publish` usage
+		contextDir = filepath.Join(req.OutputDir, "context")
+		contextSource = fmt.Sprintf("OutputDir (%s)", contextDir)
+	}
+
 	// Try to read context manifest to determine context type
-	contextManifestPath := filepath.Join(outputDir, "context", "manifest.json")
+	contextManifestPath := filepath.Join(contextDir, "manifest.json")
 	var contextInfo githubContextInfo
 
 	contextData, err := os.ReadFile(contextManifestPath)
 	if err != nil {
 		// No context manifest available, return empty title (will use fallback)
+		log.Warn("Context manifest not found, skipping deterministic title generation", "path", contextManifestPath)
 		return "", nil
 	}
 
@@ -387,12 +402,15 @@ func (p *PRPublisher) generateDeterministicTitle(outputDir string, manifest map[
 		return "", nil
 	}
 
+	// Log where context was found for debugging
+	log.Debug("Found context for deterministic title generation", "source", contextSource, "kind", contextInfo.Kind)
+
 	// Generate title based on context kind
 	switch contextInfo.Kind {
 	case "issue":
-		return p.generateIssueTitle(outputDir)
+		return p.generateIssueTitle(contextDir)
 	case "pr":
-		return p.generatePRFixTitle(outputDir)
+		return p.generatePRFixTitle(contextDir)
 	default:
 		return "", nil
 	}
@@ -400,8 +418,9 @@ func (p *PRPublisher) generateDeterministicTitle(outputDir string, manifest map[
 
 // generateIssueTitle generates a deterministic title for issue-based PRs.
 // Format: "Fix: <issue title>"
-func (p *PRPublisher) generateIssueTitle(outputDir string) (string, error) {
-	issuePath := filepath.Join(outputDir, "context", "github", "issue.json")
+// contextDir is the context directory (e.g., inputDir/context or outputDir/context)
+func (p *PRPublisher) generateIssueTitle(contextDir string) (string, error) {
+	issuePath := filepath.Join(contextDir, "github", "issue.json")
 	data, err := os.ReadFile(issuePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read issue.json: %w", err)
@@ -421,8 +440,9 @@ func (p *PRPublisher) generateIssueTitle(outputDir string) (string, error) {
 
 // generatePRFixTitle generates a deterministic title for PR-fix mode PRs.
 // Format: "Address review comments on #<pr_number>: <pr title>"
-func (p *PRPublisher) generatePRFixTitle(outputDir string) (string, error) {
-	prPath := filepath.Join(outputDir, "context", "github", "pr.json")
+// contextDir is the context directory (e.g., inputDir/context or outputDir/context)
+func (p *PRPublisher) generatePRFixTitle(contextDir string) (string, error) {
+	prPath := filepath.Join(contextDir, "github", "pr.json")
 	data, err := os.ReadFile(prPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read pr.json: %w", err)
