@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/holon-run/holon/pkg/publisher"
 	"github.com/go-git/go-git/v5"
+	"github.com/holon-run/holon/pkg/publisher"
 )
 
 const (
@@ -130,7 +130,7 @@ func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResu
 	// Create/checkout branch FIRST (before applying patch)
 	// This avoids issues with staged changes being reset during branch checkout
 	if config.Branch != "" {
-		if err := gitClient.CreateBranch(config.Branch); err != nil {
+		if err := gitClient.CreateBranch(context.Background(), config.Branch); err != nil {
 			wrappedErr := fmt.Errorf("failed to create branch: %w", err)
 			result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
 			result.Success = false

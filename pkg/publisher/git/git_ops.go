@@ -84,7 +84,19 @@ func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) (bool, err
 }
 
 // CreateBranch creates a new branch or checks out an existing one.
-func (g *GitClient) CreateBranch(branchName string) error {
+func (g *GitClient) CreateBranch(ctx context.Context, branchName string) error {
+	// Use system git to reset working tree (more robust than go-git)
+	// This prevents "worktree contains unstaged changes" errors
+	gitClient := holonGit.NewClient(g.WorkspaceDir)
+	if _, err := gitClient.ExecCommand(ctx, "reset", "--hard", "HEAD"); err != nil {
+		// Log warning but continue - reset failure shouldn't block branch creation
+		fmt.Printf("Warning: failed to reset worktree with system git (continuing anyway): %v\n", err)
+	}
+	if _, err := gitClient.ExecCommand(ctx, "clean", "-fd"); err != nil {
+		// Log warning but continue - clean failure shouldn't block branch creation
+		fmt.Printf("Warning: failed to clean untracked files (continuing anyway): %v\n", err)
+	}
+
 	repo, err := gogit.PlainOpen(g.WorkspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
