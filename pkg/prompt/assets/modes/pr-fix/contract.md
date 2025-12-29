@@ -144,53 +144,36 @@ When CI tests fail, follow this proactive workflow:
 Test failure detected
   ↓
 Are CI logs sufficient?
-  ↓ YES
-  ↓
-Analyze logs → Determine relevance → Fix or not-applicable
-  ↓ NO
-  ↓
-Attempt to reproduce locally
-  ↓ Can run test?
-  ↓ YES
-  ↓
-Run test → Can reproduce?
-  ↓ YES
-  ↓
-Analyze error → Determine relevance → Fix or not-applicable
-  ↓ NO
-  ↓
-Investigate environment differences → Can explain?
-  ↓ YES
-  ↓
-Fix environment issue or document
-  ↓ NO
-  ↓
-Mark as unfixed with explanation
-  ↓
-↓ NO (cannot run test)
-↓
-Check if test requires unavailable resources
-  ↓ Requires unavailable resources?
-  ↓ YES
-  ↓
-Mark as unfixed with explanation
+  ↓ YES                              ↓ NO
+  ↓                                  ↓
+Analyze logs → Determine           Attempt to reproduce locally
+relevance → Fix or not-applicable   ↓ Can run test?
+                                    ↓ YES                 ↓ NO
+                                    ↓                      ↓
+                              Run test → Can          Check if test requires
+                              reproduce?              unavailable resources
+                              ↓ YES   ↓ NO            ↓ Requires unavailable?
+                              ↓       ↓                ↓ YES
+                              ↓       Investigate      ↓
+                        Analyze → environment         Mark as unfixed
+                        Fix or   differences          with explanation
+                        not-    ↓ Can explain?
+                        applicable ↓ YES     ↓ NO
+                                 ↓         ↓
+                            Fix env  Mark as
+                            or doc   unfixed
 ```
 
 ### Step 1: Check Available Information
 
 1. **Read CI logs** (if available):
-   ```bash
-   cat /holon/input/context/github/test-failure-logs.txt 2>/dev/null || echo "No test failure logs available"
-
-   # Search for specific failures
-   grep -i "FAIL" /holon/input/context/github/test-failure-logs.txt 2>/dev/null || true
-   grep -i "error" /holon/input/context/github/test-failure-logs.txt 2>/dev/null || true
-   ```
+   - Check `/holon/input/context/github/test-failure-logs.txt` for failure details
+   - Search for specific failures (FAIL, error, exception patterns)
+   - Identify failing test names and stack traces
 
 2. **Read check_runs.json** for test names and failure details:
-   ```bash
-   cat /holon/input/context/github/check_runs.json
-   ```
+   - Check `/holon/input/context/github/check_runs.json` for structured test failure information
+   - Extract test names, job IDs, and failure summaries
 
 3. **If logs are complete and clear**:
    - Analyze the error message
@@ -214,86 +197,16 @@ From CI logs or check_runs.json:
 
 #### 2.2. Run the test locally
 
-**Go tests**:
-```bash
-# Run specific test
-go test -v -run TestRunner_Run_EnvVariablePrecedence ./cmd/holon/
+**Run the failing test** to reproduce the issue:
+- Determine the appropriate test command for the project's language/framework
+- Check project documentation (README, CONTRIBUTING.md, package.json, Makefile, etc.) for test commands
+- Run the specific failing test identified from CI logs or check_runs.json
+- Use appropriate verbosity flags to see detailed error messages
 
-# Run all tests in package
-go test -v ./cmd/holon/
-
-# Run with race detector
-go test -race -v ./cmd/holon/
-
-# Run specific test with verbose output
-go test -v -run TestName ./path/to/package
-```
-
-**JavaScript/TypeScript (Jest)**:
-```bash
-# Run specific test file
-npm test -- path/to/test.test.ts
-
-# Run with coverage
-npm test -- --coverage
-
-# Run in watch mode for debugging
-npm test -- --watch
-
-# Run specific test
-npm test -- -t "test name"
-```
-
-**Python (pytest)**:
-```bash
-# Run specific test
-pytest tests/test_api.py::test_create_user -v
-
-# Run all tests in directory
-pytest tests/ -v
-
-# Run with pdb debugger
-pytest tests/test_api.py::test_create_user --pdb
-
-# Run with verbose output
-pytest tests/ -vv
-```
-
-**Rust**:
-```bash
-# Run specific test
-cargo test test_name
-
-# Run tests in package
-cargo test -p package_name
-
-# Run with output
-cargo test -- --nocapture
-```
-
-**Java (Maven)**:
-```bash
-# Run specific test
-mvn test -Dtest=TestClass#testMethod
-
-# Run all tests
-mvn test
-
-# Run with debug output
-mvn test -X
-```
-
-**Java (Gradle)**:
-```bash
-# Run specific test
-./gradlew test --tests TestClass.testMethod
-
-# Run all tests
-./gradlew test
-
-# Run with info logging
-./gradlew test --info
-```
+**Common test patterns** (examples - adapt to project):
+- Use `make test`, `npm test`, `pytest`, `go test`, `cargo test`, etc. based on project setup
+- Run specific tests by name when possible for faster debugging
+- Check CI configuration files (`.github/workflows/*.yml`, `.gitlab-ci.yml`, etc.) for exact commands used
 
 #### 2.3. Analyze the result
 
@@ -311,18 +224,10 @@ mvn test -X
 **If reproduction fails** (test passes locally):
 
 1. Check for environment differences:
-   ```bash
-   # Check language versions
-   go version      # Go
-   node --version  # JavaScript/TypeScript
-   python --version # Python
-
-   # Check environment variables
-   env | grep -i anthropic
-
-   # Check for test isolation issues
-   # (does test pass when run alone vs with other tests?)
-   ```
+   - Verify language/runtime versions match CI environment
+   - Check for required environment variables (use project documentation or CI config as reference)
+   - Check for test isolation issues (does test pass when run alone vs with other tests?)
+   - Verify all required dependencies and services are available
 
 2. Review PR changes for:
    - Version-specific code
@@ -336,16 +241,14 @@ mvn test -X
 
 ### Step 3: When to Mark as `unfixed`
 
-Only mark as `unfixed` when **all** of the following are true:
+Only mark as `unfixed` when **ONE** of these conditions is met:
 
-**Condition A: Unable to reproduce**
+**Condition A: Unable to reproduce AND ALL of:**
 1. Test passes locally despite efforts
 2. Cannot explain CI failure (environment differences unclear)
 3. No available workaround or diagnostic access
 
-OR
-
-**Condition B: Cannot run test**
+**Condition B: Cannot run test because:**
 1. Test requires unavailable resources:
    - External database (PostgreSQL, MongoDB, etc.)
    - External API/services
@@ -410,8 +313,8 @@ Explanation: "Test requires PostgreSQL database which is unavailable in containe
 Test: Fails with error in package X
 PR changes: Only modifies package Y
 Local run: Same failure (pre-existing issue)
-Analysis: Test failure existed before PR changes
-Action: Mark as "not-applicable" with explanation that this is a pre-existing issue
+Analysis: Test failure existed before PR changes (also fails on main/base branch)
+Action: Mark as "not-applicable" with explanation that this is a pre-existing issue not related to PR changes
 ```
 
 ### Key Principles
