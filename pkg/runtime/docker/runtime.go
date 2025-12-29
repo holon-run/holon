@@ -112,7 +112,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	}
 
 	// Set host git config (user's personal identity, highest priority)
-	// This will be used unless ProjectConfig explicitly overrides it
+	// This overrides any ProjectConfig values that were set earlier in runner.go
 	if gitName != "" {
 		cfg.Env["GIT_AUTHOR_NAME"] = gitName
 		cfg.Env["GIT_COMMITTER_NAME"] = gitName

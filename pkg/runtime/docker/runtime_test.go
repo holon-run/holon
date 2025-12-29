@@ -1027,7 +1027,7 @@ exit 1`
 			gitEmail, _ := getGitConfig("user.email")
 
 			// Set host git config (highest priority)
-			// This will override any ProjectConfig values
+			// This overrides any initialEnv values (including ProjectConfig)
 			if gitName != "" {
 				cfg.Env["GIT_AUTHOR_NAME"] = gitName
 				cfg.Env["GIT_COMMITTER_NAME"] = gitName
@@ -1037,9 +1037,8 @@ exit 1`
 				cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
 			}
 
-			// Note: ProjectConfig overrides would be applied after this in runner.go
-			// So initialEnv values that represent ProjectConfig would override host config
-			// But in this test, initialEnv is set before host config, so host config wins
+			// Note: initialEnv may contain ProjectConfig values, but host config
+			// unconditionally overrides them here, matching runtime.go behavior.
 
 			// Verify the precedence worked correctly
 			// GIT_AUTHOR_NAME should match expected
