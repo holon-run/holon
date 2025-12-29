@@ -15,6 +15,11 @@ NAME="${BUNDLE_NAME:-agent-claude}"
 VERSION="${BUNDLE_VERSION:-}"
 if [ -z "${VERSION}" ]; then
   VERSION=$(node -e "const p=require('${ROOT_DIR}/package.json'); console.log(p.version || '0.0.0')" 2>/dev/null || echo "0.0.0")
+  # Warn if using fallback version
+  if [ "${VERSION}" = "0.0.0" ]; then
+    echo "WARNING: Using fallback version 0.0.0 - version could not be detected from package.json" >&2
+    echo "         Set BUNDLE_VERSION explicitly to override." >&2
+  fi
 fi
 PLATFORM="${BUNDLE_PLATFORM:-linux}"
 ARCH="${BUNDLE_ARCH:-amd64}"
@@ -90,7 +95,7 @@ echo "  ✓ manifest.json is valid JSON"
 
 # Try to run the agent (syntax check)
 echo "Running Node.js syntax check on dist/agent.js..."
-if ! node -c "${TEST_DIR}/dist/agent.js" 2>&1; then
+if ! node -c "${TEST_DIR}/dist/agent.js" 2>/dev/null; then
   echo "ERROR: Syntax check failed for dist/agent.js" >&2
   exit 1
 fi
@@ -98,6 +103,7 @@ echo "  ✓ dist/agent.js syntax is valid"
 
 # Try to execute agent with --probe (basic execution test)
 # The --probe mode validates that the agent can start and write outputs
+# Expected output format: "Probe completed" string indicates successful execution
 echo "Running agent probe test..."
 PROBE_OUTPUT=$(cd "${TEST_DIR}" && NODE_ENV=production node dist/agent.js --probe 2>&1)
 PROBE_EXIT_CODE=$?
@@ -109,7 +115,8 @@ if [ ${PROBE_EXIT_CODE} -ne 0 ]; then
   exit 1
 fi
 
-# Check if probe wrote the expected manifest
+# Check if probe wrote the expected completion message
+# Note: The "Probe completed" string is the expected success indicator from the agent's --probe mode
 if ! echo "${PROBE_OUTPUT}" | grep -q "Probe completed"; then
   echo "ERROR: Agent probe did not complete successfully" >&2
   echo "Output:" >&2

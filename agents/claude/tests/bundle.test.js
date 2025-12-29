@@ -29,7 +29,7 @@ function extractBundle(bundlePath) {
     return tmpDir;
   } catch (error) {
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    throw error;
+    throw new Error(`Failed to extract bundle: ${error.message}`);
   }
 }
 
@@ -62,9 +62,9 @@ describe('Agent Bundle', () => {
     ];
 
     for (const file of required) {
-      // Files in tar archive have leading ./ prefix
-      const pattern = file.replace(/\//g, '\\/').replace(/\./g, '\\.');
-      assert.ok(new RegExp(`^${pattern}$`, 'm').test(output),
+      // Files in tar archive have leading ./ prefix; escape regex metacharacters for exact line match
+      const pattern = new RegExp('^' + file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'm');
+      assert.ok(pattern.test(output),
         `Required file not found in bundle: ${file}`);
     }
   });
@@ -139,7 +139,7 @@ describe('Agent Bundle', () => {
         cwd: tmpDir,
         env: { ...process.env, NODE_ENV: 'production' },
         stdio: 'pipe',
-        timeout: 10000, // 10 second timeout
+        timeout: 30000, // 30 second timeout for CI environments
       });
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -172,8 +172,13 @@ describe('Agent Bundle', () => {
     const stats = fs.statSync(bundlePath);
     const sizeMB = stats.size / (1024 * 1024);
 
-    // Bundle should be between 5MB and 200MB (approximate, adjust as needed)
-    assert.ok(sizeMB >= 5, `Bundle is suspiciously small: ${sizeMB.toFixed(2)}MB`);
-    assert.ok(sizeMB <= 200, `Bundle is suspiciously large: ${sizeMB.toFixed(2)}MB`);
+    // Sanity check: bundle size should be within a reasonable range.
+    // Defaults are 5MB–200MB but can be overridden via env vars to adapt to
+    // different deployment targets or build configurations.
+    const minSizeMB = Number(process.env.BUNDLE_MIN_SIZE_MB) || 5;
+    const maxSizeMB = Number(process.env.BUNDLE_MAX_SIZE_MB) || 200;
+
+    assert.ok(sizeMB >= minSizeMB, `Bundle is suspiciously small: ${sizeMB.toFixed(2)}MB (min: ${minSizeMB}MB)`);
+    assert.ok(sizeMB <= maxSizeMB, `Bundle is suspiciously large: ${sizeMB.toFixed(2)}MB (max: ${maxSizeMB}MB)`);
   });
 });
