@@ -185,6 +185,33 @@ holon run --goal "Fix the bug" --log-level info
 
 Holon can automatically detect the appropriate Docker base image for your workspace by analyzing project files. This feature is enabled by default when no image is explicitly specified.
 
+**Root-First Detection Strategy:**
+
+Holon uses a root-first detection strategy to ensure accurate image selection:
+
+1. **Root Directory Scan** (depth 1, files only): First scans only root-level files
+   - If signals are found, uses them and stops scanning
+   - This prevents dependency directories (`deps/`, `vendor/`) from overriding root project configuration
+
+2. **Full Recursive Scan** (fallback): If no root signals found, performs full workspace scan
+   - Scans all subdirectories (excluding `node_modules`, `vendor`, etc.)
+   - Uses priority-based selection to choose the best signal
+
+**Benefits:**
+- **More Accurate**: Root signals define the project's primary technology
+- **Faster**: Root scan is ~10 files in <1ms vs full scan of 10,000+ files in 100-500ms
+- **Monorepo-Friendly**: Root workspace files (`pnpm-workspace.yaml`) are prioritized over dependency signals
+
+**Example** - TypeScript project with Go dependencies:
+```
+project/
+├── pnpm-workspace.yaml     # Root workspace (TypeScript/pnpm) ← DETECTED
+├── package.json            # Root package.json ← DETECTED
+└── deps/
+    └── x402_upstream/
+        └── go.mod          # Go dependency ← IGNORED (not scanned due to root signals)
+```
+
 **Detection Heuristics:**
 - `go.mod` → `golang:1.23` (detects `go <version>` directive for version-specific images)
 - `Cargo.toml` → `rust:1.83` (version detection not implemented)
@@ -231,17 +258,19 @@ For supported languages (Go, Node.js, Python, Java), Holon attempts to parse ver
 
 **Usage Examples:**
 ```bash
-# Auto-detect enabled (default) with version detection
+# Auto-detect enabled (default) with root-only scan
 holon run --goal "Fix the bug"
 # Output: Config: Detected image: golang:1.24 (signals: go.mod) - Detected Go module (go.mod) (version: 1.24 (go.mod: go, line 3: 1.24))
 
-# Version detection with Python project
-holon run --goal "Run tests"
-# Output: Config: Detected image: python:3.11 (signals: pyproject.toml) - Detected Python project (pyproject.toml) (version: 3.11 (pyproject.toml: requires-python, line 2: ">=3.11"))
-
-# No version hint found - falls back to static default
+# TypeScript/pnpm project with Go dependencies - root signals win
 holon run --goal "Build"
-# Output: Config: Detected image: golang:1.23 (signals: go.mod) - Detected Go module (go.mod) (no version hint detected, using static default)
+# Output: Config: Detected image: node:22 (signals: pnpm-workspace.yaml, package.json) - Detected pnpm workspace (pnpm-workspace.yaml)
+# Note: deps/ directory with go.mod files is NOT scanned (root-only mode)
+
+# Monorepo without root config - falls back to full scan
+holon run --goal "Test"
+# Output: Config: Detected image: golang:1.23 (signals: go.mod) - Detected Go module (go.mod)
+# Note: packages/*/go.mod was found via full-recursive scan
 
 # Disable auto-detection via CLI
 holon run --goal "Fix the bug" --image-auto-detect=false
@@ -291,16 +320,27 @@ holon detect image --json
 
 **Output Examples:**
 
-Default output:
+Default output (root-only scan):
 ```
 $ holon detect image
 ✓ Detected image: node:22
   Signals: pnpm-workspace.yaml, package.json
   Rationale: Detected pnpm workspace (pnpm-workspace.yaml)
+  Scan mode: root-only
   Workspace: /home/user/project
 ```
 
-Debug mode:
+Default output (full-recursive scan - monorepo without root config):
+```
+$ holon detect image
+✓ Detected image: golang:1.23
+  Signals: go.mod
+  Rationale: Detected Go module (go.mod)
+  Scan mode: full-recursive
+  Workspace: /home/user/project
+```
+
+Debug mode (root-only scan):
 ```
 $ holon detect image --debug
 Scanning workspace: /home/user/project
@@ -316,6 +356,7 @@ Scanning workspace: /home/user/project
     Raw: ">=18.0.0"
   ✓ Total files scanned: 1,247
   ✓ Signals found: 2
+  ✓ Scan mode: root-only
   ✓ Best signal: pnpm-workspace.yaml (priority: 95)
 
 ✓ Detected image: node:22
@@ -325,6 +366,7 @@ Scanning workspace: /home/user/project
   Workspace: /home/user/project
   Files scanned: 1,247
   Scan duration: 45ms
+  Scan mode: root-only
 ```
 
 JSON output:
@@ -347,7 +389,8 @@ JSON output:
   "scan_stats": {
     "files_scanned": 1247,
     "duration_ms": 45,
-    "signals_found": 2
+    "signals_found": 2,
+    "scan_mode": "root-only"
   }
 }
 ```

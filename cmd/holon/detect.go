@@ -72,7 +72,8 @@ Examples:
 // outputDetectDefault outputs the detection result in default human-readable format
 func outputDetectDefault(workspace string) error {
 	detector := image.NewDetector(workspace)
-	result := detector.Detect()
+	debugResult := detector.DetectDebug()
+	result := debugResult.DetectResult
 
 	if result.Disabled {
 		fmt.Printf("⚠ Auto-detection disabled\n")
@@ -90,6 +91,7 @@ func outputDetectDefault(workspace string) error {
 	}
 
 	fmt.Printf("  Rationale: %s\n", result.Rationale)
+	fmt.Printf("  Scan mode: %s\n", debugResult.ScanMode)
 	fmt.Printf("  Workspace: %s\n", workspace)
 
 	return nil
@@ -130,6 +132,7 @@ func outputDetectDebug(workspace string) error {
 
 	fmt.Printf("  ✓ Total files scanned: %d\n", debugResult.FileCount)
 	fmt.Printf("  ✓ Signals found: %d\n", len(debugResult.ScannedSignals))
+	fmt.Printf("  ✓ Scan mode: %s\n", debugResult.ScanMode)
 
 	if len(debugResult.ScannedSignals) > 0 {
 		bestSignal := findBestSignal(debugResult.ScannedSignals)
@@ -151,6 +154,7 @@ func outputDetectDebug(workspace string) error {
 	fmt.Printf("  Workspace: %s\n", workspace)
 	fmt.Printf("  Files scanned: %d\n", debugResult.FileCount)
 	fmt.Printf("  Scan duration: %dms\n", debugResult.DurationMs)
+	fmt.Printf("  Scan mode: %s\n", debugResult.ScanMode)
 
 	return nil
 }
@@ -171,9 +175,10 @@ func outputDetectJSON(workspace string) error {
 	}
 
 	type ScanStats struct {
-		FilesScanned int   `json:"files_scanned"`
-		DurationMs   int64 `json:"duration_ms"`
-		SignalsFound int   `json:"signals_found"`
+		FilesScanned int    `json:"files_scanned"`
+		DurationMs   int64  `json:"duration_ms"`
+		SignalsFound int    `json:"signals_found"`
+		ScanMode     string `json:"scan_mode"`
 	}
 
 	output := struct {
@@ -196,6 +201,7 @@ func outputDetectJSON(workspace string) error {
 			FilesScanned: debugResult.FileCount,
 			DurationMs:   debugResult.DurationMs,
 			SignalsFound: len(debugResult.ScannedSignals),
+			ScanMode:     debugResult.ScanMode,
 		},
 	}
 

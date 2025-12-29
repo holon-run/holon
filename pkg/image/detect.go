@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/holon-run/holon/pkg/log"
 )
 
 // DefaultImage is the fallback Docker image used when no language signal is detected.
@@ -47,6 +49,9 @@ type DebugDetectResult struct {
 
 	// DurationMs is how long the detection took
 	DurationMs int64 `json:"duration_ms"`
+
+	// ScanMode indicates which scanning strategy was used (root-only or full-recursive)
+	ScanMode string `json:"scan_mode"`
 }
 
 // SignalMatch represents a found signal with location info.
@@ -101,6 +106,22 @@ func (d *Detector) DetectDebug() *DebugDetectResult {
 	// Collect signals with path tracking
 	signals := d.collectSignals(true)
 
+	// Determine scan mode
+	scanMode := "full-recursive"
+	if len(signals) > 0 {
+		// Check if all signals are at root level
+		allRoot := true
+		for _, sig := range signals {
+			if sig.path != "" && filepath.Dir(sig.path) != "." {
+				allRoot = false
+				break
+			}
+		}
+		if allRoot {
+			scanMode = "root-only"
+		}
+	}
+
 	// Count files
 	fileCount := 0
 	_ = filepath.Walk(d.workspace, func(path string, info os.FileInfo, err error) error {
@@ -143,6 +164,7 @@ func (d *Detector) DetectDebug() *DebugDetectResult {
 		VersionInfo:    versionInfo,
 		FileCount:      fileCount,
 		DurationMs:     time.Since(start).Milliseconds(),
+		ScanMode:       scanMode,
 	}
 }
 
@@ -172,8 +194,68 @@ type signal struct {
 }
 
 // collectSignals scans the workspace for language/framework signals.
+// Uses root-first strategy: scan root directory first, fall back to full scan if no root signals found.
 // If trackPaths is true, stores the path where each signal was found.
 func (d *Detector) collectSignals(trackPaths bool) []signal {
+	// Step 1: Check root directory first (depth 1, only files)
+	rootSignals := d.collectRootSignals(trackPaths)
+	if len(rootSignals) > 0 {
+		log.Debug("image detect found signals in root directory",
+			"signals", signalNames(rootSignals),
+			"scan_mode", "root-only")
+		return rootSignals
+	}
+
+	// Step 2: Fall back to full recursive scan if no root signals
+	log.Debug("image detect no signals in root, performing full scan")
+	return d.collectAllSignals(trackPaths)
+}
+
+// collectRootSignals scans only the root directory (depth 1, files only) for language/framework signals.
+// This is the first step in the root-first detection strategy.
+// If trackPaths is true, stores the path where each signal was found.
+func (d *Detector) collectRootSignals(trackPaths bool) []signal {
+	var signals []signal
+	seen := make(map[string]bool)
+
+	// Read only root directory entries
+	entries, err := os.ReadDir(d.workspace)
+	if err != nil {
+		return signals
+	}
+
+	for _, entry := range entries {
+		// Skip directories in root scan - we only want root-level files
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+
+		// Skip hidden files
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+
+		// Check if this file matches a known signal
+		if sig := matchSignal(name, name); sig != nil {
+			if !seen[sig.Name] {
+				seen[sig.Name] = true
+				if trackPaths {
+					sig.path = name // Root level file
+				}
+				signals = append(signals, *sig)
+			}
+		}
+	}
+
+	return signals
+}
+
+// collectAllSignals recursively scans the entire workspace for language/framework signals.
+// This is the fallback when no root signals are found.
+// If trackPaths is true, stores the path where each signal was found.
+func (d *Detector) collectAllSignals(trackPaths bool) []signal {
 	var signals []signal
 
 	// Walk the workspace directory looking for known files
