@@ -1,6 +1,6 @@
 # Holon
 
-[English][中文](README.zh.md)
+English|[中文](README.zh.md)
 
 Holon runs AI coding agents headlessly to turn issues into PR-ready patches and summaries — locally or in CI, without babysitting the agent.
 

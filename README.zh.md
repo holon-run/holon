@@ -1,6 +1,6 @@
 # Holon
 
-[English](README.md) | [中文]
+[English](README.md) | 中文
 
 Holon 让 AI 编码代理以全程无交互方式运行，一步把 Issue 变成可合并的 PR 补丁和摘要——本地或 CI 都可用，无需人工值守。
 
