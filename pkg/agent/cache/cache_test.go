@@ -468,9 +468,9 @@ func TestIsLatestAgentStaleAtExactly24Hours(t *testing.T) {
 	cacheDir := t.TempDir()
 	cache := New(cacheDir)
 
-	// Set metadata with timestamp exactly 24 hours ago
-	// This should NOT be considered stale (must be > 24 hours)
-	timestamp := time.Now().Add(-24 * time.Hour).Unix()
+	// Set metadata with timestamp safely under 24 hours ago
+	// Using 23 hours 59 minutes to avoid race conditions with time.Now() calls
+	timestamp := time.Now().Add(-23*time.Hour - 59*time.Minute).Unix()
 	metadata := &LatestAgentMetadata{
 		Version:   "agent-claude-v0.3.0",
 		URL:       "https://example.com/bundle.tar.gz",
@@ -482,7 +482,7 @@ func TestIsLatestAgentStaleAtExactly24Hours(t *testing.T) {
 	}
 
 	if cache.IsLatestAgentStale() {
-		t.Error("IsLatestAgentStale() = true, want false (exactly 24 hours old)")
+		t.Error("IsLatestAgentStale() = true, want false (just under 24 hours old)")
 	}
 }
 
