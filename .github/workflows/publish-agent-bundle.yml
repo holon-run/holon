@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   publish-agent-bundle:
@@ -139,3 +140,95 @@ jobs:
           ${{ env.checksum_file }}
         draft: false
         prerelease: false
+
+    - name: Create/update builtin agent update issue
+      if: steps.check_tag.outputs.exists == 'false' && steps.push_tag.outputs.pushed == 'true'
+      run: |
+        TAG="agent-claude-v${{ steps.version.outputs.version }}"
+        BUNDLE_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz"
+
+        # Extract SHA256 checksum (format: "checksum filename")
+        SHA256=$(awk '{print $1}' "${{ env.checksum_file }}")
+
+        # Issue title
+        TITLE="Update builtin agent to ${TAG}"
+
+        # Issue body
+        BODY=$(cat <<EOF
+        A new Claude agent bundle has been released. Update the builtin agent configuration to use the latest version.
+
+        ## Release Details
+
+        - **Tag**: \`${TAG}\`
+        - **Version**: \`${{ steps.version.outputs.version }}\`
+        - **Bundle URL**: \`${BUNDLE_URL}\`
+        - **SHA256 Checksum**: \`${SHA256}\`
+
+        ## Update Instructions
+
+        Please update the following files:
+
+        ### 1. Update \`pkg/agent/builtin.go\`
+
+        Update the \`DefaultBuiltinAgent()\` function with the new values:
+
+        \`\`\`go
+        func DefaultBuiltinAgent() *BuiltinAgent {
+            return &BuiltinAgent{
+                Name:     \"claude-agent\",
+                Version:  \"${TAG}\",
+                URL:      \"${BUNDLE_URL}\",
+                Checksum: \"${SHA256}\",
+            }
+        }
+        \`\`\`
+
+        ### 2. Update Tests (if applicable)
+
+        Check for any hardcoded version references in test files (e.g., \`tests/integration/testdata/builtin-agent.txtar\`) and update them to reference the new tag.
+
+        ### 3. Verification
+
+        After updating, verify the changes:
+        - Run \`make test\` to ensure all tests pass
+        - Run \`holon agent info default\` to verify the new configuration
+        - Test the agent bundle download and installation
+
+        ---
+
+        *This issue was automatically created by the [publish-agent-bundle](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) workflow.*
+        EOF
+        )
+
+        # Check if an open issue with this title already exists
+        echo "Checking for existing open issue with title: ${TITLE}"
+        if ! EXISTING_ISSUES=$(gh issue list \
+          --repo "${{ github.repository }}" \
+          --search "in:title ${TITLE}" \
+          --state open \
+          --json number \
+          --jq '.[].number'); then
+          echo "Error: failed to list existing issues with gh" >&2
+          exit 1
+        fi
+
+        if [ -n "$EXISTING_ISSUES" ]; then
+          # Update the first existing issue
+          ISSUE_NUMBER=$(echo "$EXISTING_ISSUES" | head -n1)
+          echo "Found existing issue #${ISSUE_NUMBER}, updating..."
+          gh issue update "${ISSUE_NUMBER}" \
+            --repo "${{ github.repository }}" \
+            --body "$BODY"
+          echo "Issue #${ISSUE_NUMBER} updated successfully"
+        else
+          # Create a new issue
+          echo "No existing issue found, creating new issue..."
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "${TITLE}" \
+            --body "$BODY" \
+            --label "dependencies"
+          echo "New issue created successfully"
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
