@@ -148,7 +148,7 @@ func TestPublisherBuildConfig(t *testing.T) {
 
 func TestApplyPatchNoOp(t *testing.T) {
 	tmpDir := t.TempDir()
-	client := NewGitClient(tmpDir, "")
+	client := NewGitClient(tmpDir, "", "", "")
 
 	// Test with non-existent patch file
 	applied, err := client.ApplyPatch(context.Background(), tmpDir+"/nonexistent.patch")

@@ -18,13 +18,21 @@ type GitClient struct {
 
 	// Token is the optional authentication token for push operations
 	Token string
+
+	// AuthorName is the git author name for commits
+	AuthorName string
+
+	// AuthorEmail is the git author email for commits
+	AuthorEmail string
 }
 
 // NewGitClient creates a new Git client.
-func NewGitClient(workspaceDir, token string) *GitClient {
+func NewGitClient(workspaceDir, token, authorName, authorEmail string) *GitClient {
 	return &GitClient{
 		WorkspaceDir: workspaceDir,
 		Token:        token,
+		AuthorName:   authorName,
+		AuthorEmail:  authorEmail,
 	}
 }
 
@@ -154,12 +162,39 @@ func (g *GitClient) CommitChanges(ctx context.Context, message string) (string, 
 		return "", fmt.Errorf("no changes to commit")
 	}
 
+	// Determine author name and email (use defaults if not configured)
+	authorName := g.AuthorName
+	if authorName == "" {
+		authorName = "Holon Bot"
+	}
+	authorEmail := g.AuthorEmail
+	if authorEmail == "" {
+		authorEmail = "bot@holon.run"
+	}
+
+	// Configure git user.name and user.email BEFORE committing
+	// This sets both author and committer identity.
+	// Use --local flag to only set repository-level config (doesn't affect global config).
+	// Use git config --get to check if already set, preserving user's existing config if present.
+	currentName, _ := client.ExecCommand(ctx, "config", "--local", "--get", "user.name")
+	if strings.TrimSpace(string(currentName)) == "" {
+		if _, err := client.ExecCommand(ctx, "config", "--local", "user.name", authorName); err != nil {
+			return "", fmt.Errorf("failed to configure git user.name: %w", err)
+		}
+	}
+	currentEmail, _ := client.ExecCommand(ctx, "config", "--local", "--get", "user.email")
+	if strings.TrimSpace(string(currentEmail)) == "" {
+		if _, err := client.ExecCommand(ctx, "config", "--local", "user.email", authorEmail); err != nil {
+			return "", fmt.Errorf("failed to configure git user.email: %w", err)
+		}
+	}
+
 	// Commit changes
 	commitSHA, err := client.CommitWith(ctx, holonGit.CommitOptions{
 		Message: message,
 		Author: &holonGit.CommitAuthor{
-			Name:  "Holon Bot",
-			Email: "bot@holon.run",
+			Name:  authorName,
+			Email: authorEmail,
 			When:  time.Now(),
 		},
 	})

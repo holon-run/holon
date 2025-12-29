@@ -1186,3 +1186,20 @@ func TestClone_FullFromBareRemote(t *testing.T) {
 		t.Errorf("expected 3 commits in full clone, got %d", len(logLines))
 	}
 }
+
+func TestGetGlobalConfig(t *testing.T) {
+	// Get current global user.name
+	name := GetGlobalConfig("user.name")
+
+	// If git is not configured, we'll get empty string (not an error)
+	// This is expected behavior - the function returns empty string on error
+	// We just verify it doesn't crash
+
+	// Try to get a key that likely doesn't exist
+	nonExistent := GetGlobalConfig("holon.test.nonexistent.key")
+	if nonExistent != "" {
+		t.Errorf("expected empty string for non-existent config key, got %q", nonExistent)
+	}
+
+	_ = name // Use name to avoid unused variable warning
+}

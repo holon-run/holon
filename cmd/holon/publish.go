@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/holon-run/holon/pkg/api/v1"
+	holonGit "github.com/holon-run/holon/pkg/git"
 	"github.com/holon-run/holon/pkg/publisher"
 	"github.com/spf13/cobra"
 )
@@ -81,6 +82,38 @@ Examples:
 		manifestData, _ = json.Marshal(manifest)
 		if err := json.Unmarshal(manifestData, &manifestMap); err != nil {
 			return fmt.Errorf("failed to convert manifest: %w", err)
+		}
+
+		// Inject git author info from project config into manifest metadata
+		// This ensures publishers use the configured git identity
+		// Priority: host git config > ProjectConfig > defaults
+		// Host git config has highest priority to respect user's personal identity
+		if metadata, ok := manifestMap["metadata"].(map[string]interface{}); ok {
+			// Get host git config (user's personal config, highest priority)
+			authorName := holonGit.GetGlobalConfig("user.name")
+			authorEmail := holonGit.GetGlobalConfig("user.email")
+
+			// Note: Host git config takes priority.
+			// Unlike the old implementation, we don't check if ProjectConfig
+			// is set first - host config is always used when available.
+			// This matches the behavior in runtime.go where host config
+			// unconditionally overrides any ProjectConfig values.
+			//
+			// If you need ProjectConfig to override host config (for CI/bot scenarios),
+			// set HOLON_GIT_AUTHOR_NAME and HOLON_GIT_AUTHOR_EMAIL environment variables
+			// before running publish, or modify the ProjectConfig values in .holon/config.yaml.
+
+			// Only set if we have a value (not already in manifest)
+			if authorName != "" {
+				if _, exists := metadata["git_author_name"]; !exists {
+					metadata["git_author_name"] = authorName
+				}
+			}
+			if authorEmail != "" {
+				if _, exists := metadata["git_author_email"]; !exists {
+					metadata["git_author_email"] = authorEmail
+				}
+			}
 		}
 
 		// Create publish request

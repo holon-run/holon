@@ -95,7 +95,9 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	}
 
 	// 3. Create Container
-	// Inject host git identity (only if not already set by project config)
+	// Inject git identity with proper priority
+	// Priority: host git config > ProjectConfig > defaults
+	// Host git config has highest priority to respect user's personal identity
 	gitName, err := getGitConfig("user.name")
 	if err != nil {
 		holonlog.Warn("failed to get host git config 'user.name'", "error", err)
@@ -109,22 +111,15 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		cfg.Env = make(map[string]string)
 	}
 
-	// Only set from host git config if not already set by project config
+	// Set host git config (user's personal identity, highest priority)
+	// This overrides any ProjectConfig values that were set earlier in runner.go
 	if gitName != "" {
-		if cfg.Env["GIT_AUTHOR_NAME"] == "" {
-			cfg.Env["GIT_AUTHOR_NAME"] = gitName
-		}
-		if cfg.Env["GIT_COMMITTER_NAME"] == "" {
-			cfg.Env["GIT_COMMITTER_NAME"] = gitName
-		}
+		cfg.Env["GIT_AUTHOR_NAME"] = gitName
+		cfg.Env["GIT_COMMITTER_NAME"] = gitName
 	}
 	if gitEmail != "" {
-		if cfg.Env["GIT_AUTHOR_EMAIL"] == "" {
-			cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
-		}
-		if cfg.Env["GIT_COMMITTER_EMAIL"] == "" {
-			cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
-		}
+		cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
+		cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
 	}
 
 	env := BuildContainerEnv(&EnvConfig{

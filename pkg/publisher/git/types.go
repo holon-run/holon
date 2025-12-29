@@ -19,4 +19,10 @@ type GitPublisherConfig struct {
 
 	// WorkspaceDir is the path to the git workspace
 	WorkspaceDir string
+
+	// AuthorName is the git author name for commits (if empty, uses "Holon Bot")
+	AuthorName string
+
+	// AuthorEmail is the git author email for commits (if empty, uses "bot@holon.run")
+	AuthorEmail string
 }

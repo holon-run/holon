@@ -22,6 +22,12 @@ type PRPublisherConfig struct {
 	// IssueID is the optional issue number to reference in the PR
 	IssueID string
 
+	// AuthorName is the git author name for commits (if empty, uses "Holon Bot")
+	AuthorName string
+
+	// AuthorEmail is the git author email for commits (if empty, uses "bot@holon.run")
+	AuthorEmail string
+
 	// DryRun if true, validates without making changes
 	DryRun bool
 }

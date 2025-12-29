@@ -801,3 +801,16 @@ func (c *Client) DiagnoseWorkingTree(ctx context.Context) string {
 
 	return builder.String()
 }
+
+// GetGlobalConfig reads a global git configuration value.
+// Returns empty string if the configuration is not set.
+// This function is useful for getting the host's git user.name and user.email
+// to use as fallback when project config doesn't specify them.
+func GetGlobalConfig(key string) string {
+	cmd := exec.Command("git", "config", "--global", "--get", key)
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}

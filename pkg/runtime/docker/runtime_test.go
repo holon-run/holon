@@ -839,7 +839,7 @@ func TestGitEnvVarPrecedence(t *testing.T) {
 		expectedCommitterEmail string
 	}{
 		{
-			name: "project config overrides host git config",
+			name: "host git config overrides project config",
 			initialEnv: map[string]string{
 				"GIT_AUTHOR_NAME":    "Project Config Name",
 				"GIT_AUTHOR_EMAIL":   "project@example.com",
@@ -868,11 +868,11 @@ exit 1`
 				pathSeparator := string(filepath.ListSeparator)
 				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
-			expectedName:           "Project Config Name",
-			expectedEmail:          "project@example.com",
-			precedenceScenario:     "project config should not be overridden by host git config",
-			expectedCommitterName:  "Project Config Name", // GIT_COMMITTER_NAME from project config
-			expectedCommitterEmail: "project@example.com", // GIT_COMMITTER_EMAIL from project config
+			expectedName:           "Host Git User",   // Host git config takes precedence
+			expectedEmail:          "host@example.com", // Host git config takes precedence
+			precedenceScenario:     "host git config takes precedence over project config",
+			expectedCommitterName:  "Host Git User",   // GIT_COMMITTER_NAME from host
+			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host
 		},
 		{
 			name: "host git config used when project config not set",
@@ -932,10 +932,10 @@ exit 1`
 				pathSeparator := string(filepath.ListSeparator)
 				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
-			expectedName:      "Project Name Only", // GIT_AUTHOR_NAME from project config
+			expectedName:      "Host Name",         // GIT_AUTHOR_NAME from host (highest priority)
 			expectedEmail:     "host@example.com",  // GIT_AUTHOR_EMAIL from host
-			precedenceScenario: "project config GIT_AUTHOR_NAME should take precedence, GIT_COMMITTER_NAME from host",
-			expectedCommitterName: "Host Name",   // GIT_COMMITTER_NAME from host (not set by project)
+			precedenceScenario: "host git config takes precedence over project config",
+			expectedCommitterName: "Host Name",   // GIT_COMMITTER_NAME from host
 			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host
 		},
 		{
@@ -964,11 +964,11 @@ exit 1`
 				pathSeparator := string(filepath.ListSeparator)
 				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
-			expectedName:      "Host Name",         // GIT_AUTHOR_NAME from host
-			expectedEmail:     "project@example.com", // GIT_AUTHOR_EMAIL from project config
-			precedenceScenario: "project config GIT_AUTHOR_EMAIL should take precedence, GIT_COMMITTER_EMAIL from host",
+			expectedName:      "Host Name",         // GIT_AUTHOR_NAME from host (highest priority)
+			expectedEmail:     "host@example.com",  // GIT_AUTHOR_EMAIL from host (highest priority)
+			precedenceScenario: "host git config takes precedence over project config",
 			expectedCommitterName: "Host Name",   // GIT_COMMITTER_NAME from host
-			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host (not set by project)
+			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host
 		},
 		{
 			name: "only committer vars set by project, author from host",
@@ -999,9 +999,9 @@ exit 1`
 			},
 			expectedName:      "Host Author",      // GIT_AUTHOR_NAME from host
 			expectedEmail:     "author@example.com", // GIT_AUTHOR_EMAIL from host
-			precedenceScenario: "project config committer vars should not be overridden, author from host",
-			expectedCommitterName: "Project Committer", // GIT_COMMITTER_NAME from project config
-			expectedCommitterEmail: "committer@example.com", // GIT_COMMITTER_EMAIL from project config
+			precedenceScenario: "host git config sets both author and committer",
+			expectedCommitterName: "Host Author",      // GIT_COMMITTER_NAME from host (overrides project)
+			expectedCommitterEmail: "author@example.com", // GIT_COMMITTER_EMAIL from host (overrides project)
 		},
 	}
 
@@ -1018,6 +1018,7 @@ exit 1`
 			}
 
 			// Apply the same logic as RunHolon does for git config injection
+			// Priority: host git config > ProjectConfig > defaults
 			if cfg.Env == nil {
 				cfg.Env = make(map[string]string)
 			}
@@ -1025,23 +1026,19 @@ exit 1`
 			gitName, _ := getGitConfig("user.name")
 			gitEmail, _ := getGitConfig("user.email")
 
-			// Only set from host git config if not already set by project config
+			// Set host git config (highest priority)
+			// This overrides any initialEnv values (including ProjectConfig)
 			if gitName != "" {
-				if cfg.Env["GIT_AUTHOR_NAME"] == "" {
-					cfg.Env["GIT_AUTHOR_NAME"] = gitName
-				}
-				if cfg.Env["GIT_COMMITTER_NAME"] == "" {
-					cfg.Env["GIT_COMMITTER_NAME"] = gitName
-				}
+				cfg.Env["GIT_AUTHOR_NAME"] = gitName
+				cfg.Env["GIT_COMMITTER_NAME"] = gitName
 			}
 			if gitEmail != "" {
-				if cfg.Env["GIT_AUTHOR_EMAIL"] == "" {
-					cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
-				}
-				if cfg.Env["GIT_COMMITTER_EMAIL"] == "" {
-					cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
-				}
+				cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
+				cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
 			}
+
+			// Note: initialEnv may contain ProjectConfig values, but host config
+			// unconditionally overrides them here, matching runtime.go behavior.
 
 			// Verify the precedence worked correctly
 			// GIT_AUTHOR_NAME should match expected
