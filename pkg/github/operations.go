@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
 	"github.com/google/go-github/v68/github"
@@ -638,4 +639,44 @@ func (c *Client) getCurrentApp(ctx context.Context) (*ActorInfo, error) {
 	}
 
 	return info, nil
+}
+
+// FetchWorkflowLogs downloads logs for a GitHub Actions workflow run.
+// The logsURL should be the check run's DetailsURL which points to the workflow logs.
+// Returns the log content as bytes.
+func (c *Client) FetchWorkflowLogs(ctx context.Context, logsURL string) ([]byte, error) {
+	if logsURL == "" {
+		return nil, fmt.Errorf("logs URL is empty")
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "GET", logsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set authentication headers
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	// Make request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download logs: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to download logs: HTTP %d (body: %s)", resp.StatusCode, string(body))
+	}
+
+	logs, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read logs: %w", err)
+	}
+
+	return logs, nil
 }

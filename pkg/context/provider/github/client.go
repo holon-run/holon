@@ -229,3 +229,9 @@ func (c *Client) FetchCombinedStatus(ctx context.Context, owner, repo, ref strin
 
 	return result, nil
 }
+
+// FetchWorkflowLogs downloads workflow logs from GitHub Actions.
+// The logsURL should be the check run's DetailsURL which points to the workflow logs.
+func (c *Client) FetchWorkflowLogs(ctx context.Context, logsURL string) ([]byte, error) {
+	return c.helper.FetchWorkflowLogs(ctx, logsURL)
+}
