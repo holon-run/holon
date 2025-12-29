@@ -153,9 +153,12 @@ jobs:
           echo "OUTPUT_DIR=$OUTPUT_DIR" >> "$GITHUB_ENV"
           echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
           echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
-          echo "comment_body<<__HOLON_COMMENT__" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "$COMMENT_BODY" >> "$GITHUB_OUTPUT"
-          echo "__HOLON_COMMENT__" >> "$GITHUB_OUTPUT"
+
+          # Safely output comment body even if it contains HTML/markdown
+          # Use a unique delimiter and base64 encoding to handle arbitrary content
+          COMMENT_B64="$(printf '%s' "$COMMENT_BODY" | base64 -w 0)"
+          echo "comment_body_b64=$COMMENT_B64" >> "$GITHUB_OUTPUT"
+
           echo "input_dir=$INPUT_DIR" >> "$GITHUB_OUTPUT"
           echo "output_dir=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
         env:
@@ -170,6 +173,9 @@ jobs:
           SHOULD_RUN='false'
           REASON='Not eligible'
           GOAL_HINT=''
+
+          # Decode comment body from base64 (handles HTML/markdown safely)
+          COMMENT_BODY="$(printf '%s' "$COMMENT_BODY_B64" | base64 -d)"
 
           # Avoid bot loops
           if [ "$ACTOR" = 'holonbot[bot]' ]; then
@@ -259,7 +265,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           ISSUE_NUMBER: ${{ steps.ctx.outputs.issue_number }}
           IS_PR: ${{ steps.ctx.outputs.is_pr }}
-          COMMENT_BODY: ${{ steps.ctx.outputs.comment_body }}
+          COMMENT_BODY_B64: ${{ steps.ctx.outputs.comment_body_b64 }}
           LABEL_NAME: ${{ github.event.label.name }}
           ASSIGNEE_TYPE: ${{ github.event.assignee.type }}
 
