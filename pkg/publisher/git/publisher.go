@@ -86,6 +86,8 @@ func (p *Publisher) Validate(req publisher.PublishRequest) error {
 // commit, or push) fails, the repository will be left on the newly created/checked
 // out branch. This behavior is intentional to preserve state for debugging.
 func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResult, error) {
+	ctx := context.Background()
+
 	// Build configuration from manifest metadata
 	config := p.buildConfig(req.Manifest)
 
@@ -130,7 +132,7 @@ func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResu
 	// Create/checkout branch FIRST (before applying patch)
 	// This avoids issues with staged changes being reset during branch checkout
 	if config.Branch != "" {
-		if err := gitClient.CreateBranch(context.Background(), config.Branch); err != nil {
+		if err := gitClient.CreateBranch(ctx, config.Branch); err != nil {
 			wrappedErr := fmt.Errorf("failed to create branch: %w", err)
 			result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
 			result.Success = false
@@ -147,7 +149,7 @@ func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResu
 	}
 
 	// Apply patch
-	applied, err := gitClient.ApplyPatch(context.Background(), patchPath)
+	applied, err := gitClient.ApplyPatch(ctx, patchPath)
 	if err != nil {
 		wrappedErr := fmt.Errorf("failed to apply patch: %w", err)
 		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
