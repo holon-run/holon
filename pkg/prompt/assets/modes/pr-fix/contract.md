@@ -7,7 +7,8 @@ PR-Fix mode is designed for GitHub PR fix operations. The agent analyzes PR feed
   - `pr.json`: Pull request metadata
   - `review_threads.json`: Review threads with comment metadata (optional, includes `comment_id`)
   - `pr.diff`: The code changes being reviewed (optional but recommended)
-  - `check_runs.json` / `checks.json`: CI/check run results (optional)
+  - `check_runs.json`: CI/check run metadata (optional)
+  - `test-failure-logs.txt`: Complete workflow logs for failed tests (optional, downloaded when checks fail)
 
 **Important:** When responding to review comments, use your GitHub identity (from common contract) to avoid replying to your own comments.
 
@@ -130,6 +131,39 @@ When review comments request substantial refactoring, testing, or enhancements t
    - If issue creation fails (e.g., token permissions), leave `issue_url` empty
    - The publisher will automatically create any issues with empty `issue_url` fields
    - This allows the publisher to act as a fallback, ensuring all deferred work gets tracked
+
+**Analyzing Test Failures:**
+
+When CI/check runs fail, test failure logs are downloaded to `/holon/input/context/github/test-failure-logs.txt`. Use these logs to diagnose failures:
+
+**How logs are obtained:**
+- Logs are downloaded from the GitHub Actions API using the check run's DetailsURL
+- The DetailsURL (e.g., `https://github.com/owner/repo/actions/runs/12345/job/67890`) is parsed to extract the workflow run ID
+- The GitHub Actions API endpoint `/repos/{owner}/{repo}/actions/runs/{run_id}/logs` is called to retrieve the logs
+- The API returns a redirect to a pre-signed URL containing the log archive (ZIP format)
+- This process only works for GitHub Actions checks (checks with `app_slug: "github-actions"`)
+
+**Using the logs:**
+
+1. **Check for test logs**: Look for `context/github/test-failure-logs.txt`
+2. **Read the logs**: Use grep to find specific test failures:
+   ```bash
+   # Find all failing tests
+   grep -E "(FAIL|FAIL:|FAILED)" /holon/input/context/github/test-failure-logs.txt
+
+   # Search for a specific test name
+   grep "TestRunner_Run_EnvVariablePrecedence" /holon/input/context/github/test-failure-logs.txt
+
+   # Show context around a failure
+   grep -A 20 "FAIL:" /holon/input/context/github/test-failure-logs.txt
+   ```
+3. **Analyze the failure**:
+   - What error message or assertion failed?
+   - What stack trace is shown?
+   - What file/line is failing?
+4. **Determine relevance**: Check if modified files relate to the failure by comparing against `pr.diff`
+
+**Important**: The `check_runs.json` only contains metadata (name, status, conclusion). The actual test failure details are in `test-failure-logs.txt`. Always read the logs when diagnosing test failures.
 
 **Context Files:**
 Additional context files may be provided in `/holon/input/context/`. Read them if they contain relevant information for addressing the review comments or CI failures.

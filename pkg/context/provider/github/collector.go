@@ -208,6 +208,14 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 			fmt.Printf("  Found %d check runs\n", len(checkRuns))
 		}
 
+		// Download workflow logs for failed checks
+		if len(checkRuns) > 0 {
+			if err := p.downloadFailedWorkflowLogs(ctx, checkRuns, req.OutputDir); err != nil {
+				fmt.Printf("  Warning: failed to download workflow logs: %v\n", err)
+				// Don't fail - logs are optional
+			}
+		}
+
 		// Fetch combined status (optional but cheap)
 		combinedStatus, err = p.client.FetchCombinedStatus(ctx, owner, repo, prInfo.HeadSHA)
 		if err != nil {
@@ -422,5 +430,63 @@ func verifyContextFiles(outputDir string, kind collector.Kind) error {
 			return fmt.Errorf("context file is empty: %s (check token and network connectivity)", p)
 		}
 	}
+	return nil
+}
+
+// downloadFailedWorkflowLogs downloads workflow logs for failed check runs
+// and saves them to the context directory for agent analysis.
+func (p *Provider) downloadFailedWorkflowLogs(ctx context.Context, checkRuns []CheckRun, outputDir string) error {
+	githubDir := filepath.Join(outputDir, "github")
+	if err := os.MkdirAll(githubDir, 0755); err != nil {
+		return fmt.Errorf("failed to create github context directory: %w", err)
+	}
+
+	var allLogs []byte
+	successfulDownloads := 0
+
+	for _, cr := range checkRuns {
+		// Only download logs for failed, timed-out, or action-required checks
+		// Matches the filtering logic in CollectPR (line 202)
+		if cr.Conclusion != "failure" && cr.Conclusion != "timed_out" && cr.Conclusion != "action_required" {
+			continue
+		}
+
+		// Skip if no DetailsURL (non-GitHub-Actions checks won't have DetailsURL)
+		if cr.DetailsURL == "" {
+			continue
+		}
+
+		fmt.Printf("  Downloading workflow logs for failed check: %s\n", cr.Name)
+
+		logs, err := p.client.FetchWorkflowLogs(ctx, cr.DetailsURL)
+		if err != nil {
+			fmt.Printf("  Warning: failed to download logs for %s: %v\n", cr.Name, err)
+			// Continue with other checks
+			continue
+		}
+
+		// Only increment counter after successful download
+		successfulDownloads++
+
+		// Append logs with separator
+		if len(allLogs) > 0 {
+			allLogs = append(allLogs, '\n')
+			allLogs = append(allLogs, []byte(strings.Repeat("=", 80))...)
+			allLogs = append(allLogs, '\n')
+			allLogs = append(allLogs, '\n')
+		}
+		allLogs = append(allLogs, []byte(fmt.Sprintf("Check: %s\nConclusion: %s\nDetails URL: %s\n\n", cr.Name, cr.Conclusion, cr.DetailsURL))...)
+		allLogs = append(allLogs, logs...)
+	}
+
+	// Only write the file if we have logs
+	if len(allLogs) > 0 {
+		logFile := filepath.Join(githubDir, "test-failure-logs.txt")
+		if err := os.WriteFile(logFile, allLogs, 0644); err != nil {
+			return fmt.Errorf("failed to write test logs: %w", err)
+		}
+		fmt.Printf("  Saved test failure logs for %d failed check(s) to %s\n", successfulDownloads, logFile)
+	}
+
 	return nil
 }
