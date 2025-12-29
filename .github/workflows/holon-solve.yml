@@ -183,18 +183,15 @@ jobs:
           if [ "$EVENT_NAME" = 'issue_comment' ] && [ "$EVENT_ACTION" = 'created' ]; then
             FIRST_LINE="$(printf '%s\n' "$COMMENT_BODY" | head -n1 | xargs || true)"
 
-            # Check if the comment starts with "@holonbot" (with or without trailing text)
+            # Check if the comment is exactly "@holonbot" or starts with "@holonbot " (with space)
             # This pattern matches both "@holonbot" alone and "@holonbot " followed by text
             # The xargs command trims trailing whitespace, so multiple spaces are normalized to one
-            if [[ "$FIRST_LINE" == "@holonbot"* ]]; then
-              # Extract trailing text after "@holonbot" (with space if present, or without)
-              # If comment is exactly "@holonbot", GOAL_HINT will be empty (acceptable)
-              # First try to remove "@holonbot " (with space), then try "@holonbot" (without space)
-              if [[ "$FIRST_LINE" == "@holonbot "* ]]; then
-                GOAL_HINT="${FIRST_LINE#@holonbot }"
-              else
-                GOAL_HINT="${FIRST_LINE#@holonbot}"
-              fi
+            # The check for "@holonbot "* ensures we don't match "@holonbot123" or similar
+            if [[ "$FIRST_LINE" == "@holonbot" ]] || [[ "$FIRST_LINE" == "@holonbot "* ]]; then
+              # Extract trailing text after "@holonbot", then drop a single leading space if present
+              # If the comment is exactly "@holonbot", GOAL_HINT will be empty (acceptable)
+              GOAL_HINT="${FIRST_LINE#@holonbot}"
+              GOAL_HINT="${GOAL_HINT# }"
               echo "✅ Trigger path: free-form command"
               echo "   Goal hint: $GOAL_HINT"
             else
