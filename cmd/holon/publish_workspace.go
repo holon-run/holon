@@ -166,6 +166,20 @@ func newClonePublishWorkspace(ctx context.Context, sourceValue, ref string, useL
 		if ref != "" && ref != "HEAD" {
 			_, _ = targetClient.ExecCommand(ctx, "fetch", "origin", ref)
 		}
+
+		// Ensure working tree is clean after unshallow
+		// fetch --unshallow can leave the working tree in an inconsistent state
+		if !targetClient.IsClean(ctx) {
+			holonlog.Info("working tree dirty after unshallow, resetting")
+			// Use system git to reset working tree (more robust than go-git)
+			if _, err := targetClient.ExecCommand(ctx, "reset", "--hard", "HEAD"); err != nil {
+				return nil, fmt.Errorf("failed to reset worktree after unshallow: %w", err)
+			}
+			// Clean untracked files
+			if _, err := targetClient.ExecCommand(ctx, "clean", "-fd"); err != nil {
+				holonlog.Warn("failed to clean untracked files after unshallow", "error", err)
+			}
+		}
 	}
 
 	cleanup := func() {

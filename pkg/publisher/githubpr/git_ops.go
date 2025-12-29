@@ -14,6 +14,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 
 	holonGit "github.com/holon-run/holon/pkg/git"
+	holonlog "github.com/holon-run/holon/pkg/log"
 )
 
 // GitClient handles Git operations for PR creation.
@@ -87,28 +88,32 @@ func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) error {
 }
 
 // CreateBranch creates a new branch or checks out existing one.
-func (g *GitClient) CreateBranch(branchName string) error {
+//
+// NOTE: This function performs destructive git operations (reset --hard, clean -fd)
+// to ensure the worktree is clean before branch creation. This is safe for publish
+// workflows where the workspace should be in a clean state, but could discard
+// uncommitted changes if called in other contexts.
+func (g *GitClient) CreateBranch(ctx context.Context, branchName string) error {
+	// Use system git to reset working tree (more robust than go-git)
+	// This prevents "worktree contains unstaged changes" errors
+	gitClient := holonGit.NewClient(g.WorkspaceDir)
+	if _, err := gitClient.ExecCommand(ctx, "reset", "--hard", "HEAD"); err != nil {
+		// Log warning but continue - reset failure shouldn't block branch creation
+		holonlog.Warn("failed to reset worktree with system git (continuing anyway)", "error", err)
+	}
+	if _, err := gitClient.ExecCommand(ctx, "clean", "-fd"); err != nil {
+		// Log warning but continue - clean failure shouldn't block branch creation
+		holonlog.Warn("failed to clean untracked files (continuing anyway)", "error", err)
+	}
+
 	repo, err := gogit.PlainOpen(g.WorkspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
 
-	// Clean working tree before branch operations to avoid "worktree contains unstaged changes" errors
-	// This is particularly important in CI environments where file metadata or permissions may differ
 	worktree, err := repo.Worktree()
 	if err != nil {
 		return fmt.Errorf("failed to get worktree: %w", err)
-	}
-
-	// Reset any unstaged changes to ensure clean working tree
-	// Use Force to discard all changes (similar to git reset --hard HEAD)
-	err = worktree.Reset(&gogit.ResetOptions{
-		Mode: gogit.HardReset,
-	})
-	if err != nil {
-		// Log warning but continue - reset failure shouldn't block branch creation
-		// This might happen if there are no changes to reset
-		fmt.Printf("Warning: failed to reset worktree (continuing anyway): %v\n", err)
 	}
 
 	// Check if branch already exists

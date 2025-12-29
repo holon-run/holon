@@ -156,11 +156,11 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 
 	// Initialize result
 	result := publisher.PublishResult{
-		Provider:   p.Name(),
-		Target:     req.Target,
-		Actions:    []publisher.PublishAction{},
-		Errors:     []publisher.PublishError{},
-		Success:    true,
+		Provider: p.Name(),
+		Target:   req.Target,
+		Actions:  []publisher.PublishAction{},
+		Errors:   []publisher.PublishError{},
+		Success:  true,
 	}
 
 	// Step 1: Read summary for PR content
@@ -191,7 +191,7 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 
 	// Step 3: Create or checkout branch FIRST (before applying patch)
 	// This prevents Checkout from discarding patch-applied files
-	if err := gitClient.CreateBranch(config.BranchName); err != nil {
+	if err := gitClient.CreateBranch(ctx, config.BranchName); err != nil {
 		wrappedErr := fmt.Errorf("failed to create branch: %w", err)
 		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
 		result.Success = false
