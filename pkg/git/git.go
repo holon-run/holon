@@ -588,6 +588,14 @@ func (c *Client) IsClean(ctx context.Context) bool {
 		return false
 	}
 
+	// Check for staged changes using git diff --cached --quiet
+	// If there are staged changes, the command returns exit code 1
+	_, err = c.execCommand(ctx, "diff", "--cached", "--quiet")
+	if err != nil {
+		// Exit code 1 means there are staged changes
+		return false
+	}
+
 	return info.Clean
 }
 
@@ -674,7 +682,17 @@ func parseFileStatus(output string) []FileStatus {
 
 		if len(line) >= 3 {
 			statusCode := line[0:2]
-			filePath := line[3:]
+			pathInfo := line[3:]
+
+			// Handle renamed/copied files in porcelain format: "R  old_name -> new_name".
+			// For programmatic use, we treat the new name as the canonical path.
+			filePath := pathInfo
+			if strings.Contains(pathInfo, " -> ") {
+				parts := strings.SplitN(pathInfo, " -> ", 2)
+				if len(parts) == 2 {
+					filePath = parts[1]
+				}
+			}
 
 			statuses = append(statuses, FileStatus{
 				Path:       filePath,
@@ -720,6 +738,22 @@ func decodeSimpleStatusCode(code string) string {
 		return "deleted (ours), modified (theirs)"
 	case "UD":
 		return "modified (ours), deleted (theirs)"
+	// Additional unmerged states
+	case "AU":
+		return "added (ours), unmerged"
+	case "UA":
+		return "added (theirs), unmerged"
+	// Additional states
+	case " A":
+		return "added (worktree)"
+	case "AD":
+		return "added (index), deleted (worktree)"
+	case "MD":
+		return "modified (index), deleted (worktree)"
+	case " R":
+		return "renamed (worktree)"
+	case " C":
+		return "copied (worktree)"
 	default:
 		return fmt.Sprintf("unknown_%s", code)
 	}

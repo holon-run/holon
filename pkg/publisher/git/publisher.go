@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	holonGit "github.com/holon-run/holon/pkg/git"
@@ -181,7 +182,7 @@ func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResu
 			commitMessage = DefaultCommitMessage
 		}
 
-		commitHash, err := gitClient.CommitChanges(commitMessage)
+		commitHash, err := gitClient.CommitChanges(ctx, commitMessage)
 		if err != nil {
 			wrappedErr := fmt.Errorf("failed to commit changes: %w", err)
 			result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
@@ -217,7 +218,7 @@ func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResu
 				result.Success = false
 				return result, wrappedErr
 			}
-			branchName = string(output)
+			branchName = strings.TrimSpace(string(output))
 		}
 
 		if err := gitClient.Push(branchName, remoteName); err != nil {

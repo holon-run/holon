@@ -84,9 +84,11 @@ func (g *GitClient) CreateBranch(ctx context.Context, branchName string) error {
 
 	// Reset working tree
 	if _, err := gitClient.ExecCommand(ctx, "reset", "--hard", "HEAD"); err != nil {
-		return fmt.Errorf("failed to reset worktree: %w", err)
+		// Preserve previous lenient behavior: log warning and continue.
+		holonlog.Warn("failed to reset worktree", "branch", branchName, "error", err)
+	} else {
+		holonlog.Debug("reset worktree successfully", "branch", branchName)
 	}
-	holonlog.Debug("reset worktree successfully", "branch", branchName)
 
 	// Clean untracked files
 	if _, err := gitClient.ExecCommand(ctx, "clean", "-fd"); err != nil {
@@ -129,21 +131,21 @@ func (g *GitClient) CreateBranch(ctx context.Context, branchName string) error {
 }
 
 // CommitChanges commits all changes with the given message.
-func (g *GitClient) CommitChanges(message string) (string, error) {
+func (g *GitClient) CommitChanges(ctx context.Context, message string) (string, error) {
 	client := holonGit.NewClient(g.WorkspaceDir)
 
 	// Force stage all changes (including untracked files)
-	if err := client.AddAll(context.Background()); err != nil {
+	if err := client.AddAll(ctx); err != nil {
 		return "", fmt.Errorf("failed to stage changes: %w", err)
 	}
 
 	// Check if there are any changes to commit
-	if client.IsClean(context.Background()) {
+	if client.IsClean(ctx) {
 		return "", fmt.Errorf("no changes to commit")
 	}
 
 	// Commit changes
-	commitSHA, err := client.CommitWith(context.Background(), holonGit.CommitOptions{
+	commitSHA, err := client.CommitWith(ctx, holonGit.CommitOptions{
 		Message: message,
 		Author: &holonGit.CommitAuthor{
 			Name:  "Holon Bot",
@@ -160,15 +162,11 @@ func (g *GitClient) CommitChanges(message string) (string, error) {
 
 // Push pushes the current branch to remote.
 func (g *GitClient) Push(branchName string) error {
-	client := holonGit.NewClientWithToken(g.WorkspaceDir, g.Token)
+	client := holonGit.NewClient(g.WorkspaceDir)
 
 	// Configure git credentials for push
-	// We use GIT_ASKPASS to provide credentials without exposing them in process list
-	// or command line arguments
 	pushCtx := context.Background()
 
-	// Set up credential helper using environment variable
-	// This is safer than passing credentials on the command line
 	if err := g.configureGitCredentials(pushCtx); err != nil {
 		return fmt.Errorf("failed to configure git credentials: %w", err)
 	}
@@ -190,12 +188,11 @@ func (g *GitClient) configureGitCredentials(ctx context.Context) error {
 	client := holonGit.NewClient(g.WorkspaceDir)
 
 	// Configure git to use the token via the extraheader
-	// This is a common pattern for GitHub authentication
-	url := "https://github.com/"
+	// This is a common pattern for GitHub authentication.
+	// Note: This persists credentials in .git/config. A more secure approach would use
+	// GIT_ASKPASS with temporary helpers, which is deferred to a follow-up improvement.
 	authHeader := fmt.Sprintf("Authorization: Bearer %s", g.Token)
 
-	// Instead of using git config, we'll use GIT_ASKPASS with a helper script
-	// For now, we'll use the credential helper approach
 	_, err := client.ExecCommand(ctx, "config", "--local", "http.https://github.com/.extraheader", authHeader)
 	if err != nil {
 		// Non-fatal error - continue with push attempt

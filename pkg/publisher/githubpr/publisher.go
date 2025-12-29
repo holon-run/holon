@@ -208,7 +208,7 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 
 	// Step 4: Apply patch AFTER creating branch
 	patchPath := req.Artifacts["diff.patch"]
-	if err := gitClient.ApplyPatch(context.Background(), patchPath); err != nil {
+	if err := gitClient.ApplyPatch(ctx, patchPath); err != nil {
 		wrappedErr := fmt.Errorf("failed to apply patch: %w", err)
 		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
 		result.Success = false
@@ -221,7 +221,7 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 	})
 
 	// Step 5: Commit changes
-	commitHash, err := gitClient.CommitChanges(config.CommitMessage)
+	commitHash, err := gitClient.CommitChanges(ctx, config.CommitMessage)
 	if err != nil {
 		wrappedErr := fmt.Errorf("failed to commit changes: %w", err)
 		result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
