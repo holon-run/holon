@@ -25,7 +25,9 @@ const (
 	// TokenEnv is the environment variable for GitHub token
 	TokenEnv = "GITHUB_TOKEN"
 
-	// LegacyTokenEnv is the legacy environment variable for GitHub token
+	// LegacyTokenEnv is the environment variable for Holon-specific GitHub token
+	// This has higher priority than GITHUB_TOKEN to allow overriding CI's GITHUB_TOKEN
+	// with a token that has higher permissions (e.g., holonbot app token).
 	LegacyTokenEnv = "HOLON_GITHUB_TOKEN"
 
 	// DefaultTimeout is the default HTTP timeout
@@ -56,16 +58,22 @@ func ghAuthToken() string {
 }
 
 // GetTokenFromEnv retrieves a GitHub token from environment variables or gh CLI.
-// It checks GITHUB_TOKEN and HOLON_GITHUB_TOKEN environment variables first.
-// If those are empty, it attempts to use `gh auth token` as a fallback.
+// Priority order (highest to lowest):
+// 1. HOLON_GITHUB_TOKEN - Holon-specific token (allows overriding CI's GITHUB_TOKEN)
+// 2. GITHUB_TOKEN - standard GitHub token (automatically set in CI environments)
+// 3. gh auth token - fallback to gh CLI token
+//
 // Returns the token and a boolean indicating whether the token came from gh CLI.
 func GetTokenFromEnv() (string, bool) {
-	token := os.Getenv(TokenEnv)
+	// Check HOLON_GITHUB_TOKEN first (highest priority)
+	// This allows overriding the CI's GITHUB_TOKEN with a higher-permission token
+	token := os.Getenv(LegacyTokenEnv)
 	if token != "" {
 		return token, false
 	}
 
-	token = os.Getenv(LegacyTokenEnv)
+	// Check standard GITHUB_TOKEN (automatically set in GitHub Actions CI)
+	token = os.Getenv(TokenEnv)
 	if token != "" {
 		return token, false
 	}
