@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/holon-run/holon/pkg/agent"
 	"github.com/holon-run/holon/pkg/agent/cache"
@@ -253,6 +257,113 @@ for auto-installation.`,
 	},
 }
 
+var agentUpdateCmd = &cobra.Command{
+	Use:   "update",
+	Short: "Update the cached latest agent metadata",
+	Long: `Eagerly refresh the cached latest agent metadata from GitHub.
+This respects the configured agent channel.
+
+This command fetches the latest agent release information from GitHub
+and updates the local cache. It does not download the actual agent bundle
+unless needed.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println("Updating agent metadata...")
+
+		// Get channel from flag or config
+		channel := strings.TrimSpace(os.Getenv("HOLON_AGENT_CHANNEL"))
+		if channel == "" {
+			channel = "latest" // Default
+		}
+
+		cacheDir := os.Getenv("HOLON_CACHE_DIR")
+		c := cache.New(cacheDir)
+
+		if channel == "builtin" {
+			fmt.Println("Channel is 'builtin' - no update needed")
+			fmt.Println("The builtin agent is embedded in the Holon binary.")
+			return nil
+		}
+
+		// Fetch latest from GitHub
+		fmt.Println("Fetching latest agent release from GitHub...")
+		latestRelease, err := agent.GetLatestAgentRelease("holon-run/holon")
+		if err != nil {
+			return fmt.Errorf("failed to fetch latest agent release: %w", err)
+		}
+
+		// Extract bundle info
+		bundleName, bundleURL, err := agent.FindAgentBundleAsset(latestRelease)
+		if err != nil {
+			return fmt.Errorf("failed to find agent bundle in release: %w", err)
+		}
+
+		// Fetch checksum
+		checksum, err := fetchChecksum(bundleURL + ".sha256")
+		if err != nil {
+			fmt.Printf("Warning: failed to fetch checksum: %v\n", err)
+			checksum = ""
+		}
+
+		// Store latest metadata
+		metadata := &cache.LatestAgentMetadata{
+			Version:   latestRelease.TagName,
+			URL:       bundleURL,
+			Checksum:  checksum,
+			FetchedAt: time.Now().Unix(),
+		}
+
+		if err := c.SetLatestAgentMetadata(metadata); err != nil {
+			return fmt.Errorf("failed to cache latest agent metadata: %w", err)
+		}
+
+		fmt.Printf("✓ Updated to version: %s\n", latestRelease.TagName)
+		fmt.Printf("  Bundle: %s\n", bundleName)
+		fmt.Printf("  URL: %s\n", bundleURL)
+		if checksum != "" {
+			fmt.Printf("  Checksum: %s\n", checksum)
+		}
+
+		// Check if current version matches
+		builtinAgent := agent.DefaultBuiltinAgent()
+		if builtinAgent != nil && builtinAgent.Version == latestRelease.TagName {
+			fmt.Println("\n✓ Your builtin agent is already up to date!")
+		} else if builtinAgent != nil {
+			fmt.Printf("\n⚠ A newer version is available (your builtin: %s)\n", builtinAgent.Version)
+			fmt.Println("Run 'holon run --agent-channel latest' to use the latest version.")
+		}
+
+		return nil
+	},
+}
+
+func fetchChecksum(checksumURL string) (string, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Get(checksumURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch checksum: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch checksum: HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read checksum: %w", err)
+	}
+
+	parts := strings.Fields(string(data))
+	if len(parts) == 0 {
+		return "", fmt.Errorf("empty checksum file")
+	}
+
+	return parts[0], nil
+}
+
 func init() {
 	agentInstallCmd.Flags().String("name", "", "Alias name for the agent bundle (required)")
 	_ = agentInstallCmd.MarkFlagRequired("name")
@@ -261,6 +372,7 @@ func init() {
 	agentCmd.AddCommand(agentListCmd)
 	agentCmd.AddCommand(agentRemoveCmd)
 	agentCmd.AddCommand(agentCheckUpdateCmd)
+	agentCmd.AddCommand(agentUpdateCmd)
 	agentCmd.AddCommand(agentInfoCmd)
 	agentInfoCmd.AddCommand(agentInfoDefaultCmd)
 }

@@ -35,6 +35,7 @@ type RunnerConfig struct {
 	TaskName             string
 	BaseImage            string
 	AgentBundle          string
+	AgentChannel         string // Agent channel: "latest", "builtin", "pinned:<version>"
 	WorkspacePath        string
 	ContextPath          string
 	InputPath            string // Optional: path to input directory (if empty, creates temp dir)
@@ -343,16 +344,25 @@ func (r *Runner) resolveAgentBundle(ctx context.Context, cfg RunnerConfig, works
 		return resolvedPath, nil
 	}
 
-	// Try builtin agent (auto-install) first
-	holonlog.Info("no agent specified, trying builtin default agent")
-	resolvedPath, err := r.resolver.Resolve(ctx, "") // Empty string triggers builtin resolver
+	// No explicit agent - use channel-based resolver
+	channel := cfg.AgentChannel
+	if channel == "" {
+		channel = "latest" // Default channel
+	}
+
+	// Use channel resolver
+	cacheDir := os.Getenv("HOLON_CACHE_DIR")
+	channelResolver := resolver.NewChannelResolver(cacheDir, channel, "holon-run/holon")
+
+	holonlog.Info("resolving agent via channel", "channel", channel)
+	resolvedPath, err := channelResolver.Resolve(ctx, "")
 	if err == nil {
-		holonlog.Info("successfully resolved builtin agent", "path", resolvedPath)
+		holonlog.Info("successfully resolved agent via channel", "channel", channel, "path", resolvedPath)
 		return resolvedPath, nil
 	}
 
-	// If builtin agent failed (e.g., auto-install disabled), fall back to local build system
-	holonlog.Debug("builtin agent not available", "error", err)
+	// Channel resolution failed - log and fall back to local build system
+	holonlog.Debug("channel resolver failed", "channel", channel, "error", err)
 	holonlog.Info("falling back to local build system")
 
 	scriptPath := filepath.Join(workspace, "agents", "claude", "scripts", "build-bundle.sh")

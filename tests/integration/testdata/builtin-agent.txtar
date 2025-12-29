@@ -10,16 +10,26 @@ env HOLON_NO_AUTO_INSTALL=1
 exec holon agent info default
 stdout 'Auto-install: DISABLED'
 
-# Test that default agent is tried when no agent specified
-# This should attempt to download the builtin agent and fail gracefully
+# Test that latest channel fetches from GitHub when no agent specified
+# This should download the latest agent and fail at Docker composition
 ! exec holon run --goal "test goal" --workspace /tmp --skip-checks
-stdout 'no agent specified'
-stdout 'falling back to local build system'
+stdout 'resolving agent via channel'
+stdout 'channel.*latest'
+stdout 'successfully resolved agent via channel'
 
-# Test with explicit default agent
+# Test builtin channel uses embedded agent without network
+! exec holon run --agent-channel builtin --goal "test goal" --workspace /tmp --skip-checks
+stdout 'resolving agent via channel'
+stdout 'channel.*builtin'
+# Builtin agent download will fail at Docker composition
+
+# Test with explicit default agent (deprecated, but should still work)
 ! exec holon run --agent default --goal "test goal" --workspace /tmp --skip-checks
 stderr 'failed to resolve agent bundle'
 
-# Test that auto-install can be disabled
-! exec holon run --goal "test goal" --workspace /tmp --skip-checks
-stderr 'agent bundle not found; set --agent/HOLON_AGENT or enable auto-install'
+# Test that channel system works independently of HOLON_NO_AUTO_INSTALL
+# The "latest" channel should still fetch from GitHub
+env HOLON_NO_AUTO_INSTALL=1
+! exec holon run --agent-channel latest --goal "test goal" --workspace /tmp --skip-checks
+stdout 'channel.*latest'
+stdout 'successfully resolved agent via channel'

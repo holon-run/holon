@@ -30,6 +30,10 @@ type ProjectConfig struct {
 	// Agent is the default agent bundle reference (path, URL, or alias)
 	Agent string `yaml:"agent,omitempty"`
 
+	// AgentChannel controls how the agent is resolved when no explicit agent is specified.
+	// Values: "latest" (default), "builtin", "pinned:<version>"
+	AgentChannel string `yaml:"agent_channel,omitempty"`
+
 	// LogLevel is the default Holon log level (debug, info, progress, minimal)
 	LogLevel string `yaml:"log_level,omitempty"`
 
@@ -131,6 +135,18 @@ func (c *ProjectConfig) ResolveBaseImage(cliValue, defaultValue string) (string,
 // ResolveAgent returns the effective agent bundle and its source.
 func (c *ProjectConfig) ResolveAgent(cliValue string) (string, string) {
 	return c.ResolveString(cliValue, c.Agent, "")
+}
+
+// ResolveAgentChannel returns the effective agent channel and its source.
+// Default is "latest" if not specified.
+func (c *ProjectConfig) ResolveAgentChannel(cliValue string) (string, string) {
+	if cliValue != "" {
+		return cliValue, "cli"
+	}
+	if c.AgentChannel != "" {
+		return c.AgentChannel, "config"
+	}
+	return "latest", "default"
 }
 
 // ResolveLogLevel returns the effective log level and its source.
