@@ -2,7 +2,7 @@
   "name": "holon-agent-claude",
   "private": true,
   "type": "module",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "bundle": "./scripts/build-bundle.sh",
