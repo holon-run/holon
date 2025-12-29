@@ -400,9 +400,9 @@ jobs:
 
           ISSUE_NUMBER='${{ steps.ctx.outputs.issue_number }}'
           IS_PR='${{ steps.ctx.outputs.is_pr }}'
-          SHOULD_RUN='${{ steps.gate.outputs.should_run }}'
-          REASON='${{ steps.gate.outputs.reason }}'
-          GOAL_HINT='${{ steps.gate.outputs.goal_hint }}'
+          SHOULD_RUN="$GATE_SHOULD_RUN"
+          REASON="$GATE_REASON"
+          GOAL_HINT="$GATE_GOAL_HINT"
 
           # Get comment_id from input (if available)
           # Default to 0 if empty to ensure valid JSON for --argjson
@@ -435,6 +435,10 @@ jobs:
               mode: $mode,
               trigger: {goal_hint: $goal_hint, comment_id: $comment_id}
             }' > "$INPUT_DIR/workflow.json"
+        env:
+          GATE_SHOULD_RUN: ${{ steps.gate.outputs.should_run }}
+          GATE_REASON: ${{ steps.gate.outputs.reason }}
+          GATE_GOAL_HINT: ${{ steps.gate.outputs.goal_hint }}
 
       - name: Run Holon
         id: run
@@ -463,8 +467,8 @@ jobs:
         if: always()
         run: |
           OUTPUT_DIR='${{ steps.ctx.outputs.output_dir }}'
-          SHOULD_RUN='${{ steps.gate.outputs.should_run }}'
-          REASON='${{ steps.gate.outputs.reason }}'
+          SHOULD_RUN="$GATE_SHOULD_RUN"
+          REASON="$GATE_REASON"
 
           if [ "$SHOULD_RUN" != 'true' ]; then
             {
@@ -489,6 +493,9 @@ jobs:
           else
             echo "result=${{ steps.run.outcome }}" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          GATE_SHOULD_RUN: ${{ steps.gate.outputs.should_run }}
+          GATE_REASON: ${{ steps.gate.outputs.reason }}
 
       - name: Post completion feedback
         if: always() && inputs.comment_id != 0 && steps.gate.outputs.should_run == 'true'
