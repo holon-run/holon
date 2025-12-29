@@ -318,6 +318,8 @@ jobs:
       - name: Checkout repository
         if: steps.gate.outputs.should_run == 'true' && steps.ctx.outputs.is_pr != 'true'
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history to avoid shallow clone issues
 
       - name: Resolve PR checkout ref
         id: pr-ref
@@ -348,6 +350,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.pr-ref.outputs.ref }}
+          fetch-depth: 0  # Fetch all history to avoid shallow clone issues
 
       - name: Detect execution mode
         id: detect
