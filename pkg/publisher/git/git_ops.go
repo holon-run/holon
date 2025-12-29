@@ -7,12 +7,6 @@ import (
 	"strings"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
-
 	holonGit "github.com/holon-run/holon/pkg/git"
 	holonlog "github.com/holon-run/holon/pkg/log"
 )
@@ -76,7 +70,7 @@ func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) (bool, err
 		return false, fmt.Errorf("failed to apply patch: %w", err)
 	}
 
-	// Stage the applied changes so go-git can see them
+	// Stage the applied changes
 	if err := client.AddAll(ctx); err != nil {
 		return false, fmt.Errorf("failed to stage changes after patch: %w", err)
 	}
@@ -91,94 +85,77 @@ func (g *GitClient) ApplyPatch(ctx context.Context, patchPath string) (bool, err
 // workflows where the workspace should be in a clean state, but could discard
 // uncommitted changes if called in other contexts.
 func (g *GitClient) CreateBranch(ctx context.Context, branchName string) error {
-	// Use system git to reset working tree (more robust than go-git)
-	// This prevents "worktree contains unstaged changes" errors
 	gitClient := holonGit.NewClient(g.WorkspaceDir)
+
+	holonlog.Debug("preparing to create branch", "branch", branchName, "workspace", g.WorkspaceDir)
+
+	// Reset working tree
 	if _, err := gitClient.ExecCommand(ctx, "reset", "--hard", "HEAD"); err != nil {
-		// Log warning but continue - reset failure shouldn't block branch creation
-		holonlog.Warn("failed to reset worktree with system git (continuing anyway)", "error", err)
+		return fmt.Errorf("failed to reset worktree: %w", err)
 	}
+	holonlog.Debug("reset worktree successfully", "branch", branchName)
+
+	// Clean untracked files
 	if _, err := gitClient.ExecCommand(ctx, "clean", "-fd"); err != nil {
-		// Log warning but continue - clean failure shouldn't block branch creation
-		holonlog.Warn("failed to clean untracked files (continuing anyway)", "error", err)
+		holonlog.Warn("failed to clean untracked files", "error", err)
 	}
 
-	repo, err := gogit.PlainOpen(g.WorkspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to open repository: %w", err)
+	// Verify working tree is clean
+	if !gitClient.IsClean(ctx) {
+		// Log diagnostic information
+		diagnostics := gitClient.DiagnoseWorkingTree(ctx)
+		holonlog.Error("working tree still dirty after reset and clean",
+			"branch", branchName,
+			"diagnostics", diagnostics)
+		return fmt.Errorf("working tree is dirty after reset and clean, cannot create branch")
 	}
 
 	// Check if branch already exists
-	_, err = repo.Branch(branchName)
-	if err == nil {
-		// Branch exists, check it out
-		worktree, err := repo.Worktree()
-		if err != nil {
-			return fmt.Errorf("failed to get worktree: %w", err)
-		}
+	branchExists := false
+	if _, err := gitClient.ExecCommand(ctx, "rev-parse", "--verify", "refs/heads/"+branchName); err == nil {
+		branchExists = true
+	}
 
-		err = worktree.Checkout(&gogit.CheckoutOptions{
-			Branch: plumbing.NewBranchReferenceName(branchName),
-		})
-		if err != nil {
+	if branchExists {
+		// Checkout existing branch
+		holonlog.Debug("checking out existing branch", "branch", branchName)
+		if _, err := gitClient.ExecCommand(ctx, "checkout", branchName); err != nil {
 			return fmt.Errorf("failed to checkout branch %s: %w", branchName, err)
 		}
-
 		return nil
 	}
 
-	// Branch doesn't exist, create it
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
-	}
-
 	// Create and checkout new branch
-	err = worktree.Checkout(&gogit.CheckoutOptions{
-		Branch: plumbing.NewBranchReferenceName(branchName),
-		Create: true,
-	})
-	if err != nil {
+	holonlog.Debug("creating new branch", "branch", branchName)
+	if _, err := gitClient.ExecCommand(ctx, "checkout", "-b", branchName); err != nil {
 		return fmt.Errorf("failed to create branch %s: %w", branchName, err)
 	}
 
+	holonlog.Info("created branch successfully", "branch", branchName)
 	return nil
 }
 
 // CommitChanges commits all changes with the given message.
 // Returns the commit hash if successful.
 func (g *GitClient) CommitChanges(message string) (string, error) {
-	repo, err := gogit.PlainOpen(g.WorkspaceDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to open repository: %w", err)
-	}
-
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return "", fmt.Errorf("failed to get worktree: %w", err)
-	}
+	client := holonGit.NewClient(g.WorkspaceDir)
 
 	// Stage all changes.
 	// Note: ApplyPatch already runs `git add -A`, so this can be redundant in that flow.
 	// We still stage here so CommitChanges is safe to call independently of ApplyPatch.
-	_, err = worktree.Add(".")
-	if err != nil {
+	if err := client.AddAll(context.Background()); err != nil {
 		return "", fmt.Errorf("failed to stage changes: %w", err)
 	}
 
 	// Check if there are any changes to commit
-	status, err := worktree.Status()
-	if err != nil {
-		return "", fmt.Errorf("failed to get status: %w", err)
-	}
-
-	if status.IsClean() {
+	if client.IsClean(context.Background()) {
 		return "", fmt.Errorf("no changes to commit")
 	}
 
 	// Commit changes
-	commit, err := worktree.Commit(message, &gogit.CommitOptions{
-		Author: &object.Signature{
+	commitSHA, err := client.CommitWith(context.Background(), holonGit.CommitOptions{
+		Message: message,
+		Author: &holonGit.CommitAuthor{
 			Name:  "Holon Bot",
 			Email: "bot@holon.run",
 			When:  time.Now(),
@@ -188,40 +165,45 @@ func (g *GitClient) CommitChanges(message string) (string, error) {
 		return "", fmt.Errorf("failed to commit: %w", err)
 	}
 
-	return commit.String(), nil
+	return commitSHA, nil
 }
 
 // Push pushes the current branch to the specified remote.
 func (g *GitClient) Push(branchName, remoteName string) error {
-	repo, err := gogit.PlainOpen(g.WorkspaceDir)
-	if err != nil {
-		return fmt.Errorf("failed to open repository: %w", err)
-	}
+	client := holonGit.NewClientWithToken(g.WorkspaceDir, g.Token)
 
-	// Get the remote to push to
-	remote, err := repo.Remote(remoteName)
-	if err != nil {
-		return fmt.Errorf("failed to get remote '%s': %w", remoteName, err)
-	}
+	pushCtx := context.Background()
 
-	// Create push options
-	opts := &gogit.PushOptions{
-		RemoteName: remoteName,
-		RefSpecs:   []config.RefSpec{config.RefSpec("refs/heads/" + branchName + ":refs/heads/" + branchName)},
-	}
-
-	// Add authentication if token is provided
+	// Configure credentials if token is provided
 	if g.Token != "" {
-		opts.Auth = &http.BasicAuth{
-			Username: "x-access-token", // Generic token auth convention
-			Password: g.Token,
+		if err := g.configureGitCredentials(pushCtx); err != nil {
+			return fmt.Errorf("failed to configure git credentials: %w", err)
 		}
 	}
 
-	// Push
-	err = remote.Push(opts)
-	if err != nil {
+	// Push using system git
+	if err := client.Push(pushCtx, holonGit.PushOptions{
+		Remote:     remoteName,
+		Branch:     branchName,
+		SetUpstream: true,
+	}); err != nil {
 		return fmt.Errorf("failed to push branch: %w", err)
+	}
+
+	return nil
+}
+
+// configureGitCredentials configures git to use the token for authentication.
+func (g *GitClient) configureGitCredentials(ctx context.Context) error {
+	client := holonGit.NewClient(g.WorkspaceDir)
+
+	// Configure git to use the token via the extraheader
+	authHeader := fmt.Sprintf("Authorization: Bearer %s", g.Token)
+
+	_, err := client.ExecCommand(ctx, "config", "--local", "http.https://github.com/.extraheader", authHeader)
+	if err != nil {
+		// Non-fatal error - continue with push attempt
+		holonlog.Warn("failed to configure git credential helper", "error", err)
 	}
 
 	return nil
@@ -229,12 +211,10 @@ func (g *GitClient) Push(branchName, remoteName string) error {
 
 // EnsureRepository ensures the workspace is a Git repository.
 func (g *GitClient) EnsureRepository() error {
-	_, err := gogit.PlainOpen(g.WorkspaceDir)
-	if err != nil {
-		if err == gogit.ErrRepositoryNotExists {
-			return fmt.Errorf("workspace is not a git repository")
-		}
-		return fmt.Errorf("failed to open repository: %w", err)
+	client := holonGit.NewClient(g.WorkspaceDir)
+
+	if !client.IsRepo(context.Background()) {
+		return fmt.Errorf("workspace is not a git repository")
 	}
 
 	return nil

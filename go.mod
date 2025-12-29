@@ -6,7 +6,6 @@ toolchain go1.24.11
 
 require (
 	github.com/docker/docker v28.5.2+incompatible
-	github.com/go-git/go-git/v5 v5.16.4
 	github.com/google/go-github/v68 v68.0.0
 	github.com/rogpeppe/go-internal v1.14.1
 	github.com/spf13/cobra v1.10.2

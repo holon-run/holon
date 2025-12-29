@@ -637,3 +637,133 @@ func (c *Client) SetRemote(ctx context.Context, name, url string) error {
 
 	return nil
 }
+
+// FileStatus represents the status of a single file in the working tree.
+type FileStatus struct {
+	// Path is the file path.
+	Path string
+
+	// Status is the human-readable status (e.g., "modified", "added", "deleted").
+	Status string
+
+	// StatusCode is the raw status code from git status.
+	StatusCode string
+}
+
+// GetWorkingTreeStatus returns detailed status information about the working tree.
+// It parses git status --porcelain output to return file-level status.
+func (c *Client) GetWorkingTreeStatus(ctx context.Context) ([]FileStatus, error) {
+	output, err := c.execCommand(ctx, "status", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get working tree status: %w", err)
+	}
+
+	return parseFileStatus(string(output)), nil
+}
+
+// parseFileStatus parses git status --porcelain output into FileStatus entries.
+func parseFileStatus(output string) []FileStatus {
+	var statuses []FileStatus
+	lines := strings.Split(output, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if len(line) >= 3 {
+			statusCode := line[0:2]
+			filePath := line[3:]
+
+			statuses = append(statuses, FileStatus{
+				Path:       filePath,
+				Status:     decodeSimpleStatusCode(statusCode),
+				StatusCode: statusCode,
+			})
+		}
+	}
+
+	return statuses
+}
+
+// decodeSimpleStatusCode converts simple porcelain status to human-readable string.
+func decodeSimpleStatusCode(code string) string {
+	switch code {
+	case " M":
+		return "modified (worktree)"
+	case "M ":
+		return "modified (index)"
+	case "MM":
+		return "modified (both)"
+	case "A ":
+		return "added (index)"
+	case " D":
+		return "deleted (worktree)"
+	case "D ":
+		return "deleted (index)"
+	case "AM":
+		return "added (index), modified (worktree)"
+	case "??":
+		return "untracked"
+	case "R ":
+		return "renamed (index)"
+	case "C ":
+		return "copied (index)"
+	case "UU":
+		return "both modified"
+	case "AA":
+		return "both added"
+	case "DD":
+		return "both deleted"
+	case "DU":
+		return "deleted (ours), modified (theirs)"
+	case "UD":
+		return "modified (ours), deleted (theirs)"
+	default:
+		return fmt.Sprintf("unknown_%s", code)
+	}
+}
+
+// DiagnoseWorkingTree returns detailed diagnostic information about the working tree state.
+// It returns a formatted string with file-by-file status information.
+func (c *Client) DiagnoseWorkingTree(ctx context.Context) string {
+	var builder strings.Builder
+
+	builder.WriteString("=== Working Tree Diagnostics ===\n")
+	builder.WriteString(fmt.Sprintf("Workspace: %s\n", c.Dir))
+
+	// Check if clean
+	if c.IsClean(ctx) {
+		builder.WriteString("Status: CLEAN\n")
+		return builder.String()
+	}
+
+	builder.WriteString("Status: DIRTY\n")
+
+	// Get detailed status
+	statuses, err := c.GetWorkingTreeStatus(ctx)
+	if err != nil {
+		builder.WriteString(fmt.Sprintf("Error getting status: %v\n", err))
+		return builder.String()
+	}
+
+	if len(statuses) == 0 {
+		builder.WriteString("No changes detected\n")
+		return builder.String()
+	}
+
+	builder.WriteString(fmt.Sprintf("Files with changes: %d\n", len(statuses)))
+	for _, status := range statuses {
+		builder.WriteString(fmt.Sprintf("  - %s: %s\n", status.Path, status.Status))
+	}
+
+	// Get diff stat
+	diffOutput, err := c.execCommand(ctx, "diff", "--stat")
+	if err == nil && len(diffOutput) > 0 {
+		builder.WriteString("\nDiff Stat:\n")
+		builder.WriteString(string(diffOutput))
+	}
+
+	return builder.String()
+}

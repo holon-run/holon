@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-git/go-git/v5"
+	holonGit "github.com/holon-run/holon/pkg/git"
 	"github.com/holon-run/holon/pkg/publisher"
 )
 
@@ -208,24 +208,16 @@ func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResu
 		// Determine branch name for push
 		branchName := config.Branch
 		if branchName == "" {
-			// Get current branch name
-			repo, err := git.PlainOpen(workspaceDir)
+			// Get current branch name using system git
+			gitClient := holonGit.NewClient(workspaceDir)
+			output, err := gitClient.ExecCommand(ctx, "rev-parse", "--abbrev-ref", "HEAD")
 			if err != nil {
-				wrappedErr := fmt.Errorf("failed to open repository: %w", err)
+				wrappedErr := fmt.Errorf("failed to get current branch: %w", err)
 				result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
 				result.Success = false
 				return result, wrappedErr
 			}
-
-			head, err := repo.Head()
-			if err != nil {
-				wrappedErr := fmt.Errorf("failed to get HEAD: %w", err)
-				result.Errors = append(result.Errors, publisher.NewError(wrappedErr.Error()))
-				result.Success = false
-				return result, wrappedErr
-			}
-
-			branchName = head.Name().Short()
+			branchName = string(output)
 		}
 
 		if err := gitClient.Push(branchName, remoteName); err != nil {
