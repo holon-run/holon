@@ -1,12 +1,14 @@
 package githubpr
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	holonGit "github.com/holon-run/holon/pkg/git"
 	"github.com/holon-run/holon/pkg/publisher"
 )
 
@@ -592,4 +594,238 @@ func TestGeneratePRFixTitle(t *testing.T) {
 			t.Errorf("expected %q, got %q", expected, title)
 		}
 	})
+}
+
+// TestGitClient_CommitChangesWithoutPreconfiguredGit tests that CommitChanges
+// properly auto-configures git when no configuration exists. This simulates
+// a fresh clone scenario like GitHub Actions where no git config is set initially.
+// This was the bug scenario from issue #383.
+func TestGitClient_CommitChangesWithoutPreconfiguredGit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Initialize git WITHOUT configuring user.name/email
+	// This simulates a fresh clone scenario (like GitHub Actions)
+	if err := exec.Command("git", "init", tmpDir).Run(); err != nil {
+		t.Fatalf("Failed to init git repo: %v", err)
+	}
+
+	// Create initial commit (without git config, this will use global config or fail)
+	testFile := filepath.Join(tmpDir, "README.md")
+	if err := os.WriteFile(testFile, []byte("# Test"), 0o644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	// Configure git minimally for initial commit (using global or setting values)
+	// In CI, there might be no global config either
+	if err := exec.Command("git", "-C", tmpDir, "config", "user.name", "Initial User").Run(); err != nil {
+		t.Fatalf("Failed to configure git name for initial commit: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "config", "user.email", "initial@example.com").Run(); err != nil {
+		t.Fatalf("Failed to configure git email for initial commit: %v", err)
+	}
+
+	if err := exec.Command("git", "-C", tmpDir, "add", ".").Run(); err != nil {
+		t.Fatalf("Failed to add files: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "commit", "-m", "Initial commit").Run(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Now REMOVE the git config to simulate a fresh clone where git config is not set
+	// This is the key scenario from the bug
+	exec.Command("git", "-C", tmpDir, "config", "--unset", "user.name").Run()
+	exec.Command("git", "-C", tmpDir, "config", "--unset", "user.email").Run()
+
+	// Verify git config is not set
+	cmd := exec.Command("git", "-C", tmpDir, "config", "--local", "--get", "user.name")
+	if output, _ := cmd.Output(); len(output) > 0 {
+		t.Logf("Warning: git config still has user.name after unset: %s", string(output))
+	}
+
+	// Create GitClient without author info (should use defaults)
+	gitClient := NewGitClient(tmpDir, "", "", "")
+
+	// Make a change to commit
+	if err := os.WriteFile(testFile, []byte("# Test\n\nNew content"), 0o644); err != nil {
+		t.Fatalf("Failed to modify test file: %v", err)
+	}
+
+	// This should succeed by auto-configuring git during CommitChanges
+	// Before fix PR #382: would fail with "Committer identity unknown"
+	// After fix: should succeed with default "Holon Bot <bot@holon.run>"
+	sha, err := gitClient.CommitChanges(ctx, "test commit from GitClient")
+	if err != nil {
+		t.Fatalf("CommitChanges() failed without pre-configured git: %v", err)
+	}
+	if sha == "" {
+		t.Error("CommitChanges() returned empty SHA")
+	}
+
+	// Verify git config was set after CommitChanges
+	client := holonGit.NewClient(tmpDir)
+	name, err := client.ConfigGet(ctx, "user.name")
+	if err != nil {
+		t.Fatalf("ConfigGet user.name failed: %v", err)
+	}
+	if name != "Holon Bot" {
+		t.Errorf("user.name = %q, want 'Holon Bot'", name)
+	}
+
+	email, err := client.ConfigGet(ctx, "user.email")
+	if err != nil {
+		t.Fatalf("ConfigGet user.email failed: %v", err)
+	}
+	if email != "bot@holon.run" {
+		t.Errorf("user.email = %q, want 'bot@holon.run'", email)
+	}
+}
+
+// TestGitClient_CommitChanges_PreservesExistingConfig tests that CommitChanges
+// preserves existing git configuration instead of overwriting it.
+func TestGitClient_CommitChanges_PreservesExistingConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Initialize git with custom configuration
+	if err := exec.Command("git", "init", tmpDir).Run(); err != nil {
+		t.Fatalf("Failed to init git repo: %v", err)
+	}
+
+	// Set custom git config
+	if err := exec.Command("git", "-C", tmpDir, "config", "user.name", "Custom User").Run(); err != nil {
+		t.Fatalf("Failed to configure git name: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "config", "user.email", "custom@example.com").Run(); err != nil {
+		t.Fatalf("Failed to configure git email: %v", err)
+	}
+
+	// Create initial commit
+	testFile := filepath.Join(tmpDir, "README.md")
+	if err := os.WriteFile(testFile, []byte("# Test"), 0o644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "add", ".").Run(); err != nil {
+		t.Fatalf("Failed to add files: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "commit", "-m", "Initial commit").Run(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Create GitClient without author info
+	gitClient := NewGitClient(tmpDir, "", "", "")
+
+	// Make a change to commit
+	if err := os.WriteFile(testFile, []byte("# Test\n\nNew content"), 0o644); err != nil {
+		t.Fatalf("Failed to modify test file: %v", err)
+	}
+
+	// CommitChanges should preserve existing config
+	sha, err := gitClient.CommitChanges(ctx, "test commit")
+	if err != nil {
+		t.Fatalf("CommitChanges() failed: %v", err)
+	}
+	if sha == "" {
+		t.Error("CommitChanges() returned empty SHA")
+	}
+
+	// Verify existing config was preserved
+	client := holonGit.NewClient(tmpDir)
+	name, err := client.ConfigGet(ctx, "user.name")
+	if err != nil {
+		t.Fatalf("ConfigGet user.name failed: %v", err)
+	}
+	if name != "Custom User" {
+		t.Errorf("user.name = %q, want 'Custom User' (existing config should be preserved)", name)
+	}
+
+	email, err := client.ConfigGet(ctx, "user.email")
+	if err != nil {
+		t.Fatalf("ConfigGet user.email failed: %v", err)
+	}
+	if email != "custom@example.com" {
+		t.Errorf("user.email = %q, want 'custom@example.com' (existing config should be preserved)", email)
+	}
+}
+
+// TestGitClient_CommitChanges_WithCustomAuthor tests that CommitChanges
+// uses custom author info when provided.
+func TestGitClient_CommitChanges_WithCustomAuthor(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Initialize git without configuration
+	if err := exec.Command("git", "init", tmpDir).Run(); err != nil {
+		t.Fatalf("Failed to init git repo: %v", err)
+	}
+
+	// Create initial commit (with temp config)
+	if err := exec.Command("git", "-C", tmpDir, "config", "user.name", "Initial").Run(); err != nil {
+		t.Fatalf("Failed to configure git: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "config", "user.email", "initial@example.com").Run(); err != nil {
+		t.Fatalf("Failed to configure git: %v", err)
+	}
+
+	testFile := filepath.Join(tmpDir, "README.md")
+	if err := os.WriteFile(testFile, []byte("# Test"), 0o644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "add", ".").Run(); err != nil {
+		t.Fatalf("Failed to add files: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "commit", "-m", "Initial").Run(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Remove config to simulate fresh clone
+	exec.Command("git", "-C", tmpDir, "config", "--unset", "user.name").Run()
+	exec.Command("git", "-C", tmpDir, "config", "--unset", "user.email").Run()
+
+	// Create GitClient with custom author info
+	gitClient := NewGitClient(tmpDir, "", "My Author", "myauthor@example.com")
+
+	// Make a change
+	if err := os.WriteFile(testFile, []byte("# Test\n\nNew content"), 0o644); err != nil {
+		t.Fatalf("Failed to modify test file: %v", err)
+	}
+
+	// CommitChanges should use custom author
+	sha, err := gitClient.CommitChanges(ctx, "test commit with custom author")
+	if err != nil {
+		t.Fatalf("CommitChanges() failed: %v", err)
+	}
+	if sha == "" {
+		t.Error("CommitChanges() returned empty SHA")
+	}
+
+	// Verify git config was set with custom values
+	client := holonGit.NewClient(tmpDir)
+	name, err := client.ConfigGet(ctx, "user.name")
+	if err != nil {
+		t.Fatalf("ConfigGet user.name failed: %v", err)
+	}
+	if name != "My Author" {
+		t.Errorf("user.name = %q, want 'My Author'", name)
+	}
+
+	email, err := client.ConfigGet(ctx, "user.email")
+	if err != nil {
+		t.Fatalf("ConfigGet user.email failed: %v", err)
+	}
+	if email != "myauthor@example.com" {
+		t.Errorf("user.email = %q, want 'myauthor@example.com'", email)
+	}
 }
