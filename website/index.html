@@ -37,7 +37,8 @@
                     </svg>
                     GitHub
                 </a>
-                <button id="theme-toggle" class="theme-toggle" aria-label="Toggle Theme">
+                <button id="theme-toggle" class="theme-toggle" aria-label="Toggle Light/Dark Theme">
+                    <span class="sr-only">Toggle Theme</span>
                     <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                         stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="12" cy="12" r="5"></circle>
@@ -103,11 +104,13 @@
                     <h2>Quickstart</h2>
                     <p>Get started with Holon in GitHub Actions or run it locally with the CLI.</p>
                 </div>
-                <div class="quickstart-tabs">
-                    <button class="tab-button active" data-tab="github-actions">GitHub Actions</button>
-                    <button class="tab-button" data-tab="local-cli">Local CLI</button>
+                <div class="quickstart-tabs" role="tablist">
+                    <button class="tab-button active" data-tab="github-actions" role="tab" aria-selected="true"
+                        aria-controls="github-actions">GitHub Actions</button>
+                    <button class="tab-button" data-tab="local-cli" role="tab" aria-selected="false"
+                        aria-controls="local-cli">Local CLI</button>
                 </div>
-                <div class="tab-content active" id="github-actions">
+                <div class="tab-content active" id="github-actions" role="tabpanel">
                     <div class="code-block">
                         <pre><code># .github/workflows/holon-trigger.yml
 name: Holon Trigger
@@ -141,7 +144,7 @@ jobs:
                         <code>ANTHROPIC_AUTH_TOKEN</code> secret in your repository.
                     </div>
                 </div>
-                <div class="tab-content" id="local-cli">
+                <div class="tab-content" id="local-cli" role="tabpanel">
                     <div class="code-block">
                         <pre><code># Install via Homebrew
 brew install holon-run/tap/holon

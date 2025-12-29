@@ -16,6 +16,7 @@
     --warning-color: #f59e0b;
     --danger-color: #ef4444;
     --terminal-bg: linear-gradient(135deg, #1a1a1a 0%, #1e1e1e 100%);
+    --terminal-bg-light: #111827;
     --header-bg: rgba(5, 5, 5, 0.85);
     --hero-gradient: linear-gradient(135deg, #fff 0%, #999 100%);
 
@@ -48,7 +49,7 @@
     --accent-color: #2563eb;
     --accent-glow: rgba(37, 99, 235, 0.1);
     --accent-light: #3b82f6;
-    --terminal-bg: #111827;
+    --terminal-bg: var(--terminal-bg-light);
     /* Keep terminal dark even in light mode for dev aesthetic */
     --header-bg: rgba(255, 255, 255, 0.85);
     --hero-gradient: linear-gradient(135deg, #111827 0%, #4b5563 100%);
@@ -81,6 +82,18 @@ body {
 
 .center {
     text-align: center;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
 }
 
 .btn {
@@ -232,8 +245,8 @@ body {
     display: none;
 }
 
-/* Root level if no [data-theme] is set (default dark) */
-body:not([data-theme="light"]) .moon-icon {
+/* Default state (dark) if data-theme is not set */
+body:not([data-theme]) .moon-icon {
     display: none;
 }
 

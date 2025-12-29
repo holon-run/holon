@@ -4,30 +4,34 @@ const initTheme = () => {
     const storedTheme = localStorage.getItem('theme');
     const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)');
 
-    const setTheme = (theme) => {
+    const setTheme = (theme, persist = true) => {
         document.body.setAttribute('data-theme', theme);
-        localStorage.setItem('theme', theme);
+        if (persist) {
+            localStorage.setItem('theme', theme);
+        }
     };
 
     // Initial detection
     if (storedTheme) {
+        // Respect previously stored user preference
         setTheme(storedTheme);
-    } else if (!systemPrefersDark.matches) {
-        setTheme('light');
     } else {
-        setTheme('dark');
+        // Use system preference without persisting as a user choice
+        setTheme(systemPrefersDark.matches ? 'dark' : 'light', false);
     }
 
     // Toggle listener
     themeToggle.addEventListener('click', () => {
         const currentTheme = document.body.getAttribute('data-theme') || 'dark';
+        // User toggle should persist the choice
         setTheme(currentTheme === 'dark' ? 'light' : 'dark');
     });
 
     // Listen for system changes
     systemPrefersDark.addEventListener('change', (e) => {
         if (!localStorage.getItem('theme')) {
-            setTheme(e.matches ? 'dark' : 'light');
+            // Follow system changes only when there is no stored user preference
+            setTheme(e.matches ? 'dark' : 'light', false);
         }
     });
 };
@@ -41,14 +45,22 @@ document.addEventListener('DOMContentLoaded', () => {
     tabButtons.forEach(button => {
         button.addEventListener('click', () => {
             const targetTab = button.getAttribute('data-tab');
+            if (!targetTab) return;
 
-            // Remove active class from all buttons and contents
-            tabButtons.forEach(btn => btn.classList.remove('active'));
+            const targetContent = document.getElementById(targetTab);
+            if (!targetContent) return;
+
+            // Remove active class and update attributes
+            tabButtons.forEach(btn => {
+                btn.classList.remove('active');
+                btn.setAttribute('aria-selected', 'false');
+            });
             tabContents.forEach(content => content.classList.remove('active'));
 
-            // Add active class to clicked button and corresponding content
+            // Add active class and update attributes
             button.classList.add('active');
-            document.getElementById(targetTab).classList.add('active');
+            button.setAttribute('aria-selected', 'true');
+            targetContent.classList.add('active');
         });
     });
 
@@ -56,29 +68,40 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
         anchor.addEventListener('click', function (e) {
             const href = this.getAttribute('href');
-            if (href !== '#') {
-                e.preventDefault();
-                const target = document.querySelector(href);
-                if (target) {
-                    const headerOffset = 80;
-                    const elementPosition = target.getBoundingClientRect().top;
-                    const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+            if (!href || href === '#') return;
 
-                    window.scrollTo({
-                        top: offsetPosition,
-                        behavior: 'smooth'
-                    });
-                }
+            e.preventDefault();
+            const target = document.querySelector(href);
+            if (target) {
+                const headerOffset = 80;
+                const elementPosition = target.getBoundingClientRect().top;
+                const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+
+                window.scrollTo({
+                    top: offsetPosition,
+                    behavior: 'smooth'
+                });
             }
         });
     });
 
-    // Add subtle parallax effect to background glow
+    // Add subtle parallax effect to background glow with requestAnimationFrame
     const backgroundGlow = document.querySelector('.background-glow');
     if (backgroundGlow) {
+        let latestScrollY = window.pageYOffset;
+        let ticking = false;
+
+        const updateParallax = () => {
+            backgroundGlow.style.transform = `translateX(-50%) translateY(${latestScrollY * 0.3}px)`;
+            ticking = false;
+        };
+
         window.addEventListener('scroll', () => {
-            const scrolled = window.pageYOffset;
-            backgroundGlow.style.transform = `translateX(-50%) translateY(${scrolled * 0.3}px)`;
+            latestScrollY = window.pageYOffset;
+            if (!ticking) {
+                ticking = true;
+                window.requestAnimationFrame(updateParallax);
+            }
         });
     }
 
