@@ -369,8 +369,7 @@ func (p *PRPublisher) generateDeterministicTitle(req publisher.PublishRequest) (
 		}
 	}
 
-	// Determine context directory path: InputDir/context takes precedence,
-	// with fallback to OutputDir/context for backward compatibility
+	// Determine context directory path: use InputDir/context
 	var contextDir string
 	var contextSource string // Tracks where context was found for logging
 
@@ -378,6 +377,7 @@ func (p *PRPublisher) generateDeterministicTitle(req publisher.PublishRequest) (
 		contextDir = filepath.Join(req.InputDir, "context")
 		contextSource = fmt.Sprintf("InputDir (%s)", contextDir)
 	} else {
+		// For backward compatibility with direct `holon publish` usage
 		contextDir = filepath.Join(req.OutputDir, "context")
 		contextSource = fmt.Sprintf("OutputDir (%s)", contextDir)
 	}
@@ -388,24 +388,9 @@ func (p *PRPublisher) generateDeterministicTitle(req publisher.PublishRequest) (
 
 	contextData, err := os.ReadFile(contextManifestPath)
 	if err != nil {
-		// If InputDir was provided but context wasn't found, try fallback to OutputDir/context
-		if req.InputDir != "" {
-			fallbackDir := filepath.Join(req.OutputDir, "context")
-			fallbackPath := filepath.Join(fallbackDir, "manifest.json")
-			contextData, err = os.ReadFile(fallbackPath)
-			if err == nil {
-				contextDir = fallbackDir
-				contextSource = fmt.Sprintf("OutputDir fallback (%s)", fallbackDir)
-			} else {
-				// Context not found in either location
-				log.Warn("Context manifest not found, skipping deterministic title generation", "path", contextManifestPath)
-				return "", nil
-			}
-		} else {
-			// No context manifest available, return empty title (will use fallback)
-			log.Warn("Context manifest not found, skipping deterministic title generation", "path", contextManifestPath)
-			return "", nil
-		}
+		// No context manifest available, return empty title (will use fallback)
+		log.Warn("Context manifest not found, skipping deterministic title generation", "path", contextManifestPath)
+		return "", nil
 	}
 
 	if err := json.Unmarshal(contextData, &contextInfo); err != nil {
