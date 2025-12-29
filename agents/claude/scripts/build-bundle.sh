@@ -85,6 +85,9 @@ mkdir -p "${BUNDLE_DIR}/bin"
 cp -R "${STAGE_DIR}/dist" "${BUNDLE_DIR}/dist"
 cp -R "${STAGE_DIR}/node_modules" "${BUNDLE_DIR}/node_modules"
 
+# Copy package.json to ensure ES modules work correctly
+cp "${STAGE_DIR}/package.json" "${BUNDLE_DIR}/package.json"
+
 cat > "${BUNDLE_DIR}/bin/agent" <<'ENTRYPOINT'
 #!/usr/bin/env sh
 set -eu
