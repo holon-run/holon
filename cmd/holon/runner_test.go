@@ -205,7 +205,7 @@ func TestRunner_Run_EnvVariablePrecedence(t *testing.T) {
 	bundlePath := createDummyBundle(t, tempDir)
 
 	// Set environment variables for auto-injection
-	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "test-key")
 	t.Setenv("GITHUB_TOKEN", "test-token")
 
 	cfg := RunnerConfig{

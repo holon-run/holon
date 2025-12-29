@@ -39,10 +39,11 @@ var skipPreflight bool
 
 // resolvedConfig holds the resolved configuration values
 type resolvedConfig struct {
-	baseImage   string
-	agent       string
-	agentChannel string
-	logLevel    string
+	baseImage         string
+	agent             string
+	agentChannel      string
+	agentChannelSource string
+	logLevel          string
 }
 
 // resolveWithProjectConfig resolves configuration values with precedence:
@@ -113,6 +114,7 @@ func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig, wor
 	}
 	channel, source := cfg.ResolveAgentChannel(cliChannel)
 	resolved.agentChannel = channel
+	resolved.agentChannelSource = source
 	logConfigResolution("agent_channel", channel, source)
 
 	// Resolve log level: CLI > config > default
@@ -225,13 +227,14 @@ var runCmd = &cobra.Command{
 
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{
-			SpecPath:        specPath,
-			GoalStr:         goalStr,
-			TaskName:        taskName,
-			BaseImage:       resolved.baseImage,
-			AgentBundle:     resolved.agent,
-			AgentChannel:    resolved.agentChannel,
-			WorkspacePath:   workspacePath,
+			SpecPath:           specPath,
+			GoalStr:            goalStr,
+			TaskName:           taskName,
+			BaseImage:          resolved.baseImage,
+			AgentBundle:        resolved.agent,
+			AgentChannel:       resolved.agentChannel,
+			AgentChannelSource: resolved.agentChannelSource,
+			WorkspacePath:      workspacePath,
 			ContextPath:     contextPath,
 			InputPath:       inputPath,
 			OutDir:          resolvedOutDir,
