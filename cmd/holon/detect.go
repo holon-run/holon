@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/holon-run/holon/pkg/image"
 	"github.com/spf13/cobra"
@@ -157,8 +158,8 @@ func outputDetectDebug(workspace string) error {
 // outputDetectJSON outputs the detection result in JSON format
 func outputDetectJSON(workspace string) error {
 	detector := image.NewDetector(workspace)
-	result := detector.Detect()
 	debugResult := detector.DetectDebug()
+	result := debugResult.DetectResult
 
 	type VersionSource struct {
 		Language    string `json:"language,omitempty"`
@@ -218,14 +219,7 @@ func formatSignals(signals []string) string {
 	if len(signals) == 0 {
 		return "none"
 	}
-	result := ""
-	for i, s := range signals {
-		if i > 0 {
-			result += ", "
-		}
-		result += s
-	}
-	return result
+	return strings.Join(signals, ", ")
 }
 
 // findBestSignal finds the highest priority signal from a list

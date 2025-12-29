@@ -104,10 +104,16 @@ func (d *Detector) DetectDebug() *DebugDetectResult {
 	// Count files
 	fileCount := 0
 	_ = filepath.Walk(d.workspace, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info == nil {
+			return nil
+		}
 		if !info.IsDir() {
 			fileCount++
 		}
-		return err
+		return nil
 	})
 
 	var result *DetectResult
@@ -217,28 +223,75 @@ func (d *Detector) collectSignals(trackPaths bool) []signal {
 // checkMonorepoSignals checks for monorepo structure patterns.
 // Returns signals for common monorepo directory layouts.
 func (d *Detector) checkMonorepoSignals() []signal {
+	// Define monorepo roots and their priorities. We will detect any
+	// package.json files recursively under these roots.
 	monorepoPatterns := []struct {
+		root     string
 		pattern  string
 		priority int
 	}{
-		{"packages/*/package.json", 85},
-		{"apps/*/package.json", 85},
-		{"typescript/*/package.json", 85},
-		{"workspaces/*/package.json", 85},
+		{"packages", "packages/**/package.json", 85},
+		{"apps", "apps/**/package.json", 85},
+		{"typescript", "typescript/**/package.json", 85},
+		{"workspaces", "workspaces/**/package.json", 85},
 	}
+
+	// Count matching package.json files per monorepo root.
+	counts := make(map[string]int)
+
+	_ = filepath.Walk(d.workspace, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip errors
+		}
+
+		if info == nil {
+			return nil
+		}
+
+		if info.IsDir() {
+			// Reuse the same directory-skipping logic as in collectSignals.
+			if shouldSkipDirectory(path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Only consider package.json files.
+		if info.Name() != "package.json" {
+			return nil
+		}
+
+		relPath, relErr := filepath.Rel(d.workspace, path)
+		if relErr != nil {
+			return nil
+		}
+
+		// Split the relative path into components for root matching.
+		components := strings.Split(relPath, string(os.PathSeparator))
+		if len(components) < 3 {
+			// Need at least: <root>/<something>/package.json
+			return nil
+		}
+
+		for _, pat := range monorepoPatterns {
+			if components[0] == pat.root && components[len(components)-1] == "package.json" {
+				counts[pat.root]++
+				// A single package.json belongs to at most one root.
+				break
+			}
+		}
+
+		return nil
+	})
 
 	var foundSignals []signal
 	for _, pat := range monorepoPatterns {
-		// Convert pattern to glob pattern
-		globPattern := filepath.Join(d.workspace, pat.pattern)
-		matches, err := filepath.Glob(globPattern)
-		if err == nil && len(matches) > 0 {
-			// Create a signal for this monorepo pattern
+		if cnt, ok := counts[pat.root]; ok && cnt > 0 {
 			foundSignals = append(foundSignals, signal{
 				Name:      "monorepo:" + pat.pattern,
 				Priority:  pat.priority,
 				Image:     "node:22",
-				Rationale: fmt.Sprintf("Detected monorepo structure (%d packages in %s)", len(matches), pat.pattern),
+				Rationale: fmt.Sprintf("Detected monorepo structure (%d packages in %s)", cnt, pat.pattern),
 				lang:      "node",
 			})
 		}

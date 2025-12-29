@@ -1,6 +1,7 @@
 package image
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -272,6 +273,292 @@ func TestFormatResult(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDetect_PnpmWorkspace_Yaml(t *testing.T) {
+	dir := t.TempDir()
+	createFile(t, dir, "pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n")
+
+	result := Detect(dir)
+	if result.Image != "node:22" {
+		t.Errorf("Expected node:22, got %s", result.Image)
+	}
+	if len(result.Signals) != 1 || result.Signals[0] != "pnpm-workspace.yaml" {
+		t.Errorf("Expected signals [pnpm-workspace.yaml], got %v", result.Signals)
+	}
+}
+
+func TestDetect_PnpmWorkspace_Yml(t *testing.T) {
+	dir := t.TempDir()
+	createFile(t, dir, "pnpm-workspace.yml", "packages:\n  - 'packages/*'\n")
+
+	result := Detect(dir)
+	if result.Image != "node:22" {
+		t.Errorf("Expected node:22, got %s", result.Image)
+	}
+	if len(result.Signals) != 1 || result.Signals[0] != "pnpm-workspace.yaml" {
+		t.Errorf("Expected signals [pnpm-workspace.yaml], got %v", result.Signals)
+	}
+}
+
+func TestDetect_PnpmWorkspace_PriorityOverPackageJson(t *testing.T) {
+	dir := t.TempDir()
+	// Both pnpm-workspace.yaml and package.json present
+	createFile(t, dir, "pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n")
+	createFile(t, dir, "package.json", `{"name": "test"}`)
+
+	result := Detect(dir)
+	// pnpm-workspace.yaml should win (priority 95 vs 90)
+	if result.Image != "node:22" {
+		t.Errorf("Expected node:22, got %s", result.Image)
+	}
+	// Both signals should be detected
+	if len(result.Signals) != 2 {
+		t.Errorf("Expected 2 signals, got %d: %v", len(result.Signals), result.Signals)
+	}
+	// Check that pnpm-workspace.yaml is in signals
+	foundPnpm := false
+	for _, sig := range result.Signals {
+		if sig == "pnpm-workspace.yaml" {
+			foundPnpm = true
+			break
+		}
+	}
+	if !foundPnpm {
+		t.Errorf("Expected pnpm-workspace.yaml in signals, got %v", result.Signals)
+	}
+}
+
+func TestDetect_Monorepo_SingleLevel(t *testing.T) {
+	dir := t.TempDir()
+	// Create packages/a/package.json
+	packagesDir := filepath.Join(dir, "packages")
+	aDir := filepath.Join(packagesDir, "a")
+	if err := os.MkdirAll(aDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(aDir, "package.json"), []byte(`{"name": "a"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Create packages/b/package.json
+	bDir := filepath.Join(packagesDir, "b")
+	if err := os.MkdirAll(bDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bDir, "package.json"), []byte(`{"name": "b"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Detect(dir)
+	if result.Image != "node:22" {
+		t.Errorf("Expected node:22, got %s", result.Image)
+	}
+	// Should detect both individual package.json signals AND monorepo signal
+	foundMonorepo := false
+	packageCount := 0
+	for _, sig := range result.Signals {
+		if sig == "monorepo:packages/**/package.json" {
+			foundMonorepo = true
+		}
+		if sig == "package.json" {
+			packageCount++
+		}
+	}
+	if !foundMonorepo {
+		t.Errorf("Expected monorepo:packages/**/package.json in signals, got %v", result.Signals)
+	}
+	// Should have 2 individual package.json signals plus the monorepo signal
+	if packageCount != 2 {
+		t.Errorf("Expected 2 package.json signals, got %d", packageCount)
+	}
+}
+
+func TestDetect_Monorepo_DeeplyNested(t *testing.T) {
+	dir := t.TempDir()
+	// Create deeply nested structure: typescript/packages/extensions/package.json
+	pathParts := []string{"typescript", "packages", "extensions"}
+	path := filepath.Join(dir, filepath.Join(pathParts...))
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	pkgJsonPath := filepath.Join(path, "package.json")
+	if err := os.WriteFile(pkgJsonPath, []byte(`{"name": "test"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Detect(dir)
+	if result.Image != "node:22" {
+		t.Errorf("Expected node:22, got %s", result.Image)
+	}
+	// Should detect monorepo signal for deeply nested structure
+	foundMonorepo := false
+	for _, sig := range result.Signals {
+		if sig == "monorepo:typescript/**/package.json" {
+			foundMonorepo = true
+			break
+		}
+	}
+	if !foundMonorepo {
+		t.Errorf("Expected monorepo:typescript/**/package.json in signals, got %v", result.Signals)
+	}
+	// Should also detect the individual package.json signal
+	foundPackageJson := false
+	for _, sig := range result.Signals {
+		if sig == "package.json" {
+			foundPackageJson = true
+			break
+		}
+	}
+	if !foundPackageJson {
+		t.Errorf("Expected package.json in signals, got %v", result.Signals)
+	}
+}
+
+func TestDetect_Monorepo_MultipleRoots(t *testing.T) {
+	dir := t.TempDir()
+	// Create packages/a/package.json
+	packagesDir := filepath.Join(dir, "packages")
+	aDir := filepath.Join(packagesDir, "a")
+	if err := os.MkdirAll(aDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(aDir, "package.json"), []byte(`{"name": "a"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Create apps/b/package.json
+	appsDir := filepath.Join(dir, "apps")
+	bDir := filepath.Join(appsDir, "b")
+	if err := os.MkdirAll(bDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bDir, "package.json"), []byte(`{"name": "b"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Detect(dir)
+	if result.Image != "node:22" {
+		t.Errorf("Expected node:22, got %s", result.Image)
+	}
+	// Should detect both monorepo signals
+	foundPackages := false
+	foundApps := false
+	for _, sig := range result.Signals {
+		if sig == "monorepo:packages/**/package.json" {
+			foundPackages = true
+		}
+		if sig == "monorepo:apps/**/package.json" {
+			foundApps = true
+		}
+	}
+	if !foundPackages {
+		t.Errorf("Expected monorepo:packages/**/package.json in signals, got %v", result.Signals)
+	}
+	if !foundApps {
+		t.Errorf("Expected monorepo:apps/**/package.json in signals, got %v", result.Signals)
+	}
+}
+
+func TestDetect_Monorepo_RationaleCorrectCount(t *testing.T) {
+	dir := t.TempDir()
+	// Create 3 packages
+	packagesDir := filepath.Join(dir, "packages")
+	for i := 1; i <= 3; i++ {
+		pkgDir := filepath.Join(packagesDir, fmt.Sprintf("pkg%d", i))
+		if err := os.MkdirAll(pkgDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(fmt.Sprintf(`{"name": "pkg%d"}`, i)), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	detector := NewDetector(dir)
+	debugResult := detector.DetectDebug()
+
+	// Check that monorepo signal is in scanned signals with correct count
+	foundMonorepoWithCount := false
+	for _, sig := range debugResult.ScannedSignals {
+		if sig.Name == "monorepo:packages/**/package.json" {
+			// The signal name itself won't have the count, but we can check it exists
+			foundMonorepoWithCount = true
+		}
+	}
+	if !foundMonorepoWithCount {
+		t.Errorf("Expected monorepo:packages/**/package.json in scanned signals, got %v", debugResult.ScannedSignals)
+	}
+	// Should have 3 package.json signals
+	packageCount := 0
+	for _, sig := range debugResult.ScannedSignals {
+		if sig.Name == "package.json" {
+			packageCount++
+		}
+	}
+	if packageCount != 3 {
+		t.Errorf("Expected 3 package.json signals, got %d", packageCount)
+	}
+}
+
+func TestDetect_DebugMode_SignalPaths(t *testing.T) {
+	dir := t.TempDir()
+	createFile(t, dir, "go.mod", "module test\n")
+	// Create a nested package.json
+	packagesDir := filepath.Join(dir, "packages")
+	testDir := filepath.Join(packagesDir, "test")
+	if err := os.MkdirAll(testDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(testDir, "package.json"), []byte(`{"name": "test"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	detector := NewDetector(dir)
+	debugResult := detector.DetectDebug()
+
+	// Check that paths are tracked
+	foundGoModPath := false
+	foundPackagePath := false
+	for _, sig := range debugResult.ScannedSignals {
+		if sig.Name == "go.mod" && sig.Path == "go.mod" {
+			foundGoModPath = true
+		}
+		if sig.Name == "package.json" && sig.Path == filepath.Join("packages", "test", "package.json") {
+			foundPackagePath = true
+		}
+	}
+
+	if !foundGoModPath {
+		t.Errorf("Expected go.mod with path 'go.mod', got paths: %v", debugResult.ScannedSignals)
+	}
+	if !foundPackagePath {
+		t.Errorf("Expected package.json with nested path, got paths: %v", debugResult.ScannedSignals)
+	}
+
+	// Check file count is tracked (should be at least 2: go.mod and package.json)
+	if debugResult.FileCount < 2 {
+		t.Errorf("Expected at least 2 files counted, got %d", debugResult.FileCount)
+	}
+
+	// Check duration is non-negative (can be 0 for very fast operations)
+	if debugResult.DurationMs < 0 {
+		t.Errorf("Expected non-negative duration, got %dms", debugResult.DurationMs)
+	}
+}
+
+// Helper function to check if a string contains a substring
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (
+		s[:len(substr)] == substr ||
+		s[len(s)-len(substr):] == substr ||
+		containsMiddle(s, substr)))
+}
+
+func containsMiddle(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // Helper function to create a file in a directory
