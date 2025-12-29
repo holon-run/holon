@@ -37,11 +37,21 @@ jobs:
         cd agents/claude
         npm run bundle
 
+    - name: Smoke Test Agent Bundle
+      run: |
+        cd agents/claude
+        npm run smoke-test
+
     - name: Verify Agent Bundle
       run: |
         cd agents/claude
         npm ci
         npm run verify-bundle
+
+    - name: Test Agent Bundle (Node.js tests)
+      run: |
+        cd agents/claude
+        node --test tests/bundle.test.js
 
   test-unit:
     name: Test Unit

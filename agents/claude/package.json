@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "bundle": "./scripts/build-bundle.sh",
+    "smoke-test": "./scripts/smoke-test.sh",
     "verify-bundle": "./scripts/verify-bundle.sh",
     "test": "node --test tests/*.test.js",
     "test:watch": "node --test --watch tests/*.test.js"
