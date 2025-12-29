@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DefaultImage is the fallback Docker image used when no language signal is detected.
@@ -31,11 +32,46 @@ type DetectResult struct {
 	Disabled  bool     // True if auto-detection is disabled
 }
 
+// DebugDetectResult contains detailed detection information for debugging.
+type DebugDetectResult struct {
+	*DetectResult
+
+	// ScannedSignals lists all signals found during scanning
+	ScannedSignals []SignalMatch `json:"scanned_signals"`
+
+	// VersionInfo contains version detection details
+	VersionInfo *VersionDebugInfo `json:"version_info,omitempty"`
+
+	// FileCount is the total number of files scanned
+	FileCount int `json:"file_count"`
+
+	// DurationMs is how long the detection took
+	DurationMs int64 `json:"duration_ms"`
+}
+
+// SignalMatch represents a found signal with location info.
+type SignalMatch struct {
+	Name     string `json:"name"`
+	Priority int    `json:"priority"`
+	Path     string `json:"path"`
+	Found    bool   `json:"found"`
+}
+
+// VersionDebugInfo contains version detection details for debugging.
+type VersionDebugInfo struct {
+	Language    string `json:"language"`
+	Version     string `json:"version"`
+	SourceFile  string `json:"source_file"`
+	SourceField string `json:"source_field"`
+	LineNumber  int    `json:"line_number"`
+	RawValue    string `json:"raw_value"`
+}
+
 // Detect analyzes the workspace to determine an appropriate base image.
 // If no strong signal is detected, returns a safe default.
 // Attempts to detect language versions from project files.
 func (d *Detector) Detect() *DetectResult {
-	signals := d.collectSignals()
+	signals := d.collectSignals(false)
 
 	if len(signals) == 0 {
 		return &DetectResult{
@@ -58,6 +94,66 @@ func (d *Detector) Detect() *DetectResult {
 	}
 }
 
+// DetectDebug performs detection with detailed debug information.
+func (d *Detector) DetectDebug() *DebugDetectResult {
+	start := time.Now()
+
+	// Collect signals with path tracking
+	signals := d.collectSignals(true)
+
+	// Count files
+	fileCount := 0
+	_ = filepath.Walk(d.workspace, func(path string, info os.FileInfo, err error) error {
+		if !info.IsDir() {
+			fileCount++
+		}
+		return err
+	})
+
+	var result *DetectResult
+	var versionInfo *VersionDebugInfo
+
+	if len(signals) == 0 {
+		result = &DetectResult{
+			Image:     DefaultImage,
+			Signals:   []string{},
+			Rationale: "No language signals detected, using default Go image",
+		}
+	} else {
+		bestSignal := d.scoreSignals(signals)
+		image, rationale, vInfo := d.detectVersionDebug(bestSignal)
+		versionInfo = vInfo
+
+		result = &DetectResult{
+			Image:     image,
+			Signals:   signalNames(signals),
+			Rationale: rationale,
+		}
+	}
+
+	return &DebugDetectResult{
+		DetectResult:   result,
+		ScannedSignals: signalsToMatches(signals),
+		VersionInfo:    versionInfo,
+		FileCount:      fileCount,
+		DurationMs:     time.Since(start).Milliseconds(),
+	}
+}
+
+// signalsToMatches converts signals to SignalMatch structs
+func signalsToMatches(signals []signal) []SignalMatch {
+	matches := make([]SignalMatch, len(signals))
+	for i, sig := range signals {
+		matches[i] = SignalMatch{
+			Name:     sig.Name,
+			Priority: sig.Priority,
+			Path:     sig.path,
+			Found:    true,
+		}
+	}
+	return matches
+}
+
 // signal is a detected language/framework indicator in the workspace.
 type signal struct {
 	Name      string   // Name of the signal (e.g., "go.mod")
@@ -66,10 +162,12 @@ type signal struct {
 	Rationale string   // Explanation for this choice
 	match     func(string, string, string) bool
 	lang      string   // Language for version detection (e.g., "go", "node")
+	path      string   // Relative path where signal was found (for debug output)
 }
 
 // collectSignals scans the workspace for language/framework signals.
-func (d *Detector) collectSignals() []signal {
+// If trackPaths is true, stores the path where each signal was found.
+func (d *Detector) collectSignals(trackPaths bool) []signal {
 	var signals []signal
 
 	// Walk the workspace directory looking for known files
@@ -100,13 +198,53 @@ func (d *Detector) collectSignals() []signal {
 
 		// Check if this file matches a known signal
 		if sig := matchSignal(relPath, info.Name()); sig != nil {
+			if trackPaths {
+				sig.path = relPath
+			}
 			signals = append(signals, *sig)
 		}
 
 		return nil
 	})
 
+	// Add monorepo-specific signals (check for common monorepo patterns)
+	monorepoSignals := d.checkMonorepoSignals()
+	signals = append(signals, monorepoSignals...)
+
 	return signals
+}
+
+// checkMonorepoSignals checks for monorepo structure patterns.
+// Returns signals for common monorepo directory layouts.
+func (d *Detector) checkMonorepoSignals() []signal {
+	monorepoPatterns := []struct {
+		pattern  string
+		priority int
+	}{
+		{"packages/*/package.json", 85},
+		{"apps/*/package.json", 85},
+		{"typescript/*/package.json", 85},
+		{"workspaces/*/package.json", 85},
+	}
+
+	var foundSignals []signal
+	for _, pat := range monorepoPatterns {
+		// Convert pattern to glob pattern
+		globPattern := filepath.Join(d.workspace, pat.pattern)
+		matches, err := filepath.Glob(globPattern)
+		if err == nil && len(matches) > 0 {
+			// Create a signal for this monorepo pattern
+			foundSignals = append(foundSignals, signal{
+				Name:      "monorepo:" + pat.pattern,
+				Priority:  pat.priority,
+				Image:     "node:22",
+				Rationale: fmt.Sprintf("Detected monorepo structure (%d packages in %s)", len(matches), pat.pattern),
+				lang:      "node",
+			})
+		}
+	}
+
+	return foundSignals
 }
 
 // matchSignal checks if a file matches any known language/framework signals.
@@ -162,23 +300,40 @@ func signalNames(signals []signal) []string {
 // detectVersion attempts to detect the language version and updates the image accordingly.
 // Returns the final image and rationale.
 func (d *Detector) detectVersion(sig signal) (string, string) {
+	image, rationale, _ := d.detectVersionDebug(sig)
+	return image, rationale
+}
+
+// detectVersionDebug attempts to detect the language version and updates the image accordingly.
+// Returns the final image, rationale, and debug version info.
+func (d *Detector) detectVersionDebug(sig signal) (string, string, *VersionDebugInfo) {
 	// If signal has no language association, return the static image
 	if sig.lang == "" {
-		return sig.Image, sig.Rationale
+		return sig.Image, sig.Rationale, nil
 	}
 
 	// Try to detect language version
 	versionSource := detectLanguageVersion(d.workspace, sig.lang)
 	if versionSource == nil || versionSource.Version == "" {
 		// No version detected, use static image with note
-		return sig.Image, fmt.Sprintf("%s (no version hint detected, using static default)", sig.Rationale)
+		return sig.Image, fmt.Sprintf("%s (no version hint detected, using static default)", sig.Rationale), nil
 	}
 
 	// Build version-specific image
 	image := buildVersionedImage(sig.Image, sig.lang, versionSource.Version)
 	rationale := fmt.Sprintf("%s (version: %s)", sig.Rationale, formatVersionSource(versionSource))
 
-	return image, rationale
+	// Build debug info
+	versionInfo := &VersionDebugInfo{
+		Language:    sig.lang,
+		Version:     versionSource.Version,
+		SourceFile:  versionSource.File,
+		SourceField: versionSource.Field,
+		LineNumber:  versionSource.Line,
+		RawValue:    versionSource.Original,
+	}
+
+	return image, rationale, versionInfo
 }
 
 // buildVersionedImage constructs a Docker image with the detected version.
@@ -269,6 +424,18 @@ var knownSignals = []signal{
 		lang:      "python",
 		match: func(path, lowerPath, lowerFile string) bool {
 			return lowerFile == "setup.py"
+		},
+	},
+
+	// Node.js/TypeScript - pnpm workspace (higher priority for monorepos)
+	{
+		Name:      "pnpm-workspace.yaml",
+		Priority:  95,
+		Image:     "node:22",
+		Rationale: "Detected pnpm workspace (pnpm-workspace.yaml)",
+		lang:      "node",
+		match: func(path, lowerPath, lowerFile string) bool {
+			return lowerFile == "pnpm-workspace.yaml" || lowerFile == "pnpm-workspace.yml"
 		},
 	},
 

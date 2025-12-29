@@ -190,6 +190,7 @@ Holon can automatically detect the appropriate Docker base image for your worksp
 - `Cargo.toml` → `rust:1.83` (version detection not implemented)
 - `pyproject.toml` → `python:3.13` (detects `requires-python` or Poetry `python` version)
 - `requirements.txt` → `python:3.13` (no version detection)
+- `pnpm-workspace.yaml` / `pnpm-workspace.yml` → `node:22` (detects pnpm workspace, higher priority for monorepos)
 - `package.json` → `node:22` (detects `engines.node` for version-specific images)
 - `.nvmrc` → detected but skipped (hidden file)
 - `.node-version` → detected but skipped (hidden file)
@@ -268,6 +269,103 @@ The `holon solve` command also supports auto-detection, analyzing the cloned/fet
 holon solve holon-run/holon#123
 # Output: Config: Detected image: golang:1.23 (signals: go.mod) - Detected Go module (go.mod)
 ```
+
+### Detect Command
+
+Holon provides a `holon detect` command to test and debug image auto-detection. This is useful for understanding why a particular image was detected or for verifying detection before running Holon.
+
+**Usage:**
+```bash
+# Basic usage - detect image for current workspace
+holon detect image
+
+# With custom workspace
+holon detect image --workspace /path/to/project
+
+# Debug mode with detailed scan information
+holon detect image --debug
+
+# JSON output for programmatic use
+holon detect image --json
+```
+
+**Output Examples:**
+
+Default output:
+```
+$ holon detect image
+✓ Detected image: node:22
+  Signals: pnpm-workspace.yaml, package.json
+  Rationale: Detected pnpm workspace (pnpm-workspace.yaml)
+  Workspace: /home/user/project
+```
+
+Debug mode:
+```
+$ holon detect image --debug
+Scanning workspace: /home/user/project
+  ✓ Found signal: pnpm-workspace.yaml (priority: 95)
+    Path: pnpm-workspace.yaml
+  ✓ Found signal: package.json (priority: 90)
+    Path: package.json
+  ✓ Language version detected:
+    Language: node
+    Version: 18
+    Source: package.json:engines.node
+    Line: 3
+    Raw: ">=18.0.0"
+  ✓ Total files scanned: 1,247
+  ✓ Signals found: 2
+  ✓ Best signal: pnpm-workspace.yaml (priority: 95)
+
+✓ Detected image: node:22
+  Signals: pnpm-workspace.yaml, package.json
+  Rationale: Detected pnpm workspace (pnpm-workspace.yaml) (version: >=18.0.0 from package.json:engines.node)
+  Version: 18
+  Workspace: /home/user/project
+  Files scanned: 1,247
+  Scan duration: 45ms
+```
+
+JSON output:
+```json
+{
+  "success": true,
+  "image": "node:22",
+  "signals": ["pnpm-workspace.yaml", "package.json"],
+  "rationale": "Detected pnpm workspace (pnpm-workspace.yaml) (version: >=18.0.0 from package.json:engines.node)",
+  "version": {
+    "language": "node",
+    "version": "18",
+    "source_file": "package.json",
+    "source_field": "engines.node",
+    "line_number": 3,
+    "raw_value": ">=18.0.0"
+  },
+  "workspace": "/home/user/project",
+  "disabled": false,
+  "scan_stats": {
+    "files_scanned": 1247,
+    "duration_ms": 45,
+    "signals_found": 2
+  }
+}
+```
+
+**Monorepo Detection:**
+
+Holon detects common monorepo patterns to better identify TypeScript/JavaScript projects:
+
+| Pattern | Priority | Example |
+|---------|----------|---------|
+| `pnpm-workspace.yaml` | 95 | pnpm workspace configuration |
+| `package.json` | 90 | Standard Node.js project |
+| `packages/*/package.json` | 85 | Monorepo with packages directory |
+| `apps/*/package.json` | 85 | Monorepo with apps directory |
+| `typescript/*/package.json` | 85 | Monorepo with typescript directory |
+| `workspaces/*/package.json` | 85 | Monorepo with workspaces directory |
+
+For monorepo projects without root-level workspace files (like `pnpm-workspace.yaml`), Holon falls back to detecting `package.json` files in common monorepo directory structures.
 
 ### Key CLI Flags
 - `--spec` / `-s`: Path to holon spec file

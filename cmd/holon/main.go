@@ -280,6 +280,7 @@ func init() {
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(contextCmd)
 	rootCmd.AddCommand(publishCmd)
+	rootCmd.AddCommand(detectCmd)
 }
 
 func main() {
