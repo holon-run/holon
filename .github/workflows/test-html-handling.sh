@@ -75,7 +75,7 @@ for i in "${!test_cases[@]}"; do
         echo "❌ Test $((i+1)) FAILED: Base64 round-trip failed"
         echo "   Original: ${comment_body:0:50}..."
         echo "   Decoded:  ${decoded_body:0:50}..."
-        ((failed++))
+        failed=$((failed+1))
         continue
     fi
 

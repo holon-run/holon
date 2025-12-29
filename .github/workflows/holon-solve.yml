@@ -155,7 +155,7 @@ jobs:
           echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
 
           # Safely output comment body even if it contains HTML/markdown
-          # Use a unique delimiter and base64 encoding to handle arbitrary content
+          # Use base64 encoding to handle arbitrary content
           COMMENT_B64="$(printf '%s' "$COMMENT_BODY" | base64 -w 0)"
           echo "comment_body_b64=$COMMENT_B64" >> "$GITHUB_OUTPUT"
 
@@ -175,7 +175,14 @@ jobs:
           GOAL_HINT=''
 
           # Decode comment body from base64 (handles HTML/markdown safely)
-          COMMENT_BODY="$(printf '%s' "$COMMENT_BODY_B64" | base64 -d)"
+          if [ -n "${COMMENT_BODY_B64:-}" ]; then
+            if ! COMMENT_BODY="$(printf '%s' "$COMMENT_BODY_B64" | base64 -d 2>/dev/null)"; then
+              echo "Warning: failed to decode COMMENT_BODY_B64 as base64; proceeding with empty COMMENT_BODY" >&2
+              COMMENT_BODY=''
+            fi
+          else
+            COMMENT_BODY=''
+          fi
 
           # Avoid bot loops
           if [ "$ACTOR" = 'holonbot[bot]' ]; then
