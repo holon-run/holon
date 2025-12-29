@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   publish-agent-bundle:
@@ -147,13 +148,14 @@ jobs:
         BUNDLE_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/holon-agent-claude-${{ steps.version.outputs.version }}.tar.gz"
 
         # Extract SHA256 checksum (format: "checksum filename")
-        SHA256=$(cat "${{ env.checksum_file }}" | awk '{print $1}')
+        SHA256=$(awk '{print $1}' "${{ env.checksum_file }}")
 
         # Issue title
         TITLE="Update builtin agent to ${TAG}"
 
         # Issue body
-        BODY="A new Claude agent bundle has been released. Update the builtin agent configuration to use the latest version.
+        BODY=$(cat <<EOF
+        A new Claude agent bundle has been released. Update the builtin agent configuration to use the latest version.
 
         ## Release Details
 
@@ -194,16 +196,21 @@ jobs:
 
         ---
 
-        *This issue was automatically created by the [publish-agent-bundle](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) workflow.*"
+        *This issue was automatically created by the [publish-agent-bundle](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) workflow.*
+        EOF
+        )
 
         # Check if an open issue with this title already exists
         echo "Checking for existing open issue with title: ${TITLE}"
-        EXISTING_ISSUES=$(gh issue list \
+        if ! EXISTING_ISSUES=$(gh issue list \
           --repo "${{ github.repository }}" \
-          --search "${TITLE}" \
+          --search "in:title ${TITLE}" \
           --state open \
           --json number \
-          --jq '.[].number')
+          --jq '.[].number'); then
+          echo "Error: failed to list existing issues with gh" >&2
+          exit 1
+        fi
 
         if [ -n "$EXISTING_ISSUES" ]; then
           # Update the first existing issue
