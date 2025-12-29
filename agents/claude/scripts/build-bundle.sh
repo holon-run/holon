@@ -87,6 +87,10 @@ cp -R "${STAGE_DIR}/node_modules" "${BUNDLE_DIR}/node_modules"
 
 # Copy package.json to ensure ES modules work correctly
 cp "${STAGE_DIR}/package.json" "${BUNDLE_DIR}/package.json"
+if [ ! -f "${BUNDLE_DIR}/package.json" ]; then
+  echo "package.json not found in bundle" >&2
+  exit 1
+fi
 
 cat > "${BUNDLE_DIR}/bin/agent" <<'ENTRYPOINT'
 #!/usr/bin/env sh
