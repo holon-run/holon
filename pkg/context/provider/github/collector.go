@@ -442,20 +442,20 @@ func (p *Provider) downloadFailedWorkflowLogs(ctx context.Context, checkRuns []C
 	}
 
 	var allLogs []byte
-	failedChecks := 0
+	successfulDownloads := 0
 
 	for _, cr := range checkRuns {
-		// Only download logs for failed or timed-out checks
-		if cr.Conclusion != "failure" && cr.Conclusion != "timed_out" {
+		// Only download logs for failed, timed-out, or action-required checks
+		// Matches the filtering logic in CollectPR (line 202)
+		if cr.Conclusion != "failure" && cr.Conclusion != "timed_out" && cr.Conclusion != "action_required" {
 			continue
 		}
 
-		// Skip if no DetailsURL
+		// Skip if no DetailsURL (non-GitHub-Actions checks won't have DetailsURL)
 		if cr.DetailsURL == "" {
 			continue
 		}
 
-		failedChecks++
 		fmt.Printf("  Downloading workflow logs for failed check: %s\n", cr.Name)
 
 		logs, err := p.client.FetchWorkflowLogs(ctx, cr.DetailsURL)
@@ -464,6 +464,9 @@ func (p *Provider) downloadFailedWorkflowLogs(ctx context.Context, checkRuns []C
 			// Continue with other checks
 			continue
 		}
+
+		// Only increment counter after successful download
+		successfulDownloads++
 
 		// Append logs with separator
 		if len(allLogs) > 0 {
@@ -482,7 +485,7 @@ func (p *Provider) downloadFailedWorkflowLogs(ctx context.Context, checkRuns []C
 		if err := os.WriteFile(logFile, allLogs, 0644); err != nil {
 			return fmt.Errorf("failed to write test logs: %w", err)
 		}
-		fmt.Printf("  Saved test failure logs for %d failed check(s) to %s\n", failedChecks, logFile)
+		fmt.Printf("  Saved test failure logs for %d failed check(s) to %s\n", successfulDownloads, logFile)
 	}
 
 	return nil

@@ -136,6 +136,15 @@ When review comments request substantial refactoring, testing, or enhancements t
 
 When CI/check runs fail, test failure logs are downloaded to `/holon/input/context/github/test-failure-logs.txt`. Use these logs to diagnose failures:
 
+**How logs are obtained:**
+- Logs are downloaded from the GitHub Actions API using the check run's DetailsURL
+- The DetailsURL (e.g., `https://github.com/owner/repo/actions/runs/12345/job/67890`) is parsed to extract the workflow run ID
+- The GitHub Actions API endpoint `/repos/{owner}/{repo}/actions/runs/{run_id}/logs` is called to retrieve the logs
+- The API returns a redirect to a pre-signed URL containing the log archive (ZIP format)
+- This process only works for GitHub Actions checks (checks with `app_slug: "github-actions"`)
+
+**Using the logs:**
+
 1. **Check for test logs**: Look for `context/github/test-failure-logs.txt`
 2. **Read the logs**: Use grep to find specific test failures:
    ```bash

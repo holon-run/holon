@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/google/go-github/v68/github"
@@ -642,41 +643,97 @@ func (c *Client) getCurrentApp(ctx context.Context) (*ActorInfo, error) {
 }
 
 // FetchWorkflowLogs downloads logs for a GitHub Actions workflow run.
-// The logsURL should be the check run's DetailsURL which points to the workflow logs.
-// Returns the log content as bytes.
-func (c *Client) FetchWorkflowLogs(ctx context.Context, logsURL string) ([]byte, error) {
-	if logsURL == "" {
-		return nil, fmt.Errorf("logs URL is empty")
+// The detailsURL should be the check run's DetailsURL (e.g., "https://github.com/owner/repo/actions/runs/12345/job/67890").
+// This function extracts the workflow run ID and uses the GitHub Actions API to download the logs.
+// Returns the log content as bytes (ZIP archive contents).
+func (c *Client) FetchWorkflowLogs(ctx context.Context, detailsURL string) ([]byte, error) {
+	if detailsURL == "" {
+		return nil, fmt.Errorf("details URL is empty")
 	}
 
-	// Create HTTP request
-	req, err := http.NewRequestWithContext(ctx, "GET", logsURL, nil)
+	// Extract workflow run ID from DetailsURL
+	// Format: https://github.com/owner/repo/actions/runs/{run_id}/job/{job_id}
+	runIDRegex := regexp.MustCompile(`/actions/runs/(\d+)`)
+	matches := runIDRegex.FindStringSubmatch(detailsURL)
+	if len(matches) < 2 {
+		return nil, fmt.Errorf("failed to extract workflow run ID from details URL: %s", detailsURL)
+	}
+	runID := matches[1]
+
+	// Extract owner and repo from details URL
+	// Format: https://github.com/{owner}/{repo}/actions/runs/...
+	parts := strings.Split(strings.TrimPrefix(detailsURL, "https://github.com/"), "/")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("failed to extract owner/repo from details URL: %s", detailsURL)
+	}
+	owner, repo := parts[0], parts[1]
+
+	// Construct GitHub Actions API endpoint for workflow run logs
+	apiURL := fmt.Sprintf("%s/repos/%s/%s/actions/runs/%s/logs", c.baseURL, owner, repo, runID)
+
+	// Create HTTP request to the logs API endpoint
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set authentication headers
+	// Set authentication headers (use "token" not "Bearer" for GitHub API)
 	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Authorization", "token "+c.token)
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	// Make request
+	// Make request to the logs API endpoint
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to download logs: %w", err)
+		return nil, fmt.Errorf("failed to request logs: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to download logs: HTTP %d (body: %s)", resp.StatusCode, string(body))
+	// Handle successful response directly (unlikely for logs endpoint, but possible)
+	if resp.StatusCode == http.StatusOK {
+		logs, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read logs: %w", err)
+		}
+		return logs, nil
 	}
 
-	logs, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read logs: %w", err)
+	// Handle redirect responses (GitHub Actions logs redirect to pre-signed URL)
+	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusTemporaryRedirect {
+		redirectURL := resp.Header.Get("Location")
+		if redirectURL == "" {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("redirect status %d without Location header (body: %s)", resp.StatusCode, string(body))
+		}
+
+		// Follow redirect to download logs from pre-signed URL
+		// Do not forward the Authorization header to avoid leaking tokens to third-party hosts
+		redirectReq, err := http.NewRequestWithContext(ctx, "GET", redirectURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create redirect request: %w", err)
+		}
+
+		redirectResp, err := c.httpClient.Do(redirectReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to follow redirect for logs download: %w", err)
+		}
+		defer redirectResp.Body.Close()
+
+		if redirectResp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(redirectResp.Body)
+			return nil, fmt.Errorf("failed to download logs from redirect URL: HTTP %d (body: %s)", redirectResp.StatusCode, string(body))
+		}
+
+		logs, err := io.ReadAll(redirectResp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read logs from redirect response: %w", err)
+		}
+
+		return logs, nil
 	}
 
-	return logs, nil
+	// All other non-OK responses are treated as errors
+	body, _ := io.ReadAll(resp.Body)
+	return nil, fmt.Errorf("failed to download logs: HTTP %d (body: %s)", resp.StatusCode, string(body))
 }
