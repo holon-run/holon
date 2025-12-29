@@ -221,16 +221,17 @@ output:
 	}
 
 	// Apply git config overrides from project config
-	// These override host git config for container operations
+	// These override host git config (for CI/bot scenarios)
+	// Host git config is set first in runtime.go, then ProjectConfig can override
 	if cfg.GitAuthorName != "" {
 		envVars["GIT_AUTHOR_NAME"] = cfg.GitAuthorName
 		envVars["GIT_COMMITTER_NAME"] = cfg.GitAuthorName
-		holonlog.Info("git config", "author_name", cfg.GitAuthorName, "source", "config")
+		holonlog.Info("git config", "author_name", cfg.GitAuthorName, "source", "project-config", "override", "host-config")
 	}
 	if cfg.GitAuthorEmail != "" {
 		envVars["GIT_AUTHOR_EMAIL"] = cfg.GitAuthorEmail
 		envVars["GIT_COMMITTER_EMAIL"] = cfg.GitAuthorEmail
-		holonlog.Info("git config", "author_email", cfg.GitAuthorEmail, "source", "config")
+		holonlog.Info("git config", "author_email", cfg.GitAuthorEmail, "source", "project-config", "override", "host-config")
 	}
 
 	// Populate Goal from Spec if not provided via flag

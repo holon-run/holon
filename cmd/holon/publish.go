@@ -8,6 +8,8 @@ import (
 	"sort"
 
 	"github.com/holon-run/holon/pkg/api/v1"
+	"github.com/holon-run/holon/pkg/config"
+	holonGit "github.com/holon-run/holon/pkg/git"
 	"github.com/holon-run/holon/pkg/publisher"
 	"github.com/spf13/cobra"
 )
@@ -38,6 +40,12 @@ Examples:
 		}
 		if publishTarget == "" {
 			return fmt.Errorf("\"target\" not set")
+		}
+
+		// Read project config for git author information
+		projectCfg, err := config.LoadFromCurrentDir()
+		if err != nil {
+			return fmt.Errorf("failed to load project config: %w", err)
 		}
 
 		// Get the publisher
@@ -81,6 +89,39 @@ Examples:
 		manifestData, _ = json.Marshal(manifest)
 		if err := json.Unmarshal(manifestData, &manifestMap); err != nil {
 			return fmt.Errorf("failed to convert manifest: %w", err)
+		}
+
+		// Inject git author info from project config into manifest metadata
+		// This ensures publishers use the configured git identity
+		// Priority: host git config > ProjectConfig > defaults
+		// Host git config has highest priority to respect user's personal identity
+		if metadata, ok := manifestMap["metadata"].(map[string]interface{}); ok {
+			// Get host git config first (user's personal config, highest priority)
+			authorName := holonGit.GetGlobalConfig("user.name")
+			authorEmail := holonGit.GetGlobalConfig("user.email")
+
+			// ProjectConfig can override host config (for CI/bot scenarios)
+			// Only override if explicitly set in ProjectConfig
+			if projectCfg.HasGitConfig() {
+				if cfgName := projectCfg.GetGitAuthorName(); cfgName != "" {
+					authorName = cfgName
+				}
+				if cfgEmail := projectCfg.GetGitAuthorEmail(); cfgEmail != "" {
+					authorEmail = cfgEmail
+				}
+			}
+
+			// Only set if we have a value (not already in manifest)
+			if authorName != "" {
+				if _, exists := metadata["git_author_name"]; !exists {
+					metadata["git_author_name"] = authorName
+				}
+			}
+			if authorEmail != "" {
+				if _, exists := metadata["git_author_email"]; !exists {
+					metadata["git_author_email"] = authorEmail
+				}
+			}
 		}
 
 		// Create publish request

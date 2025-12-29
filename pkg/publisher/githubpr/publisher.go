@@ -29,6 +29,12 @@ const (
 
 	// IssueFlag is the flag name for issue ID reference.
 	IssueFlag = "issue_id"
+
+	// AuthorNameFlag is the flag name for git author name configuration.
+	AuthorNameFlag = "git_author_name"
+
+	// AuthorEmailFlag is the flag name for git author email configuration.
+	AuthorEmailFlag = "git_author_email"
 )
 
 // githubContextInfo represents the context information collected from GitHub
@@ -187,7 +193,7 @@ func (p *PRPublisher) Publish(req publisher.PublishRequest) (publisher.PublishRe
 
 	// Step 2: Initialize Git client
 	token := githubClient.GetToken()
-	gitClient := NewGitClient(workspaceDir, token)
+	gitClient := NewGitClient(workspaceDir, token, config.AuthorName, config.AuthorEmail)
 
 	// Step 3: Create or checkout branch FIRST (before applying patch)
 	// This prevents Checkout from discarding patch-applied files
@@ -345,6 +351,12 @@ func (p *PRPublisher) buildConfig(manifest map[string]interface{}) PRPublisherCo
 		}
 		if issueID, ok := metadata[IssueFlag].(string); ok {
 			config.IssueID = issueID
+		}
+		if authorName, ok := metadata[AuthorNameFlag].(string); ok {
+			config.AuthorName = authorName
+		}
+		if authorEmail, ok := metadata[AuthorEmailFlag].(string); ok {
+			config.AuthorEmail = authorEmail
 		}
 	}
 

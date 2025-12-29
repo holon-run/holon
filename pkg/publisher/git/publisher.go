@@ -71,7 +71,7 @@ func (p *Publisher) Validate(req publisher.PublishRequest) error {
 
 	if needsGitValidation {
 		workspaceDir := p.getWorkspaceDir()
-		gitClient := NewGitClient(workspaceDir, "")
+		gitClient := NewGitClient(workspaceDir, "", "", "")
 
 		if err := gitClient.EnsureRepository(); err != nil {
 			return fmt.Errorf("workspace validation failed: %w", err)
@@ -120,7 +120,7 @@ func (p *Publisher) Publish(req publisher.PublishRequest) (publisher.PublishResu
 	}
 
 	// Initialize Git client
-	gitClient := NewGitClient(workspaceDir, token)
+	gitClient := NewGitClient(workspaceDir, token, config.AuthorName, config.AuthorEmail)
 
 	// Ensure workspace is a git repository
 	if err := gitClient.EnsureRepository(); err != nil {
@@ -271,6 +271,12 @@ func (p *Publisher) buildConfig(manifest map[string]interface{}) GitPublisherCon
 		}
 		if push, ok := metadata["push"].(bool); ok {
 			config.Push = push
+		}
+		if authorName, ok := metadata["git_author_name"].(string); ok {
+			config.AuthorName = authorName
+		}
+		if authorEmail, ok := metadata["git_author_email"].(string); ok {
+			config.AuthorEmail = authorEmail
 		}
 	}
 
