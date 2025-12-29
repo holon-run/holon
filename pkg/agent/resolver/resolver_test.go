@@ -3,7 +3,6 @@ package resolver
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -613,126 +612,6 @@ func TestChannelResolver_Resolve_NonEmptyRef(t *testing.T) {
 
 	if err != nil && !strings.Contains(err.Error(), "cannot handle non-empty reference") {
 		t.Errorf("Expected error about non-empty reference, got: %v", err)
-	}
-}
-
-// Mock HTTP server for testing network requests
-
-type mockHTTPServer struct {
-	server          *httptest.Server
-	releaseJSON     []byte
-	checksumContent []byte
-	bundleContent   []byte
-}
-
-func newMockHTTPServer(releaseJSON, checksumContent, bundleContent []byte) *mockHTTPServer {
-	m := &mockHTTPServer{
-		releaseJSON:     releaseJSON,
-		checksumContent: checksumContent,
-		bundleContent:   bundleContent,
-	}
-
-	m.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		m.serveHTTP(w, r)
-	}))
-
-	return m
-}
-
-func (m *mockHTTPServer) Close() {
-	if m.server != nil {
-		m.server.Close()
-	}
-}
-
-func (m *mockHTTPServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-
-	switch {
-	case strings.HasPrefix(path, "/releases"):
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write(m.releaseJSON)
-	case strings.HasSuffix(path, ".sha256"):
-		w.WriteHeader(http.StatusOK)
-		w.Write(m.checksumContent)
-	case strings.HasSuffix(path, ".tar.gz"):
-		w.Header().Set("Content-Type", "application/gzip")
-		w.WriteHeader(http.StatusOK)
-		w.Write(m.bundleContent)
-	default:
-		w.WriteHeader(http.StatusNotFound)
-	}
-}
-
-func (m *mockHTTPServer) ReleasesURL() string {
-	return m.server.URL + "/releases"
-}
-
-func (m *mockHTTPServer) BundleURL() string {
-	return m.server.URL + "/bundle.tar.gz"
-}
-
-func (m *mockHTTPServer) ChecksumURL() string {
-	return m.server.URL + "/bundle.tar.gz.sha256"
-}
-
-func TestChannelResolver_ChecksumVerification(t *testing.T) {
-	cacheDir, err := os.MkdirTemp("", "holon-test-cache-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp cache dir: %v", err)
-	}
-	defer os.RemoveAll(cacheDir)
-
-	tests := []struct {
-		name            string
-		bundleContent   []byte
-		checksumContent string
-		shouldErr       bool
-		errContains     string
-	}{
-		{
-			name:            "valid checksum",
-			bundleContent:   []byte("test bundle content"),
-			checksumContent: "a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
-			shouldErr:       false,
-		},
-		{
-			name:            "invalid checksum - mismatch",
-			bundleContent:   []byte("different content"),
-			checksumContent: "a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
-			shouldErr:       true,
-			errContains:     "checksum verification failed",
-		},
-		{
-			name:            "empty checksum - no verification",
-			bundleContent:   []byte("test bundle content"),
-			checksumContent: "",
-			shouldErr:       false, // Should succeed with warning
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create a mock HTTP server
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasSuffix(r.URL.Path, ".tar.gz") {
-					w.WriteHeader(http.StatusOK)
-					w.Write(tt.bundleContent)
-				} else if strings.HasSuffix(r.URL.Path, ".sha256") {
-					w.WriteHeader(http.StatusOK)
-					w.Write([]byte(tt.checksumContent))
-				} else {
-					w.WriteHeader(http.StatusNotFound)
-				}
-			}))
-			defer server.Close()
-
-			// Test validates the checksum verification logic structure
-			// Full integration testing would require mocking the agent.DefaultBuiltinAgent
-			// and GitHub API calls, which is beyond the scope of this unit test
-			_ = server.URL // Use the variable to avoid unused warnings
-		})
 	}
 }
 
