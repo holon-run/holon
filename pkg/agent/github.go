@@ -86,3 +86,36 @@ func FindAgentBundleAsset(release *GitHubRelease) (string, string, error) {
 
 	return "", "", fmt.Errorf("no agent bundle found in release %s", release.TagName)
 }
+
+// FetchChecksum fetches and parses a SHA256 checksum file from a URL.
+// Checksum files typically contain: <hash>  <filename>
+// This function returns just the hash part.
+func FetchChecksum(checksumURL string) (string, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Get(checksumURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch checksum: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch checksum: HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read checksum: %w", err)
+	}
+
+	// Checksum files typically contain: <hash>  <filename>
+	// We just need the hash part
+	parts := strings.Fields(string(data))
+	if len(parts) == 0 {
+		return "", fmt.Errorf("empty checksum file")
+	}
+
+	return parts[0], nil
+}

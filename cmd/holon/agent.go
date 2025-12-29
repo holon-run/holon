@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -298,7 +296,7 @@ unless needed.`,
 		}
 
 		// Fetch checksum
-		checksum, err := fetchChecksum(bundleURL + ".sha256")
+		checksum, err := agent.FetchChecksum(bundleURL + ".sha256")
 		if err != nil {
 			fmt.Printf("Warning: failed to fetch checksum: %v\n", err)
 			checksum = ""
@@ -334,34 +332,6 @@ unless needed.`,
 
 		return nil
 	},
-}
-
-func fetchChecksum(checksumURL string) (string, error) {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
-	resp, err := client.Get(checksumURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch checksum: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to fetch checksum: HTTP %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read checksum: %w", err)
-	}
-
-	parts := strings.Fields(string(data))
-	if len(parts) == 0 {
-		return "", fmt.Errorf("empty checksum file")
-	}
-
-	return parts[0], nil
 }
 
 func init() {

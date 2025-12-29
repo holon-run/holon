@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -146,7 +145,7 @@ func (r *ChannelResolver) resolveLatest(ctx context.Context) (string, error) {
 	}
 
 	// Download the .sha256 file to get checksum
-	checksum, err := r.fetchChecksum(ctx, bundleURL+".sha256")
+	checksum, err := agent.FetchChecksum(bundleURL + ".sha256")
 	if err != nil {
 		holonlog.Warn("failed to fetch checksum, downloading without verification", "error", err)
 		checksum = ""
@@ -198,7 +197,7 @@ func (r *ChannelResolver) resolvePinned(ctx context.Context) (string, error) {
 	// For simplicity, if not in cache and not matching builtin, we return an error
 	// Full implementation would query GitHub API for the specific release
 
-	return "", fmt.Errorf("pinned version %q not found; use 'latest' channel to auto-fetch or provide explicit agent URL", r.pinnedVersion)
+	return "", fmt.Errorf("pinned version %q not found; use \"latest\" channel to auto-fetch or provide explicit agent URL", r.pinnedVersion)
 }
 
 // downloadAndCache downloads an agent bundle and caches it
@@ -225,12 +224,20 @@ func (r *ChannelResolver) downloadAndCache(ctx context.Context, url, checksum, v
 		return "", fmt.Errorf("failed to download agent bundle: HTTP %d", resp.StatusCode)
 	}
 
-	// Calculate checksum while downloading
+	// Stream to temp file while calculating checksum
 	hasher := sha256.New()
-	multiWriter := io.MultiWriter(hasher)
+	teeReader := io.TeeReader(resp.Body, hasher)
 
-	// We need to tee the response to both calculate checksum and store it
-	size, err := io.Copy(multiWriter, resp.Body)
+	// Create temp file
+	tmpFile, err := os.CreateTemp("", "holon-agent-download-*.tar.gz")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	// Copy response to temp file while calculating checksum
+	size, err := io.Copy(tmpFile, teeReader)
 	if err != nil {
 		return "", fmt.Errorf("failed to download agent bundle: %w", err)
 	}
@@ -246,71 +253,16 @@ func (r *ChannelResolver) downloadAndCache(ctx context.Context, url, checksum, v
 		holonlog.Warn("downloaded agent bundle without integrity verification", "url", downloadURL)
 	}
 
-	// Read the response body again for caching (we need to re-download since we already consumed it)
-	// In production, we'd want to stream to a temp file while calculating checksum
-	req2, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create second request: %w", err)
+	// Seek back to beginning of temp file for reading
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		return "", fmt.Errorf("failed to seek temp file: %w", err)
 	}
-
-	resp2, err := r.httpClient.Do(req2)
-	if err != nil {
-		return "", fmt.Errorf("failed to re-download agent bundle: %w", err)
-	}
-	defer resp2.Body.Close()
 
 	// Cache the bundle with extended metadata including version
-	cachedPath, err := r.cache.StoreBundleWithVersion(url, actualChecksum, resp2.Body, size, version)
+	cachedPath, err := r.cache.StoreBundleWithVersion(url, actualChecksum, tmpFile, size, version)
 	if err != nil {
 		return "", fmt.Errorf("failed to cache agent bundle: %w", err)
 	}
 
 	return cachedPath, nil
-}
-
-// fetchChecksum fetches the SHA256 checksum file for a bundle
-func (r *ChannelResolver) fetchChecksum(ctx context.Context, checksumURL string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", checksumURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create checksum request: %w", err)
-	}
-
-	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch checksum: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to fetch checksum: HTTP %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read checksum: %w", err)
-	}
-
-	// Checksum files typically contain: <hash>  <filename>
-	// We just need the hash part
-	parts := strings.Fields(string(data))
-	if len(parts) == 0 {
-		return "", fmt.Errorf("empty checksum file")
-	}
-
-	return parts[0], nil
-}
-
-// readBundleMetadata reads bundle metadata from a file
-func (r *ChannelResolver) readBundleMetadata(path string) (*cache.BundleMetadata, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var metadata cache.BundleMetadata
-	if err := json.Unmarshal(data, &metadata); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-	}
-
-	return &metadata, nil
 }
