@@ -56,22 +56,22 @@ Download the latest release for your platform from [GitHub Releases](https://git
 **Linux (amd64):**
 ```bash
 curl -fsSL https://github.com/holon-run/holon/releases/latest/download/holon-linux-amd64.tar.gz | tar -xz
-chmod +x holon-linux-amd64
-sudo mv holon-linux-amd64 /usr/local/bin/holon
+chmod +x holon
+sudo mv holon /usr/local/bin/holon
 ```
 
 **macOS (Intel):**
 ```bash
 curl -fsSL https://github.com/holon-run/holon/releases/latest/download/holon-darwin-amd64.tar.gz | tar -xz
-chmod +x holon-darwin-amd64
-sudo mv holon-darwin-amd64 /usr/local/bin/holon
+chmod +x holon
+sudo mv holon /usr/local/bin/holon
 ```
 
 **macOS (Apple Silicon):**
 ```bash
 curl -fsSL https://github.com/holon-run/holon/releases/latest/download/holon-darwin-arm64.tar.gz | tar -xz
-chmod +x holon-darwin-arm64
-sudo mv holon-darwin-arm64 /usr/local/bin/holon
+chmod +x holon
+sudo mv holon /usr/local/bin/holon
 ```
 
 Verify your installation:

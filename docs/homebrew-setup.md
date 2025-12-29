@@ -129,7 +129,7 @@ The formula (`Formula/holon.rb`) uses platform-specific installation:
 - **macOS (ARM)**: Downloads `holon-darwin-arm64.tar.gz`
 - **Linux (amd64)**: Downloads `holon-linux-amd64.tar.gz`
 
-Each platform has its own URL and SHA256 checksum, which are updated during releases.
+Each tarball contains a binary named `holon` (no platform suffix), which is installed directly to the bin directory. Each platform has its own URL and SHA256 checksum, which are updated during releases.
 
 ## Homebrew Livecheck
 

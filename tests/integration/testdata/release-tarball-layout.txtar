@@ -1,0 +1,32 @@
+# Test that release tarballs contain 'holon' (not platform-suffixed name)
+# This test simulates the release workflow's archive creation step
+
+# Create mock binaries (we just need files, not actual Go binaries)
+exec sh -c 'mkdir -p bin && touch bin/holon-linux-amd64 bin/holon-darwin-amd64 bin/holon-darwin-arm64'
+
+# Simulate the release archive creation (from .github/workflows/release.yml)
+# The key change: binaries are copied as 'holon' before being added to tarball
+exec sh -c 'cd bin && for binary in holon-*; do tmpdir=$(mktemp -d); cp "$binary" "$tmpdir/holon"; tar -czf "${binary}.tar.gz" -C "$tmpdir" holon; rm -rf "$tmpdir"; done'
+
+# Verify tarball contents contain 'holon' (not platform-suffixed name)
+# Test linux tarball
+exec sh -c 'tar -tzf bin/holon-linux-amd64.tar.gz'
+stdout '^holon$'
+
+# Test darwin amd64 tarball
+exec sh -c 'tar -tzf bin/holon-darwin-amd64.tar.gz'
+stdout '^holon$'
+
+# Test darwin arm64 tarball
+exec sh -c 'tar -tzf bin/holon-darwin-arm64.tar.gz'
+stdout '^holon$'
+
+# Verify extraction produces 'holon' directly
+exec sh -c 'mkdir -p test-extract && tar -xzf bin/holon-linux-amd64.tar.gz -C test-extract && ls test-extract/holon'
+stdout 'test-extract/holon'
+
+! exec sh -c 'ls test-extract/holon-linux-amd64'
+stderr 'No such file or directory'
+
+# Cleanup
+exec rm -rf bin test-extract

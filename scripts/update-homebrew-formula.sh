@@ -62,14 +62,14 @@ class Holon < Formula
       sha256 "${INTEL_MAC_SHA256}"
 
       def install
-        bin.install "holon-darwin-amd64" => "holon"
+        bin.install "holon"
       end
     else
       url "https://github.com/holon-run/holon/releases/download/v${VERSION}/holon-darwin-arm64.tar.gz"
       sha256 "${ARM_MAC_SHA256}"
 
       def install
-        bin.install "holon-darwin-arm64" => "holon"
+        bin.install "holon"
       end
     end
   end
@@ -80,7 +80,7 @@ class Holon < Formula
       sha256 "${LINUX_SHA256}"
 
       def install
-        bin.install "holon-linux-amd64" => "holon"
+        bin.install "holon"
       end
     end
   end

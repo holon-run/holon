@@ -197,7 +197,22 @@ runs:
         echo "Downloading holon $VERSION for $PLATFORM-$ARCH..."
         curl -fsSL "https://github.com/holon-run/holon/releases/$RELEASE_PATH/holon-$PLATFORM-$ARCH.tar.gz" | \
           tar -xz -C "$RUNNER_TEMP/holon/bin"
-        chmod +x "$RUNNER_TEMP/holon/bin/holon"
+
+        # Handle both new and old tarball layouts:
+        # New layout: contains 'holon' directly
+        # Old layout: contains 'holon-<platform>-<arch>'
+        if [ -f "$RUNNER_TEMP/holon/bin/holon" ]; then
+          # New layout - binary is already named 'holon'
+          chmod +x "$RUNNER_TEMP/holon/bin/holon"
+        elif [ -f "$RUNNER_TEMP/holon/bin/holon-$PLATFORM-$ARCH" ]; then
+          # Old layout - rename platform-suffixed binary to 'holon'
+          mv "$RUNNER_TEMP/holon/bin/holon-$PLATFORM-$ARCH" "$RUNNER_TEMP/holon/bin/holon"
+          chmod +x "$RUNNER_TEMP/holon/bin/holon"
+        else
+          echo "❌ Error: Failed to find holon binary after extraction"
+          ls -la "$RUNNER_TEMP/holon/bin/"
+          exit 1
+        fi
 
         echo "✅ Holon binary downloaded to $RUNNER_TEMP/holon/bin/holon"
 
