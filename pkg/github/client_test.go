@@ -1,6 +1,8 @@
 package github
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -895,4 +897,152 @@ func TestGetCurrentUserAppTokenNoPerm(t *testing.T) {
 	if actorInfo.AppSlug != "" {
 		t.Errorf("AppSlug = %q, want empty string", actorInfo.AppSlug)
 	}
+}
+
+// createTestZipArchive creates a test ZIP archive with sample log files
+func createTestZipArchive(t *testing.T) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+
+	// Add some test log files
+	files := map[string]string{
+		"1_Test Agent.txt":           "Running tests...\nAll tests passed\n",
+		"Test Agent/system.txt":      "System check: OK\nMemory: 512MB\n",
+		"2_Test Integration.txt":     "Integration test started\nStep 1: OK\nStep 2: OK\n",
+		"build_and_test/set-env job": "Setting up environment...\nNode version: v22.0.0\n",
+	}
+
+	for name, content := range files {
+		w, err := w.Create(name)
+		if err != nil {
+			t.Fatalf("Failed to create zip entry: %v", err)
+		}
+		_, err = w.Write([]byte(content))
+		if err != nil {
+			t.Fatalf("Failed to write zip entry: %v", err)
+		}
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Failed to close zip writer: %v", err)
+	}
+
+	return buf.Bytes()
+}
+
+// TestExtractZipFiles tests the extractZipFiles function
+func TestExtractZipFiles(t *testing.T) {
+	t.Run("extracts files from ZIP archive", func(t *testing.T) {
+		zipData := createTestZipArchive(t)
+
+		extracted, err := extractZipFiles(zipData)
+		if err != nil {
+			t.Fatalf("extractZipFiles() error = %v", err)
+		}
+
+		// Verify extracted content is text (not binary)
+		extractedStr := string(extracted)
+
+		// Check for file separators
+		if !strings.Contains(extractedStr, "=== 1_Test Agent.txt ===") {
+			t.Error("Expected file name separator for '1_Test Agent.txt'")
+		}
+		if !strings.Contains(extractedStr, "=== Test Agent/system.txt ===") {
+			t.Error("Expected file name separator for 'Test Agent/system.txt'")
+		}
+
+		// Check for actual content
+		if !strings.Contains(extractedStr, "Running tests...") {
+			t.Error("Expected content from '1_Test Agent.txt'")
+		}
+		if !strings.Contains(extractedStr, "System check: OK") {
+			t.Error("Expected content from 'Test Agent/system.txt'")
+		}
+		if !strings.Contains(extractedStr, "Integration test started") {
+			t.Error("Expected content from '2_Test Integration.txt'")
+		}
+	})
+
+	t.Run("handles empty ZIP archive", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := zip.NewWriter(&buf)
+		if err := w.Close(); err != nil {
+			t.Fatalf("Failed to close zip writer: %v", err)
+		}
+
+		extracted, err := extractZipFiles(buf.Bytes())
+		if err != nil {
+			t.Fatalf("extractZipFiles() error = %v", err)
+		}
+
+		if len(extracted) != 0 {
+			t.Errorf("Expected empty output for empty ZIP, got %d bytes", len(extracted))
+		}
+	})
+
+	t.Run("skips directories in ZIP", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := zip.NewWriter(&buf)
+
+		// Create a directory entry
+		_, err := w.Create("some-directory/")
+		if err != nil {
+			t.Fatalf("Failed to create directory entry: %v", err)
+		}
+
+		// Create a file entry
+		fw, err := w.Create("some-directory/file.txt")
+		if err != nil {
+			t.Fatalf("Failed to create file entry: %v", err)
+		}
+		_, err = fw.Write([]byte("test content"))
+		if err != nil {
+			t.Fatalf("Failed to write file entry: %v", err)
+		}
+
+		if err := w.Close(); err != nil {
+			t.Fatalf("Failed to close zip writer: %v", err)
+		}
+
+		extracted, err := extractZipFiles(buf.Bytes())
+		if err != nil {
+			t.Fatalf("extractZipFiles() error = %v", err)
+		}
+
+		// Should only have the file, not the directory
+		extractedStr := string(extracted)
+		if !strings.Contains(extractedStr, "test content") {
+			t.Error("Expected file content to be extracted")
+		}
+		// Directory entries should not appear as separators
+		if strings.Contains(extractedStr, "=== some-directory/ ===") {
+			t.Error("Directory should not appear as a file separator")
+		}
+	})
+
+	t.Run("returns error for invalid ZIP data", func(t *testing.T) {
+		invalidZip := []byte("not a valid zip file")
+
+		_, err := extractZipFiles(invalidZip)
+		if err == nil {
+			t.Error("Expected error for invalid ZIP data, got nil")
+		}
+	})
+
+	t.Run("detects ZIP magic bytes", func(t *testing.T) {
+		zipData := createTestZipArchive(t)
+
+		// ZIP files start with "PK" magic bytes
+		if !bytes.HasPrefix(zipData, []byte("PK")) {
+			t.Error("Test ZIP should start with PK magic bytes")
+		}
+
+		// Verify non-ZIP data doesn't start with PK
+		nonZip := []byte("just plain text log output")
+		if bytes.HasPrefix(nonZip, []byte("PK")) {
+			t.Error("Plain text should not start with PK magic bytes")
+		}
+	})
 }

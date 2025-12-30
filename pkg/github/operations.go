@@ -1,6 +1,8 @@
 package github
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -642,6 +644,41 @@ func (c *Client) getCurrentApp(ctx context.Context) (*ActorInfo, error) {
 	return info, nil
 }
 
+// extractZipFiles extracts all text files from a ZIP archive.
+// Returns concatenated text content with file name separators.
+func extractZipFiles(zipData []byte) ([]byte, error) {
+	reader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open ZIP archive: %w", err)
+	}
+
+	var allLogs []byte
+	for _, file := range reader.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+
+		rc, err := file.Open()
+		if err != nil {
+			continue // Skip files that can't be opened
+		}
+
+		content, err := io.ReadAll(rc)
+		rc.Close()
+
+		if err != nil {
+			continue // Skip files that can't be read
+		}
+
+		// Add file name as separator
+		allLogs = append(allLogs, []byte(fmt.Sprintf("\n=== %s ===\n", file.Name))...)
+		allLogs = append(allLogs, content...)
+		allLogs = append(allLogs, '\n')
+	}
+
+	return allLogs, nil
+}
+
 // FetchWorkflowLogs downloads logs for a GitHub Actions workflow run.
 // The detailsURL should be the check run's DetailsURL (e.g., "https://github.com/owner/repo/actions/runs/12345/job/67890").
 // This function extracts the workflow run ID and uses the GitHub Actions API to download the logs.
@@ -696,6 +733,16 @@ func (c *Client) FetchWorkflowLogs(ctx context.Context, detailsURL string) ([]by
 		if err != nil {
 			return nil, fmt.Errorf("failed to read logs: %w", err)
 		}
+		// Auto-extract ZIP archives
+		if bytes.HasPrefix(logs, []byte("PK")) {
+			extractedLogs, err := extractZipFiles(logs)
+			if err != nil {
+				// If extraction fails, log warning but return original data
+				fmt.Printf("Warning: failed to extract ZIP logs: %v\n", err)
+				return logs, nil
+			}
+			return extractedLogs, nil
+		}
 		return logs, nil
 	}
 
@@ -728,6 +775,17 @@ func (c *Client) FetchWorkflowLogs(ctx context.Context, detailsURL string) ([]by
 		logs, err := io.ReadAll(redirectResp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read logs from redirect response: %w", err)
+		}
+
+		// Auto-extract ZIP archives
+		if bytes.HasPrefix(logs, []byte("PK")) {
+			extractedLogs, err := extractZipFiles(logs)
+			if err != nil {
+				// If extraction fails, log warning but return original data
+				fmt.Printf("Warning: failed to extract ZIP logs: %v\n", err)
+				return logs, nil
+			}
+			return extractedLogs, nil
 		}
 
 		return logs, nil
