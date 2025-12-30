@@ -106,10 +106,42 @@ echo "  ✓ dist/agent.js syntax is valid"
 # Expected output format: "Probe completed" string indicates successful execution
 echo "Running agent probe test..."
 
-# Check if docker is available for probe test
-if ! command -v docker >/dev/null 2>&1; then
-  echo "  ⚠ WARNING: Docker not available, skipping agent probe test"
-  echo "    The agent probe test requires Docker to simulate the Holon container environment"
+# Check if we're already running in a Holon container environment
+IN_HOLON_CONTAINER=0
+if [ -d "/holon/workspace" ] && [ -d "/holon/input" ] && [ -d "/holon/output" ]; then
+  IN_HOLON_CONTAINER=1
+fi
+
+# Check if docker is available for probe test (only needed if not already in container)
+if [ ${IN_HOLON_CONTAINER} -eq 1 ]; then
+  echo "  ℹ Running in Holon container environment"
+  # Use existing Holon environment
+  set +e
+  PROBE_OUTPUT=$(cd "${TEST_DIR}" && NODE_ENV=production node dist/agent.js --probe 2>&1)
+  PROBE_EXIT_CODE=$?
+  set -e
+
+  if [ ${PROBE_EXIT_CODE} -ne 0 ]; then
+    echo "ERROR: Agent probe test failed with exit code ${PROBE_EXIT_CODE}" >&2
+    echo "Output:" >&2
+    echo "${PROBE_OUTPUT}" >&2
+    exit 1
+  fi
+
+  # Check if probe wrote the expected completion message
+  if ! echo "${PROBE_OUTPUT}" | grep -q "Probe completed"; then
+    echo "ERROR: Agent probe did not complete successfully" >&2
+    echo "Output:" >&2
+    echo "${PROBE_OUTPUT}" >&2
+    exit 1
+  fi
+
+  echo "  ✓ Agent probe test passed"
+elif ! command -v docker >/dev/null 2>&1; then
+  echo "  ⚠ WARNING: Docker not available and not in Holon container, skipping agent probe test"
+  echo "    The agent probe test requires either:"
+  echo "    - A Holon container environment (/holon/workspace, /holon/input, /holon/output)"
+  echo "    - Docker to simulate the Holon container environment"
   echo "    Run 'npm run verify-bundle' for a full Docker-based verification"
 else
   # Create minimal Holon environment structure required for probe mode

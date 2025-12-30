@@ -132,21 +132,42 @@ describe('Agent Bundle', () => {
 
   test('agent.js can be executed (probe mode)', { timeout: 60000 }, () => {
     const tmpDir = extractBundle(bundlePath);
-    const holonDir = fs.mkdtempSync(path.join(os.tmpdir(), 'holon-test-'));
-    const inputDir = path.join(holonDir, 'input');
-    const workspaceDir = path.join(holonDir, 'workspace');
-    const outputDir = path.join(holonDir, 'output');
+
+    // Check if we're already running in a Holon container environment
+    const inHolonContainer = fs.existsSync('/holon/workspace') &&
+                             fs.existsSync('/holon/input') &&
+                             fs.existsSync('/holon/output');
 
     try {
-      // Create minimal Holon environment
-      fs.mkdirSync(inputDir, { recursive: true });
-      fs.mkdirSync(workspaceDir, { recursive: true });
-      fs.mkdirSync(outputDir, { recursive: true });
+      if (inHolonContainer) {
+        // Use existing Holon environment
+        console.log('  ℹ Running in Holon container environment');
+        const agentPath = path.join(tmpDir, 'dist', 'agent.js');
+        const output = execSync(`node "${agentPath}" --probe`, {
+          cwd: tmpDir,
+          env: { ...process.env, NODE_ENV: 'production' },
+          stdio: 'pipe',
+          timeout: 30000,
+        }).toString();
 
-      // Create minimal spec.yaml
-      fs.writeFileSync(
-        path.join(inputDir, 'spec.yaml'),
-        `version: "v1"
+        assert.ok(output.includes('Probe completed'), 'Agent probe did not complete successfully');
+      } else {
+        // Need to create Holon environment
+        const holonDir = fs.mkdtempSync(path.join(os.tmpdir(), 'holon-test-'));
+        const inputDir = path.join(holonDir, 'input');
+        const workspaceDir = path.join(holonDir, 'workspace');
+        const outputDir = path.join(holonDir, 'output');
+
+        try {
+          // Create minimal Holon environment
+          fs.mkdirSync(inputDir, { recursive: true });
+          fs.mkdirSync(workspaceDir, { recursive: true });
+          fs.mkdirSync(outputDir, { recursive: true });
+
+          // Create minimal spec.yaml
+          fs.writeFileSync(
+            path.join(inputDir, 'spec.yaml'),
+            `version: "v1"
 kind: Holon
 metadata:
   name: "bundle-test-probe"
@@ -159,58 +180,61 @@ output:
     - path: "manifest.json"
       required: true
 `
-      );
+          );
 
-      // Create minimal workspace file
-      fs.writeFileSync(path.join(workspaceDir, 'README.md'), 'Bundle test workspace\n');
+          // Create minimal workspace file
+          fs.writeFileSync(path.join(workspaceDir, 'README.md'), 'Bundle test workspace\n');
 
-      // Check if Docker is available
-      let dockerAvailable = false;
-      try {
-        execSync('docker --version', { stdio: 'pipe' });
-        dockerAvailable = true;
-      } catch {
-        // Docker not available, skip test
-        console.log('  ⚠ WARNING: Docker not available, skipping agent probe test');
-        return;
-      }
+          // Check if Docker is available
+          let dockerAvailable = false;
+          try {
+            execSync('docker --version', { stdio: 'pipe' });
+            dockerAvailable = true;
+          } catch {
+            // Docker not available, skip test
+            console.log('  ⚠ WARNING: Docker not available and not in Holon container, skipping agent probe test');
+            return;
+          }
 
-      if (!dockerAvailable) {
-        return;
-      }
+          if (!dockerAvailable) {
+            return;
+          }
 
-      // Determine Node version
-      const nodeVersion = process.env.BUNDLE_NODE_VERSION || '20';
-      const image = process.env.BUNDLE_VERIFY_IMAGE || `node:${nodeVersion}-bookworm-slim`;
+          // Determine Node version
+          const nodeVersion = process.env.BUNDLE_NODE_VERSION || '20';
+          const image = process.env.BUNDLE_VERIFY_IMAGE || `node:${nodeVersion}-bookworm-slim`;
 
-      // Run agent probe test in Docker container
-      const output = execSync(
-        `docker run --rm \
-         -v "${inputDir}:/holon/input:ro" \
-         -v "${workspaceDir}:/holon/workspace:ro" \
-         -v "${outputDir}:/holon/output" \
-         -v "${tmpDir}:/holon/agent:ro" \
-         --entrypoint /bin/sh \
-         "${image}" -c "cd /holon/agent && NODE_ENV=production node dist/agent.js --probe"`,
-        {
-          stdio: 'pipe',
-          timeout: 60000,
+          // Run agent probe test in Docker container
+          const output = execSync(
+            `docker run --rm \
+             -v "${inputDir}:/holon/input:ro" \
+             -v "${workspaceDir}:/holon/workspace:ro" \
+             -v "${outputDir}:/holon/output" \
+             -v "${tmpDir}:/holon/agent:ro" \
+             --entrypoint /bin/sh \
+             "${image}" -c "cd /holon/agent && NODE_ENV=production node dist/agent.js --probe"`,
+            {
+              stdio: 'pipe',
+              timeout: 60000,
+            }
+          ).toString();
+
+          // Verify probe completed successfully
+          assert.ok(output.includes('Probe completed'), 'Agent probe did not complete successfully');
+
+          // Verify manifest.json was written
+          const manifestPath = path.join(outputDir, 'manifest.json');
+          assert.ok(fs.existsSync(manifestPath), 'Agent probe did not write manifest.json');
+
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+          assert.strictEqual(manifest.status, 'completed', 'Manifest status should be completed');
+          assert.strictEqual(manifest.outcome, 'success', 'Manifest outcome should be success');
+        } finally {
+          fs.rmSync(holonDir, { recursive: true, force: true });
         }
-      ).toString();
-
-      // Verify probe completed successfully
-      assert.ok(output.includes('Probe completed'), 'Agent probe did not complete successfully');
-
-      // Verify manifest.json was written
-      const manifestPath = path.join(outputDir, 'manifest.json');
-      assert.ok(fs.existsSync(manifestPath), 'Agent probe did not write manifest.json');
-
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      assert.strictEqual(manifest.status, 'completed', 'Manifest status should be completed');
-      assert.strictEqual(manifest.outcome, 'success', 'Manifest outcome should be success');
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
-      fs.rmSync(holonDir, { recursive: true, force: true });
     }
   });
 
