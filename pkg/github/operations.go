@@ -644,8 +644,8 @@ func (c *Client) getCurrentApp(ctx context.Context) (*ActorInfo, error) {
 	return info, nil
 }
 
-// extractZipFiles extracts all text files from a ZIP archive.
-// Returns concatenated text content with file name separators.
+// extractZipFiles extracts all non-directory files from a ZIP archive.
+// Returns the concatenated contents with file name separators.
 func extractZipFiles(zipData []byte) ([]byte, error) {
 	reader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
@@ -662,9 +662,9 @@ func extractZipFiles(zipData []byte) ([]byte, error) {
 		if err != nil {
 			continue // Skip files that can't be opened
 		}
+		defer rc.Close()
 
 		content, err := io.ReadAll(rc)
-		rc.Close()
 
 		if err != nil {
 			continue // Skip files that can't be read

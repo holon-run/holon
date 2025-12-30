@@ -915,11 +915,11 @@ func createTestZipArchive(t *testing.T) []byte {
 	}
 
 	for name, content := range files {
-		w, err := w.Create(name)
+		fw, err := w.Create(name)
 		if err != nil {
 			t.Fatalf("Failed to create zip entry: %v", err)
 		}
-		_, err = w.Write([]byte(content))
+		_, err = fw.Write([]byte(content))
 		if err != nil {
 			t.Fatalf("Failed to write zip entry: %v", err)
 		}
