@@ -194,7 +194,8 @@ jobs:
           fi
 
           if [ "$EVENT_NAME" = 'issue_comment' ] && [ "$EVENT_ACTION" = 'created' ]; then
-            FIRST_LINE="$(printf '%s\n' "$COMMENT_BODY" | head -n1 | xargs || true)"
+            # Normalize first non-empty line (strip CR, trim whitespace)
+            FIRST_LINE="$(printf '%s\n' "$COMMENT_BODY" | tr '\r' '\n' | sed '/./{p;q}' | xargs || true)"
 
             # Check if the comment is exactly "@holonbot" or starts with "@holonbot " (with space)
             # This pattern matches both "@holonbot" alone and "@holonbot " followed by text
@@ -205,6 +206,10 @@ jobs:
               # If the comment is exactly "@holonbot", GOAL_HINT will be empty (acceptable)
               GOAL_HINT="${FIRST_LINE#@holonbot}"
               GOAL_HINT="${GOAL_HINT# }"
+              # If user provided a message on subsequent lines, pick the first non-empty line as hint
+              if [ -z "$GOAL_HINT" ]; then
+                GOAL_HINT="$(printf '%s\n' "$COMMENT_BODY" | tr '\r' '\n' | sed '1d;/./{s/^[[:space:]]*//;s/[[:space:]]*$//;p;q}')"
+              fi
               echo "✅ Trigger path: free-form command"
               echo "   Goal hint: $GOAL_HINT"
             else
