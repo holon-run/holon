@@ -51,6 +51,12 @@ type ContainerConfig struct {
 
 	// Agent config mount mode
 	AgentConfigMode string // Agent config mount mode: "auto", "yes", "no"
+
+	// Git configuration (already resolved by caller)
+	// These values are pre-resolved using git.ResolveConfig() with proper priority:
+	// host git config > ProjectConfig > env vars > defaults
+	GitAuthorName  string // Git author name for commits
+	GitAuthorEmail string // Git author email for commits
 }
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, error) {
@@ -96,30 +102,23 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 
 	// 3. Create Container
 	// Inject git identity with proper priority
-	// Priority: host git config > ProjectConfig > defaults
-	// Host git config has highest priority to respect user's personal identity
-	gitName, err := getGitConfig("user.name")
-	if err != nil {
-		holonlog.Warn("failed to get host git config 'user.name'", "error", err)
-	}
-	gitEmail, err := getGitConfig("user.email")
-	if err != nil {
-		holonlog.Warn("failed to get host git config 'user.email'", "error", err)
-	}
+	// The caller (runner.go) has already resolved git config using git.ResolveConfig()
+	// Priority: host git config (local>global>system) > ProjectConfig > env vars > defaults
+	// We just use the pre-resolved values here - no more double-setting/overriding
 
 	if cfg.Env == nil {
 		cfg.Env = make(map[string]string)
 	}
 
-	// Set host git config (user's personal identity, highest priority)
-	// This overrides any ProjectConfig values that were set earlier in runner.go
-	if gitName != "" {
-		cfg.Env["GIT_AUTHOR_NAME"] = gitName
-		cfg.Env["GIT_COMMITTER_NAME"] = gitName
+	// Set git config environment variables for the container
+	// These are the resolved values with proper priority handling
+	if cfg.GitAuthorName != "" {
+		cfg.Env["GIT_AUTHOR_NAME"] = cfg.GitAuthorName
+		cfg.Env["GIT_COMMITTER_NAME"] = cfg.GitAuthorName
 	}
-	if gitEmail != "" {
-		cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
-		cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
+	if cfg.GitAuthorEmail != "" {
+		cfg.Env["GIT_AUTHOR_EMAIL"] = cfg.GitAuthorEmail
+		cfg.Env["GIT_COMMITTER_EMAIL"] = cfg.GitAuthorEmail
 	}
 
 	env := BuildContainerEnv(&EnvConfig{

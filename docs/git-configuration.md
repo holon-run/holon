@@ -11,11 +11,14 @@ If no git identity is configured, Holon uses default fallback values:
 
 ## Configuration Priority
 
-Holon determines git identity using the following priority (highest to lowest):
+Holon determines git identity using a **centralized resolver** (`git.ResolveConfig()`) with the following priority (highest to lowest):
 
-1. **Host git config** - Your system's global git configuration (`git config --global user.name` and `user.email`)
+1. **Host git config** (local > global > system) - Your system's git configuration
 2. **ProjectConfig** - Project-level configuration in `.holon/config.yaml`
-3. **Default values** - `Holon Bot <bot@holon.run>`
+3. **Environment variables** - `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL`
+4. **Default values** - `Holon Bot <bot@holon.run>`
+
+**Important**: The centralized resolver ensures consistent behavior across all commands (`run`, `publish`, `solve`). Host git config always has highest priority, respecting your personal git identity.
 
 ## Configuration Methods
 
@@ -150,20 +153,30 @@ sudo -u holon-bot git config --global user.email "bot@holon.run"
 
 ## Technical Details
 
-### How Holon Resolves Git Identity
+### Centralized Resolver
 
-1. **`holon run` command**:
-   - Reads ProjectConfig from `.holon/config.yaml`
-   - Injects git config as environment variables into the container
-   - Host git config overrides ProjectConfig values at runtime
+Holon uses a centralized git configuration resolver (`git.ResolveConfig()`) that ensures consistent behavior across all commands:
 
-2. **`holon publish` command**:
-   - Reads host git config directly
-   - Injects into manifest metadata as `git_author_name` and `git_author_email`
-   - Publishers (github-pr, git) use these values for commits
+- **`holon run`**: Resolves git config once using the centralized resolver, passes to runtime
+- **`holon publish`**: Uses the centralized resolver to inject git config into manifest metadata
+- **`holon solve`**: Uses the centralized resolver for consistency
 
-3. **`holon solve` command**:
-   - Combines both approaches for consistency
+This eliminates the previous confusion where `runner.go` would set ProjectConfig values, then `runtime.go` would override with host git config. Now the priority is explicit and enforced in one place.
+
+### Priority Enforcement
+
+The centralized resolver enforces priority as:
+
+1. **Host git config** (local > global > system) - highest priority
+2. **ProjectConfig** (`.holon/config.yaml`)
+3. **Environment variables** (`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`)
+4. **Defaults** (`Holon Bot <bot@holon.run>`)
+
+This means:
+- Your personal git identity (host config) is always respected
+- ProjectConfig is used as fallback when host config is unavailable
+- Environment variables provide explicit override capability
+- Defaults ensure the system never fails completely
 
 ### Git Commit Identity
 

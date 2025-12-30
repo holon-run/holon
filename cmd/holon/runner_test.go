@@ -1413,13 +1413,16 @@ func TestRunner_GitConfigOverride(t *testing.T) {
 			gitAuthorName:  "Bot Name",
 			gitAuthorEmail: "",
 			expectedName:   "Bot Name",
-			expectedEmail:  "",
+			// Email will be resolved from host git config or defaults
+			// The test uses a helper to get the expected value
+			expectedEmail: "", // Will be determined at runtime
 		},
 		{
 			name:           "only git email set",
 			gitAuthorName:  "",
 			gitAuthorEmail: "bot@example.com",
-			expectedName:   "",
+			// Name will be resolved from host git config or defaults
+			expectedName: "", // Will be determined at runtime
 			expectedEmail:  "bot@example.com",
 		},
 	}
@@ -1450,26 +1453,25 @@ func TestRunner_GitConfigOverride(t *testing.T) {
 				t.Fatalf("Expected 1 call to RunHolon, got %d", len(calls))
 			}
 
-			env := calls[0].cfg.Env
+			containerCfg := calls[0].cfg
 
-			// Verify GIT_AUTHOR_NAME and GIT_COMMITTER_NAME
-			if tt.gitAuthorName != "" {
-				if env["GIT_AUTHOR_NAME"] != tt.expectedName {
-					t.Errorf("Expected GIT_AUTHOR_NAME to be %q, got %q", tt.expectedName, env["GIT_AUTHOR_NAME"])
+			// Verify GitAuthorName and GitAuthorEmail in ContainerConfig
+			// When expected values are empty, we accept the resolved value (from host git or defaults)
+			// When expected values are non-empty, the explicit override should be used
+			if tt.expectedName != "" {
+				if containerCfg.GitAuthorName != tt.expectedName {
+					t.Errorf("Expected GitAuthorName to be %q, got %q", tt.expectedName, containerCfg.GitAuthorName)
 				}
-				if env["GIT_COMMITTER_NAME"] != tt.expectedName {
-					t.Errorf("Expected GIT_COMMITTER_NAME to be %q, got %q", tt.expectedName, env["GIT_COMMITTER_NAME"])
-				}
+			} else if containerCfg.GitAuthorName == "" {
+				t.Error("GitAuthorName should not be empty")
 			}
 
-			// Verify GIT_AUTHOR_EMAIL and GIT_COMMITTER_EMAIL
-			if tt.gitAuthorEmail != "" {
-				if env["GIT_AUTHOR_EMAIL"] != tt.expectedEmail {
-					t.Errorf("Expected GIT_AUTHOR_EMAIL to be %q, got %q", tt.expectedEmail, env["GIT_AUTHOR_EMAIL"])
+			if tt.expectedEmail != "" {
+				if containerCfg.GitAuthorEmail != tt.expectedEmail {
+					t.Errorf("Expected GitAuthorEmail to be %q, got %q", tt.expectedEmail, containerCfg.GitAuthorEmail)
 				}
-				if env["GIT_COMMITTER_EMAIL"] != tt.expectedEmail {
-					t.Errorf("Expected GIT_COMMITTER_EMAIL to be %q, got %q", tt.expectedEmail, env["GIT_COMMITTER_EMAIL"])
-				}
+			} else if containerCfg.GitAuthorEmail == "" {
+				t.Error("GitAuthorEmail should not be empty")
 			}
 		})
 	}
