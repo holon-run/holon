@@ -29,6 +29,14 @@ type Config struct {
 
 // ConfigOptions holds options for resolving git configuration.
 type ConfigOptions struct {
+	// ExplicitAuthorName is an explicitly set author name that should override all other sources.
+	// This has the highest priority and is used for user-specified overrides.
+	ExplicitAuthorName string
+
+	// ExplicitAuthorEmail is an explicitly set author email that should override all other sources.
+	// This has the highest priority and is used for user-specified overrides.
+	ExplicitAuthorEmail string
+
 	// ProjectAuthorName is the project-level git author name from .holon/config.yaml.
 	ProjectAuthorName string
 
@@ -43,10 +51,11 @@ type ConfigOptions struct {
 }
 
 // ResolveConfig resolves git configuration with the following priority:
-// 1. Host git config (local > global > system)
-// 2. ProjectConfig (.holon/config.yaml git.author_*)
+// 1. Explicit overrides (ExplicitAuthorName/Email) - highest priority for user-specified values
+// 2. Host git config (local > global > system)
 // 3. Environment variables (GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL)
-// 4. Defaults ("Holon Bot <bot@holon.run>")
+// 4. ProjectConfig (.holon/config.yaml git.author_*)
+// 5. Defaults ("Holon Bot <bot@holon.run>")
 //
 // This function consolidates all git config resolution logic into one place.
 // It reads host git config with proper scope awareness (local > global > system).
@@ -68,8 +77,8 @@ func ResolveConfig(opts ConfigOptions) Config {
 		AuthorEmail: DefaultAuthorEmail,
 	}
 
-	// Priority 2: ProjectConfig (.holon/config.yaml)
-	// Note: Host git config (Priority 1) is checked first below
+	// Apply ProjectConfig
+	// Environment variables (applied below) will override this
 	if opts.ProjectAuthorName != "" {
 		cfg.AuthorName = opts.ProjectAuthorName
 	}
@@ -77,8 +86,8 @@ func ResolveConfig(opts ConfigOptions) Config {
 		cfg.AuthorEmail = opts.ProjectAuthorEmail
 	}
 
-	// Priority 3: Environment variables
-	// These are checked before host git config because they represent explicit user intent
+	// Apply environment variables
+	// Host git config (applied below) will override this to maintain priority
 	if opts.EnvAuthorName != "" {
 		cfg.AuthorName = opts.EnvAuthorName
 	}
@@ -86,14 +95,22 @@ func ResolveConfig(opts ConfigOptions) Config {
 		cfg.AuthorEmail = opts.EnvAuthorEmail
 	}
 
-	// Priority 1: Host git config (highest priority)
-	// This reads from local > global > system git config
-	// and overrides all other sources.
+	// Apply host git config (local > global > system)
+	// Explicit overrides (applied below) will override this
 	if hostName := getHostGitConfig("user.name"); hostName != "" {
 		cfg.AuthorName = hostName
 	}
 	if hostEmail := getHostGitConfig("user.email"); hostEmail != "" {
 		cfg.AuthorEmail = hostEmail
+	}
+
+	// Apply explicit overrides (highest priority)
+	// These are user-specified values that should override everything else
+	if opts.ExplicitAuthorName != "" {
+		cfg.AuthorName = opts.ExplicitAuthorName
+	}
+	if opts.ExplicitAuthorEmail != "" {
+		cfg.AuthorEmail = opts.ExplicitAuthorEmail
 	}
 
 	return cfg
@@ -128,15 +145,17 @@ func GetHostGitConfig(key string) string {
 // Priority:
 // 1. Workspace local git config
 // 2. Host git config (global > system)
-// 3. ProjectConfig (.holon/config.yaml)
-// 4. Defaults ("Holon Bot <bot@holon.run>")
+// 3. Environment variables (GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL)
+// 4. ProjectConfig (.holon/config.yaml git.author_*)
+// 5. Defaults ("Holon Bot <bot@holon.run>")
 func ResolveConfigForWorkspace(ctx context.Context, workspaceDir string, opts ConfigOptions) (Config, error) {
 	cfg := Config{
 		AuthorName: DefaultAuthorName,
 		AuthorEmail: DefaultAuthorEmail,
 	}
 
-	// Priority 2: ProjectConfig
+	// Apply ProjectConfig
+	// Environment variables (applied below) will override this
 	if opts.ProjectAuthorName != "" {
 		cfg.AuthorName = opts.ProjectAuthorName
 	}
@@ -144,7 +163,8 @@ func ResolveConfigForWorkspace(ctx context.Context, workspaceDir string, opts Co
 		cfg.AuthorEmail = opts.ProjectAuthorEmail
 	}
 
-	// Priority 3: Environment variables
+	// Apply environment variables
+	// Workspace and host git config (applied below) will override this
 	if opts.EnvAuthorName != "" {
 		cfg.AuthorName = opts.EnvAuthorName
 	}
@@ -152,22 +172,28 @@ func ResolveConfigForWorkspace(ctx context.Context, workspaceDir string, opts Co
 		cfg.AuthorEmail = opts.EnvAuthorEmail
 	}
 
-	// Priority 1: Workspace git config (local) then host config (global/system)
+	// Apply workspace git config (local) then host config (global/system)
 	client := NewClient(workspaceDir)
 
 	// Check workspace local config first
+	localNameSet := false
 	if localName, err := client.ConfigGet(ctx, "user.name"); err == nil && localName != "" {
 		cfg.AuthorName = localName
+		localNameSet = true
 	}
+	localEmailSet := false
 	if localEmail, err := client.ConfigGet(ctx, "user.email"); err == nil && localEmail != "" {
 		cfg.AuthorEmail = localEmail
+		localEmailSet = true
 	}
 
-	// Fall back to host global/system config if workspace local is not set
-	if cfg.AuthorName == DefaultAuthorName || cfg.AuthorEmail == DefaultAuthorEmail {
+	// Fall back to host global/system config for any fields not set by workspace local
+	if !localNameSet {
 		if hostName := getHostGitConfig("user.name"); hostName != "" {
 			cfg.AuthorName = hostName
 		}
+	}
+	if !localEmailSet {
 		if hostEmail := getHostGitConfig("user.email"); hostEmail != "" {
 			cfg.AuthorEmail = hostEmail
 		}

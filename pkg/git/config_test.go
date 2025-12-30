@@ -70,14 +70,26 @@ func setupGlobalTestGitConfig(t *testing.T, name, email string) func() {
 			_ = cmd.Run()
 		} else {
 			cmd := exec.Command("git", "config", "--global", "--unset", "user.name")
-			_ = cmd.Run()
+			if err := cmd.Run(); err != nil {
+				// Exit code 5 means the key was already unset, which is fine
+				if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 5 {
+					// Log other errors but don't fail the test
+					t.Logf("warning: failed to unset global user.name: %v", err)
+				}
+			}
 		}
 		if len(oldEmail) > 0 {
 			cmd := exec.Command("git", "config", "--global", "user.email", strings.TrimSpace(string(oldEmail)))
 			_ = cmd.Run()
 		} else {
 			cmd := exec.Command("git", "config", "--global", "--unset", "user.email")
-			_ = cmd.Run()
+			if err := cmd.Run(); err != nil {
+				// Exit code 5 means the key was already unset, which is fine
+				if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 5 {
+					// Log other errors but don't fail the test
+					t.Logf("warning: failed to unset global user.email: %v", err)
+				}
+			}
 		}
 	}
 }
@@ -248,6 +260,57 @@ func TestResolveConfig_AllSources(t *testing.T) {
 	}
 	if cfg.AuthorEmail != "host-user@example.com" {
 		t.Errorf("expected host git config email %q, got %q", "host-user@example.com", cfg.AuthorEmail)
+	}
+}
+
+func TestResolveConfig_EnvOverridesProject(t *testing.T) {
+	// This test verifies that env vars have higher priority than ProjectConfig
+	// when no host git config is set (env vars are applied after ProjectConfig)
+	opts := ConfigOptions{
+		ProjectAuthorName:  "Project Bot",
+		ProjectAuthorEmail: "project-bot@example.com",
+		EnvAuthorName:      "Env Bot",
+		EnvAuthorEmail:     "env-bot@example.com",
+	}
+
+	cfg := ResolveConfig(opts)
+
+	// Priority is: host git > env vars > ProjectConfig > defaults
+	// The test verifies that ProjectConfig is not used when env vars are set
+
+	// Get host git config to determine what we expect
+	hostName := getHostGitConfig("user.name")
+	hostEmail := getHostGitConfig("user.email")
+
+	// If host git config is set, it should override everything
+	if hostName != "" {
+		if cfg.AuthorName != hostName {
+			t.Errorf("expected host git config name %q, got %q", hostName, cfg.AuthorName)
+		}
+	} else if cfg.AuthorName != "Env Bot" && cfg.AuthorName != DefaultAuthorName {
+		t.Errorf("expected env vars to override ProjectConfig, got name %q", cfg.AuthorName)
+	}
+
+	if hostEmail != "" {
+		if cfg.AuthorEmail != hostEmail {
+			t.Errorf("expected host git config email %q, got %q", hostEmail, cfg.AuthorEmail)
+		}
+	} else if cfg.AuthorEmail != "env-bot@example.com" && cfg.AuthorEmail != DefaultAuthorEmail {
+		t.Errorf("expected env vars to override ProjectConfig, got email %q", cfg.AuthorEmail)
+	}
+
+	// Verify ProjectConfig is NOT used when env vars are set (unless host git overrides)
+	if cfg.AuthorName == "Project Bot" || cfg.AuthorEmail == "project-bot@example.com" {
+		t.Error("ProjectConfig should not be used when env vars are set (unless host git config overrides both)")
+	}
+
+	// Log which source was used
+	if hostName != "" {
+		t.Logf("Note: host git config is set (%q) and overrides both ProjectConfig and env vars", cfg.AuthorName)
+	} else if cfg.AuthorName == "Env Bot" {
+		t.Logf("Note: env vars correctly override ProjectConfig (no host git config)")
+	} else if cfg.AuthorName == DefaultAuthorName {
+		t.Logf("Note: using defaults (no host git config, no env vars, no ProjectConfig)")
 	}
 }
 

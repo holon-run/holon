@@ -222,11 +222,11 @@ output:
 	}
 
 	// Resolve git configuration using the centralized resolver
-	// Priority: host git config (local>global>system) > ProjectConfig > env vars > defaults
-	// This single source of truth ensures consistent behavior across run, publish, and runtime
+	// Priority: explicit > host git config (local>global>system) > env vars > ProjectConfig > defaults
+	// RunnerConfig fields are passed as explicit overrides to give them highest priority
 	gitCfg := holonGit.ResolveConfig(holonGit.ConfigOptions{
-		ProjectAuthorName:  cfg.GitAuthorName,
-		ProjectAuthorEmail: cfg.GitAuthorEmail,
+		ExplicitAuthorName:  cfg.GitAuthorName,
+		ExplicitAuthorEmail: cfg.GitAuthorEmail,
 	})
 
 	// Log the resolved git config source
