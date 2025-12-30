@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	holonGit "github.com/holon-run/holon/pkg/git"
 	"github.com/holon-run/holon/pkg/workspace"
 )
 
@@ -1017,28 +1018,28 @@ exit 1`
 				Env: tt.initialEnv,
 			}
 
-			// Apply the same logic as RunHolon does for git config injection
+			// Apply the new centralized resolver logic
 			// Priority: host git config > ProjectConfig > defaults
 			if cfg.Env == nil {
 				cfg.Env = make(map[string]string)
 			}
 
-			gitName, _ := getGitConfig("user.name")
-			gitEmail, _ := getGitConfig("user.email")
+			// Use centralized resolver for git config
+			gitCfg := holonGit.ResolveConfig(holonGit.ConfigOptions{})
 
-			// Set host git config (highest priority)
+			// Set resolved git config (highest priority)
 			// This overrides any initialEnv values (including ProjectConfig)
-			if gitName != "" {
-				cfg.Env["GIT_AUTHOR_NAME"] = gitName
-				cfg.Env["GIT_COMMITTER_NAME"] = gitName
+			if gitCfg.AuthorName != "" {
+				cfg.Env["GIT_AUTHOR_NAME"] = gitCfg.AuthorName
+				cfg.Env["GIT_COMMITTER_NAME"] = gitCfg.AuthorName
 			}
-			if gitEmail != "" {
-				cfg.Env["GIT_AUTHOR_EMAIL"] = gitEmail
-				cfg.Env["GIT_COMMITTER_EMAIL"] = gitEmail
+			if gitCfg.AuthorEmail != "" {
+				cfg.Env["GIT_AUTHOR_EMAIL"] = gitCfg.AuthorEmail
+				cfg.Env["GIT_COMMITTER_EMAIL"] = gitCfg.AuthorEmail
 			}
 
-			// Note: initialEnv may contain ProjectConfig values, but host config
-			// unconditionally overrides them here, matching runtime.go behavior.
+			// Note: initialEnv may contain ProjectConfig values, but the centralized
+			// resolver already handled priority correctly, so we use resolved values.
 
 			// Verify the precedence worked correctly
 			// GIT_AUTHOR_NAME should match expected

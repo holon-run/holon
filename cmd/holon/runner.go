@@ -17,6 +17,7 @@ import (
 	v1 "github.com/holon-run/holon/pkg/api/v1"
 	"github.com/holon-run/holon/pkg/context/collector"
 	gh "github.com/holon-run/holon/pkg/github"
+	holonGit "github.com/holon-run/holon/pkg/git"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
@@ -220,18 +221,17 @@ output:
 		return err
 	}
 
-	// Apply git config overrides from project config
-	// Note: These values will be overridden by host git config in runtime.go
-	// Final priority: host git config > ProjectConfig > defaults
-	if cfg.GitAuthorName != "" {
-		envVars["GIT_AUTHOR_NAME"] = cfg.GitAuthorName
-		envVars["GIT_COMMITTER_NAME"] = cfg.GitAuthorName
-		holonlog.Info("git config", "author_name", cfg.GitAuthorName, "source", "project-config", "note", "will-be-overridden-by-host-config")
-	}
-	if cfg.GitAuthorEmail != "" {
-		envVars["GIT_AUTHOR_EMAIL"] = cfg.GitAuthorEmail
-		envVars["GIT_COMMITTER_EMAIL"] = cfg.GitAuthorEmail
-		holonlog.Info("git config", "author_email", cfg.GitAuthorEmail, "source", "project-config", "note", "will-be-overridden-by-host-config")
+	// Resolve git configuration using the centralized resolver
+	// Priority: host git config (local>global>system) > ProjectConfig > env vars > defaults
+	// This single source of truth ensures consistent behavior across run, publish, and runtime
+	gitCfg := holonGit.ResolveConfig(holonGit.ConfigOptions{
+		ProjectAuthorName:  cfg.GitAuthorName,
+		ProjectAuthorEmail: cfg.GitAuthorEmail,
+	})
+
+	// Log the resolved git config source
+	if gitCfg.AuthorName != holonGit.DefaultAuthorName {
+		holonlog.Info("git config resolved", "author_name", gitCfg.AuthorName, "author_email", gitCfg.AuthorEmail)
 	}
 
 	// Populate Goal from Spec if not provided via flag
@@ -304,6 +304,8 @@ output:
 		Env:                  envVars,
 		AgentConfigMode:      cfg.AgentConfigMode,
 		WorkspaceIsTemporary: cfg.WorkspaceIsTemporary,
+		GitAuthorName:        gitCfg.AuthorName,
+		GitAuthorEmail:       gitCfg.AuthorEmail,
 	}
 
 	holonlog.Progress("running holon", "spec", cfg.SpecPath, "base_image", cfg.BaseImage, "agent", containerCfg.AgentBundle)

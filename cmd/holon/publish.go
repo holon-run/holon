@@ -84,35 +84,20 @@ Examples:
 			return fmt.Errorf("failed to convert manifest: %w", err)
 		}
 
-		// Inject git author info from project config into manifest metadata
-		// This ensures publishers use the configured git identity
+		// Inject git author info into manifest metadata using centralized resolver
 		// Priority: host git config > ProjectConfig > defaults
-		// Host git config has highest priority to respect user's personal identity
+		// The centralized resolver ensures consistent behavior across all commands
 		if metadata, ok := manifestMap["metadata"].(map[string]interface{}); ok {
-			// Get host git config (user's personal config, highest priority)
-			authorName := holonGit.GetGlobalConfig("user.name")
-			authorEmail := holonGit.GetGlobalConfig("user.email")
+			// Use the centralized git config resolver
+			// Priority: host git config (local>global>system) > ProjectConfig > env vars > defaults
+			gitCfg := holonGit.ResolveConfig(holonGit.ConfigOptions{})
 
-			// Note: Host git config takes priority.
-			// Unlike the old implementation, we don't check if ProjectConfig
-			// is set first - host config is always used when available.
-			// This matches the behavior in runtime.go where host config
-			// unconditionally overrides any ProjectConfig values.
-			//
-			// If you need ProjectConfig to override host config (for CI/bot scenarios),
-			// set HOLON_GIT_AUTHOR_NAME and HOLON_GIT_AUTHOR_EMAIL environment variables
-			// before running publish, or modify the ProjectConfig values in .holon/config.yaml.
-
-			// Only set if we have a value (not already in manifest)
-			if authorName != "" {
-				if _, exists := metadata["git_author_name"]; !exists {
-					metadata["git_author_name"] = authorName
-				}
+			// Only set if not already in manifest (allow manifest to override)
+			if _, exists := metadata["git_author_name"]; !exists && gitCfg.AuthorName != "" {
+				metadata["git_author_name"] = gitCfg.AuthorName
 			}
-			if authorEmail != "" {
-				if _, exists := metadata["git_author_email"]; !exists {
-					metadata["git_author_email"] = authorEmail
-				}
+			if _, exists := metadata["git_author_email"]; !exists && gitCfg.AuthorEmail != "" {
+				metadata["git_author_email"] = gitCfg.AuthorEmail
 			}
 		}
 
