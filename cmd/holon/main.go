@@ -281,6 +281,7 @@ func init() {
 	rootCmd.AddCommand(contextCmd)
 	rootCmd.AddCommand(publishCmd)
 	rootCmd.AddCommand(detectCmd)
+	rootCmd.AddCommand(logCmd)
 }
 
 func main() {

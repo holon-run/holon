@@ -433,7 +433,6 @@ async function runClaude(
   }
 
   const finalResult = resultText || finalOutput;
-  logFile.write(`--- FINAL OUTPUT ---\n${finalResult}\n`);
 
   return { success, result: finalResult };
 }
