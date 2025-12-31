@@ -6,8 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+)
+
+const (
+	// maxShortContentLength is the threshold for determining whether content is "short"
+	// and should be displayed in full. Content longer than this is truncated or omitted.
+	maxShortContentLength = 500
 )
 
 // Parser defines the interface for parsing execution logs
@@ -58,23 +65,6 @@ type ClaudeMessage struct {
 	Content []interface{} `json:"content"`
 }
 
-// ToolResult represents a tool use result
-type ToolResult struct {
-	Type        string                 `json:"type"`
-	ToolUseID   string                 `json:"tool_use_id"`
-	Content     string                 `json:"content"`
-	IsError     bool                   `json:"is_error,omitempty"`
-	FileContent *FileContent           `json:"-"`
-}
-
-// FileContent represents file content in tool results
-type FileContent struct {
-	FilePath  string `json:"filePath"`
-	Content   string `json:"content"`
-	NumLines  int    `json:"numLines"`
-	StartLine int    `json:"startLine"`
-	TotalLines int   `json:"totalLines"`
-}
 
 // ClaudeParser parses Claude Code agent logs
 type ClaudeParser struct{}
@@ -114,7 +104,7 @@ func (p *ClaudeParser) Parse(logPath string) (string, error) {
 		// Try to parse as JSON
 		var entry ClaudeLogEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			// Not a JSON line, skip empty lines, write others with minimal formatting
+			// Not a JSON line: write non-empty lines with minimal formatting
 			if line != "" {
 				sb.WriteString(fmt.Sprintf("[RAW] %s\n", line))
 			}
@@ -236,8 +226,12 @@ func (p *ClaudeParser) handleAssistantEntry(sb *strings.Builder, entry *ClaudeLo
 					} else if !seenToolUse {
 						// Text without tools - direct response
 						sb.WriteString(fmt.Sprintf("💬 %s\n", text))
+					} else {
+						// Text appearing after tool_use and before its result is intentionally
+						// omitted from the summary. This content is usually redundant with the
+						// eventual result block and is skipped to keep the output concise.
+						// If needed for debugging, this is the branch to adjust.
 					}
-					// Skip text between tool_use and result (it's redundant)
 				}
 
 			case "tool_use":
@@ -274,7 +268,50 @@ func (p *ClaudeParser) handleAssistantEntry(sb *strings.Builder, entry *ClaudeLo
 	}
 }
 
-// handleUserEntry processes user messages (tool results)
+// handleUserEntry processes user messages that represent tool results and appends
+// a human-readable summary of those results to sb.
+//
+// Tool results are emitted by the assistant as "user" messages whose
+// entry.Message.Content is a slice of blocks. For this parser, only blocks
+// that are maps with type == "tool_result" are considered. A tool result has
+// the following expected structure:
+//
+//   {
+//     "type":        "tool_result",          // required discriminator
+//     "tool_use_id": "<id>",                 // optional, currently ignored
+//     "is_error":    <bool>,                 // true if the tool reported an error
+//     "content":     "<string>",             // optional primary result payload
+//     "file": {                             // optional file result wrapper
+//       "filePath": "<path to file>",       // path of the file that was read
+//       "content":  "<file contents>"       // full textual contents of the file
+//     }
+//   }
+//
+// Depending on which fields are present, this function renders different
+// one-line summaries:
+//
+//   - File results: if a "file" object with non-empty "filePath" and
+//     "content" is present, the function counts the number of lines in the
+//     file content and appends a summary like:
+//         "   ✓ Read <filePath> (<N> lines)\n"
+//
+//   - JSON content: if "content" is a string that appears to be JSON
+//     (starts with '{' or '[') and can be unmarshaled successfully, the
+//     function does not print the full JSON but instead appends:
+//         "   ✓ Read JSON data\n"
+//
+//   - Errors: if "is_error" is true, the string in "content" is cleaned,
+//     truncated to a safe length, and rendered as:
+//         "   ❌ Error: <message>\n"
+//
+//   - Short non-error content: if "is_error" is false and "content" is a
+//     non-empty string shorter than a configured threshold, the cleaned and
+//     truncated content is rendered as:
+//         "   → <content>\n"
+//
+// Long or verbose result payloads are intentionally not printed in full; in
+// those cases, only the tool execution summary produced elsewhere in the log
+// (for example by handleAssistantEntry) is shown, keeping the output concise.
 func (p *ClaudeParser) handleUserEntry(sb *strings.Builder, entry *ClaudeLogEntry) {
 	if entry.Message == nil {
 		return
@@ -291,7 +328,6 @@ func (p *ClaudeParser) handleUserEntry(sb *strings.Builder, entry *ClaudeLogEntr
 			continue
 		}
 
-		_, _ = resultMap["tool_use_id"].(string) // Reserved for future use
 		isError, _ := resultMap["is_error"].(bool)
 
 		// Extract content
@@ -327,7 +363,7 @@ func (p *ClaudeParser) handleUserEntry(sb *strings.Builder, entry *ClaudeLogEntr
 		// Check for error content
 		if isError {
 			sb.WriteString(fmt.Sprintf("   ❌ Error: %s\n", truncateString(cleanContent(contentStr), 200)))
-		} else if contentStr != "" && len(contentStr) < 500 {
+		} else if contentStr != "" && len(contentStr) < maxShortContentLength {
 			// Show short non-error content
 			cleaned := cleanContent(contentStr)
 			if cleaned != "" {
@@ -348,45 +384,53 @@ func truncateString(s string, maxLen int) string {
 
 // formatFilePath shortens file paths for better readability
 func formatFilePath(path string) string {
+	// Normalize path separators to forward slashes for consistent processing
+	normalized := filepath.ToSlash(path)
+
 	// Show just the filename for paths in common directories
-	if strings.Contains(path, "/node_modules/") {
+	if strings.Contains(normalized, "/node_modules/") {
 		return filepath.Base(path)
 	}
-	// For workspace files, show relative path with max 2 levels
-	parts := strings.Split(path, "/")
-	if len(parts) > 3 {
-		return filepath.Join(parts[len(parts)-3:]...)
+	// For workspace files, show relative path with max 2 levels (up to last 3 parts)
+	parts := strings.Split(normalized, "/")
+	if len(parts) <= 3 {
+		return filepath.Join(parts...)
 	}
-	return filepath.Base(path)
+	return filepath.Join(parts[len(parts)-3:]...)
 }
 
 // cleanContent removes escape sequences and cleans up content strings
 func cleanContent(content string) string {
+	// Limit to reasonable length early to avoid processing large strings
+	const maxCleanLength = 1000
+	if len(content) > maxCleanLength {
+		content = content[:maxCleanLength-3] + "..."
+	}
+
 	// Remove common escape sequences
 	cleaned := strings.ReplaceAll(content, "\\n", " ")
 	cleaned = strings.ReplaceAll(cleaned, "\\t", " ")
 	cleaned = strings.ReplaceAll(cleaned, "\\\"", "\"")
 	cleaned = strings.ReplaceAll(cleaned, "\\\\", "\\")
+
+	// Precompile regex for line number detection (e.g., "123→")
+	lineNumberRegex := regexp.MustCompile(`^\d+→$`)
+
 	// Remove line numbers like "1→", "2→" etc.
-	re := strings.Builder{}
+	result := strings.Builder{}
 	for _, line := range strings.Split(cleaned, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		// Skip lines with just line numbers
-		if len(trimmed) < 10 && strings.Contains(trimmed, "→") {
+		// Skip lines that are just line numbers (e.g., "123→")
+		if lineNumberRegex.MatchString(trimmed) {
 			continue
 		}
-		re.WriteString(trimmed)
-		re.WriteString(" ")
+		result.WriteString(trimmed)
+		result.WriteString(" ")
 	}
-	result := strings.TrimSpace(re.String())
-	// Limit to reasonable length
-	if len(result) > 1000 {
-		result = result[:997] + "..."
-	}
-	return result
+	return strings.TrimSpace(result.String())
 }
 
 func (p *ClaudeParser) handleResultEntry(sb *strings.Builder, entry *ClaudeLogEntry) {
