@@ -146,8 +146,7 @@ interface AgentMetadata {
   };
 }
 
-function readBundleManifest(): BundleManifest | null {
-  const manifestPath = "/holon/agent/manifest.json";
+export function readBundleManifest(manifestPath: string = "/holon/agent/manifest.json"): BundleManifest | null {
   try {
     if (!fs.existsSync(manifestPath)) {
       return null;
@@ -160,7 +159,7 @@ function readBundleManifest(): BundleManifest | null {
   }
 }
 
-function getAgentMetadata(bundleManifest: BundleManifest | null): AgentMetadata {
+export function getAgentMetadata(bundleManifest: BundleManifest | null): AgentMetadata {
   // If bundle manifest is available, derive metadata from it
   if (bundleManifest) {
     const agent = bundleManifest.engine?.name || bundleManifest.name || "claude-code";
@@ -168,11 +167,21 @@ function getAgentMetadata(bundleManifest: BundleManifest | null): AgentMetadata 
     const metadata: AgentMetadata = { agent, version };
 
     // Optionally include engine SDK info for debugging
-    if (bundleManifest.engine?.sdk || bundleManifest.engine?.sdkVersion) {
-      metadata.engine = {
-        sdk: bundleManifest.engine.sdk,
-        sdkVersion: bundleManifest.engine.sdkVersion,
-      };
+    // Only add engine object if at least one SDK field is defined
+    if (bundleManifest.engine) {
+      const engine: NonNullable<AgentMetadata["engine"]> = {};
+
+      if (bundleManifest.engine.sdk !== undefined) {
+        engine.sdk = bundleManifest.engine.sdk;
+      }
+
+      if (bundleManifest.engine.sdkVersion !== undefined) {
+        engine.sdkVersion = bundleManifest.engine.sdkVersion;
+      }
+
+      if (Object.keys(engine).length > 0) {
+        metadata.engine = engine;
+      }
     }
 
     return metadata;
