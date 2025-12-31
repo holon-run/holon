@@ -58,6 +58,24 @@ type ClaudeMessage struct {
 	Content []interface{} `json:"content"`
 }
 
+// ToolResult represents a tool use result
+type ToolResult struct {
+	Type        string                 `json:"type"`
+	ToolUseID   string                 `json:"tool_use_id"`
+	Content     string                 `json:"content"`
+	IsError     bool                   `json:"is_error,omitempty"`
+	FileContent *FileContent           `json:"-"`
+}
+
+// FileContent represents file content in tool results
+type FileContent struct {
+	FilePath  string `json:"filePath"`
+	Content   string `json:"content"`
+	NumLines  int    `json:"numLines"`
+	StartLine int    `json:"startLine"`
+	TotalLines int   `json:"totalLines"`
+}
+
 // ClaudeParser parses Claude Code agent logs
 type ClaudeParser struct{}
 
@@ -77,6 +95,12 @@ func (p *ClaudeParser) Parse(logPath string) (string, error) {
 	var sb strings.Builder
 	scanner := bufio.NewScanner(file)
 
+	// Increase buffer size to handle large log lines (e.g., big JSON objects)
+	// Start with 64KB and grow up to 10MB if needed
+	const maxTokenSize = 10 * 1024 * 1024 // 10MB
+	buf := make([]byte, 0, 64*1024)       // 64KB initial capacity
+	scanner.Buffer(buf, maxTokenSize)
+
 	// Track session info
 	var sessionID string
 	var model string
@@ -90,7 +114,7 @@ func (p *ClaudeParser) Parse(logPath string) (string, error) {
 		// Try to parse as JSON
 		var entry ClaudeLogEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			// Not a JSON line, write as-is with minimal formatting
+			// Not a JSON line, skip empty lines, write others with minimal formatting
 			if line != "" {
 				sb.WriteString(fmt.Sprintf("[RAW] %s\n", line))
 			}
@@ -103,11 +127,13 @@ func (p *ClaudeParser) Parse(logPath string) (string, error) {
 			p.handleSystemEntry(&sb, &entry, &sessionID, &model, &tools)
 		case "assistant":
 			p.handleAssistantEntry(&sb, &entry)
+		case "user":
+			p.handleUserEntry(&sb, &entry)
 		case "result":
 			p.handleResultEntry(&sb, &entry)
 		default:
-			// Unknown type, write as-is
-			sb.WriteString(fmt.Sprintf("[%s] %s\n", strings.ToUpper(entry.Type), line))
+			// Unknown type, skip silently
+			continue
 		}
 	}
 
@@ -175,7 +201,7 @@ func (p *ClaudeParser) handleAssistantEntry(sb *strings.Builder, entry *ClaudeLo
 		return
 	}
 
-	// Track whether we've seen any tool_use blocks - text before tool_use is typically reasoning
+	// Track whether we've seen any tool_use blocks
 	seenToolUse := false
 
 	// First pass: check if there are any tool_use blocks
@@ -197,31 +223,49 @@ func (p *ClaudeParser) handleAssistantEntry(sb *strings.Builder, entry *ClaudeLo
 
 			switch blockType {
 			case "text":
-				if text, ok := v["text"].(string); ok {
-					// If text appears before tool_use, mark it as assistant reasoning
-					if seenToolUse && textBeforeTool {
-						sb.WriteString(fmt.Sprintf("🤔 [ASSISTANT] %s\n", text))
-					} else {
-						sb.WriteString(fmt.Sprintf("[TEXT] %s\n", text))
+				if text, ok := v["text"].(string); ok && text != "" {
+					// Clean up the text - remove excessive whitespace
+					text = strings.TrimSpace(text)
+					if text == "" {
+						continue
 					}
+
+					// If text appears before tool_use, it's typically assistant reasoning
+					if seenToolUse && textBeforeTool {
+						sb.WriteString(fmt.Sprintf("💭 %s\n", text))
+					} else if !seenToolUse {
+						// Text without tools - direct response
+						sb.WriteString(fmt.Sprintf("💬 %s\n", text))
+					}
+					// Skip text between tool_use and result (it's redundant)
 				}
+
 			case "tool_use":
 				textBeforeTool = false
 				toolName, _ := v["name"].(string)
 				toolInput, _ := v["input"].(map[string]interface{})
 
-				sb.WriteString(fmt.Sprintf("\n🔧 [TOOL] %s", toolName))
+				sb.WriteString(fmt.Sprintf("\n🔧 %s", toolName))
 
 				// Show relevant input parameters
 				if toolInput != nil {
 					if filePath, ok := toolInput["file_path"].(string); ok && filePath != "" {
-						sb.WriteString(fmt.Sprintf(" -> %s", filepath.Base(filePath)))
+						sb.WriteString(fmt.Sprintf(" → %s", formatFilePath(filePath)))
+					}
+					if pattern, ok := toolInput["pattern"].(string); ok && pattern != "" {
+						sb.WriteString(fmt.Sprintf(" (pattern: %s)", pattern))
 					}
 					if goal, ok := toolInput["goal"].(string); ok && goal != "" {
-						sb.WriteString(fmt.Sprintf(" (goal: %s)", truncateString(goal, 50)))
+						sb.WriteString(fmt.Sprintf("\n   Goal: %s", truncateString(goal, 80)))
+					}
+					if prompt, ok := toolInput["prompt"].(string); ok && prompt != "" {
+						sb.WriteString(fmt.Sprintf("\n   Prompt: %s", truncateString(prompt, 80)))
 					}
 					if query, ok := toolInput["query"].(string); ok && query != "" {
-						sb.WriteString(fmt.Sprintf(" (query: %s)", truncateString(query, 50)))
+						sb.WriteString(fmt.Sprintf("\n   Query: %s", truncateString(query, 80)))
+					}
+					if description, ok := toolInput["description"].(string); ok && description != "" {
+						sb.WriteString(fmt.Sprintf("\n   Desc: %s", truncateString(description, 80)))
 					}
 				}
 				sb.WriteString("\n")
@@ -230,18 +274,67 @@ func (p *ClaudeParser) handleAssistantEntry(sb *strings.Builder, entry *ClaudeLo
 	}
 }
 
-func (p *ClaudeParser) handleResultEntry(sb *strings.Builder, entry *ClaudeLogEntry) {
-	subtype := entry.Subtype
+// handleUserEntry processes user messages (tool results)
+func (p *ClaudeParser) handleUserEntry(sb *strings.Builder, entry *ClaudeLogEntry) {
+	if entry.Message == nil {
+		return
+	}
 
-	// Derive error indication from subtype since Extra field is not populated
-	// (Extra has json:"-" tag which prevents unmarshaling)
-	lowered := strings.ToLower(subtype)
-	isError := strings.Contains(lowered, "error") || strings.Contains(lowered, "failed") || strings.Contains(lowered, "failure")
+	for _, block := range entry.Message.Content {
+		resultMap, ok := block.(map[string]interface{})
+		if !ok {
+			continue
+		}
 
-	if isError {
-		sb.WriteString(fmt.Sprintf("\n❌ [ERROR] Result: %s\n", subtype))
-	} else {
-		sb.WriteString(fmt.Sprintf("\n✅ [RESULT] %s\n", subtype))
+		resultType, _ := resultMap["type"].(string)
+		if resultType != "tool_result" {
+			continue
+		}
+
+		_, _ = resultMap["tool_use_id"].(string) // Reserved for future use
+		isError, _ := resultMap["is_error"].(bool)
+
+		// Extract content
+		var contentStr string
+		if content, ok := resultMap["content"].(string); ok {
+			contentStr = content
+		}
+
+		// Check if this is file content
+		if file, ok := resultMap["file"].(map[string]interface{}); ok {
+			filePath, _ := file["filePath"].(string)
+			fileContent, _ := file["content"].(string)
+
+			if filePath != "" && fileContent != "" {
+				// Show file read result
+				lineCount := strings.Count(fileContent, "\n") + 1
+				sb.WriteString(fmt.Sprintf("   ✓ Read %s (%d lines)\n", formatFilePath(filePath), lineCount))
+				continue
+			}
+		}
+
+		// Check if content is a large JSON string (unescaped)
+		if strings.HasPrefix(contentStr, "{") || strings.HasPrefix(contentStr, "[") {
+			// Try to parse as JSON to show structured info
+			var jsonData interface{}
+			if err := json.Unmarshal([]byte(contentStr), &jsonData); err == nil {
+				// Successfully parsed JSON - show summary
+				sb.WriteString(fmt.Sprintf("   ✓ Read JSON data\n"))
+				continue
+			}
+		}
+
+		// Check for error content
+		if isError {
+			sb.WriteString(fmt.Sprintf("   ❌ Error: %s\n", truncateString(cleanContent(contentStr), 200)))
+		} else if contentStr != "" && len(contentStr) < 500 {
+			// Show short non-error content
+			cleaned := cleanContent(contentStr)
+			if cleaned != "" {
+				sb.WriteString(fmt.Sprintf("   → %s\n", truncateString(cleaned, 200)))
+			}
+		}
+		// Skip long content (just show tool execution above)
 	}
 }
 
@@ -251,6 +344,63 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// formatFilePath shortens file paths for better readability
+func formatFilePath(path string) string {
+	// Show just the filename for paths in common directories
+	if strings.Contains(path, "/node_modules/") {
+		return filepath.Base(path)
+	}
+	// For workspace files, show relative path with max 2 levels
+	parts := strings.Split(path, "/")
+	if len(parts) > 3 {
+		return filepath.Join(parts[len(parts)-3:]...)
+	}
+	return filepath.Base(path)
+}
+
+// cleanContent removes escape sequences and cleans up content strings
+func cleanContent(content string) string {
+	// Remove common escape sequences
+	cleaned := strings.ReplaceAll(content, "\\n", " ")
+	cleaned = strings.ReplaceAll(cleaned, "\\t", " ")
+	cleaned = strings.ReplaceAll(cleaned, "\\\"", "\"")
+	cleaned = strings.ReplaceAll(cleaned, "\\\\", "\\")
+	// Remove line numbers like "1→", "2→" etc.
+	re := strings.Builder{}
+	for _, line := range strings.Split(cleaned, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Skip lines with just line numbers
+		if len(trimmed) < 10 && strings.Contains(trimmed, "→") {
+			continue
+		}
+		re.WriteString(trimmed)
+		re.WriteString(" ")
+	}
+	result := strings.TrimSpace(re.String())
+	// Limit to reasonable length
+	if len(result) > 1000 {
+		result = result[:997] + "..."
+	}
+	return result
+}
+
+func (p *ClaudeParser) handleResultEntry(sb *strings.Builder, entry *ClaudeLogEntry) {
+	subtype := entry.Subtype
+
+	// Derive error indication from subtype
+	lowered := strings.ToLower(subtype)
+	isError := strings.Contains(lowered, "error") || strings.Contains(lowered, "failed") || strings.Contains(lowered, "failure")
+
+	if isError {
+		sb.WriteString(fmt.Sprintf("\n❌ Error: %s\n", subtype))
+	} else if subtype != "" && subtype != "success" {
+		sb.WriteString(fmt.Sprintf("\n✅ %s\n", subtype))
+	}
 }
 
 // FallbackParser returns the raw log content for unknown agents
@@ -328,5 +478,10 @@ func ParseLogFromPath(logPath string) (string, error) {
 
 func init() {
 	// Register built-in parsers
-	RegisterParser("claude-code", &ClaudeParser{})
+	// Register the same parser under both names for compatibility:
+	// - "claude-code": legacy name (current default)
+	// - "agent-claude": standardized name (see https://github.com/holon-run/holon/issues/407)
+	parser := &ClaudeParser{}
+	RegisterParser("claude-code", parser)
+	RegisterParser("agent-claude", parser)
 }
