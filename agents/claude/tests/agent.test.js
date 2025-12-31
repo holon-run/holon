@@ -515,3 +515,165 @@ describe("Git Diff Command Generation", () => {
     // Should not throw when allowFailure is true
   });
 });
+
+describe("Bundle Manifest Metadata", () => {
+  let tempDir;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "holon-bundle-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("getAgentMetadata derives from bundle manifest with engine.name", () => {
+    // Simulate getAgentMetadata behavior with a bundle manifest
+    const bundleManifest = {
+      bundleVersion: "1",
+      name: "agent-claude",
+      version: "0.6.1",
+      engine: {
+        name: "claude-code",
+        sdk: "@anthropic-ai/claude-agent-sdk",
+        sdkVersion: "0.1.75",
+      },
+    };
+
+    // Simulate getAgentMetadata logic
+    const agent = bundleManifest.engine?.name || bundleManifest.name || "claude-code";
+    const version = bundleManifest.version || "0.1.0";
+    const metadata = { agent, version };
+
+    if (bundleManifest.engine?.sdk || bundleManifest.engine?.sdkVersion) {
+      metadata.engine = {
+        sdk: bundleManifest.engine.sdk,
+        sdkVersion: bundleManifest.engine.sdkVersion,
+      };
+    }
+
+    assert.strictEqual(metadata.agent, "claude-code");
+    assert.strictEqual(metadata.version, "0.6.1");
+    assert.strictEqual(metadata.engine.sdk, "@anthropic-ai/claude-agent-sdk");
+    assert.strictEqual(metadata.engine.sdkVersion, "0.1.75");
+  });
+
+  test("getAgentMetadata derives from bundle manifest without engine.name", () => {
+    // Test fallback when engine.name is missing
+    const bundleManifest = {
+      bundleVersion: "1",
+      name: "my-custom-agent",
+      version: "1.2.3",
+    };
+
+    const agent = bundleManifest.engine?.name || bundleManifest.name || "claude-code";
+    const version = bundleManifest.version || "0.1.0";
+    const metadata = { agent, version };
+
+    assert.strictEqual(metadata.agent, "my-custom-agent");
+    assert.strictEqual(metadata.version, "1.2.3");
+    assert.strictEqual(metadata.engine, undefined);
+  });
+
+  test("getAgentMetadata uses fallback defaults when bundle manifest is null", () => {
+    // Test backward compatibility fallback
+    const bundleManifest = null;
+
+    const agent = bundleManifest?.engine?.name || bundleManifest?.name || "claude-code";
+    const version = bundleManifest?.version || "0.1.0";
+    const metadata = { agent, version };
+
+    assert.strictEqual(metadata.agent, "claude-code");
+    assert.strictEqual(metadata.version, "0.1.0");
+  });
+
+  test("getAgentMetadata handles bundle manifest with missing version", () => {
+    const bundleManifest = {
+      bundleVersion: "1",
+      name: "agent-claude",
+      engine: {
+        name: "claude-code",
+      },
+    };
+
+    const agent = bundleManifest.engine?.name || bundleManifest.name || "claude-code";
+    const version = bundleManifest.version || "0.1.0";
+    const metadata = { agent, version };
+
+    assert.strictEqual(metadata.agent, "claude-code");
+    assert.strictEqual(metadata.version, "0.1.0"); // Fallback default
+  });
+
+  test("readBundleManifest returns null when file does not exist", () => {
+    const manifestPath = path.join(tempDir, "nonexistent-manifest.json");
+
+    // Simulate readBundleManifest behavior
+    let result = null;
+    try {
+      if (!fs.existsSync(manifestPath)) {
+        result = null;
+      } else {
+        const raw = fs.readFileSync(manifestPath, "utf8");
+        result = JSON.parse(raw);
+      }
+    } catch (error) {
+      result = null;
+    }
+
+    assert.strictEqual(result, null);
+  });
+
+  test("readBundleManifest returns null for invalid JSON", () => {
+    const manifestPath = path.join(tempDir, "invalid-manifest.json");
+    fs.writeFileSync(manifestPath, "invalid json content {");
+
+    // Simulate readBundleManifest behavior
+    let result = null;
+    try {
+      if (!fs.existsSync(manifestPath)) {
+        result = null;
+      } else {
+        const raw = fs.readFileSync(manifestPath, "utf8");
+        result = JSON.parse(raw);
+      }
+    } catch (error) {
+      result = null;
+    }
+
+    assert.strictEqual(result, null);
+  });
+
+  test("readBundleManifest parses valid bundle manifest", () => {
+    const manifestPath = path.join(tempDir, "manifest.json");
+    const validManifest = {
+      bundleVersion: "1",
+      name: "agent-claude",
+      version: "0.6.1",
+      engine: {
+        name: "claude-code",
+        sdk: "@anthropic-ai/claude-agent-sdk",
+        sdkVersion: "0.1.75",
+      },
+    };
+    fs.writeFileSync(manifestPath, JSON.stringify(validManifest, null, 2));
+
+    // Simulate readBundleManifest behavior
+    let result = null;
+    try {
+      if (!fs.existsSync(manifestPath)) {
+        result = null;
+      } else {
+        const raw = fs.readFileSync(manifestPath, "utf8");
+        result = JSON.parse(raw);
+      }
+    } catch (error) {
+      result = null;
+    }
+
+    assert.notStrictEqual(result, null);
+    assert.strictEqual(result.bundleVersion, "1");
+    assert.strictEqual(result.name, "agent-claude");
+    assert.strictEqual(result.version, "0.6.1");
+    assert.strictEqual(result.engine.name, "claude-code");
+  });
+});

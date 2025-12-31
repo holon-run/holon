@@ -116,6 +116,75 @@ class ProgressLogger {
   }
 }
 
+interface BundleManifest {
+  bundleVersion?: string;
+  name?: string;
+  version?: string;
+  entry?: string;
+  platform?: string;
+  arch?: string;
+  libc?: string;
+  engine?: {
+    name?: string;
+    sdk?: string;
+    sdkVersion?: string;
+  };
+  runtime?: {
+    type?: string;
+    version?: string;
+  };
+  env?: Record<string, string>;
+  capabilities?: Record<string, boolean>;
+}
+
+interface AgentMetadata {
+  agent: string;
+  version: string;
+  engine?: {
+    sdk?: string;
+    sdkVersion?: string;
+  };
+}
+
+function readBundleManifest(): BundleManifest | null {
+  const manifestPath = "/holon/agent/manifest.json";
+  try {
+    if (!fs.existsSync(manifestPath)) {
+      return null;
+    }
+    const raw = fs.readFileSync(manifestPath, "utf8");
+    return JSON.parse(raw) as BundleManifest;
+  } catch (error) {
+    // If manifest is missing or invalid, return null to use fallback defaults
+    return null;
+  }
+}
+
+function getAgentMetadata(bundleManifest: BundleManifest | null): AgentMetadata {
+  // If bundle manifest is available, derive metadata from it
+  if (bundleManifest) {
+    const agent = bundleManifest.engine?.name || bundleManifest.name || "claude-code";
+    const version = bundleManifest.version || "0.1.0";
+    const metadata: AgentMetadata = { agent, version };
+
+    // Optionally include engine SDK info for debugging
+    if (bundleManifest.engine?.sdk || bundleManifest.engine?.sdkVersion) {
+      metadata.engine = {
+        sdk: bundleManifest.engine.sdk,
+        sdkVersion: bundleManifest.engine.sdkVersion,
+      };
+    }
+
+    return metadata;
+  }
+
+  // Fallback to existing defaults for backward compatibility
+  return {
+    agent: "claude-code",
+    version: "0.1.0",
+  };
+}
+
 function generateFallbackSummary(goal: string, success: boolean, result: string): string {
   const outcome = success ? "Success" : "Failure";
   return `# Task Summary\n\nGoal: ${goal}\n\nOutcome: ${outcome}\n\n## Actions\n<details><summary>Click to see full execution log</summary>\n\n${result}\n</details>\n`;
@@ -685,11 +754,16 @@ async function runAgent(): Promise<void> {
 
     logger.progress(`Generated patch: ${patchContent.length} characters`);
 
+    // Read bundle manifest to derive agent metadata
+    const bundleManifest = readBundleManifest();
+    const agentMetadata = getAgentMetadata(bundleManifest);
+
     const manifest = {
       metadata: {
-        agent: "claude-code",
-        version: "0.1.0",
+        agent: agentMetadata.agent,
+        version: agentMetadata.version,
         mode: mode,
+        ...(agentMetadata.engine && { engine: agentMetadata.engine }),
       },
       status: "completed",
       outcome: success ? "success" : "failure",
@@ -727,11 +801,16 @@ async function runAgent(): Promise<void> {
     const durationSeconds = (Date.now() - startTime) / 1000;
     logger.logOutcome(false, durationSeconds, String(error));
 
+    // Read bundle manifest to derive agent metadata
+    const bundleManifest = readBundleManifest();
+    const agentMetadata = getAgentMetadata(bundleManifest);
+
     const manifest = {
       metadata: {
-        agent: "claude-code",
-        version: "0.1.0",
+        agent: agentMetadata.agent,
+        version: agentMetadata.version,
         mode: mode,
+        ...(agentMetadata.engine && { engine: agentMetadata.engine }),
       },
       status: "completed",
       outcome: "failure",
