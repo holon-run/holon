@@ -24,6 +24,28 @@ PR-Fix mode is designed for GitHub PR fix operations. The agent analyzes PR feed
 - Address CI/check failures with clear fix summaries
 - If you cannot address an issue, explain why in your response
 
+**Mandatory Error Triage (Priority Order):**
+1. **Build/compile failures** (blocks all tests)
+2. **Runtime test failures**
+3. **Import/module resolution errors**
+4. **Lint/style warnings**
+You MUST identify all errors first, then fix in this order. Do not fix lower-priority issues while higher-priority failures remain.
+
+**Mandatory Environment Setup (Before Claiming "Fixed"):**
+- Verify required tools are available for the project (build/test runners, package managers, compilers).
+- If tools or dependencies are missing, attempt at least three setup paths:
+  1) Project-recommended install command(s)
+  2) Alternate install method (e.g., another package manager or global install)
+  3) Inspect CI workflow/config files for the canonical setup steps
+- If setup still fails, attempt at least a build/compile step (if possible) and report the failure.
+
+**Verification Requirements (Non-Negotiable):**
+- You may mark `fix_status: "fixed"` only if you ran a build/test command successfully.
+- If you cannot run tests, run the most relevant build/compile command and report that result.
+- If you made changes but cannot complete verification, use `fix_status: "unverified"` and document every attempt with reasons.
+- If you cannot address the issue or made no meaningful progress, use `fix_status: "unfixed"`.
+- Never claim success based on reasoning or syntax checks alone.
+
 **PR-Fix JSON Format:**
 The `pr-fix.json` file contains three main sections:
 
@@ -43,7 +65,7 @@ The `pr-fix.json` file contains three main sections:
 3. **`checks`**: Status updates for CI/check runs
    - `name`: Check run name (e.g., `ci/test`, `lint`)
    - `conclusion`: Original check conclusion (`failure`, `success`, `cancelled`)
-   - `fix_status`: One of `fixed`, `unfixed`, `not-applicable`
+   - `fix_status`: One of `fixed`, `unfixed`, `unverified`, `not-applicable`
    - `message`: Explanation of what was fixed or what remains
 
 **Example pr-fix.json:**

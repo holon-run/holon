@@ -95,8 +95,8 @@
           },
           "fix_status": {
             "type": "string",
-            "enum": ["fixed", "unfixed", "not-applicable"],
-            "description": "Status of the fix attempt for this check run."
+            "enum": ["fixed", "unfixed", "unverified", "not-applicable"],
+            "description": "Status of the fix attempt for this check run. Use \"unverified\" when changes were made but verification could not be completed."
           },
           "message": {
             "type": "string",

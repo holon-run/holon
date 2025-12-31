@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	holonGit "github.com/holon-run/holon/pkg/git"
 	pubgit "github.com/holon-run/holon/pkg/publisher/git"
 )
 
@@ -410,33 +411,25 @@ func TestPublishPatchToPR_PublishRequestValidation(t *testing.T) {
 
 // initTestGitRepo initializes a minimal git repository for testing.
 func initTestGitRepo(dir string) error {
-	// Create .git directory structure
-	gitDir := filepath.Join(dir, ".git")
-	dirs := []string{
-		filepath.Join(gitDir, "objects"),
-		filepath.Join(gitDir, "refs", "heads"),
-		filepath.Join(gitDir, "refs", "tags"),
-	}
-	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0755); err != nil {
-			return err
-		}
-	}
+	client := holonGit.NewClient(dir)
 
-	// Create HEAD file
-	headFile := filepath.Join(gitDir, "HEAD")
-	if err := os.WriteFile(headFile, []byte("ref: refs/heads/main\n"), 0644); err != nil {
+	if err := client.InitRepository(context.Background()); err != nil {
 		return err
 	}
 
-	// Create config file
-	configFile := filepath.Join(gitDir, "config")
-	configContent := `[core]
-	repositoryformatversion = 0
-	filemode = true
-	bare = false
-`
-	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(""), 0644); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("test repo\n"), 0644); err != nil {
+		return err
+	}
+
+	if _, err := client.ExecCommand(context.Background(), "add", "."); err != nil {
+		return err
+	}
+
+	if _, err := client.ExecCommand(context.Background(), "commit", "-m", "Initial commit"); err != nil {
 		return err
 	}
 
