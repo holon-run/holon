@@ -5,6 +5,7 @@ import { spawnSync } from "child_process";
 import { parse as parseYaml } from "yaml";
 import { query } from "./claudeSdk.js";
 import type { Options } from "./claudeSdk.js";
+import { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
 
 enum LogLevel {
   DEBUG = "debug",
