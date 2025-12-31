@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Parser defines the interface for parsing execution logs
@@ -18,15 +19,22 @@ type Parser interface {
 }
 
 // ParserRegistry holds registered parsers keyed by agent name
-var parsers = make(map[string]Parser)
+var (
+	parsers = make(map[string]Parser)
+	parsersMutex sync.RWMutex
+)
 
 // RegisterParser registers a parser for a specific agent
 func RegisterParser(agent string, p Parser) {
+	parsersMutex.Lock()
+	defer parsersMutex.Unlock()
 	parsers[agent] = p
 }
 
 // GetParser retrieves a parser for the given agent, returns nil if not found
 func GetParser(agent string) Parser {
+	parsersMutex.RLock()
+	defer parsersMutex.RUnlock()
 	return parsers[agent]
 }
 
@@ -111,24 +119,53 @@ func (p *ClaudeParser) Parse(logPath string) (string, error) {
 }
 
 func (p *ClaudeParser) handleSystemEntry(sb *strings.Builder, entry *ClaudeLogEntry, sessionID, model *string, tools *[]string) {
-	// Initialize or update session info
-	if entry.SessionID != "" && *sessionID == "" {
-		*sessionID = entry.SessionID
-		sb.WriteString("╔════════════════════════════════════════════════════════════╗\n")
-		sb.WriteString("║                      SESSION START                          ║\n")
-		sb.WriteString("╚════════════════════════════════════════════════════════════╝\n")
-		sb.WriteString(fmt.Sprintf("Session ID: %s\n", entry.SessionID))
-		if entry.Model != "" {
-			*model = entry.Model
-			sb.WriteString(fmt.Sprintf("Model: %s\n", entry.Model))
+	// Show session info on first system entry or when session ID changes
+	if entry.SessionID != "" {
+		if *sessionID == "" {
+			// First session entry
+			sb.WriteString("╔════════════════════════════════════════════════════════════╗\n")
+			sb.WriteString("║                      SESSION START                          ║\n")
+			sb.WriteString("╚════════════════════════════════════════════════════════════╝\n")
+		} else if entry.SessionID != *sessionID {
+			// Session ID changed - show transition
+			sb.WriteString("\n╔════════════════════════════════════════════════════════════╗\n")
+			sb.WriteString("║                    SESSION TRANSITION                       ║\n")
+			sb.WriteString("╚════════════════════════════════════════════════════════════╝\n")
 		}
+
+		*sessionID = entry.SessionID
+		sb.WriteString(fmt.Sprintf("Session ID: %s\n", entry.SessionID))
+
+		// Show model if present or changed
+		if entry.Model != "" {
+			if *model != entry.Model {
+				*model = entry.Model
+				sb.WriteString(fmt.Sprintf("Model: %s\n", entry.Model))
+			}
+		}
+
+		// Always show subtype when present
 		if entry.Subtype != "" {
 			sb.WriteString(fmt.Sprintf("Subtype: %s\n", entry.Subtype))
 		}
+
+		// Show tools if present or changed
 		if len(entry.Tools) > 0 {
-			*tools = entry.Tools
-			sb.WriteString(fmt.Sprintf("Tools: %s\n", strings.Join(entry.Tools, ", ")))
+			toolsChanged := len(*tools) != len(entry.Tools)
+			if !toolsChanged {
+				for i, t := range entry.Tools {
+					if i >= len(*tools) || (*tools)[i] != t {
+						toolsChanged = true
+						break
+					}
+				}
+			}
+			if toolsChanged {
+				*tools = entry.Tools
+				sb.WriteString(fmt.Sprintf("Tools: %s\n", strings.Join(entry.Tools, ", ")))
+			}
 		}
+
 		sb.WriteString("\n")
 	}
 }
@@ -138,7 +175,21 @@ func (p *ClaudeParser) handleAssistantEntry(sb *strings.Builder, entry *ClaudeLo
 		return
 	}
 
-	// Process message content blocks
+	// Track whether we've seen any tool_use blocks - text before tool_use is typically reasoning
+	seenToolUse := false
+
+	// First pass: check if there are any tool_use blocks
+	for _, block := range entry.Message.Content {
+		if blockMap, ok := block.(map[string]interface{}); ok {
+			if blockType, _ := blockMap["type"].(string); blockType == "tool_use" {
+				seenToolUse = true
+				break
+			}
+		}
+	}
+
+	// Second pass: process content blocks
+	textBeforeTool := true
 	for _, block := range entry.Message.Content {
 		switch v := block.(type) {
 		case map[string]interface{}:
@@ -147,15 +198,15 @@ func (p *ClaudeParser) handleAssistantEntry(sb *strings.Builder, entry *ClaudeLo
 			switch blockType {
 			case "text":
 				if text, ok := v["text"].(string); ok {
-					// Check if this is a tool call indicator
-					if strings.Contains(text, "I'll") || strings.Contains(text, "Let me") || strings.Contains(text, "I'm going to") {
-						// Assistant reasoning
+					// If text appears before tool_use, mark it as assistant reasoning
+					if seenToolUse && textBeforeTool {
 						sb.WriteString(fmt.Sprintf("🤔 [ASSISTANT] %s\n", text))
 					} else {
 						sb.WriteString(fmt.Sprintf("[TEXT] %s\n", text))
 					}
 				}
 			case "tool_use":
+				textBeforeTool = false
 				toolName, _ := v["name"].(string)
 				toolInput, _ := v["input"].(map[string]interface{})
 
@@ -181,31 +232,16 @@ func (p *ClaudeParser) handleAssistantEntry(sb *strings.Builder, entry *ClaudeLo
 
 func (p *ClaudeParser) handleResultEntry(sb *strings.Builder, entry *ClaudeLogEntry) {
 	subtype := entry.Subtype
-	isError := false
 
-	if ie, ok := entry.Extra["is_error"].(bool); ok {
-		isError = ie
-	}
+	// Derive error indication from subtype since Extra field is not populated
+	// (Extra has json:"-" tag which prevents unmarshaling)
+	lowered := strings.ToLower(subtype)
+	isError := strings.Contains(lowered, "error") || strings.Contains(lowered, "failed") || strings.Contains(lowered, "failure")
 
 	if isError {
 		sb.WriteString(fmt.Sprintf("\n❌ [ERROR] Result: %s\n", subtype))
 	} else {
 		sb.WriteString(fmt.Sprintf("\n✅ [RESULT] %s\n", subtype))
-	}
-
-	// Extract result text if present
-	if result, ok := entry.Extra["result"].(string); ok && result != "" {
-		lines := strings.Split(result, "\n")
-		if len(lines) > 0 && len(lines) <= 5 {
-			for _, line := range lines {
-				sb.WriteString(fmt.Sprintf("  %s\n", line))
-			}
-		} else if len(lines) > 5 {
-			for i := 0; i < 3; i++ {
-				sb.WriteString(fmt.Sprintf("  %s\n", lines[i]))
-			}
-			sb.WriteString(fmt.Sprintf("  ... (%d more lines)\n", len(lines)-3))
-		}
 	}
 }
 

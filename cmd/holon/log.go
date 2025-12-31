@@ -42,6 +42,11 @@ Examples:
 		var logContent string
 		var err error
 
+		if logViewPath != "" && logViewOutput != "" {
+			// Both flags provided - warn and use --path
+			fmt.Fprintf(os.Stderr, "Warning: both --path and --output specified, using --path\n")
+		}
+
 		if logViewPath != "" {
 			// Direct log path - use raw parsing
 			logContent, err = parseLogDirect(logViewPath)
@@ -82,7 +87,7 @@ func parseLogFromOutput(outputDir string) (string, error) {
 	return logview.ParseLog(manifestPath)
 }
 
-// parseLogDirect parses the log file directly (raw output)
+// parseLogDirect parses the log file directly without agent-specific formatting
 func parseLogDirect(logPath string) (string, error) {
 	// Resolve to absolute path
 	absPath, err := filepath.Abs(logPath)
@@ -95,7 +100,7 @@ func parseLogDirect(logPath string) (string, error) {
 		return "", fmt.Errorf("log file not found: %s", absPath)
 	}
 
-	// Use the log parser package (raw mode)
+	// Use the fallback parser which returns unprocessed log content
 	return logview.ParseLogFromPath(absPath)
 }
 
