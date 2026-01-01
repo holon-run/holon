@@ -197,8 +197,7 @@ holon run --goal "Test" --skill /custom/testing
 See the `examples/skills/` directory for complete examples:
 
 - **testing-go**: Go testing best practices
-- **typescript**: TypeScript project patterns
-- **api-client**: REST API integration patterns
+- **typescript-api**: TypeScript/Node.js API development patterns
 
 ## How Skills Work in Holon
 

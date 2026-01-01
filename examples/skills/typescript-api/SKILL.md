@@ -72,8 +72,13 @@ export const createUserSchema = z.object({
 
 export const updateUserSchema = createUserSchema.partial();
 
+export const getUserParamsSchema = z.object({
+  id: z.string().uuid('Invalid user ID format'),
+});
+
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+export type GetUserParamsInput = z.infer<typeof getUserParamsSchema>;
 ```
 
 ## Route Handlers
@@ -84,7 +89,7 @@ export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 // controllers/userController.ts
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { createUserSchema } from '../schemas/user';
+import { createUserSchema, getUserParamsSchema, updateUserSchema } from '../schemas/user';
 import * as userService from '../services/userService';
 
 export async function createUser(
@@ -148,6 +153,73 @@ export async function getUser(
     next(error);
   }
 }
+
+export async function updateUser(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { id } = getUserParamsSchema.parse(req.params);
+    const input = updateUserSchema.parse(req.body);
+    const user = await userService.updateUser(id, input);
+
+    if (!user) {
+      res.status(404).json({
+        success: false,
+        error: {
+          code: 'NOT_FOUND',
+          message: 'User not found',
+        },
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: user,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid request data',
+          details: error.errors,
+        },
+      });
+      return;
+    }
+    next(error);
+  }
+}
+
+export async function deleteUser(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { id } = getUserParamsSchema.parse(req.params);
+    const deleted = await userService.deleteUser(id);
+
+    if (!deleted) {
+      res.status(404).json({
+        success: false,
+        error: {
+          code: 'NOT_FOUND',
+          message: 'User not found',
+        },
+      });
+      return;
+    }
+
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+}
 ```
 
 ### Route Definition
@@ -173,7 +245,8 @@ export default router;
 ```typescript
 // services/userService.ts
 import { db } from '../db';
-import { CreateUserInput, UserResponse } from '../types/api';
+import { CreateUserInput, UpdateUserInput, UserResponse } from '../types/api';
+import { hashPassword } from '../utils/crypto';
 
 export async function createUser(
   input: CreateUserInput
@@ -224,6 +297,57 @@ export async function getUserById(id: string): Promise<UserResponse | null> {
     createdAt: user.createdAt,
   };
 }
+
+export async function updateUser(
+  id: string,
+  input: UpdateUserInput
+): Promise<UserResponse | null> {
+  const user = await db.user.update({
+    where: { id },
+    data: input,
+  });
+
+  if (!user) {
+    return null;
+  }
+
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    createdAt: user.createdAt,
+  };
+}
+
+export async function deleteUser(id: string): Promise<boolean> {
+  try {
+    await db.user.delete({
+      where: { id },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+```
+
+## Utility Functions
+
+```typescript
+// utils/crypto.ts
+import bcrypt from 'bcrypt';
+
+export async function hashPassword(password: string): Promise<string> {
+  const salt = await bcrypt.genSalt(10);
+  return bcrypt.hash(password, salt);
+}
+
+export async function comparePassword(
+  password: string,
+  hashedPassword: string
+): Promise<boolean> {
+  return bcrypt.compare(password, hashedPassword);
+}
 ```
 
 ## Error Handling Middleware
@@ -232,6 +356,18 @@ export async function getUserById(id: string): Promise<UserResponse | null> {
 // middleware/errorHandler.ts
 import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
+
+// Custom error class for application errors
+export class AppError extends Error {
+  constructor(
+    public code: string,
+    message: string,
+    public statusCode: number = 500
+  ) {
+    super(message);
+    this.name = 'AppError';
+  }
+}
 
 export function errorHandler(
   err: Error,
@@ -255,11 +391,11 @@ export function errorHandler(
   }
 
   // Handle custom application errors
-  if (err.name === 'NOT_FOUND') {
-    res.status(404).json({
+  if (err instanceof AppError) {
+    res.status(err.statusCode).json({
       success: false,
       error: {
-        code: 'NOT_FOUND',
+        code: err.code,
         message: err.message,
       },
     });
@@ -275,6 +411,9 @@ export function errorHandler(
     },
   });
 }
+
+// Usage example in services:
+// throw new AppError('USER_NOT_FOUND', 'User not found', 404);
 ```
 
 ## Async Patterns
