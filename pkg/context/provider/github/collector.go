@@ -171,6 +171,26 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 
 	fmt.Printf("  Found %d review threads\n", len(reviewThreads))
 
+	// Fetch PR comments (general discussion, not code reviews)
+	fmt.Println("Fetching PR comments...")
+	comments, err := p.client.FetchIssueComments(ctx, owner, repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch PR comments: %w", err)
+	}
+
+	// Mark trigger comment if provided
+	if req.Options.TriggerCommentID > 0 {
+		for i := range comments {
+			if comments[i].CommentID == req.Options.TriggerCommentID {
+				comments[i].IsTrigger = true
+				fmt.Printf("  Marked comment #%d as trigger\n", req.Options.TriggerCommentID)
+				break
+			}
+		}
+	}
+
+	fmt.Printf("  Found %d PR comments\n", len(comments))
+
 	// Fetch diff if requested
 	var diff string
 	if req.Options.IncludeDiff {
@@ -228,7 +248,7 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 
 	// Write context files
 	fmt.Printf("Writing context files to %s...\n", req.OutputDir)
-	files, err := WritePRContext(req.OutputDir, prInfo, reviewThreads, diff, checkRuns, combinedStatus)
+	files, err := WritePRContext(req.OutputDir, prInfo, reviewThreads, comments, diff, checkRuns, combinedStatus)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write context: %w", err)
 	}

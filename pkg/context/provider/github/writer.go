@@ -28,7 +28,7 @@ func WriteManifest(outputDir string, result collector.CollectResult) error {
 }
 
 // WritePRContext writes PR context files and returns the list of files written
-func WritePRContext(outputDir string, prInfo *PRInfo, reviewThreads []ReviewThread, diff string, checkRuns []CheckRun, combinedStatus *CombinedStatus) ([]collector.FileInfo, error) {
+func WritePRContext(outputDir string, prInfo *PRInfo, reviewThreads []ReviewThread, comments []IssueComment, diff string, checkRuns []CheckRun, combinedStatus *CombinedStatus) ([]collector.FileInfo, error) {
 	// Create output directory structure
 	githubDir := filepath.Join(outputDir, "github")
 	if err := os.MkdirAll(githubDir, 0755); err != nil {
@@ -56,6 +56,18 @@ func WritePRContext(outputDir string, prInfo *PRInfo, reviewThreads []ReviewThre
 		ContentType: "application/json",
 		Description: "Review comment threads",
 	})
+
+	// Write comments.json if available
+	if len(comments) > 0 {
+		if err := writeCommentsJSON(githubDir, comments); err != nil {
+			return nil, fmt.Errorf("failed to write comments.json: %w", err)
+		}
+		files = append(files, collector.FileInfo{
+			Path:        "github/comments.json",
+			ContentType: "application/json",
+			Description: "PR comments",
+		})
+	}
 
 	// Write pr-fix.schema.json
 	if err := writePRFixSchema(outputDir); err != nil {
