@@ -279,7 +279,7 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 	p := NewPRPublisher()
 
 	t.Run("returns empty when title already exists in manifest", func(t *testing.T) {
-		outDir := t.TempDir()
+		inDir := t.TempDir()
 		manifest := map[string]interface{}{
 			"metadata": map[string]interface{}{
 				"title": "Existing Title",
@@ -287,8 +287,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 		}
 
 		req := publisher.PublishRequest{
-			OutputDir: outDir,
-			Manifest:  manifest,
+			InputDir: inDir,
+			Manifest: manifest,
 		}
 		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
@@ -300,12 +300,12 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 	})
 
 	t.Run("returns empty when no context manifest exists", func(t *testing.T) {
-		outDir := t.TempDir()
+		inDir := t.TempDir()
 		manifest := map[string]interface{}{}
 
 		req := publisher.PublishRequest{
-			OutputDir: outDir,
-			Manifest:  manifest,
+			InputDir: inDir,
+			Manifest: manifest,
 		}
 		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
@@ -317,8 +317,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 	})
 
 	t.Run("generates issue title from context", func(t *testing.T) {
-		outDir := t.TempDir()
-		contextDir := filepath.Join(outDir, "context", "github")
+		inDir := t.TempDir()
+		contextDir := filepath.Join(inDir, "context", "github")
 		if err := os.MkdirAll(contextDir, 0o755); err != nil {
 			t.Fatalf("failed to create context dir: %v", err)
 		}
@@ -332,7 +332,7 @@ func TestGenerateDeterministicTitle(t *testing.T) {
   "repo": "holon",
   "number": 123
 }`
-		if err := os.WriteFile(filepath.Join(outDir, "context", "manifest.json"), []byte(contextManifest), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(inDir, "context", "manifest.json"), []byte(contextManifest), 0o644); err != nil {
 			t.Fatalf("failed to write context manifest: %v", err)
 		}
 
@@ -347,8 +347,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 
 		manifest := map[string]interface{}{}
 		req := publisher.PublishRequest{
-			OutputDir: outDir,
-			Manifest:  manifest,
+			InputDir: inDir,
+			Manifest: manifest,
 		}
 		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
@@ -361,8 +361,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 	})
 
 	t.Run("generates PR fix title from context", func(t *testing.T) {
-		outDir := t.TempDir()
-		contextDir := filepath.Join(outDir, "context", "github")
+		inDir := t.TempDir()
+		contextDir := filepath.Join(inDir, "context", "github")
 		if err := os.MkdirAll(contextDir, 0o755); err != nil {
 			t.Fatalf("failed to create context dir: %v", err)
 		}
@@ -376,7 +376,7 @@ func TestGenerateDeterministicTitle(t *testing.T) {
   "repo": "holon",
   "number": 45
 }`
-		if err := os.WriteFile(filepath.Join(outDir, "context", "manifest.json"), []byte(contextManifest), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(inDir, "context", "manifest.json"), []byte(contextManifest), 0o644); err != nil {
 			t.Fatalf("failed to write context manifest: %v", err)
 		}
 
@@ -391,8 +391,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 
 		manifest := map[string]interface{}{}
 		req := publisher.PublishRequest{
-			OutputDir: outDir,
-			Manifest:  manifest,
+			InputDir: inDir,
+			Manifest: manifest,
 		}
 		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
@@ -405,8 +405,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 	})
 
 	t.Run("returns empty for non-GitHub provider", func(t *testing.T) {
-		outDir := t.TempDir()
-		contextDir := filepath.Join(outDir, "context")
+		inDir := t.TempDir()
+		contextDir := filepath.Join(inDir, "context")
 		if err := os.MkdirAll(contextDir, 0o755); err != nil {
 			t.Fatalf("failed to create context dir: %v", err)
 		}
@@ -426,8 +426,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 
 		manifest := map[string]interface{}{}
 		req := publisher.PublishRequest{
-			OutputDir: outDir,
-			Manifest:  manifest,
+			InputDir: inDir,
+			Manifest: manifest,
 		}
 		title, err := p.generateDeterministicTitle(req)
 		if err != nil {
@@ -439,8 +439,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 	})
 
 	t.Run("handles missing issue.json gracefully", func(t *testing.T) {
-		outDir := t.TempDir()
-		contextDir := filepath.Join(outDir, "context")
+		inDir := t.TempDir()
+		contextDir := filepath.Join(inDir, "context")
 		if err := os.MkdirAll(contextDir, 0o755); err != nil {
 			t.Fatalf("failed to create context dir: %v", err)
 		}
@@ -460,8 +460,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 
 		manifest := map[string]interface{}{}
 		req := publisher.PublishRequest{
-			OutputDir: outDir,
-			Manifest:  manifest,
+			InputDir: inDir,
+			Manifest: manifest,
 		}
 		_, err := p.generateDeterministicTitle(req)
 		if err == nil {
@@ -470,8 +470,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 	})
 
 	t.Run("handles empty issue title", func(t *testing.T) {
-		outDir := t.TempDir()
-		contextDir := filepath.Join(outDir, "context", "github")
+		inDir := t.TempDir()
+		contextDir := filepath.Join(inDir, "context", "github")
 		if err := os.MkdirAll(contextDir, 0o755); err != nil {
 			t.Fatalf("failed to create context dir: %v", err)
 		}
@@ -485,7 +485,7 @@ func TestGenerateDeterministicTitle(t *testing.T) {
   "repo": "holon",
   "number": 123
 }`
-		if err := os.WriteFile(filepath.Join(outDir, "context", "manifest.json"), []byte(contextManifest), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(inDir, "context", "manifest.json"), []byte(contextManifest), 0o644); err != nil {
 			t.Fatalf("failed to write context manifest: %v", err)
 		}
 
@@ -500,8 +500,8 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 
 		manifest := map[string]interface{}{}
 		req := publisher.PublishRequest{
-			OutputDir: outDir,
-			Manifest:  manifest,
+			InputDir: inDir,
+			Manifest: manifest,
 		}
 		_, err := p.generateDeterministicTitle(req)
 		if err == nil {

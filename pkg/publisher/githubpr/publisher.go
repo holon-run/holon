@@ -383,17 +383,9 @@ func (p *PRPublisher) generateDeterministicTitle(req publisher.PublishRequest) (
 	}
 
 	// Determine context directory path: use InputDir/context
-	var contextDir string
-	var contextSource string // Tracks where context was found for logging
-
-	if req.InputDir != "" {
-		contextDir = filepath.Join(req.InputDir, "context")
-		contextSource = fmt.Sprintf("InputDir (%s)", contextDir)
-	} else {
-		// For backward compatibility with direct `holon publish` usage
-		contextDir = filepath.Join(req.OutputDir, "context")
-		contextSource = fmt.Sprintf("OutputDir (%s)", contextDir)
-	}
+	// Context is only written to the input directory, not to the output directory
+	contextDir := filepath.Join(req.InputDir, "context")
+	contextSource := fmt.Sprintf("InputDir (%s)", contextDir)
 
 	// Try to read context manifest to determine context type
 	contextManifestPath := filepath.Join(contextDir, "manifest.json")
@@ -401,7 +393,7 @@ func (p *PRPublisher) generateDeterministicTitle(req publisher.PublishRequest) (
 
 	contextData, err := os.ReadFile(contextManifestPath)
 	if err != nil {
-		// No context manifest available, return empty title (will use fallback)
+		// No context manifest available, return empty title (no fallback)
 		log.Warn("Context manifest not found, skipping deterministic title generation", "path", contextManifestPath)
 		return "", nil
 	}
