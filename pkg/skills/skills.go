@@ -224,7 +224,7 @@ func Stage(workspaceDest string, skills []Skill) error {
 	return nil
 }
 
-// copyDir recursively copies a directory tree
+// copyDir recursively copies a directory tree, handling symlinks and preserving permissions
 func copyDir(src, dst string) error {
 	// Create destination directory
 	if err := os.MkdirAll(dst, 0755); err != nil {
@@ -242,6 +242,20 @@ func copyDir(src, dst string) error {
 		srcPath := filepath.Join(src, entry.Name())
 		dstPath := filepath.Join(dst, entry.Name())
 
+		// Check if it's a symbolic link
+		if entry.Type()&os.ModeSymlink != 0 {
+			// Read the symlink target
+			target, err := os.Readlink(srcPath)
+			if err != nil {
+				return fmt.Errorf("failed to read symlink %s: %w", srcPath, err)
+			}
+			// Create the same symlink at destination
+			if err := os.Symlink(target, dstPath); err != nil {
+				return fmt.Errorf("failed to create symlink %s: %w", dstPath, err)
+			}
+			continue
+		}
+
 		if entry.IsDir() {
 			// Recursively copy subdirectory
 			if err := copyDir(srcPath, dstPath); err != nil {
@@ -258,8 +272,14 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
-// copyFile copies a single file
+// copyFile copies a single file, preserving permissions
 func copyFile(src, dst string) error {
+	// Get source file info to preserve permissions
+	info, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("failed to stat source file: %w", err)
+	}
+
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
@@ -267,6 +287,11 @@ func copyFile(src, dst string) error {
 
 	if err := os.WriteFile(dst, data, 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	// Preserve original file permissions
+	if err := os.Chmod(dst, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("failed to set file permissions: %w", err)
 	}
 
 	return nil

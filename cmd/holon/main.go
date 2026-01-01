@@ -142,7 +142,7 @@ func logConfigResolution(key, value, source string) {
 
 // resolveSkills resolves skills from CLI, config, spec, and auto-discovery
 // Precedence: CLI > config > spec > auto-discovered
-func resolveSkills(ctx context.Context, workspace, specPath string) ([]skills.Skill, error) {
+func resolveSkills(ctx context.Context, workspace, specPath string, projectCfg *config.ProjectConfig) ([]skills.Skill, error) {
 	// Parse CLI skills
 	var cliSkills []string
 	for _, path := range skillPaths {
@@ -153,11 +153,7 @@ func resolveSkills(ctx context.Context, workspace, specPath string) ([]skills.Sk
 		cliSkills = append(cliSkills, path)
 	}
 
-	// Load project config for skills
-	projectCfg, err := config.LoadFromCurrentDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load project config: %w", err)
-	}
+	// Get skills from project config (already loaded by caller)
 	configSkills := projectCfg.GetSkills()
 
 	// Load spec for skills
@@ -280,7 +276,7 @@ var runCmd = &cobra.Command{
 		}
 
 		// Resolve skills with precedence: CLI > config > spec > auto-discovered
-		resolvedSkills, err := resolveSkills(ctx, absWorkspace, specPath)
+		resolvedSkills, err := resolveSkills(ctx, absWorkspace, specPath, projectCfg)
 		if err != nil {
 			return fmt.Errorf("failed to resolve skills: %w", err)
 		}
@@ -292,9 +288,9 @@ var runCmd = &cobra.Command{
 		}
 
 		// Convert skills to path list for ContainerConfig
-		skillPaths := make([]string, len(resolvedSkills))
+		resolvedSkillPaths := make([]string, len(resolvedSkills))
 		for i, skill := range resolvedSkills {
-			skillPaths[i] = skill.Path
+			resolvedSkillPaths[i] = skill.Path
 		}
 
 		runner := NewRunner(rt)
@@ -319,7 +315,7 @@ var runCmd = &cobra.Command{
 			AgentConfigMode: agentConfigMode,
 			GitAuthorName:   projectCfg.GetGitAuthorName(),
 			GitAuthorEmail:  projectCfg.GetGitAuthorEmail(),
-			Skills:          skillPaths,
+			Skills:          resolvedSkillPaths,
 		})
 	},
 }

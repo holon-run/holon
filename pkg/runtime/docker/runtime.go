@@ -613,18 +613,18 @@ func writeWorkspaceManifest(outDir string, result workspace.PrepareResult) error
 	return workspace.WriteManifest(outDir, result)
 }
 
-// resolveSkills resolves skills from ContainerConfig.Skills with proper precedence
+// resolveSkills validates skills from ContainerConfig.Skills and merges with auto-discovered skills
 // Returns empty list if no skills are configured
 func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, error) {
+	resolver := skills.NewResolver(cfg.Workspace)
+
+	// If no skills explicitly provided, just auto-discover from workspace
 	if len(cfg.Skills) == 0 {
-		// No skills explicitly specified - still auto-discover from workspace
-		resolver := skills.NewResolver(cfg.Workspace)
 		return resolver.Resolve([]string{}, []string{}, []string{})
 	}
 
-	// Skills explicitly provided via ContainerConfig (already resolved by caller)
-	// Validate and normalize them
-	resolver := skills.NewResolver(cfg.Workspace)
+	// Skills are already resolved by caller (cmd/holon/main.go with proper precedence)
+	// Just validate and normalize them to Skill structs
 	var validated []skills.Skill
 	for _, path := range cfg.Skills {
 		skill, err := resolver.ValidateAndNormalize(path, "cli")
@@ -634,13 +634,13 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 		validated = append(validated, skill)
 	}
 
-	// Auto-discover additional skills from workspace
+	// Auto-discover additional skills from workspace (add those not already specified)
 	discovered, err := resolver.Resolve([]string{}, []string{}, []string{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover skills: %w", err)
 	}
 
-	// Merge explicit and discovered skills (explicit take precedence)
+	// Merge validated and discovered skills (validated take precedence)
 	for _, skill := range discovered {
 		if !containsSkill(validated, skill) {
 			validated = append(validated, skill)

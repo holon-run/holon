@@ -238,3 +238,165 @@ func TestStage(t *testing.T) {
 		t.Errorf("skill was not copied to destination: %s", destSkillPath)
 	}
 }
+
+func TestResolver_Resolve(t *testing.T) {
+	// Create a temporary workspace for testing
+	tempDir, err := os.MkdirTemp("", "holon-skills-resolve-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create .claude/skills directory structure for discovered skills
+	skillsDir := filepath.Join(tempDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatalf("failed to create skills dir: %v", err)
+	}
+
+	// Create discovered skill1
+	discoveredSkill1Dir := filepath.Join(skillsDir, "discovered1")
+	if err := os.MkdirAll(discoveredSkill1Dir, 0755); err != nil {
+		t.Fatalf("failed to create discovered1 dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(discoveredSkill1Dir, "SKILL.md"), []byte("# Discovered 1\n"), 0644); err != nil {
+		t.Fatalf("failed to create discovered1 manifest: %v", err)
+	}
+
+	// Create discovered skill2
+	discoveredSkill2Dir := filepath.Join(skillsDir, "discovered2")
+	if err := os.MkdirAll(discoveredSkill2Dir, 0755); err != nil {
+		t.Fatalf("failed to create discovered2 dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(discoveredSkill2Dir, "SKILL.md"), []byte("# Discovered 2\n"), 0644); err != nil {
+		t.Fatalf("failed to create discovered2 manifest: %v", err)
+	}
+
+	// Create external skills for CLI/config/spec
+	cliSkillDir := filepath.Join(tempDir, "cli-skill")
+	if err := os.MkdirAll(cliSkillDir, 0755); err != nil {
+		t.Fatalf("failed to create cli-skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cliSkillDir, "SKILL.md"), []byte("# CLI Skill\n"), 0644); err != nil {
+		t.Fatalf("failed to create cli-skill manifest: %v", err)
+	}
+
+	configSkillDir := filepath.Join(tempDir, "config-skill")
+	if err := os.MkdirAll(configSkillDir, 0755); err != nil {
+		t.Fatalf("failed to create config-skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configSkillDir, "SKILL.md"), []byte("# Config Skill\n"), 0644); err != nil {
+		t.Fatalf("failed to create config-skill manifest: %v", err)
+	}
+
+	specSkillDir := filepath.Join(tempDir, "spec-skill")
+	if err := os.MkdirAll(specSkillDir, 0755); err != nil {
+		t.Fatalf("failed to create spec-skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(specSkillDir, "SKILL.md"), []byte("# Spec Skill\n"), 0644); err != nil {
+		t.Fatalf("failed to create spec-skill manifest: %v", err)
+	}
+
+	resolver := NewResolver(tempDir)
+
+	// Test 1: Precedence - CLI > config > spec > discovered
+	t.Run("precedence", func(t *testing.T) {
+		cliSkills := []string{cliSkillDir}
+		configSkills := []string{configSkillDir}
+		specSkills := []string{specSkillDir}
+
+		resolved, err := resolver.Resolve(cliSkills, configSkills, specSkills)
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+
+		// Should have 5 skills: cli, config, spec, and 2 discovered
+		if len(resolved) != 5 {
+			t.Errorf("expected 5 skills, got %d", len(resolved))
+		}
+
+		// Check precedence order
+		sources := make([]string, len(resolved))
+		for i, skill := range resolved {
+			sources[i] = skill.Source
+		}
+
+		// CLI should be first
+		if sources[0] != "cli" {
+			t.Errorf("expected first source to be 'cli', got '%s'", sources[0])
+		}
+		// config should be second
+		if sources[1] != "config" {
+			t.Errorf("expected second source to be 'config', got '%s'", sources[1])
+		}
+		// spec should be third
+		if sources[2] != "spec" {
+			t.Errorf("expected third source to be 'spec', got '%s'", sources[2])
+		}
+		// discovered should be last (sorted alphabetically)
+		if sources[3] != "discovered" || sources[4] != "discovered" {
+			t.Errorf("expected last two sources to be 'discovered', got '%s' and '%s'", sources[3], sources[4])
+		}
+	})
+
+	// Test 2: Deduplication - discovered skills don't duplicate explicit skills
+	t.Run("deduplication", func(t *testing.T) {
+		// Add discovered1 (which is also in .claude/skills/) to CLI
+		cliSkills := []string{discoveredSkill1Dir} // Same as discovered1 from auto-discovery
+		configSkills := []string{}
+		specSkills := []string{}
+
+		resolved, err := resolver.Resolve(cliSkills, configSkills, specSkills)
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+
+		// Should only have 2 skills: discovered1 (from CLI, deduped from discovered) and discovered2
+		if len(resolved) != 2 {
+			t.Errorf("expected 2 skills (deduplicated), got %d", len(resolved))
+		}
+
+		// First skill should be from CLI (highest precedence)
+		if resolved[0].Source != "cli" {
+			t.Errorf("expected first skill source to be 'cli', got '%s'", resolved[0].Source)
+		}
+		if resolved[0].Name != "discovered1" {
+			t.Errorf("expected first skill name to be 'discovered1', got '%s'", resolved[0].Name)
+		}
+
+		// Second skill should be discovered2 (auto-discovered, not in CLI/config/spec)
+		if resolved[1].Source != "discovered" {
+			t.Errorf("expected second skill source to be 'discovered', got '%s'", resolved[1].Source)
+		}
+		if resolved[1].Name != "discovered2" {
+			t.Errorf("expected second skill name to be 'discovered2', got '%s'", resolved[1].Name)
+		}
+	})
+
+	// Test 3: Empty lists - only discovered skills
+	t.Run("only discovered", func(t *testing.T) {
+		resolved, err := resolver.Resolve([]string{}, []string{}, []string{})
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+
+		// Should have 2 discovered skills
+		if len(resolved) != 2 {
+			t.Errorf("expected 2 discovered skills, got %d", len(resolved))
+		}
+
+		for _, skill := range resolved {
+			if skill.Source != "discovered" {
+				t.Errorf("expected all sources to be 'discovered', got '%s'", skill.Source)
+			}
+		}
+	})
+
+	// Test 4: Invalid skill path
+	t.Run("invalid path", func(t *testing.T) {
+		invalidSkills := []string{"/nonexistent/skill"}
+		_, err := resolver.Resolve(invalidSkills, []string{}, []string{})
+		if err == nil {
+			t.Error("expected error for invalid skill path, got nil")
+		}
+	})
+}
