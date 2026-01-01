@@ -70,6 +70,7 @@ exec grep -q '"outcome": "success"' out/manifest.json
 
 # Add git publisher metadata to manifest.json
 # The git publisher requires these fields in manifest.metadata (see pkg/publisher/git/publisher.go:260-283)
+# Note: commit/push flags are strings here to match how they're set in practice
 exec sh -c 'cat out/manifest.json | python3 -c "import sys, json; m = json.load(sys.stdin); m[\"metadata\"][\"branch\"] = \"feature/add-error-handling\"; m[\"metadata\"][\"commit_message\"] = \"Fix review comments: Add error handling\"; m[\"metadata\"][\"commit\"] = \"true\"; m[\"metadata\"][\"push\"] = \"true\"; m[\"metadata\"][\"remote\"] = \"origin\"; print(json.dumps(m, indent=2))" > out/manifest.json.tmp && mv out/manifest.json.tmp out/manifest.json'
 
 # Verify manifest now has git publisher metadata

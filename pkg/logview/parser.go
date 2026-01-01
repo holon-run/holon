@@ -473,9 +473,7 @@ func ParseLog(manifestPath string) (string, error) {
 	}
 
 	var manifest struct {
-		Metadata struct {
-			Agent string `json:"agent"`
-		} `json:"metadata"`
+		Metadata map[string]interface{} `json:"metadata"`
 	}
 
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
@@ -492,7 +490,10 @@ func ParseLog(manifestPath string) (string, error) {
 	}
 
 	// Get parser for agent
-	agent := manifest.Metadata.Agent
+	agent := "unknown"
+	if agentVal, ok := manifest.Metadata["agent"].(string); ok {
+		agent = agentVal
+	}
 	if agent == "" {
 		agent = "unknown"
 	}
