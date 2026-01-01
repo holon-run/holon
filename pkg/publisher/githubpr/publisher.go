@@ -384,6 +384,12 @@ func (p *PRPublisher) generateDeterministicTitle(req publisher.PublishRequest) (
 
 	// Determine context directory path: use InputDir/context
 	// Context is only written to the input directory, not to the output directory
+	if req.InputDir == "" {
+		// InputDir must be set for context-based title generation
+		// When using direct `holon publish` (not `holon solve`), context is not available
+		log.Debug("InputDir not set, skipping deterministic title generation")
+		return "", nil
+	}
 	contextDir := filepath.Join(req.InputDir, "context")
 	contextSource := fmt.Sprintf("InputDir (%s)", contextDir)
 

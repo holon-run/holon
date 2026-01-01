@@ -299,6 +299,22 @@ func TestGenerateDeterministicTitle(t *testing.T) {
 		}
 	})
 
+	t.Run("returns empty when InputDir is not set", func(t *testing.T) {
+		manifest := map[string]interface{}{}
+
+		req := publisher.PublishRequest{
+			InputDir: "", // Empty InputDir
+			Manifest: manifest,
+		}
+		title, err := p.generateDeterministicTitle(req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if title != "" {
+			t.Errorf("expected empty title when InputDir is empty, got %q", title)
+		}
+	})
+
 	t.Run("returns empty when no context manifest exists", func(t *testing.T) {
 		inDir := t.TempDir()
 		manifest := map[string]interface{}{}
