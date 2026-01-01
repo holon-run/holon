@@ -7,6 +7,9 @@ import { query } from "./claudeSdk.js";
 import type { Options } from "./claudeSdk.js";
 import { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
 
+// Re-export for testing
+export { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
+
 enum LogLevel {
   DEBUG = "debug",
   INFO = "info",
@@ -115,84 +118,6 @@ class ProgressLogger {
       this.info(`[WARNING] Failed to read summary: ${String(error)}`);
     }
   }
-}
-
-interface BundleManifest {
-  bundleVersion?: string;
-  name?: string;
-  version?: string;
-  entry?: string;
-  platform?: string;
-  arch?: string;
-  libc?: string;
-  engine?: {
-    name?: string;
-    sdk?: string;
-    sdkVersion?: string;
-  };
-  runtime?: {
-    type?: string;
-    version?: string;
-  };
-  env?: Record<string, string>;
-  capabilities?: Record<string, boolean>;
-}
-
-interface AgentMetadata {
-  agent: string;
-  version: string;
-  engine?: {
-    sdk?: string;
-    sdkVersion?: string;
-  };
-}
-
-export function readBundleManifest(manifestPath: string = "/holon/agent/manifest.json"): BundleManifest | null {
-  try {
-    if (!fs.existsSync(manifestPath)) {
-      return null;
-    }
-    const raw = fs.readFileSync(manifestPath, "utf8");
-    return JSON.parse(raw) as BundleManifest;
-  } catch (error) {
-    // If manifest is missing or invalid, return null to use fallback defaults
-    return null;
-  }
-}
-
-export function getAgentMetadata(bundleManifest: BundleManifest | null): AgentMetadata {
-  // If bundle manifest is available, derive metadata from it
-  if (bundleManifest) {
-    const agent = bundleManifest.engine?.name || bundleManifest.name || "claude-code";
-    const version = bundleManifest.version || "0.1.0";
-    const metadata: AgentMetadata = { agent, version };
-
-    // Optionally include engine SDK info for debugging
-    // Only add engine object if at least one SDK field is defined
-    if (bundleManifest.engine) {
-      const engine: NonNullable<AgentMetadata["engine"]> = {};
-
-      if (bundleManifest.engine.sdk !== undefined) {
-        engine.sdk = bundleManifest.engine.sdk;
-      }
-
-      if (bundleManifest.engine.sdkVersion !== undefined) {
-        engine.sdkVersion = bundleManifest.engine.sdkVersion;
-      }
-
-      if (Object.keys(engine).length > 0) {
-        metadata.engine = engine;
-      }
-    }
-
-    return metadata;
-  }
-
-  // Fallback to existing defaults for backward compatibility
-  return {
-    agent: "claude-code",
-    version: "0.1.0",
-  };
 }
 
 function generateFallbackSummary(goal: string, success: boolean, result: string): string {
@@ -836,7 +761,15 @@ async function runAgent(): Promise<void> {
   }
 }
 
-runAgent().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+// Only run agent when executed as main module, not when imported as a dependency
+// This check prevents the agent from auto-running when tests import the module
+// The spec file path only exists in actual Holon execution environment
+const SPEC_PATH = "/holon/input/spec.yaml";
+const shouldRunAutomatically = fs.existsSync(SPEC_PATH);
+
+if (shouldRunAutomatically) {
+  runAgent().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
