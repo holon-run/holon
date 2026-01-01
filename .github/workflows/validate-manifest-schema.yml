@@ -1,0 +1,56 @@
+name: Validate Manifest Schema
+
+# Trigger on PRs that affect manifest-related files
+on:
+  pull_request:
+    paths:
+      - 'schemas/**'
+      - 'pkg/api/v1/**'
+      - 'agents/claude/**'
+      - '.github/workflows/validate-manifest-schema.yml'
+  push:
+    paths:
+      - 'schemas/**'
+      - 'pkg/api/v1/**'
+      - 'agents/claude/**'
+      - '.github/workflows/validate-manifest-schema.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-schema:
+    name: Validate Manifest Schema
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install ajv-cli
+        run: npm install -g ajv-cli
+
+      - name: Validate manifest schema syntax
+        run: make validate-schema
+
+  test-contract:
+    name: Test Manifest Contract (Backward Compatibility)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Run manifest contract tests
+        run: make test-contract

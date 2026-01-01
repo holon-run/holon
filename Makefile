@@ -1,4 +1,4 @@
-.PHONY: build build-host test test-all clean run-example test-agent help release-build
+.PHONY: build build-host test test-all clean run-example test-agent help release-build validate-schema test-contract
 
 # Project variables
 BINARY_NAME=holon
@@ -76,6 +76,18 @@ test-agent:
 
 ## test-all: Run all project tests (Go + agent)
 test-all: test-agent test-go
+
+## validate-schema: Validate JSON schema syntax
+validate-schema:
+	@echo "Validating manifest JSON schema..."
+	@which ajv > /dev/null 2>&1 || (echo "ajv not found. Install with: npm install -g ajv-cli" && exit 1)
+	@ajv compile -s schemas/manifest.schema.json
+	@echo "Schema validation passed"
+
+## test-contract: Run manifest contract tests (backward compatibility)
+test-contract:
+	@echo "Running manifest contract tests..."
+	@go test ./pkg/api/v1/... -v -run TestHolonManifest
 
 ## install-gotestfmt: Install gotestfmt tool for structured test output
 install-gotestfmt:
