@@ -140,8 +140,11 @@ The manifest format maintains backward compatibility with previous agent bundle 
 {
   "status": "completed",
   "outcome": "success",
-  "mode": "probe",
-  "artifacts": [{"name": "manifest.json", "path": "manifest.json"}]
+  "duration": "0s",
+  "artifacts": [{"name": "manifest.json", "path": "manifest.json"}],
+  "metadata": {
+    "mode": "probe"
+  }
 }
 ```
 

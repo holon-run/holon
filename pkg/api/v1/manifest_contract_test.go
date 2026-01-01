@@ -82,8 +82,11 @@ func TestHolonManifest_BackwardCompatibility(t *testing.T) {
 			jsonData: `{
 				"status": "completed",
 				"outcome": "success",
-				"mode": "probe",
-				"artifacts": [{"name": "manifest.json", "path": "manifest.json"}]
+				"duration": "0s",
+				"artifacts": [{"name": "manifest.json", "path": "manifest.json"}],
+				"metadata": {
+					"mode": "probe"
+				}
 			}`,
 			validate: func(t *testing.T, m *HolonManifest) {
 				if m.Status != "completed" {
