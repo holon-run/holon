@@ -101,6 +101,54 @@
           "message": {
             "type": "string",
             "description": "Explanation of what was fixed, what remains, or why the fix is not applicable."
+          },
+          "diagnosis": {
+            "type": "object",
+            "description": "Optional diagnostic information about the failure analysis, including confidence level and reasoning process.",
+            "properties": {
+              "root_cause": {
+                "type": "string",
+                "description": "Brief summary of the identified issue."
+              },
+              "confidence": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": "Confidence level in the diagnosis. 'high' = clear root cause, 'medium' = likely but not certain, 'low' = uncertain or multiple plausible explanations."
+              },
+              "reasoning": {
+                "type": "string",
+                "description": "Detailed explanation of the diagnostic process and how the conclusion was reached."
+              },
+              "evidence_supporting": {
+                "type": "array",
+                "description": "List of evidence that supports the diagnosis.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "evidence_conflicting": {
+                "type": "array",
+                "description": "List of evidence that doesn't fit the diagnosis or suggests alternative explanations.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "alternative_explanations": {
+                "type": "array",
+                "description": "Other possible explanations that were considered but ruled less likely.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "investigation_needed": {
+                "type": "array",
+                "description": "Specific areas that need further investigation to reach a definitive conclusion.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": false

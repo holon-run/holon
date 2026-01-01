@@ -67,6 +67,14 @@ The `pr-fix.json` file contains three main sections:
    - `conclusion`: Original check conclusion (`failure`, `success`, `cancelled`)
    - `fix_status`: One of `fixed`, `unfixed`, `unverified`, `not-applicable`
    - `message`: Explanation of what was fixed or what remains
+   - `diagnosis` (optional): Diagnostic information about the failure analysis
+     - `root_cause`: Brief summary of the identified issue
+     - `confidence`: One of `low`, `medium`, `high`
+     - `reasoning`: Detailed explanation of the diagnostic process
+     - `evidence_supporting`: List of evidence supporting the diagnosis
+     - `evidence_conflicting`: List of conflicting evidence
+     - `alternative_explanations`: Other explanations considered
+     - `investigation_needed`: Areas requiring further investigation
 
 **Example pr-fix.json:**
 ```json
@@ -104,7 +112,19 @@ The `pr-fix.json` file contains three main sections:
       "name": "ci/test",
       "conclusion": "failure",
       "fix_status": "fixed",
-      "message": "Fixed race condition in test setup by adding proper synchronization"
+      "message": "Fixed race condition in test setup by adding proper synchronization",
+      "diagnosis": {
+        "root_cause": "Concurrent map writes in test helper function",
+        "confidence": "high",
+        "reasoning": "Stack trace shows data race in setupTestHelper. Multiple goroutines access shared map without synchronization. Adding mutex fixes the issue.",
+        "evidence_supporting": [
+          "Race detector reports concurrent map writes",
+          "Trace points to setupTestHelper:142",
+          "All tests pass after adding sync.Mutex"
+        ],
+        "evidence_conflicting": [],
+        "alternative_explanations": []
+      }
     },
     {
       "name": "lint",
@@ -380,3 +400,142 @@ Action: Mark as "not-applicable" with explanation that this is a pre-existing is
 3. **Transparent decisions**: Always document your reasoning and attempts
 4. **Last resort unfixed**: Only mark as `unfixed` when truly unable to diagnose or fix
 5. **Check test relevance**: Verify the failing test relates to PR changes before marking as `fixed`
+
+---
+
+## Diagnostic Confidence Levels
+
+When diagnosing CI failures or issues, communicate your confidence level and reasoning process using the `diagnosis` field in check items.
+
+### High Confidence
+
+Use `confidence: "high"` when:
+- Root cause is clearly identified in code
+- All evidence points to the same conclusion
+- No conflicting evidence exists
+- Fix is straightforward and tested
+
+**Example**: "Null pointer exception at line 42, variable not initialized"
+
+### Medium Confidence
+
+Use `confidence: "medium"` when:
+- Root cause is likely but not 100% certain
+- Some evidence supports the diagnosis, but not conclusive
+- Alternative explanations are less likely
+- Fix may need validation
+
+**Example**: "Race condition likely caused by shared state, but timing makes it hard to reproduce"
+
+### Low Confidence
+
+Use `confidence: "low"` when:
+- Significant conflicting evidence exists (e.g., tests pass locally but fail in CI)
+- Multiple plausible explanations exist
+- Environment-specific behavior not fully understood
+- Root cause is inferred from surface symptoms
+
+**Example**: "Permission denied error - could be environment issue OR code trying to create protected paths"
+
+### Required When Confidence is Low
+
+When `fix_status` is "not-applicable" (environment issue) OR confidence is "low":
+
+1. **Document all conflicting evidence**
+   - "Local tests: 32/32 passed ✅"
+   - "CI tests: Failed with EACCES ❌"
+
+2. **List alternative explanations**
+   - "Explanation A: CI environment permissions issue"
+   - "Explanation B: Code attempts to create protected paths during module load"
+
+3. **Request specific investigation**
+   - "Check if code has module-level side effects"
+   - "Verify path creation attempts in test vs CI environments"
+
+4. **Consider "needs-investigation" status**
+   - If uncertain, use `fix_status: "unverified"` instead of "not-applicable"
+   - This signals that human review is needed
+
+---
+
+## Diagnostic Validation
+
+Before finalizing a diagnosis, ask yourself:
+
+### Evidence Quality
+- [ ] I have examined the actual error/failure, not just summaries
+- [ ] I have traced the code execution path when possible
+- [ ] I have considered environment differences (local vs CI)
+
+### Confidence Calibration
+- [ ] If local tests pass but CI fails → confidence should be "low"
+- [ ] If I'm inferring root cause without seeing code → confidence should be "low"
+- [ ] If multiple plausible explanations exist → confidence should be "low"
+
+### Completeness
+- [ ] I've documented all evidence (supporting and conflicting)
+- [ ] I've considered alternative explanations
+- [ ] I've explained my reasoning process clearly
+
+---
+
+## Diagnostic Examples
+
+### Example 1: High Confidence Diagnosis
+
+```json
+{
+  "name": "Test Integration",
+  "conclusion": "failure",
+  "fix_status": "fixed",
+  "message": "Added missing database migration file",
+  "diagnosis": {
+    "root_cause": "Missing database migration file",
+    "confidence": "high",
+    "reasoning": "The test failure shows 'table users does not exist'. Code inspection reveals the migration file 003_create_users.sql was never committed. Adding this file fixes the issue.",
+    "evidence_supporting": [
+      "Error message explicitly states missing table",
+      "Migration file is absent from repository",
+      "Adding file makes tests pass"
+    ],
+    "evidence_conflicting": [],
+    "alternative_explanations": []
+  }
+}
+```
+
+### Example 2: Low Confidence Diagnosis
+
+```json
+{
+  "name": "Test Agent",
+  "conclusion": "failure",
+  "fix_status": "unverified",
+  "message": "Local tests pass but CI fails with permission error - requires investigation",
+  "diagnosis": {
+    "root_cause": "Unknown - requires investigation",
+    "confidence": "low",
+    "reasoning": "Local tests pass (32/32) but CI fails with EACCES permission denied. This suggests an environment difference, but could also indicate code that executes differently during module import vs explicit test invocation.",
+    "evidence_supporting": [
+      "Local test run: 32/32 passed",
+      "CI error: EACCES permission denied creating /holon/output/evidence",
+      "Error path /holon/output/evidence is a protected system path"
+    ],
+    "evidence_conflicting": [
+      "If it were a simple environment issue, why would the code need to create /holon/output/evidence?",
+      "Tests don't fail locally even though they import the same agent.ts file"
+    ],
+    "alternative_explanations": [
+      "Explanation A: CI environment lacks write permissions to /holon (environment issue)",
+      "Explanation B: agent.ts has module-level code that auto-executes and tries to create paths during import (code issue)",
+      "Explanation C: Test setup mocks paths differently in CI vs local"
+    ],
+    "investigation_needed": [
+      "Check agent.ts for module-level code that auto-executes",
+      "Verify when /holon/output/evidence creation is triggered",
+      "Compare test environment setup between local and CI"
+    ]
+  }
+}
+```
