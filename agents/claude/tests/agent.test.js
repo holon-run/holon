@@ -680,3 +680,151 @@ describe("Bundle Manifest Metadata", () => {
     assert.ok(result === null || typeof result === "object");
   });
 });
+
+describe("Skills Loading", () => {
+  let loadSkillsFromSpec;
+  let tempDir;
+
+  before(async () => {
+    // Dynamic import to test the exported function
+    const agentModule = await import("../dist/agent.js");
+    loadSkillsFromSpec = agentModule.loadSkillsFromSpec;
+  });
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "holon-skills-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("loads skills from valid spec with metadata.skills array", async () => {
+    const spec = {
+      metadata: {
+        skills: [
+          "/path/to/skill1",
+          "skill2",
+          "./relative/skill3",
+        ],
+      },
+    };
+
+    const logger = new MockProgressLogger("debug");
+    const skills = await loadSkillsFromSpec(spec, logger);
+
+    assert.strictEqual(skills.length, 3);
+    assert.strictEqual(skills[0].name, "skill1");
+    assert.strictEqual(skills[1].name, "skill2");
+    assert.strictEqual(skills[2].name, "skill3");
+  });
+
+  test("handles missing metadata.skills field", async () => {
+    const spec = {
+      metadata: {
+        someOtherField: "value",
+      },
+    };
+
+    const logger = new MockProgressLogger("debug");
+    const skills = await loadSkillsFromSpec(spec, logger);
+
+    assert.strictEqual(skills.length, 0);
+  });
+
+  test("handles non-array metadata.skills values", async () => {
+    const spec = {
+      metadata: {
+        skills: "not-an-array",
+      },
+    };
+
+    const logger = new MockProgressLogger("debug");
+    const skills = await loadSkillsFromSpec(spec, logger);
+
+    assert.strictEqual(skills.length, 0);
+  });
+
+  test("handles skill paths that are not strings", async () => {
+    const spec = {
+      metadata: {
+        skills: [
+          "/path/to/skill1",
+          { name: "object-skill" },
+          12345,
+          null,
+          undefined,
+        ],
+      },
+    };
+
+    const logger = new MockProgressLogger("debug");
+    const skills = await loadSkillsFromSpec(spec, logger);
+
+    // All types should be converted to strings and processed
+    assert.strictEqual(skills.length, 5);
+    assert.strictEqual(skills[0].name, "skill1");
+    assert.strictEqual(skills[1].name, "[object Object]");
+    assert.strictEqual(skills[2].name, "12345");
+    assert.strictEqual(skills[3].name, "null");
+    assert.strictEqual(skills[4].name, "undefined");
+  });
+
+  test("handles empty skills array", async () => {
+    const spec = {
+      metadata: {
+        skills: [],
+      },
+    };
+
+    const logger = new MockProgressLogger("debug");
+    const skills = await loadSkillsFromSpec(spec, logger);
+
+    assert.strictEqual(skills.length, 0);
+  });
+
+  test("handles missing metadata entirely", async () => {
+    const spec = {
+      goal: "Test goal",
+    };
+
+    const logger = new MockProgressLogger("debug");
+    const skills = await loadSkillsFromSpec(spec, logger);
+
+    assert.strictEqual(skills.length, 0);
+  });
+
+  test("handles null spec gracefully", async () => {
+    const logger = new MockProgressLogger("debug");
+    const skills = await loadSkillsFromSpec(null, logger);
+
+    assert.strictEqual(skills.length, 0);
+    // Should log a debug message about the error
+    assert(logger.logs.some(log => log.includes("Failed to load skills from spec")));
+  });
+
+  test("normalizes various path formats", async () => {
+    const spec = {
+      metadata: {
+        skills: [
+          "/absolute/path/to/my-skill",
+          "relative-skill",
+          "../parent-skill",
+          "./current-dir-skill",
+          "/complex/path/with/subdirs/skill-name",
+        ],
+      },
+    };
+
+    const logger = new MockProgressLogger("debug");
+    const skills = await loadSkillsFromSpec(spec, logger);
+
+    assert.strictEqual(skills.length, 5);
+    assert.strictEqual(skills[0].name, "my-skill");
+    assert.strictEqual(skills[1].name, "relative-skill");
+    assert.strictEqual(skills[2].name, "parent-skill");
+    assert.strictEqual(skills[3].name, "current-dir-skill");
+    assert.strictEqual(skills[4].name, "skill-name");
+  });
+});
+

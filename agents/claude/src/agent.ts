@@ -9,6 +9,7 @@ import { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
 
 // Re-export for testing
 export { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
+export { loadSkillsFromSpec };
 
 enum LogLevel {
   DEBUG = "debug",
@@ -265,23 +266,19 @@ async function connectivityCheck(logger: ProgressLogger, baseUrl: string): Promi
 
 interface SkillMetadata {
   name: string;
-  description: string;
 }
 
-async function loadSkillsFromSpec(specPath: string, logger: ProgressLogger): Promise<SkillMetadata[]> {
+async function loadSkillsFromSpec(spec: Record<string, any>, logger: ProgressLogger): Promise<SkillMetadata[]> {
   try {
-    const specContent = fs.readFileSync(specPath, "utf8");
-    const spec = parseYaml(specContent) as Record<string, any>;
-
     // Skills can be in metadata.skills
     if (spec.metadata?.skills && Array.isArray(spec.metadata.skills)) {
       const skills: SkillMetadata[] = [];
       for (const skillPath of spec.metadata.skills) {
-        // Extract skill name from path
-        const skillName = typeof skillPath === "string" ? path.basename(skillPath) : skillPath;
+        // Normalize skill path to string and extract skill name
+        const skillPathStr = String(skillPath);
+        const skillName = path.basename(skillPathStr);
         skills.push({
           name: skillName,
-          description: `Skill from ${skillPath}`,
         });
       }
       return skills;
@@ -299,8 +296,7 @@ async function runClaude(
   workspacePath: string,
   systemInstruction: string,
   userPrompt: string,
-  logFile: fs.WriteStream,
-  enabledSkills: SkillMetadata[]
+  logFile: fs.WriteStream
 ): Promise<{ success: boolean; result: string }> {
   const env = { ...process.env } as NodeJS.ProcessEnv;
   const isMountedConfig = env.HOLON_MOUNTED_CLAUDE_CONFIG === "1";
@@ -586,7 +582,7 @@ async function runAgent(): Promise<void> {
   await connectivityCheck(logger, baseUrl);
 
   // Load skills from spec for logging and manifest metadata
-  const enabledSkills = await loadSkillsFromSpec(specPath, logger);
+  const enabledSkills = await loadSkillsFromSpec(spec, logger);
 
   // Log enabled skills at startup (info level)
   if (enabledSkills.length > 0) {
@@ -608,7 +604,7 @@ async function runAgent(): Promise<void> {
     logger.minimal("Session established. Running query...");
     logger.minimal("Executing query...");
 
-    const response = await runClaude(logger, workspacePath, systemInstruction, userPrompt, logFile, enabledSkills);
+    const response = await runClaude(logger, workspacePath, systemInstruction, userPrompt, logFile);
     success = response.success;
     result = response.result;
 
