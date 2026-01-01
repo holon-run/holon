@@ -17,8 +17,9 @@ type HolonSpec struct {
 }
 
 type Metadata struct {
-	Name string `yaml:"name" json:"name"`
-	ID   string `yaml:"id,omitempty" json:"id,omitempty"`
+	Name   string   `yaml:"name" json:"name"`
+	ID     string   `yaml:"id,omitempty" json:"id,omitempty"`
+	Skills []string `yaml:"skills,omitempty" json:"skills,omitempty"`
 }
 
 type Context struct {

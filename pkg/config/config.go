@@ -37,6 +37,9 @@ type ProjectConfig struct {
 	// LogLevel is the default Holon log level (debug, info, progress, minimal)
 	LogLevel string `yaml:"log_level,omitempty"`
 
+	// Skills is a list of paths to skill directories to include
+	Skills []string `yaml:"skills,omitempty"`
+
 	// Git configuration overrides for container operations
 	Git GitConfig `yaml:"git,omitempty"`
 }
@@ -179,4 +182,9 @@ func (c *ProjectConfig) ShouldAutoDetectImage() bool {
 // configured in the project config (vs. default behavior).
 func (c *ProjectConfig) IsImageAutoDetectEnabled() bool {
 	return c.BaseImage == "auto" || c.BaseImage == "auto-detect"
+}
+
+// GetSkills returns the configured skills list
+func (c *ProjectConfig) GetSkills() []string {
+	return c.Skills
 }

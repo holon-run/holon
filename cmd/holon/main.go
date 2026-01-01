@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/holon-run/holon/pkg/config"
+	v1 "github.com/holon-run/holon/pkg/api/v1"
 	"github.com/holon-run/holon/pkg/image"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/preflight"
@@ -15,7 +16,9 @@ import (
 	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher
 	_ "github.com/holon-run/holon/pkg/publisher/git"      // Register git publisher
 	"github.com/holon-run/holon/pkg/runtime/docker"
+	"github.com/holon-run/holon/pkg/skills"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var specPath string
@@ -36,6 +39,8 @@ var logLevel string
 var mode string
 var agentConfigMode string
 var skipPreflight bool
+var skillPaths []string
+var skillsList string
 
 // resolvedConfig holds the resolved configuration values
 type resolvedConfig struct {
@@ -135,6 +140,55 @@ func logConfigResolution(key, value, source string) {
 	holonlog.Info("config", "key", key, "value", value, "source", source)
 }
 
+// resolveSkills resolves skills from CLI, config, spec, and auto-discovery
+// Precedence: CLI > config > spec > auto-discovered
+func resolveSkills(ctx context.Context, workspace, specPath string) ([]skills.Skill, error) {
+	// Parse CLI skills
+	var cliSkills []string
+	for _, path := range skillPaths {
+		cliSkills = append(cliSkills, path)
+	}
+	// Parse --skills flag
+	for _, path := range skills.ParseSkillsList(skillsList) {
+		cliSkills = append(cliSkills, path)
+	}
+
+	// Load project config for skills
+	projectCfg, err := config.LoadFromCurrentDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load project config: %w", err)
+	}
+	configSkills := projectCfg.GetSkills()
+
+	// Load spec for skills
+	var specSkills []string
+	if specPath != "" {
+		absSpec, err := filepath.Abs(specPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve spec path: %w", err)
+		}
+		specData, err := os.ReadFile(absSpec)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read spec file: %w", err)
+		}
+
+		var spec v1.HolonSpec
+		if err := yaml.Unmarshal(specData, &spec); err != nil {
+			return nil, fmt.Errorf("failed to parse spec file: %w", err)
+		}
+		specSkills = spec.Metadata.Skills
+	}
+
+	// Resolve all skills with proper precedence
+	resolver := skills.NewResolver(workspace)
+	resolved, err := resolver.Resolve(cliSkills, configSkills, specSkills)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve skills: %w", err)
+	}
+
+	return resolved, nil
+}
+
 // resolveOutDir resolves the output directory for run command.
 // Precedence: CLI flag (--output) > temp directory.
 // Returns the output directory path, whether it's a default temp dir, and an error.
@@ -225,6 +279,24 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize runtime: %w", err)
 		}
 
+		// Resolve skills with precedence: CLI > config > spec > auto-discovered
+		resolvedSkills, err := resolveSkills(ctx, absWorkspace, specPath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve skills: %w", err)
+		}
+		if len(resolvedSkills) > 0 {
+			holonlog.Info("resolved skills", "count", len(resolvedSkills))
+			for _, skill := range resolvedSkills {
+				holonlog.Debug("skill", "name", skill.Name, "source", skill.Source)
+			}
+		}
+
+		// Convert skills to path list for ContainerConfig
+		skillPaths := make([]string, len(resolvedSkills))
+		for i, skill := range resolvedSkills {
+			skillPaths[i] = skill.Path
+		}
+
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{
 			SpecPath:           specPath,
@@ -247,6 +319,7 @@ var runCmd = &cobra.Command{
 			AgentConfigMode: agentConfigMode,
 			GitAuthorName:   projectCfg.GetGitAuthorName(),
 			GitAuthorEmail:  projectCfg.GetGitAuthorEmail(),
+			Skills:          skillPaths,
 		})
 	},
 }
@@ -274,6 +347,8 @@ func init() {
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	runCmd.Flags().StringVar(&agentConfigMode, "agent-config-mode", "no", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount, default)")
+	runCmd.Flags().StringSliceVar(&skillPaths, "skill", []string{}, "Path to skill directory (repeatable, higher precedence than --skills)")
+	runCmd.Flags().StringVar(&skillsList, "skills", "", "Comma-separated list of skill paths")
 	runCmd.Flags().BoolVar(&skipPreflight, "no-preflight", false, "Skip preflight checks (not recommended)")
 	runCmd.Flags().BoolVar(&skipPreflight, "skip-checks", false, "Skip preflight checks (alias for --no-preflight, not recommended)")
 	rootCmd.AddCommand(runCmd)

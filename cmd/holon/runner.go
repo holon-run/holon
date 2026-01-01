@@ -53,6 +53,7 @@ type RunnerConfig struct {
 	GitAuthorName        string // Optional: git author name override
 	GitAuthorEmail       string // Optional: git author email override
 	WorkspaceIsTemporary bool   // true if workspace is a temporary directory (vs user-provided)
+	Skills               []string // Skills to include (already resolved with precedence)
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -306,6 +307,7 @@ output:
 		WorkspaceIsTemporary: cfg.WorkspaceIsTemporary,
 		GitAuthorName:        gitCfg.AuthorName,
 		GitAuthorEmail:       gitCfg.AuthorEmail,
+		Skills:               cfg.Skills,
 	}
 
 	holonlog.Progress("running holon", "spec", cfg.SpecPath, "base_image", cfg.BaseImage, "agent", containerCfg.AgentBundle)
