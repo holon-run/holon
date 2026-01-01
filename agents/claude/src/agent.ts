@@ -263,12 +263,44 @@ async function connectivityCheck(logger: ProgressLogger, baseUrl: string): Promi
   }
 }
 
+interface SkillMetadata {
+  name: string;
+  description: string;
+}
+
+async function loadSkillsFromSpec(specPath: string, logger: ProgressLogger): Promise<SkillMetadata[]> {
+  try {
+    const specContent = fs.readFileSync(specPath, "utf8");
+    const spec = parseYaml(specContent) as Record<string, any>;
+
+    // Skills can be in metadata.skills
+    if (spec.metadata?.skills && Array.isArray(spec.metadata.skills)) {
+      const skills: SkillMetadata[] = [];
+      for (const skillPath of spec.metadata.skills) {
+        // Extract skill name from path
+        const skillName = typeof skillPath === "string" ? path.basename(skillPath) : skillPath;
+        skills.push({
+          name: skillName,
+          description: `Skill from ${skillPath}`,
+        });
+      }
+      return skills;
+    }
+
+    return [];
+  } catch (error) {
+    logger.debug(`Failed to load skills from spec: ${String(error)}`);
+    return [];
+  }
+}
+
 async function runClaude(
   logger: ProgressLogger,
   workspacePath: string,
   systemInstruction: string,
   userPrompt: string,
-  logFile: fs.WriteStream
+  logFile: fs.WriteStream,
+  enabledSkills: SkillMetadata[]
 ): Promise<{ success: boolean; result: string }> {
   const env = { ...process.env } as NodeJS.ProcessEnv;
   const isMountedConfig = env.HOLON_MOUNTED_CLAUDE_CONFIG === "1";
@@ -309,6 +341,9 @@ async function runClaude(
   const model = env.HOLON_MODEL;
   const fallbackModel = env.HOLON_FALLBACK_MODEL;
   const abortController = new AbortController();
+
+  // Explicitly include Skill in allowed tools
+  // This is required when using bypassPermissions mode
   const options: Options = {
     cwd: workspacePath,
     env,
@@ -318,6 +353,7 @@ async function runClaude(
     systemPrompt: { type: "preset", preset: "claude_code", append: systemInstruction },
     settingSources: ["user", "project"],
     tools: { type: "preset", preset: "claude_code" },
+    allowedTools: ["Skill"], // Explicitly enable Skill tool
     stderr: (data: string) => {
       logFile.write(`[stderr] ${data}`);
       logger.debug(data.trim());
@@ -549,6 +585,16 @@ async function runAgent(): Promise<void> {
   await syncClaudeSettings(logger, authToken, baseUrl);
   await connectivityCheck(logger, baseUrl);
 
+  // Load skills from spec for logging and manifest metadata
+  const enabledSkills = await loadSkillsFromSpec(specPath, logger);
+
+  // Log enabled skills at startup (info level)
+  if (enabledSkills.length > 0) {
+    logger.info(`Enabled skills (${enabledSkills.length}): ${enabledSkills.map((s) => s.name).join(", ")}`);
+  } else {
+    logger.info("No explicit skills configured");
+  }
+
   const logFilePath = path.join(evidenceDir, "execution.log");
   const logFile = fs.createWriteStream(logFilePath, { flags: "w" });
 
@@ -562,7 +608,7 @@ async function runAgent(): Promise<void> {
     logger.minimal("Session established. Running query...");
     logger.minimal("Executing query...");
 
-    const response = await runClaude(logger, workspacePath, systemInstruction, userPrompt, logFile);
+    const response = await runClaude(logger, workspacePath, systemInstruction, userPrompt, logFile, enabledSkills);
     success = response.success;
     result = response.result;
 
@@ -699,6 +745,7 @@ async function runAgent(): Promise<void> {
         version: agentMetadata.version,
         mode: mode,
         ...(agentMetadata.engine && { engine: agentMetadata.engine }),
+        ...(enabledSkills.length > 0 && { skills: enabledSkills.map((s) => s.name) }),
       },
       status: "completed",
       outcome: success ? "success" : "failure",
@@ -746,6 +793,7 @@ async function runAgent(): Promise<void> {
         version: agentMetadata.version,
         mode: mode,
         ...(agentMetadata.engine && { engine: agentMetadata.engine }),
+        ...(enabledSkills.length > 0 && { skills: enabledSkills.map((s) => s.name) }),
       },
       status: "completed",
       outcome: "failure",
