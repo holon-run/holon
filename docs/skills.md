@@ -13,6 +13,7 @@ Skills provide a way to:
 - Standardize common workflows across your team
 - Extend Claude's capabilities with custom tools
 - Package complex multi-step procedures
+- Share skills across projects via remote URLs
 
 ## Skill Discovery
 
@@ -25,9 +26,65 @@ Holon automatically discovers skills from the `.claude/skills/` directory in you
 
 Auto-discovered skills are loaded alphabetically by directory name.
 
+### Remote Skills via Zip URLs
+
+Holon supports installing skills directly from remote zip URLs. This allows you to:
+
+- Distribute skills via GitHub releases, CDNs, or any HTTP/S endpoint
+- Share skill collections without manual downloads
+- Version skills using release tags
+- Install multiple skills from a single zip archive
+
+**URL Format:**
+```
+https://example.com/skills.zip
+https://github.com/org/repo/archive/refs/tags/v1.2.3.zip
+https://example.com/skills.zip#sha256=<checksum>
+```
+
+**Optional Integrity Check:**
+Add a SHA256 checksum via URL fragment to verify download integrity:
+```bash
+# Without checksum (download proceeds without verification)
+--skill https://github.com/myorg/skills/archive/v1.0.0.zip
+
+# With checksum (fails if checksum doesn't match)
+--skill "https://github.com/myorg/skills/archive/v1.0.0.zip#sha256=abc123..."
+```
+
+**Caching:**
+Downloaded skills are cached in `~/.holon/cache/skills/` based on URL and checksum (if provided). Subsequent runs use the cache automatically.
+
+**Multiple Skills in One Zip:**
+When a zip contains multiple skill directories (each with `SKILL.md`), all skills are installed automatically. No need to specify individual skill paths.
+
 ## Using Skills
 
-### Method 1: Auto-Discovery (Recommended)
+### Method 1: Remote Skills (New!)
+
+Install skills directly from remote URLs:
+
+```bash
+# Single skill from a URL
+holon run --goal "Add tests" \
+  --skill https://github.com/myorg/skills/releases/download/v1.0/testing-go.zip
+
+# Multiple skills from a collection
+holon run --goal "Build and test" \
+  --skill https://github.com/myorg/skills/archive/refs/tags/v1.2.3.zip
+
+# With integrity verification
+holon run --goal "Deploy" \
+  --skill "https://github.com/myorg/skills/releases/download/v2.0.0/deploy.zip#sha256=abc123def456..."
+```
+
+**Use Cases:**
+- Team-maintained skill collections
+- Public skill libraries
+- Versioned skill distributions via GitHub releases
+- CDN-hosted skill repositories
+
+### Method 2: Auto-Discovery (Recommended)
 
 Create a `.claude/skills/` directory in your workspace:
 
@@ -45,7 +102,7 @@ my-project/
 
 These skills will be automatically available to Holon without additional configuration.
 
-### Method 2: Project Configuration
+### Method 3: Project Configuration
 
 Add skills to your `.holon/config.yaml`:
 
@@ -54,9 +111,10 @@ Add skills to your `.holon/config.yaml`:
 skills:
   - ./shared-skills/testing
   - ./shared-skills/documentation
+  - https://github.com/myorg/skills/releases/download/v1.0/ci-cd.zip#sha256=abc123...
 ```
 
-### Method 3: CLI Flags
+### Method 4: CLI Flags
 
 Specify skills via command line:
 
@@ -64,16 +122,20 @@ Specify skills via command line:
 # Single skill (repeatable flag)
 holon run --goal "Add unit tests" --skill ./skills/testing
 
+# Remote skill
+holon run --goal "Add unit tests" --skill https://example.com/testing.zip
+
 # Multiple skills
 holon run --goal "Add tests and docs" \
   --skill ./skills/testing \
-  --skill ./skills/documentation
+  --skill ./skills/documentation \
+  --skill https://github.com/myorg/skills/archive/main.zip
 
 # Comma-separated list
-holon run --goal "Add tests" --skills ./skills/testing,./skills/unit-tests
+holon run --goal "Add tests" --skills ./skills/testing,https://example.com/linting.zip
 ```
 
-### Method 4: Spec File
+### Method 5: Spec File
 
 Include skills in your Holon spec:
 
@@ -86,6 +148,7 @@ metadata:
   skills:
     - ./skills/testing
     - ./skills/coverage
+    - https://github.com/myorg/skills/archive/refs/tags/v1.0.0.zip
 goal:
   description: "Add comprehensive unit tests"
 ```
@@ -223,6 +286,26 @@ See the `examples/skills/` directory for complete examples:
 - [Claude Agent Skills: A First Principles Deep Dive](https://leehanchung.github.io/blogs/2025/10/26/claude-skills-deep-dive/)
 
 ## Troubleshooting
+
+### Remote Skill Download Failed
+
+If remote skill download fails:
+- Check the URL is accessible (try opening it in a browser)
+- Verify the URL points to a valid zip file
+- Check network connectivity and firewall settings
+- Ensure the zip file contains directories with `SKILL.md` files
+- Check Holon logs with `--log-level debug` for detailed error information
+- Verify SHA256 checksum is correct (if using `#sha256=` fragment)
+
+### Remote Skill Cache Issues
+
+If cached remote skills cause problems:
+```bash
+# Clear the skills cache
+rm -rf ~/.holon/cache/skills/
+```
+
+Skills will be re-downloaded on next run.
 
 ### Skill Not Found
 

@@ -1,6 +1,7 @@
 // Package skills provides skill discovery, validation, and staging for Holon.
 // Skills are directories containing SKILL.md files that can be auto-discovered
 // from .claude/skills/ or explicitly specified via config/spec/CLI.
+// Skills can also be downloaded from remote zip URLs.
 package skills
 
 import (
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/holon-run/holon/pkg/skills/remote"
 )
 
 const (
@@ -31,46 +34,49 @@ type Skill struct {
 // Resolver handles skill discovery, validation, and resolution
 type Resolver struct {
 	workspace string
+	cache     *remote.Cache
 }
 
 // NewResolver creates a new skill resolver for the given workspace
 func NewResolver(workspace string) *Resolver {
 	return &Resolver{
 		workspace: workspace,
+		cache:     remote.NewCache(""),
 	}
 }
 
 // Resolve resolves skills from multiple sources with proper precedence.
 // Precedence: CLI > config > spec > auto-discovered.
 // Returns a deduplicated list of skills in order of precedence.
+// Skill refs can be local paths or remote zip URLs.
 func (r *Resolver) Resolve(cliSkills []string, configSkills []string, specSkills []string) ([]Skill, error) {
 	var skills []Skill
 
 	// Add CLI skills (highest precedence)
-	for _, path := range cliSkills {
-		skill, err := r.ValidateAndNormalize(path, "cli")
+	for _, ref := range cliSkills {
+		resolved, err := r.resolveSkillRef(ref, "cli")
 		if err != nil {
 			return nil, fmt.Errorf("invalid skill from CLI: %w", err)
 		}
-		skills = append(skills, skill)
+		skills = append(skills, resolved...)
 	}
 
 	// Add config skills
-	for _, path := range configSkills {
-		skill, err := r.ValidateAndNormalize(path, "config")
+	for _, ref := range configSkills {
+		resolved, err := r.resolveSkillRef(ref, "config")
 		if err != nil {
 			return nil, fmt.Errorf("invalid skill from config: %w", err)
 		}
-		skills = append(skills, skill)
+		skills = append(skills, resolved...)
 	}
 
 	// Add spec skills
-	for _, path := range specSkills {
-		skill, err := r.ValidateAndNormalize(path, "spec")
+	for _, ref := range specSkills {
+		resolved, err := r.resolveSkillRef(ref, "spec")
 		if err != nil {
 			return nil, fmt.Errorf("invalid skill from spec: %w", err)
 		}
-		skills = append(skills, skill)
+		skills = append(skills, resolved...)
 	}
 
 	// Auto-discover skills from .claude/skills/
@@ -136,6 +142,53 @@ func (r *Resolver) discover() ([]Skill, error) {
 	})
 
 	return skills, nil
+}
+
+// resolveSkillRef resolves a single skill reference (URL or local path) to one or more skills
+// Returns multiple skills for URLs (zip can contain multiple skills) or single skill for local paths
+func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
+	// Check if it's a URL
+	if remote.IsURL(ref) {
+		// Parse the URL reference
+		skillRef, err := remote.ParseSkillRef(ref)
+		if err != nil {
+			return nil, fmt.Errorf("invalid URL reference: %w", err)
+		}
+
+		// Download and extract
+		skillPaths, err := r.cache.DownloadAndExtract(skillRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download remote skills: %w", err)
+		}
+
+		// Convert to Skill structs
+		var skills []Skill
+		for _, skillPath := range skillPaths {
+			skillName := filepath.Base(skillPath)
+
+			// Validate the downloaded skill
+			skillManifestPath := filepath.Join(skillPath, SkillManifestFile)
+			if _, err := os.Stat(skillManifestPath); err != nil {
+				return nil, fmt.Errorf("downloaded skill missing %s: %s", SkillManifestFile, skillPath)
+			}
+
+			skills = append(skills, Skill{
+				Path:   skillPath,
+				Name:   skillName,
+				Source: source,
+			})
+		}
+
+		return skills, nil
+	}
+
+	// Local path - use existing validation logic
+	skill, err := r.ValidateAndNormalize(ref, source)
+	if err != nil {
+		return nil, err
+	}
+
+	return []Skill{skill}, nil
 }
 
 // ValidateAndNormalize validates a skill path and normalizes it to an absolute path

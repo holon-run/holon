@@ -1,6 +1,10 @@
 package skills
 
 import (
+	"archive/zip"
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -399,4 +403,63 @@ func TestResolver_Resolve(t *testing.T) {
 			t.Error("expected error for invalid skill path, got nil")
 		}
 	})
+
+	// Test 5: Remote skill URL
+	t.Run("remote URL", func(t *testing.T) {
+		// Create a test zip with skills
+		zipData := createTestZipData()
+
+		// Create test server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/zip")
+			w.WriteHeader(http.StatusOK)
+			w.Write(zipData)
+		}))
+		defer server.Close()
+
+		// Create a separate temporary workspace without discovered skills
+		cleanWorkspace, err := os.MkdirTemp("", "holon-remote-test-*")
+		if err != nil {
+			t.Fatalf("failed to create clean workspace: %v", err)
+		}
+		defer os.RemoveAll(cleanWorkspace)
+
+		cleanResolver := NewResolver(cleanWorkspace)
+
+		// Resolve remote URL
+		cliSkills := []string{server.URL + "/skills.zip"}
+		resolved, err := cleanResolver.Resolve(cliSkills, []string{}, []string{})
+		if err != nil {
+			t.Fatalf("Resolve failed for remote URL: %v", err)
+		}
+
+		// Should find 2 skills from the zip
+		if len(resolved) != 2 {
+			t.Errorf("expected 2 skills from remote URL, got %d", len(resolved))
+		}
+
+		// Check source is 'cli'
+		for _, skill := range resolved {
+			if skill.Source != "cli" {
+				t.Errorf("expected source 'cli', got '%s'", skill.Source)
+			}
+		}
+	})
+}
+
+// createTestZipData creates a test zip file with two skills
+func createTestZipData() []byte {
+	buf := new(bytes.Buffer)
+	zipWriter := zip.NewWriter(buf)
+
+	// Create skill1
+	w, _ := zipWriter.Create("skill1/SKILL.md")
+	w.Write([]byte("# Skill 1\n"))
+
+	// Create skill2
+	w, _ = zipWriter.Create("skill2/SKILL.md")
+	w.Write([]byte("# Skill 2\n"))
+
+	zipWriter.Close()
+	return buf.Bytes()
 }
