@@ -453,7 +453,7 @@ When `fix_status` is "not-applicable" (environment issue) OR confidence is "low"
    - "Check if code has module-level side effects"
    - "Verify path creation attempts in test vs CI environments"
 
-4. **Consider "needs-investigation" status**
+4. **Consider "unverified" status**
    - If uncertain, use `fix_status: "unverified"` instead of "not-applicable"
    - This signals that human review is needed
 
