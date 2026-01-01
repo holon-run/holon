@@ -334,6 +334,14 @@ async function runClaude(
   }
   env.IS_SANDBOX = "1";
 
+  // Configure Anthropic SDK log level if HOLON_ANTHROPIC_LOG is set
+  // This allows SDK-level debugging for troubleshooting
+  const holonAnthropicLog = env.HOLON_ANTHROPIC_LOG || env.ANTHROPIC_LOG;
+  if (holonAnthropicLog) {
+    env.ANTHROPIC_LOG = holonAnthropicLog;
+    logger.debug(`Anthropic SDK logging enabled: ANTHROPIC_LOG=${holonAnthropicLog}`);
+  }
+
   const model = env.HOLON_MODEL;
   const fallbackModel = env.HOLON_FALLBACK_MODEL;
   const abortController = new AbortController();

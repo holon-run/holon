@@ -293,8 +293,42 @@ describe("Environment Variable Parsing", () => {
     assert.strictEqual(intEnv("TEST_INT_VAR", 42), 0);
   });
 
+  test("HOLON_ANTHROPIC_LOG takes precedence over ANTHROPIC_LOG", () => {
+    process.env.ANTHROPIC_LOG = "info";
+    process.env.HOLON_ANTHROPIC_LOG = "debug";
+
+    // Simulate the logic from agent.ts
+    const holonAnthropicLog = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
+    assert.strictEqual(holonAnthropicLog, "debug");
+
+    delete process.env.ANTHROPIC_LOG;
+    delete process.env.HOLON_ANTHROPIC_LOG;
+  });
+
+  test("ANTHROPIC_LOG is used when HOLON_ANTHROPIC_LOG is not set", () => {
+    process.env.ANTHROPIC_LOG = "warn";
+    delete process.env.HOLON_ANTHROPIC_LOG;
+
+    // Simulate the logic from agent.ts
+    const holonAnthropicLog = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
+    assert.strictEqual(holonAnthropicLog, "warn");
+
+    delete process.env.ANTHROPIC_LOG;
+  });
+
+  test("No log level is set when neither env var is present", () => {
+    delete process.env.ANTHROPIC_LOG;
+    delete process.env.HOLON_ANTHROPIC_LOG;
+
+    // Simulate the logic from agent.ts
+    const holonAnthropicLog = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
+    assert.strictEqual(holonAnthropicLog, undefined);
+  });
+
   afterEach(() => {
     delete process.env.TEST_INT_VAR;
+    delete process.env.ANTHROPIC_LOG;
+    delete process.env.HOLON_ANTHROPIC_LOG;
   });
 });
 

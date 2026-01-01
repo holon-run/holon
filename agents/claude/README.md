@@ -7,6 +7,7 @@ Notes:
 - Uses the Agent SDK `query()` stream and parses SDK messages for artifacts.
 - Model overrides: `HOLON_MODEL`, `HOLON_FALLBACK_MODEL`.
 - Timeouts: `HOLON_QUERY_TIMEOUT_SECONDS`, `HOLON_HEARTBEAT_SECONDS`, `HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS`, `HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS`.
+- SDK logging: `HOLON_ANTHROPIC_LOG` (or `ANTHROPIC_LOG`) sets the Anthropic SDK log level for debugging (e.g., `debug`, `info`, `warn`, `error`).
 
 ## Agent bundle build
 Build a bundle that follows `docs/agent-bundle.md`:
