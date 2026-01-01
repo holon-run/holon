@@ -68,8 +68,41 @@ Behavior:
 - PR: applies/pushes the patch to the PR branch and posts replies when needed.
 
 
+## Using Claude Skills
+
+Claude Skills extend Holon's capabilities by packaging custom instructions, tools, and best practices that Claude can use during task execution.
+
+**Quick example** - Add testing skills to your project:
+
+```bash
+# Create a skills directory
+mkdir -p .claude/skills/testing-go
+
+# Add a SKILL.md file (see examples/skills/ for templates)
+cat > .claude/skills/testing-go/SKILL.md << 'EOF'
+---
+name: testing-go
+description: Expert Go testing skills for table-driven tests and comprehensive coverage
+---
+# Go Testing Guidelines
+[Your testing instructions here]
+EOF
+
+# Run Holon - skills are automatically discovered
+holon run --goal "Add unit tests for user service"
+```
+
+**Skill sources** (in precedence order):
+1. CLI flags: `--skill ./path/to/skill` or `--skills skill1,skill2`
+2. Project config: `skills: [./skill1, ./skill2]` in `.holon/config.yaml`
+3. Spec file: `metadata.skills` field in YAML specs
+4. Auto-discovery: `.claude/skills/*/SKILL.md` directories
+
+**See** `docs/skills.md` for complete documentation, examples, and best practices.
+
 ## Development & docs
 - Build CLI: `make build`; test: `make test`; agent bundle: `(cd agents/claude && npm run bundle)`.
+- Skills guide: `docs/skills.md`
 - Design/architecture: `docs/holon-architecture.md`
 - Agent contract: `rfc/0002-agent-scheme.md`
 - Modes: `docs/modes.md`
