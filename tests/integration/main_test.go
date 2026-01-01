@@ -71,6 +71,11 @@ func TestIntegration(t *testing.T) {
 			pathVar := os.Getenv("PATH")
 			env.Setenv("PATH", filepath.Dir(holonBin)+string(os.PathListSeparator)+pathVar)
 			env.Setenv("HOLON_BIN", holonBin)
+
+			// Set HOLON_REPO_ROOT to point to the repository root
+			// This allows tests to access repo-built artifacts like agent bundles
+			env.Setenv("HOLON_REPO_ROOT", repoRoot)
+
 			return nil
 		},
 		Condition: func(cond string) (bool, error) {

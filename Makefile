@@ -74,6 +74,11 @@ test-agent:
 	@echo "Running TypeScript agent tests..."
 	cd $(AGENT_DIR) && npm install && npm run build && npm test
 
+## build-agent-bundle: Build agent bundle from repo sources
+build-agent-bundle:
+	@echo "Building agent bundle from repo sources..."
+	@cd $(AGENT_DIR) && npm ci && npm run bundle
+
 ## test-all: Run all project tests (Go + agent)
 test-all: test-agent test-go
 
@@ -101,9 +106,10 @@ clean:
 	rm -rf $(BIN_DIR)
 	rm -rf holon-output*
 	rm -rf _testwork
+	rm -rf $(AGENT_DIR)/dist
 
 ## test-integration: Run integration tests with structured output (requires Docker)
-test-integration: build
+test-integration: build build-agent-bundle
 	@echo "Running integration tests..."
 	@if command -v gotestfmt > /dev/null 2>&1; then \
 		go test ./tests/integration/... -json -v 2>&1 | gotestfmt; \
@@ -113,12 +119,12 @@ test-integration: build
 	fi
 
 ## test-integration-raw: Run integration tests without gotestfmt (plain output)
-test-integration-raw: build
+test-integration-raw: build build-agent-bundle
 	@echo "Running integration tests with plain output..."
 	go test ./tests/integration/... -v
 
 ## test-integration-artifacts: Run integration tests and capture artifacts on failure
-test-integration-artifacts: build
+test-integration-artifacts: build build-agent-bundle
 	@echo "Running integration tests with artifact capture..."
 	@mkdir -p _testwork
 	@go test ./tests/integration/... -v -work

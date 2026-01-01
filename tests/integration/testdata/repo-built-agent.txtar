@@ -1,0 +1,63 @@
+[!docker] skip 'docker not available'
+
+# This test validates that the agent bundle built from the current repo works end-to-end.
+# It uses the mock driver to avoid network dependencies and ensure fast, deterministic execution.
+# The bundle must be pre-built via 'make build-agent-bundle' before running this test.
+
+# Check that the bundle exists at the expected location
+exec bash -c 'BUNDLE=$(ls "$HOLON_REPO_ROOT/agents/claude/dist/agent-bundles/agent-bundle-*.tar.gz" 2>/dev/null | head -1) && [ -n "$BUNDLE" ] && echo "Bundle found: $BUNDLE"'
+stdout 'Bundle found:'
+
+mkdir work
+mkdir work/examples
+mkdir out
+mkdir input
+mkdir input/context
+
+# Initialize git in workspace (required for mock driver to generate diff.patch)
+exec git -C work init
+exec git -C work config user.email "test@example.com"
+exec git -C work config user.name "Test User"
+exec git -C work add examples/buggy.go
+exec git -C work commit -m 'initial commit'
+
+# Run holon with mock driver using the repo-built agent bundle
+# The fixture file is provided as a txtar section below
+env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json
+exec bash -c 'BUNDLE=$(ls "$HOLON_REPO_ROOT/agents/claude/dist/agent-bundles/agent-bundle-*.tar.gz" 2>/dev/null | head -1) && holon run --agent "$BUNDLE" --goal "Fix the division by zero error" --workspace work --input input --output out --image golang:1.22'
+
+# Verify outputs
+exists out/manifest.json
+exists out/diff.patch
+exists out/summary.md
+
+# Verify the fix was applied
+grep 'if b == 0' work/examples/buggy.go
+
+# Initial file (workspace snapshot)
+-- work/examples/buggy.go --
+package main
+import "fmt"
+func main() {
+    fmt.Println("Result:", divide(10, 0))
+}
+func divide(a, b int) int {
+    return a / b
+}
+
+-- input/context/fixture.json --
+{
+  "version": "v1",
+  "description": "Fix division by zero",
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "examples/buggy.go",
+      "content": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Result:\", divide(10, 0))\n}\n\nfunc divide(a, b int) int {\n\tif b == 0 {\n\t\treturn 0\n\t}\n\treturn a / b\n}\n"
+    }
+  ],
+  "outcome": {
+    "success": true,
+    "result_text": "Fixed division by zero error"
+  }
+}
