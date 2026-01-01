@@ -144,14 +144,16 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 		return nil, fmt.Errorf("failed to fetch review threads: %w", err)
 	}
 
+	// Track if trigger comment has been found to avoid searching again in PR comments
+	foundTrigger := false
+
 	// Mark trigger comment if provided
 	if req.Options.TriggerCommentID > 0 {
-		found := false
 		for i := range reviewThreads {
 			if reviewThreads[i].CommentID == req.Options.TriggerCommentID {
 				reviewThreads[i].IsTrigger = true
 				fmt.Printf("  Marked review thread comment #%d as trigger\n", req.Options.TriggerCommentID)
-				found = true
+				foundTrigger = true
 				break
 			}
 			// Also check replies
@@ -159,11 +161,11 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 				if reviewThreads[i].Replies[j].CommentID == req.Options.TriggerCommentID {
 					reviewThreads[i].Replies[j].IsTrigger = true
 					fmt.Printf("  Marked review reply #%d as trigger\n", req.Options.TriggerCommentID)
-					found = true
+					foundTrigger = true
 					break
 				}
 			}
-			if found {
+			if foundTrigger {
 				break
 			}
 		}
@@ -178,8 +180,8 @@ func (p *Provider) collectPR(ctx context.Context, owner, repo string, number int
 		return nil, fmt.Errorf("failed to fetch PR comments: %w", err)
 	}
 
-	// Mark trigger comment if provided
-	if req.Options.TriggerCommentID > 0 {
+	// Mark trigger comment in PR comments if not already found in review threads
+	if req.Options.TriggerCommentID > 0 && !foundTrigger {
 		for i := range comments {
 			if comments[i].CommentID == req.Options.TriggerCommentID {
 				comments[i].IsTrigger = true
