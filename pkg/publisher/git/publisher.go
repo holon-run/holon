@@ -266,11 +266,17 @@ func (p *Publisher) buildConfig(manifest map[string]interface{}) GitPublisherCon
 		if remote, ok := metadata["remote"].(string); ok {
 			config.Remote = remote
 		}
+		// Handle commit flag (supports both bool and string for backward compatibility)
 		if commit, ok := metadata["commit"].(bool); ok {
 			config.Commit = commit
+		} else if commitStr, ok := metadata["commit"].(string); ok {
+			config.Commit = commitStr == "true" || commitStr == "1"
 		}
+		// Handle push flag (supports both bool and string for backward compatibility)
 		if push, ok := metadata["push"].(bool); ok {
 			config.Push = push
+		} else if pushStr, ok := metadata["push"].(string); ok {
+			config.Push = pushStr == "true" || pushStr == "1"
 		}
 		if authorName, ok := metadata["git_author_name"].(string); ok {
 			config.AuthorName = authorName
