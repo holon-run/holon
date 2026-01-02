@@ -27,7 +27,7 @@ log_level: "progress"
 # These settings override the host's git config when running inside containers
 git:
   # Override git config user.name for containers
-  # author_name: "Holon Bot"
+  # author_name: "holonbot[bot]"
 
   # Override git config user.email for containers
   # author_email: "holon@example.com"

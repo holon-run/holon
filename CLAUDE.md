@@ -109,7 +109,7 @@ log_level: "debug"
 
 # Git identity overrides for container operations
 git:
-  author_name: "Holon Bot"
+  author_name: "holonbot[bot]"
   author_email: "holon@example.com"
 ```
 

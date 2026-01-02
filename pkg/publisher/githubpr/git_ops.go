@@ -155,11 +155,11 @@ func (g *GitClient) CommitChanges(ctx context.Context, message string) (string, 
 	// Determine author name and email (use defaults if not configured)
 	authorName := g.AuthorName
 	if authorName == "" {
-		authorName = "Holon Bot"
+		authorName = holonGit.DefaultAuthorName
 	}
 	authorEmail := g.AuthorEmail
 	if authorEmail == "" {
-		authorEmail = "bot@holon.run"
+		authorEmail = holonGit.DefaultAuthorEmail
 	}
 
 	// Configure git user.name and user.email BEFORE committing
