@@ -343,21 +343,26 @@ func (c *Cache) extract(zipData []byte) (string, error) {
 
 // extractFile extracts a single file from the zip with safety checks
 func (c *Cache) extractFile(file *zip.File, destDir string) error {
-	// Prevent zip-slip vulnerability
+	// Prevent zip-slip vulnerability by sanitizing the file path
 	joinedPath := filepath.Join(destDir, file.Name)
 	cleanDest := filepath.Clean(destDir)
 	cleanPath := filepath.Clean(joinedPath)
+
+	// Validate that the sanitized path is within the destination directory
 	if cleanPath != cleanDest && !strings.HasPrefix(cleanPath, cleanDest+string(os.PathSeparator)) {
 		return fmt.Errorf("invalid file path (zip-slip): %s", file.Name)
 	}
 
+	// Use the sanitized path for all operations
+	safePath := cleanPath
+
 	// Create directory if needed
 	if file.FileInfo().IsDir() {
-		return os.MkdirAll(joinedPath, file.Mode())
+		return os.MkdirAll(safePath, file.Mode())
 	}
 
 	// Create parent directory
-	if err := os.MkdirAll(filepath.Dir(joinedPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
 		return err
 	}
 
@@ -368,7 +373,7 @@ func (c *Cache) extractFile(file *zip.File, destDir string) error {
 	}
 	defer fileReader.Close()
 
-	destFile, err := os.OpenFile(joinedPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, file.Mode())
+	destFile, err := os.OpenFile(safePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, file.Mode())
 	if err != nil {
 		return err
 	}
