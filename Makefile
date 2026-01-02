@@ -84,9 +84,9 @@ test-all: test-agent test-go
 
 ## validate-schema: Validate JSON schema syntax
 validate-schema:
-	@echo "Validating manifest JSON schema..."
+	@echo "Validating run manifest JSON schema..."
 	@which ajv > /dev/null 2>&1 || (echo "ajv not found. Install with: npm install -g ajv-cli" && exit 1)
-	@ajv compile -s schemas/manifest.schema.json
+	@ajv compile -s schemas/run.manifest.schema.json
 	@echo "Schema validation passed"
 
 ## test-contract: Run manifest contract tests (backward compatibility)
