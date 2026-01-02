@@ -5,15 +5,7 @@
 # The bundle must be pre-built via 'make build-agent-bundle' before running this test.
 
 # Check that the bundle exists at the expected location
-exec bash -c <<'SCRIPT'
-BUNDLE=$(ls -t "$HOLON_REPO_ROOT/agents/claude/dist/agent-bundles/agent-bundle-*.tar.gz" 2>/dev/null | head -1)
-if [ -n "$BUNDLE" ]; then
-    echo "Bundle found: $BUNDLE"
-else
-    echo "Error: No agent bundle found. Run 'make build-agent-bundle' first." >&2
-    exit 1
-fi
-SCRIPT
+exec bash -c 'BUNDLE=$(ls -t "$HOLON_REPO_ROOT/agents/claude/dist/agent-bundles/agent-bundle-*.tar.gz" 2>/dev/null | head -1) && [ -n "$BUNDLE" ] && echo "Bundle found: $BUNDLE" || { echo "Error: No agent bundle found. Run make build-agent-bundle first." >&2; exit 1; }'
 stdout 'Bundle found:'
 
 mkdir work
@@ -32,14 +24,7 @@ exec git -C work commit -m 'initial commit'
 # Run holon with mock driver using the repo-built agent bundle
 # The fixture file is provided as a txtar section below
 env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json
-exec bash -c <<'SCRIPT'
-BUNDLE=$(ls -t "$HOLON_REPO_ROOT/agents/claude/dist/agent-bundles/agent-bundle-*.tar.gz" 2>/dev/null | head -1)
-if [ -z "$BUNDLE" ]; then
-    echo "ERROR: Agent bundle not found. Please run 'make build-agent-bundle' before running this test." >&2
-    exit 1
-fi
-holon run --agent "$BUNDLE" --goal "Fix the division by zero error" --workspace work --input input --output out --image golang:1.22
-SCRIPT
+exec bash -c 'BUNDLE=$(ls -t "$HOLON_REPO_ROOT/agents/claude/dist/agent-bundles/agent-bundle-*.tar.gz" 2>/dev/null | head -1); [ -n "$BUNDLE" ] || { echo "ERROR: Agent bundle not found. Please run make build-agent-bundle before running this test." >&2; exit 1; }; holon run --agent "$BUNDLE" --goal "Fix the division by zero error" --workspace work --input input --output out --image golang:1.22'
 
 # Verify outputs
 exists out/manifest.json
