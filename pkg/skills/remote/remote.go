@@ -345,7 +345,9 @@ func (c *Cache) extract(zipData []byte) (string, error) {
 func (c *Cache) extractFile(file *zip.File, destDir string) error {
 	// Prevent zip-slip vulnerability
 	joinedPath := filepath.Join(destDir, file.Name)
-	if !strings.HasPrefix(filepath.Clean(joinedPath), filepath.Clean(destDir)+string(os.PathSeparator)) {
+	cleanDest := filepath.Clean(destDir)
+	cleanPath := filepath.Clean(joinedPath)
+	if cleanPath != cleanDest && !strings.HasPrefix(cleanPath, cleanDest+string(os.PathSeparator)) {
 		return fmt.Errorf("invalid file path (zip-slip): %s", file.Name)
 	}
 
@@ -373,7 +375,17 @@ func (c *Cache) extractFile(file *zip.File, destDir string) error {
 	defer destFile.Close()
 
 	_, err = io.Copy(destFile, fileReader)
-	return err
+	closeErr := destFile.Close()
+	if err != nil {
+		if closeErr != nil {
+			return fmt.Errorf("failed to copy file data: %v; also failed to close file: %v", err, closeErr)
+		}
+		return err
+	}
+	if closeErr != nil {
+		return fmt.Errorf("failed to close file after writing: %w", closeErr)
+	}
+	return nil
 }
 
 // DiscoverSkills discovers all skill directories in a directory tree

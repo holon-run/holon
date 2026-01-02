@@ -453,13 +453,25 @@ func createTestZipData() []byte {
 	zipWriter := zip.NewWriter(buf)
 
 	// Create skill1
-	w, _ := zipWriter.Create("skill1/SKILL.md")
-	w.Write([]byte("# Skill 1\n"))
+	w, err := zipWriter.Create("skill1/SKILL.md")
+	if err != nil {
+		panic("failed to create zip entry skill1/SKILL.md: " + err.Error())
+	}
+	if _, err := w.Write([]byte("# Skill 1\n")); err != nil {
+		panic("failed to write to zip entry skill1/SKILL.md: " + err.Error())
+	}
 
 	// Create skill2
-	w, _ = zipWriter.Create("skill2/SKILL.md")
-	w.Write([]byte("# Skill 2\n"))
+	w, err = zipWriter.Create("skill2/SKILL.md")
+	if err != nil {
+		panic("failed to create zip entry skill2/SKILL.md: " + err.Error())
+	}
+	if _, err := w.Write([]byte("# Skill 2\n")); err != nil {
+		panic("failed to write to zip entry skill2/SKILL.md: " + err.Error())
+	}
 
-	zipWriter.Close()
+	if err := zipWriter.Close(); err != nil {
+		panic("failed to close zip writer: " + err.Error())
+	}
 	return buf.Bytes()
 }

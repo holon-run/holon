@@ -2,6 +2,7 @@ package remote
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -341,7 +342,7 @@ func TestZipSlipProtection(t *testing.T) {
 // Helper functions
 
 func createTestZip() ([]byte, error) {
-	buf := new(strings.Builder)
+	buf := new(bytes.Buffer)
 	zipWriter := zip.NewWriter(buf)
 
 	// Create skill1
@@ -379,11 +380,11 @@ func createTestZip() ([]byte, error) {
 		return nil, err
 	}
 
-	return []byte(buf.String()), nil
+	return buf.Bytes(), nil
 }
 
 func createMaliciousZip() ([]byte, error) {
-	buf := new(strings.Builder)
+	buf := new(bytes.Buffer)
 	zipWriter := zip.NewWriter(buf)
 
 	// Try to write outside the extraction directory
@@ -399,7 +400,7 @@ func createMaliciousZip() ([]byte, error) {
 		return nil, err
 	}
 
-	return []byte(buf.String()), nil
+	return buf.Bytes(), nil
 }
 
 func calculateChecksum(data []byte) string {
