@@ -7,9 +7,9 @@
   "required": ["strategy", "source", "created_at", "has_history", "is_shallow"],
   "properties": {
     "strategy": {
-      "description": "Name of the workspace preparation strategy used (e.g., 'local', 'github', 'git').",
+      "description": "Name of the workspace preparation strategy used (e.g., 'git-clone', 'snapshot', 'existing').",
       "type": "string",
-      "examples": ["local", "github", "git", "empty"]
+      "examples": ["git-clone", "snapshot", "existing"]
     },
     "source": {
       "description": "Origin of the workspace content. For git-based strategies, this is the repository URL or path.",
@@ -65,7 +65,7 @@
   },
   "examples": [
     {
-      "strategy": "github",
+      "strategy": "git-clone",
       "source": "https://github.com/holon-run/holon",
       "ref": "main",
       "head_sha": "6a06914c4603fe4bf33c0a5a2931f10be38544b2",
@@ -74,7 +74,7 @@
       "is_shallow": false
     },
     {
-      "strategy": "git",
+      "strategy": "git-clone",
       "source": "https://github.com/user/repo",
       "ref": "refs/pull/123/head",
       "head_sha": "abc123def456789abc123def456789abc123def4",
@@ -87,19 +87,18 @@
       ]
     },
     {
-      "strategy": "local",
+      "strategy": "snapshot",
       "source": "/local/path/to/workspace",
       "created_at": "2026-01-02T08:00:00Z",
-      "has_history": true,
+      "has_history": false,
       "is_shallow": false
     },
     {
-      "strategy": "empty",
-      "source": "",
+      "strategy": "existing",
+      "source": "/existing/workspace",
       "created_at": "2026-01-02T07:00:00Z",
-      "has_history": false,
-      "is_shallow": false,
-      "notes": ["Empty workspace created"]
+      "has_history": true,
+      "is_shallow": false
     }
   ]
 }

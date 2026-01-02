@@ -23,7 +23,7 @@ The canonical JSON Schema is maintained at [`schemas/workspace.manifest.schema.j
 
 ```json
 {
-  "strategy": "github",
+  "strategy": "git-clone",
   "source": "https://github.com/holon-run/holon",
   "ref": "main",
   "head_sha": "6a06914c4603fe4bf33c0a5a2931f10be38544b2",
@@ -37,7 +37,7 @@ The canonical JSON Schema is maintained at [`schemas/workspace.manifest.schema.j
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `strategy` | string | Yes | Workspace preparation strategy used (e.g., `"local"`, `"github"`, `"git"`) |
+| `strategy` | string | Yes | Workspace preparation strategy used (e.g., `"git-clone"`, `"snapshot"`, `"existing"`) |
 | `source` | string | Yes | Origin of the workspace content (repository URL or local path) |
 | `ref` | string | No | Git reference that was checked out (branch, tag, or SHA) |
 | `head_sha` | string | No | Full 40-character commit SHA of the workspace |
@@ -48,25 +48,12 @@ The canonical JSON Schema is maintained at [`schemas/workspace.manifest.schema.j
 
 ## Strategy Types
 
-### Local Strategy
-Used when the workspace is copied from a local directory:
+### Git-Clone Strategy
+Used when cloning a git repository (from GitHub or any other git host):
 
 ```json
 {
-  "strategy": "local",
-  "source": "/local/path/to/workspace",
-  "created_at": "2026-01-02T08:00:00Z",
-  "has_history": true,
-  "is_shallow": false
-}
-```
-
-### GitHub Strategy
-Used when fetching from GitHub (e.g., with `holon solve`):
-
-```json
-{
-  "strategy": "github",
+  "strategy": "git-clone",
   "source": "https://github.com/holon-run/holon",
   "ref": "main",
   "head_sha": "6a06914c4603fe4bf33c0a5a2931f10be38544b2",
@@ -76,32 +63,29 @@ Used when fetching from GitHub (e.g., with `holon solve`):
 }
 ```
 
-### Git Strategy
-Used when cloning from a generic git repository:
+### Snapshot Strategy
+Used when copying workspace files without git history:
 
 ```json
 {
-  "strategy": "git",
-  "source": "https://github.com/user/repo",
-  "ref": "v1.0.0",
-  "head_sha": "abc123def456789abc123def456789abc123def4",
-  "created_at": "2026-01-02T10:00:00Z",
-  "has_history": true,
+  "strategy": "snapshot",
+  "source": "/local/path/to/workspace",
+  "created_at": "2026-01-02T08:00:00Z",
+  "has_history": false,
   "is_shallow": false
 }
 ```
 
-### Empty Strategy
-Used when creating an empty workspace:
+### Existing Strategy
+Used when using an existing directory as the workspace:
 
 ```json
 {
-  "strategy": "empty",
-  "source": "",
+  "strategy": "existing",
+  "source": "/existing/workspace",
   "created_at": "2026-01-02T07:00:00Z",
-  "has_history": false,
-  "is_shallow": false,
-  "notes": ["Empty workspace created"]
+  "has_history": true,
+  "is_shallow": false
 }
 ```
 
@@ -112,7 +96,7 @@ A complete clone with full git history:
 
 ```json
 {
-  "strategy": "git",
+  "strategy": "git-clone",
   "source": "https://github.com/user/repo",
   "has_history": true,
   "is_shallow": false
@@ -124,7 +108,7 @@ A shallow clone (depth=1) for faster checkout:
 
 ```json
 {
-  "strategy": "github",
+  "strategy": "git-clone",
   "source": "https://github.com/holon-run/holon",
   "ref": "refs/pull/123/head",
   "head_sha": "abc123def456789abc123def456789abc123def4",
@@ -143,7 +127,7 @@ A shallow clone (depth=1) for faster checkout:
 ### Main Branch Checkout
 ```json
 {
-  "strategy": "github",
+  "strategy": "git-clone",
   "source": "https://github.com/holon-run/holon",
   "ref": "main",
   "head_sha": "6a06914c4603fe4bf33c0a5a2931f10be38544b2",
@@ -156,7 +140,7 @@ A shallow clone (depth=1) for faster checkout:
 ### Pull Request Checkout
 ```json
 {
-  "strategy": "github",
+  "strategy": "git-clone",
   "source": "https://github.com/holon-run/holon",
   "ref": "refs/pull/423/head",
   "head_sha": "def456789abc123def456789abc123def456789a",
@@ -173,7 +157,7 @@ A shallow clone (depth=1) for faster checkout:
 ### Tag Checkout
 ```json
 {
-  "strategy": "git",
+  "strategy": "git-clone",
   "source": "https://github.com/user/repo",
   "ref": "v1.2.3",
   "head_sha": "123abc456def789123abc456def789123abc456d",
@@ -183,13 +167,13 @@ A shallow clone (depth=1) for faster checkout:
 }
 ```
 
-### Local Directory
+### Snapshot from Local Directory
 ```json
 {
-  "strategy": "local",
+  "strategy": "snapshot",
   "source": "/home/user/projects/myproject",
   "created_at": "2026-01-02T08:30:00Z",
-  "has_history": true,
+  "has_history": false,
   "is_shallow": false
 }
 ```
