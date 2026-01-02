@@ -1226,16 +1226,16 @@ func TestClient_InitRepository_AutoConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConfigGet user.name failed: %v", err)
 	}
-	if name != "Holon Bot" {
-		t.Errorf("user.name = %q, want 'Holon Bot'", name)
+	if name != "holonbot[bot]" {
+		t.Errorf("user.name = %q, want 'holonbot[bot]'", name)
 	}
 
 	email, err := client.ConfigGet(ctx, "user.email")
 	if err != nil {
 		t.Fatalf("ConfigGet user.email failed: %v", err)
 	}
-	if email != "bot@holon.run" {
-		t.Errorf("user.email = %q, want 'bot@holon.run'", email)
+	if email != "250454749+holonbot[bot]@users.noreply.github.com" {
+		t.Errorf("user.email = %q, want '250454749+holonbot[bot]@users.noreply.github.com'", email)
 	}
 
 	// Create a file and commit to verify config works
@@ -1331,8 +1331,8 @@ func TestClient_InitRepository_OverwritesExistingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConfigGet user.name failed: %v", err)
 	}
-	// Current behavior: gets "Holon Bot", not "Existing User"
-	if name != "Holon Bot" {
+	// Current behavior: gets "holonbot[bot]", not "Existing User"
+	if name != "holonbot[bot]" {
 		t.Logf("Note: InitRepository overwrites existing config (user.name: %q)", name)
 	}
 }

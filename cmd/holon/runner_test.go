@@ -1403,9 +1403,9 @@ func TestRunner_GitConfigOverride(t *testing.T) {
 	}{
 		{
 			name:           "both git name and email set",
-			gitAuthorName:  "Holon Bot",
+			gitAuthorName:  "holonbot[bot]",
 			gitAuthorEmail: "holon@example.com",
-			expectedName:   "Holon Bot",
+			expectedName:   "holonbot[bot]",
 			expectedEmail:  "holon@example.com",
 		},
 		{

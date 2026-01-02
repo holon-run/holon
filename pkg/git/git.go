@@ -43,8 +43,8 @@ type ClientOptions struct {
 // DefaultClientOptions returns the default client options.
 func DefaultClientOptions() *ClientOptions {
 	return &ClientOptions{
-		UserName:  "Holon Bot",
-		UserEmail: "bot@holon.run",
+		UserName:  "holonbot[bot]",
+		UserEmail: "250454749+holonbot[bot]@users.noreply.github.com",
 		Quiet:     true,
 		DryRun:    false,
 	}

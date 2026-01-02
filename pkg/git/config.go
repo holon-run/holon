@@ -13,10 +13,10 @@ import (
 )
 
 // DefaultAuthorName is the default git author name when no other config is available.
-const DefaultAuthorName = "Holon Bot"
+const DefaultAuthorName = "holonbot[bot]"
 
 // DefaultAuthorEmail is the default git author email when no other config is available.
-const DefaultAuthorEmail = "bot@holon.run"
+const DefaultAuthorEmail = "250454749+holonbot[bot]@users.noreply.github.com"
 
 // Config holds resolved git configuration.
 type Config struct {
@@ -55,7 +55,7 @@ type ConfigOptions struct {
 // 2. Host git config (local > global > system)
 // 3. Environment variables (GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL)
 // 4. ProjectConfig (.holon/config.yaml git.author_*)
-// 5. Defaults ("Holon Bot <bot@holon.run>")
+// 5. Defaults ("holonbot[bot] <250454749+holonbot[bot]@users.noreply.github.com>")
 //
 // This function consolidates all git config resolution logic into one place.
 // It reads host git config with proper scope awareness (local > global > system).
@@ -147,7 +147,7 @@ func GetHostGitConfig(key string) string {
 // 2. Host git config (global > system)
 // 3. Environment variables (GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL)
 // 4. ProjectConfig (.holon/config.yaml git.author_*)
-// 5. Defaults ("Holon Bot <bot@holon.run>")
+// 5. Defaults ("holonbot[bot] <250454749+holonbot[bot]@users.noreply.github.com>")
 func ResolveConfigForWorkspace(ctx context.Context, workspaceDir string, opts ConfigOptions) (Config, error) {
 	cfg := Config{
 		AuthorName: DefaultAuthorName,

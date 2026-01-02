@@ -6,8 +6,8 @@ When Holon performs git operations (e.g., creating PRs, publishing changes), it 
 
 If no git identity is configured, Holon uses default fallback values:
 
-- **Name**: `Holon Bot`
-- **Email**: `bot@holon.run`
+- **Name**: `holonbot[bot]`
+- **Email**: `250454749+holonbot[bot]@users.noreply.github.com`
 
 ## Configuration Priority
 
@@ -16,7 +16,7 @@ Holon determines git identity using a **centralized resolver** (`git.ResolveConf
 1. **Host git config** (local > global > system) - Your system's git configuration
 2. **ProjectConfig** - Project-level configuration in `.holon/config.yaml`
 3. **Environment variables** - `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL`
-4. **Default values** - `Holon Bot <bot@holon.run>`
+4. **Default values** - `holonbot[bot] <250454749+holonbot[bot]@users.noreply.github.com>`
 
 **Important**: The centralized resolver ensures consistent behavior across all commands (`run`, `publish`, `solve`). Host git config always has highest priority, respecting your personal git identity.
 
@@ -119,8 +119,8 @@ Commit this file to your repository so all team members use the same bot identit
 **Recommended**: Use host git config on the bot machine
 
 ```bash
-sudo -u holon-bot git config --global user.name "Holon Bot"
-sudo -u holon-bot git config --global user.email "bot@holon.run"
+sudo -u holon-bot git config --global user.name "holonbot[bot]"
+sudo -u holon-bot git config --global user.email "250454749+holonbot[bot]@users.noreply.github.com"
 ```
 
 ## Troubleshooting
@@ -170,7 +170,7 @@ The centralized resolver enforces priority as:
 1. **Host git config** (local > global > system) - highest priority
 2. **ProjectConfig** (`.holon/config.yaml`)
 3. **Environment variables** (`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`)
-4. **Defaults** (`Holon Bot <bot@holon.run>`)
+4. **Defaults** (`holonbot[bot] <250454749+holonbot[bot]@users.noreply.github.com>`)
 
 This means:
 - Your personal git identity (host config) is always respected

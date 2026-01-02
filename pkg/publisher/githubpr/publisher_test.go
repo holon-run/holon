@@ -677,7 +677,7 @@ func TestGitClient_CommitChangesWithoutPreconfiguredGit(t *testing.T) {
 
 	// This should succeed by auto-configuring git during CommitChanges
 	// Before fix PR #382: would fail with "Committer identity unknown"
-	// After fix: should succeed with default "Holon Bot <bot@holon.run>"
+	// After fix: should succeed with default "holonbot[bot] <250454749+holonbot[bot]@users.noreply.github.com>"
 	sha, err := gitClient.CommitChanges(ctx, "test commit from GitClient")
 	if err != nil {
 		t.Fatalf("CommitChanges() failed without pre-configured git: %v", err)
@@ -692,16 +692,16 @@ func TestGitClient_CommitChangesWithoutPreconfiguredGit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConfigGet user.name failed: %v", err)
 	}
-	if name != "Holon Bot" {
-		t.Errorf("user.name = %q, want 'Holon Bot'", name)
+	if name != "holonbot[bot]" {
+		t.Errorf("user.name = %q, want 'holonbot[bot]'", name)
 	}
 
 	email, err := client.ConfigGet(ctx, "user.email")
 	if err != nil {
 		t.Fatalf("ConfigGet user.email failed: %v", err)
 	}
-	if email != "bot@holon.run" {
-		t.Errorf("user.email = %q, want 'bot@holon.run'", email)
+	if email != "250454749+holonbot[bot]@users.noreply.github.com" {
+		t.Errorf("user.email = %q, want '250454749+holonbot[bot]@users.noreply.github.com'", email)
 	}
 }
 
