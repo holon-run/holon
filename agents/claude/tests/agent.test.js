@@ -293,36 +293,114 @@ describe("Environment Variable Parsing", () => {
     assert.strictEqual(intEnv("TEST_INT_VAR", 42), 0);
   });
 
-  test("HOLON_ANTHROPIC_LOG takes precedence over ANTHROPIC_LOG", () => {
-    process.env.ANTHROPIC_LOG = "info";
+  test("HOLON_ANTHROPIC_LOG takes precedence over ANTHROPIC_LOG and auto-mapping", () => {
+    const logger = new MockProgressLogger("info"); // Would normally auto-map to "info"
+    process.env.ANTHROPIC_LOG = "warn";
     process.env.HOLON_ANTHROPIC_LOG = "debug";
 
     // Simulate the logic from agent.ts
-    const holonAnthropicLog = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
-    assert.strictEqual(holonAnthropicLog, "debug");
+    let anthropicLogLevel = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
+
+    // Auto-map from logger if not explicitly set
+    if (!anthropicLogLevel) {
+      const logLevelStr = logger["logLevel"];
+      if (logLevelStr === "debug") {
+        anthropicLogLevel = "debug";
+      } else if (logLevelStr === "info") {
+        anthropicLogLevel = "info";
+      }
+    }
+
+    assert.strictEqual(anthropicLogLevel, "debug", "HOLON_ANTHROPIC_LOG should take precedence");
 
     delete process.env.ANTHROPIC_LOG;
     delete process.env.HOLON_ANTHROPIC_LOG;
   });
 
-  test("ANTHROPIC_LOG is used when HOLON_ANTHROPIC_LOG is not set", () => {
+  test("ANTHROPIC_LOG is used when HOLON_ANTHROPIC_LOG is not set (overrides auto-mapping)", () => {
+    const logger = new MockProgressLogger("debug"); // Would normally auto-map to "debug"
     process.env.ANTHROPIC_LOG = "warn";
     delete process.env.HOLON_ANTHROPIC_LOG;
 
     // Simulate the logic from agent.ts
-    const holonAnthropicLog = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
-    assert.strictEqual(holonAnthropicLog, "warn");
+    let anthropicLogLevel = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
+
+    // Auto-map from logger if not explicitly set
+    if (!anthropicLogLevel) {
+      const logLevelStr = logger["logLevel"];
+      if (logLevelStr === "debug") {
+        anthropicLogLevel = "debug";
+      } else if (logLevelStr === "info") {
+        anthropicLogLevel = "info";
+      }
+    }
+
+    assert.strictEqual(anthropicLogLevel, "warn", "ANTHROPIC_LOG should be used when HOLON_ANTHROPIC_LOG is not set");
 
     delete process.env.ANTHROPIC_LOG;
   });
 
-  test("No log level is set when neither env var is present", () => {
+  test("Auto-maps from ProgressLogger debug level when no env vars are set", () => {
+    const logger = new MockProgressLogger("debug");
     delete process.env.ANTHROPIC_LOG;
     delete process.env.HOLON_ANTHROPIC_LOG;
 
     // Simulate the logic from agent.ts
-    const holonAnthropicLog = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
-    assert.strictEqual(holonAnthropicLog, undefined);
+    let anthropicLogLevel = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
+
+    // Auto-map from logger if not explicitly set
+    if (!anthropicLogLevel) {
+      const logLevelStr = logger["logLevel"];
+      if (logLevelStr === "debug") {
+        anthropicLogLevel = "debug";
+      } else if (logLevelStr === "info") {
+        anthropicLogLevel = "info";
+      }
+    }
+
+    assert.strictEqual(anthropicLogLevel, "debug", "Should auto-map from logger debug level");
+  });
+
+  test("Auto-maps from ProgressLogger info level when no env vars are set", () => {
+    const logger = new MockProgressLogger("info");
+    delete process.env.ANTHROPIC_LOG;
+    delete process.env.HOLON_ANTHROPIC_LOG;
+
+    // Simulate the logic from agent.ts
+    let anthropicLogLevel = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
+
+    // Auto-map from logger if not explicitly set
+    if (!anthropicLogLevel) {
+      const logLevelStr = logger["logLevel"];
+      if (logLevelStr === "debug") {
+        anthropicLogLevel = "debug";
+      } else if (logLevelStr === "info") {
+        anthropicLogLevel = "info";
+      }
+    }
+
+    assert.strictEqual(anthropicLogLevel, "info", "Should auto-map from logger info level");
+  });
+
+  test("No auto-mapping for ProgressLogger progress level", () => {
+    const logger = new MockProgressLogger("progress");
+    delete process.env.ANTHROPIC_LOG;
+    delete process.env.HOLON_ANTHROPIC_LOG;
+
+    // Simulate the logic from agent.ts
+    let anthropicLogLevel = process.env.HOLON_ANTHROPIC_LOG || process.env.ANTHROPIC_LOG;
+
+    // Auto-map from logger if not explicitly set
+    if (!anthropicLogLevel) {
+      const logLevelStr = logger["logLevel"];
+      if (logLevelStr === "debug") {
+        anthropicLogLevel = "debug";
+      } else if (logLevelStr === "info") {
+        anthropicLogLevel = "info";
+      }
+    }
+
+    assert.strictEqual(anthropicLogLevel, undefined, "Should not auto-map from progress/minimal levels");
   });
 
   afterEach(() => {

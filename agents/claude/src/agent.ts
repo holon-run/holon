@@ -334,12 +334,28 @@ async function runClaude(
   }
   env.IS_SANDBOX = "1";
 
-  // Configure Anthropic SDK log level if HOLON_ANTHROPIC_LOG is set
-  // This allows SDK-level debugging for troubleshooting
-  const holonAnthropicLog = env.HOLON_ANTHROPIC_LOG || env.ANTHROPIC_LOG;
-  if (holonAnthropicLog) {
-    env.ANTHROPIC_LOG = holonAnthropicLog;
-    logger.debug(`Anthropic SDK logging enabled: ANTHROPIC_LOG=${holonAnthropicLog}`);
+  // Configure Anthropic SDK log level based on multiple sources (priority order):
+  // 1. HOLON_ANTHROPIC_LOG env var (explicit user control)
+  // 2. ANTHROPIC_LOG env var (standard Anthropic variable)
+  // 3. Auto-map from ProgressLogger logLevel (when set to debug/info)
+  // This allows SDK-level debugging to seamlessly follow Holon's log level
+  let anthropicLogLevel = env.HOLON_ANTHROPIC_LOG || env.ANTHROPIC_LOG;
+
+  // Auto-map SDK log level from ProgressLogger if not explicitly set
+  if (!anthropicLogLevel) {
+    // Map ProgressLogger logLevel to Anthropic SDK log level
+    // Only enable SDK logging for debug/info levels, not progress/minimal
+    const logLevelStr = logger["logLevel"]; // Access private property for mapping
+    if (logLevelStr === LogLevel.DEBUG) {
+      anthropicLogLevel = "debug";
+    } else if (logLevelStr === LogLevel.INFO) {
+      anthropicLogLevel = "info";
+    }
+  }
+
+  if (anthropicLogLevel) {
+    env.ANTHROPIC_LOG = anthropicLogLevel;
+    logger.debug(`Anthropic SDK logging enabled: ANTHROPIC_LOG=${anthropicLogLevel}`);
   }
 
   const model = env.HOLON_MODEL;
