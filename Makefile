@@ -1,4 +1,4 @@
-.PHONY: build build-host test test-all clean run-example test-agent help release-build validate-schema test-contract
+.PHONY: build build-host test test-all clean run-example test-agent help release-build validate-schema test-contract build-agent-bundle
 
 # Project variables
 BINARY_NAME=holon
