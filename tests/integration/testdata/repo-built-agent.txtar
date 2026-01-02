@@ -31,8 +31,9 @@ exists out/manifest.json
 exists out/diff.patch
 exists out/summary.md
 
-# Verify the fix was applied
-grep 'if b == 0' work/examples/buggy.go
+# Verify the fix was applied (check diff.patch content)
+grep 'if b == 0' out/diff.patch
+grep 'return 0' out/diff.patch
 
 # Initial file (workspace snapshot)
 -- work/examples/buggy.go --
