@@ -2,14 +2,14 @@
 
 [English](README.md) | 中文
 
-Holon 让 AI 编码代理以全程无交互方式运行，一步把 Issue 变成可合并的 PR 补丁和摘要——本地或 CI 都可用，无需人工值守。
+Holon 让 AI 编码 Agent 以全程无交互方式运行，一步把 Issue 变成可合并的 PR 补丁和摘要——本地或 CI 都可用，无需人工值守。
 
 ## 为什么选择 Holon
 - 默认无交互：无需 TTY/人肉输入，运行可重复、可预期。
-- Issue → PR 端到端：拉取上下文、运行代理、一条命令创建/更新 PR。
+- Issue → PR 端到端：拉取上下文、运行 Agent、一条命令创建/更新 PR。
 - Patch-first 标准工件：始终产出 `diff.patch`、`summary.md`、`manifest.json`，便于审查、审计、CI 消费。
 - 沙箱隔离：Docker + 快照工作区默认保护仓库，只有你主动选择才会写回宿主。
-- 可插拔代理与工具链：自由更换代理引擎/Bundle，不改工作流。
+- 可插拔 Agent 与工具链：自由更换 Agent 引擎/Bundle，不改工作流。
 - 本地/CI 同步体验：`holon solve` 本地或 GitHub Actions，输入输出一致。
 
 ## GitHub Actions 快速开始（配合 holonbot）
@@ -45,7 +45,7 @@ jobs:
       anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL }}
 ```
 
-3) 配置密钥 `ANTHROPIC_AUTH_TOKEN`（确保该 repo 能访问），并通过 `secrets:` 映射传入，如上所示。`holon-solve` 会根据事件自动推导模式/上下文/输出目录并无交互运行代理。开箱即用：将 `examples/workflows/holon-trigger.yml` 复制到你的仓库即可快速触发。
+3) 配置密钥 `ANTHROPIC_AUTH_TOKEN`（确保该 repo 能访问），并通过 `secrets:` 映射传入，如上所示。`holon-solve` 会根据事件自动推导模式/上下文/输出目录并无交互运行 Agent。开箱即用：将 `examples/workflows/holon-trigger.yml` 复制到你的仓库即可快速触发。
 
 可选：直接使用 Composite Action 并上传制品：
 ```yaml
@@ -67,7 +67,7 @@ jobs:
 - Homebrew：`brew install holon-run/tap/holon`
 - 或下载发行版 tarball，将 `holon` 放入 `PATH`。
 
-针对 Issue 或 PR 运行（自动收集上下文 → 运行代理 → 发布结果）：
+针对 Issue 或 PR 运行（自动收集上下文 → 运行 Agent → 发布结果）：
 ```bash
 export ANTHROPIC_AUTH_TOKEN=...
 export GITHUB_TOKEN=...   # 或使用 gh auth login
@@ -81,8 +81,8 @@ holon solve https://github.com/owner/repo/issues/123
 - PR：将 patch 推送到 PR 分支，按需回复评论。
 
 ## 开发与文档
-- 构建 CLI：`make build`；测试：`make test`；代理 Bundle：`(cd agents/claude && npm run bundle)`。
+- 构建 CLI：`make build`；测试：`make test`；Agent Bundle：`(cd agents/claude && npm run bundle)`。
 - 架构设计：`docs/holon-architecture.md`
-- 代理契约：`rfc/0002-agent-scheme.md`
+- Agent 契约：`rfc/0002-agent-scheme.md`
 - 模式说明：`docs/modes.md`
 - 贡献指南：`CONTRIBUTING.md`
