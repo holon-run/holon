@@ -89,6 +89,17 @@ jobs:
     - name: Set up Docker
       uses: docker/setup-buildx-action@v3
 
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Build Agent Bundle
+      run: |
+        cd agents/claude
+        npm ci
+        npm run bundle
+
     - name: Test Integration
       id: test
       run: make test-integration-artifacts
