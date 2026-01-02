@@ -1,0 +1,105 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://holon.run/schemas/workspace.manifest.schema.json",
+  "title": "Holon Workspace Manifest",
+  "description": "Manifest file written by the Holon runtime after workspace preparation. Contains workspace metadata including preparation strategy, source origin, git reference information, and timestamps. This file is written to /holon/output/workspace.manifest.json.",
+  "type": "object",
+  "required": ["strategy", "source", "created_at", "has_history", "is_shallow"],
+  "properties": {
+    "strategy": {
+      "description": "Name of the workspace preparation strategy used (e.g., 'local', 'github', 'git').",
+      "type": "string",
+      "examples": ["local", "github", "git", "empty"]
+    },
+    "source": {
+      "description": "Origin of the workspace content. For git-based strategies, this is the repository URL or path.",
+      "type": "string",
+      "examples": ["https://github.com/holon-run/holon", "/local/path/to/workspace"]
+    },
+    "ref": {
+      "description": "Git reference that was checked out (branch, tag, or commit SHA). Only present for git-based strategies.",
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9._/\\-]+$",
+      "examples": ["main", "v1.0.0", "refs/pull/123/head", "abc123def456"]
+    },
+    "head_sha": {
+      "description": "Commit SHA of the workspace after preparation. Only present for git-based strategies.",
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$",
+      "examples": ["abc123def456789abc123def456789abc123def4"]
+    },
+    "created_at": {
+      "description": "Timestamp when the workspace was prepared (RFC 3339 format).",
+      "type": "string",
+      "format": "date-time",
+      "examples": ["2026-01-02T12:34:56Z"]
+    },
+    "has_history": {
+      "description": "Indicates whether full git history is available in the workspace.",
+      "type": "boolean"
+    },
+    "is_shallow": {
+      "description": "Indicates whether the git repository is a shallow clone (depth=1).",
+      "type": "boolean"
+    },
+    "notes": {
+      "description": "Additional information or warnings about the workspace preparation.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "examples": [["Repository cloned with depth=1", "Fetched 3 PR branches"]]
+    }
+  },
+  "definitions": {
+    "gitRef": {
+      "description": "Git reference (branch, tag, or SHA)",
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9._/\\-]+$"
+    },
+    "commitSHA": {
+      "description": "Full 40-character commit SHA",
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    }
+  },
+  "examples": [
+    {
+      "strategy": "github",
+      "source": "https://github.com/holon-run/holon",
+      "ref": "main",
+      "head_sha": "6a06914c4603fe4bf33c0a5a2931f10be38544b2",
+      "created_at": "2026-01-02T12:34:56Z",
+      "has_history": true,
+      "is_shallow": false
+    },
+    {
+      "strategy": "git",
+      "source": "https://github.com/user/repo",
+      "ref": "refs/pull/123/head",
+      "head_sha": "abc123def456789abc123def456789abc123def4",
+      "created_at": "2026-01-02T10:00:00Z",
+      "has_history": false,
+      "is_shallow": true,
+      "notes": [
+        "Repository cloned with depth=1",
+        "Fetched PR #123 from upstream"
+      ]
+    },
+    {
+      "strategy": "local",
+      "source": "/local/path/to/workspace",
+      "created_at": "2026-01-02T08:00:00Z",
+      "has_history": true,
+      "is_shallow": false
+    },
+    {
+      "strategy": "empty",
+      "source": "",
+      "created_at": "2026-01-02T07:00:00Z",
+      "has_history": false,
+      "is_shallow": false,
+      "notes": ["Empty workspace created"]
+    }
+  ]
+}
