@@ -272,9 +272,10 @@ func writeCommitStatusJSON(dir string, status *CombinedStatus) error {
 }
 
 func writePRFixSchema(dir string) error {
-	data, err := prompt.ReadAsset("modes/pr-fix/pr-fix.schema.json")
+	// Read schema from the prompt assets' schemas/ directory
+	data, err := prompt.ReadAsset("schemas/pr-fix.schema.json")
 	if err != nil {
-		return fmt.Errorf("failed to read pr-fix schema asset: %w", err)
+		return fmt.Errorf("failed to read pr-fix schema: %w", err)
 	}
 
 	path := filepath.Join(dir, "pr-fix.schema.json")
