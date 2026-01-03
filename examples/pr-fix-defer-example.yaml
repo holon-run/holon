@@ -6,7 +6,7 @@ context:
   workspace: "/workspace"
   files:
     - "pkg/prompt/assets/modes/pr-fix/contract.md"
-    - "pkg/prompt/assets/modes/pr-fix/pr-fix.schema.json"
+    - "pkg/prompt/assets/schemas/pr-fix.schema.json"
 goal:
   description: |
     ## PR-Fix Mode with Deferred Work Handling
