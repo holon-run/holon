@@ -395,8 +395,12 @@ async function runClaude(
   let queryError: Error | null = null;
 
   const heartbeatSeconds = intEnv("HOLON_HEARTBEAT_SECONDS", 60);
-  const idleTimeoutSeconds = intEnv("HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS", 1800);
-  const totalTimeoutSeconds = intEnv("HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS", 7200);
+  // Idle timeout: 90 minutes default. Covers most single-file compilations (Rust, C++, Go)
+  // and aligns with typical CI/CD job timeouts. Users can override via HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS.
+  const idleTimeoutSeconds = intEnv("HOLON_RESPONSE_IDLE_TIMEOUT_SECONDS", 5400);
+  // Total timeout: 3 hours default. Allows for multi-step workflows (build + test + package)
+  // in large projects/monorepos. Users can override via HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS.
+  const totalTimeoutSeconds = intEnv("HOLON_RESPONSE_TOTAL_TIMEOUT_SECONDS", 10800);
   const queryTimeoutSeconds = intEnv("HOLON_QUERY_TIMEOUT_SECONDS", 300);
 
   const startTime = Date.now();
