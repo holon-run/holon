@@ -404,28 +404,21 @@ async function runClaude(
   }
   env.IS_SANDBOX = "1";
 
-  // Configure Anthropic SDK log level based on multiple sources (priority order):
-  // 1. HOLON_ANTHROPIC_LOG env var (explicit user control)
-  // 2. ANTHROPIC_LOG env var (standard Anthropic variable)
-  // 3. Auto-map from ProgressLogger logLevel (when set to debug/info)
-  // This allows SDK-level debugging to seamlessly follow Holon's log level
+  // Configure Anthropic SDK log level
+  //
+  // IMPORTANT: Do NOT auto-enable SDK debug logging based on Holon's log level.
+  // SDK's ANTHROPIC_LOG=debug causes internal debug output to be written to the
+  // SDK's message pipe, which is not JSON-formatted and breaks JSON.parse in
+  // ProcessTransport.readMessages(), causing SyntaxError like:
+  // "Unexpected token 'l', \"[log_9dd16b\"... is not valid JSON"
+  //
+  // Only enable SDK logging when explicitly requested via environment variables.
   let anthropicLogLevel = env.HOLON_ANTHROPIC_LOG || env.ANTHROPIC_LOG;
-
-  // Auto-map SDK log level from ProgressLogger if not explicitly set
-  if (!anthropicLogLevel) {
-    // Map ProgressLogger logLevel to Anthropic SDK log level
-    // Only enable SDK logging for debug/info levels, not progress/minimal
-    const logLevelStr = logger["logLevel"]; // Access private property for mapping
-    if (logLevelStr === LogLevel.DEBUG) {
-      anthropicLogLevel = "debug";
-    } else if (logLevelStr === LogLevel.INFO) {
-      anthropicLogLevel = "info";
-    }
-  }
 
   if (anthropicLogLevel) {
     env.ANTHROPIC_LOG = anthropicLogLevel;
-    logger.debug(`Anthropic SDK logging enabled: ANTHROPIC_LOG=${anthropicLogLevel}`);
+    logger.debug(`Anthropic SDK logging explicitly enabled: ANTHROPIC_LOG=${anthropicLogLevel}`);
+    logger.debug(`Warning: SDK debug logging may cause internal JSON parsing errors`);
   }
 
   const model = env.HOLON_MODEL;
