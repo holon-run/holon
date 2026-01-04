@@ -591,6 +591,12 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		return fmt.Errorf("failed to resolve base image: %w", err)
 	}
 
+	// Resolve assistant output with precedence: CLI > config > default
+	resolvedAssistantOutput, err := resolveSolveAssistantOutput(workspacePrep.path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve assistant output: %w", err)
+	}
+
 	// Determine goal from the reference
 	goal := buildGoal(inputDir, solveRef, refType, workflowMeta.TriggerGoalHint)
 
@@ -677,7 +683,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		OutDir:               outDir,
 		RoleName:             solveRole,
 		LogLevel:             solveLogLevel,
-		AssistantOutput:      solveAssistantOutput,
+		AssistantOutput:      resolvedAssistantOutput,
 		Mode:                 solveMode,
 		Cleanup:              cleanupMode,
 		AgentConfigMode:      solveAgentConfigMode,
@@ -912,6 +918,42 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// resolveSolveAssistantOutput resolves the assistant output mode for solve command.
+// Precedence: CLI flag > project config > default ("none").
+func resolveSolveAssistantOutput(workspace string) (string, error) {
+	// Load project config from workspace
+	projectCfg, err := config.Load(workspace)
+	if err != nil {
+		fmt.Printf("Warning: failed to load project config: %v\n", err)
+		projectCfg = &config.ProjectConfig{}
+	}
+
+	// Check CLI flag first
+	if solveAssistantOutput != "" {
+		// Validate the value
+		if solveAssistantOutput != "none" && solveAssistantOutput != "stream" {
+			return "", fmt.Errorf("invalid assistant-output value: %q (must be \"none\" or \"stream\")", solveAssistantOutput)
+		}
+		fmt.Printf("Config: assistant_output = %q (source: cli)\n", solveAssistantOutput)
+		return solveAssistantOutput, nil
+	}
+
+	// Check project config
+	if projectCfg.AssistantOutput != "" {
+		// Validate the value
+		if projectCfg.AssistantOutput != "none" && projectCfg.AssistantOutput != "stream" {
+			return "", fmt.Errorf("invalid assistant-output value in config: %q (must be \"none\" or \"stream\")", projectCfg.AssistantOutput)
+		}
+		fmt.Printf("Config: assistant_output = %q (source: config)\n", projectCfg.AssistantOutput)
+		return projectCfg.AssistantOutput, nil
+	}
+
+	// Use default
+	defaultValue := "none"
+	fmt.Printf("Config: assistant_output = %q (source: default)\n", defaultValue)
+	return defaultValue, nil
 }
 
 // resolveSolveBaseImage resolves the base image for solve command with auto-detection.

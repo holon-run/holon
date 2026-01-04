@@ -46,15 +46,23 @@ class AssistantStreamLimiter {
       return ""; // Skip this message due to rate limiting
     }
 
-    // Truncate if needed
+    // Trim and check for empty text
     let outputText = text.trim();
+    if (outputText.length === 0) {
+      return ""; // Skip empty text
+    }
+
+    // Calculate content length before truncation (for accurate total counting)
+    const contentLengthToCount = Math.min(outputText.length, this.maxCharsPerMessage);
+
+    // Truncate if needed
     if (outputText.length > this.maxCharsPerMessage) {
       outputText = outputText.substring(0, this.maxCharsPerMessage) + "... (truncated)";
     }
 
     // Update state
     this.lastOutputTime = now;
-    this.totalCharsSent += outputText.length;
+    this.totalCharsSent += contentLengthToCount;
 
     return outputText;
   }

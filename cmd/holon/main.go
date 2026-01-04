@@ -235,6 +235,11 @@ var runCmd = &cobra.Command{
 		// Apply config with precedence: CLI flags > project config > defaults
 		resolved := resolveWithProjectConfig(cmd, projectCfg, absWorkspace)
 
+		// Validate assistant output value
+		if resolved.assistantOutput != "" && resolved.assistantOutput != "none" && resolved.assistantOutput != "stream" {
+			return fmt.Errorf("invalid assistant-output value: %q (must be \"none\" or \"stream\")", resolved.assistantOutput)
+		}
+
 		// Initialize logger with resolved log level
 		logCfg := holonlog.Config{
 			Level:  holonlog.LogLevel(resolved.logLevel),
