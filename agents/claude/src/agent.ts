@@ -418,7 +418,9 @@ async function runClaude(
   if (anthropicLogLevel) {
     env.ANTHROPIC_LOG = anthropicLogLevel;
     logger.debug(`Anthropic SDK logging explicitly enabled: ANTHROPIC_LOG=${anthropicLogLevel}`);
-    logger.debug(`Warning: SDK debug logging may cause internal JSON parsing errors`);
+    logger.debug(
+      `Note: In some SDK versions or configurations, SDK debug logging can emit non-JSON output on the message pipe, which may cause JSON parsing errors in Holon.`,
+    );
   }
 
   const model = env.HOLON_MODEL;
