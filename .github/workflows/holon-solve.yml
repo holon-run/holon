@@ -38,6 +38,11 @@ on:
         required: false
         type: string
         default: 'progress'
+      assistant_output:
+        description: 'Assistant output mode (none, stream)'
+        required: false
+        type: string
+        default: 'none'
       workspace:
         description: 'Workspace path (default: .)'
         required: false
@@ -460,6 +465,7 @@ jobs:
           anthropic_base_url: ${{ secrets.anthropic_base_url || 'https://api.anthropic.com' }}
           github_token: ${{ secrets.holon_github_token }}
           log_level: ${{ inputs.log_level }}
+          assistant_output: ${{ inputs.assistant_output }}
           workspace: ${{ inputs.workspace }}
           input_dir: ${{ steps.ctx.outputs.input_dir }}
           output_dir: ${{ steps.ctx.outputs.output_dir }}

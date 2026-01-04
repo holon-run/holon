@@ -54,6 +54,7 @@ type RunnerConfig struct {
 	GitAuthorEmail       string // Optional: git author email override
 	WorkspaceIsTemporary bool   // true if workspace is a temporary directory (vs user-provided)
 	Skills               []string // Skills to include (already resolved with precedence)
+	AssistantOutput      string  // Assistant output mode: "none" or "stream"
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -263,6 +264,13 @@ output:
 		envVars["HOLON_MODE"] = cfg.Mode
 	} else {
 		envVars["HOLON_MODE"] = "solve" // Default to solve mode
+	}
+
+	// Add assistant_output to environment variables
+	if cfg.AssistantOutput != "" {
+		envVars["ASSISTANT_OUTPUT"] = cfg.AssistantOutput
+	} else {
+		envVars["ASSISTANT_OUTPUT"] = "none" // Default to none
 	}
 
 	// Compile prompts

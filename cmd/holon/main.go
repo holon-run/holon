@@ -36,6 +36,7 @@ var cleanupMode string
 var roleName string
 var envVarsList []string
 var logLevel string
+var assistantOutput string
 var mode string
 var agentConfigMode string
 var skipPreflight bool
@@ -49,6 +50,7 @@ type resolvedConfig struct {
 	agentChannel      string
 	agentChannelSource string
 	logLevel          string
+	assistantOutput   string
 }
 
 // resolveWithProjectConfig resolves configuration values with precedence:
@@ -131,6 +133,16 @@ func resolveWithProjectConfig(cmd *cobra.Command, cfg *config.ProjectConfig, wor
 	level, source := cfg.ResolveLogLevel(cliLogLevel, "progress")
 	resolved.logLevel = level
 	logConfigResolution("log_level", level, source)
+
+	// Resolve assistant output: CLI > config > default
+	// Only use CLI value if flag was explicitly changed
+	cliAssistantOutput := assistantOutput
+	if !cmd.Flags().Changed("assistant-output") {
+		cliAssistantOutput = ""
+	}
+	assistantOutputValue, source := cfg.ResolveAssistantOutput(cliAssistantOutput, "none")
+	resolved.assistantOutput = assistantOutputValue
+	logConfigResolution("assistant_output", assistantOutputValue, source)
 
 	return resolved
 }
@@ -223,6 +235,11 @@ var runCmd = &cobra.Command{
 		// Apply config with precedence: CLI flags > project config > defaults
 		resolved := resolveWithProjectConfig(cmd, projectCfg, absWorkspace)
 
+		// Validate assistant output value
+		if resolved.assistantOutput != "" && resolved.assistantOutput != "none" && resolved.assistantOutput != "stream" {
+			return fmt.Errorf("invalid assistant-output value: %q (must be \"none\" or \"stream\")", resolved.assistantOutput)
+		}
+
 		// Initialize logger with resolved log level
 		logCfg := holonlog.Config{
 			Level:  holonlog.LogLevel(resolved.logLevel),
@@ -310,6 +327,7 @@ var runCmd = &cobra.Command{
 			RoleName:        roleName,
 			EnvVarsList:     envVarsList,
 			LogLevel:        resolved.logLevel,
+			AssistantOutput: resolved.assistantOutput,
 			Mode:            mode,
 			Cleanup:         cleanupMode,
 			AgentConfigMode: agentConfigMode,
@@ -342,6 +360,7 @@ func init() {
 	runCmd.Flags().StringVar(&mode, "mode", "solve", "Execution mode: solve, pr-fix, plan, review")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
+	runCmd.Flags().StringVar(&assistantOutput, "assistant-output", "none", "Assistant output mode: none (default), stream (stream assistant text to logs)")
 	runCmd.Flags().StringVar(&agentConfigMode, "agent-config-mode", "no", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount, default)")
 	runCmd.Flags().StringSliceVar(&skillPaths, "skill", []string{}, "Path to skill directory (repeatable, higher precedence than --skills)")
 	runCmd.Flags().StringVar(&skillsList, "skills", "", "Comma-separated list of skill paths")

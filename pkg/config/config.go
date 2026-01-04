@@ -37,6 +37,10 @@ type ProjectConfig struct {
 	// LogLevel is the default Holon log level (debug, info, progress, minimal)
 	LogLevel string `yaml:"log_level,omitempty"`
 
+	// AssistantOutput controls streaming of assistant text to stdout/stderr
+	// Values: "none" (default) or "stream"
+	AssistantOutput string `yaml:"assistant_output,omitempty"`
+
 	// Skills is a list of paths to skill directories to include
 	Skills []string `yaml:"skills,omitempty"`
 
@@ -187,4 +191,11 @@ func (c *ProjectConfig) IsImageAutoDetectEnabled() bool {
 // GetSkills returns the configured skills list
 func (c *ProjectConfig) GetSkills() []string {
 	return c.Skills
+}
+
+// ResolveAssistantOutput returns the effective assistant output mode and its source.
+// Precedence: cliValue > configValue > defaultValue.
+// Returns the effective value and its source ("cli", "config", or "default").
+func (c *ProjectConfig) ResolveAssistantOutput(cliValue, defaultValue string) (string, string) {
+	return c.ResolveString(cliValue, c.AssistantOutput, defaultValue)
 }

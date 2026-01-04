@@ -18,15 +18,74 @@ enum LogLevel {
   MINIMAL = "minimal",
 }
 
+enum AssistantOutputMode {
+  NONE = "none",
+  STREAM = "stream",
+}
+
+// Rate limiter for streaming assistant output
+// Limits output to max 1 message per second with truncation
+class AssistantStreamLimiter {
+  private lastOutputTime = 0;
+  private readonly minIntervalMs = 1000; // 1 second between messages
+  private readonly maxCharsPerMessage = 500; // Truncate long messages
+  private totalCharsSent = 0;
+  private readonly maxTotalChars = 10000; // Cap on total chars to prevent log flooding
+
+  shouldOutput(text: string): string {
+    const now = Date.now();
+    const timeSinceLastOutput = now - this.lastOutputTime;
+
+    // Check if we've hit the total cap
+    if (this.totalCharsSent >= this.maxTotalChars) {
+      return ""; // Stop outputting once we've hit the cap
+    }
+
+    // Check rate limiting (max 1 message per second)
+    if (timeSinceLastOutput < this.minIntervalMs) {
+      return ""; // Skip this message due to rate limiting
+    }
+
+    // Trim and check for empty text
+    let outputText = text.trim();
+    if (outputText.length === 0) {
+      return ""; // Skip empty text
+    }
+
+    // Calculate content length before truncation (for accurate total counting)
+    const contentLengthToCount = Math.min(outputText.length, this.maxCharsPerMessage);
+
+    // Truncate if needed
+    if (outputText.length > this.maxCharsPerMessage) {
+      outputText = outputText.substring(0, this.maxCharsPerMessage) + "... (truncated)";
+    }
+
+    // Update state
+    this.lastOutputTime = now;
+    this.totalCharsSent += contentLengthToCount;
+
+    return outputText;
+  }
+}
+
 class ProgressLogger {
   private logLevel: LogLevel;
   private toolUseCount = 0;
+  private assistantOutputMode: AssistantOutputMode;
+  private streamLimiter: AssistantStreamLimiter;
 
-  constructor(level: string) {
+  constructor(level: string, assistantOutput: string = "none") {
     const normalized = level.toLowerCase() as LogLevel;
     this.logLevel = Object.values(LogLevel).includes(normalized)
       ? normalized
       : LogLevel.PROGRESS;
+
+    const normalizedOutput = assistantOutput.toLowerCase() as AssistantOutputMode;
+    this.assistantOutputMode = Object.values(AssistantOutputMode).includes(normalizedOutput)
+      ? normalizedOutput
+      : AssistantOutputMode.NONE;
+
+    this.streamLimiter = new AssistantStreamLimiter();
   }
 
   private shouldLog(level: LogLevel): boolean {
@@ -117,6 +176,17 @@ class ProgressLogger {
       this.minimal("=== END SUMMARY ===");
     } catch (error) {
       this.info(`[WARNING] Failed to read summary: ${String(error)}`);
+    }
+  }
+
+  // Stream assistant text to stdout if enabled and rate-limited
+  streamAssistantText(text: string): void {
+    if (this.assistantOutputMode !== AssistantOutputMode.STREAM) {
+      return;
+    }
+    const output = this.streamLimiter.shouldOutput(text);
+    if (output) {
+      console.log(`[ASSISTANT] ${output}`);
     }
   }
 }
@@ -449,6 +519,8 @@ async function runClaude(
         for (const block of message.message.content) {
           if (block.type === "text" && typeof block.text === "string") {
             finalOutput += block.text;
+            // Stream assistant text if enabled (with rate limiting in logger)
+            logger.streamAssistantText(block.text);
           } else if (block.type === "tool_use") {
             const toolName = typeof block.name === "string" ? block.name : "UnknownTool";
             logger.logToolUse(toolName);
@@ -502,7 +574,7 @@ async function runClaude(
 }
 
 async function runAgent(): Promise<void> {
-  const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress");
+  const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress", process.env.ASSISTANT_OUTPUT ?? "none");
   const mode = process.env.HOLON_MODE ?? "solve";
   const isProbe = process.argv.slice(2).includes("--probe");
 
