@@ -5,13 +5,13 @@ import fs from "fs";
  * All fields are required to align with the bundle manifest schema.
  */
 export interface BundleManifest {
-  bundleVersion: string;
+  bundleVersion: "1";
   name: string;
   version: string;
   entry: string;
   platform: string;
   arch: string;
-  libc: string;
+  libc: "glibc" | "musl";
   engine: {
     name: string;
     sdk: string;
@@ -30,13 +30,13 @@ export interface BundleManifest {
  * Used during development or for legacy bundles that may not have all required fields.
  */
 export interface PartialBundleManifest {
-  bundleVersion?: string;
+  bundleVersion?: "1";
   name?: string;
   version?: string;
   entry?: string;
   platform?: string;
   arch?: string;
-  libc?: string;
+  libc?: "glibc" | "musl";
   engine?: {
     name?: string;
     sdk?: string;
