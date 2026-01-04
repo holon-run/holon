@@ -445,8 +445,13 @@ async function runClaude(
     tools: { type: "preset", preset: "claude_code" },
     allowedTools: ["Skill"], // Explicitly enable Skill tool
     stderr: (data: string) => {
-      logFile.write(`[stderr] ${data}`);
-      logger.debug(data.trim());
+      // Filter out SDK internal debug output that looks like variable names
+      // These are SDK implementation details that shouldn't be logged
+      const trimmed = data.trim();
+      if (trimmed && !trimmed.match(/^log_[a-f0-9]+$/i)) {
+        logFile.write(`[stderr] ${data}`);
+        logger.debug(trimmed);
+      }
     },
   };
 
@@ -512,8 +517,32 @@ async function runClaude(
   try {
     for await (const message of queryStream) {
       lastMsgTime = Date.now();
+
+      // Validate message structure before processing
+      // SDK may sometimes emit non-object debug output or malformed data
+      if (typeof message !== 'object' || message === null) {
+        // Log non-object messages with a special prefix for easy identification
+        // These are typically SDK debug output that should still be visible
+        const debugMsg = String(message);
+        logFile.write(`[SDK_DEBUG] ${debugMsg}\n`);
+        logger.debug(`SDK debug output: ${debugMsg.substring(0, 200)}`);
+        continue;
+      }
+
+      // Now try to serialize and log
+      let messageStr: string;
+      try {
+        messageStr = JSON.stringify(message);
+      } catch (err) {
+        const safeMessageType = (message as any)?.type ?? "unknown";
+        logger.debug(`Failed to serialize message (type: ${safeMessageType}, runtime type: ${typeof message}): ${err}`);
+        continue;
+      }
+
+      logFile.write(`${messageStr}\n`);
+
+      // Only increment counter for valid, serialized messages
       msgCount += 1;
-      logFile.write(`${JSON.stringify(message)}\n`);
 
       if (message?.type === "assistant" && message.message && Array.isArray(message.message.content)) {
         for (const block of message.message.content) {
@@ -546,6 +575,12 @@ async function runClaude(
       }
     }
   } catch (error) {
+    // Capture full error details for debugging
+    const errorStr = error instanceof Error ? error.message : String(error);
+    const stackInfo = error instanceof Error && error.stack ? `\nError stack: ${error.stack}` : "";
+
+    logger.debug(`SDK query error: ${errorStr}${stackInfo}`);
+
     queryError = error instanceof Error ? error : new Error(String(error));
   } finally {
     if (heartbeatTimer) {
