@@ -2,8 +2,34 @@ import fs from "fs";
 
 /**
  * Bundle manifest interface defining the structure of /holon/agent/manifest.json
+ * All fields are required to align with the bundle manifest schema.
  */
 export interface BundleManifest {
+  bundleVersion: string;
+  name: string;
+  version: string;
+  entry: string;
+  platform: string;
+  arch: string;
+  libc: string;
+  engine: {
+    name: string;
+    sdk: string;
+    sdkVersion: string;
+  };
+  runtime: {
+    type: string;
+    version: string;
+  };
+  env: Record<string, string>;
+  capabilities: Record<string, boolean>;
+}
+
+/**
+ * Partial bundle manifest interface for backward compatibility with incomplete manifests.
+ * Used during development or for legacy bundles that may not have all required fields.
+ */
+export interface PartialBundleManifest {
   bundleVersion?: string;
   name?: string;
   version?: string;
@@ -41,13 +67,13 @@ export interface AgentMetadata {
  * @param manifestPath - Path to the bundle manifest file (defaults to /holon/agent/manifest.json)
  * @returns Parsed bundle manifest or null if file is missing or invalid
  */
-export function readBundleManifest(manifestPath: string = "/holon/agent/manifest.json"): BundleManifest | null {
+export function readBundleManifest(manifestPath: string = "/holon/agent/manifest.json"): PartialBundleManifest | null {
   try {
     if (!fs.existsSync(manifestPath)) {
       return null;
     }
     const raw = fs.readFileSync(manifestPath, "utf8");
-    return JSON.parse(raw) as BundleManifest;
+    return JSON.parse(raw) as PartialBundleManifest;
   } catch (error) {
     // If manifest is missing or invalid, return null to use fallback defaults
     return null;
@@ -59,7 +85,7 @@ export function readBundleManifest(manifestPath: string = "/holon/agent/manifest
  * @param bundleManifest - The bundle manifest object (can be null)
  * @returns Agent metadata with agent name, version, and optional engine SDK info
  */
-export function getAgentMetadata(bundleManifest: BundleManifest | null): AgentMetadata {
+export function getAgentMetadata(bundleManifest: PartialBundleManifest | null): AgentMetadata {
   // If bundle manifest is available, derive metadata from it
   if (bundleManifest) {
     const agent = bundleManifest.engine?.name || bundleManifest.name || "claude-code";
