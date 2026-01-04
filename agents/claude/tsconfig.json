@@ -10,5 +10,6 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "types": ["node"]
-  }
+  },
+  "exclude": ["tests/**"]
 }

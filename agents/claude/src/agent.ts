@@ -11,21 +11,21 @@ import { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
 export { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
 export { loadSkillsFromSpec };
 
-enum LogLevel {
+export enum LogLevel {
   DEBUG = "debug",
   INFO = "info",
   PROGRESS = "progress",
   MINIMAL = "minimal",
 }
 
-enum AssistantOutputMode {
+export enum AssistantOutputMode {
   NONE = "none",
   STREAM = "stream",
 }
 
 // Rate limiter for streaming assistant output
 // Limits output to max 1 message per second with truncation
-class AssistantStreamLimiter {
+export class AssistantStreamLimiter {
   private lastOutputTime = 0;
   private readonly minIntervalMs = 1000; // 1 second between messages
   private readonly maxCharsPerMessage = 500; // Truncate long messages
@@ -68,7 +68,7 @@ class AssistantStreamLimiter {
   }
 }
 
-class ProgressLogger {
+export class ProgressLogger {
   private logLevel: LogLevel;
   private toolUseCount = 0;
   private assistantOutputMode: AssistantOutputMode;
