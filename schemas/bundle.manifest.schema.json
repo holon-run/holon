@@ -15,7 +15,7 @@
     "name": {
       "description": "Bundle name identifier (e.g., 'agent-claude').",
       "type": "string",
-      "examples": ["agent-claude", "agent-claude-prfix"]
+      "examples": ["agent-claude", "agent-claude-prefix"]
     },
     "version": {
       "description": "Bundle version string (e.g., '0.7.0', '0.7.0-beta.1').",
@@ -113,35 +113,6 @@
       }
     }
   },
-  "definitions": {
-    "engine": {
-      "type": "object",
-      "required": ["name", "sdk", "sdkVersion"],
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "sdk": {
-          "type": "string"
-        },
-        "sdkVersion": {
-          "type": "string"
-        }
-      }
-    },
-    "runtime": {
-      "type": "object",
-      "required": ["type", "version"],
-      "properties": {
-        "type": {
-          "type": "string"
-        },
-        "version": {
-          "type": "string"
-        }
-      }
-    }
-  },
   "examples": [
     {
       "bundleVersion": "1",
@@ -170,7 +141,7 @@
     },
     {
       "bundleVersion": "1",
-      "name": "agent-claude-prfix",
+      "name": "agent-claude-prefix",
       "version": "0.6.0-beta.1",
       "entry": "bin/agent",
       "platform": "linux",
@@ -200,7 +171,7 @@
       "entry": "bin/agent",
       "platform": "darwin",
       "arch": "arm64",
-      "libc": "glibc",
+      "libc": "",
       "engine": {
         "name": "claude-code",
         "sdk": "@anthropic-ai/claude-agent-sdk",
