@@ -1,0 +1,222 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://holon.run/schemas/bundle.manifest.schema.json",
+  "title": "Holon Agent Bundle Manifest",
+  "description": "Manifest file for Holon agent bundles. Describes the bundle metadata, entry point, platform, runtime requirements, and capabilities. This is the manifest.json file found at /holon/agent/manifest.json inside agent bundles.",
+  "type": "object",
+  "required": ["bundleVersion", "name", "version", "entry", "platform", "arch", "libc", "engine", "runtime", "env", "capabilities"],
+  "properties": {
+    "bundleVersion": {
+      "description": "Bundle manifest format version.",
+      "type": "string",
+      "enum": ["1"],
+      "default": "1"
+    },
+    "name": {
+      "description": "Bundle name identifier (e.g., 'agent-claude').",
+      "type": "string",
+      "examples": ["agent-claude", "agent-claude-prfix"]
+    },
+    "version": {
+      "description": "Bundle version string (e.g., '0.7.0', '0.7.0-beta.1').",
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+.*"
+    },
+    "entry": {
+      "description": "Entry point script path relative to bundle root.",
+      "type": "string",
+      "default": "bin/agent",
+      "examples": ["bin/agent"]
+    },
+    "platform": {
+      "description": "Target operating system platform.",
+      "type": "string",
+      "examples": ["linux", "darwin", "windows"]
+    },
+    "arch": {
+      "description": "Target CPU architecture.",
+      "type": "string",
+      "examples": ["amd64", "arm64", "x86_64", "aarch64"]
+    },
+    "libc": {
+      "description": "C library variant (for Linux builds).",
+      "type": "string",
+      "enum": ["glibc", "musl"],
+      "examples": ["glibc", "musl"]
+    },
+    "engine": {
+      "description": "AI engine information (e.g., Claude Code).",
+      "type": "object",
+      "required": ["name", "sdk", "sdkVersion"],
+      "properties": {
+        "name": {
+          "description": "Engine name (e.g., 'claude-code').",
+          "type": "string",
+          "examples": ["claude-code"]
+        },
+        "sdk": {
+          "description": "Engine SDK package name.",
+          "type": "string",
+          "examples": ["@anthropic-ai/claude-agent-sdk"]
+        },
+        "sdkVersion": {
+          "description": "Engine SDK version string.",
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+.*"
+        }
+      }
+    },
+    "runtime": {
+      "description": "Runtime environment requirements.",
+      "type": "object",
+      "required": ["type", "version"],
+      "properties": {
+        "type": {
+          "description": "Runtime type identifier.",
+          "type": "string",
+          "examples": ["node", "python", "deno"]
+        },
+        "version": {
+          "description": "Runtime version or 'unknown' if not detectable.",
+          "type": "string",
+          "examples": ["20.18.0", "22.11.0", "unknown"]
+        }
+      }
+    },
+    "env": {
+      "description": "Environment variables to set in the agent container.",
+      "type": "object",
+      "patternProperties": {
+        "^[A-Z_][A-Z0-9_]*$": {
+          "description": "Environment variable value.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "description": "Agent capability flags indicating required resources.",
+      "type": "object",
+      "properties": {
+        "needsNetwork": {
+          "description": "Whether the agent requires network access.",
+          "type": "boolean"
+        },
+        "needsGit": {
+          "description": "Whether the agent requires Git.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": {
+        "description": "Additional capability flags.",
+        "type": "boolean"
+      }
+    }
+  },
+  "definitions": {
+    "engine": {
+      "type": "object",
+      "required": ["name", "sdk", "sdkVersion"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sdk": {
+          "type": "string"
+        },
+        "sdkVersion": {
+          "type": "string"
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["type", "version"],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "bundleVersion": "1",
+      "name": "agent-claude",
+      "version": "0.7.0",
+      "entry": "bin/agent",
+      "platform": "linux",
+      "arch": "amd64",
+      "libc": "glibc",
+      "engine": {
+        "name": "claude-code",
+        "sdk": "@anthropic-ai/claude-agent-sdk",
+        "sdkVersion": "1.0.0"
+      },
+      "runtime": {
+        "type": "node",
+        "version": "22.11.0"
+      },
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "capabilities": {
+        "needsNetwork": true,
+        "needsGit": true
+      }
+    },
+    {
+      "bundleVersion": "1",
+      "name": "agent-claude-prfix",
+      "version": "0.6.0-beta.1",
+      "entry": "bin/agent",
+      "platform": "linux",
+      "arch": "arm64",
+      "libc": "musl",
+      "engine": {
+        "name": "claude-code",
+        "sdk": "@anthropic-ai/claude-agent-sdk",
+        "sdkVersion": "0.9.5"
+      },
+      "runtime": {
+        "type": "node",
+        "version": "20.18.0"
+      },
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "capabilities": {
+        "needsNetwork": true,
+        "needsGit": true
+      }
+    },
+    {
+      "bundleVersion": "1",
+      "name": "agent-claude",
+      "version": "0.5.0",
+      "entry": "bin/agent",
+      "platform": "darwin",
+      "arch": "arm64",
+      "libc": "glibc",
+      "engine": {
+        "name": "claude-code",
+        "sdk": "@anthropic-ai/claude-agent-sdk",
+        "sdkVersion": "0.8.0"
+      },
+      "runtime": {
+        "type": "node",
+        "version": "unknown"
+      },
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "capabilities": {
+        "needsNetwork": true,
+        "needsGit": true
+      }
+    }
+  ]
+}
