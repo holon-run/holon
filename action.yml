@@ -39,6 +39,10 @@ inputs:
     description: 'Log level for CI visibility (debug, info, progress, minimal)'
     required: false
     default: 'progress'
+  assistant_output:
+    description: 'Assistant output mode for CI visibility (none, stream)'
+    required: false
+    default: 'none'
   mode:
     description: 'Execution mode: solve, pr-fix, plan, review (default: auto-detect from ref type)'
     required: false
@@ -265,7 +269,8 @@ runs:
         SOLVE_ARGS+=(--output "$OUT_DIR")
 
         # Run holon solve
-        echo "Running: holon solve ${{ inputs.ref }} ${SOLVE_ARGS[*]} --log-level ${{ inputs.log_level }}"
+        echo "Running: holon solve ${{ inputs.ref }} ${SOLVE_ARGS[*]} --log-level ${{ inputs.log_level }} --assistant-output ${{ inputs.assistant_output }}"
         holon solve "${{ inputs.ref }}" \
           "${SOLVE_ARGS[@]}" \
-          --log-level "${{ inputs.log_level }}"
+          --log-level "${{ inputs.log_level }}" \
+          --assistant-output "${{ inputs.assistant_output }}"

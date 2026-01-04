@@ -36,6 +36,7 @@ var (
 	solveMode             string
 	solveRole             string
 	solveLogLevel         string
+	solveAssistantOutput  string
 	solveDryRun           bool
 	solveWorkspace        string
 	solveWorkspaceHistory string
@@ -676,6 +677,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		OutDir:               outDir,
 		RoleName:             solveRole,
 		LogLevel:             solveLogLevel,
+		AssistantOutput:      solveAssistantOutput,
 		Mode:                 solveMode,
 		Cleanup:              cleanupMode,
 		AgentConfigMode:      solveAgentConfigMode,
@@ -962,6 +964,7 @@ func init() {
 	solveCmd.Flags().StringVar(&solveMode, "mode", "", "Execution mode (default: auto-detect from ref type)")
 	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")
+	solveCmd.Flags().StringVar(&solveAssistantOutput, "assistant-output", "none", "Assistant output mode: none (default), stream (stream assistant text to logs)")
 	solveCmd.Flags().StringVar(&solveAgentConfigMode, "agent-config-mode", "no", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount, default)")
 	solveCmd.Flags().BoolVar(&solveDryRun, "dry-run", false, "Validate without running (not yet implemented)")
 	solveCmd.Flags().BoolVar(&solveSkipPreflight, "no-preflight", false, "Skip preflight checks (not recommended)")
