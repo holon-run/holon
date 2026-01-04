@@ -445,8 +445,13 @@ async function runClaude(
     tools: { type: "preset", preset: "claude_code" },
     allowedTools: ["Skill"], // Explicitly enable Skill tool
     stderr: (data: string) => {
-      logFile.write(`[stderr] ${data}`);
-      logger.debug(data.trim());
+      // Filter out SDK internal debug output that looks like variable names
+      // These are SDK implementation details that shouldn't be logged
+      const trimmed = data.trim();
+      if (trimmed && !trimmed.match(/^log_[a-f0-9]+$/)) {
+        logFile.write(`[stderr] ${data}`);
+        logger.debug(trimmed);
+      }
     },
   };
 
@@ -513,7 +518,30 @@ async function runClaude(
     for await (const message of queryStream) {
       lastMsgTime = Date.now();
       msgCount += 1;
-      logFile.write(`${JSON.stringify(message)}\n`);
+
+      // Validate message structure before processing
+      // SDK may sometimes emit non-object debug output or malformed data
+      const messageType = typeof message;
+
+      if (messageType !== 'object' || message === null) {
+        // Log non-object messages with a special prefix for easy identification
+        // These are typically SDK debug output that should still be visible
+        const debugMsg = String(message);
+        logFile.write(`[SDK_DEBUG] ${debugMsg}\n`);
+        logger.debug(`SDK debug output: ${debugMsg.substring(0, 200)}`);
+        continue;
+      }
+
+      // Now try to serialize and log
+      let messageStr: string;
+      try {
+        messageStr = JSON.stringify(message);
+      } catch (err) {
+        logger.debug(`Failed to serialize message: ${err}`);
+        continue;
+      }
+
+      logFile.write(`${messageStr}\n`);
 
       if (message?.type === "assistant" && message.message && Array.isArray(message.message.content)) {
         for (const block of message.message.content) {
@@ -546,6 +574,15 @@ async function runClaude(
       }
     }
   } catch (error) {
+    // Capture full error details for debugging
+    const errorStr = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : '';
+
+    logger.debug(`SDK query error: ${errorStr}`);
+    if (errorStack) {
+      logger.debug(`Error stack: ${errorStack}`);
+    }
+
     queryError = error instanceof Error ? error : new Error(String(error));
   } finally {
     if (heartbeatTimer) {
