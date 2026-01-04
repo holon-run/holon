@@ -55,7 +55,7 @@ describe("AssistantStreamLimiter - Truncation", () => {
         assert.strictEqual(result.length, 500 + "... (truncated)".length);
         assert.strictEqual(result, "A".repeat(500) + "... (truncated)");
     });
-    test("truncates exactly at 500 characters without adding suffix when exactly at limit", () => {
+    test("does not truncate messages at exactly 500 characters", () => {
         const limiter = new AssistantStreamLimiter();
         const exactMessage = "B".repeat(500);
         const result = limiter.shouldOutput(exactMessage);
@@ -79,12 +79,12 @@ describe("AssistantStreamLimiter - Total Character Cap", () => {
         for (let i = 0; i < 20; i++) {
             const message = "X".repeat(500);
             const result = limiter.shouldOutput(message);
-            // First 20 messages should succeed (10,000 chars exactly at cap)
+            // These 20 messages should all succeed, bringing totalCharsSent to the 10,000-char cap
             assert.strictEqual(result, message);
             // Wait for rate limit to expire before next message
             await new Promise((resolve) => setTimeout(resolve, 1100));
         }
-        // 21st message should hit the cap and return empty
+        // 21st message should hit the cap (totalCharsSent >= maxTotalChars) and return empty
         const message21 = "Y".repeat(500);
         const result21 = limiter.shouldOutput(message21);
         assert.strictEqual(result21, "");
@@ -138,6 +138,15 @@ describe("AssistantStreamLimiter - Empty Text Handling", () => {
         const result = limiter.shouldOutput("");
         assert.strictEqual(result, "");
     });
+    test("empty string does not update internal state", () => {
+        const limiter = new AssistantStreamLimiter();
+        // Empty string should be skipped
+        const result1 = limiter.shouldOutput("");
+        assert.strictEqual(result1, "");
+        // Immediate call with valid text should succeed (proving empty didn't update lastOutputTime)
+        const result2 = limiter.shouldOutput("Valid text");
+        assert.strictEqual(result2, "Valid text");
+    });
     test("skips whitespace-only text", () => {
         const limiter = new AssistantStreamLimiter();
         const result = limiter.shouldOutput("   \n\t  ");
@@ -184,5 +193,50 @@ describe("AssistantStreamLimiter - Combined Behavior", () => {
         await new Promise((resolve) => setTimeout(resolve, 1100));
         const result2 = limiter.shouldOutput("H".repeat(500));
         assert.strictEqual(result2, "");
+    });
+    test("rate-limited messages do not count toward total cap", async () => {
+        const limiter = new AssistantStreamLimiter();
+
+        // First message: 500 chars (counts toward cap)
+        const result1 = limiter.shouldOutput("A".repeat(500));
+        assert.strictEqual(result1, "A".repeat(500));
+
+        // Rapid second message: rate-limited, should NOT count toward cap
+        const result2 = limiter.shouldOutput("B".repeat(500));
+        assert.strictEqual(result2, "");
+
+        // Wait for rate limit
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+
+        // Third message: 500 chars (total should now be 1000, proving 2nd message didn't count)
+        const result3 = limiter.shouldOutput("C".repeat(500));
+        assert.strictEqual(result3, "C".repeat(500));
+
+        // Send 16 more messages of 500 chars each (total should be 1000 + 16*500 = 9,000)
+        for (let i = 0; i < 16; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 1100));
+            limiter.shouldOutput("D".repeat(500));
+        }
+
+        // Wait for rate limit
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+
+        // 19th message (1st + 3rd + 16 more = 18 successful so far): should bring total to 9,500
+        const result4 = limiter.shouldOutput("E".repeat(500));
+        assert.strictEqual(result4, "E".repeat(500));
+
+        // Wait for rate limit
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+
+        // 20th message: should bring total to exactly 10,000 and succeed
+        const result5 = limiter.shouldOutput("F".repeat(500));
+        assert.strictEqual(result5, "F".repeat(500));
+
+        // Wait for rate limit
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+
+        // 21st message: should be blocked because we've hit the cap (20 messages * 500 = 10,000)
+        const result6 = limiter.shouldOutput("G".repeat(500));
+        assert.strictEqual(result6, "");
     });
 });

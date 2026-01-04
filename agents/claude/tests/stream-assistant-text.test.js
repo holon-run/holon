@@ -112,24 +112,39 @@ describe("ProgressLogger - streamAssistantText Integration", () => {
         });
     });
     describe("Total character cap with streamAssistantText", () => {
-        test("stops outputting after hitting total character cap", () => {
+        test("stops outputting after hitting total character cap", async () => {
             const logger = new ProgressLogger(LogLevel.PROGRESS, AssistantOutputMode.STREAM);
             // Send messages that will eventually hit the 10,000 character cap
             // Each message is 500 chars, so 20 messages = 10,000 chars
             for (let i = 0; i < 25; i++) {
                 logger.streamAssistantText("M".repeat(500));
+                // Wait for rate limit to allow next message
+                await new Promise((resolve) => setTimeout(resolve, 1100));
             }
             // Should have stopped outputting after 20 messages
             // Note: The exact count may vary slightly due to timing, but it should be around 20
             assert.ok(getAssistantOutputs().length <= 21, `Expected <= 21 outputs, got ${getAssistantOutputs().length}`);
         });
-        test("accurately counts characters toward total cap", () => {
+        test("accurately counts characters toward total cap", async () => {
             const logger = new ProgressLogger(LogLevel.PROGRESS, AssistantOutputMode.STREAM);
             // Send a message that will be truncated
             logger.streamAssistantText("Z".repeat(600));
             // The truncated content (500 chars) should be counted toward the cap
             assert.strictEqual(getAssistantOutputs().length, 1);
             assert.ok(getAssistantOutputs()[0].includes("... (truncated)"));
+            // Wait for rate limit
+            await new Promise((resolve) => setTimeout(resolve, 1100));
+            // Send 19 more 500-char messages (total should be 500 + 19*500 = 10,000)
+            for (let i = 0; i < 19; i++) {
+                logger.streamAssistantText("A".repeat(500));
+                await new Promise((resolve) => setTimeout(resolve, 1100));
+            }
+            // Should have output 20 messages total (1 truncated + 19 full)
+            assert.strictEqual(getAssistantOutputs().length, 20);
+            // Next message should be blocked by cap
+            logger.streamAssistantText("B".repeat(500));
+            await new Promise((resolve) => setTimeout(resolve, 1100));
+            assert.strictEqual(getAssistantOutputs().length, 20);
         });
     });
     describe("Invalid assistantOutput mode handling", () => {
