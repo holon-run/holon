@@ -1,7 +1,7 @@
 // Package skills provides skill discovery, validation, and staging for Holon.
 // Skills are directories containing SKILL.md files that can be auto-discovered
 // from .claude/skills/ or explicitly specified via config/spec/CLI.
-// Skills can also be downloaded from remote zip URLs.
+// Skills can also be downloaded from remote zip URLs or loaded from builtin.
 package skills
 
 import (
@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/holon-run/holon/pkg/builtin"
 	"github.com/holon-run/holon/pkg/skills/remote"
 )
 
@@ -24,11 +25,14 @@ const (
 // Skill represents a discovered or specified skill
 type Skill struct {
 	// Path is the absolute or relative path to the skill directory
+	// For builtin skills, this is the reference (e.g., "github/solve")
 	Path string
 	// Name is the base name of the skill directory
 	Name string
-	// Source indicates where the skill was specified from (cli, config, spec, discovered)
+	// Source indicates where the skill was specified from (cli, config, spec, discovered, builtin)
 	Source string
+	// Builtin indicates if this is a builtin skill (embedded in the binary)
+	Builtin bool
 }
 
 // Resolver handles skill discovery, validation, and resolution
@@ -144,10 +148,15 @@ func (r *Resolver) discover() ([]Skill, error) {
 	return skills, nil
 }
 
-// resolveSkillRef resolves a single skill reference (URL or local path) to one or more skills
-// Returns multiple skills for URLs (zip can contain multiple skills) or single skill for local paths
+// resolveSkillRef resolves a single skill reference to one or more skills
+// Resolution order (first match wins):
+// 1. Remote URL
+// 2. Workspace skill (.claude/skills/{ref})
+// 3. Absolute/relative path
+// 4. Builtin skill
+// Returns multiple skills for URLs (zip can contain multiple skills) or single skill for other types
 func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
-	// Check if it's a URL
+	// 1. Check if it's a URL
 	if remote.IsURL(ref) {
 		// Parse the URL reference
 		skillRef, err := remote.ParseSkillRef(ref)
@@ -182,13 +191,47 @@ func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
 		return skills, nil
 	}
 
-	// Local path - use existing validation logic
-	skill, err := r.ValidateAndNormalize(ref, source)
-	if err != nil {
-		return nil, err
+	// 2. Check workspace skills
+	workspaceSkillPath := filepath.Join(r.workspace, SkillsDir, ref)
+	if info, err := os.Stat(workspaceSkillPath); err == nil && info.IsDir() {
+		// Validate that SKILL.md exists
+		skillManifestPath := filepath.Join(workspaceSkillPath, SkillManifestFile)
+		if _, err := os.Stat(skillManifestPath); err == nil {
+			// Found valid workspace skill
+			skillName := filepath.Base(workspaceSkillPath)
+			return []Skill{{
+				Path:    workspaceSkillPath,
+				Name:    skillName,
+				Source:  source,
+				Builtin: false,
+			}}, nil
+		}
 	}
 
-	return []Skill{skill}, nil
+	// 3. Check absolute/relative path
+	if _, err := os.Stat(ref); err == nil {
+		skill, err := r.ValidateAndNormalize(ref, source)
+		if err != nil {
+			return nil, err
+		}
+		skill.Builtin = false
+		return []Skill{skill}, nil
+	}
+
+	// 4. Check builtin skills
+	if builtin.Has(ref) {
+		// Use the reference as the path (for builtin skills, Path is the ref)
+		skillName := filepath.Base(ref)
+		return []Skill{{
+			Path:    ref,
+			Name:    skillName,
+			Source:  source,
+			Builtin: true,
+		}}, nil
+	}
+
+	// Not found anywhere
+	return nil, fmt.Errorf("skill not found: %s (checked: URL, workspace, filesystem, builtin)", ref)
 }
 
 // ValidateAndNormalize validates a skill path and normalizes it to an absolute path
@@ -228,9 +271,10 @@ func (r *Resolver) ValidateAndNormalize(path string, source string) (Skill, erro
 	skillName := filepath.Base(absPath)
 
 	return Skill{
-		Path:   absPath,
-		Name:   skillName,
-		Source: source,
+		Path:    absPath,
+		Name:    skillName,
+		Source:  source,
+		Builtin: false,
 	}, nil
 }
 
@@ -268,9 +312,44 @@ func Stage(workspaceDest string, skills []Skill) error {
 			return fmt.Errorf("failed to check skill destination %s: %w", destPath, err)
 		}
 
-		// Copy the skill directory
+		// Handle builtin skills differently - extract from embedded FS
+		if skill.Builtin {
+			if err := stageBuiltinSkill(skill.Path, destPath); err != nil {
+				return fmt.Errorf("failed to stage builtin skill %s: %w", skill.Name, err)
+			}
+			continue
+		}
+
+		// Copy the skill directory from filesystem
 		if err := copyDir(skill.Path, destPath); err != nil {
 			return fmt.Errorf("failed to copy skill %s: %w", skill.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// stageBuiltinSkill extracts a builtin skill from the embedded FS to the destination
+func stageBuiltinSkill(ref string, destPath string) error {
+	// Load all files from the builtin skill directory
+	files, err := builtin.LoadDir(ref)
+	if err != nil {
+		return fmt.Errorf("failed to load builtin skill %s: %w", ref, err)
+	}
+
+	// Create destination directory
+	if err := os.MkdirAll(destPath, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Write each file
+	for relPath, content := range files {
+		filePath := filepath.Join(destPath, relPath)
+		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+			return fmt.Errorf("failed to create directory: %w", err)
+		}
+		if err := os.WriteFile(filePath, content, 0644); err != nil {
+			return fmt.Errorf("failed to write file %s: %w", relPath, err)
 		}
 	}
 
