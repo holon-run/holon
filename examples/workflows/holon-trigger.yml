@@ -24,7 +24,7 @@ jobs:
     uses: holon-run/holon/.github/workflows/holon-solve.yml@main
     with:
       issue_number: ${{ github.event.issue.number || github.event.pull_request.number }}
-      comment_id: ${{ github.event.comment.id }}
+      comment_id: ${{ github.event.comment.id || 0 }}
     secrets:
       anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
       anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL }}
