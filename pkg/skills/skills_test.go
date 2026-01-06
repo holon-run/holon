@@ -475,3 +475,253 @@ func createTestZipData() []byte {
 	}
 	return buf.Bytes()
 }
+
+func TestStage_BuiltinSkills(t *testing.T) {
+	// Create destination workspace
+	workspaceDir, err := os.MkdirTemp("", "holon-builtin-workspace-*")
+	if err != nil {
+		t.Fatalf("failed to create workspace dir: %v", err)
+	}
+	defer os.RemoveAll(workspaceDir)
+
+	// Stage builtin skill
+	skillsList := []Skill{
+		{Path: "github/solve", Name: "solve", Source: "cli", Builtin: true},
+	}
+
+	err = Stage(workspaceDir, skillsList)
+	if err != nil {
+		t.Fatalf("Stage failed for builtin skill: %v", err)
+	}
+
+	// Verify skill was extracted
+	destSkillPath := filepath.Join(workspaceDir, ".claude", "skills", "github", "solve", "SKILL.md")
+	if _, err := os.Stat(destSkillPath); os.IsNotExist(err) {
+		t.Errorf("builtin skill was not extracted to destination: %s", destSkillPath)
+	}
+
+	// Verify content
+	content, err := os.ReadFile(destSkillPath)
+	if err != nil {
+		t.Fatalf("failed to read extracted skill: %v", err)
+	}
+	if len(content) == 0 {
+		t.Error("extracted skill is empty")
+	}
+	// Check for expected content
+	if len(content) < 20 {
+		t.Errorf("extracted skill content too short: %d bytes", len(content))
+	}
+}
+
+func TestStage_BuiltinSkillsWithNestedFiles(t *testing.T) {
+	// Test that builtin skill extraction preserves directory structure
+	workspaceDir, err := os.MkdirTemp("", "holon-builtin-nested-*")
+	if err != nil {
+		t.Fatalf("failed to create workspace dir: %v", err)
+	}
+	defer os.RemoveAll(workspaceDir)
+
+	// Stage builtin skill
+	skillsList := []Skill{
+		{Path: "github/solve", Name: "solve", Source: "cli", Builtin: true},
+	}
+
+	err = Stage(workspaceDir, skillsList)
+	if err != nil {
+		t.Fatalf("Stage failed: %v", err)
+	}
+
+	// Verify directory structure
+	destDir := filepath.Join(workspaceDir, ".claude", "skills", "github", "solve")
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		t.Fatalf("failed to read destination directory: %v", err)
+	}
+
+	// Should at least have SKILL.md
+	hasSkillMD := false
+	for _, entry := range entries {
+		if entry.Name() == "SKILL.md" {
+			hasSkillMD = true
+			break
+		}
+	}
+	if !hasSkillMD {
+		t.Error("SKILL.md not found in extracted skill")
+	}
+}
+
+func TestStage_MixedBuiltinAndFilesystem(t *testing.T) {
+	// Test staging both builtin and filesystem skills together
+	workspaceDir, err := os.MkdirTemp("", "holon-mixed-skills-*")
+	if err != nil {
+		t.Fatalf("failed to create workspace dir: %v", err)
+	}
+	defer os.RemoveAll(workspaceDir)
+
+	// Create a filesystem skill
+	sourceDir, err := os.MkdirTemp("", "holon-source-skill-*")
+	if err != nil {
+		t.Fatalf("failed to create source dir: %v", err)
+	}
+	defer os.RemoveAll(sourceDir)
+
+	skill1Dir := filepath.Join(sourceDir, "filesystem-skill")
+	if err := os.MkdirAll(skill1Dir, 0755); err != nil {
+		t.Fatalf("failed to create skill dir: %v", err)
+	}
+	skill1Manifest := filepath.Join(skill1Dir, "SKILL.md")
+	if err := os.WriteFile(skill1Manifest, []byte("# Filesystem Skill\n"), 0644); err != nil {
+		t.Fatalf("failed to create skill manifest: %v", err)
+	}
+
+	// Stage both builtin and filesystem skills
+	skillsList := []Skill{
+		{Path: "github/solve", Name: "solve", Source: "cli", Builtin: true},
+		{Path: skill1Dir, Name: "filesystem-skill", Source: "cli", Builtin: false},
+	}
+
+	err = Stage(workspaceDir, skillsList)
+	if err != nil {
+		t.Fatalf("Stage failed for mixed skills: %v", err)
+	}
+
+	// Verify builtin skill
+	builtinPath := filepath.Join(workspaceDir, ".claude", "skills", "github", "solve", "SKILL.md")
+	if _, err := os.Stat(builtinPath); os.IsNotExist(err) {
+		t.Errorf("builtin skill not found: %s", builtinPath)
+	}
+
+	// Verify filesystem skill
+	filesystemPath := filepath.Join(workspaceDir, ".claude", "skills", "filesystem-skill", "SKILL.md")
+	if _, err := os.Stat(filesystemPath); os.IsNotExist(err) {
+		t.Errorf("filesystem skill not found: %s", filesystemPath)
+	}
+}
+
+func TestStage_BuiltinSkillErrorHandling(t *testing.T) {
+	// Test error handling when builtin skill doesn't exist
+	workspaceDir, err := os.MkdirTemp("", "holon-builtin-error-*")
+	if err != nil {
+		t.Fatalf("failed to create workspace dir: %v", err)
+	}
+	defer os.RemoveAll(workspaceDir)
+
+	// Try to stage non-existent builtin skill
+	skillsList := []Skill{
+		{Path: "nonexistent/skill", Name: "skill", Source: "cli", Builtin: true},
+	}
+
+	err = Stage(workspaceDir, skillsList)
+	if err == nil {
+		t.Error("expected error for non-existent builtin skill, got nil")
+	}
+}
+
+func TestResolver_ResolveBuiltinSkill(t *testing.T) {
+	// Create a clean workspace without discovered skills
+	tempDir, err := os.MkdirTemp("", "holon-builtin-resolve-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	resolver := NewResolver(tempDir)
+
+	// Test 1: Resolve builtin skill by reference
+	t.Run("builtin skill reference", func(t *testing.T) {
+		resolved, err := resolver.Resolve([]string{"github/solve"}, []string{}, []string{})
+		if err != nil {
+			t.Fatalf("Resolve failed for builtin skill: %v", err)
+		}
+
+		if len(resolved) != 1 {
+			t.Errorf("expected 1 skill, got %d", len(resolved))
+		}
+
+		skill := resolved[0]
+		if skill.Name != "solve" {
+			t.Errorf("expected name 'solve', got '%s'", skill.Name)
+		}
+		if skill.Source != "cli" {
+			t.Errorf("expected source 'cli', got '%s'", skill.Source)
+		}
+		if !skill.Builtin {
+			t.Error("expected Builtin to be true")
+		}
+		if skill.Path != "github/solve" {
+			t.Errorf("expected path 'github/solve', got '%s'", skill.Path)
+		}
+	})
+
+	// Test 2: Precedence - workspace skill > builtin skill
+	t.Run("precedence workspace over builtin", func(t *testing.T) {
+		// Create a workspace skill with the same name as builtin
+		workspaceSkillDir := filepath.Join(tempDir, ".claude", "skills", "github")
+		if err := os.MkdirAll(workspaceSkillDir, 0755); err != nil {
+			t.Fatalf("failed to create workspace skill dir: %v", err)
+		}
+		// Create solve directory
+		solveDir := filepath.Join(workspaceSkillDir, "solve")
+		if err := os.MkdirAll(solveDir, 0755); err != nil {
+			t.Fatalf("failed to create solve dir: %v", err)
+		}
+		skillManifest := filepath.Join(solveDir, "SKILL.md")
+		if err := os.WriteFile(skillManifest, []byte("# Workspace Skill\n"), 0644); err != nil {
+			t.Fatalf("failed to create skill manifest: %v", err)
+		}
+
+		// Resolve - should prefer workspace skill over builtin
+		resolved, err := resolver.Resolve([]string{"github/solve"}, []string{}, []string{})
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+
+		if len(resolved) != 1 {
+			t.Errorf("expected 1 skill, got %d", len(resolved))
+		}
+
+		skill := resolved[0]
+		// Should be workspace skill (not builtin)
+		if skill.Builtin {
+			t.Error("expected workspace skill to take precedence over builtin (Builtin should be false)")
+		}
+	})
+
+	// Test 3: Non-existent builtin skill
+	t.Run("non-existent builtin skill", func(t *testing.T) {
+		_, err := resolver.Resolve([]string{"nonexistent/skill"}, []string{}, []string{})
+		if err == nil {
+			t.Error("expected error for non-existent builtin skill, got nil")
+		}
+	})
+
+	// Test 4: Builtin skill not found when workspace path exists
+	t.Run("filesystem path takes precedence", func(t *testing.T) {
+		// Create a filesystem path (not in workspace)
+		filesystemSkillDir := filepath.Join(tempDir, "filesystem-skill")
+		if err := os.MkdirAll(filesystemSkillDir, 0755); err != nil {
+			t.Fatalf("failed to create filesystem skill dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(filesystemSkillDir, "SKILL.md"), []byte("# Filesystem Skill\n"), 0644); err != nil {
+			t.Fatalf("failed to create skill manifest: %v", err)
+		}
+
+		// Resolve filesystem path - should not be treated as builtin
+		resolved, err := resolver.Resolve([]string{filesystemSkillDir}, []string{}, []string{})
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+
+		if len(resolved) != 1 {
+			t.Errorf("expected 1 skill, got %d", len(resolved))
+		}
+
+		skill := resolved[0]
+		if skill.Builtin {
+			t.Error("filesystem path should not be marked as builtin")
+		}
+	})
+}
+

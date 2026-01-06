@@ -20,8 +20,8 @@ func FS() fs.FS {
 	sub, err := fs.Sub(builtinSkills, "skills")
 	if err != nil {
 		// This should never happen if the embed path is correct
-		// Return a filesystem that will error on any operation
-		return fs.FS(nil)
+		// Return a nil filesystem so callers can detect unavailability
+		return nil
 	}
 	return sub
 }
@@ -84,7 +84,12 @@ func LoadDir(ref string) (map[string][]byte, error) {
 		// Store with relative path from skill root
 		relPath := path
 		if ref != "." {
-			relPath = path[len(ref)+1:]
+			// Ensure path is long enough to avoid slicing panic
+			if len(path) > len(ref)+1 {
+				relPath = path[len(ref)+1:]
+			} else {
+				relPath = filepath.Base(path)
+			}
 		}
 		files[relPath] = content
 

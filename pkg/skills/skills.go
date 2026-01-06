@@ -302,7 +302,14 @@ func Stage(workspaceDest string, skills []Skill) error {
 
 	// Copy each skill
 	for _, skill := range skills {
-		destPath := filepath.Join(destSkillsDir, skill.Name)
+		// For builtin skills, use the full ref path (e.g., "github/solve")
+		// For filesystem skills, use the skill name (e.g., "my-skill")
+		var destPath string
+		if skill.Builtin {
+			destPath = filepath.Join(destSkillsDir, skill.Path)
+		} else {
+			destPath = filepath.Join(destSkillsDir, skill.Name)
+		}
 
 		// Check if destination already exists
 		if _, err := os.Stat(destPath); err == nil {

@@ -220,20 +220,20 @@ var runCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 
-		// Validate --skill and --mode mutual exclusivity
+		// Validate --skill/--skills and --mode mutual exclusivity
 		// Parse CLI skills
 		cliSkills := skillPaths
 		for _, s := range skills.ParseSkillsList(skillsList) {
 			cliSkills = append(cliSkills, s)
 		}
-		// Check if --skill was explicitly provided
+		// Check if --skill/--skills was explicitly provided
 		hasSkills := cmd.Flags().Changed("skill") || cmd.Flags().Changed("skills")
 		// Check if --mode was explicitly provided (not default)
 		hasMode := cmd.Flags().Changed("mode")
-		if hasSkills && hasMode && mode != "solve" {
-			return fmt.Errorf("--skill and --mode flags are mutually exclusive (both were provided)")
+		if hasSkills && hasMode {
+			return fmt.Errorf("--skill/--skills and --mode flags are mutually exclusive (both were provided)")
 		}
-		// Note: If --mode is "solve" (default), we allow --skill to override it
+		// Note: If only one of --mode or --skill/--skills is provided, it will control the behavior
 
 		// Resolve workspace path early for auto-detection
 		absWorkspace, err := filepath.Abs(workspacePath)

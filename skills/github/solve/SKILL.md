@@ -4,7 +4,7 @@
 
 This skill adapts behavior based on the GitHub context provided:
 
-- **PR Context** ( `/holon/input/context/github/pr.json` exists):
+- **PR Context** (`/holon/input/context/github/pr.json` exists):
   - PR-fix mode: Analyze PR feedback, review threads, and CI failures
   - Generate structured responses to make the PR mergeable
 
