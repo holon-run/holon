@@ -14,7 +14,6 @@ import (
 	"github.com/holon-run/holon/pkg/context/provider/github"
 	"github.com/holon-run/holon/pkg/git"
 	pkggithub "github.com/holon-run/holon/pkg/github"
-	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/image"
 	"github.com/holon-run/holon/pkg/preflight"
 	"github.com/holon-run/holon/pkg/publisher"
@@ -561,6 +560,23 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		}
 	}
 
+	// Run early preflight checks before workspace preparation
+	// This checks Docker, and Git to fail fast before expensive workspace operations
+	// Note: GitHub token is already validated earlier by getGitHubToken() at line 413
+	checker := preflight.NewChecker(preflight.Config{
+		Skip:                  solveSkipPreflight,
+		Quiet:                 false,
+		RequireDocker:         true,
+		RequireGit:            true,
+		RequireGitHubToken:    false, // Already validated by getGitHubToken() at line 413
+		RequireAnthropicToken: false,
+		WorkspacePath:         "", // Skip workspace check - will do later
+		OutputPath:            "", // Skip output check - will do later
+	})
+	if err := checker.Run(ctx); err != nil {
+		return fmt.Errorf("early preflight checks failed: %w", err)
+	}
+
 	// Prepare workspace using the workspace prepare abstraction
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("Preparing workspace...")
@@ -644,21 +660,21 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		}()
 	}
 
-	// Run preflight checks before execution
-	holonlog.Progress("running preflight checks")
-
-	checker := preflight.NewChecker(preflight.Config{
+	// Run path preflight checks after workspace and output are resolved
+	// This checks workspace and output permissions/existence
+	// Use Quiet mode to suppress individual check messages (banners will still show)
+	checker = preflight.NewChecker(preflight.Config{
 		Skip:                  solveSkipPreflight,
-		Quiet:                 false,
-		RequireDocker:         true,
-		RequireGit:            true,
-		RequireGitHubToken:    true, // solve command always needs GitHub token
+		Quiet:                 true, // Suppress individual check messages (banners still show)
+		RequireDocker:         false, // Already checked in early preflight
+		RequireGit:            false, // Already checked in early preflight
+		RequireGitHubToken:    false, // Already checked in early preflight
 		RequireAnthropicToken: false,
 		WorkspacePath:         workspacePrep.path,
 		OutputPath:            outDir,
 	})
 	if err := checker.Run(ctx); err != nil {
-		return fmt.Errorf("preflight checks failed: %w", err)
+		return fmt.Errorf("path preflight checks failed: %w", err)
 	}
 
 	// Run holon
