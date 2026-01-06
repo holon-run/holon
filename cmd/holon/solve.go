@@ -561,13 +561,14 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Run early preflight checks before workspace preparation
-	// This checks Docker, Git, and tokens to fail fast before expensive workspace operations
+	// This checks Docker, and Git to fail fast before expensive workspace operations
+	// Note: GitHub token is already validated earlier by getGitHubToken() at line 413
 	checker := preflight.NewChecker(preflight.Config{
 		Skip:                  solveSkipPreflight,
 		Quiet:                 false,
 		RequireDocker:         true,
 		RequireGit:            true,
-		RequireGitHubToken:    true, // solve command always needs GitHub token
+		RequireGitHubToken:    false, // Already validated by getGitHubToken() at line 413
 		RequireAnthropicToken: false,
 		WorkspacePath:         "", // Skip workspace check - will do later
 		OutputPath:            "", // Skip output check - will do later
@@ -661,10 +662,10 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 
 	// Run path preflight checks after workspace and output are resolved
 	// This checks workspace and output permissions/existence
-	// Use Quiet mode to avoid duplicate "running preflight checks" banners
+	// Use Quiet mode to suppress individual check messages (banners will still show)
 	checker = preflight.NewChecker(preflight.Config{
 		Skip:                  solveSkipPreflight,
-		Quiet:                 true, // Suppress banners - early preflight already logged
+		Quiet:                 true, // Suppress individual check messages (banners still show)
 		RequireDocker:         false, // Already checked in early preflight
 		RequireGit:            false, // Already checked in early preflight
 		RequireGitHubToken:    false, // Already checked in early preflight
