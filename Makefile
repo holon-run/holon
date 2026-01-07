@@ -21,12 +21,16 @@ build: build-host
 ## build-host: Build runner CLI for current OS/Arch with version info
 build-host:
 	@echo "Building runner CLI (Version: $(VERSION), Commit: $(COMMIT))..."
+	@echo "Generating builtin skills..."
+	@go generate ./pkg/builtin
 	@mkdir -p $(BIN_DIR)
 	go build $(LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/holon
 
 ## release-build: Build binaries for multiple platforms
 release-build:
 	@echo "Building release binaries..."
+	@echo "Generating builtin skills..."
+	@go generate ./pkg/builtin
 	@mkdir -p $(BIN_DIR)
 	@echo "Building for linux/amd64..."
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/holon
@@ -42,6 +46,8 @@ test: test-go
 ## test-go: Run Go tests with structured output
 test-go:
 	@echo "Running Go tests..."
+	@echo "Generating builtin skills..."
+	@go generate ./pkg/builtin
 	@if command -v gotestfmt > /dev/null 2>&1; then \
 		go test ./... -json -v 2>&1 | gotestfmt; \
 	else \
@@ -52,11 +58,15 @@ test-go:
 ## test-raw: Run Go tests without gotestfmt (plain output)
 test-raw:
 	@echo "Running Go tests with plain output..."
+	@echo "Generating builtin skills..."
+	@go generate ./pkg/builtin
 	go test ./... -v
 
 ## test-unit: Run unit tests (non-integration) with structured output
 test-unit:
 	@echo "Running unit tests..."
+	@echo "Generating builtin skills..."
+	@go generate ./pkg/builtin
 	@if command -v gotestfmt > /dev/null 2>&1; then \
 		go test $$(go list ./... | grep -v '^github.com/holon-run/holon/tests/') -short -json -v 2>&1 | gotestfmt; \
 	else \
@@ -67,6 +77,8 @@ test-unit:
 ## test-unit-raw: Run unit tests (non-integration) without gotestfmt
 test-unit-raw:
 	@echo "Running unit tests with plain output..."
+	@echo "Generating builtin skills..."
+	@go generate ./pkg/builtin
 	go test $$(go list ./... | grep -v '^github.com/holon-run/holon/tests/') -short -v
 
 ## test-agent: Run agent TypeScript tests
