@@ -37,3 +37,7 @@ dist
 
 # Exception: allow .claude in agents/claude (needed for agent development)
 !agents/claude/.claude/
+
+# Builtin skills (generated copy from repository-level skills/)
+# Run 'go generate ./pkg/builtin' to regenerate
+pkg/builtin/skills/

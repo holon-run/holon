@@ -1,6 +1,8 @@
 // Package builtin provides embedded builtin skills for Holon.
 // Builtin skills are embedded in the binary using Go's embed package
 // and can be loaded by reference (e.g., "github/solve").
+//
+//go:generate sh -c "rm -rf skills && cp -r ../../skills ."
 package builtin
 
 import (
