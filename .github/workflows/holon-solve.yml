@@ -74,7 +74,9 @@ on:
         type: string
         default: 'holon-run/holon'
       runs_on:
-        description: 'Runner labels (JSON array or quoted string, e.g. '"'"'["ubuntu-latest"]'"'"' or '"'"'["self-hosted","linux","x64"]'"'"')'
+        description: >
+          Runner labels as a JSON array string.
+          Examples: '["ubuntu-latest"]' or '["self-hosted","linux","x64"]'
         required: false
         type: string
         default: '["ubuntu-latest"]'
