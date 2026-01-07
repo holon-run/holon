@@ -75,11 +75,12 @@ on:
         default: 'holon-run/holon'
       runs_on:
         description: >
-          Runner labels as a JSON array string.
-          Examples: '["ubuntu-latest"]' or '["self-hosted","linux","x64"]'
+          Runner labels as a plain string (e.g., 'ubuntu-latest' or 'self-hosted')
+          or JSON array string (e.g., '["ubuntu-latest"]' or '["self-hosted","linux","x64"]').
+          Plain strings are automatically converted to arrays.
         required: false
         type: string
-        default: '["ubuntu-latest"]'
+        default: 'ubuntu-latest'
     secrets:
       anthropic_auth_token:
         description: 'Anthropic Auth Token (legacy: anthropic_api_key also supported)'
@@ -103,7 +104,7 @@ on:
 
 jobs:
   holon-solve:
-    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    runs-on: ${{ (startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on)) || inputs.runs_on || 'ubuntu-latest' }}
     permissions:
       contents: write
       issues: write
