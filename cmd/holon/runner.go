@@ -16,8 +16,8 @@ import (
 	"github.com/holon-run/holon/pkg/agent/resolver"
 	v1 "github.com/holon-run/holon/pkg/api/v1"
 	"github.com/holon-run/holon/pkg/context/collector"
-	gh "github.com/holon-run/holon/pkg/github"
 	holonGit "github.com/holon-run/holon/pkg/git"
+	gh "github.com/holon-run/holon/pkg/github"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
@@ -48,13 +48,13 @@ type RunnerConfig struct {
 	EnvVarsList          []string
 	LogLevel             string
 	Mode                 string
-	Cleanup              string // Cleanup mode: "auto" (default), "none", "all"
-	AgentConfigMode      string // Agent config mount mode: "auto", "yes", "no"
-	GitAuthorName        string // Optional: git author name override
-	GitAuthorEmail       string // Optional: git author email override
-	WorkspaceIsTemporary bool   // true if workspace is a temporary directory (vs user-provided)
+	Cleanup              string   // Cleanup mode: "auto" (default), "none", "all"
+	AgentConfigMode      string   // Agent config mount mode: "auto", "yes", "no"
+	GitAuthorName        string   // Optional: git author name override
+	GitAuthorEmail       string   // Optional: git author email override
+	WorkspaceIsTemporary bool     // true if workspace is a temporary directory (vs user-provided)
 	Skills               []string // Skills to include (already resolved with precedence)
-	AssistantOutput      string  // Assistant output mode: "none" or "stream"
+	AssistantOutput      string   // Assistant output mode: "none" or "stream"
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -527,22 +527,43 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 
 	// 1.55. Resolve GitHub actor identity if token is available
 	// This allows the agent to know its own identity and avoid self-replies
+	// Priority: Explicit env vars > API resolution
+	actorLogin := os.Getenv("HOLON_ACTOR_LOGIN")
+	actorType := os.Getenv("HOLON_ACTOR_TYPE")
+	actorSource := os.Getenv("HOLON_ACTOR_SOURCE")
+	actorAppSlug := os.Getenv("HOLON_ACTOR_APP_SLUG")
+
 	if githubToken != "" {
-		actorInfo := r.resolveGitHubActorIdentity(context.Background(), githubToken)
-		if actorInfo != nil {
-			envVars["HOLON_ACTOR_LOGIN"] = actorInfo.Login
-			envVars["HOLON_ACTOR_TYPE"] = actorInfo.Type
-			if actorInfo.Source != "" {
-				envVars["HOLON_ACTOR_SOURCE"] = actorInfo.Source
+		// If explicit identity is provided via env vars, use that (highest priority)
+		// This allows broker/App flows to set holonbot identity deterministically
+		if actorLogin != "" && actorType != "" {
+			envVars["HOLON_ACTOR_LOGIN"] = actorLogin
+			envVars["HOLON_ACTOR_TYPE"] = actorType
+			if actorSource != "" {
+				envVars["HOLON_ACTOR_SOURCE"] = actorSource
 			}
-			if actorInfo.AppSlug != "" {
-				envVars["HOLON_ACTOR_APP_SLUG"] = actorInfo.AppSlug
+			if actorAppSlug != "" {
+				envVars["HOLON_ACTOR_APP_SLUG"] = actorAppSlug
 			}
-			// Log identity resolution (without exposing sensitive data)
-			holonlog.Info("github actor identity resolved", "login", actorInfo.Login, "type", actorInfo.Type)
+			holonlog.Info("github actor identity from env", "login", actorLogin, "type", actorType)
 		} else {
-			// Identity lookup failed - non-critical, log and continue
-			holonlog.Info("github actor identity lookup failed, continuing without identity")
+			// Otherwise, resolve from API
+			actorInfo := r.resolveGitHubActorIdentity(context.Background(), githubToken)
+			if actorInfo != nil {
+				envVars["HOLON_ACTOR_LOGIN"] = actorInfo.Login
+				envVars["HOLON_ACTOR_TYPE"] = actorInfo.Type
+				if actorInfo.Source != "" {
+					envVars["HOLON_ACTOR_SOURCE"] = actorInfo.Source
+				}
+				if actorInfo.AppSlug != "" {
+					envVars["HOLON_ACTOR_APP_SLUG"] = actorInfo.AppSlug
+				}
+				// Log identity resolution (without exposing sensitive data)
+				holonlog.Info("github actor identity resolved", "login", actorInfo.Login, "type", actorInfo.Type)
+			} else {
+				// Identity lookup failed - non-critical, log and continue
+				holonlog.Info("github actor identity lookup failed, continuing without identity")
+			}
 		}
 	}
 

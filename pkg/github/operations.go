@@ -624,7 +624,8 @@ func (c *Client) getCurrentApp(ctx context.Context) (*ActorInfo, error) {
 	if err != nil {
 		// If /app also fails, return a minimal ActorInfo for App tokens
 		// This handles the case where we have an App installation token but can't call /app
-		if resp != nil && resp.StatusCode == 403 {
+		// /app returns 401 for installation tokens (requires JWT), /user returns 403
+		if resp != nil && (resp.StatusCode == 401 || resp.StatusCode == 403) {
 			// Return minimal ActorInfo for App installation token
 			return &ActorInfo{
 				Type:   "App",
