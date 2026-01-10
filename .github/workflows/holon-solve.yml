@@ -458,6 +458,14 @@ jobs:
           GATE_REASON: ${{ steps.gate.outputs.reason }}
           GATE_GOAL_HINT: ${{ steps.gate.outputs.goal_hint }}
 
+      - name: Ensure Docker daemon
+        if: steps.gate.outputs.should_run == 'true' && runner.os == 'Linux'
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            sudo systemctl start docker || sudo service docker start
+          fi
+          docker info
+
       - name: Run Holon
         id: run
         if: steps.gate.outputs.should_run == 'true'
