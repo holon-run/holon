@@ -275,7 +275,7 @@ func (r *Runtime) buildComposedImageFromBundle(ctx context.Context, baseImage, b
 
 	claudeCodeVersion := os.Getenv("HOLON_CLAUDE_CODE_VERSION")
 	if claudeCodeVersion == "" {
-		claudeCodeVersion = "2.0.74"
+		claudeCodeVersion = "2.1.3"
 	}
 
 	dockerfile := fmt.Sprintf(`
