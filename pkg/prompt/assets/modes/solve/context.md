@@ -7,5 +7,5 @@ The following context is mounted at `/holon/input/context/`:
 {{- end }}
 
 ### SOLVE CONTEXT USAGE
-- If `github/issue.json` or `github/issue.md` exist, read them first to understand the task and any comments.
+- If `github/issue.json` exists, read it first to understand the task and any comments.
 - If other provider context files are present, use them as authoritative requirements before modifying code.

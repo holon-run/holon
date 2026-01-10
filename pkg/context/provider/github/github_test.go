@@ -600,7 +600,6 @@ func TestVerifyContextFiles(t *testing.T) {
 			files: map[string]string{
 				"github/pr.json":             `{"number": 123}`,
 				"github/review_threads.json": `[]`,
-				"github/review.md":           "# Review",
 				"pr-fix.schema.json":         `{}`,
 			},
 			wantErr: false,
@@ -611,7 +610,6 @@ func TestVerifyContextFiles(t *testing.T) {
 			files: map[string]string{
 				"github/issue.json":    `{"number": 123}`,
 				"github/comments.json": `[]`,
-				"github/issue.md":      "# Issue",
 			},
 			wantErr: false,
 		},
@@ -620,7 +618,6 @@ func TestVerifyContextFiles(t *testing.T) {
 			kind: collector.KindPR,
 			files: map[string]string{
 				"github/review_threads.json": `[]`,
-				"github/review.md":           "# Review",
 				"pr-fix.schema.json":         `{}`,
 			},
 			wantErr:     true,
@@ -632,30 +629,6 @@ func TestVerifyContextFiles(t *testing.T) {
 			files: map[string]string{
 				"github/pr.json":             "",
 				"github/review_threads.json": `[]`,
-				"github/review.md":           "# Review",
-				"pr-fix.schema.json":         `{}`,
-			},
-			wantErr:     true,
-			errContains: "context file is empty",
-		},
-		{
-			name: "PR context - missing review.md",
-			kind: collector.KindPR,
-			files: map[string]string{
-				"github/pr.json":             `{"number": 123}`,
-				"github/review_threads.json": `[]`,
-				"pr-fix.schema.json":         `{}`,
-			},
-			wantErr:     true,
-			errContains: "context file missing",
-		},
-		{
-			name: "PR context - empty review.md",
-			kind: collector.KindPR,
-			files: map[string]string{
-				"github/pr.json":             `{"number": 123}`,
-				"github/review_threads.json": `[]`,
-				"github/review.md":           "",
 				"pr-fix.schema.json":         `{}`,
 			},
 			wantErr:     true,
@@ -667,7 +640,6 @@ func TestVerifyContextFiles(t *testing.T) {
 			files: map[string]string{
 				"github/pr.json":             `{"number": 123}`,
 				"github/review_threads.json": `[]`,
-				"github/review.md":           "# Review",
 			},
 			wantErr:     true,
 			errContains: "context file missing",
@@ -677,7 +649,6 @@ func TestVerifyContextFiles(t *testing.T) {
 			kind: collector.KindIssue,
 			files: map[string]string{
 				"github/comments.json": `[]`,
-				"github/issue.md":      "# Issue",
 			},
 			wantErr:     true,
 			errContains: "context file missing",
@@ -688,20 +659,9 @@ func TestVerifyContextFiles(t *testing.T) {
 			files: map[string]string{
 				"github/issue.json":    "",
 				"github/comments.json": `[]`,
-				"github/issue.md":      "# Issue",
 			},
 			wantErr:     true,
 			errContains: "context file is empty",
-		},
-		{
-			name: "issue context - missing issue.md",
-			kind: collector.KindIssue,
-			files: map[string]string{
-				"github/issue.json":    `{"number": 123}`,
-				"github/comments.json": `[]`,
-			},
-			wantErr:     true,
-			errContains: "context file missing",
 		},
 		{
 			name: "network error simulation - all files empty",
@@ -709,7 +669,6 @@ func TestVerifyContextFiles(t *testing.T) {
 			files: map[string]string{
 				"github/pr.json":             "",
 				"github/review_threads.json": "",
-				"github/review.md":           "",
 				"pr-fix.schema.json":         "",
 			},
 			wantErr:     true,
@@ -774,7 +733,6 @@ func TestVerifyContextFilesNetworkFailureSimulation(t *testing.T) {
 	emptyFiles := []string{
 		"github/pr.json",
 		"github/review_threads.json",
-		"github/review.md",
 	}
 	for _, file := range emptyFiles {
 		path := filepath.Join(tmpDir, file)
