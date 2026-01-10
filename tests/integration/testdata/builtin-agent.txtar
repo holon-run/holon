@@ -2,7 +2,7 @@
 exec holon agent info default
 stdout 'Builtin Default Agent:'
 stdout 'Name:.*claude-agent'
-stdout 'Version:.*agent-claude-v0.9.1'
+stdout 'Version:.*agent-claude-v0.10.0'
 stdout 'Auto-install: ENABLED'
 
 # Test builtin agent info with auto-install disabled
