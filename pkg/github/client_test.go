@@ -831,6 +831,8 @@ func TestGetCurrentUser(t *testing.T) {
 }
 
 // TestGetCurrentUserAppToken tests fetching the current app's identity when using an App installation token
+// Note: This test now expects minimal ActorInfo since we no longer call /app endpoint
+// (which requires JWT, not installation token)
 func TestGetCurrentUserAppToken(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -846,25 +848,28 @@ func TestGetCurrentUserAppToken(t *testing.T) {
 		t.Fatalf("GetCurrentUser() error = %v", err)
 	}
 
-	// Verify basic fields
-	if actorInfo.Login != "my-github-app" {
-		t.Errorf("Login = %q, want %q", actorInfo.Login, "my-github-app")
-	}
-
+	// Verify minimal fields - /user returns 403 for App installation tokens
+	// We return Type="App" with Source="token" (no /app call)
 	if actorInfo.Type != "App" {
 		t.Errorf("Type = %q, want %q", actorInfo.Type, "App")
 	}
 
-	if actorInfo.Source != "app" {
-		t.Errorf("Source = %q, want %q", actorInfo.Source, "app")
+	if actorInfo.Source != "token" {
+		t.Errorf("Source = %q, want %q", actorInfo.Source, "token")
 	}
 
-	if actorInfo.AppSlug != "my-github-app" {
-		t.Errorf("AppSlug = %q, want %q", actorInfo.AppSlug, "my-github-app")
+	// Login and AppSlug should be empty since we can't call /app with installation token
+	if actorInfo.Login != "" {
+		t.Errorf("Login = %q, want empty string (cannot determine from installation token)", actorInfo.Login)
+	}
+
+	if actorInfo.AppSlug != "" {
+		t.Errorf("AppSlug = %q, want empty string (cannot determine from installation token)", actorInfo.AppSlug)
 	}
 }
 
 // TestGetCurrentUserAppTokenNoPerm tests fetching identity when using an App installation token without /app permission
+// Note: This test now expects minimal ActorInfo since we no longer call /app endpoint
 func TestGetCurrentUserAppTokenNoPerm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -881,21 +886,22 @@ func TestGetCurrentUserAppTokenNoPerm(t *testing.T) {
 	}
 
 	// Verify minimal fields - should still return ActorInfo even without /app permission
+	// We no longer call /app, so behavior is same as TestGetCurrentUserAppToken
 	if actorInfo.Type != "App" {
 		t.Errorf("Type = %q, want %q", actorInfo.Type, "App")
 	}
 
-	if actorInfo.Source != "app" {
-		t.Errorf("Source = %q, want %q", actorInfo.Source, "app")
+	if actorInfo.Source != "token" {
+		t.Errorf("Source = %q, want %q", actorInfo.Source, "token")
 	}
 
 	// Login and AppSlug should be empty when we can't access /app
 	if actorInfo.Login != "" {
-		t.Errorf("Login = %q, want empty string", actorInfo.Login)
+		t.Errorf("Login = %q, want empty string (cannot determine from installation token)", actorInfo.Login)
 	}
 
 	if actorInfo.AppSlug != "" {
-		t.Errorf("AppSlug = %q, want empty string", actorInfo.AppSlug)
+		t.Errorf("AppSlug = %q, want empty string (cannot determine from installation token)", actorInfo.AppSlug)
 	}
 }
 
