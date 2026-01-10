@@ -273,15 +273,9 @@ func (r *Runtime) buildComposedImageFromBundle(ctx context.Context, baseImage, b
 		return "", fmt.Errorf("failed to stage agent bundle: %w", err)
 	}
 
-	claudeCodeVersion := os.Getenv("HOLON_CLAUDE_CODE_VERSION")
-	if claudeCodeVersion == "" {
-		claudeCodeVersion = "2.0.74"
-	}
-
 	dockerfile := fmt.Sprintf(`
 FROM %s
 ARG NODE_MAJOR=%s
-ARG CLAUDE_CODE_VERSION=%s
 SHELL ["/bin/sh", "-c"]
 
 RUN set -e; \
@@ -321,15 +315,14 @@ RUN set -e; \
         exit 1; \
     fi
 
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
-
 COPY %s /holon/agent-bundle.tar.gz
 RUN mkdir -p /holon/agent && tar -xzf /holon/agent-bundle.tar.gz -C /holon/agent
 
+ENV PATH="/holon/agent/node_modules/.bin:${PATH}"
 ENV IS_SANDBOX=1
 WORKDIR /holon/workspace
 ENTRYPOINT ["/holon/agent/bin/agent"]
-`, baseImage, nodeMajor, claudeCodeVersion, bundleName)
+`, baseImage, nodeMajor, bundleName)
 
 	dfPath := filepath.Join(tmpDir, "Dockerfile")
 	if err := os.WriteFile(dfPath, []byte(dockerfile), 0644); err != nil {
