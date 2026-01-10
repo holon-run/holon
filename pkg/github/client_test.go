@@ -831,6 +831,9 @@ func TestGetCurrentUser(t *testing.T) {
 }
 
 // TestGetCurrentUserAppToken tests fetching the current app's identity when using an App installation token
+// Note: This fixture contains a 403 response from /user, which indicates an App installation token.
+// With the new implementation, we return a minimal ActorInfo without calling /app (since installation
+// tokens cannot call /app - that endpoint requires a JWT).
 func TestGetCurrentUserAppToken(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -846,21 +849,23 @@ func TestGetCurrentUserAppToken(t *testing.T) {
 		t.Fatalf("GetCurrentUser() error = %v", err)
 	}
 
-	// Verify basic fields
-	if actorInfo.Login != "my-github-app" {
-		t.Errorf("Login = %q, want %q", actorInfo.Login, "my-github-app")
-	}
-
+	// Verify minimal fields - /user returned 403 for App installation token
+	// We don't call /app anymore since installation tokens can't access it
 	if actorInfo.Type != "App" {
 		t.Errorf("Type = %q, want %q", actorInfo.Type, "App")
 	}
 
-	if actorInfo.Source != "app" {
-		t.Errorf("Source = %q, want %q", actorInfo.Source, "app")
+	if actorInfo.Source != "token" {
+		t.Errorf("Source = %q, want %q", actorInfo.Source, "token")
 	}
 
-	if actorInfo.AppSlug != "my-github-app" {
-		t.Errorf("AppSlug = %q, want %q", actorInfo.AppSlug, "my-github-app")
+	// Login and AppSlug should be empty since we got a 403 and don't call /app
+	if actorInfo.Login != "" {
+		t.Errorf("Login = %q, want empty string (App installation token cannot be identified)", actorInfo.Login)
+	}
+
+	if actorInfo.AppSlug != "" {
+		t.Errorf("AppSlug = %q, want empty string (App installation token cannot be identified)", actorInfo.AppSlug)
 	}
 }
 
@@ -885,8 +890,8 @@ func TestGetCurrentUserAppTokenNoPerm(t *testing.T) {
 		t.Errorf("Type = %q, want %q", actorInfo.Type, "App")
 	}
 
-	if actorInfo.Source != "app" {
-		t.Errorf("Source = %q, want %q", actorInfo.Source, "app")
+	if actorInfo.Source != "token" {
+		t.Errorf("Source = %q, want %q", actorInfo.Source, "token")
 	}
 
 	// Login and AppSlug should be empty when we can't access /app
