@@ -429,14 +429,12 @@ func verifyContextFiles(outputDir string, kind collector.Kind) error {
 		paths = []string{
 			filepath.Join(outputDir, "github", "pr.json"),
 			filepath.Join(outputDir, "github", "review_threads.json"),
-			filepath.Join(outputDir, "github", "review.md"),
 			filepath.Join(outputDir, "pr-fix.schema.json"),
 		}
 	} else if kind == collector.KindIssue {
 		paths = []string{
 			filepath.Join(outputDir, "github", "issue.json"),
 			filepath.Join(outputDir, "github", "comments.json"),
-			filepath.Join(outputDir, "github", "issue.md"),
 		}
 	}
 
