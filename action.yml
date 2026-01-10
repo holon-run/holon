@@ -91,6 +91,7 @@ runs:
         if [ -n "${{ inputs.github_token }}" ]; then
           echo "Using explicit github_token input."
           echo "token=${{ inputs.github_token }}" >> $GITHUB_OUTPUT
+          # For explicit tokens, don't set actor identity (let API lookup)
           exit 0
         fi
 
@@ -114,6 +115,11 @@ runs:
               if [ -n "$BOT_TOKEN" ]; then
                 echo "Successfully obtained Holonbot token."
                 echo "token=$BOT_TOKEN" >> $GITHUB_OUTPUT
+                # Set actor identity for holonbot token
+                echo "actor_login=holonbot[bot]" >> $GITHUB_OUTPUT
+                echo "actor_type=App" >> $GITHUB_OUTPUT
+                echo "actor_app_slug=holonbot" >> $GITHUB_OUTPUT
+                echo "actor_source=token" >> $GITHUB_OUTPUT
                 exit 0
               else
                 ERROR=$(echo $RESPONSE | jq -r '.error // "Unknown error"')
@@ -128,7 +134,13 @@ runs:
           echo "Skipping token exchange: id-token permission not granted or holonbot_broker_url is empty."
         fi
 
+        # Fallback to GitHub Actions token
         echo "token=${{ github.token }}" >> $GITHUB_OUTPUT
+        # Set actor identity for GitHub Actions token
+        echo "actor_login=github-actions[bot]" >> $GITHUB_OUTPUT
+        echo "actor_type=App" >> $GITHUB_OUTPUT
+        echo "actor_app_slug=github-actions" >> $GITHUB_OUTPUT
+        echo "actor_source=token" >> $GITHUB_OUTPUT
 
     - name: Checkout holon repository (for building)
       if: inputs.build_from_source == 'true'
@@ -226,6 +238,10 @@ runs:
         ANTHROPIC_AUTH_TOKEN: ${{ inputs.anthropic_auth_token || inputs.anthropic_api_key }}
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
         GITHUB_TOKEN: ${{ steps.get_token.outputs.token }}
+        HOLON_ACTOR_LOGIN: ${{ steps.get_token.outputs.actor_login }}
+        HOLON_ACTOR_TYPE: ${{ steps.get_token.outputs.actor_type }}
+        HOLON_ACTOR_APP_SLUG: ${{ steps.get_token.outputs.actor_app_slug }}
+        HOLON_ACTOR_SOURCE: ${{ steps.get_token.outputs.actor_source }}
       run: |
         set -euo pipefail
 

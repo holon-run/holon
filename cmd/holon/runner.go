@@ -537,7 +537,8 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 		actorInfoProvided = true
 
 		// Copy other actor fields if provided
-		if actorType := os.Getenv("HOLON_ACTOR_TYPE"); actorType != "" {
+		actorType := ""
+		if actorType = os.Getenv("HOLON_ACTOR_TYPE"); actorType != "" {
 			envVars["HOLON_ACTOR_TYPE"] = actorType
 		}
 		if actorSource := os.Getenv("HOLON_ACTOR_SOURCE"); actorSource != "" {
@@ -547,28 +548,32 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 			envVars["HOLON_ACTOR_APP_SLUG"] = actorAppSlug
 		}
 
-		holonlog.Info("using explicit github actor identity", "login", actorLogin, "type", envVars["HOLON_ACTOR_TYPE"])
+		holonlog.Info("using explicit github actor identity", "login", actorLogin, "type", actorType)
 	}
 
 	// If actor identity is not explicitly provided and we have a token, resolve via API
-	// Skip API lookup if HOLON_ACTOR_TYPE is explicitly set to "App" without login
-	// (indicates an App installation token where identity cannot be determined)
 	if !actorInfoProvided && githubToken != "" {
-		actorInfo := r.resolveGitHubActorIdentity(context.Background(), githubToken)
-		if actorInfo != nil {
-			envVars["HOLON_ACTOR_LOGIN"] = actorInfo.Login
-			envVars["HOLON_ACTOR_TYPE"] = actorInfo.Type
-			if actorInfo.Source != "" {
-				envVars["HOLON_ACTOR_SOURCE"] = actorInfo.Source
-			}
-			if actorInfo.AppSlug != "" {
-				envVars["HOLON_ACTOR_APP_SLUG"] = actorInfo.AppSlug
-			}
-			// Log identity resolution (without exposing sensitive data)
-			holonlog.Info("github actor identity resolved", "login", actorInfo.Login, "type", actorInfo.Type)
+		// Skip API lookup if HOLON_ACTOR_TYPE is explicitly set to "App" without login
+		// (indicates an App installation token where identity cannot be determined)
+		if actorType := os.Getenv("HOLON_ACTOR_TYPE"); actorType == "App" {
+			holonlog.Info("skipping github actor identity lookup for App token without explicit login")
 		} else {
-			// Identity lookup failed - non-critical, log and continue
-			holonlog.Info("github actor identity lookup failed, continuing without identity")
+			actorInfo := r.resolveGitHubActorIdentity(context.Background(), githubToken)
+			if actorInfo != nil {
+				envVars["HOLON_ACTOR_LOGIN"] = actorInfo.Login
+				envVars["HOLON_ACTOR_TYPE"] = actorInfo.Type
+				if actorInfo.Source != "" {
+					envVars["HOLON_ACTOR_SOURCE"] = actorInfo.Source
+				}
+				if actorInfo.AppSlug != "" {
+					envVars["HOLON_ACTOR_APP_SLUG"] = actorInfo.AppSlug
+				}
+				// Log identity resolution (without exposing sensitive data)
+				holonlog.Info("github actor identity resolved", "login", actorInfo.Login, "type", actorInfo.Type)
+			} else {
+				// Identity lookup failed - non-critical, log and continue
+				holonlog.Info("github actor identity lookup failed, continuing without identity")
+			}
 		}
 	}
 
