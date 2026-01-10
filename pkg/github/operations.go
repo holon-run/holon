@@ -581,7 +581,8 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, state
 
 // GetCurrentUser retrieves the authenticated user's identity information
 // Returns ActorInfo with login and type (User or App)
-// Handles both PAT/user tokens (via /user endpoint) and GitHub App tokens (via /app endpoint)
+// Handles both PAT/user tokens (via /user endpoint) and GitHub App installation tokens
+// For App installation tokens, returns minimal ActorInfo when /user returns 403
 // Returns nil if the request fails (non-critical operation)
 func (c *Client) GetCurrentUser(ctx context.Context) (*ActorInfo, error) {
 	// First, try the /user endpoint (works for PAT and user tokens)
@@ -607,41 +608,20 @@ func (c *Client) GetCurrentUser(ctx context.Context) (*ActorInfo, error) {
 	}
 
 	// Check if this is a 403 error indicating an App installation token
-	// GitHub App tokens get "403 Resource not accessible by integration" when calling /user
+	// GitHub App installation tokens get "403 Resource not accessible by integration" when calling /user
+	// We cannot call /app because it requires a JWT, which Holon never uses
+	// Return minimal ActorInfo for App token without making the /app call
 	if resp != nil && resp.StatusCode == 403 {
-		// This is likely an App installation token, try the /app endpoint
-		return c.getCurrentApp(ctx)
+		// Return minimal ActorInfo for App installation token
+		// The login will be empty since we cannot determine it without /app
+		return &ActorInfo{
+			Type:   "App",
+			Source: "token",
+		}, nil
 	}
 
 	// For other errors, return the error
 	return nil, fmt.Errorf("failed to get current user: %w", err)
-}
-
-// getCurrentApp retrieves the authenticated GitHub App's identity information
-// Called as a fallback when /user returns 403 for App installation tokens
-func (c *Client) getCurrentApp(ctx context.Context) (*ActorInfo, error) {
-	app, resp, err := c.GitHubClient().Apps.Get(ctx, "")
-	if err != nil {
-		// If /app also fails, return a minimal ActorInfo for App tokens
-		// This handles the case where we have an App installation token but can't call /app
-		if resp != nil && resp.StatusCode == 403 {
-			// Return minimal ActorInfo for App installation token
-			return &ActorInfo{
-				Type:   "App",
-				Source: "app",
-			}, nil
-		}
-		return nil, fmt.Errorf("failed to get current app: %w", err)
-	}
-
-	info := &ActorInfo{
-		Login:   app.GetSlug(),
-		Type:    "App",
-		Source:  "app",
-		AppSlug: app.GetSlug(),
-	}
-
-	return info, nil
 }
 
 // extractZipFiles extracts all non-directory files from a ZIP archive.

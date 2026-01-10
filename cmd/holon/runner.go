@@ -527,7 +527,33 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 
 	// 1.55. Resolve GitHub actor identity if token is available
 	// This allows the agent to know its own identity and avoid self-replies
-	if githubToken != "" {
+	// Priority: explicit HOLON_ACTOR_* env vars > API lookup
+	actorInfoProvided := false
+
+	// First, check if actor identity is explicitly provided via environment variables
+	// This allows source-based identity injection (e.g., holonbot broker, GitHub Actions)
+	if actorLogin := os.Getenv("HOLON_ACTOR_LOGIN"); actorLogin != "" {
+		envVars["HOLON_ACTOR_LOGIN"] = actorLogin
+		actorInfoProvided = true
+
+		// Copy other actor fields if provided
+		if actorType := os.Getenv("HOLON_ACTOR_TYPE"); actorType != "" {
+			envVars["HOLON_ACTOR_TYPE"] = actorType
+		}
+		if actorSource := os.Getenv("HOLON_ACTOR_SOURCE"); actorSource != "" {
+			envVars["HOLON_ACTOR_SOURCE"] = actorSource
+		}
+		if actorAppSlug := os.Getenv("HOLON_ACTOR_APP_SLUG"); actorAppSlug != "" {
+			envVars["HOLON_ACTOR_APP_SLUG"] = actorAppSlug
+		}
+
+		holonlog.Info("using explicit github actor identity", "login", actorLogin, "type", envVars["HOLON_ACTOR_TYPE"])
+	}
+
+	// If actor identity is not explicitly provided and we have a token, resolve via API
+	// Skip API lookup if HOLON_ACTOR_TYPE is explicitly set to "App" without login
+	// (indicates an App installation token where identity cannot be determined)
+	if !actorInfoProvided && githubToken != "" {
 		actorInfo := r.resolveGitHubActorIdentity(context.Background(), githubToken)
 		if actorInfo != nil {
 			envVars["HOLON_ACTOR_LOGIN"] = actorInfo.Login
