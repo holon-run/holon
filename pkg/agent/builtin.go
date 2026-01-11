@@ -24,9 +24,9 @@ type BuiltinAgent struct {
 func DefaultBuiltinAgent() *BuiltinAgent {
 	return &BuiltinAgent{
 		Name:     "claude-agent",
-		Version:  "agent-claude-v0.9.1",
-		URL:      "https://github.com/holon-run/holon/releases/download/agent-claude-v0.9.1/holon-agent-claude-0.9.1.tar.gz",
-		Checksum: "562c7dc4f011266bda28378766fe1cc52b6f58d999ec93bc2fc08076184c424b",
+		Version:  "agent-claude-v0.10.0",
+		URL:      "https://github.com/holon-run/holon/releases/download/agent-claude-v0.10.0/holon-agent-claude-0.10.0.tar.gz",
+		Checksum: "f14deadfb237456800bec33d00fdae5ee69d31144760d91743113524728641fc",
 	}
 }
 
