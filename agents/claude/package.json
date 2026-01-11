@@ -2,7 +2,7 @@
   "name": "holon-agent-claude",
   "private": true,
   "type": "module",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "bundle": "./scripts/build-bundle.sh",
@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.75",
-    "@anthropic-ai/claude-code": "^2.0.74",
+    "@anthropic-ai/claude-code": "^2.1.3",
     "yaml": "^2.5.0",
     "zod": "^3.24.1"
   },
