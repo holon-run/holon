@@ -536,7 +536,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     concurrency:
-      group: holon-${{ github.repository }}-${{ inputs.issue_number != 0 && inputs.issue_number || github.run_id }}
+      group: holon-${{ github.repository }}-${{ inputs.issue_number != 0 && inputs.issue_number || github.event.issue.number || github.event.pull_request.number || github.run_id }}
       cancel-in-progress: true
     runs-on: ${{ (startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on)) || inputs.runs_on || 'ubuntu-latest' }}
     permissions:
