@@ -19,7 +19,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: holon-${{ github.event_name }}-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.actor }}
+  group: holon-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
