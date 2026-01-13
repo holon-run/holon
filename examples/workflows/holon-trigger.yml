@@ -7,6 +7,10 @@ on:
     types: [labeled, assigned]
   pull_request:
     types: [labeled]
+  pull_request_review:
+    types: [submitted, edited]
+  pull_request_review_comment:
+    types: [created]
 
 permissions:
   contents: write
@@ -21,10 +25,17 @@ concurrency:
 jobs:
   holon:
     name: Run Holon (via holon-solve)
+    # Light job-level gating for comment events (cheap heuristic to avoid unnecessary workflow runs)
+    # The precise gate with full parsing is inside holon-solve.yml
+    if: |
+      (github.event_name != 'issue_comment' && github.event_name != 'pull_request_review_comment') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@holonbot')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@holonbot'))
     uses: holon-run/holon/.github/workflows/holon-solve.yml@main
     with:
       issue_number: ${{ github.event.issue.number || github.event.pull_request.number }}
       comment_id: ${{ github.event.comment.id || 0 }}
+      review_body: ${{ github.event.review.body || '' }}
       # Optional: Specify custom runner labels.
       # Plain string for single label (e.g., 'self-hosted' or 'ubuntu-24.04-large'):
       # runs_on: 'self-hosted'
