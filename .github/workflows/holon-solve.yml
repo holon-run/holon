@@ -33,6 +33,11 @@ on:
         required: false
         type: number
         default: 0
+      review_id:
+        description: 'Review ID (for PR review triggers and body fetch)'
+        required: false
+        type: number
+        default: 0
       comment_body:
         description: 'Comment body (for auto mode detection)'
         required: false
@@ -339,6 +344,22 @@ jobs:
             REVIEW_BODY="$EVENT_REVIEW_BODY"
           fi
 
+          COMMENT_ID="$INPUT_COMMENT_ID"
+          if [ -z "$COMMENT_ID" ]; then
+            COMMENT_ID="$EVENT_COMMENT_ID"
+          fi
+          if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = 'null' ]; then
+            COMMENT_ID='0'
+          fi
+
+          REVIEW_ID="$INPUT_REVIEW_ID"
+          if [ -z "$REVIEW_ID" ]; then
+            REVIEW_ID="$EVENT_REVIEW_ID"
+          fi
+          if [ -z "$REVIEW_ID" ] || [ "$REVIEW_ID" = 'null' ]; then
+            REVIEW_ID='0'
+          fi
+
           # Determine if this issue number is a PR
           IS_PR='false'
           if [ -n "$EVENT_PR_NUMBER" ] || [ -n "$EVENT_ISSUE_PR_URL" ]; then
@@ -368,11 +389,13 @@ jobs:
             exit 0
           fi
 
-          # Backward-compat: if caller didn't pass event_name and this workflow sees workflow_call,
-          # assume the caller already gated the invocation.
+          # Backward-compat: older callers may gate invocation themselves and pass only issue_number.
+          # Only auto-allow when no trigger context is provided (otherwise we can gate here).
           if [ -z "$INPUT_EVENT_NAME" ] && [ "$EVENT_NAME" = 'workflow_call' ]; then
-            SHOULD_RUN='true'
-            REASON='workflow_call without inputs.event_name (backward compatible default allow)'
+            if [ "$COMMENT_ID" = '0' ] && [ "$REVIEW_ID" = '0' ] && [ -z "$LABEL_NAME" ] && [ -z "$ASSIGNEE_LOGIN" ]; then
+              SHOULD_RUN='true'
+              REASON='workflow_call without trigger context (assume caller gated)'
+            fi
           fi
 
           # Allow explicit mode input (manual/custom callers).
@@ -381,120 +404,87 @@ jobs:
             REASON='Explicit inputs.mode provided'
           fi
 
-          # Handle comment-based triggers (issue_comment, pull_request_review_comment)
-          if [ "$SHOULD_RUN" != 'true' ] && { [ "$EVENT_NAME" = 'issue_comment' ] || [ "$EVENT_NAME" = 'pull_request_review_comment' ]; }; then
-            if [ "$EVENT_ACTION" = 'created' ] && [ -n "$PARSE_TEXT" ]; then
-              # Parse for @holonbot mention
+          # Comment triggers: prefer explicit comment_id to fetch body, which avoids passing raw body through workflow_call.
+          if [ "$SHOULD_RUN" != 'true' ] && [ "$COMMENT_ID" != '0' ]; then
+            if [ -z "$PARSE_TEXT" ]; then
+              PARSE_TEXT="$(gh api "repos/$REPO/issues/comments/$COMMENT_ID" --jq '.body' 2>/dev/null || true)"
+              if [ -z "$PARSE_TEXT" ] || [ "$PARSE_TEXT" = 'null' ]; then
+                PARSE_TEXT="$(gh api "repos/$REPO/pulls/comments/$COMMENT_ID" --jq '.body' 2>/dev/null || true)"
+              fi
+              if [ "$PARSE_TEXT" = 'null' ]; then
+                PARSE_TEXT=''
+              fi
+            fi
+
+            if [ -z "$PARSE_TEXT" ]; then
+              REASON='Comment body is empty or unavailable'
+            else
               parse_result="$(parse_mention "$PARSE_TEXT")"
               FOUND_MENTION="$(printf '%s' "$parse_result" | sed -n '1p')"
               GOAL_HINT="$(printf '%s' "$parse_result" | sed -n '2p')"
 
               if [ "$FOUND_MENTION" != 'true' ]; then
                 REASON='No @holonbot mention found (or only in code block)'
-                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-                echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
-                echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
-                echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-
-              if [ "$IS_PR" = 'true' ]; then
-                # Disallow fork PRs
-                IS_CROSS_REPO="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo 'true')"
-                if [ "$IS_CROSS_REPO" = 'true' ]; then
-                  REASON='PR is from a fork/cross-repo head; not supported'
-                  echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-                  echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-                  echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
-                  echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
-                  echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
-                  exit 0
+              else
+                if [ "$IS_PR" = 'true' ]; then
+                  IS_CROSS_REPO="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo 'true')"
+                  if [ "$IS_CROSS_REPO" = 'true' ]; then
+                    REASON='PR is from a fork/cross-repo head; not supported'
+                  fi
                 fi
-              fi
 
-              # Require write/maintain/admin permissions
-              PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo '')"
-              if [ "$PERMISSION" != 'admin' ] && [ "$PERMISSION" != 'maintain' ] && [ "$PERMISSION" != 'write' ]; then
-                REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
-                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-                echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
-                echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
-                echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-
-              SHOULD_RUN='true'
-              REASON='Comment gates passed'
-            else
-              if [ "$EVENT_ACTION" != 'created' ]; then
-                REASON="Comment event not eligible: action=${EVENT_ACTION:-<none>}"
-              elif [ -z "$PARSE_TEXT" ]; then
-                REASON='Comment body is empty'
-              fi
-            fi
-          fi
-
-          # Handle PR review events
-          if [ "$SHOULD_RUN" != 'true' ] && [ "$EVENT_NAME" = 'pull_request_review' ]; then
-            if [ "$EVENT_ACTION" = 'submitted' ] || [ "$EVENT_ACTION" = 'edited' ]; then
-              if [ -n "$PARSE_TEXT" ]; then
-                parse_result="$(parse_mention "$PARSE_TEXT")"
-                FOUND_MENTION="$(printf '%s' "$parse_result" | sed -n '1p')"
-                GOAL_HINT="$(printf '%s' "$parse_result" | sed -n '2p')"
-
-                if [ "$FOUND_MENTION" = 'true' ]; then
-                  # Require write/maintain/admin permissions
+                if [ "$REASON" != 'PR is from a fork/cross-repo head; not supported' ]; then
                   PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo '')"
                   if [ "$PERMISSION" != 'admin' ] && [ "$PERMISSION" != 'maintain' ] && [ "$PERMISSION" != 'write' ]; then
                     REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
-                    echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-                    echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-                    echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
-                    echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
-                    echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
-                    exit 0
+                  else
+                    SHOULD_RUN='true'
+                    REASON='Comment gates passed'
                   fi
+                fi
+              fi
+            fi
+          fi
 
+          # PR review triggers: prefer explicit review_id to fetch body.
+          if [ "$SHOULD_RUN" != 'true' ] && [ "$REVIEW_ID" != '0' ]; then
+            if [ -z "$PARSE_TEXT" ]; then
+              PARSE_TEXT="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER/reviews/$REVIEW_ID" --jq '.body' 2>/dev/null || true)"
+              if [ "$PARSE_TEXT" = 'null' ]; then
+                PARSE_TEXT=''
+              fi
+            fi
+
+            if [ -z "$PARSE_TEXT" ]; then
+              REASON='Review body is empty or unavailable'
+            else
+              parse_result="$(parse_mention "$PARSE_TEXT")"
+              FOUND_MENTION="$(printf '%s' "$parse_result" | sed -n '1p')"
+              GOAL_HINT="$(printf '%s' "$parse_result" | sed -n '2p')"
+
+              if [ "$FOUND_MENTION" != 'true' ]; then
+                REASON='No @holonbot mention found in review body'
+              else
+                PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo '')"
+                if [ "$PERMISSION" != 'admin' ] && [ "$PERMISSION" != 'maintain' ] && [ "$PERMISSION" != 'write' ]; then
+                  REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
+                else
                   SHOULD_RUN='true'
                   REASON='PR review gates passed'
-                else
-                  REASON='No @holonbot mention found in review body'
                 fi
-              else
-                REASON='Review body is empty'
               fi
-            else
-              REASON="PR review event not eligible: action=${EVENT_ACTION}"
             fi
           fi
 
-          # Handle issue events (label, assign)
-          if [ "$SHOULD_RUN" != 'true' ] && [ "$EVENT_NAME" = 'issues' ]; then
-            if [ "$EVENT_ACTION" = 'labeled' ] && [ "$LABEL_NAME" = 'holon' ]; then
-              SHOULD_RUN='true'
-              REASON='Issue labeled holon'
-            elif [ "$EVENT_ACTION" = 'assigned' ]; then
-              if [ "$ASSIGNEE_LOGIN" = 'holonbot[bot]' ] || [ "$ASSIGNEE_LOGIN" = 'holonbot' ]; then
-                SHOULD_RUN='true'
-                REASON='Issue assigned to holonbot[bot]'
-              else
-                REASON="Issue assigned to $ASSIGNEE_LOGIN (not holonbot[bot])"
-              fi
-            else
-              REASON='Issue event not eligible'
-            fi
+          # Label/assignment triggers rely on the event payload (label_name / assignee_login) to avoid false positives.
+          if [ "$SHOULD_RUN" != 'true' ] && [ "$LABEL_NAME" = 'holon' ]; then
+            SHOULD_RUN='true'
+            REASON='Labeled holon'
           fi
 
-          # Handle PR events (label)
-          if [ "$SHOULD_RUN" != 'true' ] && [ "$EVENT_NAME" = 'pull_request' ] && [ "$EVENT_ACTION" = 'labeled' ]; then
-            if [ "$LABEL_NAME" = 'holon' ]; then
-              SHOULD_RUN='true'
-              REASON='PR labeled holon'
-            else
-              REASON='PR label not eligible'
-            fi
+          if [ "$SHOULD_RUN" != 'true' ] && { [ "$ASSIGNEE_LOGIN" = 'holonbot[bot]' ] || [ "$ASSIGNEE_LOGIN" = 'holonbot' ]; }; then
+            SHOULD_RUN='true'
+            REASON='Assigned to holonbot[bot]'
           fi
 
           echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
@@ -518,8 +508,12 @@ jobs:
           EVENT_LABEL_NAME: ${{ github.event.label.name }}
           INPUT_ASSIGNEE_LOGIN: ${{ inputs.assignee_login }}
           EVENT_ASSIGNEE_LOGIN: ${{ github.event.assignee.login }}
+          INPUT_COMMENT_ID: ${{ inputs.comment_id }}
+          EVENT_COMMENT_ID: ${{ github.event.comment.id }}
           INPUT_COMMENT_BODY: ${{ inputs.comment_body }}
           EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+          INPUT_REVIEW_ID: ${{ inputs.review_id }}
+          EVENT_REVIEW_ID: ${{ github.event.review.id }}
           INPUT_REVIEW_BODY: ${{ inputs.review_body }}
           EVENT_REVIEW_BODY: ${{ github.event.review.body }}
           INPUT_MODE: ${{ inputs.mode }}

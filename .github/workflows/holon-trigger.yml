@@ -23,14 +23,11 @@ jobs:
     name: Run Holon (via holon-solve)
     uses: ./.github/workflows/holon-solve.yml
     with:
-      event_name: ${{ github.event_name }}
-      event_action: ${{ github.event.action }}
       issue_number: ${{ github.event.issue.number || github.event.pull_request.number }}
       label_name: ${{ github.event.label.name || '' }}
       assignee_login: ${{ github.event.assignee.login || '' }}
       comment_id: ${{ github.event.comment.id || 0 }}
-      comment_body: ${{ github.event.comment.body || '' }}
-      review_body: ${{ github.event.review.body || '' }}
+      review_id: ${{ github.event.review.id || 0 }}
 
       # Repo-local workflow uses the current branch Holon implementation.
       log_level: 'debug'
