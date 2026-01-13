@@ -7,6 +7,10 @@ on:
     types: [labeled, assigned]
   pull_request:
     types: [labeled]
+  pull_request_review:
+    types: [submitted, edited]
+  pull_request_review_comment:
+    types: [created]
 
 permissions:
   contents: write
@@ -21,12 +25,20 @@ concurrency:
 jobs:
   holon:
     name: Run Holon (via holon-solve)
+    # Light job-level gating for comment events (cheap heuristic to avoid unnecessary workflow runs)
+    # The precise gate with full parsing is inside holon-solve.yml
+    if: |
+      (github.event_name != 'issue_comment' && github.event_name != 'pull_request_review_comment' && github.event_name != 'pull_request_review') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@holonbot')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@holonbot')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@holonbot'))
     uses: ./.github/workflows/holon-solve.yml
     with:
       # Keep config minimal; holon-solve derives issue_number/comment_body/mode/output_dir from the event.
       log_level: 'debug'
       build_from_source: true
       comment_id: ${{ github.event.comment.id || 0 }}
+      review_body: ${{ github.event.review.body || '' }}
     secrets:
       anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
       holon_github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}

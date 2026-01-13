@@ -199,31 +199,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Helper function to check if a line is inside a code block
-          # Returns 0 if inside code block, 1 otherwise
-          # Updates IN_CODE_BLOCK variable (0 or 1) and CODE_FENCE_TYPE
-          is_inside_code_block() {
-            local line="$1"
-            # Check for code fence opening/closing (``` or ~~~)
-            if [[ "$line" =~ ^(\`\`\`|~~~) ]]; then
-              if [ "$IN_CODE_BLOCK" -eq 1 ]; then
-                # Closing fence
-                IN_CODE_BLOCK=0
-                CODE_FENCE_TYPE=""
-              else
-                # Opening fence
-                IN_CODE_BLOCK=1
-                CODE_FENCE_TYPE="${BASH_REMATCH[1]}"
-              fi
-              return 0
-            fi
-            # If we're inside a code block, return true
-            if [ "$IN_CODE_BLOCK" -eq 1 ]; then
-              return 0
-            fi
-            return 1
-          }
-
           # Helper function to parse text and extract @holonbot mention with goal hint
           # Args: text body
           # Outputs: FOUND_MENTION (true/false), GOAL_HINT
@@ -240,12 +215,19 @@ jobs:
             while IFS= read -r line || [ -n "$line" ]; do
               line_num=$((line_num + 1))
 
-              # Track code block state
+              # Track code block state (validate matching fence types)
               if [[ "$line" =~ ^(\`\`\`|~~~) ]]; then
+                local fence_marker="${BASH_REMATCH[1]}"
                 if [ "$in_code_block" -eq 1 ]; then
-                  in_code_block=0
+                  # Only close code block if fence marker matches opener
+                  if [ "$fence_marker" = "$code_fence_type" ]; then
+                    in_code_block=0
+                    code_fence_type=''
+                  fi
                 else
+                  # Open new code block and record fence marker type
                   in_code_block=1
+                  code_fence_type="$fence_marker"
                 fi
                 continue
               fi
@@ -258,8 +240,8 @@ jobs:
               # Check for inline code blocks (ignore content between backticks)
               # Remove inline code content before checking for mention
               local cleaned_line="$line"
-              while [[ "$cleaned_line" =~ \`[^\`]*\` ]]; do
-                cleaned_line="${cleaned_line%%\`\`*}${cleaned_line#*\`}"
+              while [[ "$cleaned_line" =~ (.*)\`[^\`]*\`(.*) ]]; do
+                cleaned_line="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
               done
 
               # Check for @holonbot mention with word boundary
@@ -285,6 +267,7 @@ jobs:
             if [ "$found_mention" = 'true' ] && [ -z "$goal_hint" ]; then
               local skip_to_mention=0
               local in_code_block=0
+              local code_fence_type=''
               local after_mention=false
 
               while IFS= read -r line || [ -n "$line" ]; do
@@ -301,12 +284,19 @@ jobs:
                   continue
                 fi
 
-                # Track code block state for lines after mention
+                # Track code block state for lines after mention (validate matching fence types)
                 if [[ "$line" =~ ^(\`\`\`|~~~) ]]; then
+                  local fence_marker="${BASH_REMATCH[1]}"
                   if [ "$in_code_block" -eq 1 ]; then
-                    in_code_block=0
+                    # Only close code block if fence marker matches opener
+                    if [ "$fence_marker" = "$code_fence_type" ]; then
+                      in_code_block=0
+                      code_fence_type=''
+                    fi
                   else
+                    # Open new code block and record fence marker type
                     in_code_block=1
+                    code_fence_type="$fence_marker"
                   fi
                   continue
                 fi
@@ -318,8 +308,8 @@ jobs:
 
                 # Skip inline code
                 local cleaned_line="$line"
-                while [[ "$cleaned_line" =~ \`[^\`]*\` ]]; do
-                  cleaned_line="${cleaned_line%%\`\`*}${cleaned_line#*\`}"
+                while [[ "$cleaned_line" =~ (.*)\`[^\`]*\`(.*) ]]; do
+                  cleaned_line="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
                 done
 
                 # Get first non-empty line (trimmed)
@@ -422,7 +412,11 @@ jobs:
               SHOULD_RUN='true'
               REASON='Comment gates passed'
             else
-              REASON="Comment event not eligible: action=${EVENT_ACTION:-<none>}"
+              if [ "$EVENT_ACTION" != 'created' ]; then
+                REASON="Comment event not eligible: action=${EVENT_ACTION:-<none>}"
+              elif [ -z "$PARSE_TEXT" ]; then
+                REASON='Comment body is empty'
+              fi
             fi
 
           # Handle PR review events
@@ -508,7 +502,6 @@ jobs:
           REVIEW_BODY_B64: ${{ steps.ctx.outputs.review_body_b64 }}
           LABEL_NAME: ${{ github.event.label.name }}
           ASSIGNEE_LOGIN: ${{ github.event.assignee.login }}
-          ASSIGNEE_TYPE: ${{ github.event.assignee.type }}
 
       - name: Add initial reaction (eyes)
         if: steps.gate.outputs.should_run == 'true' && inputs.comment_id != 0
