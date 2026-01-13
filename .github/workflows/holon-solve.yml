@@ -3,6 +3,26 @@ name: Holon Solve (Reusable)
 on:
   workflow_call:
     inputs:
+      event_name:
+        description: 'Caller event name (optional; defaults to github.event_name)'
+        required: false
+        type: string
+        default: ''
+      event_action:
+        description: 'Caller event action (optional; defaults to github.event.action)'
+        required: false
+        type: string
+        default: ''
+      label_name:
+        description: 'Label name (optional; defaults to github.event.label.name)'
+        required: false
+        type: string
+        default: ''
+      assignee_login:
+        description: 'Assignee login (optional; defaults to github.event.assignee.login)'
+        required: false
+        type: string
+        default: ''
       issue_number:
         description: 'Issue or PR number'
         required: false
@@ -108,7 +128,422 @@ on:
         value: ${{ jobs.holon-solve.outputs.summary }}
 
 jobs:
+  gate:
+    runs-on: ${{ (startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on)) || inputs.runs_on || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      reason: ${{ steps.gate.outputs.reason }}
+      goal_hint: ${{ steps.gate.outputs.goal_hint }}
+      is_pr: ${{ steps.gate.outputs.is_pr }}
+      issue_number: ${{ steps.gate.outputs.issue_number }}
+    steps:
+      - name: Gate execution
+        id: gate
+        run: |
+          set -euo pipefail
+
+          # Helper function to parse text and extract @holonbot mention with goal hint
+          # Args: text body
+          # Outputs: FOUND_MENTION (true/false), GOAL_HINT
+          parse_mention() {
+            local text="$1"
+            local found_mention='false'
+            local goal_hint=''
+            local in_code_block=0
+            local code_fence_type=''
+            local mention_line=-1
+            local line_num=0
+
+            # Process line by line
+            while IFS= read -r line || [ -n "$line" ]; do
+              line_num=$((line_num + 1))
+
+              # Track code block state (validate matching fence types)
+              # Allow up to 3 leading spaces (common in Markdown) and optional language info
+              if [[ "$line" =~ ^[[:space:]]{0,3}(\`\`\`|~~~) ]]; then
+                local fence_marker="${BASH_REMATCH[1]}"
+                if [ "$in_code_block" -eq 1 ]; then
+                  # Only close code block if fence marker matches opener
+                  if [ "$fence_marker" = "$code_fence_type" ]; then
+                    in_code_block=0
+                    code_fence_type=''
+                  fi
+                else
+                  # Open new code block and record fence marker type
+                  in_code_block=1
+                  code_fence_type="$fence_marker"
+                fi
+                continue
+              fi
+
+              # Skip if inside code block
+              if [ "$in_code_block" -eq 1 ]; then
+                continue
+              fi
+
+              # Ignore blockquotes (treat quoted content as non-actionable trigger text)
+              # Allow up to 3 leading spaces before '>' per Markdown
+              local trimmed_for_quote
+              trimmed_for_quote="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//')"
+              if [[ "$trimmed_for_quote" == \>* ]]; then
+                continue
+              fi
+
+              # Check for inline code blocks (ignore content between backticks)
+              # Remove inline code content before checking for mention
+              local cleaned_line="$line"
+              while [[ "$cleaned_line" =~ (.*)\`[^\`]*\`(.*) ]]; do
+                cleaned_line="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+              done
+
+              # Check for @holonbot mention with word boundary
+              # Pattern: @holonbot as a standalone token (not followed by letters/digits/_)
+              # This avoids matching @holonbot123 or similar.
+              if [[ "$cleaned_line" =~ (^|[^[:alnum:]_])@holonbot([^[:alnum:]_]|$) ]]; then
+                found_mention='true'
+                mention_line=$line_num
+
+                # Extract goal hint from the same line after @holonbot (even if mention isn't at line start)
+                local after_mention="${cleaned_line#*@holonbot}"
+                goal_hint="$(printf '%s' "$after_mention" | sed -e 's/^[[:space:][:punct:]]*//')"
+
+                # If no goal hint on mention line, we'll get it from next lines
+                break
+              fi
+            done <<< "$text"
+
+            # If we found a mention but no goal hint, look at subsequent lines
+            if [ "$found_mention" = 'true' ] && [ -z "$goal_hint" ]; then
+              local skip_to_mention=0
+              local in_code_block=0
+              local code_fence_type=''
+              local after_mention=false
+
+              while IFS= read -r line || [ -n "$line" ]; do
+                skip_to_mention=$((skip_to_mention + 1))
+
+                # Skip until we reach the mention line
+                if [ "$skip_to_mention" -lt "$mention_line" ]; then
+                  continue
+                fi
+
+                # Start looking after the mention line
+                if [ "$skip_to_mention" -eq "$mention_line" ]; then
+                  after_mention=true
+                  continue
+                fi
+
+                # Track code block state for lines after mention (validate matching fence types)
+                if [[ "$line" =~ ^[[:space:]]{0,3}(\`\`\`|~~~) ]]; then
+                  local fence_marker="${BASH_REMATCH[1]}"
+                  if [ "$in_code_block" -eq 1 ]; then
+                    # Only close code block if fence marker matches opener
+                    if [ "$fence_marker" = "$code_fence_type" ]; then
+                      in_code_block=0
+                      code_fence_type=''
+                    fi
+                  else
+                    # Open new code block and record fence marker type
+                    in_code_block=1
+                    code_fence_type="$fence_marker"
+                  fi
+                  continue
+                fi
+
+                # Skip code blocks
+                if [ "$in_code_block" -eq 1 ]; then
+                  continue
+                fi
+
+                # Ignore blockquotes
+                local trimmed_for_quote
+                trimmed_for_quote="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//')"
+                if [[ "$trimmed_for_quote" == \>* ]]; then
+                  continue
+                fi
+
+                # Skip inline code
+                local cleaned_line="$line"
+                while [[ "$cleaned_line" =~ (.*)\`[^\`]*\`(.*) ]]; do
+                  cleaned_line="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                done
+
+                # Get first non-empty line (trimmed)
+                local trimmed_line
+                trimmed_line="$(printf '%s' "$cleaned_line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+                if [ -n "$trimmed_line" ]; then
+                  goal_hint="$trimmed_line"
+                  break
+                fi
+              done <<< "$text"
+            fi
+
+            printf '%s\n' "$found_mention"
+            printf '%s\n' "$goal_hint"
+          }
+
+          SHOULD_RUN='false'
+          REASON='Not eligible'
+          GOAL_HINT=''
+
+          EVENT_NAME="$INPUT_EVENT_NAME"
+          if [ -z "$EVENT_NAME" ]; then
+            EVENT_NAME="$EVENT_NAME_FALLBACK"
+          fi
+
+          EVENT_ACTION="$INPUT_EVENT_ACTION"
+          if [ -z "$EVENT_ACTION" ]; then
+            EVENT_ACTION="$EVENT_ACTION_FALLBACK"
+          fi
+
+          ISSUE_NUMBER="$ISSUE_NUMBER_INPUT"
+          if [ -z "$ISSUE_NUMBER" ] || [ "$ISSUE_NUMBER" = '0' ]; then
+            ISSUE_NUMBER="$EVENT_ISSUE_NUMBER"
+            if [ -z "$ISSUE_NUMBER" ]; then
+              ISSUE_NUMBER="$EVENT_PR_NUMBER"
+            fi
+          fi
+
+          if [ -z "$ISSUE_NUMBER" ] || [ "$ISSUE_NUMBER" = '0' ]; then
+            REASON='Unable to determine issue/PR number (provide inputs.issue_number)'
+            echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+            echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+            echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+            echo "is_pr=false" >> "$GITHUB_OUTPUT"
+            echo "issue_number=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LABEL_NAME="$INPUT_LABEL_NAME"
+          if [ -z "$LABEL_NAME" ]; then
+            LABEL_NAME="$EVENT_LABEL_NAME"
+          fi
+
+          ASSIGNEE_LOGIN="$INPUT_ASSIGNEE_LOGIN"
+          if [ -z "$ASSIGNEE_LOGIN" ]; then
+            ASSIGNEE_LOGIN="$EVENT_ASSIGNEE_LOGIN"
+          fi
+
+          COMMENT_BODY="$INPUT_COMMENT_BODY"
+          if [ -z "$COMMENT_BODY" ]; then
+            COMMENT_BODY="$EVENT_COMMENT_BODY"
+          fi
+
+          REVIEW_BODY="$INPUT_REVIEW_BODY"
+          if [ -z "$REVIEW_BODY" ]; then
+            REVIEW_BODY="$EVENT_REVIEW_BODY"
+          fi
+
+          # Determine if this issue number is a PR
+          IS_PR='false'
+          if [ -n "$EVENT_PR_NUMBER" ] || [ -n "$EVENT_ISSUE_PR_URL" ]; then
+            IS_PR='true'
+          else
+            if gh api --silent "repos/$REPO/pulls/$ISSUE_NUMBER" >/dev/null 2>&1; then
+              IS_PR='true'
+            fi
+          fi
+
+          # Determine which text to parse based on event type
+          PARSE_TEXT=''
+          if [ -n "$COMMENT_BODY" ]; then
+            PARSE_TEXT="$COMMENT_BODY"
+          elif [ -n "$REVIEW_BODY" ]; then
+            PARSE_TEXT="$REVIEW_BODY"
+          fi
+
+          # Avoid bot loops
+          if [ "$ACTOR" = 'holonbot[bot]' ]; then
+            REASON='Actor is holonbot[bot]'
+            echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+            echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+            echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+            echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+            echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Backward-compat: if caller didn't pass event_name and this workflow sees workflow_call,
+          # assume the caller already gated the invocation.
+          if [ -z "$INPUT_EVENT_NAME" ] && [ "$EVENT_NAME" = 'workflow_call' ]; then
+            SHOULD_RUN='true'
+            REASON='workflow_call without inputs.event_name (backward compatible default allow)'
+          fi
+
+          # Allow explicit mode input (manual/custom callers).
+          if [ "$SHOULD_RUN" != 'true' ] && [ -n "$INPUT_MODE" ]; then
+            SHOULD_RUN='true'
+            REASON='Explicit inputs.mode provided'
+          fi
+
+          # Handle comment-based triggers (issue_comment, pull_request_review_comment)
+          if [ "$SHOULD_RUN" != 'true' ] && { [ "$EVENT_NAME" = 'issue_comment' ] || [ "$EVENT_NAME" = 'pull_request_review_comment' ]; }; then
+            if [ "$EVENT_ACTION" = 'created' ] && [ -n "$PARSE_TEXT" ]; then
+              # Parse for @holonbot mention
+              parse_result="$(parse_mention "$PARSE_TEXT")"
+              FOUND_MENTION="$(printf '%s' "$parse_result" | sed -n '1p')"
+              GOAL_HINT="$(printf '%s' "$parse_result" | sed -n '2p')"
+
+              if [ "$FOUND_MENTION" != 'true' ]; then
+                REASON='No @holonbot mention found (or only in code block)'
+                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+                echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+                echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+
+              if [ "$IS_PR" = 'true' ]; then
+                # Disallow fork PRs
+                IS_CROSS_REPO="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo 'true')"
+                if [ "$IS_CROSS_REPO" = 'true' ]; then
+                  REASON='PR is from a fork/cross-repo head; not supported'
+                  echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                  echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                  echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+                  echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+                  echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+                  exit 0
+                fi
+              fi
+
+              # Require write/maintain/admin permissions
+              PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo '')"
+              if [ "$PERMISSION" != 'admin' ] && [ "$PERMISSION" != 'maintain' ] && [ "$PERMISSION" != 'write' ]; then
+                REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
+                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+                echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+                echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+
+              SHOULD_RUN='true'
+              REASON='Comment gates passed'
+            else
+              if [ "$EVENT_ACTION" != 'created' ]; then
+                REASON="Comment event not eligible: action=${EVENT_ACTION:-<none>}"
+              elif [ -z "$PARSE_TEXT" ]; then
+                REASON='Comment body is empty'
+              fi
+            fi
+          fi
+
+          # Handle PR review events
+          if [ "$SHOULD_RUN" != 'true' ] && [ "$EVENT_NAME" = 'pull_request_review' ]; then
+            if [ "$EVENT_ACTION" = 'submitted' ] || [ "$EVENT_ACTION" = 'edited' ]; then
+              if [ -n "$PARSE_TEXT" ]; then
+                parse_result="$(parse_mention "$PARSE_TEXT")"
+                FOUND_MENTION="$(printf '%s' "$parse_result" | sed -n '1p')"
+                GOAL_HINT="$(printf '%s' "$parse_result" | sed -n '2p')"
+
+                if [ "$FOUND_MENTION" = 'true' ]; then
+                  # Require write/maintain/admin permissions
+                  PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo '')"
+                  if [ "$PERMISSION" != 'admin' ] && [ "$PERMISSION" != 'maintain' ] && [ "$PERMISSION" != 'write' ]; then
+                    REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
+                    echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                    echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                    echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+                    echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+                    echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+
+                  SHOULD_RUN='true'
+                  REASON='PR review gates passed'
+                else
+                  REASON='No @holonbot mention found in review body'
+                fi
+              else
+                REASON='Review body is empty'
+              fi
+            else
+              REASON="PR review event not eligible: action=${EVENT_ACTION}"
+            fi
+          fi
+
+          # Handle issue events (label, assign)
+          if [ "$SHOULD_RUN" != 'true' ] && [ "$EVENT_NAME" = 'issues' ]; then
+            if [ "$EVENT_ACTION" = 'labeled' ] && [ "$LABEL_NAME" = 'holon' ]; then
+              SHOULD_RUN='true'
+              REASON='Issue labeled holon'
+            elif [ "$EVENT_ACTION" = 'assigned' ]; then
+              if [ "$ASSIGNEE_LOGIN" = 'holonbot[bot]' ] || [ "$ASSIGNEE_LOGIN" = 'holonbot' ]; then
+                SHOULD_RUN='true'
+                REASON='Issue assigned to holonbot[bot]'
+              else
+                REASON="Issue assigned to $ASSIGNEE_LOGIN (not holonbot[bot])"
+              fi
+            else
+              REASON='Issue event not eligible'
+            fi
+          fi
+
+          # Handle PR events (label)
+          if [ "$SHOULD_RUN" != 'true' ] && [ "$EVENT_NAME" = 'pull_request' ] && [ "$EVENT_ACTION" = 'labeled' ]; then
+            if [ "$LABEL_NAME" = 'holon' ]; then
+              SHOULD_RUN='true'
+              REASON='PR labeled holon'
+            else
+              REASON='PR label not eligible'
+            fi
+          fi
+
+          echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+          echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+          echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          INPUT_EVENT_NAME: ${{ inputs.event_name }}
+          EVENT_NAME_FALLBACK: ${{ github.event_name }}
+          INPUT_EVENT_ACTION: ${{ inputs.event_action }}
+          EVENT_ACTION_FALLBACK: ${{ github.event.action }}
+          ISSUE_NUMBER_INPUT: ${{ inputs.issue_number }}
+          EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ISSUE_PR_URL: ${{ github.event.issue.pull_request.url }}
+          INPUT_LABEL_NAME: ${{ inputs.label_name }}
+          EVENT_LABEL_NAME: ${{ github.event.label.name }}
+          INPUT_ASSIGNEE_LOGIN: ${{ inputs.assignee_login }}
+          EVENT_ASSIGNEE_LOGIN: ${{ github.event.assignee.login }}
+          INPUT_COMMENT_BODY: ${{ inputs.comment_body }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+          INPUT_REVIEW_BODY: ${{ inputs.review_body }}
+          EVENT_REVIEW_BODY: ${{ github.event.review.body }}
+          INPUT_MODE: ${{ inputs.mode }}
+
+      - name: Gate summary
+        if: always()
+        run: |
+          set -euo pipefail
+
+          if [ "${{ steps.gate.outputs.should_run }}" != 'true' ]; then
+            {
+              echo "### Holon skipped"
+              echo "- Reason: ${{ steps.gate.outputs.reason }}"
+              echo "- Event: ${{ inputs.event_name || github.event_name }} (${{ inputs.event_action || github.event.action }})"
+              echo "- Target: #${{ steps.gate.outputs.issue_number }}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   holon-solve:
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
+    concurrency:
+      group: holon-${{ github.repository }}-${{ inputs.issue_number != 0 && inputs.issue_number || github.run_id }}
+      cancel-in-progress: true
     runs-on: ${{ (startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on)) || inputs.runs_on || 'ubuntu-latest' }}
     permissions:
       contents: write
@@ -126,8 +561,11 @@ jobs:
 
           EVENT_NAME='${{ github.event_name }}'
 
+          ISSUE_NUMBER_FROM_GATE='${{ needs.gate.outputs.issue_number }}'
           ISSUE_NUMBER_INPUT='${{ inputs.issue_number }}'
-          if [ -n "$ISSUE_NUMBER_INPUT" ] && [ "$ISSUE_NUMBER_INPUT" != '0' ]; then
+          if [ -n "$ISSUE_NUMBER_FROM_GATE" ] && [ "$ISSUE_NUMBER_FROM_GATE" != '0' ]; then
+            ISSUE_NUMBER="$ISSUE_NUMBER_FROM_GATE"
+          elif [ -n "$ISSUE_NUMBER_INPUT" ] && [ "$ISSUE_NUMBER_INPUT" != '0' ]; then
             ISSUE_NUMBER="$ISSUE_NUMBER_INPUT"
           else
             ISSUE_NUMBER='${{ github.event.issue.number }}'
@@ -141,8 +579,11 @@ jobs:
             exit 1
           fi
 
+          IS_PR_FROM_GATE='${{ needs.gate.outputs.is_pr }}'
           IS_PR='false'
-          if [ -n '${{ github.event.issue.pull_request.url }}' ] || [ -n '${{ github.event.pull_request.number }}' ]; then
+          if [ "$IS_PR_FROM_GATE" = 'true' ]; then
+            IS_PR='true'
+          elif [ -n '${{ github.event.issue.pull_request.url }}' ] || [ -n '${{ github.event.pull_request.number }}' ]; then
             IS_PR='true'
           fi
 
@@ -198,6 +639,12 @@ jobs:
         id: gate
         run: |
           set -euo pipefail
+
+          # Gate logic moved to jobs.gate; keep this step as a shim for downstream steps.
+          echo "should_run=${{ needs.gate.outputs.should_run }}" >> "$GITHUB_OUTPUT"
+          echo "reason=${{ needs.gate.outputs.reason }}" >> "$GITHUB_OUTPUT"
+          echo "goal_hint=${{ needs.gate.outputs.goal_hint }}" >> "$GITHUB_OUTPUT"
+          exit 0
 
           # Helper function to parse text and extract @holonbot mention with goal hint
           # Args: text body

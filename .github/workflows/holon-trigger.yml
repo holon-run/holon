@@ -21,25 +21,20 @@ permissions:
 jobs:
   holon:
     name: Run Holon (via holon-solve)
-    # Light job-level gating for comment events (cheap heuristic to avoid unnecessary workflow runs)
-    # The precise gate with full parsing is inside holon-solve.yml
-    concurrency:
-      group: holon-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: true
-    if: |
-      (github.event_name == 'issue_comment' && github.event.action == 'created' && contains(github.event.comment.body, '@holonbot')) ||
-      (github.event_name == 'pull_request_review_comment' && github.event.action == 'created' && contains(github.event.comment.body, '@holonbot')) ||
-      (github.event_name == 'pull_request_review' && (github.event.action == 'submitted' || github.event.action == 'edited') && contains(github.event.review.body, '@holonbot')) ||
-      (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'holon') ||
-      (github.event_name == 'issues' && github.event.action == 'assigned' && (github.event.assignee.login == 'holonbot[bot]' || github.event.assignee.login == 'holonbot')) ||
-      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'holon')
     uses: ./.github/workflows/holon-solve.yml
     with:
-      # Keep config minimal; holon-solve derives issue_number/comment_body/mode/output_dir from the event.
+      event_name: ${{ github.event_name }}
+      event_action: ${{ github.event.action }}
+      issue_number: ${{ github.event.issue.number || github.event.pull_request.number }}
+      label_name: ${{ github.event.label.name || '' }}
+      assignee_login: ${{ github.event.assignee.login || '' }}
+      comment_id: ${{ github.event.comment.id || 0 }}
+      comment_body: ${{ github.event.comment.body || '' }}
+      review_body: ${{ github.event.review.body || '' }}
+
+      # Repo-local workflow uses the current branch Holon implementation.
       log_level: 'debug'
       build_from_source: true
-      comment_id: ${{ github.event.comment.id || 0 }}
-      review_body: ${{ github.event.review.body || '' }}
     secrets:
       anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
       holon_github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}
