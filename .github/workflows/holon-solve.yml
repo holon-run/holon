@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: ''
+      review_body:
+        description: 'Review body (for PR review events)'
+        required: false
+        type: string
+        default: ''
       mode:
         description: 'Execution mode (solve, pr-fix, plan, review). Empty = auto-detect'
         required: false
@@ -146,6 +151,11 @@ jobs:
             COMMENT_BODY="$EVENT_COMMENT_BODY"
           fi
 
+          REVIEW_BODY="$INPUT_REVIEW_BODY"
+          if [ -z "$REVIEW_BODY" ] && [ "$EVENT_NAME" = 'pull_request_review' ]; then
+            REVIEW_BODY="$EVENT_REVIEW_BODY"
+          fi
+
           INPUT_DIR_INPUT='${{ inputs.input_dir }}'
           if [ -n "$INPUT_DIR_INPUT" ]; then
             INPUT_DIR="$INPUT_DIR_INPUT"
@@ -172,16 +182,150 @@ jobs:
           COMMENT_B64="$(printf '%s' "$COMMENT_BODY" | base64 -w 0)"
           echo "comment_body_b64=$COMMENT_B64" >> "$GITHUB_OUTPUT"
 
+          # Safely output review body
+          REVIEW_B64="$(printf '%s' "$REVIEW_BODY" | base64 -w 0)"
+          echo "review_body_b64=$REVIEW_B64" >> "$GITHUB_OUTPUT"
+
           echo "input_dir=$INPUT_DIR" >> "$GITHUB_OUTPUT"
           echo "output_dir=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
         env:
           INPUT_COMMENT_BODY: ${{ inputs.comment_body }}
           EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+          INPUT_REVIEW_BODY: ${{ inputs.review_body }}
+          EVENT_REVIEW_BODY: ${{ github.event.review.body }}
 
       - name: Gate execution
         id: gate
         run: |
           set -euo pipefail
+
+          # Helper function to parse text and extract @holonbot mention with goal hint
+          # Args: text body
+          # Outputs: FOUND_MENTION (true/false), GOAL_HINT
+          parse_mention() {
+            local text="$1"
+            local found_mention='false'
+            local goal_hint=''
+            local in_code_block=0
+            local code_fence_type=''
+            local mention_line=-1
+            local line_num=0
+
+            # Process line by line
+            while IFS= read -r line || [ -n "$line" ]; do
+              line_num=$((line_num + 1))
+
+              # Track code block state (validate matching fence types)
+              if [[ "$line" =~ ^(\`\`\`|~~~) ]]; then
+                local fence_marker="${BASH_REMATCH[1]}"
+                if [ "$in_code_block" -eq 1 ]; then
+                  # Only close code block if fence marker matches opener
+                  if [ "$fence_marker" = "$code_fence_type" ]; then
+                    in_code_block=0
+                    code_fence_type=''
+                  fi
+                else
+                  # Open new code block and record fence marker type
+                  in_code_block=1
+                  code_fence_type="$fence_marker"
+                fi
+                continue
+              fi
+
+              # Skip if inside code block
+              if [ "$in_code_block" -eq 1 ]; then
+                continue
+              fi
+
+              # Check for inline code blocks (ignore content between backticks)
+              # Remove inline code content before checking for mention
+              local cleaned_line="$line"
+              while [[ "$cleaned_line" =~ (.*)\`[^\`]*\`(.*) ]]; do
+                cleaned_line="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+              done
+
+              # Check for @holonbot mention with word boundary
+              # Pattern: @holonbot followed by space, punctuation, or end of line
+              # This avoids matching @holonbot123 or similar
+              if [[ "$cleaned_line" =~ @holonbot([[:space:]]|$|[\.\,\:\;\!\?\)]) ]]; then
+                found_mention='true'
+                mention_line=$line_num
+
+                # Extract goal hint from the same line after @holonbot
+                # Remove @holonbot and any following whitespace/punctuation
+                goal_hint="${cleaned_line#@holonbot}"
+                # Remove leading word-boundary characters (space, punctuation)
+                goal_hint="${goal_hint#[[:space:]]}"
+                goal_hint="${goal_hint#[\.\,\:\;\!\?\]]}"
+
+                # If no goal hint on mention line, we'll get it from next lines
+                break
+              fi
+            done <<< "$text"
+
+            # If we found a mention but no goal hint, look at subsequent lines
+            if [ "$found_mention" = 'true' ] && [ -z "$goal_hint" ]; then
+              local skip_to_mention=0
+              local in_code_block=0
+              local code_fence_type=''
+              local after_mention=false
+
+              while IFS= read -r line || [ -n "$line" ]; do
+                skip_to_mention=$((skip_to_mention + 1))
+
+                # Skip until we reach the mention line
+                if [ "$skip_to_mention" -lt "$mention_line" ]; then
+                  continue
+                fi
+
+                # Start looking after the mention line
+                if [ "$skip_to_mention" -eq "$mention_line" ]; then
+                  after_mention=true
+                  continue
+                fi
+
+                # Track code block state for lines after mention (validate matching fence types)
+                if [[ "$line" =~ ^(\`\`\`|~~~) ]]; then
+                  local fence_marker="${BASH_REMATCH[1]}"
+                  if [ "$in_code_block" -eq 1 ]; then
+                    # Only close code block if fence marker matches opener
+                    if [ "$fence_marker" = "$code_fence_type" ]; then
+                      in_code_block=0
+                      code_fence_type=''
+                    fi
+                  else
+                    # Open new code block and record fence marker type
+                    in_code_block=1
+                    code_fence_type="$fence_marker"
+                  fi
+                  continue
+                fi
+
+                # Skip code blocks
+                if [ "$in_code_block" -eq 1 ]; then
+                  continue
+                fi
+
+                # Skip inline code
+                local cleaned_line="$line"
+                while [[ "$cleaned_line" =~ (.*)\`[^\`]*\`(.*) ]]; do
+                  cleaned_line="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                done
+
+                # Get first non-empty line (trimmed)
+                local trimmed_line
+                trimmed_line="$(printf '%s' "$cleaned_line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+                if [ -n "$trimmed_line" ]; then
+                  goal_hint="$trimmed_line"
+                  break
+                fi
+              done <<< "$text"
+            fi
+
+            printf '%s\n' "$found_mention"
+            printf '%s\n' "$goal_hint"
+          }
 
           SHOULD_RUN='false'
           REASON='Not eligible'
@@ -197,6 +341,24 @@ jobs:
             COMMENT_BODY=''
           fi
 
+          # Decode review body from base64
+          if [ -n "${REVIEW_BODY_B64:-}" ]; then
+            if ! REVIEW_BODY="$(printf '%s' "$REVIEW_BODY_B64" | base64 -d 2>/dev/null)"; then
+              echo "Warning: failed to decode REVIEW_BODY_B64 as base64; proceeding with empty REVIEW_BODY" >&2
+              REVIEW_BODY=''
+            fi
+          else
+            REVIEW_BODY=''
+          fi
+
+          # Determine which text to parse based on event type
+          PARSE_TEXT=''
+          if [ -n "$COMMENT_BODY" ]; then
+            PARSE_TEXT="$COMMENT_BODY"
+          elif [ -n "$REVIEW_BODY" ]; then
+            PARSE_TEXT="$REVIEW_BODY"
+          fi
+
           # Avoid bot loops
           if [ "$ACTOR" = 'holonbot[bot]' ]; then
             REASON='Actor is holonbot[bot]'
@@ -206,67 +368,111 @@ jobs:
             exit 0
           fi
 
-          if [ "$EVENT_NAME" = 'issue_comment' ] && [ "$EVENT_ACTION" = 'created' ]; then
-            # Normalize first non-empty line (strip CR, trim whitespace)
-            FIRST_LINE="$(printf '%s\n' "$COMMENT_BODY" | tr '\r' '\n' | sed '/./{p;q}' | xargs || true)"
+          # Handle comment-based triggers (issue_comment, pull_request_review_comment)
+          if [ "$EVENT_NAME" = 'issue_comment' ] || [ "$EVENT_NAME" = 'pull_request_review_comment' ]; then
+            if [ "$EVENT_ACTION" = 'created' ] && [ -n "$PARSE_TEXT" ]; then
+              # Parse for @holonbot mention
+              parse_result="$(parse_mention "$PARSE_TEXT")"
+              FOUND_MENTION="$(printf '%s' "$parse_result" | sed -n '1p')"
+              GOAL_HINT="$(printf '%s' "$parse_result" | sed -n '2p')"
 
-            # Check if the comment is exactly "@holonbot" or starts with "@holonbot " (with space)
-            # This pattern matches both "@holonbot" alone and "@holonbot " followed by text
-            # The xargs command trims trailing whitespace, so multiple spaces are normalized to one
-            # The check for "@holonbot "* ensures we don't match "@holonbot123" or similar
-            if [[ "$FIRST_LINE" == "@holonbot" ]] || [[ "$FIRST_LINE" == "@holonbot "* ]]; then
-              # Extract trailing text after "@holonbot", then drop a single leading space if present
-              # If the comment is exactly "@holonbot", GOAL_HINT will be empty (acceptable)
-              GOAL_HINT="${FIRST_LINE#@holonbot}"
-              GOAL_HINT="${GOAL_HINT# }"
-              # If user provided a message on subsequent lines, pick the first non-empty line as hint
-              if [ -z "$GOAL_HINT" ]; then
-                GOAL_HINT="$(printf '%s\n' "$COMMENT_BODY" | tr '\r' '\n' | sed '1d;/./{s/^[[:space:]]*//;s/[[:space:]]*$//;p;q}')"
-              fi
-              echo "✅ Trigger path: free-form command"
-              echo "   Goal hint: $GOAL_HINT"
-            else
-              REASON="Comment command not recognized: '$FIRST_LINE'"
-              echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-              echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-              echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            if [ "$IS_PR" = 'true' ]; then
-              # Disallow fork PRs
-              IS_CROSS_REPO="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo 'true')"
-              if [ "$IS_CROSS_REPO" = 'true' ]; then
-                REASON='PR is from a fork/cross-repo head; not supported'
+              if [ "$FOUND_MENTION" = 'true' ]; then
+                echo "✅ Trigger path: comment command"
+                echo "   Goal hint: ${GOAL_HINT:-<none>}"
+              else
+                REASON='No @holonbot mention found (or only in code block)'
                 echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
                 echo "reason=$REASON" >> "$GITHUB_OUTPUT"
                 echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
+
+              if [ "$IS_PR" = 'true' ]; then
+                # Disallow fork PRs
+                IS_CROSS_REPO="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo 'true')"
+                if [ "$IS_CROSS_REPO" = 'true' ]; then
+                  REASON='PR is from a fork/cross-repo head; not supported'
+                  echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                  echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                  echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+                  exit 0
+                fi
+              fi
+
+              # Require write/maintain/admin permissions
+              PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo '')"
+              if [ "$PERMISSION" != 'admin' ] && [ "$PERMISSION" != 'maintain' ] && [ "$PERMISSION" != 'write' ]; then
+                REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
+                echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+
+              SHOULD_RUN='true'
+              REASON='Comment gates passed'
+            else
+              if [ "$EVENT_ACTION" != 'created' ]; then
+                REASON="Comment event not eligible: action=${EVENT_ACTION:-<none>}"
+              elif [ -z "$PARSE_TEXT" ]; then
+                REASON='Comment body is empty'
+              fi
             fi
 
-            # Require write/maintain/admin permissions
-            PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo '')"
-            if [ "$PERMISSION" != 'admin' ] && [ "$PERMISSION" != 'maintain' ] && [ "$PERMISSION" != 'write' ]; then
-              REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
-              echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-              echo "reason=$REASON" >> "$GITHUB_OUTPUT"
-              echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
-              exit 0
+          # Handle PR review events
+          elif [ "$EVENT_NAME" = 'pull_request_review' ]; then
+            if [ "$EVENT_ACTION" = 'submitted' ] || [ "$EVENT_ACTION" = 'edited' ]; then
+              # Parse for @holonbot mention in review body
+              if [ -n "$PARSE_TEXT" ]; then
+                parse_result="$(parse_mention "$PARSE_TEXT")"
+                FOUND_MENTION="$(printf '%s' "$parse_result" | sed -n '1p')"
+                GOAL_HINT="$(printf '%s' "$parse_result" | sed -n '2p')"
+
+                if [ "$FOUND_MENTION" = 'true' ]; then
+                  echo "✅ Trigger path: PR review command"
+                  echo "   Goal hint: ${GOAL_HINT:-<none>}"
+
+                  # Require write/maintain/admin permissions
+                  PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo '')"
+                  if [ "$PERMISSION" != 'admin' ] && [ "$PERMISSION" != 'maintain' ] && [ "$PERMISSION" != 'write' ]; then
+                    REASON="Insufficient permissions for $ACTOR: ${PERMISSION:-none}"
+                    echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+                    echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+                    echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+
+                  SHOULD_RUN='true'
+                  REASON='PR review gates passed'
+                else
+                  REASON='No @holonbot mention found in review body'
+                fi
+              else
+                REASON='Review body is empty'
+              fi
+            else
+              REASON="PR review event not eligible: action=${EVENT_ACTION}"
             fi
 
-            SHOULD_RUN='true'
-            REASON='Comment gates passed'
+          # Handle issue events (label, assign)
           elif [ "$EVENT_NAME" = 'issues' ]; then
             if [ "$EVENT_ACTION" = 'labeled' ] && [ "$LABEL_NAME" = 'holon' ]; then
               SHOULD_RUN='true'
               REASON='Issue labeled holon'
-            elif [ "$EVENT_ACTION" = 'assigned' ] && [ "$ASSIGNEE_TYPE" = 'Bot' ]; then
-              SHOULD_RUN='true'
-              REASON='Issue assigned to Bot'
+            elif [ "$EVENT_ACTION" = 'assigned' ]; then
+              # Only trigger if assigned to holonbot[bot] specifically
+              ASSIGNEE_LOGIN="${ASSIGNEE_LOGIN:-}"
+              if [ "$ASSIGNEE_LOGIN" = 'holonbot[bot]' ] || [ "$ASSIGNEE_LOGIN" = 'holonbot' ]; then
+                SHOULD_RUN='true'
+                REASON='Issue assigned to holonbot[bot]'
+              else
+                REASON="Issue assigned to $ASSIGNEE_LOGIN (not holonbot[bot])"
+              fi
             else
               REASON='Issue event not eligible'
             fi
+
+          # Handle PR events (label)
           elif [ "$EVENT_NAME" = 'pull_request' ] && [ "$EVENT_ACTION" = 'labeled' ]; then
             if [ "$LABEL_NAME" = 'holon' ]; then
               SHOULD_RUN='true'
@@ -274,9 +480,11 @@ jobs:
             else
               REASON='PR label not eligible'
             fi
+
+          # Default: allow (manual triggers, etc.)
           else
             SHOULD_RUN='true'
-            REASON='Default allow'
+            REASON='Default allow (manual trigger or workflow_call)'
           fi
 
           echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
@@ -291,8 +499,9 @@ jobs:
           ISSUE_NUMBER: ${{ steps.ctx.outputs.issue_number }}
           IS_PR: ${{ steps.ctx.outputs.is_pr }}
           COMMENT_BODY_B64: ${{ steps.ctx.outputs.comment_body_b64 }}
+          REVIEW_BODY_B64: ${{ steps.ctx.outputs.review_body_b64 }}
           LABEL_NAME: ${{ github.event.label.name }}
-          ASSIGNEE_TYPE: ${{ github.event.assignee.type }}
+          ASSIGNEE_LOGIN: ${{ github.event.assignee.login }}
 
       - name: Add initial reaction (eyes)
         if: steps.gate.outputs.should_run == 'true' && inputs.comment_id != 0
