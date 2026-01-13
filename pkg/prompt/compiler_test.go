@@ -557,3 +557,91 @@ func TestLegacyContractPathsIgnored(t *testing.T) {
 		}
 	})
 }
+
+// TestSkipModePrompts verifies that SkipModePrompts option skips mode-specific layers
+// This is used in skill mode where Claude Code discovers skills natively
+func TestSkipModePrompts(t *testing.T) {
+	mockFS := fstest.MapFS{
+		"manifest.yaml":                     {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
+		"contracts/common.md":               {Data: []byte("Common Contract")},
+		"modes/solve/contract.md":           {Data: []byte("Solve Mode Contract")},
+		"modes/solve/overlay.md":            {Data: []byte("Solve Mode Overlay")},
+		"modes/solve/context.md":            {Data: []byte("Solve Mode Context")},
+		"modes/solve/overlays/developer.md": {Data: []byte("Solve Developer Overlay")},
+		"roles/developer.md":                {Data: []byte("Developer Role")},
+	}
+
+	compiler := NewCompilerFromFS(mockFS)
+
+	t.Run("SkipModePrompts=false includes all mode layers", func(t *testing.T) {
+		prompt, err := compiler.CompileSystemPrompt(Config{
+			WorkingDir:      "/test",
+			SkipModePrompts: false,
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// Should include common, role, and all mode layers
+		expectedContents := []string{
+			"Common Contract",
+			"Developer Role",
+			"Solve Mode Contract",
+			"Solve Mode Overlay",
+			"Solve Mode Context",
+			"Solve Developer Overlay",
+		}
+		for _, expected := range expectedContents {
+			if !strings.Contains(prompt, expected) {
+				t.Errorf("Expected prompt to contain %q, but it was missing. Prompt: %s", expected, prompt)
+			}
+		}
+	})
+
+	t.Run("SkipModePrompts=true skips all mode layers", func(t *testing.T) {
+		prompt, err := compiler.CompileSystemPrompt(Config{
+			WorkingDir:      "/test",
+			SkipModePrompts: true,
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// Should include common and role only
+		if !strings.Contains(prompt, "Common Contract") {
+			t.Error("Expected prompt to contain Common Contract")
+		}
+		if !strings.Contains(prompt, "Developer Role") {
+			t.Error("Expected prompt to contain Developer Role")
+		}
+
+		// Should NOT include any mode-specific layers
+		modeLayersToSkip := []string{
+			"Solve Mode Contract",
+			"Solve Mode Overlay",
+			"Solve Mode Context",
+			"Solve Developer Overlay",
+		}
+		for _, notExpected := range modeLayersToSkip {
+			if strings.Contains(prompt, notExpected) {
+				t.Errorf("Expected prompt NOT to contain %q when SkipModePrompts=true, but it was present. Prompt: %s", notExpected, prompt)
+			}
+		}
+	})
+
+	t.Run("SkipModePrompts=true with explicit mode still skips mode layers", func(t *testing.T) {
+		prompt, err := compiler.CompileSystemPrompt(Config{
+			Mode:            "solve",
+			WorkingDir:      "/test",
+			SkipModePrompts: true,
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// Even with explicit mode, SkipModePrompts should skip mode layers
+		if strings.Contains(prompt, "Solve Mode Contract") {
+			t.Error("Expected prompt NOT to contain Solve Mode Contract when SkipModePrompts=true")
+		}
+	})
+}

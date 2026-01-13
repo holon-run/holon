@@ -7,14 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/holon-run/holon/pkg/config"
 	v1 "github.com/holon-run/holon/pkg/api/v1"
+	"github.com/holon-run/holon/pkg/config"
 	"github.com/holon-run/holon/pkg/image"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/preflight"
-	_ "github.com/holon-run/holon/pkg/publisher/github"  // Register GitHub publisher
-	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher
 	_ "github.com/holon-run/holon/pkg/publisher/git"      // Register git publisher
+	_ "github.com/holon-run/holon/pkg/publisher/github"   // Register GitHub publisher
+	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/skills"
 	"github.com/spf13/cobra"
@@ -45,12 +45,12 @@ var skillsList string
 
 // resolvedConfig holds the resolved configuration values
 type resolvedConfig struct {
-	baseImage         string
-	agent             string
-	agentChannel      string
+	baseImage          string
+	agent              string
+	agentChannel       string
 	agentChannelSource string
-	logLevel          string
-	assistantOutput   string
+	logLevel           string
+	assistantOutput    string
 }
 
 // resolveWithProjectConfig resolves configuration values with precedence:
@@ -335,20 +335,21 @@ var runCmd = &cobra.Command{
 			AgentChannel:       resolved.agentChannel,
 			AgentChannelSource: resolved.agentChannelSource,
 			WorkspacePath:      workspacePath,
-			ContextPath:     contextPath,
-			InputPath:       inputPath,
-			OutDir:          resolvedOutDir,
-			OutDirIsTemp:    outIsTemp,
-			RoleName:        roleName,
-			EnvVarsList:     envVarsList,
-			LogLevel:        resolved.logLevel,
-			AssistantOutput: resolved.assistantOutput,
-			Mode:            mode,
-			Cleanup:         cleanupMode,
-			AgentConfigMode: agentConfigMode,
-			GitAuthorName:   projectCfg.GetGitAuthorName(),
-			GitAuthorEmail:  projectCfg.GetGitAuthorEmail(),
-			Skills:          resolvedSkillPaths,
+			ContextPath:        contextPath,
+			InputPath:          inputPath,
+			OutDir:             resolvedOutDir,
+			OutDirIsTemp:       outIsTemp,
+			RoleName:           roleName,
+			EnvVarsList:        envVarsList,
+			LogLevel:           resolved.logLevel,
+			AssistantOutput:    resolved.assistantOutput,
+			Mode:               mode,
+			ModeExplicit:       hasMode,
+			Cleanup:            cleanupMode,
+			AgentConfigMode:    agentConfigMode,
+			GitAuthorName:      projectCfg.GetGitAuthorName(),
+			GitAuthorEmail:     projectCfg.GetGitAuthorEmail(),
+			Skills:             resolvedSkillPaths,
 		})
 	},
 }

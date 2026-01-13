@@ -53,6 +53,11 @@ on:
         required: false
         type: string
         default: ''
+      skill:
+        description: 'Skill reference (e.g., github/solve). When provided, uses skill mode instead of mode-based prompts.'
+        required: false
+        type: string
+        default: ''
       base:
         description: 'Base branch for PR creation (empty = repository default branch)'
         required: false
@@ -1138,6 +1143,7 @@ jobs:
         with:
           ref: "${{ github.repository }}#${{ steps.ctx.outputs.issue_number }}"
           mode: ${{ steps.detect.outputs.mode }}
+          skill: ${{ inputs.skill }}
           base: ${{ steps.base.outputs.base }}
           agent: ${{ inputs.agent }}
           anthropic_auth_token: ${{ secrets.anthropic_auth_token || secrets.anthropic_api_key }}
