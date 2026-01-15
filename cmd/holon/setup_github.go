@@ -159,7 +159,13 @@ func resolveRepoInfo(cfg *setupConfig) error {
 		if err != nil {
 			return fmt.Errorf("org-level setup requires --repo flag or git repo: %w", err)
 		}
-		cfg.repo = repo
+		// Parse owner/repo to extract only the repo name
+		parts := strings.Split(repo, "/")
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid repo format from git remote: %s", repo)
+		}
+		// Keep cfg.owner as the specified org; only use remote to infer repo name
+		cfg.repo = parts[1]
 		return nil
 	}
 
@@ -263,14 +269,13 @@ func createWorkflowFile(cfg *setupConfig) error {
 	// Define workflow paths
 	workflowDir := ".github/workflows"
 	workflowFile := filepath.Join(workflowDir, "holon-trigger.yml")
-	cfg.workflowPath = workflowFile
 
 	// Check if file exists
 	if _, err := os.Stat(workflowFile); err == nil {
 		fmt.Printf("  ⚠ Workflow file already exists: %s\n", workflowFile)
 
 		if cfg.nonInteractive {
-			fmt.Println("  ⚠ Skipping (non-interactive mode, use --dry-run to see what would be done)")
+			fmt.Println("  ⚠ Skipping: existing file will not be overwritten in non-interactive mode. Re-run without --non-interactive (and optionally with --dry-run) to review or overwrite.")
 			return nil
 		}
 
@@ -346,6 +351,8 @@ func createWorkflowFile(cfg *setupConfig) error {
 		return fmt.Errorf("failed to write workflow file: %w", err)
 	}
 
+	// Only set workflowPath when the file is actually created or updated
+	cfg.workflowPath = workflowFile
 	fmt.Printf("  ✓ Created workflow file: %s\n", workflowFile)
 
 	return nil
