@@ -27,6 +27,10 @@ var setupGithubCmd = &cobra.Command{
 	Long: `Setup GitHub integration for Holon by installing holonbot app, configuring workflows,
 and setting up required secrets.
 
+IMPORTANT: This command creates workflow files in the current directory under .github/workflows/
+You should run this command from within your git repository directory so the files can be
+committed and pushed to the repository.
+
 This command guides you through:
 1. Verifying prerequisites (gh CLI authentication, repo access)
 2. Installing the holonbot GitHub App
@@ -63,6 +67,14 @@ type workflowTemplate struct {
 	On         map[string]interface{} `yaml:"on"`
 	Permission map[string]string      `yaml:"permissions"`
 	Jobs       map[string]interface{} `yaml:"jobs"`
+}
+
+// requiredWorkflowPermissions defines the required permissions for the holon workflow
+var requiredWorkflowPermissions = map[string]string{
+	"contents":      "write",
+	"issues":        "write",
+	"pull-requests": "write",
+	"id-token":      "write",
 }
 
 func runSetupGithub(ctx context.Context) error {
@@ -224,6 +236,9 @@ func checkHolonbotInstallation(ctx context.Context, cfg *setupConfig) error {
 
 	// Check if app is installed by trying to get app info
 	// We'll use a simple check: try to get the repo which requires auth
+	// Note: This is an authentication check, not a holonbot verification.
+	// We verify that the user has access to the repo (authentication),
+	// but we don't actually check if holonbot is installed here.
 	_, _, err = client.GitHubClient().Repositories.Get(ctx, cfg.owner, cfg.repo)
 	if err != nil {
 		return fmt.Errorf("failed to access repo %s/%s: %w (check permissions)", cfg.owner, cfg.repo, err)
@@ -266,6 +281,10 @@ func checkHolonbotInstallation(ctx context.Context, cfg *setupConfig) error {
 func createWorkflowFile(cfg *setupConfig) error {
 	fmt.Println("\n✓ Step 4: Creating workflow file")
 
+	// Note: Workflow files are created in the current directory under .github/workflows/
+	// Users should run this command from within their git repository directory
+	// so the workflow file can be committed and pushed to the repository.
+
 	// Define workflow paths
 	workflowDir := ".github/workflows"
 	workflowFile := filepath.Join(workflowDir, "holon-trigger.yml")
@@ -279,7 +298,7 @@ func createWorkflowFile(cfg *setupConfig) error {
 			return nil
 		}
 
-		fmt.Printf("  Options: [s]kip, [o]verwrite, [m]erge-safe? ")
+		fmt.Printf("  Options: [s]kip, [o]verwrite? ")
 		reader := bufio.NewReader(os.Stdin)
 		input, err := reader.ReadString('\n')
 		if err != nil {
@@ -293,9 +312,6 @@ func createWorkflowFile(cfg *setupConfig) error {
 			return nil
 		case "o", "overwrite":
 			fmt.Println("  ⚠ Will overwrite existing file")
-		case "m", "merge-safe":
-			fmt.Println("  ⚠ Merge-safe not implemented yet, skipping")
-			return nil
 		default:
 			fmt.Println("  ✓ Skipping workflow file creation")
 			return nil
@@ -316,12 +332,7 @@ func createWorkflowFile(cfg *setupConfig) error {
 	}
 
 	// Check for required permissions
-	requiredPerms := map[string]string{
-		"contents":    "write",
-		"issues":      "write",
-		"pull-requests": "write",
-		"id-token":    "write",
-	}
+	requiredPerms := requiredWorkflowPermissions
 
 	missingPerms := []string{}
 	for perm, access := range requiredPerms {
@@ -410,7 +421,11 @@ func configureSecretOrVar(cfg *setupConfig, name string, required bool, prompt, 
 	if cfg.nonInteractive {
 		fmt.Printf("  Skipping in non-interactive mode\n")
 		fmt.Printf("  To set manually, run:\n")
-		fmt.Printf("    gh secret set %s --repo %s/%s\n", name, cfg.owner, cfg.repo)
+		if kind == "secret" {
+			fmt.Printf("    echo \"your-value\" | gh secret set %s --repo %s/%s\n", name, cfg.owner, cfg.repo)
+		} else {
+			fmt.Printf("    gh variable set %s --repo %s/%s --body \"your-value\"\n", name, cfg.owner, cfg.repo)
+		}
 		return nil
 	}
 
@@ -467,37 +482,34 @@ func validateSetup(ctx context.Context, cfg *setupConfig) error {
 
 	issues := []string{}
 
-	// Check workflow file exists
-	if _, err := os.Stat(cfg.workflowPath); err != nil {
-		issues = append(issues, fmt.Sprintf("workflow file missing: %s", cfg.workflowPath))
-	} else {
-		fmt.Println("  ✓ Workflow file present")
-	}
-
-	// Validate workflow file permissions
-	if content, err := os.ReadFile(cfg.workflowPath); err == nil {
-		var workflow workflowTemplate
-		if err := yaml.Unmarshal(content, &workflow); err != nil {
-			issues = append(issues, "workflow file has invalid YAML")
+	// Check workflow file exists and validate it only if a workflow path was configured
+	if cfg.workflowPath != "" {
+		if _, err := os.Stat(cfg.workflowPath); err != nil {
+			issues = append(issues, fmt.Sprintf("workflow file missing: %s", cfg.workflowPath))
 		} else {
-			requiredPerms := map[string]string{
-				"contents":      "write",
-				"issues":        "write",
-				"pull-requests": "write",
-				"id-token":      "write",
-			}
+			fmt.Println("  ✓ Workflow file present")
 
-			allPresent := true
-			for perm, access := range requiredPerms {
-				if workflow.Permission[perm] != access {
-					allPresent = false
-					issues = append(issues, fmt.Sprintf("workflow missing permission: %s: %s", perm, access))
+			// Validate workflow file permissions
+			if content, err := os.ReadFile(cfg.workflowPath); err == nil {
+				var workflow workflowTemplate
+				if err := yaml.Unmarshal(content, &workflow); err != nil {
+					issues = append(issues, "workflow file has invalid YAML")
+				} else {
+					allPresent := true
+					for perm, access := range requiredWorkflowPermissions {
+						if workflow.Permission[perm] != access {
+							allPresent = false
+							issues = append(issues, fmt.Sprintf("workflow missing permission: %s: %s", perm, access))
+						}
+					}
+					if allPresent {
+						fmt.Println("  ✓ Workflow permissions correct")
+					}
 				}
 			}
-			if allPresent {
-				fmt.Println("  ✓ Workflow permissions correct")
-			}
 		}
+	} else {
+		fmt.Println("  ℹ No workflow file was configured; skipping workflow validation")
 	}
 
 	// Check holonbot installation
@@ -524,7 +536,7 @@ func validateSetup(ctx context.Context, cfg *setupConfig) error {
 }
 
 // printSetupSummary prints a summary of what was done
-func printSetupSummary(cfg *setupConfig) error {
+func printSetupSummary(cfg *setupConfig) {
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("✓ Setup complete!")
 	fmt.Println(strings.Repeat("=", 60))
@@ -545,8 +557,6 @@ func printSetupSummary(cfg *setupConfig) error {
 	fmt.Println("\n  3. Trigger a run by commenting '@holonbot' on an issue or PR")
 
 	fmt.Printf("\nFor more information, see: https://github.com/holon-run/holon\n")
-
-	return nil
 }
 
 func init() {
