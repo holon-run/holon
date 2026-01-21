@@ -1,0 +1,38 @@
+name: Holon Trigger
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [labeled, assigned]
+  pull_request:
+    types: [labeled]
+  pull_request_review:
+    types: [submitted, edited]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  holon:
+    name: Run Holon (via holon-solve)
+    uses: holon-run/holon/.github/workflows/holon-solve.yml@main
+    with:
+      issue_number: ${{ github.event.issue.number || github.event.pull_request.number }}
+      label_name: ${{ github.event.label.name || '' }}
+      assignee_login: ${{ github.event.assignee.login || '' }}
+      comment_id: ${{ github.event.comment.id || 0 }}
+      review_id: ${{ github.event.review.id || 0 }}
+      # Optional: Specify custom runner labels.
+      # Plain string for single label (e.g., 'self-hosted' or 'ubuntu-24.04-large'):
+      # runs_on: 'self-hosted'
+      # JSON array string for multiple labels (e.g., '["self-hosted","linux","x64"]'):
+      # runs_on: '["self-hosted","linux","x64"]'
+    secrets:
+      anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+      anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL }}

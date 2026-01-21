@@ -318,11 +318,10 @@ func createWorkflowFile(cfg *setupConfig) error {
 		}
 	}
 
-	// Read template from examples
-	templatePath := filepath.Join("examples", "workflows", "holon-trigger.yml")
-	templateContent, err := os.ReadFile(templatePath)
+	// Read template from embedded assets
+	templateContent, err := getWorkflowTemplate()
 	if err != nil {
-		return fmt.Errorf("failed to read workflow template from %s: %w", templatePath, err)
+		return fmt.Errorf("failed to read workflow template: %w", err)
 	}
 
 	// Validate that it's a proper YAML with required permissions
