@@ -1,5 +1,86 @@
 # SKILL: github-solve
 
+## Minimal Input Payload
+
+When no pre-populated GitHub context is available (i.e., `/holon/input/context/github/` is empty or missing), you **MUST** first collect context using the skill's built-in collection script.
+
+The minimal input payload required is:
+- **`/holon/input/payload.json`** (optional): Contains task metadata with GitHub reference
+  ```json
+  {
+    "ref": "holon-run/holon#502",
+    "repo": "holon-run/holon",
+    "type": "issue|pr",
+    "trigger_comment_id": 123456  // optional
+  }
+  ```
+
+If `payload.json` exists, use its `ref` field. Otherwise, check for:
+1. Command-line arguments or environment variables with the reference
+2. Fallback to requesting the reference from the user
+
+## Context Collection (When No Pre-Populated Context)
+
+When `/holon/input/context/github/` is empty or missing required files:
+
+1. **Run the collection script**:
+   ```bash
+   /holon/workspace/skills/github-solve/scripts/collect.sh "<ref>" [repo_hint]
+   ```
+
+   Where `<ref>` is one of:
+   - `holon-run/holon#502` - owner/repo#number format
+   - `502` - numeric (requires repo_hint)
+   - `https://github.com/holon-run/holon/issues/502` - full URL
+
+2. **Configure with environment variables** (optional):
+   ```bash
+   export GITHUB_CONTEXT_DIR=/holon/output/github-context  # default
+   export TRIGGER_COMMENT_ID=123456  # if provided in payload
+   export INCLUDE_DIFF=true          # for PRs
+   export INCLUDE_CHECKS=true        # for PRs
+   export UNRESOLVED_ONLY=true       # for PR review threads
+   ```
+
+3. **Copy collected context** to input location (for compatibility):
+   ```bash
+   mkdir -p /holon/input/context/github
+   cp -r /holon/output/github-context/github/* /holon/input/context/github/
+   ```
+
+4. **Proceed with task** using collected context
+
+The collection script fetches:
+- **For issues**: `issue.json`, `comments.json`
+- **For PRs**: `pr.json`, `review_threads.json`, `pr_comments.json`, `pr.diff`, `check_runs.json`, `test-failure-logs.txt`
+
+All collected context is persisted under `/holon/output/github-context/` for audit/debug.
+
+## Transition Behavior
+
+- **Primary**: Always attempt to collect context using the skill's `scripts/collect.sh` first when pre-populated context is missing
+- **Fallback**: If the script fails, check if `/holon/input/context/github/` has any files that were populated by the host (legacy behavior)
+- **Error**: If neither method provides context, report the error clearly in `manifest.json` and exit
+
+## Skill Scripts
+
+This skill includes helper scripts in `scripts/`:
+
+- **`scripts/collect.sh`**: Main context collection script
+  - Fetches issue/PR metadata, comments, diffs, and CI logs using `gh` CLI
+  - Requires `gh` CLI to be authenticated (container environment typically provides this)
+  - Usage: `collect.sh <ref> [repo_hint]`
+
+- **`scripts/lib/helpers.sh`**: Reusable helper functions
+  - `parse_ref()`: Parse GitHub reference into owner/repo/number
+  - `determine_ref_type()`: Check if a number is a PR or issue
+  - `fetch_issue_metadata()`, `fetch_pr_metadata()`: Get issue/PR details
+  - `fetch_issue_comments()`, `fetch_pr_comments()`, `fetch_pr_review_threads()`: Get comments
+  - `fetch_pr_diff()`: Get PR diff
+  - `fetch_pr_check_runs()`, `fetch_workflow_logs()`: Get CI status and logs
+  - `verify_context_files()`: Validate required files exist and are non-empty
+  - `write_manifest()`: Write collection manifest
+
 ## Context Detection
 
 This skill adapts behavior based on the GitHub context provided:
@@ -14,7 +95,7 @@ This skill adapts behavior based on the GitHub context provided:
 
 ## GitHub Context Files
 
-When GitHub context is provided, files are available under `/holon/input/context/github/`:
+When GitHub context is provided (either pre-populated or collected), files are available under `/holon/input/context/github/`:
 
 ### PR Context Files
 - `pr.json`: Pull request metadata
