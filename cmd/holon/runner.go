@@ -16,8 +16,8 @@ import (
 	"github.com/holon-run/holon/pkg/agent/resolver"
 	v1 "github.com/holon-run/holon/pkg/api/v1"
 	"github.com/holon-run/holon/pkg/context/collector"
-	gh "github.com/holon-run/holon/pkg/github"
 	holonGit "github.com/holon-run/holon/pkg/git"
+	gh "github.com/holon-run/holon/pkg/github"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
@@ -48,13 +48,14 @@ type RunnerConfig struct {
 	EnvVarsList          []string
 	LogLevel             string
 	Mode                 string
-	Cleanup              string // Cleanup mode: "auto" (default), "none", "all"
-	AgentConfigMode      string // Agent config mount mode: "auto", "yes", "no"
-	GitAuthorName        string // Optional: git author name override
-	GitAuthorEmail       string // Optional: git author email override
-	WorkspaceIsTemporary bool   // true if workspace is a temporary directory (vs user-provided)
+	ModeExplicit         bool     // true if --mode was explicitly provided (vs default)
+	Cleanup              string   // Cleanup mode: "auto" (default), "none", "all"
+	AgentConfigMode      string   // Agent config mount mode: "auto", "yes", "no"
+	GitAuthorName        string   // Optional: git author name override
+	GitAuthorEmail       string   // Optional: git author email override
+	WorkspaceIsTemporary bool     // true if workspace is a temporary directory (vs user-provided)
 	Skills               []string // Skills to include (already resolved with precedence)
-	AssistantOutput      string  // Assistant output mode: "none" or "stream"
+	AssistantOutput      string   // Assistant output mode: "none" or "stream"
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -638,13 +639,18 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 
 	contextEntries, contextFileNames := collectContextEntries(absContext)
 
+	// Determine if using skill mode: skills are specified AND mode is not explicitly provided
+	// In skill mode, skip mode-specific prompt layers and let Claude Code discover skills natively
+	useSkillMode := len(cfg.Skills) > 0 && !cfg.ModeExplicit
+
 	sysPrompt, err = compiler.CompileSystemPrompt(prompt.Config{
-		Mode:           cfg.Mode,
-		Role:           cfg.RoleName,
-		Language:       "en", // TODO: Detect or flag
-		WorkingDir:     "/holon/workspace",
-		ContextFiles:   contextFileNames,
-		ContextEntries: contextEntries,
+		Mode:            cfg.Mode,
+		Role:            cfg.RoleName,
+		Language:        "en", // TODO: Detect or flag
+		WorkingDir:      "/holon/workspace",
+		ContextFiles:    contextFileNames,
+		ContextEntries:  contextEntries,
+		SkipModePrompts: useSkillMode,
 		// Pass GitHub actor identity from environment variables
 		ActorLogin:   envVars["HOLON_ACTOR_LOGIN"],
 		ActorType:    envVars["HOLON_ACTOR_TYPE"],

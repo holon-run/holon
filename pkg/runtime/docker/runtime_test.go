@@ -945,9 +945,13 @@ func TestPrepareWorkspace_TemporaryWorkspace(t *testing.T) {
 			}
 
 			// Call prepareWorkspace
-			resultPath, preparer, err := prepareWorkspace(ctx, cfg)
+			resultPath, skillsDir, preparer, err := prepareWorkspace(ctx, cfg)
 			if err != nil {
 				t.Fatalf("prepareWorkspace failed: %v", err)
+			}
+			// Ensure cleanup of skills directory
+			if skillsDir != "" {
+				defer os.RemoveAll(skillsDir)
 			}
 
 			// Verify the preparer is of the correct type

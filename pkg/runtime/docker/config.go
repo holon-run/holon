@@ -17,6 +17,7 @@ type MountConfig struct {
 	InputPath            string // Path to input directory (contains spec.yaml, context/, prompts/)
 	OutDir               string
 	LocalClaudeConfigDir string // Path to host ~/.claude directory (optional, for mounting)
+	LocalSkillsDir       string // Path to skills staging directory (optional, for mounting)
 }
 
 // EnvConfig represents the environment configuration for a container
@@ -48,12 +49,25 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 		},
 	}
 
-	// Add Claude config directory mount if provided
+	// Add Claude config directory mount FIRST (if provided)
+	// This mounts to /root/.claude
 	if cfg.LocalClaudeConfigDir != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:        mount.TypeBind,
 			Source:      cfg.LocalClaudeConfigDir,
 			Target:      "/root/.claude",
+			ReadOnly:    true, // Mount read-only to prevent accidental modifications
+			BindOptions: &mount.BindOptions{Propagation: mount.PropagationRPrivate},
+		})
+	}
+
+	// Add skills directory mount SECOND (if provided)
+	// This mounts to /root/.claude/skills and will overlay any existing skills subdir
+	if cfg.LocalSkillsDir != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:        mount.TypeBind,
+			Source:      cfg.LocalSkillsDir,
+			Target:      "/root/.claude/skills",
 			ReadOnly:    true, // Mount read-only to prevent accidental modifications
 			BindOptions: &mount.BindOptions{Propagation: mount.PropagationRPrivate},
 		})

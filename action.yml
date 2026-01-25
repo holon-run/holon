@@ -50,6 +50,10 @@ inputs:
     description: 'Execution mode: solve, pr-fix, plan, review (default: auto-detect from ref type)'
     required: false
     default: ''
+  skill:
+    description: 'Skill reference (e.g., github-solve). When provided, uses skill mode instead of mode-based prompts. Mutually exclusive with mode.'
+    required: false
+    default: ''
   role:
     description: 'Role to assume (e.g. developer, reviewer)'
     required: false
@@ -273,6 +277,9 @@ runs:
         fi
         if [ -n "${{ inputs.mode }}" ]; then
           SOLVE_ARGS+=(--mode "${{ inputs.mode }}")
+        fi
+        if [ -n "${{ inputs.skill }}" ]; then
+          SOLVE_ARGS+=(--skill "${{ inputs.skill }}")
         fi
         if [ -n "${{ inputs.role }}" ]; then
           SOLVE_ARGS+=(--role "${{ inputs.role }}")

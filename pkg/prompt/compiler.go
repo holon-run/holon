@@ -23,6 +23,9 @@ type Config struct {
 	ActorType    string // "User" or "App"
 	ActorSource  string // "token" or "app"
 	ActorAppSlug string // App slug if type is "App"
+	// SkipModePrompts skips mode-specific prompt layers when true.
+	// Used in skill mode where Claude Code discovers skills natively.
+	SkipModePrompts bool
 }
 
 // Manifest represents the structure of manifest.yaml
@@ -123,40 +126,41 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		return "", fmt.Errorf("failed to read role %s: %w", role, err)
 	}
 
-	// 6. Load Mode Contract (optional layer)
-	// Mode contracts are optional - if missing, continue without them.
-	var modeData []byte
-	modeContractPath := fmt.Sprintf("modes/%s/contract.md", mode)
-	modeData, err = readOptionalFile(c.assets, modeContractPath)
-	if err != nil {
-		return "", err
+	// 6-9: Load Mode-specific layers (skip if SkipModePrompts is true)
+	// In skill mode, Claude Code discovers skills natively from .claude/skills/
+	var modeData, modeOverlayData, modeContextData, roleOverlayData []byte
+
+	if !cfg.SkipModePrompts {
+		// 6. Load Mode Contract (optional layer)
+		modeContractPath := fmt.Sprintf("modes/%s/contract.md", mode)
+		modeData, err = readOptionalFile(c.assets, modeContractPath)
+		if err != nil {
+			return "", err
+		}
+
+		// 7. Load Mode Overlay (optional layer)
+		modeOverlayPath := fmt.Sprintf("modes/%s/overlay.md", mode)
+		modeOverlayData, err = readOptionalFile(c.assets, modeOverlayPath)
+		if err != nil {
+			return "", err
+		}
+
+		// 8. Load Mode Context (optional layer, uses ContextEntries)
+		modeContextPath := fmt.Sprintf("modes/%s/context.md", mode)
+		modeContextData, err = readOptionalFile(c.assets, modeContextPath)
+		if err != nil {
+			return "", err
+		}
+
+		// 9. Load Role Overlay (optional layer for selected role only)
+		roleOverlayPath := fmt.Sprintf("modes/%s/overlays/%s.md", mode, role)
+		roleOverlayData, err = readOptionalFile(c.assets, roleOverlayPath)
+		if err != nil {
+			return "", err
+		}
 	}
 
-	// 7. Load Mode Overlay (optional layer)
-	var modeOverlayData []byte
-	modeOverlayPath := fmt.Sprintf("modes/%s/overlay.md", mode)
-	modeOverlayData, err = readOptionalFile(c.assets, modeOverlayPath)
-	if err != nil {
-		return "", err
-	}
-
-	// 8. Load Mode Context (optional layer, uses ContextEntries)
-	var modeContextData []byte
-	modeContextPath := fmt.Sprintf("modes/%s/context.md", mode)
-	modeContextData, err = readOptionalFile(c.assets, modeContextPath)
-	if err != nil {
-		return "", err
-	}
-
-	// 9. Load Role Overlay (optional layer for selected role only)
-	var roleOverlayData []byte
-	roleOverlayPath := fmt.Sprintf("modes/%s/overlays/%s.md", mode, role)
-	roleOverlayData, err = readOptionalFile(c.assets, roleOverlayPath)
-	if err != nil {
-		return "", err
-	}
-
-	// 10. Combine layers in order: common + role + mode contract + mode overlay + mode context + role overlay
+	// 10. Combine layers in order: common + role + (mode layers if not skipped)
 	fullTemplate := string(commonData)
 
 	fullTemplate += "\n\n" + string(roleData)

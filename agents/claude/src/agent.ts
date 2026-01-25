@@ -721,6 +721,41 @@ async function runAgent(): Promise<void> {
     logger.info("No explicit skills configured");
   }
 
+  // Debug: Log mounted skills directory
+  try {
+    const skillsDir = "/root/.claude/skills";
+    if (fs.existsSync(skillsDir)) {
+      // Recursively find all directories containing SKILL.md
+      const findSkills = (dir: string, base = ""): string[] => {
+        const skills: string[] = [];
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          const relPath = base ? path.join(base, entry.name) : entry.name;
+          if (entry.isDirectory()) {
+            const skillManifest = path.join(fullPath, "SKILL.md");
+            if (fs.existsSync(skillManifest)) {
+              skills.push(relPath);
+            }
+            // Recursively check subdirectories
+            skills.push(...findSkills(fullPath, relPath));
+          }
+        }
+        return skills;
+      };
+      const foundSkills = findSkills(skillsDir);
+      if (foundSkills.length > 0) {
+        logger.info(`Skills found in /root/.claude/skills: ${foundSkills.join(", ")}`);
+      } else {
+        logger.info("No skills found in /root/.claude/skills");
+      }
+    } else {
+      logger.info("/root/.claude/skills directory does not exist");
+    }
+  } catch (error) {
+    logger.debug(`Failed to check /root/.claude/skills: ${String(error)}`);
+  }
+
   const logFilePath = path.join(evidenceDir, "execution.log");
   const logFile = fs.createWriteStream(logFilePath, { flags: "w" });
 

@@ -289,27 +289,38 @@ func (r *Resolver) containsSkill(skills []Skill, skill Skill) bool {
 }
 
 // Stage copies skills to the workspace snapshot's .claude/skills/ directory
+// If includeSkillsPrefix is false, copies skills directly to dest (for external mounting)
 func Stage(workspaceDest string, skills []Skill) error {
+	return StageWithPrefix(workspaceDest, skills, true)
+}
+
+// StageWithPrefix copies skills with control over whether to add .claude/skills prefix
+// If includeSkillsPrefix is true, copies to dest/.claude/skills/ (for workspace staging)
+// If includeSkillsPrefix is false, copies to dest/ (for external mounting to /root/.claude/skills)
+func StageWithPrefix(workspaceDest string, skills []Skill, includeSkillsPrefix bool) error {
 	if len(skills) == 0 {
 		return nil
 	}
 
-	// Create .claude/skills directory in workspace
-	destSkillsDir := filepath.Join(workspaceDest, SkillsDir)
+	var destSkillsDir string
+	if includeSkillsPrefix {
+		// Create .claude/skills directory in workspace
+		destSkillsDir = filepath.Join(workspaceDest, SkillsDir)
+	} else {
+		// Use destination directory directly (for external mounting)
+		destSkillsDir = workspaceDest
+	}
+
 	if err := os.MkdirAll(destSkillsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create skills directory: %w", err)
 	}
 
 	// Copy each skill
 	for _, skill := range skills {
-		// For builtin skills, use the full ref path (e.g., "github/solve")
-		// For filesystem skills, use the skill name (e.g., "my-skill")
-		var destPath string
-		if skill.Builtin {
-			destPath = filepath.Join(destSkillsDir, skill.Path)
-		} else {
-			destPath = filepath.Join(destSkillsDir, skill.Name)
-		}
+		// Use the skill name (base directory) for all skills
+		// For builtin skills: "github-solve" -> Name is "github-solve"
+		// For filesystem skills: Name is the directory name
+		destPath := filepath.Join(destSkillsDir, skill.Name)
 
 		// Check if destination already exists
 		if _, err := os.Stat(destPath); err == nil {
