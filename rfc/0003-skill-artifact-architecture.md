@@ -85,13 +85,12 @@ This RFC does not redefine the agent/runner contract from RFC-0002; it clarifies
 
 Holon supports skills as directories with `SKILL.md` and optional supporting files (scripts/templates/etc.).
 
-Current builtin skill naming in this repository uses flat names like:
-- `github-solve`
+Skills are discovered by the underlying agent runtime (e.g., Claude Code). In practice, this means skill directories live under a single `skills` root (e.g., `.claude/skills/<skill-name>/SKILL.md`).
 
-Long-term, Holon should prefer hierarchical references (platform/scenario) like:
-- `github/solve`
+As a result, skill references should be **single-directory names** (no nested `platform/scenario` paths) to align with current skill discovery conventions.
 
-Backward compatibility should be maintained via aliases during migration.
+Recommended naming scheme:
+- `<platform>-<scenario>` (flat), e.g. `github-solve`
 
 ### 5.2 Skill staging (agent-native discovery; not prompt injection)
 
@@ -147,7 +146,7 @@ The migration direction is:
 ## 8. Open questions
 
 1. How should Holon represent a “request envelope” for common triggers (issue/pr refs, webhooks, ticks) without reintroducing modes?
-2. How should skill references be normalized (`github-solve` vs `github/solve`) and migrated without breaking users?
+2. Should Holon support aliases for historical skill refs (if any), or keep a single canonical flat name per skill?
 3. What is the minimal always-on execution record Holon should provide (e.g., event stream/log file) while keeping artifacts skill-owned?
 
 ## 9. References
