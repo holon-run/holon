@@ -318,7 +318,7 @@ func StageWithPrefix(workspaceDest string, skills []Skill, includeSkillsPrefix b
 	// Copy each skill
 	for _, skill := range skills {
 		// Use the skill name (base directory) for all skills
-		// For builtin skills: "github/solve" -> Name is "solve"
+		// For builtin skills: "github-solve" -> Name is "github-solve"
 		// For filesystem skills: Name is the directory name
 		destPath := filepath.Join(destSkillsDir, skill.Name)
 

@@ -1050,7 +1050,7 @@ func init() {
 	solveCmd.Flags().StringVarP(&solveImage, "image", "i", "", "Docker base image (default: auto-detect from workspace)")
 	solveCmd.Flags().BoolVar(&solveImageAutoDetect, "image-auto-detect", true, "Enable automatic base image detection (default: true)")
 	solveCmd.Flags().StringVar(&solveMode, "mode", "", "Execution mode (default: auto-detect from ref type)")
-	solveCmd.Flags().StringSliceVar(&solveSkillPaths, "skill", []string{}, "Skill reference (e.g., github/solve). Repeatable. Mutually exclusive with --mode.")
+	solveCmd.Flags().StringSliceVar(&solveSkillPaths, "skill", []string{}, "Skill reference (e.g., github-solve). Repeatable. Mutually exclusive with --mode.")
 	solveCmd.Flags().StringVar(&solveSkillsList, "skills", "", "Comma-separated list of skill references")
 	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")

@@ -9,9 +9,9 @@ func main() {
 	// Create resolver with a temporary workspace
 	resolver := skills.NewResolver("/tmp/test-workspace")
 	
-	// Try to resolve "github/solve"
-	fmt.Println("Resolving 'github/solve'...")
-	resolved, err := resolver.Resolve([]string{"github/solve"}, nil, nil)
+	// Try to resolve "github-solve"
+	fmt.Println("Resolving 'github-solve'...")
+	resolved, err := resolver.Resolve([]string{"github-solve"}, nil, nil)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 	} else {

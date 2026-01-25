@@ -54,7 +54,7 @@ on:
         type: string
         default: ''
       skill:
-        description: 'Skill reference (e.g., github/solve). When provided, uses skill mode instead of mode-based prompts.'
+        description: 'Skill reference (e.g., github-solve). When provided, uses skill mode instead of mode-based prompts.'
         required: false
         type: string
         default: ''

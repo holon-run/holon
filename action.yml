@@ -51,7 +51,7 @@ inputs:
     required: false
     default: ''
   skill:
-    description: 'Skill reference (e.g., github/solve). When provided, uses skill mode instead of mode-based prompts. Mutually exclusive with mode.'
+    description: 'Skill reference (e.g., github-solve). When provided, uses skill mode instead of mode-based prompts. Mutually exclusive with mode.'
     required: false
     default: ''
   role:
