@@ -486,7 +486,7 @@ func TestStage_BuiltinSkills(t *testing.T) {
 
 	// Stage builtin skill
 	skillsList := []Skill{
-		{Path: "github/solve", Name: "solve", Source: "cli", Builtin: true},
+		{Path: "github-solve", Name: "github-solve", Source: "cli", Builtin: true},
 	}
 
 	err = Stage(workspaceDir, skillsList)
@@ -495,7 +495,7 @@ func TestStage_BuiltinSkills(t *testing.T) {
 	}
 
 	// Verify skill was extracted
-	destSkillPath := filepath.Join(workspaceDir, ".claude", "skills", "github", "solve", "SKILL.md")
+	destSkillPath := filepath.Join(workspaceDir, ".claude", "skills", "github-solve", "SKILL.md")
 	if _, err := os.Stat(destSkillPath); os.IsNotExist(err) {
 		t.Errorf("builtin skill was not extracted to destination: %s", destSkillPath)
 	}
@@ -524,7 +524,7 @@ func TestStage_BuiltinSkillsWithNestedFiles(t *testing.T) {
 
 	// Stage builtin skill
 	skillsList := []Skill{
-		{Path: "github/solve", Name: "solve", Source: "cli", Builtin: true},
+		{Path: "github-solve", Name: "github-solve", Source: "cli", Builtin: true},
 	}
 
 	err = Stage(workspaceDir, skillsList)
@@ -533,7 +533,7 @@ func TestStage_BuiltinSkillsWithNestedFiles(t *testing.T) {
 	}
 
 	// Verify directory structure
-	destDir := filepath.Join(workspaceDir, ".claude", "skills", "github", "solve")
+	destDir := filepath.Join(workspaceDir, ".claude", "skills", "github-solve")
 	entries, err := os.ReadDir(destDir)
 	if err != nil {
 		t.Fatalf("failed to read destination directory: %v", err)
@@ -578,7 +578,7 @@ func TestStage_MixedBuiltinAndFilesystem(t *testing.T) {
 
 	// Stage both builtin and filesystem skills
 	skillsList := []Skill{
-		{Path: "github/solve", Name: "solve", Source: "cli", Builtin: true},
+		{Path: "github-solve", Name: "github-solve", Source: "cli", Builtin: true},
 		{Path: skill1Dir, Name: "filesystem-skill", Source: "cli", Builtin: false},
 	}
 
@@ -588,7 +588,7 @@ func TestStage_MixedBuiltinAndFilesystem(t *testing.T) {
 	}
 
 	// Verify builtin skill
-	builtinPath := filepath.Join(workspaceDir, ".claude", "skills", "github", "solve", "SKILL.md")
+	builtinPath := filepath.Join(workspaceDir, ".claude", "skills", "github-solve", "SKILL.md")
 	if _, err := os.Stat(builtinPath); os.IsNotExist(err) {
 		t.Errorf("builtin skill not found: %s", builtinPath)
 	}
@@ -631,7 +631,7 @@ func TestResolver_ResolveBuiltinSkill(t *testing.T) {
 
 	// Test 1: Resolve builtin skill by reference
 	t.Run("builtin skill reference", func(t *testing.T) {
-		resolved, err := resolver.Resolve([]string{"github/solve"}, []string{}, []string{})
+		resolved, err := resolver.Resolve([]string{"github-solve"}, []string{}, []string{})
 		if err != nil {
 			t.Fatalf("Resolve failed for builtin skill: %v", err)
 		}
@@ -641,8 +641,8 @@ func TestResolver_ResolveBuiltinSkill(t *testing.T) {
 		}
 
 		skill := resolved[0]
-		if skill.Name != "solve" {
-			t.Errorf("expected name 'solve', got '%s'", skill.Name)
+		if skill.Name != "github-solve" {
+			t.Errorf("expected name 'github-solve', got '%s'", skill.Name)
 		}
 		if skill.Source != "cli" {
 			t.Errorf("expected source 'cli', got '%s'", skill.Source)
@@ -650,30 +650,25 @@ func TestResolver_ResolveBuiltinSkill(t *testing.T) {
 		if !skill.Builtin {
 			t.Error("expected Builtin to be true")
 		}
-		if skill.Path != "github/solve" {
-			t.Errorf("expected path 'github/solve', got '%s'", skill.Path)
+		if skill.Path != "github-solve" {
+			t.Errorf("expected path 'github-solve', got '%s'", skill.Path)
 		}
 	})
 
 	// Test 2: Precedence - workspace skill > builtin skill
 	t.Run("precedence workspace over builtin", func(t *testing.T) {
 		// Create a workspace skill with the same name as builtin
-		workspaceSkillDir := filepath.Join(tempDir, ".claude", "skills", "github")
+		workspaceSkillDir := filepath.Join(tempDir, ".claude", "skills", "github-solve")
 		if err := os.MkdirAll(workspaceSkillDir, 0755); err != nil {
 			t.Fatalf("failed to create workspace skill dir: %v", err)
 		}
-		// Create solve directory
-		solveDir := filepath.Join(workspaceSkillDir, "solve")
-		if err := os.MkdirAll(solveDir, 0755); err != nil {
-			t.Fatalf("failed to create solve dir: %v", err)
-		}
-		skillManifest := filepath.Join(solveDir, "SKILL.md")
+		skillManifest := filepath.Join(workspaceSkillDir, "SKILL.md")
 		if err := os.WriteFile(skillManifest, []byte("# Workspace Skill\n"), 0644); err != nil {
 			t.Fatalf("failed to create skill manifest: %v", err)
 		}
 
 		// Resolve - should prefer workspace skill over builtin
-		resolved, err := resolver.Resolve([]string{"github/solve"}, []string{}, []string{})
+		resolved, err := resolver.Resolve([]string{"github-solve"}, []string{}, []string{})
 		if err != nil {
 			t.Fatalf("Resolve failed: %v", err)
 		}
@@ -699,6 +694,10 @@ func TestResolver_ResolveBuiltinSkill(t *testing.T) {
 
 	// Test 4: Builtin skill not found when workspace path exists
 	t.Run("filesystem path takes precedence", func(t *testing.T) {
+		// Clean any existing skills directory from previous tests
+		skillsDir := filepath.Join(tempDir, ".claude", "skills")
+		os.RemoveAll(skillsDir)
+
 		// Create a filesystem path (not in workspace)
 		filesystemSkillDir := filepath.Join(tempDir, "filesystem-skill")
 		if err := os.MkdirAll(filesystemSkillDir, 0755); err != nil {

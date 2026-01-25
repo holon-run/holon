@@ -18,6 +18,7 @@ import (
 	"github.com/holon-run/holon/pkg/preflight"
 	"github.com/holon-run/holon/pkg/publisher"
 	"github.com/holon-run/holon/pkg/runtime/docker"
+	"github.com/holon-run/holon/pkg/skills"
 	"github.com/holon-run/holon/pkg/workspace"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +34,8 @@ var (
 	solveImage            string
 	solveImageAutoDetect  bool
 	solveMode             string
+	solveSkillPaths       []string // Skill paths (--skill flag, repeatable)
+	solveSkillsList       string   // Comma-separated skills (--skills flag)
 	solveRole             string
 	solveLogLevel         string
 	solveAssistantOutput  string
@@ -515,6 +518,10 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		}
 	}
 
+	// Track if user explicitly provided --mode flag (before auto-detection)
+	// This is important for skill mode: we only skip mode prompts if user didn't specify mode
+	modeExplicitByUser := solveMode != ""
+
 	// Collect context based on type
 	prov := github.NewProvider()
 	if refType == "pr" {
@@ -524,12 +531,12 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 			Ref:       fmt.Sprintf("%s/%s#%d", solveRef.Owner, solveRef.Repo, solveRef.Number),
 			OutputDir: contextDir,
 			Options: collector.Options{
-				Token:           token,
-				IncludeDiff:     true,
-				UnresolvedOnly:  true,
-				IncludeChecks:   true,
+				Token:            token,
+				IncludeDiff:      true,
+				UnresolvedOnly:   true,
+				IncludeChecks:    true,
 				ChecksOnlyFailed: false,
-				ChecksMax:       200,
+				ChecksMax:        200,
 				TriggerCommentID: workflowMeta.TriggerCommentID,
 			},
 		}
@@ -547,7 +554,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 			Ref:       fmt.Sprintf("%s/%s#%d", solveRef.Owner, solveRef.Repo, solveRef.Number),
 			OutputDir: contextDir,
 			Options: collector.Options{
-				Token:           token,
+				Token:            token,
 				TriggerCommentID: workflowMeta.TriggerCommentID,
 			},
 		}
@@ -665,7 +672,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	// Use Quiet mode to suppress individual check messages (banners will still show)
 	checker = preflight.NewChecker(preflight.Config{
 		Skip:                  solveSkipPreflight,
-		Quiet:                 true, // Suppress individual check messages (banners still show)
+		Quiet:                 true,  // Suppress individual check messages (banners still show)
 		RequireDocker:         false, // Already checked in early preflight
 		RequireGit:            false, // Already checked in early preflight
 		RequireGitHubToken:    false, // Already checked in early preflight
@@ -675,6 +682,27 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	})
 	if err := checker.Run(ctx); err != nil {
 		return fmt.Errorf("path preflight checks failed: %w", err)
+	}
+
+	// Resolve skills (similar to run command but simpler - no spec or config)
+	// Parse CLI skills
+	cliSkills := solveSkillPaths
+	for _, s := range skills.ParseSkillsList(solveSkillsList) {
+		cliSkills = append(cliSkills, s)
+	}
+
+	// Resolve skills using the resolver
+	// For solve command: only CLI skills, no config or spec
+	resolver := skills.NewResolver(workspacePrep.path)
+	resolvedSkills, err := resolver.Resolve(cliSkills, nil, nil)
+	if err != nil {
+		return fmt.Errorf("failed to resolve skills: %w", err)
+	}
+
+	// Extract skill paths for runner
+	resolvedSkillPaths := make([]string, len(resolvedSkills))
+	for i, skill := range resolvedSkills {
+		resolvedSkillPaths[i] = skill.Path
 	}
 
 	// Run holon
@@ -701,6 +729,8 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		LogLevel:             solveLogLevel,
 		AssistantOutput:      resolvedAssistantOutput,
 		Mode:                 solveMode,
+		ModeExplicit:         modeExplicitByUser,
+		Skills:               resolvedSkillPaths,
 		Cleanup:              cleanupMode,
 		AgentConfigMode:      solveAgentConfigMode,
 		WorkspaceIsTemporary: workspacePrep.isTemp,
@@ -1020,6 +1050,8 @@ func init() {
 	solveCmd.Flags().StringVarP(&solveImage, "image", "i", "", "Docker base image (default: auto-detect from workspace)")
 	solveCmd.Flags().BoolVar(&solveImageAutoDetect, "image-auto-detect", true, "Enable automatic base image detection (default: true)")
 	solveCmd.Flags().StringVar(&solveMode, "mode", "", "Execution mode (default: auto-detect from ref type)")
+	solveCmd.Flags().StringSliceVar(&solveSkillPaths, "skill", []string{}, "Skill reference (e.g., github/solve). Repeatable. Mutually exclusive with --mode.")
+	solveCmd.Flags().StringVar(&solveSkillsList, "skills", "", "Comma-separated list of skill references")
 	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")
 	solveCmd.Flags().StringVar(&solveAssistantOutput, "assistant-output", "none", "Assistant output mode: none (default), stream (stream assistant text to logs)")

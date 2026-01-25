@@ -51,3 +51,4 @@ Holon prefers a “patch-first” integration boundary:
 
 ## Reference implementations
 - Claude agent: `docs/agent-claude.md`
+- Multi-turn service mode (proposed): `docs/agent-service.md`

@@ -17,8 +17,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
-	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/git"
+	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/skills"
 	"github.com/holon-run/holon/pkg/workspace"
 )
@@ -36,19 +36,19 @@ func NewRuntime() (*Runtime, error) {
 }
 
 type ContainerConfig struct {
-	BaseImage      string // e.g., golang:1.22 (The toolchain)
-	AgentBundle    string // Required path to agent bundle archive (.tar.gz)
-	Workspace      string
-	InputPath      string // Path to input directory (contains spec.yaml, context/, prompts/)
-	OutDir         string
-	Env            map[string]string
-	Cmd            []string // Optional command override
+	BaseImage   string // e.g., golang:1.22 (The toolchain)
+	AgentBundle string // Required path to agent bundle archive (.tar.gz)
+	Workspace   string
+	InputPath   string // Path to input directory (contains spec.yaml, context/, prompts/)
+	OutDir      string
+	Env         map[string]string
+	Cmd         []string // Optional command override
 
 	// Workspace preparation options
-	WorkspaceStrategy string                 // Workspace preparation strategy (e.g., "git-clone", "snapshot")
-	WorkspaceHistory  workspace.HistoryMode // How much git history to include
-	WorkspaceRef      string                 // Git ref to checkout (optional)
-	WorkspaceIsTemporary bool                // true if workspace is a temporary directory (vs user-provided)
+	WorkspaceStrategy    string                // Workspace preparation strategy (e.g., "git-clone", "snapshot")
+	WorkspaceHistory     workspace.HistoryMode // How much git history to include
+	WorkspaceRef         string                // Git ref to checkout (optional)
+	WorkspaceIsTemporary bool                  // true if workspace is a temporary directory (vs user-provided)
 
 	// Agent config mount mode
 	AgentConfigMode string // Agent config mount mode: "auto", "yes", "no"
@@ -65,9 +65,14 @@ type ContainerConfig struct {
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, error) {
 	// 1. Prepare Workspace using WorkspacePreparer
-	snapshotDir, _, err := prepareWorkspace(ctx, cfg)
+	snapshotDir, skillsDir, _, err := prepareWorkspace(ctx, cfg)
 	if err != nil {
 		return "", err
+	}
+
+	// Ensure cleanup of skills directory
+	if skillsDir != "" {
+		defer os.RemoveAll(skillsDir)
 	}
 
 	// Note: We do NOT cleanup snapshotDir here.
@@ -132,9 +137,10 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	})
 
 	mountConfig := &MountConfig{
-		SnapshotDir: snapshotDir,
-		InputPath:   cfg.InputPath,
-		OutDir:      cfg.OutDir,
+		SnapshotDir:    snapshotDir,
+		InputPath:      cfg.InputPath,
+		OutDir:         cfg.OutDir,
+		LocalSkillsDir: skillsDir, // NEW: Pass skills directory
 	}
 
 	// Handle agent config mounting based on mode
@@ -436,8 +442,23 @@ func copyFile(src, dst string) error {
 	return out.Sync()
 }
 
+// prepareSkillsDir creates a temporary directory for skills staging
+func prepareSkillsDir() (string, error) {
+	skillsDir, err := os.MkdirTemp("", "holon-skills-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create skills dir: %w", err)
+	}
+	// Convert to absolute path for Docker bind mount
+	absSkillsDir, err := filepath.Abs(skillsDir)
+	if err != nil {
+		os.RemoveAll(skillsDir) // Cleanup on error
+		return "", fmt.Errorf("failed to get absolute path for skills dir: %w", err)
+	}
+	return absSkillsDir, nil
+}
+
 // prepareWorkspace prepares the workspace using the configured strategy
-func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, workspace.Preparer, error) {
+func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string, workspace.Preparer, error) {
 	// If the workspace is already a temporary directory (created by solve),
 	// use it directly instead of creating another snapshot.
 	// This optimization avoids double cloning when solve creates a temp workspace.
@@ -464,18 +485,27 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 			CleanDest:  false,
 		})
 		if err != nil {
-			return "", nil, fmt.Errorf("failed to prepare temporary workspace: %w", err)
+			return "", "", nil, fmt.Errorf("failed to prepare temporary workspace: %w", err)
 		}
 
-		// Stage skills to workspace
+		// Create skills staging directory
+		skillsDir, err := prepareSkillsDir()
+		if err != nil {
+			return "", "", nil, fmt.Errorf("failed to create skills dir: %w", err)
+		}
+
+		// Stage skills to dedicated directory (not workspace)
 		resolvedSkills, err := resolveSkills(ctx, cfg)
 		if err != nil {
-			return "", nil, fmt.Errorf("failed to resolve skills: %w", err)
+			os.RemoveAll(skillsDir) // Cleanup on error
+			return "", "", nil, fmt.Errorf("failed to resolve skills: %w", err)
 		}
 		if len(resolvedSkills) > 0 {
 			holonlog.Info("staging skills", "count", len(resolvedSkills))
-			if err := skills.Stage(cfg.Workspace, resolvedSkills); err != nil {
-				return "", nil, fmt.Errorf("failed to stage skills: %w", err)
+			// Stage skills without .claude/skills prefix since skillsDir is mounted to /root/.claude/skills
+			if err := skills.StageWithPrefix(skillsDir, resolvedSkills, false); err != nil {
+				os.RemoveAll(skillsDir) // Cleanup on error
+				return "", "", nil, fmt.Errorf("failed to stage skills: %w", err)
 			}
 			for _, skill := range resolvedSkills {
 				holonlog.Debug("staged skill", "name", skill.Name, "source", skill.Source)
@@ -485,18 +515,19 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 		// Write workspace manifest to output directory if specified
 		if cfg.OutDir != "" {
 			if err := writeWorkspaceManifest(cfg.OutDir, prepareResult); err != nil {
-				return "", nil, fmt.Errorf("failed to write workspace manifest: %w", err)
+				os.RemoveAll(skillsDir) // Cleanup on error
+				return "", "", nil, fmt.Errorf("failed to write workspace manifest: %w", err)
 			}
 		}
 
 		// Return the workspace as-is with an existing preparer (no-op cleanup)
-		return cfg.Workspace, preparer, nil
+		return cfg.Workspace, skillsDir, preparer, nil
 	}
 
 	// Create snapshot directory outside workspace
 	snapshotDir, err := workspace.MkdirTempOutsideWorkspace(cfg.Workspace, "holon-workspace-*")
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to create snapshot dir: %w", err)
+		return "", "", nil, fmt.Errorf("failed to create snapshot dir: %w", err)
 	}
 
 	// Determine the strategy to use
@@ -515,7 +546,7 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 	preparer := workspace.Get(strategyName)
 	if preparer == nil {
 		os.RemoveAll(snapshotDir)
-		return "", nil, fmt.Errorf("workspace strategy '%s' not found", strategyName)
+		return "", "", nil, fmt.Errorf("workspace strategy '%s' not found", strategyName)
 	}
 
 	// Determine history mode
@@ -537,7 +568,7 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 
 	if err != nil {
 		os.RemoveAll(snapshotDir)
-		return "", nil, fmt.Errorf("failed to prepare workspace: %w", err)
+		return "", "", nil, fmt.Errorf("failed to prepare workspace: %w", err)
 	}
 
 	// IMPORTANT: Fix the origin URL when cloning from a local git repo
@@ -569,15 +600,27 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 		holonlog.Info("workspace note", "note", note)
 	}
 
-	// Stage skills to snapshot workspace
+	// Create skills staging directory
+	skillsDir, err := prepareSkillsDir()
+	if err != nil {
+		os.RemoveAll(snapshotDir) // Cleanup snapshot on error
+		return "", "", nil, fmt.Errorf("failed to create skills dir: %w", err)
+	}
+
+	// Stage skills to dedicated directory (not workspace)
 	resolvedSkills, err := resolveSkills(ctx, cfg)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to resolve skills: %w", err)
+		os.RemoveAll(snapshotDir) // Cleanup snapshot on error
+		os.RemoveAll(skillsDir)   // Cleanup skills on error
+		return "", "", nil, fmt.Errorf("failed to resolve skills: %w", err)
 	}
 	if len(resolvedSkills) > 0 {
 		holonlog.Info("staging skills", "count", len(resolvedSkills))
-		if err := skills.Stage(snapshotDir, resolvedSkills); err != nil {
-			return "", nil, fmt.Errorf("failed to stage skills: %w", err)
+		// Stage skills without .claude/skills prefix since skillsDir is mounted to /root/.claude/skills
+		if err := skills.StageWithPrefix(skillsDir, resolvedSkills, false); err != nil {
+			os.RemoveAll(snapshotDir) // Cleanup snapshot on error
+			os.RemoveAll(skillsDir)   // Cleanup skills on error
+			return "", "", nil, fmt.Errorf("failed to stage skills: %w", err)
 		}
 		for _, skill := range resolvedSkills {
 			holonlog.Debug("staged skill", "name", skill.Name, "source", skill.Source)
@@ -592,7 +635,7 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, worksp
 		}
 	}
 
-	return snapshotDir, preparer, nil
+	return snapshotDir, skillsDir, preparer, nil
 }
 
 // writeWorkspaceManifest writes the workspace manifest to the output directory
@@ -616,31 +659,17 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 		return resolver.Resolve([]string{}, []string{}, []string{})
 	}
 
-	// Skills are already resolved by caller (cmd/holon/main.go with proper precedence)
-	// Just validate and normalize them to Skill structs
-	var validated []skills.Skill
-	for _, path := range cfg.Skills {
-		skill, err := resolver.ValidateAndNormalize(path, "cli")
-		if err != nil {
-			return nil, fmt.Errorf("invalid skill path: %w", err)
-		}
-		validated = append(validated, skill)
-	}
-
-	// Auto-discover additional skills from workspace (add those not already specified)
-	discovered, err := resolver.Resolve([]string{}, []string{}, []string{})
+	// Skills from ContainerConfig.Skills can be:
+	// - Builtin skill references (e.g., "github/solve")
+	// - Local filesystem paths
+	// - Remote URLs
+	// Use Resolve to handle all types properly
+	resolved, err := resolver.Resolve(cfg.Skills, []string{}, []string{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover skills: %w", err)
+		return nil, err
 	}
 
-	// Merge validated and discovered skills (validated take precedence)
-	for _, skill := range discovered {
-		if !containsSkill(validated, skill) {
-			validated = append(validated, skill)
-		}
-	}
-
-	return validated, nil
+	return resolved, nil
 }
 
 // containsSkill checks if a skill is already in the list (by path)

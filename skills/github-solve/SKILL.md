@@ -1,4 +1,4 @@
-# SKILL: github/solve
+# SKILL: github-solve
 
 ## Context Detection
 
