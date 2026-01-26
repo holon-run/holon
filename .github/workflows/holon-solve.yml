@@ -1045,8 +1045,16 @@ jobs:
           set -euo pipefail
 
           PROVIDED_MODE="${{ inputs.mode }}"
+          PROVIDED_SKILL="${{ inputs.skill }}"
 
           IS_PR='${{ steps.ctx.outputs.is_pr }}'
+
+          # If skill is provided, skip mode detection (skill mode takes precedence)
+          if [ -n "$PROVIDED_SKILL" ]; then
+            echo "mode=" >> "$GITHUB_OUTPUT"
+            echo "✅ Skill mode enabled (skill: $PROVIDED_SKILL)"
+            exit 0
+          fi
 
           # If mode is explicitly provided, use it
           if [ -n "$PROVIDED_MODE" ]; then
@@ -1055,6 +1063,7 @@ jobs:
             exit 0
           fi
 
+          # Auto-detect mode based on ref type
           if [ "$IS_PR" = 'true' ]; then
             echo "mode=pr-fix" >> "$GITHUB_OUTPUT"
             echo "✅ Detected: PR → mode=pr-fix"
