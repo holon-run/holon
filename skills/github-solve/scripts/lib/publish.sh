@@ -58,20 +58,6 @@ find_existing_comment() {
     fi
 }
 
-# Read and validate markdown file
-# Usage: read_markdown_file <file_path>
-# Output: File contents
-read_markdown_file() {
-    local file_path="$1"
-
-    if [[ ! -f "$file_path" ]]; then
-        log_error "File not found: $file_path"
-        return 1
-    fi
-
-    cat "$file_path"
-}
-
 # Parse file parameter (handles inline content and file references)
 # Usage: parse_body_param <params> <output_var>
 # Output: Body content (either inline or from file)
@@ -87,15 +73,34 @@ parse_body_param() {
         return 1
     fi
 
-    # Check if it's a file path (simple heuristic: if it exists as a file or ends in .md)
-    if [[ "$body_param" =~ \.md$ ]] && [[ -f "$GITHUB_OUTPUT_DIR/$body_param" ]]; then
-        # Read from file
-        cat "$GITHUB_OUTPUT_DIR/$body_param"
-    elif [[ -f "$body_param" ]]; then
-        # Absolute or relative path provided
-        cat "$body_param"
+    # Check if it's a file path (ends in .md)
+    if [[ "$body_param" =~ \.md$ ]]; then
+        # Resolve and validate file path within GITHUB_OUTPUT_DIR
+        local resolved_file
+        if [[ "$body_param" =~ ^/ ]]; then
+            # Absolute path - reject for security
+            log_error "Absolute paths not allowed for security: $body_param"
+            return 1
+        fi
+
+        # Resolve relative to GITHUB_OUTPUT_DIR
+        resolved_file="$GITHUB_OUTPUT_DIR/$body_param"
+
+        # Validate the resolved path is within GITHUB_OUTPUT_DIR
+        if [[ "$resolved_file" != "$GITHUB_OUTPUT_DIR"/* ]]; then
+            log_error "Invalid file path (outside output directory): $body_param"
+            return 1
+        fi
+
+        # Read from file if it exists
+        if [[ -f "$resolved_file" ]]; then
+            cat "$resolved_file"
+        else
+            log_error "File not found: $resolved_file"
+            return 1
+        fi
     else
-        # Inline content
+        # Inline content (not a .md file)
         echo "$body_param"
     fi
 }
