@@ -1,5 +1,48 @@
 # SKILL: github-solve
 
+## Environment and Paths
+
+This skill uses environment variables to maintain flexibility across different environments (Holon, local development, CI/CD, etc.):
+
+### Key Environment Variables
+
+- **`GITHUB_OUTPUT_DIR`**: Output directory for artifacts and context
+  - **Default**: `${GITHUB_OUTPUT_DIR}` (Holon environment)
+  - **Custom**: Set to any directory (e.g., `./output`, `/tmp/github-work`)
+  - **Usage**: All generated files (artifacts, results) go here
+
+- **`GITHUB_CONTEXT_DIR`**: Directory for collected GitHub context
+  - **Default**: `${GITHUB_OUTPUT_DIR}/github-context`
+  - **Custom**: Override to control where context is stored
+
+- **`GITHUB_TOKEN`**: GitHub authentication token (required for publishing)
+  - **Required for**: Creating PRs, posting comments, replying to reviews
+  - **Not required for**: Context collection (read-only operations)
+
+- **`HOLON_GITHUB_BOT_LOGIN`**: Bot login name for idempotency checks
+  - **Default**: `holonbot[bot]`
+  - **Purpose**: Skip bot's own comments/replies when checking for duplicates
+
+### Path Examples
+
+```bash
+# Holon environment (default)
+export GITHUB_OUTPUT_DIR=${GITHUB_OUTPUT_DIR}
+
+# Local development
+export GITHUB_OUTPUT_DIR=./output
+export GITHUB_TOKEN=ghp_xxx
+
+# CI/CD environment
+export GITHUB_OUTPUT_DIR=${PWD}/artifacts
+export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+
+# Then use scripts (they respect GITHUB_OUTPUT_DIR)
+./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+```
+
+**Note**: This documentation uses `${GITHUB_OUTPUT_DIR}` as a placeholder. Replace it with your actual output directory or set the environment variable.
+
 ## Minimal Input Payload
 
 When no pre-populated GitHub context is available (i.e., `/holon/input/context/github/` is empty or missing), you **MUST** first collect context using the skill's built-in collection script.
@@ -35,7 +78,7 @@ When `/holon/input/context/github/` is empty or missing required files:
 
 2. **Configure with environment variables** (optional):
    ```bash
-   export GITHUB_CONTEXT_DIR=/holon/output/github-context  # default
+   export GITHUB_CONTEXT_DIR=${GITHUB_OUTPUT_DIR}/github-context  # default
    export TRIGGER_COMMENT_ID=123456  # if provided in payload
    export INCLUDE_DIFF=true          # for PRs
    export INCLUDE_CHECKS=true        # for PRs
@@ -45,7 +88,7 @@ When `/holon/input/context/github/` is empty or missing required files:
 3. **Copy collected context** to input location (for compatibility):
    ```bash
    mkdir -p /holon/input/context/github
-   cp -r /holon/output/github-context/github/* /holon/input/context/github/
+   cp -r ${GITHUB_OUTPUT_DIR}/github-context/github/* /holon/input/context/github/
    ```
 
 4. **Proceed with task** using collected context
@@ -54,7 +97,7 @@ The collection script fetches:
 - **For issues**: `issue.json`, `comments.json`
 - **For PRs**: `pr.json`, `review_threads.json`, `comments.json`, `pr.diff`, `check_runs.json`, `test-failure-logs.txt`
 
-All collected context is persisted under `/holon/output/github-context/` for audit/debug.
+All collected context is persisted under `${GITHUB_OUTPUT_DIR}/github-context/` for audit/debug.
 
 ## Transition Behavior
 
@@ -166,15 +209,15 @@ You MUST NOT use these directly (use artifacts instead):
 
 ### Required Outputs
 
-1. **`/holon/output/summary.md`**: Human-readable summary of your analysis and actions taken
+1. **`${GITHUB_OUTPUT_DIR}/summary.md`**: Human-readable summary of your analysis and actions taken
 
-2. **`/holon/output/manifest.json`**: Execution metadata and status
+2. **`${GITHUB_OUTPUT_DIR}/manifest.json`**: Execution metadata and status
 
 ### Conditional Outputs
 
 #### For PR Context (PR-fix mode)
 
-3. **`/holon/output/pr-fix.json`**: Structured JSON containing fix status and responses
+3. **`${GITHUB_OUTPUT_DIR}/pr-fix.json`**: Structured JSON containing fix status and responses
    - Format:
      ```json
      {
@@ -207,9 +250,9 @@ You MUST NOT use these directly (use artifacts instead):
 
 #### For Issue Context (Issue-solve mode)
 
-3. **`/holon/output/diff.patch`**: Git-compatible patch with code changes
+3. **`${GITHUB_OUTPUT_DIR}/diff.patch`**: Git-compatible patch with code changes
 
-4. **`/holon/output/pr-fix.json`** (if creating PR): PR creation metadata
+4. **`${GITHUB_OUTPUT_DIR}/pr-fix.json`** (if creating PR): PR creation metadata
    - `title`: PR title
    - `body`: PR body (references issue)
    - `branch`: Suggested branch name
@@ -290,7 +333,7 @@ When review comments request substantial refactoring that is **valid but non-blo
 
 ### Posting Review Replies
 
-After generating `/holon/output/pr-fix.json` with review replies:
+After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies:
 
 1. **Use the skill's reply script**:
    ```bash
@@ -325,9 +368,477 @@ When only issue context is detected (no PR):
 
 1. **Analyze the issue**: Read `issue.json` and `comments.json` (if present)
 2. **Implement the solution**: Make code changes to address the issue
-3. **Generate diff**: Create `/holon/output/diff.patch` with your changes
-4. **Document**: Write `/holon/output/summary.md` explaining what was done
-5. **PR metadata** (optional): Create `/holon/output/pr-fix.json` with PR title, body, and branch name
+3. **Generate diff**: Create `${GITHUB_OUTPUT_DIR}/diff.patch` with your changes
+4. **Document**: Write `${GITHUB_OUTPUT_DIR}/summary.md` explaining what was done
+5. **PR metadata** (optional): Create `${GITHUB_OUTPUT_DIR}/pr-fix.json` with PR title, body, and branch name
+
+## GitHub Publishing
+
+The github-solve skill includes built-in GitHub publishing capabilities that allow agents to create PRs, post comments, and reply to reviews directly from within the container.
+
+### Overview
+
+The publishing system uses a **unified publish.sh script** that supports two modes:
+
+1. **Batch Mode**: Execute multiple actions from a declarative intent file
+2. **Direct Command Mode**: Execute single actions with command-line arguments
+
+### Workflow and Responsibilities
+
+When using the publishing system, responsibilities are clearly divided between the **agent** and the **script**:
+
+#### Agent Responsibilities (Code and Git Operations)
+
+The agent is responsible for all **creative and intelligent** work:
+
+1. **Create feature branch** (if needed):
+   ```bash
+   git checkout -b feature/issue-503
+   ```
+
+2. **Edit code directly** (modify files in workspace):
+   ```bash
+   # Edit files directly, don't generate patches
+   vim cmd/holon/solve.go
+   vim skills/github-solve/scripts/publish.sh
+   ```
+
+3. **Test and iterate**:
+   ```bash
+   go test ./...
+   ./scripts/publish.sh --dry-run --intent=/tmp/test.json
+   ```
+
+4. **Commit changes**:
+   ```bash
+   git add .
+   git commit -m "Feature: GitHub publishing"
+   ```
+
+5. **Generate artifacts**:
+   - `${GITHUB_OUTPUT_DIR}/publish-intent.json` - Publishing instructions
+   - `${GITHUB_OUTPUT_DIR}/pr-description.md` - PR description
+   - `${GITHUB_OUTPUT_DIR}/summary.md` - Implementation summary
+   - `${GITHUB_OUTPUT_DIR}/pr-fix.json` - Review replies (for PR-fix mode)
+
+6. **Execute publishing script**:
+   ```bash
+   cd /holon/workspace/skills/github-solve
+   ./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+   ```
+
+#### Script Responsibilities (GitHub API Operations)
+
+The `publish.sh` script is responsible for all **operational and repetitive** work:
+
+1. **Validate intent** - Check file structure and required fields
+2. **Call GitHub API** - Create PRs, post comments, reply to reviews
+3. **Handle idempotency** - Avoid duplicate operations
+4. **Format output** - Generate publish-results.json
+5. **Error handling** - Graceful failure with clear messages
+
+#### Why This Division?
+
+| Responsibility | Agent | Script |
+|----------------|-------|--------|
+| **Code editing** | ✅ Intelligent, iterative | ❌ Can't make decisions |
+| **Git operations** | ✅ Simple, reliable | ❌ Unnecessary complexity |
+| **Testing** | ✅ Needs interpretation | ❌ Can't analyze results |
+| **API calls** | ❌ Error-prone, repetitive | ✅ Idempotent, reliable |
+| **Formatting** | ❌ Inconsistent | ✅ Standardized |
+
+- **Agent excels at**: Understanding requirements, making decisions, iterating on code
+- **Script excels at**: Repetitive tasks, API calls, error handling, consistency
+
+#### Complete Workflow Example
+
+```bash
+# ===== AGENT DOES THIS =====
+# 1. Analyze the issue
+cat /holon/input/context/github/issue.json
+
+# 2. Create branch
+git checkout -b feature/issue-503
+
+# 3. Implement solution (edit files directly)
+vim pkg/publisher/github/publisher.go
+
+# 4. Test
+go test ./pkg/publisher/github/
+
+# 5. Commit
+git add .
+git commit -m "Feature: Add GitHub publishing to skill"
+
+# 6. Generate artifacts
+cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
+{
+  "version": "1.0",
+  "pr_ref": "holon-run/holon#503",
+  "actions": [
+    {
+      "type": "create_pr",
+      "params": {
+        "title": "Feature: GitHub skill publishing",
+        "body": "pr-description.md",
+        "head": "feature/issue-503",
+        "base": "main"
+      }
+    },
+    {
+      "type": "post_comment",
+      "params": {
+        "body": "summary.md"
+      }
+    }
+  ]
+}
+EOF
+
+# 7. Test publishing (dry-run)
+cd /holon/workspace/skills/github-solve
+./scripts/publish.sh --dry-run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+
+# ===== SCRIPT DOES THIS =====
+# 8. Execute actual publishing
+./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+
+# Output: publish-results.json shows what was done
+```
+
+### publish-intent.json Format
+
+For batch mode, create a `${GITHUB_OUTPUT_DIR}/publish-intent.json` file:
+
+```json
+{
+  "version": "1.0",
+  "pr_ref": "holon-run/holon#123",
+  "actions": [
+    {
+      "type": "create_pr|update_pr|post_comment|reply_review",
+      "description": "Human-readable description",
+      "params": { }
+    }
+  ]
+}
+```
+
+### Action Types
+
+#### 1. create_pr - Create a Pull Request
+
+Creates a new PR from a feature branch.
+
+**Parameters**:
+- `title` (required): PR title
+- `body` (required): PR description (file path or inline markdown)
+- `head` (required): Feature branch name
+- `base` (required): Target branch (e.g., "main")
+- `draft` (optional): Create as draft (default: false)
+- `labels` (optional): Array of label strings
+
+**Example**:
+```json
+{
+  "type": "create_pr",
+  "description": "Create PR for GitHub publishing feature",
+  "params": {
+    "title": "Feature: GitHub skill publishing",
+    "body": "pr-description.md",
+    "head": "feature/github-publishing",
+    "base": "main",
+    "draft": false,
+    "labels": ["enhancement", "skill"]
+  }
+}
+```
+
+#### 2. update_pr - Update an Existing PR
+
+Updates an existing PR's metadata.
+
+**Parameters**:
+- `pr_number` (required): PR number to update
+- `title` (optional): New PR title
+- `body` (optional): New PR description (file path or inline)
+- `state` (optional): New state ("open" or "closed")
+
+**Example**:
+```json
+{
+  "type": "update_pr",
+  "description": "Mark PR as ready",
+  "params": {
+    "pr_number": 123,
+    "title": "Feature: GitHub skill publishing - ready for review"
+  }
+}
+```
+
+#### 3. post_comment - Post a PR-Level Comment
+
+Posts or updates a PR-level comment with idempotency.
+
+**Parameters**:
+- `body` (required): Comment content (file path or inline markdown)
+- `marker` (optional): Unique identifier for idempotency (default: "holon-publish-marker")
+
+**Example**:
+```json
+{
+  "type": "post_comment",
+  "description": "Post implementation summary",
+  "params": {
+    "body": "summary.md"
+  }
+}
+```
+
+**Idempotency**: The comment includes a hidden marker (`<!-- holon-publish-marker -->`). Re-running will update the existing comment instead of creating duplicates.
+
+#### 4. reply_review - Reply to Review Comments
+
+Posts formatted replies to PR review comments.
+
+**Parameters**:
+- `replies_file` (recommended): Path to pr-fix.json file
+- `replies` (optional): Array of inline reply objects
+
+**Using pr-fix.json (Recommended)**:
+```json
+{
+  "type": "reply_review",
+  "description": "Respond to review feedback",
+  "params": {
+    "replies_file": "pr-fix.json"
+  }
+}
+```
+
+**pr-fix.json Format**:
+```json
+{
+  "review_replies": [
+    {
+      "comment_id": 123456,
+      "status": "fixed|deferred|wontfix",
+      "message": "Explanation of the fix",
+      "action_taken": "Updated file X line Y"
+    }
+  ]
+}
+```
+
+### Usage Examples
+
+#### Issue→PR Workflow
+
+```bash
+# 1. Implement solution and create branch
+git checkout -b feature/issue-503
+# ... make changes ...
+
+# 2. Write artifacts
+cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
+{
+  "version": "1.0",
+  "pr_ref": "holon-run/holon#503",
+  "actions": [
+    {
+      "type": "create_pr",
+      "params": {
+        "title": "Feature: GitHub publishing",
+        "body": "pr-description.md",
+        "head": "feature/issue-503",
+        "base": "main"
+      }
+    },
+    {
+      "type": "post_comment",
+      "params": {
+        "body": "summary.md"
+      }
+    }
+  ]
+}
+EOF
+
+# 3. Execute publishing
+cd /holon/workspace/skills/github-solve
+./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+```
+
+#### PR-Fix Workflow
+
+```bash
+# 1. Generate pr-fix.json with review responses
+cat > ${GITHUB_OUTPUT_DIR}/pr-fix.json <<EOF
+{
+  "review_replies": [
+    {
+      "comment_id": 123456,
+      "status": "fixed",
+      "message": "Fixed the validation issue",
+      "action_taken": "Updated helpers.sh:123"
+    }
+  ]
+}
+EOF
+
+# 2. Write publish intent
+cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
+{
+  "version": "1.0",
+  "pr_ref": "holon-run/holon#507",
+  "actions": [
+    {
+      "type": "reply_review",
+      "params": {
+        "replies_file": "pr-fix.json"
+      }
+    },
+    {
+      "type": "post_comment",
+      "params": {
+        "body": "summary.md"
+      }
+    }
+  ]
+}
+EOF
+
+# 3. Execute publishing
+cd /holon/workspace/skills/github-solve
+./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+```
+
+### Direct Command Mode
+
+For simple operations, use direct commands without an intent file:
+
+```bash
+# Create PR
+./scripts/publish.sh create-pr \
+    --title "Feature: GitHub publishing" \
+    --body-file pr-description.md \
+    --head feature/github-publishing \
+    --base main
+
+# Post comment
+./scripts/publish.sh comment --body-file summary.md
+
+# Reply to reviews
+./scripts/publish.sh reply-reviews --pr-fix-json pr-fix.json
+```
+
+### Environment Variables
+
+- `GITHUB_OUTPUT_DIR`: Output directory (default: ${GITHUB_OUTPUT_DIR})
+- `GITHUB_TOKEN`: GitHub authentication token (required)
+- `HOLON_GITHUB_BOT_LOGIN`: Bot login name for idempotency (default: holonbot[bot])
+
+### Options
+
+- `--dry-run`: Show what would be done without executing
+- `--from=N`: Start from action N (for resume capability)
+- `--pr=OWNER/REPO#NUM`: Target PR reference (auto-detected from intent if not specified)
+
+### Output
+
+All publishing operations generate `${GITHUB_OUTPUT_DIR}/publish-results.json`:
+
+```json
+{
+  "version": "1.0",
+  "pr_ref": "holon-run/holon#507",
+  "executed_at": "2026-01-26T12:00:00Z",
+  "dry_run": false,
+  "actions": [
+    {
+      "index": 0,
+      "type": "reply_review",
+      "status": "completed",
+      "result": {
+        "total": 30,
+        "posted": 30,
+        "skipped": 0,
+        "failed": 0
+      }
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "completed": 1,
+    "failed": 0
+  },
+  "overall_status": "success"
+}
+```
+
+### Authentication
+
+The publish.sh script requires `GITHUB_TOKEN` to be set:
+
+```bash
+export GITHUB_TOKEN="ghp_xxx"  # Or via container mount
+```
+
+For production use, the token should be provided via:
+- Container secrets mount
+- Environment variable injection
+- GitHub Actions secrets
+
+### Best Practices
+
+1. **Always test with --dry-run first**:
+   ```bash
+   ./scripts/publish.sh --dry-run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+   ```
+
+2. **Use file references for long content**:
+   ```json
+   {
+     "params": {
+       "body": "pr-description.md"  // Better than inline markdown
+     }
+   }
+   ```
+
+3. **Leverage idempotency**: All actions can be safely re-run. Use this for debugging and recovery.
+
+4. **Combine actions strategically**:
+   - Issue→PR: create_pr + post_comment
+   - PR-fix: reply_review + post_comment
+   - Complex: create_pr + update_pr + post_comment
+
+5. **Review publish-results.json**: After execution, check results to verify success and diagnose issues.
+
+### Troubleshooting
+
+**Error: "Missing required field"**
+- Ensure all required parameters are provided
+- Check that file references point to existing files
+
+**Error: "Branch not found"**
+- Create the feature branch before calling publish.sh
+- Or add `"create_branch": true` to create_pr params
+
+**Error: "gh auth failed"**
+- Ensure GITHUB_TOKEN is set and valid
+- Run `gh auth status` to verify authentication
+
+**Partial failures**:
+- Check publish-results.json for failed actions
+- Use `--from=N` to resume from failed action
+- Fix the issue and re-run
+
+### Dependencies
+
+The publishing system requires:
+- `gh` CLI - GitHub API operations
+- `jq` - JSON processing
+- `git` - Version control operations (for create_pr)
 
 ## Diagnostic Confidence Levels
 
