@@ -199,7 +199,7 @@ action_create_pr() {
     # Add labels if provided
     if [[ "$labels" != "null" && "$labels" != "[]" ]]; then
         local label_list
-        label_list=$(echo "$labels" | jq -r '@tsv')
+        label_list=$(echo "$labels" | jq -r 'join(",")')
         cmd+=("--label" "$label_list")
     fi
 
