@@ -735,8 +735,18 @@ cd /holon/workspace/skills/github-solve
 
 #### PR-Fix Workflow
 
+**IMPORTANT**: Commit your code fixes BEFORE replying to reviews. This ensures reviewers can see your actual fixes when reading your replies.
+
 ```bash
-# 1. Generate pr-fix.json with review responses
+# 1. Fix issues based on review feedback
+# ... make code changes ...
+
+# 2. Commit and push your fixes
+git add .
+git commit -m "Fix: Address review feedback"
+git push
+
+# 3. Generate pr-fix.json with review responses
 cat > ${GITHUB_OUTPUT_DIR}/pr-fix.json <<EOF
 {
   "review_replies": [
@@ -750,7 +760,7 @@ cat > ${GITHUB_OUTPUT_DIR}/pr-fix.json <<EOF
 }
 EOF
 
-# 2. Write publish intent
+# 4. Write publish intent
 cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
 {
   "version": "1.0",
@@ -772,7 +782,7 @@ cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
 }
 EOF
 
-# 3. Execute publishing
+# 5. Execute publishing
 cd /holon/workspace/skills/github-solve
 ./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 ```
