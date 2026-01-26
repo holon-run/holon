@@ -1,5 +1,5 @@
 // Command to generate the built-in catalog from a source list
-// Usage: go run generate_catalog.go source-list.json > builtin_catalog.json
+// Usage: go run generate_builtin_catalog.go <source-list.json> > builtin_catalog.json
 package main
 
 import (
@@ -42,7 +42,7 @@ type CatalogEntry struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: go run generate_catalog.go <source-list.json>")
+		fmt.Fprintln(os.Stderr, "Usage: go run generate_builtin_catalog.go <source-list.json>")
 		os.Exit(1)
 	}
 

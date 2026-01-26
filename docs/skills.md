@@ -116,14 +116,12 @@ The `skills:` prefix resolves packages through the [skills.sh](https://catalog.s
 ```bash
 # Install skills from a GitHub repository
 holon run --goal "Fix issue" --skill gh:myorg/skills
-
-# Install skills from a specific path in a repository
-holon run --goal "Documentation" --skill gh:myorg/docs/skills/api
 ```
 
 The `gh:` prefix downloads the repository as a zip archive from GitHub and discovers all skill directories within it. Format:
-- `gh:<owner>/<repo>` - downloads entire repository
-- `gh:<owner>/<repo>/<path>` - downloads repository and uses specific path
+- `gh:<owner>/<repo>` - downloads entire repository and discovers all skills
+
+Note: The archive download uses the entire repository. All skill directories within the repository will be discovered and made available.
 
 **Resolution Order:**
 When you use catalog references, Holon resolves them in this order:

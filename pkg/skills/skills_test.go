@@ -752,12 +752,14 @@ func TestResolver_CatalogResolution(t *testing.T) {
 		resolver := NewResolver(tempDir)
 
 		// Try to resolve a catalog reference that doesn't exist
+		// This test verifies that catalog references are properly recognized
+		// and that appropriate error messages are returned
 		_, err := resolver.Resolve([]string{"skills:nonexistent-package-that-does-not-exist"}, []string{}, []string{})
 		if err == nil {
 			t.Error("expected error for nonexistent catalog reference, got nil")
 		}
 
-		// Error should mention catalog or skills.sh
+		// Error should mention catalog or skills
 		if !strings.Contains(err.Error(), "catalog") && !strings.Contains(err.Error(), "skills") {
 			t.Errorf("error should mention catalog or skills: %v", err)
 		}
