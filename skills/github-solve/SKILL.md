@@ -9,21 +9,19 @@ Automation skill for GitHub issue and pull request workflows.
 
 ## Environment and Paths
 
-This skill uses environment variables to maintain flexibility across different environments (Holon, local development, CI/CD, etc.).
+This skill uses environment variables to stay portable across Holon, local shells, and CI.
 
 ### Key Environment Variables
 
-- **`GITHUB_OUTPUT_DIR`**: Output directory for artifacts and context
-  - **Default**: `/holon/output` (Holon environment)
+- **`GITHUB_OUTPUT_DIR`**: Output directory for artifacts and publish results
+  - **Default**: `/holon/output` when the path exists (Holon container); otherwise a temp dir under `/tmp/holon-ghout-*`
   - **Custom**: Set to any directory (e.g., `./output`, `/tmp/github-work`)
-  - **Usage**: All generated files (artifacts, results) go here
 
 - **`GITHUB_CONTEXT_DIR`**: Directory for collected GitHub context
-  - **Default**: `${GITHUB_OUTPUT_DIR}/github-context`
+  - **Default**: `${GITHUB_OUTPUT_DIR}/github-context` if `/holon/output` exists; otherwise a temp dir under `/tmp/holon-ghctx-*`
 
-- **`GITHUB_TOKEN`**: GitHub authentication token (required for publishing)
-  - **Required for**: Creating PRs, posting comments, replying to reviews
-  - **Not required for**: Context collection (read-only operations)
+- **`GITHUB_TOKEN` / `GH_TOKEN`**: GitHub authentication token
+  - Required for publishing; also used for collection if gh auth is not already logged in
 
 - **`HOLON_GITHUB_BOT_LOGIN`**: Bot login name for idempotency checks
   - **Default**: `holonbot[bot]`
@@ -32,10 +30,10 @@ This skill uses environment variables to maintain flexibility across different e
 ### Path Examples
 
 ```bash
-# Holon environment (default)
+# Holon container (default picked up automatically)
 export GITHUB_OUTPUT_DIR=/holon/output
 
-# Local development
+# Local development (keeps workspace clean by defaulting to /tmp if unset)
 export GITHUB_OUTPUT_DIR=./output
 export GITHUB_TOKEN=ghp_xxx
 
@@ -81,11 +79,12 @@ When `/holon/input/context/github/` is empty or missing required files:
 
 2. **Configure with environment variables** (optional):
    ```bash
+   # Optional overrides; otherwise defaults to /holon/output/github-context or /tmp/holon-ghctx-*
    export GITHUB_CONTEXT_DIR=${GITHUB_OUTPUT_DIR}/github-context
    export TRIGGER_COMMENT_ID=123456
    export INCLUDE_DIFF=true          # for PRs
    export INCLUDE_CHECKS=true        # for PRs
-   export UNRESOLVED_ONLY=true       # for PR review threads
+   # UNRESOLVED_ONLY is deprecated (GitHub API lacks unresolved state on /pulls/{n}/comments)
    ```
 
 3. **Copy collected context** to input location (for compatibility):

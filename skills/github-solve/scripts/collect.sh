@@ -10,7 +10,7 @@
 #   repo_hint: Optional repository hint (e.g., "owner/repo") for numeric refs
 #
 # Environment variables:
-#   GITHUB_CONTEXT_DIR: Output directory for collected context (default: /holon/output/github-context)
+#   GITHUB_CONTEXT_DIR: Output directory for collected context (default: /holon/output/github-context if present, else tmp)
 #   TRIGGER_COMMENT_ID: Optional comment ID to mark as trigger
 #   INCLUDE_DIFF: Set to "true" to include PR diff (default: true)
 #   INCLUDE_CHECKS: Set to "true" to include CI checks (default: true)
@@ -29,12 +29,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/helpers.sh
 source "$SCRIPT_DIR/lib/helpers.sh"
 
-# Default values
-GITHUB_CONTEXT_DIR="${GITHUB_CONTEXT_DIR:-/holon/output/github-context}"
+# Default values (prefer Holon contract path; fallback to temp to avoid polluting workspace)
+if [[ -z "${GITHUB_CONTEXT_DIR:-}" ]]; then
+    if [[ -d /holon/output ]]; then
+        GITHUB_CONTEXT_DIR="/holon/output/github-context"
+    else
+        GITHUB_CONTEXT_DIR="$(mktemp -d /tmp/holon-ghctx-XXXXXX)"
+    fi
+fi
+
 TRIGGER_COMMENT_ID="${TRIGGER_COMMENT_ID:-}"
 INCLUDE_DIFF="${INCLUDE_DIFF:-true}"
 INCLUDE_CHECKS="${INCLUDE_CHECKS:-true}"
-UNRESOLVED_ONLY="${UNRESOLVED_ONLY:-true}"
+UNRESOLVED_ONLY="${UNRESOLVED_ONLY:-false}"
 
 # Show usage
 usage() {
@@ -48,11 +55,11 @@ Arguments:
   repo_hint  Optional repository hint (e.g., "owner/repo") for numeric refs
 
 Environment:
-  GITHUB_CONTEXT_DIR   Output directory (default: /holon/output/github-context)
+  GITHUB_CONTEXT_DIR   Output directory (default: /holon/output/github-context if present, else temp dir)
   TRIGGER_COMMENT_ID   Comment ID to mark as trigger
   INCLUDE_DIFF         Include PR diff (default: true)
   INCLUDE_CHECKS       Include CI checks (default: true)
-  UNRESOLVED_ONLY      Only unresolved review threads (default: true)
+  UNRESOLVED_ONLY      Deprecated; unresolved filtering is not supported (ignored)
 
 Examples:
   collect.sh holon-run/holon#502
@@ -72,13 +79,8 @@ fi
 REF="$1"
 REPO_HINT="${2:-}"
 
-# Check gh CLI
-if ! check_gh_cli; then
-    exit 1
-fi
-
-# Check jq
-if ! check_jq; then
+# Check dependencies (gh + auth + jq)
+if ! check_dependencies; then
     exit 1
 fi
 

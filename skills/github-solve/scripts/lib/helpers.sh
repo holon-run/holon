@@ -20,26 +20,22 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $*" >&2
 }
 
-# Check if gh CLI is available and authenticated
-check_gh_cli() {
+# Check CLI dependencies (gh + auth) and jq
+check_dependencies() {
+    local missing=()
+
     if ! command -v gh &> /dev/null; then
-        log_error "gh CLI is not installed"
-        return 1
+        missing+=("gh CLI")
+    elif ! gh auth status &> /dev/null; then
+        missing+=("gh auth (run 'gh auth login' or set GITHUB_TOKEN/GH_TOKEN)")
     fi
 
-    # Check if authenticated
-    if ! gh auth status &> /dev/null; then
-        log_error "gh CLI is not authenticated. Run 'gh auth login'"
-        return 1
-    fi
-
-    return 0
-}
-
-# Check if jq is available
-check_jq() {
     if ! command -v jq &> /dev/null; then
-        log_error "jq is not installed. Please install jq to continue."
+        missing+=("jq")
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing dependencies: ${missing[*]}"
         return 1
     fi
 
@@ -244,15 +240,11 @@ fetch_pr_review_threads() {
     fi
 
     # Filter and transform data
-    local filter_cmd="."
+    # The /pulls/{number}/comments endpoint does not expose thread state such as APPROVED;
+    # filter only by 'outdated' flag to drop outdated comments. "Unresolved" is not available here.
+    local filter_cmd='map(select(.outdated != true))'
     if [[ "$unresolved_only" == "true" ]]; then
-        # NOTE: The /pulls/{number}/comments endpoint returns individual comments and
-        # does not expose review thread state (e.g., "APPROVED") or an "outdated" flag.
-        # To avoid relying on nonexistent fields, we currently do not filter and simply
-        # return all comments. This preserves existing behavior while avoiding
-        # incorrect assumptions about the API response shape.
-        log_warn "Unresolved-only filtering is not supported for review comments; returning all comments."
-        filter_cmd='.'
+        log_warn "Unresolved-only filtering is not supported for review comments; returning non-outdated comments."
     fi
 
     # Mark trigger comment if provided
@@ -431,7 +423,7 @@ fetch_workflow_logs() {
     return 0
 }
 
-# Verify that required context files exist and are non-empty
+# Verify that required context files exist and are non-empty where appropriate
 # Usage: verify_context_files <context_dir> <ref_type> [include_diff] [include_checks]
 verify_context_files() {
     local context_dir="$1"
@@ -439,25 +431,21 @@ verify_context_files() {
     local include_diff="${3:-false}"
     local include_checks="${4:-false}"
     local required_files=()
+    local optional_files=()
 
     if [[ "$ref_type" == "pr" ]]; then
-        required_files=(
-            "$context_dir/github/pr.json"
-            "$context_dir/github/review_threads.json"
-        )
-        # Optionally verify additional PR context files if they were requested
+        required_files=("$context_dir/github/pr.json")
+        optional_files=("$context_dir/github/review_threads.json" "$context_dir/github/pr_comments.json")
         if [[ "$include_diff" == "true" ]]; then
-            required_files+=("$context_dir/github/pr.diff")
+            optional_files+=("$context_dir/github/pr.diff")
         fi
 
         if [[ "$include_checks" == "true" ]]; then
-            required_files+=("$context_dir/github/check_runs.json")
+            optional_files+=("$context_dir/github/check_runs.json")
         fi
     elif [[ "$ref_type" == "issue" ]]; then
-        required_files=(
-            "$context_dir/github/issue.json"
-            "$context_dir/github/comments.json"
-        )
+        required_files=("$context_dir/github/issue.json")
+        optional_files=("$context_dir/github/comments.json")
     fi
 
     for file in "${required_files[@]}"; do
@@ -466,17 +454,25 @@ verify_context_files() {
             return 1
         fi
 
-        # Check if file is non-empty OR contains valid empty JSON array
         if [[ ! -s "$file" ]]; then
             log_error "Required context file is empty: $file"
             return 1
         fi
+    done
 
-        # For JSON files that may be empty arrays (comments, review_threads), validate JSON structure
-        if [[ "$file" =~ (comments|review_threads)\.json$ ]]; then
+    # Optional files: allow missing/empty but warn
+    for file in "${optional_files[@]}"; do
+        if [[ ! -f "$file" ]]; then
+            log_warn "Optional context file missing: $file"
+            continue
+        fi
+        if [[ ! -s "$file" ]]; then
+            log_warn "Optional context file is empty (allowed): $file"
+            continue
+        fi
+        if [[ "$file" =~ \.json$ ]]; then
             if ! jq empty "$file" 2>/dev/null; then
-                log_error "Required context file has invalid JSON: $file"
-                return 1
+                log_warn "Optional context file has invalid JSON: $file"
             fi
         fi
     done
