@@ -15,7 +15,7 @@ The minimal input payload required is:
   }
   ```
 
-If `payload.json` exists, use its `ref` field. Otherwise, check for:
+The agent must extract the `ref` field from `payload.json` and pass it as a command-line argument to the collection script. If `payload.json` doesn't exist or `ref` is not provided, check for:
 1. Command-line arguments or environment variables with the reference
 2. Fallback to requesting the reference from the user
 
@@ -52,7 +52,7 @@ When `/holon/input/context/github/` is empty or missing required files:
 
 The collection script fetches:
 - **For issues**: `issue.json`, `comments.json`
-- **For PRs**: `pr.json`, `review_threads.json`, `pr_comments.json`, `pr.diff`, `check_runs.json`, `test-failure-logs.txt`
+- **For PRs**: `pr.json`, `review_threads.json`, `comments.json`, `pr.diff`, `check_runs.json`, `test-failure-logs.txt`
 
 All collected context is persisted under `/holon/output/github-context/` for audit/debug.
 
@@ -66,20 +66,53 @@ All collected context is persisted under `/holon/output/github-context/` for aud
 
 This skill includes helper scripts in `scripts/`:
 
+### Context Collection
+
 - **`scripts/collect.sh`**: Main context collection script
   - Fetches issue/PR metadata, comments, diffs, and CI logs using `gh` CLI
   - Requires `gh` CLI to be authenticated (container environment typically provides this)
+  - Requires `jq` for JSON processing
   - Usage: `collect.sh <ref> [repo_hint]`
 
 - **`scripts/lib/helpers.sh`**: Reusable helper functions
+  - `check_gh_cli()`, `check_jq()`: Verify required dependencies are available
   - `parse_ref()`: Parse GitHub reference into owner/repo/number
   - `determine_ref_type()`: Check if a number is a PR or issue
-  - `fetch_issue_metadata()`, `fetch_pr_metadata()`: Get issue/PR details
+  - `fetch_issue_metadata()`, `fetch_pr_metadata()`: Get issue/PR details (includes reviews for PRs)
   - `fetch_issue_comments()`, `fetch_pr_comments()`, `fetch_pr_review_threads()`: Get comments
   - `fetch_pr_diff()`: Get PR diff
   - `fetch_pr_check_runs()`, `fetch_workflow_logs()`: Get CI status and logs
   - `verify_context_files()`: Validate required files exist and are non-empty
   - `write_manifest()`: Write collection manifest
+
+### Review Reply Posting
+
+- **`scripts/reply-reviews.sh`**: Post formatted replies to PR review comments
+  - Reads `pr-fix.json` and posts replies with proper formatting
+  - Implements idempotency checks to avoid duplicate replies
+  - Requires `gh` CLI to be authenticated
+  - Usage examples:
+    ```bash
+    # Preview replies without posting (dry-run)
+    reply-reviews.sh --dry-run --pr=owner/repo#123
+
+    # Post all replies
+    reply-reviews.sh --pr=owner/repo#123
+
+    # Resume from specific reply index (for error recovery)
+    reply-reviews.sh --from=5 --pr=owner/repo#123
+    ```
+  - Options:
+    - `--dry-run`: Show what would be posted without actually posting
+    - `--from=N`: Start from reply N (useful if script fails midway)
+    - `--pr=OWNER/REPO#NUMBER`: Target PR (auto-detected from git if not specified)
+    - `--bot-login=NAME`: Bot login name for idempotency (default: holonbot[bot])
+  - Environment variables:
+    - `PR_FIX_JSON`: Path to pr-fix.json (default: ./pr-fix.json)
+    - `HOLON_GITHUB_BOT_LOGIN`: Bot login name (default: holonbot[bot])
+  - Output:
+    - `reply-results.json`: JSON with results of each reply attempt
+    - Console summary: total, posted, skipped, failed counts
 
 ## Context Detection
 
@@ -98,8 +131,9 @@ This skill adapts behavior based on the GitHub context provided:
 When GitHub context is provided (either pre-populated or collected), files are available under `/holon/input/context/github/`:
 
 ### PR Context Files
-- `pr.json`: Pull request metadata
-- `review_threads.json`: Review threads with comment metadata (optional, includes `comment_id`)
+- `pr.json`: Pull request metadata including reviews (review submissions without line-specific comments)
+- `review_threads.json`: Review threads with line-specific comments (optional, includes `comment_id`)
+- `comments.json`: PR discussion comments (optional)
 - `pr.diff`: The code changes being reviewed (optional but recommended)
 - `check_runs.json`: CI/check run metadata (optional)
 - `test-failure-logs.txt`: Complete workflow logs for failed tests (optional, downloaded when checks fail)
@@ -253,6 +287,37 @@ When review comments request substantial refactoring that is **valid but non-blo
    - **BLOCKING issues must be fixed**: bugs, security issues, breaking changes, missing critical functionality
    - **DEFER appropriate improvements**: additional test coverage, refactoring for clarity, performance optimizations
    - **Use `wontfix` for rejected suggestions**: requests that don't align with project goals
+
+### Posting Review Replies
+
+After generating `/holon/output/pr-fix.json` with review replies:
+
+1. **Use the skill's reply script**:
+   ```bash
+   # Navigate to skill directory
+   cd /holon/workspace/skills/github-solve
+
+   # Preview replies (recommended before posting)
+   scripts/reply-reviews.sh --dry-run
+
+   # Post replies to PR
+   scripts/reply-reviews.sh --pr=owner/repo#123
+   ```
+
+2. **Reply format** (automatically applied by script):
+   - Emoji based on status: ✅ fixed, ⚠️ wontfix, ❓ need-info, 🔜 deferred
+   - Status label in uppercase
+   - Your message
+   - Optional "Action taken" section
+
+3. **Idempotency**:
+   - Script checks if bot already replied to each comment
+   - Skips already-responded comments
+   - Supports `--from=N` to resume from specific index
+
+4. **Output files**:
+   - `reply-results.json`: Detailed results for each reply attempt
+   - Console summary: total, posted, skipped, failed counts
 
 ## Issue-Solve Mode Behavior
 

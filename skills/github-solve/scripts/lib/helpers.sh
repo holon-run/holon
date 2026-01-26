@@ -36,6 +36,16 @@ check_gh_cli() {
     return 0
 }
 
+# Check if jq is available
+check_jq() {
+    if ! command -v jq &> /dev/null; then
+        log_error "jq is not installed. Please install jq to continue."
+        return 1
+    fi
+
+    return 0
+}
+
 # Parse GitHub reference and extract owner, repo, and number
 # Usage: parse_ref <ref> [repo_hint]
 # Outputs: OWNER REPO NUMBER REF_TYPE
@@ -80,6 +90,12 @@ parse_ref() {
         return 1
     fi
 
+    # Validate required fields
+    if [[ -z "$owner" || -z "$repo" || -z "$number" ]]; then
+        log_error "Incomplete reference: owner=$owner, repo=$repo, number=$number"
+        return 1
+    fi
+
     echo "$owner" "$repo" "$number" "$ref_type"
 }
 
@@ -116,7 +132,7 @@ fetch_issue_metadata() {
     local output_file="$4"
 
     log_info "Fetching issue metadata for $owner/$repo#$number..."
-    if gh issue view "$number" --repo "$owner/$repo" --json number,title,body,state,url,author,createdAt,updatedAt,repository,labels > "$output_file"; then
+    if gh issue view "$number" --repo "$owner/$repo" --json number,title,body,state,url,author,createdAt,updatedAt,labels > "$output_file"; then
         return 0
     else
         log_error "Failed to fetch issue metadata"
@@ -135,7 +151,13 @@ fetch_issue_comments() {
 
     log_info "Fetching comments for $owner/$repo#$number..."
 
-    local tmp_file="${output_file}.tmp"
+    # Create temporary file using mktemp for unique naming
+    local tmp_file
+    tmp_file=$(mktemp "${output_file}.XXXXXX")
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to create temporary file for issue comments"
+        return 1
+    fi
 
     # Fetch all comments using API
     local api_path="repos/$owner/$repo/issues/$number/comments"
@@ -149,16 +171,26 @@ fetch_issue_comments() {
 
     # Mark trigger comment if provided
     if [[ -n "$trigger_comment_id" ]]; then
-        # Use jq to add is_trigger field to the matching comment
-        jq --argjson trigger_id "$trigger_comment_id" \
-           'map(. + {is_trigger: (.id == $trigger_id)})' \
-           "$tmp_file" > "$output_file"
-        rm -f "$tmp_file"
+        # Validate that trigger_comment_id is numeric before using --argjson
+        if [[ "$trigger_comment_id" =~ ^[0-9]+$ ]]; then
+            # Use jq to add is_trigger field to the matching comment
+            jq --argjson trigger_id "$trigger_comment_id" \
+               'map(. + {is_trigger: (.id == $trigger_id)})' \
+               "$tmp_file" > "$output_file"
+            rm -f "$tmp_file"
+        else
+            log_warn "Invalid trigger_comment_id '$trigger_comment_id'; expected numeric. Skipping trigger marking."
+            mv "$tmp_file" "$output_file"
+        fi
     else
         mv "$tmp_file" "$output_file"
     fi
 
-    local count=$(jq 'length' "$output_file")
+    local count
+    if ! count=$(jq 'length' "$output_file" 2>/dev/null); then
+        log_warn "Failed to parse comments JSON; defaulting count to 0"
+        count=0
+    fi
     log_info "Found $count comments"
     return 0
 }
@@ -172,7 +204,7 @@ fetch_pr_metadata() {
     local output_file="$4"
 
     log_info "Fetching PR metadata for $owner/$repo#$number..."
-    if gh pr view "$number" --repo "$owner/$repo" --json number,title,body,state,url,baseRefName,headRefName,baseRefOid,headRefOid,author,createdAt,updatedAt,repository,mergeCommit > "$output_file"; then
+    if gh pr view "$number" --repo "$owner/$repo" --json number,title,body,state,url,baseRefName,headRefName,headRefOid,author,createdAt,updatedAt,mergeCommit,reviews > "$output_file"; then
         return 0
     else
         log_error "Failed to fetch PR metadata"
@@ -192,7 +224,14 @@ fetch_pr_review_threads() {
 
     log_info "Fetching review threads for $owner/$repo#$number..."
 
-    local tmp_file="${output_file}.tmp"
+    # Create temporary file using mktemp for unique naming
+    local tmp_file
+    tmp_file=$(mktemp "${output_file}.XXXXXX")
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to create temporary file for review threads"
+        return 1
+    fi
+
     local query="repos/$owner/$repo/pulls/$number/comments"
 
     # Fetch review comments
@@ -207,21 +246,37 @@ fetch_pr_review_threads() {
     # Filter and transform data
     local filter_cmd="."
     if [[ "$unresolved_only" == "true" ]]; then
-        filter_cmd='map(select(.state != "APPROVED")) | map(select(.outdated != true))'
+        # NOTE: The /pulls/{number}/comments endpoint returns individual comments and
+        # does not expose review thread state (e.g., "APPROVED") or an "outdated" flag.
+        # To avoid relying on nonexistent fields, we currently do not filter and simply
+        # return all comments. This preserves existing behavior while avoiding
+        # incorrect assumptions about the API response shape.
+        log_warn "Unresolved-only filtering is not supported for review comments; returning all comments."
+        filter_cmd='.'
     fi
 
     # Mark trigger comment if provided
     if [[ -n "$trigger_comment_id" ]]; then
-        jq --argjson trigger_id "$trigger_comment_id" \
-           "$filter_cmd | map(. + {is_trigger: (.id == $trigger_id)})" \
-           "$tmp_file" > "$output_file"
+        # Ensure trigger_comment_id is a valid numeric value before using --argjson
+        if [[ "$trigger_comment_id" =~ ^[0-9]+$ ]]; then
+            jq --argjson trigger_id "$trigger_comment_id" \
+               "$filter_cmd | map(. + {is_trigger: (.id == $trigger_id)})" \
+               "$tmp_file" > "$output_file"
+        else
+            log_warn "Invalid trigger_comment_id '$trigger_comment_id'; skipping trigger marking"
+            jq "$filter_cmd" "$tmp_file" > "$output_file"
+        fi
     else
         jq "$filter_cmd" "$tmp_file" > "$output_file"
     fi
 
     rm -f "$tmp_file"
 
-    local count=$(jq 'length' "$output_file")
+    local count
+    if ! count=$(jq 'length' "$output_file" 2>/dev/null); then
+        log_warn "Failed to parse review threads JSON; defaulting count to 0"
+        count=0
+    fi
     log_info "Found $count review threads"
     return 0
 }
@@ -237,7 +292,14 @@ fetch_pr_comments() {
 
     log_info "Fetching PR comments for $owner/$repo#$number..."
 
-    local tmp_file="${output_file}.tmp"
+    # Create temporary file using mktemp for unique naming
+    local tmp_file
+    tmp_file=$(mktemp "${output_file}.XXXXXX")
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to create temporary file for PR comments"
+        return 1
+    fi
+
     local api_path="repos/$owner/$repo/issues/$number/comments"
 
     gh api "$api_path" --paginate > "$tmp_file"
@@ -250,15 +312,25 @@ fetch_pr_comments() {
 
     # Mark trigger comment if provided
     if [[ -n "$trigger_comment_id" ]]; then
-        jq --argjson trigger_id "$trigger_comment_id" \
-           'map(. + {is_trigger: (.id == $trigger_id)})' \
-           "$tmp_file" > "$output_file"
-        rm -f "$tmp_file"
+        # Validate that trigger_comment_id is numeric before using --argjson
+        if [[ "$trigger_comment_id" =~ ^[0-9]+$ ]]; then
+            jq --argjson trigger_id "$trigger_comment_id" \
+               'map(. + {is_trigger: (.id == $trigger_id)})' \
+               "$tmp_file" > "$output_file"
+            rm -f "$tmp_file"
+        else
+            log_warn "Invalid trigger_comment_id '$trigger_comment_id'; skipping trigger comment marking"
+            mv "$tmp_file" "$output_file"
+        fi
     else
         mv "$tmp_file" "$output_file"
     fi
 
-    local count=$(jq 'length' "$output_file")
+    local count
+    if ! count=$(jq 'length' "$output_file" 2>/dev/null); then
+        log_warn "Failed to parse PR comments JSON; defaulting count to 0"
+        count=0
+    fi
     log_info "Found $count PR comments"
     return 0
 }
@@ -287,7 +359,12 @@ fetch_pr_check_runs() {
     local repo="$2"
     local head_sha="$3"
     local output_file="$4"
-    local max_runs="${5:-200}"
+
+    # max_runs: explicit arg wins, otherwise use MAX_CHECK_RUNS env var, falling back to 200.
+    # 200 is a reasonable upper bound to avoid excessive data while capturing typical workloads.
+    local max_runs_arg="${5:-}"
+    local max_runs_env="${MAX_CHECK_RUNS:-200}"
+    local max_runs="${max_runs_arg:-$max_runs_env}"
 
     log_info "Fetching check runs for $head_sha..."
     local api_path="repos/$owner/$repo/commits/$head_sha/check-runs?per_page=100"
@@ -299,7 +376,11 @@ fetch_pr_check_runs() {
         return 1
     fi
 
-    local count=$(jq 'length' "$output_file")
+    local count
+    if ! count=$(jq 'length' "$output_file" 2>/dev/null); then
+        log_warn "Failed to parse check runs JSON; defaulting count to 0"
+        count=0
+    fi
     log_info "Found $count check runs"
     return 0
 }
@@ -351,10 +432,12 @@ fetch_workflow_logs() {
 }
 
 # Verify that required context files exist and are non-empty
-# Usage: verify_context_files <context_dir> <ref_type>
+# Usage: verify_context_files <context_dir> <ref_type> [include_diff] [include_checks]
 verify_context_files() {
     local context_dir="$1"
     local ref_type="$2"
+    local include_diff="${3:-false}"
+    local include_checks="${4:-false}"
     local required_files=()
 
     if [[ "$ref_type" == "pr" ]]; then
@@ -362,6 +445,14 @@ verify_context_files() {
             "$context_dir/github/pr.json"
             "$context_dir/github/review_threads.json"
         )
+        # Optionally verify additional PR context files if they were requested
+        if [[ "$include_diff" == "true" ]]; then
+            required_files+=("$context_dir/github/pr.diff")
+        fi
+
+        if [[ "$include_checks" == "true" ]]; then
+            required_files+=("$context_dir/github/check_runs.json")
+        fi
     elif [[ "$ref_type" == "issue" ]]; then
         required_files=(
             "$context_dir/github/issue.json"
@@ -375,9 +466,18 @@ verify_context_files() {
             return 1
         fi
 
+        # Check if file is non-empty OR contains valid empty JSON array
         if [[ ! -s "$file" ]]; then
             log_error "Required context file is empty: $file"
             return 1
+        fi
+
+        # For JSON files that may be empty arrays (comments, review_threads), validate JSON structure
+        if [[ "$file" =~ (comments|review_threads)\.json$ ]]; then
+            if ! jq empty "$file" 2>/dev/null; then
+                log_error "Required context file has invalid JSON: $file"
+                return 1
+            fi
         fi
     done
 
@@ -394,7 +494,7 @@ write_manifest() {
     local ref_type="$5"
     local success="$6"
 
-    local manifest_file="$output_dir/context-manifest.json"
+    local manifest_file="$output_dir/manifest.json"
     local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
     cat > "$manifest_file" <<EOF

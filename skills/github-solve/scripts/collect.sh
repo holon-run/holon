@@ -31,6 +31,7 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 
 # Default values
 GITHUB_CONTEXT_DIR="${GITHUB_CONTEXT_DIR:-/holon/output/github-context}"
+TRIGGER_COMMENT_ID="${TRIGGER_COMMENT_ID:-}"
 INCLUDE_DIFF="${INCLUDE_DIFF:-true}"
 INCLUDE_CHECKS="${INCLUDE_CHECKS:-true}"
 UNRESOLVED_ONLY="${UNRESOLVED_ONLY:-true}"
@@ -76,6 +77,11 @@ if ! check_gh_cli; then
     exit 1
 fi
 
+# Check jq
+if ! check_jq; then
+    exit 1
+fi
+
 # Parse reference
 log_info "Parsing reference: $REF"
 read -r OWNER REPO NUMBER REF_TYPE <<< "$(parse_ref "$REF" "$REPO_HINT")"
@@ -117,7 +123,7 @@ if [[ "$REF_TYPE" == "pr" ]]; then
     fi
 
     # Fetch PR comments
-    if ! fetch_pr_comments "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/pr_comments.json" "$TRIGGER_COMMENT_ID"; then
+    if ! fetch_pr_comments "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/comments.json" "$TRIGGER_COMMENT_ID"; then
         log_warn "Failed to fetch PR comments (continuing...)"
     fi
 
@@ -173,7 +179,7 @@ else
 fi
 
 # Verify required files
-if ! verify_context_files "$GITHUB_CONTEXT_DIR" "$REF_TYPE"; then
+if ! verify_context_files "$GITHUB_CONTEXT_DIR" "$REF_TYPE" "$INCLUDE_DIFF" "$INCLUDE_CHECKS"; then
     log_error "Context verification failed"
     write_manifest "$GITHUB_CONTEXT_DIR" "$OWNER" "$REPO" "$NUMBER" "$REF_TYPE" "false"
     exit 1
@@ -187,8 +193,8 @@ log_info "Context written to: $GITHUB_CONTEXT_DIR"
 echo ""
 log_info "Collected files:"
 find "$GITHUB_CONTEXT_DIR" -type f | sort | while read -r file; do
-    local rel_path="${file#$GITHUB_CONTEXT_DIR/}"
-    local size=$(wc -c < "$file")
+    rel_path="${file#$GITHUB_CONTEXT_DIR/}"
+    size=$(wc -c < "$file")
     echo "  - $rel_path ($size bytes)"
 done
 
