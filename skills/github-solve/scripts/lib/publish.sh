@@ -179,14 +179,10 @@ action_create_pr() {
         return 0
     fi
 
-    # Check if head branch exists
-    log_info "Verifying head branch exists: $head"
+    # Check if head branch exists (best-effort, don't fail for remote branches)
+    log_info "Verifying head branch (best-effort): $head"
     if ! git rev-parse --verify "$head" >/dev/null 2>&1; then
-        log_error "Head branch does not exist: $head"
-        jq -n \
-            --arg head "$head" \
-            '{error: "Branch not found", branch: $head, suggestion: "Create the branch before calling publish.sh or add \"create_branch\": true to params"}'
-        return 1
+        log_warn "Unable to verify local branch '$head'; it may be remote-only or a cross-fork ref. Proceeding and letting 'gh pr create' validate the head."
     fi
 
     # Build gh pr create command
@@ -210,16 +206,16 @@ action_create_pr() {
 
     # Create PR
     log_info "Creating PR..."
-    local pr_output
-    if ! pr_output=$("${cmd[@]}" 2>&1); then
-        log_error "Failed to create PR: $pr_output"
+    local pr_json
+    if ! pr_json=$("${cmd[@]}" --json number,url 2>&1); then
+        log_error "Failed to create PR: $pr_json"
         return 1
     fi
 
-    # Extract PR info from output
+    # Extract PR info from structured JSON output
     local pr_number pr_url
-    pr_number=$(echo "$pr_output" | grep -oE '[0-9]+' | head -1)
-    pr_url="https://github.com/$PR_OWNER/$PR_REPO/pull/$pr_number"
+    pr_number=$(echo "$pr_json" | jq -r '.number')
+    pr_url=$(echo "$pr_json" | jq -r '.url')
 
     log_info "✅ Created PR #$pr_number"
     log_info "   URL: $pr_url"
@@ -410,7 +406,23 @@ action_reply_review() {
     if echo "$params" | jq -e '.replies_file' >/dev/null; then
         local replies_file
         replies_file=$(echo "$params" | jq -r '.replies_file')
-        replies_file="$GITHUB_OUTPUT_DIR/$replies_file"
+
+        # Security: Validate path doesn't escape GITHUB_OUTPUT_DIR
+        if [[ "$replies_file" =~ ^/ ]]; then
+            log_error "Absolute paths not allowed for security: $replies_file"
+            return 1
+        fi
+
+        # Resolve relative to GITHUB_OUTPUT_DIR
+        local resolved_file="$GITHUB_OUTPUT_DIR/$replies_file"
+
+        # Validate the resolved path is within GITHUB_OUTPUT_DIR
+        if [[ "$resolved_file" != "$GITHUB_OUTPUT_DIR"/* ]]; then
+            log_error "Invalid replies file path (outside output directory): $replies_file"
+            return 1
+        fi
+
+        replies_file="$resolved_file"
 
         if [[ ! -f "$replies_file" ]]; then
             log_error "Replies file not found: $replies_file"
