@@ -512,10 +512,10 @@ action_reply_review() {
 **Action taken**: $action_taken"
         fi
 
-        # Post reply
-        if gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/comments/$comment_id/replies" \
-            -X POST \
-            -f body="$formatted_msg" >/dev/null 2>&1; then
+        # Post reply using JSON format (handles newlines correctly)
+        if echo "$formatted_msg" | jq -Rs '{body: .}' | \
+            gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/comments/$comment_id/replies" \
+            --input - >/dev/null 2>&1; then
             log_info "  ✅ Posted reply"
             ((posted++))
         else
