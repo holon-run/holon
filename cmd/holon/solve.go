@@ -531,17 +531,8 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Determine if we're in skill mode: skills are specified AND mode is not explicitly provided
-	// This matches the logic in runner.go line 644
+	// This matches the logic in runner.go where useSkillMode is determined
 	useSkillMode := len(cliSkills) > 0 && !modeExplicitByUser
-
-	// Resolve skills using the resolver
-	// For solve command: only CLI skills, no config or spec
-	// Note: We resolve skills before workspace preparation to detect skill mode early
-	var resolvedSkillPaths []string
-	if len(cliSkills) > 0 {
-		// Defer workspace-based resolution until after workspace preparation
-		// For now, just store cliSkills for later resolution
-	}
 
 	// Collect context based on type
 	// In skill mode, skip the Go collector - the skill (agent) is responsible for invoking
@@ -591,12 +582,10 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 			}
 		}
 	} else {
-		// In skill mode: context must be provided by the skill
-		// Verify that required context files exist
+		// In skill mode: context will be provided by the skill during its execution
+		// The skill (agent) is responsible for invoking any collectors and writing context
+		// under /holon/input/context/, so we do not validate context here
 		fmt.Println("Skill mode enabled: skipping Go collector, expecting skill-provided context")
-		if err := validateSkillContext(contextDir, refType, solveRef); err != nil {
-			return fmt.Errorf("skill context validation failed: %w", err)
-		}
 		// In skill mode, preserve the user's mode setting (or empty if not set)
 		// Don't auto-detect mode from refType
 	}
@@ -719,15 +708,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Resolve skills (deferred from earlier - we need workspace path for resolution)
-	// Parse CLI skills (re-parse since we need to do it after workspace preparation)
-	// Note: cliSkills was declared earlier, so we use = instead of :=
-	cliSkills = solveSkillPaths
-	for _, s := range skills.ParseSkillsList(solveSkillsList) {
-		cliSkills = append(cliSkills, s)
-	}
-
-	// Resolve skills using the resolver
-	// For solve command: only CLI skills, no config or spec
+	// Use cliSkills parsed earlier from CLI flags; resolution happens after workspace prep
 	resolver := skills.NewResolver(workspacePrep.path)
 	resolvedSkills, err := resolver.Resolve(cliSkills, nil, nil)
 	if err != nil {
@@ -735,7 +716,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Extract skill paths for runner
-	resolvedSkillPaths = make([]string, len(resolvedSkills))
+	resolvedSkillPaths := make([]string, len(resolvedSkills))
 	for i, skill := range resolvedSkills {
 		resolvedSkillPaths[i] = skill.Path
 	}
@@ -862,42 +843,16 @@ func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, trigger
 	return baseGoal
 }
 
-// validateSkillContext validates that required context files exist when using skill mode
-// In skill mode, the Go collector is skipped, so we need to verify that the skill
-// has provided the necessary context files under /holon/input/context/
-func validateSkillContext(contextDir string, refType string, solveRef *pkggithub.SolveRef) error {
-	// Check that context directory exists
-	if _, err := os.Stat(contextDir); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("context directory %q does not exist (skill mode requires skill to provide context)", contextDir)
-		}
-		return fmt.Errorf("cannot access context directory %q: %w", contextDir, err)
-	}
-
-	// Check for expected context files based on reference type
-	// At minimum, we expect issue.json or pr.json to be present
-	var expectedFile string
-	if refType == "pr" {
-		expectedFile = "pr.json"
-	} else {
-		expectedFile = "issue.json"
-	}
-
-	expectedPath := filepath.Join(contextDir, expectedFile)
-	if _, err := os.Stat(expectedPath); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("required context file %q not found in %s (skill mode: skill must collect and write context files)", expectedFile, contextDir)
-		}
-		return fmt.Errorf("cannot access context file %q: %w", expectedFile, err)
-	}
-
-	fmt.Printf("Skill context validation passed: found %s in %s\n", expectedFile, contextDir)
-	return nil
-}
-
 // publishResults publishes the holon execution results
 // In skill mode, the Go publisher is skipped - the skill is responsible for publishing
 func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string, inputDir string, outDir string, cleanupMode string, useSkillMode bool) error {
+	// In skill mode: skip the Go publisher entirely
+	// The skill is responsible for publishing (e.g., via gh or its own mechanism)
+	if useSkillMode {
+		fmt.Println("Skill mode enabled: skipping Go publisher, expecting skill-driven publishing")
+		return nil
+	}
+
 	// Prepare a clean workspace for publishing from manifest so that patches are
 	// applied to a baseline rather than an already-modified tree.
 	pubWS, err := preparePublishWorkspace(ctx, outDir)
@@ -933,26 +888,6 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 		return fmt.Errorf("failed to parse manifest.json: %w", err)
 	}
 
-	// In skill mode: skip the Go publisher entirely
-	// The skill is responsible for publishing (e.g., via gh or its own mechanism)
-	// We only validate that expected outputs exist and report success
-	if useSkillMode {
-		fmt.Println("Skill mode enabled: skipping Go publisher, expecting skill-driven publishing")
-		// In skill mode, check for publish-intent.json which indicates the skill's publishing intent
-		publishIntentPath := filepath.Join(outDir, "publish-intent.json")
-		if _, err := os.Stat(publishIntentPath); err != nil {
-			if os.IsNotExist(err) {
-				return fmt.Errorf("skill mode: required publish-intent.json not found in %s (skill must provide publish intent or skip publishing)", outDir)
-			}
-			return fmt.Errorf("skill mode: cannot access publish-intent.json: %w", err)
-		}
-		fmt.Printf("Skill mode: found publish-intent.json, skill will handle publishing\n")
-		// In skill mode, we don't call the Go publisher at all
-		// The skill is responsible for reading publish-intent.json and executing the publish
-		return nil
-	}
-
-	// Non-skill mode: proceed with Go publisher
 	// Ensure metadata exists
 	if manifestMap["metadata"] == nil {
 		manifestMap["metadata"] = make(map[string]interface{})
