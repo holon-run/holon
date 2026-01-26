@@ -6,15 +6,17 @@ Complete guide for GitHub publishing in the github-solve skill.
 
 1. [Overview](#overview)
 2. [Workflow and Responsibilities](#workflow-and-responsibilities)
-3. [Action Types](#action-types)
-4. [Usage Examples](#usage-examples)
-5. [Environment Variables](#environment-variables)
-6. [Options](#options)
-7. [Output](#output)
-8. [Authentication](#authentication)
-9. [Best Practices](#best-practices)
-10. [Troubleshooting](#troubleshooting)
-11. [Dependencies](#dependencies)
+3. [publish-intent.json Format](#publish-intentjson-format)
+4. [Action Types](#action-types)
+5. [Usage Examples](#usage-examples)
+6. [Direct Command Mode (Planned for Future Phases)](#direct-command-mode-planned-for-future-phases)
+7. [Environment Variables](#environment-variables)
+8. [Options](#options)
+9. [Output](#output)
+10. [Authentication](#authentication)
+11. [Best Practices](#best-practices)
+12. [Troubleshooting](#troubleshooting)
+13. [Dependencies](#dependencies)
 
 ## Overview
 
@@ -112,7 +114,7 @@ go test ./pkg/publisher/github/
 git add .
 git commit -m "Feature: Add GitHub publishing to skill"
 
-# 5. Generate summary (main description document)
+# 6. Generate summary (main description document)
 cat > ${GITHUB_OUTPUT_DIR}/summary.md <<EOF
 ## Summary
 
@@ -131,7 +133,7 @@ Implements GitHub publishing in github-solve skill
 Resolves #503
 EOF
 
-# 6. Generate publish intent
+# 7. Generate publish intent
 cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
 {
   "version": "1.0",
@@ -150,7 +152,7 @@ cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
 }
 EOF
 
-# 7. (Optional) Add extra comment if needed
+# 8. (Optional) Add extra comment if needed
 # Example: CI fix explanation, important notes, etc.
 # cat > ${GITHUB_OUTPUT_DIR}/ci-note.md <<EOF
 # ## CI 修复说明
@@ -159,12 +161,12 @@ EOF
 # EOF
 # Then add post_comment action to intent if needed
 
-# 8. Test publishing (dry-run)
+# 9. Test publishing (dry-run)
 cd /holon/workspace/skills/github-solve
 ./scripts/publish.sh --dry-run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 
 # ===== SCRIPT DOES THIS =====
-# 9. Execute actual publishing
+# 10. Execute actual publishing
 ./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 
 # Output: publish-results.json shows what was done
