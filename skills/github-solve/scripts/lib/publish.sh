@@ -16,11 +16,11 @@
 
 set -euo pipefail
 
-# Source helpers if not already loaded
-[[ -z "${helpers_sourced:-}" ]] && source "${SCRIPT_DIR}/helpers.sh"
-
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Source helpers if not already loaded
+[[ -z "${helpers_sourced:-}" ]] && source "${SCRIPT_DIR}/lib/helpers.sh"
 
 # ============================================================================
 # Helper Functions
