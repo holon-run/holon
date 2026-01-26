@@ -29,6 +29,9 @@ jobs:
       comment_id: ${{ github.event.comment.id || 0 }}
       review_id: ${{ github.event.review.id || 0 }}
 
+      # Use skill mode for GitHub workflows
+      skill: 'github-solve'
+
       # Repo-local workflow uses the current branch Holon implementation.
       log_level: 'debug'
       build_from_source: true
