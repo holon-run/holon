@@ -142,8 +142,10 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         create-pr|update-pr|comment|reply-reviews)
-            # Direct command mode
-            exec "${SCRIPT_DIR}/publish-${1}.sh" "$@"
+            # Direct command mode (not yet implemented)
+            log_error "Direct command mode '$1' is not yet supported."
+            log_error "Please use --intent mode instead. See SKILL.md for examples."
+            exit 1
             ;;
         *)
             log_error "Unknown option: $1"
@@ -217,7 +219,7 @@ validate_intent() {
     fi
 
     # Check required fields
-    if ! jq -e '(.version and .pr_ref and .actions) != null' "$intent_file" >/dev/null 2>&1; then
+    if ! jq -e 'has("version") and has("pr_ref") and has("actions")' "$intent_file" >/dev/null 2>&1; then
         log_error "Missing required fields in intent file (version, pr_ref, actions)"
         return 1
     fi
@@ -240,7 +242,7 @@ validate_intent() {
         local action_type
         action_type=$(echo "$action" | jq -r '.type // empty')
 
-        if [[ "$action_type" == "empty" ]]; then
+        if [[ -z "$action_type" ]]; then
             log_error "Action $i: Missing 'type' field"
             return 1
         fi
@@ -262,8 +264,6 @@ validate_intent() {
 
 # Parse PR reference
 parse_pr_ref() {
-    local ref="$1"
-
     # Already parsed
     if [[ -n "$PR_REF" ]]; then
         return 0
@@ -315,6 +315,9 @@ execute_intent() {
     local total=0
     local completed=0
     local failed=0
+
+    # Source publish functions once (before the action loop)
+    source "${SCRIPT_DIR}/lib/publish.sh"
 
     # Execute each action
     for ((i=FROM_INDEX; i<action_count; i++)); do
@@ -374,9 +377,6 @@ execute_action() {
     local action_type="$2"
     local params="$3"
 
-    # Source publish functions
-    source "${SCRIPT_DIR}/lib/publish.sh"
-
     case "$action_type" in
         create_pr)
             action_create_pr "$params"
@@ -404,23 +404,38 @@ write_results() {
     local failed="$3"
     local results_json="$4"
 
+    # Ensure output directory exists
+    mkdir -p "$GITHUB_OUTPUT_DIR"
+
     local results_file="$GITHUB_OUTPUT_DIR/publish-results.json"
 
-    cat > "$results_file" <<EOF
-{
-  "version": "1.0",
-  "pr_ref": "$PR_REF",
-  "executed_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "dry_run": $DRY_RUN,
-  "actions": $results_json,
-  "summary": {
-    "total": $total,
-    "completed": $completed,
-    "failed": $failed
-  },
-  "overall_status": "$([ $failed -eq 0 ] && echo "success" || echo "failed")"
-}
-EOF
+    # Use jq for safe JSON construction (prevents injection)
+    local status
+    if [[ $failed -eq 0 ]]; then
+        status="success"
+    else
+        status="failed"
+    fi
+
+    jq -n \
+        --arg version "1.0" \
+        --arg pr_ref "$PR_REF" \
+        --arg executed_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+        --argjson dry_run "$DRY_RUN" \
+        --argjson actions "$results_json" \
+        --argjson total "$total" \
+        --argjson completed "$completed" \
+        --argjson failed "$failed" \
+        --arg status "$status" \
+        '{
+            version: $version,
+            pr_ref: $pr_ref,
+            executed_at: $executed_at,
+            dry_run: $dry_run,
+            actions: $actions,
+            summary: {total: $total, completed: $completed, failed: $failed},
+            overall_status: $status
+        }' > "$results_file"
 
     log_info "Results written to: $results_file"
 }
