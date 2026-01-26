@@ -644,7 +644,8 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Determine goal from the reference
-	goal := buildGoal(inputDir, solveRef, refType, workflowMeta.TriggerGoalHint)
+	// Pass useSkillMode to generate appropriate goal
+	goal := buildGoal(inputDir, solveRef, refType, workflowMeta.TriggerGoalHint, useSkillMode)
 
 	// Resolve output directory with precedence: CLI flag > temp dir
 	// For solve command, we use a temp directory by default to avoid polluting the workspace
@@ -827,12 +828,21 @@ func getGitHubToken() (string, error) {
 
 // buildGoal builds a goal description from the reference
 // triggerGoalHint is the optional goal hint from free-form triggers (e.g., "@holonbot fix this bug")
-func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, triggerGoalHint string) string {
+// useSkillMode indicates whether we're in skill mode (agent should use skills instead of direct implementation)
+func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, triggerGoalHint string, useSkillMode bool) string {
 	baseGoal := ""
 	if refType == "pr" {
-		baseGoal = fmt.Sprintf("Fix the review comments and issues in PR %s. Address all unresolved review comments and make necessary code changes.", ref.URL())
+		if useSkillMode {
+			baseGoal = fmt.Sprintf("Use the github-solve skill to fix the PR %s. The skill will guide you through: (1) Analyzing review comments, (2) Implementing fixes, (3) Publishing replies to GitHub.", ref.URL())
+		} else {
+			baseGoal = fmt.Sprintf("Fix the review comments and issues in PR %s. Address all unresolved review comments and make necessary code changes.", ref.URL())
+		}
 	} else {
-		baseGoal = fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. Focus on implementing the solution; the system will handle committing changes and creating any pull requests.", ref.URL())
+		if useSkillMode {
+			baseGoal = fmt.Sprintf("Use the github-solve skill to solve the GitHub issue %s. The skill will guide you through: (1) Collecting GitHub context, (2) Implementing the solution, (3) Publishing changes via GitHub API.", ref.URL())
+		} else {
+			baseGoal = fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. Focus on implementing the solution; the system will handle committing changes and creating any pull requests.", ref.URL())
+		}
 	}
 
 	// Append goal hint from free-form triggers if provided
