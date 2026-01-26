@@ -24,6 +24,14 @@ Holon automatically discovers skills from the `.claude/skills/` directory in you
 3. **Spec file** (`metadata.skills` field)
 4. **Auto-discovered** from `.claude/skills/` - lowest priority
 
+**Skill Reference Formats:**
+Skills can be specified using any of these formats:
+- **Catalog references**: `skills:<package>` (skills.sh catalog), `gh:<owner>/<repo>` (GitHub)
+- **Direct URLs**: `https://example.com/skill.zip#sha256=<checksum>`
+- **Local paths**: `/path/to/skill`, `./relative/skill`
+- **Workspace references**: `skill-name` (resolves to `.claude/skills/skill-name`)
+- **Built-in**: `github-solve` (built-in skills)
+
 Auto-discovered skills are loaded alphabetically by directory name.
 
 ### Remote Skills via Zip URLs
@@ -83,6 +91,50 @@ holon run --goal "Deploy" \
 - Public skill libraries
 - Versioned skill distributions via GitHub releases
 - CDN-hosted skill repositories
+
+### Method 1.5: Using External Skill Ecosystems (New!)
+
+Holon supports skills from external ecosystems through catalog adapters:
+
+#### Skills from skills.sh Catalog (Vercel-style)
+
+```bash
+# Install a skill from the skills.sh catalog
+holon run --goal "Add tests" --skill skills:testing-go
+
+# The catalog automatically resolves to the correct download URL
+# and includes checksum verification when available
+```
+
+The `skills:` prefix resolves packages through the [skills.sh](https://catalog.skills.sh) catalog, which provides:
+- Automatic URL resolution to skill package downloads
+- Built-in SHA256 checksums for integrity verification
+- Community-curated skill packages
+
+#### Skills from GitHub Repositories
+
+```bash
+# Install skills from a GitHub repository
+holon run --goal "Fix issue" --skill gh:myorg/skills
+
+# Install skills from a specific path in a repository
+holon run --goal "Documentation" --skill gh:myorg/docs/skills/api
+```
+
+The `gh:` prefix downloads the repository as a zip archive from GitHub and discovers all skill directories within it. Format:
+- `gh:<owner>/<repo>` - downloads entire repository
+- `gh:<owner>/<repo>/<path>` - downloads repository and uses specific path
+
+**Resolution Order:**
+When you use catalog references, Holon resolves them in this order:
+1. Direct URL (https://...)
+2. Catalog reference (`skills:<package>`, `gh:<owner>/<repo>`)
+3. Workspace skill (.claude/skills/{ref})
+4. Absolute/relative filesystem path
+5. Built-in skills
+
+**Cache Location:**
+Catalog-downloaded skills are cached in `~/.holon/cache/skills/` just like direct URLs.
 
 ### Method 2: Auto-Discovery (Recommended)
 

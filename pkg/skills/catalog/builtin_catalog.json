@@ -1,0 +1,12 @@
+{
+  "name": "holon-builtin",
+  "description": "Built-in Holon skill catalog with popular community skills",
+  "skills": [
+    {
+      "name": "github-solve-community",
+      "url": "https://github.com/holon-run/holon/archive/refs/heads/main.zip",
+      "description": "Community-curated GitHub issue resolution workflows",
+      "version": "1.0.0"
+    }
+  ]
+}

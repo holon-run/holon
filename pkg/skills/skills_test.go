@@ -7,7 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/holon-run/holon/pkg/skills/catalog"
 )
 
 func TestResolver_Discover(t *testing.T) {
@@ -720,6 +723,43 @@ func TestResolver_ResolveBuiltinSkill(t *testing.T) {
 		skill := resolved[0]
 		if skill.Builtin {
 			t.Error("filesystem path should not be marked as builtin")
+		}
+	})
+}
+
+func TestResolver_CatalogResolution(t *testing.T) {
+	// Create a temporary workspace for testing
+	tempDir, err := os.MkdirTemp("", "holon-catalog-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	t.Run("catalog reference is recognized", func(t *testing.T) {
+		// Test that catalog references are properly identified
+		if !catalog.IsCatalogRef("skills:test-package") {
+			t.Error("expected skills: reference to be recognized as catalog ref")
+		}
+		if !catalog.IsCatalogRef("gh:owner/repo") {
+			t.Error("expected gh: reference to be recognized as catalog ref")
+		}
+		if catalog.IsCatalogRef("https://example.com/skill.zip") {
+			t.Error("expected URL to not be recognized as catalog ref")
+		}
+	})
+
+	t.Run("invalid catalog reference fails", func(t *testing.T) {
+		resolver := NewResolver(tempDir)
+
+		// Try to resolve a catalog reference that doesn't exist
+		_, err := resolver.Resolve([]string{"skills:nonexistent-package-that-does-not-exist"}, []string{}, []string{})
+		if err == nil {
+			t.Error("expected error for nonexistent catalog reference, got nil")
+		}
+
+		// Error should mention catalog or skills.sh
+		if !strings.Contains(err.Error(), "catalog") && !strings.Contains(err.Error(), "skills") {
+			t.Errorf("error should mention catalog or skills: %v", err)
 		}
 	})
 }
