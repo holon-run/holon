@@ -7,7 +7,7 @@ This skill uses environment variables to maintain flexibility across different e
 ### Key Environment Variables
 
 - **`GITHUB_OUTPUT_DIR`**: Output directory for artifacts and context
-  - **Default**: `${GITHUB_OUTPUT_DIR}` (Holon environment)
+  - **Default**: `/holon/output` (Holon environment)
   - **Custom**: Set to any directory (e.g., `./output`, `/tmp/github-work`)
   - **Usage**: All generated files (artifacts, results) go here
 
@@ -27,7 +27,7 @@ This skill uses environment variables to maintain flexibility across different e
 
 ```bash
 # Holon environment (default)
-export GITHUB_OUTPUT_DIR=${GITHUB_OUTPUT_DIR}
+export GITHUB_OUTPUT_DIR=/holon/output
 
 # Local development
 export GITHUB_OUTPUT_DIR=./output
@@ -378,10 +378,12 @@ The github-solve skill includes built-in GitHub publishing capabilities that all
 
 ### Overview
 
-The publishing system uses a **unified publish.sh script** that supports two modes:
+The publishing system uses a **unified publish.sh script** that supports:
 
-1. **Batch Mode**: Execute multiple actions from a declarative intent file
-2. **Direct Command Mode**: Execute single actions with command-line arguments
+1. **Batch Mode** (available): Execute multiple actions from a declarative intent file
+2. **Direct Command Mode** (planned): Execute single actions with command-line arguments - **Not yet implemented in Phase 1**
+
+**Note**: Direct Command Mode is planned for future phases. Currently, only Batch Mode (--intent) is supported.
 
 ### Workflow and Responsibilities
 
@@ -775,28 +777,30 @@ cd /holon/workspace/skills/github-solve
 ./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 ```
 
-### Direct Command Mode
+### Direct Command Mode (Planned for Future Phases)
 
-For simple operations, use direct commands without an intent file:
+**Status**: ⚠️ Not yet implemented - Planned for Phase 2+
+
+Direct Command Mode will allow simple operations without an intent file:
 
 ```bash
-# Create PR
+# Future examples (not yet available):
 ./scripts/publish.sh create-pr \
     --title "Feature: GitHub publishing" \
-    --body-file pr-description.md \
+    --body summary.md \
     --head feature/github-publishing \
     --base main
 
-# Post comment
-./scripts/publish.sh comment --body-file summary.md
+./scripts/publish.sh comment --body summary.md
 
-# Reply to reviews
 ./scripts/publish.sh reply-reviews --pr-fix-json pr-fix.json
 ```
 
+**Current Workaround**: Use batch mode with intent file for all operations.
+
 ### Environment Variables
 
-- `GITHUB_OUTPUT_DIR`: Output directory (default: ${GITHUB_OUTPUT_DIR})
+- `GITHUB_OUTPUT_DIR`: Output directory (default: `/holon/output`)
 - `GITHUB_TOKEN`: GitHub authentication token (required)
 - `HOLON_GITHUB_BOT_LOGIN`: Bot login name for idempotency (default: holonbot[bot])
 
