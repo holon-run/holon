@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/holon-run/holon/pkg/builtin"
+	"github.com/holon-run/holon/pkg/skills/catalog"
 	"github.com/holon-run/holon/pkg/skills/remote"
 )
 
@@ -37,15 +38,33 @@ type Skill struct {
 
 // Resolver handles skill discovery, validation, and resolution
 type Resolver struct {
-	workspace string
-	cache     *remote.Cache
+	workspace    string
+	cache        *remote.Cache
+	catalogRegistry *catalog.Registry
 }
 
 // NewResolver creates a new skill resolver for the given workspace
 func NewResolver(workspace string) *Resolver {
+	// Initialize catalog registry with built-in catalog
+	registry := catalog.NewRegistry()
+
+	// Add built-in catalog adapter
+	if builtinCatalog, err := catalog.BuiltinCatalog(); err == nil {
+		registry.Register(builtinCatalog)
+	}
+	// If built-in catalog fails to load, log warning but continue
+	// The catalog is optional - skills can still be resolved by other means
+
+	// Add skills.sh catalog adapter
+	registry.Register(catalog.NewSkillsShAdapter())
+
+	// Add GitHub catalog adapter
+	registry.Register(catalog.NewGitHubAdapter())
+
 	return &Resolver{
-		workspace: workspace,
-		cache:     remote.NewCache(""),
+		workspace:       workspace,
+		cache:           remote.NewCache(""),
+		catalogRegistry: registry,
 	}
 }
 
@@ -151,9 +170,10 @@ func (r *Resolver) discover() ([]Skill, error) {
 // resolveSkillRef resolves a single skill reference to one or more skills
 // Resolution order (first match wins):
 // 1. Remote URL
-// 2. Workspace skill (.claude/skills/{ref})
-// 3. Absolute/relative path
-// 4. Builtin skill
+// 2. Catalog reference (skills:, gh:)
+// 3. Workspace skill (.claude/skills/{ref})
+// 4. Absolute/relative path
+// 5. Builtin skill
 // Returns multiple skills for URLs (zip can contain multiple skills) or single skill for other types
 func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
 	// 1. Check if it's a URL
@@ -191,7 +211,12 @@ func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
 		return skills, nil
 	}
 
-	// 2. Check workspace skills
+	// 2. Check if it's a catalog reference
+	if catalog.IsCatalogRef(ref) {
+		return r.resolveCatalogRef(ref, source)
+	}
+
+	// 3. Check workspace skills
 	workspaceSkillPath := filepath.Join(r.workspace, SkillsDir, ref)
 	if info, err := os.Stat(workspaceSkillPath); err == nil && info.IsDir() {
 		// Validate that SKILL.md exists
@@ -208,7 +233,7 @@ func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
 		}
 	}
 
-	// 3. Check absolute/relative path
+	// 4. Check absolute/relative path
 	if _, err := os.Stat(ref); err == nil {
 		skill, err := r.ValidateAndNormalize(ref, source)
 		if err != nil {
@@ -218,7 +243,7 @@ func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
 		return []Skill{skill}, nil
 	}
 
-	// 4. Check builtin skills
+	// 5. Check builtin skills
 	if builtin.Has(ref) {
 		// Use the reference as the path (for builtin skills, Path is the ref)
 		skillName := filepath.Base(ref)
@@ -231,7 +256,55 @@ func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
 	}
 
 	// Not found anywhere
-	return nil, fmt.Errorf("skill not found: %s (checked: URL, workspace, filesystem, builtin)", ref)
+	return nil, fmt.Errorf("skill not found: %s (checked: URL, catalog, workspace, filesystem, builtin)", ref)
+}
+
+// resolveCatalogRef resolves a catalog reference to one or more skills
+func (r *Resolver) resolveCatalogRef(ref string, source string) ([]Skill, error) {
+	// Try to resolve using catalog registry
+	entry, err := r.catalogRegistry.Resolve(ref)
+	if err != nil {
+		// If catalog resolution fails, return error
+		return nil, fmt.Errorf("failed to resolve catalog reference %s: %w", ref, err)
+	}
+
+	// Build URL with optional checksum
+	url := entry.URL
+	if entry.SHA256 != "" {
+		url += "#sha256=" + entry.SHA256
+	}
+
+	// Parse the URL reference
+	skillRef, err := remote.ParseSkillRef(url)
+	if err != nil {
+		return nil, fmt.Errorf("invalid catalog URL reference: %w", err)
+	}
+
+	// Download and extract
+	skillPaths, err := r.cache.DownloadAndExtract(skillRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download catalog skill: %w", err)
+	}
+
+	// Convert to Skill structs
+	var skills []Skill
+	for _, skillPath := range skillPaths {
+		skillName := filepath.Base(skillPath)
+
+		// Validate the downloaded skill
+		skillManifestPath := filepath.Join(skillPath, SkillManifestFile)
+		if _, err := os.Stat(skillManifestPath); err != nil {
+			return nil, fmt.Errorf("downloaded catalog skill missing %s: %s", SkillManifestFile, skillPath)
+		}
+
+		skills = append(skills, Skill{
+			Path:   skillPath,
+			Name:   skillName,
+			Source: source,
+		})
+	}
+
+	return skills, nil
 }
 
 // ValidateAndNormalize validates a skill path and normalizes it to an absolute path
