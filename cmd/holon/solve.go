@@ -530,9 +530,29 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		cliSkills = append(cliSkills, s)
 	}
 
-	// Determine if we're in skill mode: skills are specified AND mode is not explicitly provided
-	// This matches the logic in runner.go where useSkillMode is determined
-	useSkillMode := len(cliSkills) > 0 && !modeExplicitByUser
+	// Try to load config skills early from current directory if no CLI skills provided
+	// This allows project-level default skills without requiring --skill flag
+	var configSkills []string
+	if len(cliSkills) == 0 {
+		// Try loading from current directory (which should be project root for holon itself)
+		projectCfg, err := config.LoadFromCurrentDir()
+		if err == nil {
+			configSkills = projectCfg.GetSkills()
+			if len(configSkills) > 0 {
+				fmt.Printf("Config: skills = %q (source: .holon/config.yaml)\n", configSkills)
+			}
+		}
+		// Silently ignore config errors
+	}
+
+	// Combine CLI skills and config skills (CLI takes precedence)
+	allSkills := cliSkills
+	if len(cliSkills) == 0 && len(configSkills) > 0 {
+		allSkills = configSkills
+	}
+
+	// Determine if we're in skill mode based on CLI or config skills
+	useSkillMode := len(allSkills) > 0 && !modeExplicitByUser
 
 	// Collect context based on type
 	// In skill mode, skip the Go collector - the skill (agent) is responsible for invoking
@@ -643,7 +663,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		return fmt.Errorf("failed to resolve assistant output: %w", err)
 	}
 
-	// Determine goal from the reference
+	// Determine goal from the reference (skill mode already determined earlier)
 	// Pass useSkillMode to generate appropriate goal
 	goal := buildGoal(inputDir, solveRef, refType, workflowMeta.TriggerGoalHint, useSkillMode)
 
@@ -709,9 +729,9 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Resolve skills (deferred from earlier - we need workspace path for resolution)
-	// Use cliSkills parsed earlier from CLI flags; resolution happens after workspace prep
+	// Use allSkills (CLI + config) parsed earlier; resolution happens after workspace prep
 	resolver := skills.NewResolver(workspacePrep.path)
-	resolvedSkills, err := resolver.Resolve(cliSkills, nil, nil)
+	resolvedSkills, err := resolver.Resolve(allSkills, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to resolve skills: %w", err)
 	}

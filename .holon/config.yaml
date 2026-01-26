@@ -1,0 +1,8 @@
+# Holon project configuration
+# See https://holon.dev/docs/config for documentation
+
+# Default skills to use for GitHub issue/PR workflows
+# These skills will be automatically used when running `holon solve`
+# unless explicitly overridden with --skill flag
+skills:
+  - github-solve
