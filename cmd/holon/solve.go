@@ -539,10 +539,12 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		if err == nil {
 			configSkills = projectCfg.GetSkills()
 			if len(configSkills) > 0 {
-				fmt.Printf("Config: skills = %q (source: .holon/config.yaml)\n", configSkills)
+				fmt.Printf("Config: skills = %q (source: project config)\n", configSkills)
 			}
+		} else if !os.IsNotExist(err) {
+			// Surface config parse/read errors while treating "config not found" as non-fatal
+			fmt.Fprintf(os.Stderr, "Warning: failed to load Holon config from current directory (.holon/config.yaml): %v\n", err)
 		}
-		// Silently ignore config errors
 	}
 
 	// Combine CLI skills and config skills (CLI takes precedence)
