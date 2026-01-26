@@ -417,9 +417,9 @@ The agent is responsible for all **creative and intelligent** work:
 
 5. **Generate artifacts**:
    - `${GITHUB_OUTPUT_DIR}/publish-intent.json` - Publishing instructions
-   - `${GITHUB_OUTPUT_DIR}/pr-description.md` - PR description
-   - `${GITHUB_OUTPUT_DIR}/summary.md` - Implementation summary
+   - `${GITHUB_OUTPUT_DIR}/summary.md` - Main description document (used as PR body or comment)
    - `${GITHUB_OUTPUT_DIR}/pr-fix.json` - Review replies (for PR-fix mode)
+   - Optional: Additional comment files (e.g., `ci-note.md`, `fix-summary.md`)
 
 6. **Execute publishing script**:
    ```bash
@@ -470,7 +470,26 @@ go test ./pkg/publisher/github/
 git add .
 git commit -m "Feature: Add GitHub publishing to skill"
 
-# 6. Generate artifacts
+# 5. Generate summary (main description document)
+cat > ${GITHUB_OUTPUT_DIR}/summary.md <<EOF
+## Summary
+
+Implements GitHub publishing in github-solve skill
+
+## Changes
+- Add publish.sh: Unified publishing script
+- Add lib/publish.sh: Action implementations
+- Update SKILL.md: Documentation
+
+## Testing
+✅ Intent validation working
+✅ Dry-run mode working
+✅ Path flexibility verified
+
+Resolves #503
+EOF
+
+# 6. Generate publish intent
 cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
 {
   "version": "1.0",
@@ -480,27 +499,30 @@ cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
       "type": "create_pr",
       "params": {
         "title": "Feature: GitHub skill publishing",
-        "body": "pr-description.md",
+        "body": "summary.md",
         "head": "feature/issue-503",
         "base": "main"
-      }
-    },
-    {
-      "type": "post_comment",
-      "params": {
-        "body": "summary.md"
       }
     }
   ]
 }
 EOF
 
-# 7. Test publishing (dry-run)
+# 7. (Optional) Add extra comment if needed
+# Example: CI fix explanation, important notes, etc.
+# cat > ${GITHUB_OUTPUT_DIR}/ci-note.md <<EOF
+# ## CI 修复说明
+#
+# 之前的 CI 失败已修复，可以重新运行检查。
+# EOF
+# Then add post_comment action to intent if needed
+
+# 8. Test publishing (dry-run)
 cd /holon/workspace/skills/github-solve
 ./scripts/publish.sh --dry-run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 
 # ===== SCRIPT DOES THIS =====
-# 8. Execute actual publishing
+# 9. Execute actual publishing
 ./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 
 # Output: publish-results.json shows what was done
@@ -524,6 +546,28 @@ For batch mode, create a `${GITHUB_OUTPUT_DIR}/publish-intent.json` file:
 }
 ```
 
+### File Usage Guidelines
+
+**summary.md** - Primary description document:
+- Used as PR body for create_pr action
+- Contains main description, changes, testing info
+- **Required for most workflows**
+
+**Additional comment files** (optional):
+- Created only when extra context is needed
+- Examples: `ci-note.md`, `fix-summary.md`, `implementation-notes.md`
+- Used with post_comment action
+- **Agent decides when needed**
+
+**When to use what**:
+
+| Scenario | Files Needed | post_comment? |
+|----------|--------------|---------------|
+| **Issue→PR** (standard) | `summary.md` only | ❌ No (summary is PR body) |
+| **Issue→PR** (needs extra context) | `summary.md` + `extra.md` | ✅ Yes (for extra.md) |
+| **PR-fix** (standard) | `pr-fix.json` + `fix-summary.md` | ✅ Yes (to summarize fixes) |
+| **PR-fix** (minimal) | `pr-fix.json` only | ❌ No (if replies are enough) |
+
 ### Action Types
 
 #### 1. create_pr - Create a Pull Request
@@ -545,14 +589,16 @@ Creates a new PR from a feature branch.
   "description": "Create PR for GitHub publishing feature",
   "params": {
     "title": "Feature: GitHub skill publishing",
-    "body": "pr-description.md",
+    "body": "summary.md",
     "head": "feature/github-publishing",
     "base": "main",
     "draft": false,
-    "labels": ["enhancement", "skill"]
+    "labels": ["enhancement", "documentation"]
   }
 }
 ```
+
+**Note**: The `body` parameter typically references `summary.md`, which contains the main description. Use separate comment files only when additional context is needed.
 
 #### 2. update_pr - Update an Existing PR
 
@@ -639,7 +685,23 @@ Posts formatted replies to PR review comments.
 git checkout -b feature/issue-503
 # ... make changes ...
 
-# 2. Write artifacts
+# 2. Write summary (main description document)
+cat > ${GITHUB_OUTPUT_DIR}/summary.md <<EOF
+## Summary
+
+Implements GitHub publishing in github-solve skill
+
+## Changes
+- Add publish.sh: Unified publishing script
+- Add lib/publish.sh: Action implementations
+
+## Testing
+✅ All tests passing
+
+Resolves #503
+EOF
+
+# 3. Write publish intent (use summary as PR body)
 cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
 {
   "version": "1.0",
@@ -649,25 +711,25 @@ cat > ${GITHUB_OUTPUT_DIR}/publish-intent.json <<EOF
       "type": "create_pr",
       "params": {
         "title": "Feature: GitHub publishing",
-        "body": "pr-description.md",
+        "body": "summary.md",
         "head": "feature/issue-503",
         "base": "main"
-      }
-    },
-    {
-      "type": "post_comment",
-      "params": {
-        "body": "summary.md"
       }
     }
   ]
 }
 EOF
 
-# 3. Execute publishing
+# 4. Execute publishing
 cd /holon/workspace/skills/github-solve
 ./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 ```
+
+**When to add extra comment**: Only add `post_comment` action when you need to:
+- Provide additional context beyond the PR description
+- Explain CI fixes or troubleshooting steps
+- Add stage markers in long-running PR discussions
+- Mention specific users or teams
 
 #### PR-Fix Workflow
 
