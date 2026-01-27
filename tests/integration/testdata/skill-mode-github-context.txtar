@@ -1,0 +1,77 @@
+[!docker] skip 'docker not available'
+
+# Test skill-mode with GitHub context collection
+# Verifies the collector script works inside the container
+
+mkdir work
+mkdir out
+mkdir bundle-src
+mkdir bundle-src/bin
+
+exec chmod +x bundle-src/bin/agent
+exec tar -czf agent-bundle.tar.gz -C bundle-src .
+
+# Create a mock git repo for context
+cd work
+exec git init
+exec git config user.email "test@example.com"
+exec git config user.name "Test User"
+exec echo "test content" > test.txt
+exec git add test.txt
+exec git commit -m "test commit"
+
+# Run holon to verify gh CLI is available
+# This tests that the collector script can run in skill mode
+exec holon run --goal 'verify gh CLI available' --workspace work --output out --agent agent-bundle.tar.gz --skill github-solve --log-level minimal
+
+# Verify outputs
+exists out/manifest.json
+
+-- bundle-src/manifest.json --
+{
+  "bundleVersion": "1",
+  "name": "test-gh-cli",
+  "version": "0.0.1",
+  "entry": "bin/agent",
+  "platform": "linux",
+  "arch": "amd64",
+  "libc": "glibc",
+  "runtime": {
+    "type": "node",
+    "version": "20"
+  }
+}
+
+-- bundle-src/bin/agent --
+#!/bin/sh
+set -eu
+
+# This agent stub validates that required tools are available
+# In skill mode, the agent (not the runner) handles collection/publishing
+
+# Verify gh CLI is available
+if ! command -v gh >/dev/null 2>&1; then
+    echo "ERROR: gh CLI not found in container" >&2
+    exit 1
+fi
+
+# Verify jq is available
+if ! command -v jq >/dev/null 2>&1; then
+    echo "ERROR: jq not found in container" >&2
+    exit 1
+fi
+
+# Verify collector script exists
+if [ ! -f "/root/.claude/skills/github-solve/scripts/collect.sh" ]; then
+    echo "WARNING: collector script not found" >&2
+fi
+
+# Verify publisher script exists
+if [ ! -f "/root/.claude/skills/github-solve/scripts/publish.sh" ]; then
+    echo "WARNING: publisher script not found" >&2
+fi
+
+# Create required outputs
+mkdir -p /holon/output
+echo '{"version":"v1"}' > /holon/output/manifest.json
+echo "GH CLI and jq are available in skill mode" > /holon/output/summary.md

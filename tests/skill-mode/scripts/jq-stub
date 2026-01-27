@@ -1,0 +1,52 @@
+#!/bin/bash
+# jq-stub - Stubbed jq for testing skill-mode scripts
+# Falls back to real jq if available
+
+set -euo pipefail
+
+SHOULD_FAIL="${JQ_STUB_FAIL:-false}"
+ERROR_MSG="${JQ_STUB_ERROR_MSG:-jq: error (stubbed)}"
+
+if [[ "${JQ_STUB_DEBUG:-false}" == "true" ]]; then
+    echo "[jq-stub] Called with: $*" >&2
+fi
+
+if [[ "$SHOULD_FAIL" == "true" ]]; then
+    echo "$ERROR_MSG" >&2
+    exit 1
+fi
+
+EXPR="${1:-}"
+FILE="${2:-}"
+
+if [[ -z "$EXPR" || -z "$FILE" ]]; then
+    echo "jq: usage: jq [options] <expr> [file...]" >&2
+    exit 2
+fi
+
+if [[ ! -f "$FILE" ]]; then
+    echo "jq: error: could not read file: $FILE" >&2
+    exit 2
+fi
+
+# Try to use real jq if available (preferred)
+if command -v jq >/dev/null 2>&1; then
+    jq "$EXPR" "$FILE"
+    exit $?
+fi
+
+# Fallback: implement basic operations with python3
+case "$EXPR" in
+    'length')
+        python3 -c "import json, sys; data = json.load(open('$FILE')); print(len(data) if isinstance(data, list) else 0)" 2>/dev/null || echo "0"
+        ;;
+    'empty')
+        python3 -c "import json, sys; json.load(open('$FILE'))" 2>&1
+        exit $?
+        ;;
+    *)
+        echo "jq-stub: Expression not implemented: $EXPR" >&2
+        echo "Install real jq for full functionality" >&2
+        exit 1
+        ;;
+esac
