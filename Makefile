@@ -48,6 +48,8 @@ test-go:
 	@echo "Running Go tests..."
 	@echo "Generating builtin skills..."
 	@go generate ./pkg/builtin
+	@echo "Checking embedded skills drift..."
+	@diff -qr --exclude=".git-commit" skills pkg/builtin/skills > /dev/null 2>&1 || (echo "ERROR: Embedded skills (pkg/builtin/skills) differ from source (skills/)"; echo "This means pkg/builtin/skills is not up to date."; echo "Please run 'go generate ./pkg/builtin' to regenerate."; exit 1)
 	@if command -v gotestfmt > /dev/null 2>&1; then \
 		go test ./... -json -v 2>&1 | gotestfmt; \
 	else \
@@ -60,6 +62,8 @@ test-raw:
 	@echo "Running Go tests with plain output..."
 	@echo "Generating builtin skills..."
 	@go generate ./pkg/builtin
+	@echo "Checking embedded skills drift..."
+	@diff -qr --exclude=".git-commit" skills pkg/builtin/skills > /dev/null 2>&1 || (echo "ERROR: Embedded skills (pkg/builtin/skills) differ from source (skills/)"; echo "This means pkg/builtin/skills is not up to date."; echo "Please run 'go generate ./pkg/builtin' to regenerate."; exit 1)
 	go test ./... -v
 
 ## test-unit: Run unit tests (non-integration) with structured output
@@ -81,6 +85,8 @@ test-unit-raw:
 	@echo "Running unit tests with plain output..."
 	@echo "Generating builtin skills..."
 	@go generate ./pkg/builtin
+	@echo "Checking embedded skills drift..."
+	@diff -qr --exclude=".git-commit" skills pkg/builtin/skills > /dev/null 2>&1 || (echo "ERROR: Embedded skills (pkg/builtin/skills) differ from source (skills/)"; echo "This means pkg/builtin/skills is not up to date."; echo "Please run 'go generate ./pkg/builtin' to regenerate."; exit 1)
 	go test $$(go list ./... | grep -v '^github.com/holon-run/holon/tests/') -short -v
 
 ## test-agent: Run agent TypeScript tests

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"strings"
 )
 
 //go:embed skills/*
@@ -157,5 +158,5 @@ func GitCommit() string {
 		return ""
 	}
 
-	return string(content)
+	return strings.TrimSpace(string(content))
 }
