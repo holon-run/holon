@@ -1,6 +1,6 @@
 ---
 name: github-review
-description: Automated PR code review skill. Collects PR context, generates review findings, and publishes structured PR reviews with inline comments via GitHub API.
+description: Automated PR code review skill that collects context, performs AI-powered analysis, and publishes structured reviews with inline comments. Use when Claude needs to review pull requests: (1) Analyzing code changes for correctness/security/performance issues, (2) Generating review findings with inline comments, (3) Publishing reviews via GitHub API. Supports one-shot review and CI integration.
 ---
 
 # GitHub Review Skill
@@ -47,6 +47,31 @@ export GITHUB_OUTPUT_DIR=${PWD}/artifacts
 export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
 export MAX_INLINE=10
 ```
+
+## Workflow
+
+This skill follows a three-step workflow:
+
+### 1. Collect Context
+Run `scripts/collect.sh <PR_REF>` to gather PR information:
+- PR metadata (title, description, author, stats)
+- Changed files list with full diff
+- Existing review threads (to avoid duplicates)
+- PR comments and commit history
+
+### 2. Perform Review
+Agent analyzes the collected context and generates:
+- `review.md` - Human-readable review summary
+- `review.json` - Structured findings with path/line/severity/message
+- `summary.md` - Brief process summary
+
+Agent follows review guidelines in `prompts/review.md`.
+
+### 3. Publish Review
+Run `scripts/publish.sh` to post the review:
+- Creates or updates a PR review via GitHub API
+- Posts inline comments for findings with path+line information
+- Limits inline comments via `MAX_INLINE` (default: 20)
 
 ## Usage
 
@@ -95,90 +120,20 @@ export MAX_INLINE=15 POST_EMPTY=true
 holon --skill github-review holon-run/holon#123
 ```
 
-## Skill Scripts
+## Scripts
 
-This skill includes helper scripts in `scripts/`:
+This skill includes executable scripts in `scripts/`:
 
-### Context Collection
+- **`collect.sh`**: Collects PR context (metadata, diff, comments, etc.)
+- **`publish.sh`**: Publishes reviews with inline comments via GitHub API
 
-**`scripts/collect.sh`**: Collect PR context for review
+For detailed script documentation, usage, and examples, see [references/SCRIPTS.md](references/SCRIPTS.md).
 
-```bash
-collect.sh <pr_ref> [repo_hint]
-```
+## Agent Prompts
 
-- Fetches PR metadata, changed files, and diff
-- Fetches existing review threads (to avoid duplicates)
-- Fetches PR discussion comments and commits
-- Requires `gh` CLI to be authenticated
-- Requires `jq` for JSON processing
+**`prompts/review.md`**: Review guidelines and output format for agents
 
-**Environment variables:**
-- `GITHUB_OUTPUT_DIR`: Output directory (default: /holon/output if present, else tmp)
-- `GITHUB_CONTEXT_DIR`: Context directory (default: ${GITHUB_OUTPUT_DIR}/github-review-context)
-- `MAX_FILES`: Maximum files to fetch (default: 100)
-- `INCLUDE_THREADS`: Include existing review threads (default: true)
-
-**Examples:**
-```bash
-collect.sh holon-run/holon#123
-collect.sh 123 holon-run/holon
-collect.sh https://github.com/holon-run/holon/pull/123
-```
-
-### Review Publishing
-
-**`scripts/publish.sh`**: Publish review to GitHub
-
-```bash
-publish.sh [options]
-```
-
-- Reads agent-generated `review.json` and `review.md`
-- Posts structured PR review with inline comments
-- Supports dry-run mode for preview
-- Requires `gh` CLI to be authenticated
-- Requires `jq` for JSON processing
-
-**Options:**
-- `--dry-run`: Preview review without posting
-- `--max-inline=N`: Maximum inline comments (default: 20)
-- `--post-empty`: Post review even if no findings
-- `--pr=OWNER/REPO#NUMBER`: Target PR (optional if manifest exists)
-
-**Environment variables:**
-- `GITHUB_OUTPUT_DIR`: Directory containing review artifacts
-- `DRY_RUN`: Preview without posting (default: false)
-- `MAX_INLINE`: Maximum inline comments (default: 20)
-- `POST_EMPTY`: Post review even with no findings (default: false)
-
-**Examples:**
-```bash
-# Preview review
-publish.sh --dry-run
-
-# Post review with default settings
-publish.sh
-
-# Post review with custom inline limit
-publish.sh --max-inline=10
-
-# Post review even if empty
-publish.sh --post-empty
-```
-
-## Review Prompts
-
-**`prompts/review.md`**: Review guidelines and instructions for the agent
-
-Defines:
-- Review priorities (correctness, security, performance, compatibility)
-- What to skip (nitpicks, style issues, large refactor requests)
-- Output format specifications
-- Inline comment guidelines
-- Quality standards
-
-Agents should read this prompt to understand how to perform reviews effectively.
+Agents should read this file to understand review priorities, what to skip, and how to structure findings.
 
 ## Output Contract
 
