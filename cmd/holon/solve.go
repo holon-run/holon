@@ -769,6 +769,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		AssistantOutput:      resolvedAssistantOutput,
 		Mode:                 solveMode,
 		ModeExplicit:         modeExplicitByUser,
+		UseSkillMode:         useSkillMode,
 		Skills:               resolvedSkillPaths,
 		Cleanup:              cleanupMode,
 		AgentConfigMode:      solveAgentConfigMode,
