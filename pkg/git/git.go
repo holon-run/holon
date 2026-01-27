@@ -351,6 +351,22 @@ func (c *Client) SetConfig(ctx context.Context, key, value string) error {
 	return err
 }
 
+// ConfigCredentialHelper configures git to use a credential helper.
+// The helper string can be:
+//   - "cache" for in-memory caching
+//   - "store" for indefinite storage
+//   - "!command" for a custom helper (e.g., "!gh auth token")
+func (c *Client) ConfigCredentialHelper(ctx context.Context, helper string) error {
+	if err := c.SetConfig(ctx, "credential.helper", helper); err != nil {
+		return fmt.Errorf("failed to set credential.helper: %w", err)
+	}
+	// Include the path component when matching credentials for GitHub URLs
+	if err := c.SetConfig(ctx, "credential.https://github.com.useHttpPath", "true"); err != nil {
+		return fmt.Errorf("failed to set useHttpPath: %w", err)
+	}
+	return nil
+}
+
 // InitRepository initializes a git repository with default configuration.
 func (c *Client) InitRepository(ctx context.Context) error {
 	if err := c.Init(ctx); err != nil {
