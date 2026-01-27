@@ -49,25 +49,6 @@ MAX_INLINE="${MAX_INLINE:-20}"
 POST_EMPTY="${POST_EMPTY:-false}"
 PR_REF=""
 
-# Color output
-export RED='\033[0;31m'
-export GREEN='\033[0;32m'
-export YELLOW='\033[1;33m'
-export NC='\033[0m' # No Color
-
-# Logging functions (already defined in helpers.sh, but keep for clarity)
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $*"
-}
-
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $*"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $*" >&2
-}
-
 # Show usage
 usage() {
     cat <<EOF
@@ -215,12 +196,18 @@ log_info "Preparing review comments..."
 INLINE_COMMENTS=()
 
 while IFS= read -r finding; do
-    PATH=$(echo "$finding" | jq -r '.path // empty')
+    FILE_PATH=$(echo "$finding" | jq -r '.path // empty')
     LINE=$(echo "$finding" | jq -r '.line // empty')
     MESSAGE=$(echo "$finding" | jq -r '.message // empty')
     SUGGESTION=$(echo "$finding" | jq -r '.suggestion // empty')
 
-    if [[ -n "$PATH" && -n "$LINE" && -n "$MESSAGE" ]]; then
+    if [[ -n "$FILE_PATH" && -n "$LINE" && -n "$MESSAGE" ]]; then
+        # Validate LINE is numeric
+        if ! [[ "$LINE" =~ ^[0-9]+$ ]]; then
+            log_warn "Skipping finding with invalid line number: $LINE"
+            continue
+        fi
+
         # Build comment body
         COMMENT_BODY="$MESSAGE"
         if [[ -n "$SUGGESTION" ]]; then
@@ -229,10 +216,14 @@ while IFS= read -r finding; do
 **Suggestion:** $SUGGESTION"
         fi
 
-        # Escape for JSON
-        COMMENT_BODY_ESCAPED=$(echo "$COMMENT_BODY" | jq -Rs .)
+        # Build JSON object safely with jq to ensure proper escaping
+        COMMENT_JSON=$(jq -n \
+            --arg path "$FILE_PATH" \
+            --argjson line "$LINE" \
+            --arg body "$COMMENT_BODY" \
+            '{path: $path, line: $line, side: "RIGHT", body: $body}')
 
-        INLINE_COMMENTS+=("{\"path\": \"$PATH\", \"line\": $LINE, \"body\": $COMMENT_BODY_ESCAPED}")
+        INLINE_COMMENTS+=("$COMMENT_JSON")
     fi
 done < <(jq -c '.[]' "$REVIEW_JSON" 2>/dev/null)
 

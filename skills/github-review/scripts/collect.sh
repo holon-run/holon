@@ -137,7 +137,7 @@ log_info "Found $FILES_COUNT changed files (limit: $MAX_FILES)"
 
 # Create a files-with-patches.json that includes patches
 # Note: GitHub API doesn't provide patches in the files endpoint, so we use gh pr diff
-gh pr diff "$NUMBER" --repo "$OWNER/$REPO" > "$GITHUB_CONTEXT_DIR/github/pr.diff" 2>&1 || {
+gh pr diff "$NUMBER" --repo "$OWNER/$REPO" > "$GITHUB_CONTEXT_DIR/github/pr.diff" 2>/dev/null || {
     log_warn "Failed to fetch PR diff (may be empty or too large)"
 }
 
@@ -152,7 +152,7 @@ fi
 if [[ "$INCLUDE_THREADS" == "true" ]]; then
     log_info "Fetching existing review threads..."
     # Fetch review comments
-    local api_path="repos/$OWNER/$REPO/pulls/$NUMBER/comments"
+    api_path="repos/$OWNER/$REPO/pulls/$NUMBER/comments"
     if gh api "$api_path" --paginate > "$GITHUB_CONTEXT_DIR/github/review_threads.json" 2>/dev/null; then
         THREADS_COUNT=$(jq 'length' "$GITHUB_CONTEXT_DIR/github/review_threads.json")
         log_info "Found $THREADS_COUNT existing review comments"
@@ -163,7 +163,7 @@ fi
 
 # Fetch PR comments (general discussion)
 log_info "Fetching PR discussion comments..."
-local api_path="repos/$OWNER/$REPO/issues/$NUMBER/comments"
+api_path="repos/$OWNER/$REPO/issues/$NUMBER/comments"
 if gh api "$api_path" --paginate > "$GITHUB_CONTEXT_DIR/github/comments.json" 2>/dev/null; then
     COMMENTS_COUNT=$(jq 'length' "$GITHUB_CONTEXT_DIR/github/comments.json")
     log_info "Found $COMMENTS_COUNT PR discussion comments"

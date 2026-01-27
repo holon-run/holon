@@ -32,6 +32,12 @@ This skill uses environment variables to stay portable across Holon, local shell
   - When `false`, skill exits silently if no issues are found
   - When `true`, posts a "no issues found" review comment
 
+- **`MAX_FILES`**: Maximum number of files to collect from the pull request
+  - When unset, the collection script's internal default (100) is used
+
+- **`INCLUDE_THREADS`**: Whether to include review comment threads and discussions in collected context
+  - Set to `true` to include discussion threads; when unset, the collection script's default behavior applies
+
 ### Path Examples
 
 ```bash
