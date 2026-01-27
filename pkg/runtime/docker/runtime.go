@@ -61,6 +61,9 @@ type ContainerConfig struct {
 
 	// Skills configuration
 	Skills []string // Paths to skill directories to include
+
+	// Skill mode configuration
+	UseSkillMode bool // True if using skill mode (agent handles collect/publish)
 }
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, error) {
@@ -586,6 +589,16 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 						holonlog.Info("preserved origin from source", "url", originURL)
 					} else {
 						holonlog.Warn("failed to preserve origin from source", "url", originURL, "error", err)
+					}
+
+					// In skill mode, configure git credential helper to use gh CLI
+					// This allows agent to push branches using GITHUB_TOKEN
+					if cfg.UseSkillMode {
+						if err := snapshotClient.ConfigCredentialHelper(ctx, "!gh auth token"); err != nil {
+							holonlog.Warn("failed to configure credential helper for skill mode", "error", err)
+						} else {
+							holonlog.Info("configured git credential helper for skill mode (using gh CLI)")
+						}
 					}
 				}
 			}

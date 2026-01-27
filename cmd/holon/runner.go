@@ -49,6 +49,7 @@ type RunnerConfig struct {
 	LogLevel             string
 	Mode                 string
 	ModeExplicit         bool     // true if --mode was explicitly provided (vs default)
+	UseSkillMode         bool     // true if using skill mode (agent handles collect/publish)
 	Cleanup              string   // Cleanup mode: "auto" (default), "none", "all"
 	AgentConfigMode      string   // Agent config mount mode: "auto", "yes", "no"
 	GitAuthorName        string   // Optional: git author name override
@@ -317,6 +318,7 @@ output:
 		GitAuthorName:        gitCfg.AuthorName,
 		GitAuthorEmail:       gitCfg.AuthorEmail,
 		Skills:               cfg.Skills,
+		UseSkillMode:         cfg.UseSkillMode,
 	}
 
 	holonlog.Progress("running holon", "spec", cfg.SpecPath, "base_image", cfg.BaseImage, "agent", containerCfg.AgentBundle)
