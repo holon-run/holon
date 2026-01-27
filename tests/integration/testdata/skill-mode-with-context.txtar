@@ -9,14 +9,14 @@ mkdir bundle-src/bin
 
 # Pre-create context (simulating GitHub-provided context)
 mkdir -p context/github
-echo '{"number": 520, "title": "Test Issue"}' > context/github/issue.json
-echo '[]' > context/github/comments.json
+exec sh -c 'echo "{\"number\": 520, \"title\": \"Test Issue\"}" > context/github/issue.json'
+exec sh -c 'echo "[]" > context/github/comments.json'
 
 exec chmod +x bundle-src/bin/agent
 exec tar -czf agent-bundle.tar.gz -C bundle-src .
 
 # Run with skill mode and existing context
-exec holon run --goal 'test skill mode with context' --workspace work --output out --context context --agent agent-bundle.tar.gz --skill github-solve --log-level minimal
+exec holon run --goal 'test skill mode with context' --workspace work --output out --context context --agent agent-bundle.tar.gz --skill github-solve --log-level minimal --no-preflight
 
 # Verify agent received the context
 exists out/manifest.json

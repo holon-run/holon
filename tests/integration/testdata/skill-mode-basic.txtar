@@ -10,7 +10,7 @@ exec chmod +x bundle-src/bin/agent
 exec tar -czf agent-bundle.tar.gz -C bundle-src .
 
 # Run with skill mode (agent handles collection/publishing)
-exec holon run --goal 'test skill mode' --workspace work --output out --agent agent-bundle.tar.gz --skill github-solve --log-level minimal
+exec holon run --goal 'test skill mode' --workspace work --output out --agent agent-bundle.tar.gz --skill github-solve --log-level minimal --no-preflight
 
 # Verify outputs exist (agent should create them)
 exists out/manifest.json
