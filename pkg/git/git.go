@@ -360,7 +360,7 @@ func (c *Client) ConfigCredentialHelper(ctx context.Context, helper string) erro
 	if err := c.SetConfig(ctx, "credential.helper", helper); err != nil {
 		return fmt.Errorf("failed to set credential.helper: %w", err)
 	}
-	// Use HTTP for HTTPS URLs to avoid certificate issues with credential helpers
+	// Include the path component when matching credentials for GitHub URLs
 	if err := c.SetConfig(ctx, "credential.https://github.com.useHttpPath", "true"); err != nil {
 		return fmt.Errorf("failed to set useHttpPath: %w", err)
 	}
