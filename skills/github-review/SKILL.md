@@ -1,0 +1,336 @@
+---
+name: github-review
+description: Automated PR code review skill. Collects PR context, generates review findings, and publishes structured PR reviews with inline comments via GitHub API.
+---
+
+# GitHub Review Skill
+
+Automated code review skill for pull requests. Collects PR context, performs AI-powered code review, and publishes structured reviews with inline comments.
+
+## Environment and Paths
+
+This skill uses environment variables to stay portable across Holon, local shells, and CI.
+
+### Key Environment Variables
+
+- **`GITHUB_OUTPUT_DIR`**: Output directory for artifacts and review results
+  - **Default**: `/holon/output` when the path exists (Holon container); otherwise a temp dir under `/tmp/holon-ghreview-*`
+  - **Custom**: Set to any directory (e.g., `./output`, `/tmp/github-work`)
+
+- **`GITHUB_CONTEXT_DIR`**: Directory for collected GitHub context
+  - **Default**: `${GITHUB_OUTPUT_DIR}/github-review-context`
+  - **Custom**: Set to override the context directory
+
+- **`GITHUB_TOKEN` / `GH_TOKEN`**: GitHub authentication token
+  - Required for both collection and publishing
+  - Must have `pull:read` and `pull:write` scopes
+
+- **`MAX_INLINE`**: Maximum inline comments to post (default: 20)
+  - Limits the number of inline comments to avoid overwhelming reviewers
+
+- **`POST_EMPTY`**: Post review even when no findings (default: false)
+  - When `false`, skill exits silently if no issues are found
+  - When `true`, posts a "no issues found" review comment
+
+### Path Examples
+
+```bash
+# Holon container (default picked up automatically)
+export GITHUB_OUTPUT_DIR=/holon/output
+
+# Local development (keeps workspace clean by defaulting to /tmp if unset)
+export GITHUB_OUTPUT_DIR=./output
+export GITHUB_TOKEN=ghp_xxx
+
+# CI/CD environment
+export GITHUB_OUTPUT_DIR=${PWD}/artifacts
+export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+export MAX_INLINE=10
+```
+
+## Usage
+
+### Basic Usage
+
+```bash
+# Review a PR
+holon --skill github-review holon-run/holon#123
+
+# Review using full URL
+holon --skill github-review https://github.com/holon-run/holon/pull/123
+```
+
+### With Collection Script
+
+```bash
+# Step 1: Collect PR context
+export GITHUB_OUTPUT_DIR=/holon/output
+/holon/workspace/skills/github-review/scripts/collect.sh "holon-run/holon#123"
+
+# Step 2: Agent performs review and generates artifacts
+# (Agent reads context from ${GITHUB_OUTPUT_DIR}/github-review-context/)
+# (Agent writes review.md and review.json to ${GITHUB_OUTPUT_DIR}/)
+
+# Step 3: Publish review
+/holon/workspace/skills/github-review/scripts/publish.sh
+```
+
+### Advanced Options
+
+```bash
+# Preview review without posting (dry-run)
+export DRY_RUN=true
+holon --skill github-review holon-run/holon#123
+
+# Limit inline comments
+export MAX_INLINE=10
+holon --skill github-review holon-run/holon#123
+
+# Post review even if no findings
+export POST_EMPTY=true
+holon --skill github-review holon-run/holon#123
+
+# Combine options
+export MAX_INLINE=15 POST_EMPTY=true
+holon --skill github-review holon-run/holon#123
+```
+
+## Skill Scripts
+
+This skill includes helper scripts in `scripts/`:
+
+### Context Collection
+
+**`scripts/collect.sh`**: Collect PR context for review
+
+```bash
+collect.sh <pr_ref> [repo_hint]
+```
+
+- Fetches PR metadata, changed files, and diff
+- Fetches existing review threads (to avoid duplicates)
+- Fetches PR discussion comments and commits
+- Requires `gh` CLI to be authenticated
+- Requires `jq` for JSON processing
+
+**Environment variables:**
+- `GITHUB_OUTPUT_DIR`: Output directory (default: /holon/output if present, else tmp)
+- `GITHUB_CONTEXT_DIR`: Context directory (default: ${GITHUB_OUTPUT_DIR}/github-review-context)
+- `MAX_FILES`: Maximum files to fetch (default: 100)
+- `INCLUDE_THREADS`: Include existing review threads (default: true)
+
+**Examples:**
+```bash
+collect.sh holon-run/holon#123
+collect.sh 123 holon-run/holon
+collect.sh https://github.com/holon-run/holon/pull/123
+```
+
+### Review Publishing
+
+**`scripts/publish.sh`**: Publish review to GitHub
+
+```bash
+publish.sh [options]
+```
+
+- Reads agent-generated `review.json` and `review.md`
+- Posts structured PR review with inline comments
+- Supports dry-run mode for preview
+- Requires `gh` CLI to be authenticated
+- Requires `jq` for JSON processing
+
+**Options:**
+- `--dry-run`: Preview review without posting
+- `--max-inline=N`: Maximum inline comments (default: 20)
+- `--post-empty`: Post review even if no findings
+- `--pr=OWNER/REPO#NUMBER`: Target PR (optional if manifest exists)
+
+**Environment variables:**
+- `GITHUB_OUTPUT_DIR`: Directory containing review artifacts
+- `DRY_RUN`: Preview without posting (default: false)
+- `MAX_INLINE`: Maximum inline comments (default: 20)
+- `POST_EMPTY`: Post review even with no findings (default: false)
+
+**Examples:**
+```bash
+# Preview review
+publish.sh --dry-run
+
+# Post review with default settings
+publish.sh
+
+# Post review with custom inline limit
+publish.sh --max-inline=10
+
+# Post review even if empty
+publish.sh --post-empty
+```
+
+## Review Prompts
+
+**`prompts/review.md`**: Review guidelines and instructions for the agent
+
+Defines:
+- Review priorities (correctness, security, performance, compatibility)
+- What to skip (nitpicks, style issues, large refactor requests)
+- Output format specifications
+- Inline comment guidelines
+- Quality standards
+
+Agents should read this prompt to understand how to perform reviews effectively.
+
+## Output Contract
+
+### Required Inputs (from collection script)
+
+1. **`${GITHUB_CONTEXT_DIR}/github/pr.json`**: PR metadata
+2. **`${GITHUB_CONTEXT_DIR}/github/files.json`**: Changed files list
+3. **`${GITHUB_CONTEXT_DIR}/github/pr.diff`**: Full diff of changes
+
+### Optional Inputs (from collection script)
+
+4. **`${GITHUB_CONTEXT_DIR}/github/review_threads.json`**: Existing review comments
+5. **`${GITHUB_CONTEXT_DIR}/github/comments.json`**: PR discussion comments
+6. **`${GITHUB_CONTEXT_DIR}/github/commits.json`**: Commit history
+
+### Required Outputs (from agent)
+
+1. **`${GITHUB_OUTPUT_DIR}/review.md`**: Human-readable review summary
+   - Overall summary of the PR
+   - Key findings by severity
+   - Detailed feedback organized by category
+   - Positive notes and recommendations
+
+2. **`${GITHUB_OUTPUT_DIR}/review.json`**: Structured review findings
+   ```json
+   [
+     {
+       "path": "path/to/file.go",
+       "line": 42,
+       "severity": "error|warn|nit",
+       "message": "Clear description of the issue",
+       "suggestion": "Specific suggestion for fixing (optional)"
+     }
+   ]
+   ```
+
+3. **`${GITHUB_OUTPUT_DIR}/summary.md`**: Brief summary of the review process
+   - PR reference and metadata
+   - Number of findings
+   - Review outcomes
+
+### Optional Outputs (from agent)
+
+4. **`${GITHUB_OUTPUT_DIR}/manifest.json`**: Execution metadata
+   ```json
+   {
+     "provider": "github-review",
+     "pr_ref": "holon-run/holon#123",
+     "findings_count": 5,
+     "inline_comments_count": 3,
+     "status": "completed|completed_with_empty|failed"
+   }
+   ```
+
+## Context Files
+
+When context is collected, the following files are available under `${GITHUB_CONTEXT_DIR}/github/`:
+
+- `pr.json`: Pull request metadata
+- `files.json`: List of changed files
+- `pr.diff`: Full diff of changes
+- `review_threads.json`: Existing review comments (if any)
+- `comments.json`: PR discussion comments (if any)
+- `commits.json`: Commit history (if any)
+
+## Workflow
+
+### Complete Review Workflow
+
+1. **Collection** (collect.sh)
+   - Fetch PR context using gh CLI
+   - Write to `${GITHUB_CONTEXT_DIR}/github/`
+   - Generate manifest.json
+
+2. **Review** (agent)
+   - Read PR context from `${GITHUB_CONTEXT_DIR}/github/`
+   - Analyze changes according to `prompts/review.md` guidelines
+   - Generate `review.md` and `review.json`
+   - Write to `${GITHUB_OUTPUT_DIR}/`
+
+3. **Publishing** (publish.sh)
+   - Read agent artifacts from `${GITHUB_OUTPUT_DIR}/`
+   - Post structured review to GitHub API
+   - Inline comments for findings with path+line
+   - Summary from review.md
+
+## Integration Examples
+
+### Holon Skill Mode
+
+```yaml
+# .github/workflows/pr-review.yml
+name: PR Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run Holon review
+        uses: holon-run/holon@main
+        with:
+          skill: github-review
+          args: ${{ github.repository }}#${{ github.event.pull_request.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAX_INLINE: 20
+```
+
+### Manual Review
+
+```bash
+# Review a PR manually
+export GITHUB_TOKEN=ghp_xxx
+export GITHUB_OUTPUT_DIR=./my-review
+mkdir -p $GITHUB_OUTPUT_DIR
+
+# Collect context
+/holon/workspace/skills/github-review/scripts/collect.sh "holon-run/holon#123"
+
+# Perform review (agent reads context, generates findings)
+# ... agent processes ...
+
+# Preview review
+/holon/workspace/skills/github-review/scripts/publish.sh --dry-run
+
+# Publish review
+/holon/workspace/skills/github-review/scripts/publish.sh
+```
+
+## Important Notes
+
+- **Idempotency**: The skill fetches existing review threads to avoid duplicating comments
+- **Rate limits**: GitHub API has rate limits; the skill uses pagination and batching appropriately
+- **Large PRs**: Use `MAX_FILES` to limit context collection for PRs with many changed files
+- **Inline limits**: Use `MAX_INLINE` to avoid overwhelming reviewers with too many comments
+- **Silent success**: By default, the skill doesn't post reviews when no findings are found (use `POST_EMPTY=true` to change this)
+- **Headless operation**: The skill runs without user interaction; all configuration is via environment variables
+
+## Capabilities
+
+You MAY use these commands directly via `gh` CLI:
+- `gh pr view` - View PR details
+- `gh pr diff` - Get PR diff
+- `gh api` - Make API calls
+
+You MUST NOT use these directly (use artifacts instead):
+- `gh pr review` - Use `scripts/publish.sh` instead
+
+## Reference Documentation
+
+See [prompts/review.md](prompts/review.md) for detailed review guidelines and instructions.
