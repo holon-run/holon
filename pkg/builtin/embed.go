@@ -3,7 +3,7 @@
 // loaded by reference (in this repo, builtin skill refs are flat names like
 // "github-solve").
 //
-//go:generate sh -c "rm -rf skills && cp -r ../../skills ."
+//go:generate sh -c "rm -rf skills && cp -r ../../skills . && git rev-parse HEAD > skills/.git-commit"
 package builtin
 
 import (
@@ -142,4 +142,20 @@ func List() ([]string, error) {
 	}
 
 	return skills, nil
+}
+
+// GitCommit returns the git commit SHA at which the builtin skills were generated.
+// Returns empty string if the commit information is not available.
+func GitCommit() string {
+	f := FS()
+	if f == nil {
+		return ""
+	}
+
+	content, err := fs.ReadFile(f, ".git-commit")
+	if err != nil {
+		return ""
+	}
+
+	return string(content)
 }

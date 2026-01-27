@@ -13,14 +13,15 @@ import (
 // The runtime now writes the manifest to the output directory instead of the workspace.
 func WriteManifest(dest string, result PrepareResult) error {
 	manifest := Manifest{
-		Strategy:   result.Strategy,
-		Source:     result.Source,
-		Ref:        result.Ref,
-		HeadSHA:    result.HeadSHA,
-		CreatedAt:  result.CreatedAt,
-		HasHistory: result.HasHistory,
-		IsShallow:  result.IsShallow,
-		Notes:      result.Notes,
+		Strategy:            result.Strategy,
+		Source:              result.Source,
+		Ref:                 result.Ref,
+		HeadSHA:             result.HeadSHA,
+		CreatedAt:           result.CreatedAt,
+		HasHistory:          result.HasHistory,
+		IsShallow:           result.IsShallow,
+		Notes:               result.Notes,
+		BuiltinSkillsCommit: result.BuiltinSkillsCommit,
 	}
 
 	data, err := json.MarshalIndent(manifest, "", "  ")

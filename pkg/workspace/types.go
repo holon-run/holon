@@ -77,6 +77,9 @@ type PrepareResult struct {
 
 	// Notes contains any additional information about the preparation
 	Notes []string `json:"notes,omitempty"`
+
+	// BuiltinSkillsCommit is the git commit SHA of embedded builtin skills
+	BuiltinSkillsCommit string `json:"builtin_skills_commit,omitempty"`
 }
 
 // Manifest contains workspace metadata
@@ -105,6 +108,9 @@ type Manifest struct {
 
 	// Notes contains any additional information
 	Notes []string `json:"notes,omitempty"`
+
+	// BuiltinSkillsCommit is the git commit SHA of embedded builtin skills
+	BuiltinSkillsCommit string `json:"builtin_skills_commit,omitempty"`
 }
 
 // Preparer is the interface for preparing workspaces

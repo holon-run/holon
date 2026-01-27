@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/holon-run/holon/pkg/builtin"
 	"github.com/holon-run/holon/pkg/git"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/skills"
@@ -517,6 +518,8 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 
 		// Write workspace manifest to output directory if specified
 		if cfg.OutDir != "" {
+			// Record builtin skills commit for audit
+			prepareResult.BuiltinSkillsCommit = builtin.GitCommit()
 			if err := writeWorkspaceManifest(cfg.OutDir, prepareResult); err != nil {
 				os.RemoveAll(skillsDir) // Cleanup on error
 				return "", "", nil, fmt.Errorf("failed to write workspace manifest: %w", err)
@@ -643,6 +646,8 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 	// Write workspace manifest to output directory (not workspace)
 	// This avoids polluting the workspace with metadata files
 	if cfg.OutDir != "" {
+		// Record builtin skills commit for audit
+		result.BuiltinSkillsCommit = builtin.GitCommit()
 		if err := writeWorkspaceManifest(cfg.OutDir, result); err != nil {
 			holonlog.Warn("failed to write workspace manifest", "error", err)
 		}
