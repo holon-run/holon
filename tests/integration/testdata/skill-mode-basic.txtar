@@ -1,3 +1,5 @@
+[!docker] skip 'docker not available'
+
 # Test basic skill-mode execution without LLM
 # This test validates that the runner correctly skips collection/publishing in skill mode
 

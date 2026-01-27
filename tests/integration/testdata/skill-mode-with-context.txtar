@@ -1,3 +1,5 @@
+[!docker] skip 'docker not available'
+
 # Test skill-mode with pre-provided context
 # Verifies that skill mode respects existing context without trying to collect
 
