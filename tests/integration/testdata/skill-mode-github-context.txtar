@@ -12,13 +12,12 @@ exec chmod +x bundle-src/bin/agent
 exec tar -czf agent-bundle.tar.gz -C bundle-src .
 
 # Create a mock git repo for context
-cd work
-exec git init
-exec git config user.email "test@example.com"
-exec git config user.name "Test User"
-exec echo "test content" > test.txt
-exec git add test.txt
-exec git commit -m "test commit"
+exec git -C work init
+exec git -C work config user.email "test@example.com"
+exec git -C work config user.name "Test User"
+exec echo "test content" > work/test.txt
+exec git -C work add test.txt
+exec git -C work commit -m "test commit"
 
 # Run holon to verify gh CLI is available
 # This tests that the collector script can run in skill mode

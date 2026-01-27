@@ -23,7 +23,7 @@ exec holon run --goal 'test skill mode with context' --workspace work --output o
 # Verify agent received the context
 exists out/manifest.json
 exists out/summary.md
-grep -q '520' out/summary.md
+exec grep -q '520' out/summary.md
 
 -- bundle-src/manifest.json --
 {
