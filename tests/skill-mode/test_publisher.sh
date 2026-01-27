@@ -201,42 +201,64 @@ test_publisher_invalid_json() {
 test_publisher_valid_intent() {
     local test_name="valid_intent"
     log_info "Running test: $test_name"
-    
+
     local tmp_dir
     tmp_dir=$(setup_test_env "$test_name")
     local output_dir="$tmp_dir/output"
-    
-    # Create valid intent file
+    local bin_dir="$tmp_dir/bin"
+
+    # Create valid intent file with proper schema
     mkdir -p "$output_dir"
     cat > "$output_dir/publish-intent.json" << 'EOF'
 {
+  "version": "1.0",
+  "pr_ref": "owner/repo#123",
   "actions": [
     {
-      "type": "post_comment",
-      "body": "Test comment"
+      "type": "post_comment"
     }
   ]
 }
 EOF
-    
+
+    # Provide a stub gh on PATH so check_dependencies/gh auth status passes in hermetic CI
+    mkdir -p "$bin_dir"
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+# Minimal gh stub for tests: always report auth as OK.
+if [[ "$1" == "auth" && "$2" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+# Default: succeed without doing anything.
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
     export GITHUB_OUTPUT_DIR="$output_dir"
-    
+
     cd "$tmp_dir"
-    
-    # Test dry-run mode (should not fail even without gh auth)
+
+    # Test dry-run mode (should succeed and not crash)
     local output
-    output=$(bash "$PUBLISHER_SCRIPT" --dry-run --intent="$output_dir/publish-intent.json" 2>&1 || true)
-    
+    local status=0
+    if output=$(bash "$PUBLISHER_SCRIPT" --dry-run --intent="$output_dir/publish-intent.json" 2>&1); then
+        status=0
+    else
+        status=$?
+    fi
+
     TESTS_RUN=$((TESTS_RUN + 1))
-    # In dry-run mode, it should succeed or at least not crash
-    if [[ "$output" != *"syntax error"* ]]; then
+    # In dry-run mode, it should succeed and not emit syntax errors
+    if [[ $status -eq 0 && "$output" != *"syntax error"* ]]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
         log_info "✓ Publisher handles valid intent in dry-run mode"
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
-        log_error "✗ Publisher should handle valid intent"
+        log_error "✗ Publisher should handle valid intent (status=$status, output: $output)"
     fi
-    
+
     cleanup_test_env "$tmp_dir"
 }
 

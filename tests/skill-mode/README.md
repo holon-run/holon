@@ -86,7 +86,7 @@ make test-integration
 ### Adding Shell Script Tests
 
 1. Create a new test function in `test_collector.sh` or `test_publisher.sh`
-2. Use the assertion helpers (`assert_file_exists`, `assert_eq`, etc.)
+2. Use the provided assertion helpers (e.g., `assert_file_exists`, `assert_file_not_empty`, `assert_json_valid`, `assert_contains`)
 3. Add the test to the `main()` function
 
 ### Adding Test Fixtures

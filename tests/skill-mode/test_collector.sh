@@ -146,10 +146,10 @@ test_collector_script_executable() {
 test_collector_help() {
     local test_name="help_output"
     log_info "Running test: $test_name"
-    
+
     local output
-    output=$(bash "$COLLECTOR_SCRIPT" 2>&1 || true 2>&1 || true)
-    
+    output=$(bash "$COLLECTOR_SCRIPT" 2>&1 || true)
+
     assert_contains "$output" "Usage:" "Usage text is shown"
     assert_contains "$output" "collect.sh" "Help text mentions script name"
 }
@@ -184,13 +184,13 @@ test_collector_invalid_ref() {
 test_collector_missing_jq() {
     local test_name="missing_jq"
     log_info "Running test: $test_name"
-    
+
     local tmp_dir
     tmp_dir=$(setup_test_env "$test_name")
     local output_dir="$tmp_dir/output"
     local bin_dir="$tmp_dir/bin"
-    
-    # Create a PATH without jq
+
+    # Create a PATH with a shadowed jq that fails
     mkdir -p "$bin_dir"
     # Create fake gh that does nothing
     cat > "$bin_dir/gh" << 'INNEREOF'
@@ -198,15 +198,23 @@ test_collector_missing_jq() {
 exit 0
 INNEREOF
     chmod +x "$bin_dir/gh"
-    
+    # Create a jq stub that always fails
+    cat > "$bin_dir/jq" << 'INNEREOF'
+#!/bin/sh
+echo "jq: command not found" >&2
+exit 1
+INNEREOF
+    chmod +x "$bin_dir/jq"
+
     local old_path="$PATH"
+    # Prepend our stubbed bin to PATH to shadow the real jq
     export PATH="$bin_dir:$PATH"
     export GITHUB_CONTEXT_DIR="$output_dir"
-    
+
     # Run collector and expect dependency error
     local output
     output=$(bash "$COLLECTOR_SCRIPT" "owner/repo#123" 2>&1 || true)
-    
+
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$output" == *"jq"* ]] || [[ "$output" == *"Missing"* ]] || [[ "$output" == *"dependencies"* ]]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
@@ -214,8 +222,9 @@ INNEREOF
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
         log_error "✗ Collector should detect missing jq"
+        log_error "Output: $output"
     fi
-    
+
     export PATH="$old_path"
     cleanup_test_env "$tmp_dir"
 }

@@ -29,11 +29,26 @@ if [[ ! -f "$FILE" ]]; then
     exit 2
 fi
 
-# Try to use real jq if available (preferred)
-if command -v jq >/dev/null 2>&1; then
-    jq "$EXPR" "$FILE"
-    exit $?
+# First, honor an explicit REAL_JQ override if provided.
+if [[ -n "${REAL_JQ:-}" && -x "${REAL_JQ:-}" ]]; then
+    exec "$REAL_JQ" "$EXPR" "$FILE"
 fi
+
+# Otherwise, search PATH for jq, skipping this stub's directory to avoid recursion.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+OLD_IFS="$IFS"
+IFS=":"
+for dir in $PATH; do
+    # Skip the directory containing this stub script.
+    if [[ "$dir" == "$SCRIPT_DIR" ]]; then
+        continue
+    fi
+    if [[ -x "$dir/jq" ]]; then
+        IFS="$OLD_IFS"
+        exec "$dir/jq" "$EXPR" "$FILE"
+    fi
+done
+IFS="$OLD_IFS"
 
 # Fallback: implement basic operations with python3
 case "$EXPR" in
