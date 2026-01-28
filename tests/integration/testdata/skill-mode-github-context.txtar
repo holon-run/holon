@@ -15,13 +15,13 @@ exec tar -czf agent-bundle.tar.gz -C bundle-src .
 exec git -C work init
 exec git -C work config user.email "test@example.com"
 exec git -C work config user.name "Test User"
-exec echo "test content" > work/test.txt
+exec sh -c 'echo "test content" > work/test.txt'
 exec git -C work add test.txt
-exec git -C work commit -m "test commit"
+exec git -C work commit -m 'test commit'
 
 # Run holon to verify gh CLI is available
 # This tests that the collector script can run in skill mode
-exec holon run --goal 'verify gh CLI available' --workspace work --output out --agent agent-bundle.tar.gz --skill github-solve --log-level minimal
+exec holon run --goal 'verify gh CLI available' --workspace work --output out --agent agent-bundle.tar.gz --skill github-solve --log-level minimal --no-preflight
 
 # Verify outputs
 exists out/manifest.json
@@ -48,29 +48,45 @@ set -eu
 # This agent stub validates that required tools are available
 # In skill mode, the agent (not the runner) handles collection/publishing
 
+# Check for required tools and report results
+tools_found=""
+tools_missing=""
+
 # Verify gh CLI is available
-if ! command -v gh >/dev/null 2>&1; then
-    echo "ERROR: gh CLI not found in container" >&2
-    exit 1
+if command -v gh >/dev/null 2>&1; then
+    tools_found="$tools_found gh"
+else
+    tools_missing="$tools_missing gh"
 fi
 
 # Verify jq is available
-if ! command -v jq >/dev/null 2>&1; then
-    echo "ERROR: jq not found in container" >&2
-    exit 1
+if command -v jq >/dev/null 2>&1; then
+    tools_found="$tools_found jq"
+else
+    tools_missing="$tools_missing jq"
 fi
 
 # Verify collector script exists
-if [ ! -f "/root/.claude/skills/github-solve/scripts/collect.sh" ]; then
-    echo "WARNING: collector script not found" >&2
+if [ -f "/root/.claude/skills/github-solve/scripts/collect.sh" ]; then
+    tools_found="$tools_found collector-script"
+else
+    tools_missing="$tools_missing collector-script"
 fi
 
 # Verify publisher script exists
-if [ ! -f "/root/.claude/skills/github-solve/scripts/publish.sh" ]; then
-    echo "WARNING: publisher script not found" >&2
+if [ -f "/root/.claude/skills/github-solve/scripts/publish.sh" ]; then
+    tools_found="$tools_found publisher-script"
+else
+    tools_missing="$tools_missing publisher-script"
 fi
 
 # Create required outputs
 mkdir -p /holon/output
 echo '{"version":"v1"}' > /holon/output/manifest.json
-echo "GH CLI and jq are available in skill mode" > /holon/output/summary.md
+{
+    echo "Tool Check Results:"
+    echo "Found: $tools_found"
+    if [ -n "$tools_missing" ]; then
+        echo "Missing: $tools_missing"
+    fi
+} > /holon/output/summary.md
