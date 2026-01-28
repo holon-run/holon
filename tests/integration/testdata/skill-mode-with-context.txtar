@@ -1,0 +1,64 @@
+[!docker] skip 'docker not available'
+
+# Test skill-mode with pre-provided context
+# Verifies that skill mode respects existing context without trying to collect
+
+mkdir work
+mkdir out
+mkdir context
+mkdir bundle-src
+mkdir bundle-src/bin
+
+# Pre-create context (simulating GitHub-provided context)
+mkdir -p context/github
+exec sh -c 'echo "{\"number\": 520, \"title\": \"Test Issue\"}" > context/github/issue.json'
+exec sh -c 'echo "[]" > context/github/comments.json'
+
+exec chmod +x bundle-src/bin/agent
+exec tar -czf agent-bundle.tar.gz -C bundle-src .
+
+# Run with skill mode and existing context
+exec holon run --goal 'test skill mode with context' --workspace work --output out --context context --agent agent-bundle.tar.gz --skill github-solve --log-level minimal --no-preflight
+
+# Verify agent received the context
+exists out/manifest.json
+exists out/summary.md
+exec grep -q '520' out/summary.md
+
+-- bundle-src/manifest.json --
+{
+  "bundleVersion": "1",
+  "name": "skill-mode-context-test",
+  "version": "0.0.1",
+  "entry": "bin/agent",
+  "platform": "linux",
+  "arch": "amd64",
+  "libc": "glibc",
+  "runtime": {
+    "type": "node",
+    "version": "20"
+  }
+}
+
+-- bundle-src/bin/agent --
+#!/bin/sh
+set -eu
+
+# Initialize issue_num
+issue_num=""
+
+# Verify context exists and is readable
+if [ -d /holon/input/context/github ]; then
+    echo "Context found in /holon/input/context/github"
+
+    # Read issue number from context
+    if [ -f /holon/input/context/github/issue.json ]; then
+        issue_num=$(grep -o '"number": [0-9]*' /holon/input/context/github/issue.json | grep -o '[0-9]*')
+        echo "Processing issue #$issue_num"
+    fi
+fi
+
+# Create required outputs
+mkdir -p /holon/output
+echo '{"version":"v1"}' > /holon/output/manifest.json
+echo "Processed issue #${issue_num:-unknown}" > /holon/output/summary.md

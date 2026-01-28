@@ -1,0 +1,144 @@
+#!/bin/bash
+# gh-stub - Stubbed gh CLI for testing skill-mode scripts without network calls
+
+set -euo pipefail
+
+OUTPUT_DIR="${GH_STUB_OUTPUT_DIR:-}"
+SHOULD_FAIL="${GH_STUB_FAIL:-false}"
+ERROR_MSG="${GH_STUB_ERROR_MSG:-gh command failed (stubbed error)}"
+
+if [[ "${GH_STUB_DEBUG:-false}" == "true" ]]; then
+    echo "[gh-stub] Called with: $*" >&2
+    echo "[gh-stub] OUTPUT_DIR=$OUTPUT_DIR" >&2
+fi
+
+if [[ "$SHOULD_FAIL" == "true" ]]; then
+    echo "Error: $ERROR_MSG" >&2
+    exit 1
+fi
+
+if [[ -z "$OUTPUT_DIR" ]]; then
+    echo "Error: GH_STUB_OUTPUT_DIR not set" >&2
+    exit 1
+fi
+
+case "${1:-}" in
+    auth)
+        case "${2:-}" in
+            status)
+                echo '{"github.com": {"login": "testuser", "token": "ghp_test"}}'
+                exit 0
+                ;;
+            *)
+                echo "Error: Unknown auth command: ${2:-}" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+
+    pr)
+        case "${2:-}" in
+            view)
+                pr_num="${3:-}"
+                shift 3
+                repo=""
+                json_fields=""
+                while [[ $# -gt 0 ]]; do
+                    case "$1" in
+                        --repo=*) repo="${1#*=}" ;;
+                        --repo) shift; repo="$1" ;;
+                        --json=*) json_fields="${1#*=}" ;;
+                        --json) shift; json_fields="$1" ;;
+                        *) ;;
+                    esac
+                    shift
+                done
+
+                fixture_file="$OUTPUT_DIR/pr_${pr_num}.json"
+                if [[ -f "$fixture_file" ]]; then
+                    cat "$fixture_file"
+                else
+                    echo "Error: PR not found (stubbed)" >&2
+                    exit 1
+                fi
+                ;;
+            diff)
+                pr_num="${3:-}"
+                fixture_file="$OUTPUT_DIR/pr_${pr_num}.diff"
+                if [[ -f "$fixture_file" ]]; then
+                    cat "$fixture_file"
+                else
+                    exit 0
+                fi
+                ;;
+            *)
+                echo "Error: Unknown pr command: ${2:-}" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+
+    issue)
+        case "${2:-}" in
+            view)
+                issue_num="${3:-}"
+                shift 3
+                repo=""
+                json_fields=""
+                while [[ $# -gt 0 ]]; do
+                    case "$1" in
+                        --repo=*) repo="${1#*=}" ;;
+                        --repo) shift; repo="$1" ;;
+                        --json=*) json_fields="${1#*=}" ;;
+                        --json) shift; json_fields="$1" ;;
+                        *) ;;
+                    esac
+                    shift
+                done
+
+                fixture_file="$OUTPUT_DIR/issue_${issue_num}.json"
+                if [[ -f "$fixture_file" ]]; then
+                    cat "$fixture_file"
+                else
+                    echo "Error: Issue not found (stubbed)" >&2
+                    exit 1
+                fi
+                ;;
+            *)
+                echo "Error: Unknown issue command: ${2:-}" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+
+    api)
+        endpoint="${2:-}"
+        shift 2
+        while [[ $# -gt 0 ]]; do
+            case "$1" in --paginate) ;; esac
+            shift
+        done
+
+        if [[ "$endpoint" =~ repos/([^/]+)/([^/]+)/pulls/([0-9]+)/comments ]]; then
+            pr_num="${BASH_REMATCH[3]}"
+            fixture_file="$OUTPUT_DIR/pr_${pr_num}_comments.json"
+            [[ -f "$fixture_file" ]] && cat "$fixture_file" || echo "[]"
+        elif [[ "$endpoint" =~ repos/([^/]+)/([^/]+)/issues/([0-9]+)/comments ]]; then
+            issue_num="${BASH_REMATCH[3]}"
+            fixture_file="$OUTPUT_DIR/issue_${issue_num}_comments.json"
+            [[ -f "$fixture_file" ]] && cat "$fixture_file" || echo "[]"
+        elif [[ "$endpoint" =~ repos/.*/.*/commits/.*/check-runs ]]; then
+            fixture_file="$OUTPUT_DIR/check_runs.json"
+            [[ -f "$fixture_file" ]] && cat "$fixture_file" || echo '{"check_runs": []}'
+        else
+            echo "[]"
+        fi
+        ;;
+
+    *)
+        echo "Error: Unknown gh command: ${1:-}" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

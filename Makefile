@@ -160,3 +160,19 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@grep -E '^##' Makefile | sed -e 's/## //'
+
+## test-skill-mode: Run skill-mode shell tests (no network/LLM required)
+test-skill-mode:
+	@echo "Running skill-mode shell tests..."
+	@./tests/skill-mode/test_collector.sh
+	@./tests/skill-mode/test_publisher.sh
+
+## test-skill-mode-collector: Run collector script tests only
+test-skill-mode-collector:
+	@echo "Running collector script tests..."
+	@./tests/skill-mode/test_collector.sh
+
+## test-skill-mode-publisher: Run publisher script tests only
+test-skill-mode-publisher:
+	@echo "Running publisher script tests..."
+	@./tests/skill-mode/test_publisher.sh

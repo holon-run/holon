@@ -1,0 +1,46 @@
+[!docker] skip 'docker not available'
+
+# Test basic skill-mode execution without LLM
+# This test validates that the runner correctly skips collection/publishing in skill mode
+
+mkdir work
+mkdir out
+mkdir bundle-src
+mkdir bundle-src/bin
+
+exec chmod +x bundle-src/bin/agent
+exec tar -czf agent-bundle.tar.gz -C bundle-src .
+
+# Run with skill mode (agent handles collection/publishing)
+exec holon run --goal 'test skill mode' --workspace work --output out --agent agent-bundle.tar.gz --skill github-solve --log-level minimal --no-preflight
+
+# Verify outputs exist (agent should create them)
+exists out/manifest.json
+exists out/summary.md
+
+-- bundle-src/manifest.json --
+{
+  "bundleVersion": "1",
+  "name": "skill-mode-test",
+  "version": "0.0.1",
+  "entry": "bin/agent",
+  "platform": "linux",
+  "arch": "amd64",
+  "libc": "glibc",
+  "runtime": {
+    "type": "node",
+    "version": "20"
+  }
+}
+
+-- bundle-src/bin/agent --
+#!/bin/sh
+set -eu
+
+# Verify we're in skill mode (skill should be available)
+echo "Testing skill mode execution"
+
+# Create required outputs
+mkdir -p /holon/output
+echo '{"version":"v1"}' > /holon/output/manifest.json
+echo 'Skill mode test passed' > /holon/output/summary.md

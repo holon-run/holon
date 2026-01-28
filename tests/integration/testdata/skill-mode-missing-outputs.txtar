@@ -1,0 +1,38 @@
+# Test skill-mode error handling when agent doesn't create required outputs
+
+mkdir work
+mkdir out
+mkdir bundle-src
+mkdir bundle-src/bin
+
+exec chmod +x bundle-src/bin/agent
+exec tar -czf agent-bundle.tar.gz -C bundle-src .
+
+# Run with skill mode but agent doesn't create outputs
+! exec holon run --goal 'test skill mode error' --workspace work --output out --agent agent-bundle.tar.gz --skill github-solve --log-level minimal
+
+# Should fail because manifest.json is missing
+! exists out/manifest.json
+
+-- bundle-src/manifest.json --
+{
+  "bundleVersion": "1",
+  "name": "skill-mode-error-test",
+  "version": "0.0.1",
+  "entry": "bin/agent",
+  "platform": "linux",
+  "arch": "amd64",
+  "libc": "glibc",
+  "runtime": {
+    "type": "node",
+    "version": "20"
+  }
+}
+
+-- bundle-src/bin/agent --
+#!/bin/sh
+set -eu
+
+# Agent fails to create required outputs (simulates error)
+echo "Agent running but not creating outputs"
+exit 1

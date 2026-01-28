@@ -1,0 +1,14 @@
+{
+  "number": 520,
+  "title": "Add non-LLM test coverage for skill mode",
+  "body": "## Summary\nAdd integration-style tests (without LLM) to validate the skill-mode pipeline.",
+  "state": "OPEN",
+  "url": "https://github.com/holon-run/holon/issues/520",
+  "author": {
+    "login": "testuser",
+    "id": 123456
+  },
+  "createdAt": "2026-01-26T15:38:55Z",
+  "updatedAt": "2026-01-27T04:48:10Z",
+  "labels": []
+}

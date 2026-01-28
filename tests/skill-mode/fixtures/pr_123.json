@@ -1,0 +1,17 @@
+{
+  "number": 123,
+  "title": "Test PR",
+  "body": "Test PR body",
+  "state": "OPEN",
+  "url": "https://github.com/holon-run/holon/pull/123",
+  "baseRefName": "main",
+  "headRefName": "feature/test",
+  "headRefOid": "abc123def456",
+  "author": {
+    "login": "testuser",
+    "id": 123456
+  },
+  "createdAt": "2026-01-26T15:38:55Z",
+  "updatedAt": "2026-01-27T04:48:10Z",
+  "reviews": []
+}
