@@ -58,7 +58,12 @@ case "${1:-}" in
                 if [[ "$json_fields" == "files" || "$json_fields" == "files,"* || "$json_fields" == *",files" ]]; then
                     files_fixture="$OUTPUT_DIR/pr_${pr_num}_files.json"
                     if [[ -f "$files_fixture" ]]; then
-                        cat "$files_fixture"
+                        if command -v jq >/dev/null 2>&1; then
+                            # Normalize to always expose a top-level \"files\" field
+                            jq -c 'if type==\"object\" and has(\"files\") then . else {files: .} end' "$files_fixture"
+                        else
+                            cat "$files_fixture"
+                        fi
                         exit 0
                     else
                         echo '{"files": []}'
