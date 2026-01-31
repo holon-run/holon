@@ -22,16 +22,12 @@ Reusable GitHub collector used by `github-solve`, `github-review`, and other ski
 
 ## Usage
 
+Use the skill runner (Holon or host) to invoke `scripts/collect.sh` with the reference; examples assume the script is on PATH or referenced relative to the skill directory:
+
 ```bash
-# Issue or PR reference (URL, owner/repo#num, or numeric with repo hint)
-/holon/workspace/skills/github-context/scripts/collect.sh "holon-run/holon#123"
-
-# Numeric ref with repo hint
-/holon/workspace/skills/github-context/scripts/collect.sh 123 holon-run/holon
-
-# Customize toggles
-INCLUDE_CHECKS=false MAX_FILES=50 \
-  /holon/workspace/skills/github-context/scripts/collect.sh https://github.com/holon-run/holon/pull/123
+collect.sh "holon-run/holon#123"
+collect.sh 123 holon-run/holon
+INCLUDE_CHECKS=false MAX_FILES=50 collect.sh https://github.com/holon-run/holon/pull/123
 ```
 
 ## Output Contract

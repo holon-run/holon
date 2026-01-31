@@ -9,7 +9,7 @@ Automation skill for GitHub issue and pull request workflows.
 
 ## Environment and Paths
 
-This skill uses environment variables to stay portable across Holon, local shells, and CI.
+This skill uses environment variables to stay portable across Holon, local shells, and CI. GitHub context may be provided by the shared `github-context` skill (recommended) or pre-populated by the host; this skill itself does not assume any absolute install path.
 
 ### Key Environment Variables
 
@@ -46,7 +46,7 @@ export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
 
 ## Minimal Input Payload
 
-When no pre-populated GitHub context is available (i.e., `/holon/input/context/github/` is empty or missing), you **MUST** first collect context using the shared `github-context` collector (this wrapper lives at `scripts/collect.sh`).
+When no pre-populated GitHub context is available (i.e., `/holon/input/context/github/` is empty or missing), you **MUST** first collect context using the shared `github-context` skill (Holon or the caller should invoke it before running this skill).
 
 The minimal input payload required is:
 - **`/holon/input/payload.json`** (optional): Contains task metadata with GitHub reference
@@ -67,10 +67,7 @@ The agent must extract the `ref` field from `payload.json` and pass it as a comm
 
 When `/holon/input/context/github/` is empty or missing required files:
 
-1. **Run the collection script** (thin wrapper over the shared `github-context` skill):
-   ```bash
-   /holon/workspace/skills/github-solve/scripts/collect.sh "<ref>" [repo_hint]
-   ```
+1. **Collect context** using the `github-context` skill (or any equivalent host-side preparation) for the target reference.
 
    Where `<ref>` is one of:
    - `holon-run/holon#502` - owner/repo#number format
@@ -91,15 +88,11 @@ When `/holon/input/context/github/` is empty or missing required files:
    # UNRESOLVED_ONLY is deprecated (GitHub API lacks unresolved state on /pulls/{n}/comments)
    ```
 
-3. **Copy collected context** to input location (for compatibility):
-   ```bash
-   mkdir -p /holon/input/context/github
-   cp -r ${GITHUB_OUTPUT_DIR}/github-context/github/* /holon/input/context/github/
-   ```
+3. **Ensure collected context is available** under `${GITHUB_CONTEXT_DIR}/github/` for the agent run (Holon runners typically place it automatically).
 
 4. **Proceed with task** using collected context
 
-The collection script fetches (via `github-context`):
+The collection step fetches (via `github-context`):
 - **For issues**: `issue.json`, `comments.json`
 - **For PRs**: `pr.json`, `files.json`, `review_threads.json`, `comments.json`, `pr.diff`, `check_runs.json`, `test-failure-logs.txt`, `commits.json`
 
@@ -113,7 +106,7 @@ All collected context is persisted under `${GITHUB_OUTPUT_DIR}/github-context/` 
 
 ## Skill Scripts
 
-This skill includes helper scripts in `scripts/` (delegating to `skills/github-context` for collection helpers):
+This skill includes helper scripts in `scripts/`:
 
 ### Context Collection
 
@@ -123,8 +116,8 @@ This skill includes helper scripts in `scripts/` (delegating to `skills/github-c
   - Requires `jq` for JSON processing
   - Usage: `collect.sh <ref> [repo_hint]`
 
-- **`scripts/collect.sh`**: Thin wrapper that sets defaults then calls `../github-context/scripts/collect.sh`
-- **`../github-context/scripts/lib/helpers.sh`**: Shared helper functions (parse refs, dependency checks, fetchers, manifest writer)
+- **`scripts/collect.sh`**: Thin wrapper that sets defaults then delegates to the `github-context` skill (no absolute path assumptions)
+- **`scripts/lib/publish.sh`**: Publishing helpers
 
 ### Review Reply Posting
 
