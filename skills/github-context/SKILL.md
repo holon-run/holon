@@ -1,6 +1,6 @@
 ---
 name: github-context
-description: "Shared GitHub context collection skill used by other skills. Collects issue/PR metadata, comments, files, diffs, review threads, commits, and check runs into a standard layout under \${GITHUB_CONTEXT_DIR}/github/."
+description: "Shared GitHub context collection skill used by other skills. Collects issue/PR metadata, comments, files, diffs, review threads, commits, and check runs into a standard layout under ${GITHUB_CONTEXT_DIR}/github/."
 ---
 
 # GitHub Context Skill
