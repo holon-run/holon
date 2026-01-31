@@ -1,7 +1,7 @@
 #!/bin/bash
 # helpers.sh - Reusable helper functions for GitHub context collection
 #
-# Shared by github-context, github-solve, and github-review skills.
+# Shared by github-context, github-issue-solve, github-pr-fix, github-review, and github-publish skills.
 
 set -euo pipefail
 

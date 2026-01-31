@@ -678,7 +678,7 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 	}
 
 	// Skills from ContainerConfig.Skills can be:
-	// - Builtin skill references (e.g., "github-solve")
+	// - Builtin skill references (e.g., "github-context")
 	// - Local filesystem paths
 	// - Remote URLs
 	// Use Resolve to handle all types properly

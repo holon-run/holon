@@ -9,7 +9,7 @@ exec chmod +x bundle-src/bin/agent
 exec tar -czf agent-bundle.tar.gz -C bundle-src .
 
 # Run with skill mode but agent doesn't create outputs
-! exec holon run --goal 'test skill mode error' --workspace work --output out --agent agent-bundle.tar.gz --skill github-solve --log-level minimal
+! exec holon run --goal 'test skill mode error' --workspace work --output out --agent agent-bundle.tar.gz --skill github-context --log-level minimal
 
 # Should fail because manifest.json is missing
 ! exists out/manifest.json

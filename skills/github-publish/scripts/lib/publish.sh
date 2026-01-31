@@ -1,5 +1,5 @@
 #!/bin/bash
-# lib/publish.sh - Publishing action functions for github-solve skill
+# lib/publish.sh - Publishing action functions for github-publish skill
 #
 # This library contains action implementations for the publish.sh script.
 # Each action function handles a specific GitHub publishing operation.

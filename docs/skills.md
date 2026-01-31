@@ -30,7 +30,7 @@ Skills can be specified using any of these formats:
 - **Direct URLs**: `https://example.com/skill.zip#sha256=<checksum>`
 - **Local paths**: `/path/to/skill`, `./relative/skill`
 - **Workspace references**: `skill-name` (resolves to `.claude/skills/skill-name`)
-- **Built-in**: `github-solve`, `github-review`, `github-context` (built-in skills)
+- **Built-in**: `github-issue-solve`, `github-pr-fix`, `github-review`, `github-context`, `github-publish` (built-in skills)
 
 Auto-discovered skills are loaded alphabetically by directory name.
 

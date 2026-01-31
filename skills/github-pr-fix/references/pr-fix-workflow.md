@@ -112,7 +112,7 @@ After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies:
 
 ```bash
 # Navigate to skill directory
-cd /holon/workspace/skills/github-solve
+cd /holon/workspace/skills/github-pr-fix
 
 # Preview replies (recommended before posting)
 scripts/reply-reviews.sh --dry-run

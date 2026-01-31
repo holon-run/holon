@@ -1,5 +1,5 @@
 #!/bin/bash
-# publish.sh - GitHub publishing script for holon github-solve skill
+# publish.sh - GitHub publishing script for holon github-publish skill
 #
 # This script provides unified GitHub publishing capabilities by executing
 # declarative publishing intents or individual commands.
@@ -60,7 +60,7 @@ usage() {
     cat <<EOF
 Usage: publish.sh [OPTIONS] | <COMMAND> [ARGS]
 
-GitHub publishing script for holon github-solve skill.
+GitHub publishing script for holon github-publish skill.
 
 BATCH MODE (execute multiple actions from intent file):
   publish.sh --intent=/holon/output/publish-intent.json [OPTIONS]
@@ -456,7 +456,7 @@ show_summary() {
 
 # Main flow
 main() {
-    log_info "GitHub publishing script for github-solve skill"
+    log_info "GitHub publishing script for github-publish skill"
 
     # Check dependencies
     if ! check_dependencies; then
