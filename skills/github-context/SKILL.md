@@ -5,7 +5,17 @@ description: "Shared GitHub context collection skill used by other skills. Colle
 
 # GitHub Context Skill
 
-Reusable GitHub collector used by `github-solve`, `github-review`, and other skills. Produces a consistent context bundle for issues and pull requests.
+Foundational skill for collecting GitHub issue and pull request context into a standardized, structured format.
+
+## Why Use This Skill?
+
+Instead of running multiple `gh` commands manually, this skill provides:
+
+- **Structured Output**: Consistent JSON format with all metadata in predictable locations
+- **Comprehensive Collection**: Automatically gathers issues/PRs, comments, diffs, review threads, commits, and CI logs in one pass
+- **Configurable Scope**: Fine-grained control over what to collect (diffs, checks, threads, etc.) via environment variables
+- **Manifest Generation**: Produces `manifest.json` with collection metadata for downstream processing
+- **Reusability**: Can be invoked standalone or as a dependency by other skills
 
 ## Environment and Paths
 

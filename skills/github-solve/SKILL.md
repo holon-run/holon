@@ -110,13 +110,11 @@ This skill includes helper scripts in `scripts/`:
 
 ### Context Collection
 
-- **`scripts/collect.sh`**: Main context collection script
-  - Fetches issue/PR metadata, comments, diffs, and CI logs using `gh` CLI
+- **`scripts/collect.sh`**: Thin wrapper that sets defaults then delegates to the `github-context` skill (no absolute path assumptions)
+  - Fetches issue/PR metadata, comments, diffs, and CI logs
   - Requires `gh` CLI to be authenticated
   - Requires `jq` for JSON processing
   - Usage: `collect.sh <ref> [repo_hint]`
-
-- **`scripts/collect.sh`**: Thin wrapper that sets defaults then delegates to the `github-context` skill (no absolute path assumptions)
 - **`scripts/lib/publish.sh`**: Publishing helpers
 
 ### Review Reply Posting
@@ -156,19 +154,19 @@ For detailed GitHub publishing guide, see [references/github-publishing.md](refe
 
 This skill adapts behavior based on the GitHub context provided:
 
-- **PR Context** (`/holon/input/context/github/pr.json` exists):
+- **PR Context** (`${GITHUB_CONTEXT_DIR}/github/pr.json` exists):
   - PR-fix mode: Analyze PR feedback, review threads, and CI failures
   - Generate structured responses to make the PR mergeable
   - See [references/pr-fix-workflow.md](references/pr-fix-workflow.md) for detailed workflow
 
-- **Issue Context** (only `/holon/input/context/github/issue.json` exists):
+- **Issue Context** (only `${GITHUB_CONTEXT_DIR}/github/issue.json` exists):
   - Issue-solve mode: Implement the feature or fix described in the issue
   - Create a pull request with the changes
   - See [references/issue-solve-workflow.md](references/issue-solve-workflow.md) for detailed workflow
 
 ## GitHub Context Files
 
-When GitHub context is provided (either pre-populated or collected), files are available under `/holon/input/context/github/`:
+When GitHub context is provided (either pre-populated or collected), files are available under `${GITHUB_CONTEXT_DIR}/github/`:
 
 ### PR Context Files
 - `pr.json`: Pull request metadata including reviews and stats
