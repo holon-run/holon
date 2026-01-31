@@ -13,6 +13,7 @@ These tests validate the skill-mode workflow (collector/publisher scripts) with 
 
 ### Shell Script Tests
 
+- **test_helper_drift.sh**: Ensures only the shared `skills/github-context/scripts/lib/helpers.sh` exists (prevents forked copies)
 - **test_collector.sh**: Tests the collector script (`skills/github-solve/scripts/collect.sh`)
   - Missing dependencies (gh, jq)
   - Issue collection

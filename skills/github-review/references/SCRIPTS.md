@@ -1,6 +1,6 @@
 # Script Reference
 
-This document provides detailed reference for the github-review skill scripts.
+This document provides detailed reference for the github-review skill scripts. Collection now delegates to the shared `github-context` collector with review-friendly defaults.
 
 ## collect.sh - Context Collection Script
 
@@ -49,6 +49,9 @@ collect.sh <pr_ref> [repo_hint]
    - Commit messages and metadata
    - Helps understand evolution of changes
 
+7. **Check Runs** (`github/check_runs.json`) *(optional)*
+   - Only when `INCLUDE_CHECKS=true`
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -57,6 +60,10 @@ collect.sh <pr_ref> [repo_hint]
 | `GITHUB_CONTEXT_DIR` | `${GITHUB_OUTPUT_DIR}/github-review-context` | Context subdirectory |
 | `MAX_FILES` | `100` | Maximum files to fetch (prevents overwhelming context) |
 | `INCLUDE_THREADS` | `true` | Include existing review threads |
+| `INCLUDE_DIFF` | `true` | Include `pr.diff` |
+| `INCLUDE_FILES` | `true` | Include `files.json` |
+| `INCLUDE_COMMITS` | `true` | Include `commits.json` |
+| `INCLUDE_CHECKS` | `false` | Include `check_runs.json` + logs when true |
 
 ### Output Files
 
@@ -68,6 +75,7 @@ All files written to `GITHUB_CONTEXT_DIR` (default: `GITHUB_OUTPUT_DIR/github-re
 - `github/review_threads.json` - Existing reviews
 - `github/comments.json` - PR comments
 - `github/commits.json` - Commit history
+- `github/check_runs.json` - Check runs (when `INCLUDE_CHECKS=true`)
 - `manifest.json` - Collection metadata
 
 ### Requirements

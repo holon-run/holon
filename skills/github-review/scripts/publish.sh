@@ -33,9 +33,9 @@ set -euo pipefail
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Source helper functions from github-solve (reuse existing helpers)
-# shellcheck source=../github-solve/scripts/lib/helpers.sh
-source "$SCRIPT_DIR/../github-solve/scripts/lib/helpers.sh"
+# Source helper functions from shared github-context
+# shellcheck source=../../github-context/scripts/lib/helpers.sh
+source "$SCRIPT_DIR/../../github-context/scripts/lib/helpers.sh"
 
 # Default values
 if [[ -d /holon/output ]]; then

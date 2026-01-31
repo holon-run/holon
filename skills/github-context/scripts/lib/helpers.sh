@@ -1,5 +1,12 @@
 #!/bin/bash
 # helpers.sh - Reusable helper functions for GitHub context collection
+#
+# Shared by github-context, github-solve, and github-review skills.
+
+set -euo pipefail
+
+# Prevent double sourcing
+helpers_sourced=true
 
 # Color output for better readability
 export RED='\033[0;31m'
@@ -47,7 +54,7 @@ check_dependencies() {
 # Outputs: OWNER REPO NUMBER REF_TYPE
 parse_ref() {
     local ref="$1"
-    local repo_hint="$2"
+    local repo_hint="${2:-}"
     local owner="" repo="" number="" ref_type=""
 
     # Default from repo_hint if provided
@@ -60,10 +67,12 @@ parse_ref() {
     if [[ "$ref" =~ github\.com ]]; then
         # Extract parts from URL
         # https://github.com/owner/repo/pull/123 or /issues/123
-        local path=$(echo "$ref" | sed -E 's|^https?://github\.com/||' | sed 's|/$||')
+        local path
+        path=$(echo "$ref" | sed -E 's|^https?://github\.com/||' | sed 's|/$||')
         owner=$(echo "$path" | cut -d'/' -f1)
         repo=$(echo "$path" | cut -d'/' -f2)
-        local type_part=$(echo "$path" | cut -d'/' -f3)
+        local type_part
+        type_part=$(echo "$path" | cut -d'/' -f3)
         number=$(echo "$path" | cut -d'/' -f4)
 
         if [[ "$type_part" == "pull" ]]; then
@@ -120,7 +129,6 @@ determine_ref_type() {
 }
 
 # Fetch issue metadata and write to file
-# Usage: fetch_issue_metadata <owner> <repo> <number> <output_file>
 fetch_issue_metadata() {
     local owner="$1"
     local repo="$2"
@@ -137,7 +145,6 @@ fetch_issue_metadata() {
 }
 
 # Fetch issue comments and write to file
-# Usage: fetch_issue_comments <owner> <repo> <number> <output_file> [trigger_comment_id]
 fetch_issue_comments() {
     local owner="$1"
     local repo="$2"
@@ -147,7 +154,6 @@ fetch_issue_comments() {
 
     log_info "Fetching comments for $owner/$repo#$number..."
 
-    # Create temporary file using mktemp for unique naming
     local tmp_file
     tmp_file=$(mktemp "${output_file}.XXXXXX")
     if [[ $? -ne 0 ]]; then
@@ -155,7 +161,6 @@ fetch_issue_comments() {
         return 1
     fi
 
-    # Fetch all comments using API
     local api_path="repos/$owner/$repo/issues/$number/comments"
     gh api "$api_path" --paginate > "$tmp_file"
 
@@ -165,11 +170,8 @@ fetch_issue_comments() {
         return 1
     fi
 
-    # Mark trigger comment if provided
     if [[ -n "$trigger_comment_id" ]]; then
-        # Validate that trigger_comment_id is numeric before using --argjson
         if [[ "$trigger_comment_id" =~ ^[0-9]+$ ]]; then
-            # Use jq to add is_trigger field to the matching comment
             jq --argjson trigger_id "$trigger_comment_id" \
                'map(. + {is_trigger: (.id == $trigger_id)})' \
                "$tmp_file" > "$output_file"
@@ -192,7 +194,6 @@ fetch_issue_comments() {
 }
 
 # Fetch PR metadata and write to file
-# Usage: fetch_pr_metadata <owner> <repo> <number> <output_file>
 fetch_pr_metadata() {
     local owner="$1"
     local repo="$2"
@@ -200,7 +201,9 @@ fetch_pr_metadata() {
     local output_file="$4"
 
     log_info "Fetching PR metadata for $owner/$repo#$number..."
-    if gh pr view "$number" --repo "$owner/$repo" --json number,title,body,state,url,baseRefName,headRefName,headRefOid,author,createdAt,updatedAt,mergeCommit,reviews > "$output_file"; then
+    if gh pr view "$number" --repo "$owner/$repo" \
+        --json number,title,body,state,url,baseRefName,headRefName,headRefOid,author,createdAt,updatedAt,mergeCommit,reviews,additions,deletions,changedFiles,mergeable \
+        > "$output_file"; then
         return 0
     else
         log_error "Failed to fetch PR metadata"
@@ -208,8 +211,33 @@ fetch_pr_metadata() {
     fi
 }
 
+# Fetch PR files list (limited) and write to file
+fetch_pr_files() {
+    local owner="$1"
+    local repo="$2"
+    local number="$3"
+    local output_file="$4"
+    local max_files="${5:-200}"
+
+    log_info "Fetching PR files (limit: $max_files) for $owner/$repo#$number..."
+    if gh pr view "$number" --repo "$owner/$repo" \
+        --json files \
+        --jq ".files // [] | .[:$max_files]" \
+        > "$output_file"; then
+        local count
+        if ! count=$(jq 'length' "$output_file" 2>/dev/null); then
+            log_warn "Failed to parse files JSON; defaulting count to 0"
+            count=0
+        fi
+        log_info "Found $count files"
+        return 0
+    else
+        log_warn "Failed to fetch PR files"
+        return 1
+    fi
+}
+
 # Fetch PR review threads and write to file
-# Usage: fetch_pr_review_threads <owner> <repo> <number> <output_file> [unresolved_only] [trigger_comment_id]
 fetch_pr_review_threads() {
     local owner="$1"
     local repo="$2"
@@ -220,7 +248,6 @@ fetch_pr_review_threads() {
 
     log_info "Fetching review threads for $owner/$repo#$number..."
 
-    # Create temporary file using mktemp for unique naming
     local tmp_file
     tmp_file=$(mktemp "${output_file}.XXXXXX")
     if [[ $? -ne 0 ]]; then
@@ -230,7 +257,6 @@ fetch_pr_review_threads() {
 
     local query="repos/$owner/$repo/pulls/$number/comments"
 
-    # Fetch review comments
     gh api "$query" --paginate > "$tmp_file"
 
     if [[ $? -ne 0 ]]; then
@@ -239,17 +265,12 @@ fetch_pr_review_threads() {
         return 1
     fi
 
-    # Filter and transform data
-    # The /pulls/{number}/comments endpoint does not expose thread state such as APPROVED;
-    # filter only by 'outdated' flag to drop outdated comments. "Unresolved" is not available here.
     local filter_cmd='map(select(.outdated != true))'
     if [[ "$unresolved_only" == "true" ]]; then
         log_warn "Unresolved-only filtering is not supported for review comments; returning non-outdated comments."
     fi
 
-    # Mark trigger comment if provided
     if [[ -n "$trigger_comment_id" ]]; then
-        # Ensure trigger_comment_id is a valid numeric value before using --argjson
         if [[ "$trigger_comment_id" =~ ^[0-9]+$ ]]; then
             jq --argjson trigger_id "$trigger_comment_id" \
                "$filter_cmd | map(. + {is_trigger: (.id == $trigger_id)})" \
@@ -274,7 +295,6 @@ fetch_pr_review_threads() {
 }
 
 # Fetch PR comments (general discussion) and write to file
-# Usage: fetch_pr_comments <owner> <repo> <number> <output_file> [trigger_comment_id]
 fetch_pr_comments() {
     local owner="$1"
     local repo="$2"
@@ -284,7 +304,6 @@ fetch_pr_comments() {
 
     log_info "Fetching PR comments for $owner/$repo#$number..."
 
-    # Create temporary file using mktemp for unique naming
     local tmp_file
     tmp_file=$(mktemp "${output_file}.XXXXXX")
     if [[ $? -ne 0 ]]; then
@@ -302,9 +321,7 @@ fetch_pr_comments() {
         return 1
     fi
 
-    # Mark trigger comment if provided
     if [[ -n "$trigger_comment_id" ]]; then
-        # Validate that trigger_comment_id is numeric before using --argjson
         if [[ "$trigger_comment_id" =~ ^[0-9]+$ ]]; then
             jq --argjson trigger_id "$trigger_comment_id" \
                'map(. + {is_trigger: (.id == $trigger_id)})' \
@@ -328,7 +345,6 @@ fetch_pr_comments() {
 }
 
 # Fetch PR diff and write to file
-# Usage: fetch_pr_diff <owner> <repo> <number> <output_file>
 fetch_pr_diff() {
     local owner="$1"
     local repo="$2"
@@ -345,15 +361,11 @@ fetch_pr_diff() {
 }
 
 # Fetch PR check runs and write to file
-# Usage: fetch_pr_check_runs <owner> <repo> <head_sha> <output_file> [max_runs]
 fetch_pr_check_runs() {
     local owner="$1"
     local repo="$2"
     local head_sha="$3"
     local output_file="$4"
-
-    # max_runs: explicit arg wins, otherwise use MAX_CHECK_RUNS env var, falling back to 200.
-    # 200 is a reasonable upper bound to avoid excessive data while capturing typical workloads.
     local max_runs_arg="${5:-}"
     local max_runs_env="${MAX_CHECK_RUNS:-200}"
     local max_runs="${max_runs_arg:-$max_runs_env}"
@@ -378,14 +390,13 @@ fetch_pr_check_runs() {
 }
 
 # Fetch workflow logs for failed checks
-# Usage: fetch_workflow_logs <output_dir> <check_runs_file>
 fetch_workflow_logs() {
     local output_dir="$1"
     local check_runs_file="$2"
     local logs_file="$output_dir/test-failure-logs.txt"
 
-    # Get failed checks with detailsURL
-    local failed_checks=$(jq -r '.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required") | select(.details_url != null) | "\(.name)|\(.details_url)|\(.conclusion)"' "$check_runs_file")
+    local failed_checks
+    failed_checks=$(jq -r '.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required") | select(.details_url != null) | "\(.name)|\(.details_url)|\(.conclusion)"' "$check_runs_file")
 
     if [[ -z "$failed_checks" ]]; then
         log_info "No failed checks with workflow logs found"
@@ -400,15 +411,14 @@ fetch_workflow_logs() {
 
         log_info "  Downloading logs for: $name"
 
-        # Fetch logs
-        local logs=$(gh api "$url" 2>/dev/null || echo "")
+        local logs
+        logs=$(gh api "$url" 2>/dev/null || echo "")
 
         if [[ -z "$logs" ]]; then
             log_warn "    Failed to download logs for $name"
             continue
         fi
 
-        # Append to output file
         if [[ "$first" == "true" ]]; then
             first=false
         else
@@ -423,25 +433,65 @@ fetch_workflow_logs() {
     return 0
 }
 
+# Fetch PR commits and write to file
+fetch_pr_commits() {
+    local owner="$1"
+    local repo="$2"
+    local number="$3"
+    local output_file="$4"
+
+    log_info "Fetching commits for $owner/$repo#$number..."
+    if gh api "repos/$owner/$repo/pulls/$number/commits" --paginate > "$output_file"; then
+        local count
+        if ! count=$(jq 'length' "$output_file" 2>/dev/null); then
+            log_warn "Failed to parse commits JSON; defaulting count to 0"
+            count=0
+        fi
+        log_info "Found $count commits"
+        return 0
+    else
+        log_warn "Failed to fetch commits (continuing...)"
+        return 1
+    fi
+}
+
 # Verify that required context files exist and are non-empty where appropriate
-# Usage: verify_context_files <context_dir> <ref_type> [include_diff] [include_checks]
 verify_context_files() {
     local context_dir="$1"
     local ref_type="$2"
     local include_diff="${3:-false}"
     local include_checks="${4:-false}"
+    local include_files="${5:-false}"
+    local include_commits="${6:-false}"
+    local include_threads="${7:-false}"
+
     local required_files=()
     local optional_files=()
 
     if [[ "$ref_type" == "pr" ]]; then
-        required_files=("$context_dir/github/pr.json")
-        optional_files=("$context_dir/github/review_threads.json" "$context_dir/github/pr_comments.json")
+        required_files+=("$context_dir/github/pr.json")
+        if [[ "$include_files" == "true" ]]; then
+            required_files+=("$context_dir/github/files.json")
+        else
+            optional_files+=("$context_dir/github/files.json")
+        fi
+
+        optional_files+=("$context_dir/github/comments.json")
+
+        if [[ "$include_threads" == "true" ]]; then
+            optional_files+=("$context_dir/github/review_threads.json")
+        fi
+
         if [[ "$include_diff" == "true" ]]; then
             optional_files+=("$context_dir/github/pr.diff")
         fi
 
         if [[ "$include_checks" == "true" ]]; then
             optional_files+=("$context_dir/github/check_runs.json")
+        fi
+
+        if [[ "$include_commits" == "true" ]]; then
+            optional_files+=("$context_dir/github/commits.json")
         fi
     elif [[ "$ref_type" == "issue" ]]; then
         required_files=("$context_dir/github/issue.json")
@@ -460,7 +510,6 @@ verify_context_files() {
         fi
     done
 
-    # Optional files: allow missing/empty but warn
     for file in "${optional_files[@]}"; do
         if [[ ! -f "$file" ]]; then
             log_warn "Optional context file missing: $file"
@@ -490,18 +539,26 @@ write_manifest() {
     local ref_type="$5"
     local success="$6"
 
+    local provider="${MANIFEST_PROVIDER:-github-context}"
     local manifest_file="$output_dir/manifest.json"
-    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
     cat > "$manifest_file" <<EOF
 {
-  "provider": "github-solve",
+  "provider": "$provider",
   "kind": "$ref_type",
   "ref": "$owner/$repo#$number",
   "owner": "$owner",
   "repo": "$repo",
   "number": $number,
   "collected_at": "$timestamp",
+  "include_diff": ${INCLUDE_DIFF:-false},
+  "include_checks": ${INCLUDE_CHECKS:-false},
+  "include_files": ${INCLUDE_FILES:-false},
+  "include_commits": ${INCLUDE_COMMITS:-false},
+  "include_threads": ${INCLUDE_THREADS:-false},
+  "max_files": ${MAX_FILES:-0},
   "success": $success
 }
 EOF
