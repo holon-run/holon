@@ -164,6 +164,7 @@ help:
 ## test-skill-mode: Run skill-mode shell tests (no network/LLM required)
 test-skill-mode:
 	@echo "Running skill-mode shell tests..."
+	@./tests/skill-mode/test_helper_drift.sh
 	@./tests/skill-mode/test_collector.sh
 	@./tests/skill-mode/test_publisher.sh
 

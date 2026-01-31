@@ -1,6 +1,6 @@
 ---
 name: github-solve
-description: GitHub issue and PR workflow automation for collecting context, fixing issues, and publishing changes. Use when working with GitHub issues, pull requests, or code reviews that require: (1) Analyzing and fixing PR review comments, (2) Creating PRs from issues, (3) Publishing changes via GitHub API, (4) Collecting GitHub context (issues, PRs, reviews, CI logs)
+description: "GitHub issue and PR workflow automation for collecting context, fixing issues, and publishing changes. Use when working with GitHub issues, pull requests, or code reviews that require: (1) Analyzing and fixing PR review comments, (2) Creating PRs from issues, (3) Publishing changes via GitHub API, (4) Collecting GitHub context (issues, PRs, reviews, CI logs)"
 ---
 
 # GitHub Solve Skill
@@ -46,7 +46,7 @@ export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
 
 ## Minimal Input Payload
 
-When no pre-populated GitHub context is available (i.e., `/holon/input/context/github/` is empty or missing), you **MUST** first collect context using the skill's built-in collection script.
+When no pre-populated GitHub context is available (i.e., `/holon/input/context/github/` is empty or missing), you **MUST** first collect context using the shared `github-context` collector (this wrapper lives at `scripts/collect.sh`).
 
 The minimal input payload required is:
 - **`/holon/input/payload.json`** (optional): Contains task metadata with GitHub reference
@@ -67,7 +67,7 @@ The agent must extract the `ref` field from `payload.json` and pass it as a comm
 
 When `/holon/input/context/github/` is empty or missing required files:
 
-1. **Run the collection script**:
+1. **Run the collection script** (thin wrapper over the shared `github-context` skill):
    ```bash
    /holon/workspace/skills/github-solve/scripts/collect.sh "<ref>" [repo_hint]
    ```
@@ -77,13 +77,17 @@ When `/holon/input/context/github/` is empty or missing required files:
    - `502` - numeric (requires repo_hint)
    - `https://github.com/holon-run/holon/issues/502` - full URL
 
-2. **Configure with environment variables** (optional):
+2. **Configure with environment variables** (optional, passed through to `github-context`):
    ```bash
    # Optional overrides; otherwise defaults to /holon/output/github-context or /tmp/holon-ghctx-*
    export GITHUB_CONTEXT_DIR=${GITHUB_OUTPUT_DIR}/github-context
    export TRIGGER_COMMENT_ID=123456
-   export INCLUDE_DIFF=true          # for PRs
-   export INCLUDE_CHECKS=true        # for PRs
+   export INCLUDE_DIFF=true          # include pr.diff
+   export INCLUDE_CHECKS=true        # include check_runs + workflow logs
+   export INCLUDE_THREADS=true       # include review_threads.json
+   export INCLUDE_FILES=true         # include files.json (PRs)
+   export INCLUDE_COMMITS=true       # include commits.json (PRs)
+   export MAX_FILES=200              # cap number of files collected
    # UNRESOLVED_ONLY is deprecated (GitHub API lacks unresolved state on /pulls/{n}/comments)
    ```
 
@@ -95,9 +99,9 @@ When `/holon/input/context/github/` is empty or missing required files:
 
 4. **Proceed with task** using collected context
 
-The collection script fetches:
+The collection script fetches (via `github-context`):
 - **For issues**: `issue.json`, `comments.json`
-- **For PRs**: `pr.json`, `review_threads.json`, `comments.json`, `pr.diff`, `check_runs.json`, `test-failure-logs.txt`
+- **For PRs**: `pr.json`, `files.json`, `review_threads.json`, `comments.json`, `pr.diff`, `check_runs.json`, `test-failure-logs.txt`, `commits.json`
 
 All collected context is persisted under `${GITHUB_OUTPUT_DIR}/github-context/` for audit/debug.
 
@@ -109,7 +113,7 @@ All collected context is persisted under `${GITHUB_OUTPUT_DIR}/github-context/` 
 
 ## Skill Scripts
 
-This skill includes helper scripts in `scripts/`:
+This skill includes helper scripts in `scripts/` (delegating to `skills/github-context` for collection helpers):
 
 ### Context Collection
 
@@ -119,13 +123,8 @@ This skill includes helper scripts in `scripts/`:
   - Requires `jq` for JSON processing
   - Usage: `collect.sh <ref> [repo_hint]`
 
-- **`scripts/lib/helpers.sh`**: Reusable helper functions
-  - `check_gh_cli()`, `check_jq()`: Verify dependencies
-  - `parse_ref()`: Parse GitHub reference into owner/repo/number
-  - `determine_ref_type()`: Check if a number is a PR or issue
-  - `fetch_*`: Various fetch functions for GitHub data
-  - `verify_context_files()`: Validate required files exist
-  - `write_manifest()`: Write collection manifest
+- **`scripts/collect.sh`**: Thin wrapper that sets defaults then calls `../github-context/scripts/collect.sh`
+- **`../github-context/scripts/lib/helpers.sh`**: Shared helper functions (parse refs, dependency checks, fetchers, manifest writer)
 
 ### Review Reply Posting
 
@@ -179,11 +178,13 @@ This skill adapts behavior based on the GitHub context provided:
 When GitHub context is provided (either pre-populated or collected), files are available under `/holon/input/context/github/`:
 
 ### PR Context Files
-- `pr.json`: Pull request metadata including reviews
+- `pr.json`: Pull request metadata including reviews and stats
+- `files.json`: Changed files list (capped by `MAX_FILES`)
 - `review_threads.json`: Review threads with line-specific comments (includes `comment_id`)
 - `comments.json`: PR discussion comments
 - `pr.diff`: The code changes being reviewed
-- `check_runs.json`: CI/check run metadata
+- `commits.json`: PR commits (when enabled)
+- `check_runs.json`: CI/check run metadata (when enabled)
 - `test-failure-logs.txt`: Complete workflow logs for failed tests
 
 ### Issue Context Files

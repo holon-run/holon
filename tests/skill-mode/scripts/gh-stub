@@ -54,6 +54,18 @@ case "${1:-}" in
                     shift
                 done
 
+                # Prefer files fixture when requesting files only
+                if [[ "$json_fields" == "files" || "$json_fields" == "files,"* || "$json_fields" == *",files" ]]; then
+                    files_fixture="$OUTPUT_DIR/pr_${pr_num}_files.json"
+                    if [[ -f "$files_fixture" ]]; then
+                        cat "$files_fixture"
+                        exit 0
+                    else
+                        echo '{"files": []}'
+                        exit 0
+                    fi
+                fi
+
                 fixture_file="$OUTPUT_DIR/pr_${pr_num}.json"
                 if [[ -f "$fixture_file" ]]; then
                     cat "$fixture_file"
@@ -130,6 +142,10 @@ case "${1:-}" in
         elif [[ "$endpoint" =~ repos/.*/.*/commits/.*/check-runs ]]; then
             fixture_file="$OUTPUT_DIR/check_runs.json"
             [[ -f "$fixture_file" ]] && cat "$fixture_file" || echo '{"check_runs": []}'
+        elif [[ "$endpoint" =~ repos/([^/]+)/([^/]+)/pulls/([0-9]+)/commits ]]; then
+            pr_num="${BASH_REMATCH[3]}"
+            fixture_file="$OUTPUT_DIR/pr_${pr_num}_commits.json"
+            [[ -f "$fixture_file" ]] && cat "$fixture_file" || echo "[]"
         else
             echo "[]"
         fi

@@ -1,6 +1,6 @@
 ---
 name: github-review
-description: Automated PR code review skill that collects context, performs AI-powered analysis, and publishes structured reviews with inline comments. Use when Claude needs to review pull requests: (1) Analyzing code changes for correctness/security/performance issues, (2) Generating review findings with inline comments, (3) Publishing reviews via GitHub API. Supports one-shot review and CI integration.
+description: "Automated PR code review skill that collects context, performs AI-powered analysis, and publishes structured reviews with inline comments. Use when Claude needs to review pull requests: (1) Analyzing code changes for correctness/security/performance issues, (2) Generating review findings with inline comments, (3) Publishing reviews via GitHub API. Supports one-shot review and CI integration."
 ---
 
 # GitHub Review Skill
@@ -9,7 +9,7 @@ Automated code review skill for pull requests. Collects PR context, performs AI-
 
 ## Environment and Paths
 
-This skill uses environment variables to stay portable across Holon, local shells, and CI.
+This skill uses environment variables to stay portable across Holon, local shells, and CI. It delegates context collection to the shared `github-context` skill (wrapper at `scripts/collect.sh`).
 
 ### Key Environment Variables
 
@@ -17,7 +17,7 @@ This skill uses environment variables to stay portable across Holon, local shell
   - **Default**: `/holon/output` when the path exists (Holon container); otherwise a temp dir under `/tmp/holon-ghreview-*`
   - **Custom**: Set to any directory (e.g., `./output`, `/tmp/github-work`)
 
-- **`GITHUB_CONTEXT_DIR`**: Directory for collected GitHub context
+- **`GITHUB_CONTEXT_DIR`**: Directory for collected GitHub context (passed to `github-context`)
   - **Default**: `${GITHUB_OUTPUT_DIR}/github-review-context`
   - **Custom**: Set to override the context directory
 
@@ -32,11 +32,12 @@ This skill uses environment variables to stay portable across Holon, local shell
   - When `false`, skill exits silently if no issues are found
   - When `true`, posts a "no issues found" review comment
 
-- **`MAX_FILES`**: Maximum number of files to collect from the pull request
-  - When unset, the collection script's internal default (100) is used
-
-- **`INCLUDE_THREADS`**: Whether to include review comment threads and discussions in collected context
-  - Set to `true` to include discussion threads; when unset, the collection script's default behavior applies
+- **`MAX_FILES`**: Maximum number of files to collect from the pull request (default wrapper value: 100)
+- **`INCLUDE_THREADS`**: Include review comment threads (default: true)
+- **`INCLUDE_FILES`**: Include changed files list (default: true)
+- **`INCLUDE_DIFF`**: Include full diff (default: true)
+- **`INCLUDE_COMMITS`**: Include commits (default: true)
+- **`INCLUDE_CHECKS`**: Include check runs (wrapper default: false to keep collection light)
 
 ### Path Examples
 
@@ -59,7 +60,7 @@ export MAX_INLINE=10
 This skill follows a three-step workflow:
 
 ### 1. Collect Context
-Run `scripts/collect.sh <PR_REF>` to gather PR information:
+Run `scripts/collect.sh <PR_REF>` to gather PR information (delegates to `github-context` with review-friendly defaults):
 - PR metadata (title, description, author, stats)
 - Changed files list with full diff
 - Existing review threads (to avoid duplicates)
@@ -130,7 +131,7 @@ holon --skill github-review holon-run/holon#123
 
 This skill includes executable scripts in `scripts/`:
 
-- **`collect.sh`**: Collects PR context (metadata, diff, comments, etc.)
+- **`collect.sh`**: Collects PR context (metadata, diff, comments, etc.) via `github-context`
 - **`publish.sh`**: Publishes reviews with inline comments via GitHub API
 
 For detailed script documentation, usage, and examples, see [references/SCRIPTS.md](references/SCRIPTS.md).
@@ -154,6 +155,7 @@ Agents should read this file to understand review priorities, what to skip, and 
 4. **`${GITHUB_CONTEXT_DIR}/github/review_threads.json`**: Existing review comments
 5. **`${GITHUB_CONTEXT_DIR}/github/comments.json`**: PR discussion comments
 6. **`${GITHUB_CONTEXT_DIR}/github/commits.json`**: Commit history
+7. **`${GITHUB_CONTEXT_DIR}/github/check_runs.json`**: Check runs (when `INCLUDE_CHECKS=true`)
 
 ### Required Outputs (from agent)
 
