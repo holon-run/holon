@@ -1,6 +1,6 @@
 # Diagnostics and Best Practices
 
-Diagnostic confidence levels and common contract rules for the github-solve skill.
+Diagnostic confidence levels and common contract rules for the github-pr-fix skill.
 
 ## Diagnostic Confidence Levels
 

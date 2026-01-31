@@ -1,6 +1,6 @@
 # GitHub Publishing
 
-Complete guide for GitHub publishing in the github-solve skill.
+Complete guide for GitHub publishing in the github-publish skill.
 
 ## Table of Contents
 
@@ -44,7 +44,7 @@ The agent is responsible for all **creative and intelligent** work:
    ```bash
    # Edit files directly, don't generate patches
    vim cmd/holon/solve.go
-   vim skills/github-solve/scripts/publish.sh
+   vim skills/github-publish/scripts/publish.sh
    ```
 
 3. **Test and iterate**:
@@ -67,7 +67,7 @@ The agent is responsible for all **creative and intelligent** work:
 
 6. **Execute publishing script**:
    ```bash
-   cd /holon/workspace/skills/github-solve
+   cd /holon/workspace/skills/github-publish
    ./scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
    ```
 
@@ -118,7 +118,7 @@ git commit -m "Feature: Add GitHub publishing to skill"
 cat > ${GITHUB_OUTPUT_DIR}/summary.md <<EOF
 ## Summary
 
-Implements GitHub publishing in github-solve skill
+Implements GitHub publishing in github-publish skill
 
 ## Changes
 - Add publish.sh: Unified publishing script
@@ -333,7 +333,7 @@ git checkout -b feature/issue-503
 cat > ${GITHUB_OUTPUT_DIR}/summary.md <<EOF
 ## Summary
 
-Implements GitHub publishing in github-solve skill
+Implements GitHub publishing in github-publish skill
 
 ## Changes
 - Add publish.sh: Unified publishing script

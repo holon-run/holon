@@ -856,13 +856,13 @@ func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, trigger
 	baseGoal := ""
 	if refType == "pr" {
 		if useSkillMode {
-			baseGoal = fmt.Sprintf("Use the github-solve skill to fix the PR %s. The skill will guide you through: (1) Analyzing review comments, (2) Implementing fixes, (3) Publishing replies to GitHub.", ref.URL())
+			baseGoal = fmt.Sprintf("Use the github-pr-fix skill to fix the PR %s. The skill will guide you through: (1) Analyzing review comments, (2) Implementing fixes, (3) Publishing replies to GitHub.", ref.URL())
 		} else {
 			baseGoal = fmt.Sprintf("Fix the review comments and issues in PR %s. Address all unresolved review comments and make necessary code changes.", ref.URL())
 		}
 	} else {
 		if useSkillMode {
-			baseGoal = fmt.Sprintf("Use the github-solve skill to solve the GitHub issue %s. The skill will guide you through: (1) Collecting GitHub context, (2) Implementing the solution, (3) Publishing changes via GitHub API.", ref.URL())
+			baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s. The skill will guide you through: (1) Collecting GitHub context, (2) Implementing the solution, (3) Publishing changes via GitHub API.", ref.URL())
 		} else {
 			baseGoal = fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. Focus on implementing the solution; the system will handle committing changes and creating any pull requests.", ref.URL())
 		}
@@ -1107,7 +1107,7 @@ func init() {
 	solveCmd.Flags().StringVarP(&solveImage, "image", "i", "", "Docker base image (default: auto-detect from workspace)")
 	solveCmd.Flags().BoolVar(&solveImageAutoDetect, "image-auto-detect", true, "Enable automatic base image detection (default: true)")
 	solveCmd.Flags().StringVar(&solveMode, "mode", "", "Execution mode (default: auto-detect from ref type)")
-	solveCmd.Flags().StringSliceVar(&solveSkillPaths, "skill", []string{}, "Skill reference (e.g., github-solve). Repeatable. Mutually exclusive with --mode.")
+	solveCmd.Flags().StringSliceVar(&solveSkillPaths, "skill", []string{}, "Skill reference (e.g., github-issue-solve, github-pr-fix). Repeatable. Mutually exclusive with --mode.")
 	solveCmd.Flags().StringVar(&solveSkillsList, "skills", "", "Comma-separated list of skill references")
 	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")

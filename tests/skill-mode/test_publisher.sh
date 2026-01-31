@@ -8,7 +8,7 @@ set -euo pipefail
 # Test directory setup
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-PUBLISHER_SCRIPT="$REPO_ROOT/skills/github-solve/scripts/publish.sh"
+PUBLISHER_SCRIPT="$REPO_ROOT/skills/github-publish/scripts/publish.sh"
 
 # Test counters
 TESTS_RUN=0
@@ -139,20 +139,37 @@ test_publisher_help() {
 test_publisher_missing_intent() {
     local test_name="missing_intent"
     log_info "Running test: $test_name"
-    
+
     local tmp_dir
     tmp_dir=$(setup_test_env "$test_name")
     local output_dir="$tmp_dir/output"
-    
+    local bin_dir="$tmp_dir/bin"
+
+    # Provide a stub gh on PATH so check_dependencies/gh auth status passes
+    mkdir -p "$bin_dir"
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+# Minimal gh stub for tests: always report auth as OK.
+if [[ "$1" == "auth" && "$2" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+# Default: succeed without doing anything.
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+
     mkdir -p "$output_dir"
     export GITHUB_OUTPUT_DIR="$output_dir"
-    
+
     cd "$tmp_dir"
-    
+
     # Run publisher without intent file and expect error
     local output
     output=$(bash "$PUBLISHER_SCRIPT" --intent=/nonexistent/intent.json 2>&1 || true)
-    
+
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$output" == *"Error"* ]] || [[ "$output" == *"error"* ]] || [[ "$output" == *"not found"* ]] || [[ "$output" == *"No such file"* ]]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
@@ -162,30 +179,47 @@ test_publisher_missing_intent() {
         log_error "✗ Publisher should error on missing intent file"
         log_error "Output: $output"
     fi
-    
+
     cleanup_test_env "$tmp_dir"
 }
 
 test_publisher_invalid_json() {
     local test_name="invalid_json"
     log_info "Running test: $test_name"
-    
+
     local tmp_dir
     tmp_dir=$(setup_test_env "$test_name")
     local output_dir="$tmp_dir/output"
-    
+    local bin_dir="$tmp_dir/bin"
+
+    # Provide a stub gh on PATH so check_dependencies/gh auth status passes
+    mkdir -p "$bin_dir"
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+# Minimal gh stub for tests: always report auth as OK.
+if [[ "$1" == "auth" && "$2" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+# Default: succeed without doing anything.
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+
     # Create invalid JSON intent file
     mkdir -p "$output_dir"
     echo "{ invalid json" > "$output_dir/publish-intent.json"
-    
+
     export GITHUB_OUTPUT_DIR="$output_dir"
-    
+
     cd "$tmp_dir"
-    
+
     # Run publisher and expect failure
     local output
     output=$(bash "$PUBLISHER_SCRIPT" --intent="$output_dir/publish-intent.json" 2>&1 || true)
-    
+
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$output" == *"parse error"* ]] || [[ "$output" == *"invalid"* ]] || [[ "$output" == *"Error"* ]]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
@@ -194,7 +228,7 @@ test_publisher_invalid_json() {
         TESTS_FAILED=$((TESTS_FAILED + 1))
         log_error "✗ Publisher should reject invalid JSON"
     fi
-    
+
     cleanup_test_env "$tmp_dir"
 }
 

@@ -26,7 +26,7 @@ const (
 // Skill represents a discovered or specified skill
 type Skill struct {
 	// Path is the absolute or relative path to the skill directory
-	// For builtin skills, this is the reference (e.g., "github-solve")
+	// For builtin skills, this is the reference (e.g., "github-issue-solve")
 	Path string
 	// Name is the base name of the skill directory
 	Name string
@@ -38,8 +38,8 @@ type Skill struct {
 
 // Resolver handles skill discovery, validation, and resolution
 type Resolver struct {
-	workspace    string
-	cache        *remote.Cache
+	workspace       string
+	cache           *remote.Cache
 	catalogRegistry *catalog.Registry
 }
 
@@ -391,7 +391,7 @@ func StageWithPrefix(workspaceDest string, skills []Skill, includeSkillsPrefix b
 	// Copy each skill
 	for _, skill := range skills {
 		// Use the skill name (base directory) for all skills
-		// For builtin skills: "github-solve" -> Name is "github-solve"
+		// For builtin skills: "github-issue-solve" -> Name is "github-issue-solve"
 		// For filesystem skills: Name is the directory name
 		destPath := filepath.Join(destSkillsDir, skill.Name)
 

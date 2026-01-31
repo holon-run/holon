@@ -9,7 +9,7 @@ Automated code review skill for pull requests. Collects PR context, performs AI-
 
 ## Environment and Paths
 
-This skill uses environment variables to stay portable across Holon, local shells, and CI. It delegates context collection to the shared `github-context` skill (wrapper at `scripts/collect.sh`).
+This skill uses environment variables to stay portable across Holon, local shells, and CI. It delegates context collection to the shared `github-context` skill; no absolute install paths are assumed.
 
 ### Key Environment Variables
 
@@ -60,7 +60,7 @@ export MAX_INLINE=10
 This skill follows a three-step workflow:
 
 ### 1. Collect Context
-Run `scripts/collect.sh <PR_REF>` to gather PR information (delegates to `github-context` with review-friendly defaults):
+Collect PR information via the `github-context` skill (review-friendly defaults recommended):
 - PR metadata (title, description, author, stats)
 - Changed files list with full diff
 - Existing review threads (to avoid duplicates)
@@ -95,16 +95,9 @@ holon --skill github-review https://github.com/holon-run/holon/pull/123
 ### With Collection Script
 
 ```bash
-# Step 1: Collect PR context
-export GITHUB_OUTPUT_DIR=/holon/output
-/holon/workspace/skills/github-review/scripts/collect.sh "holon-run/holon#123"
-
-# Step 2: Agent performs review and generates artifacts
-# (Agent reads context from ${GITHUB_OUTPUT_DIR}/github-review-context/)
-# (Agent writes review.md and review.json to ${GITHUB_OUTPUT_DIR}/)
-
-# Step 3: Publish review
-/holon/workspace/skills/github-review/scripts/publish.sh
+# Step 1: Collect PR context (via github-context skill)
+# Step 2: Agent performs review and generates artifacts in ${GITHUB_OUTPUT_DIR}
+# Step 3: Publish review with scripts/publish.sh
 ```
 
 ### Advanced Options
@@ -207,27 +200,6 @@ When context is collected, the following files are available under `${GITHUB_CON
 - `comments.json`: PR discussion comments (if any)
 - `commits.json`: Commit history (if any)
 
-## Workflow
-
-### Complete Review Workflow
-
-1. **Collection** (collect.sh)
-   - Fetch PR context using gh CLI
-   - Write to `${GITHUB_CONTEXT_DIR}/github/`
-   - Generate manifest.json
-
-2. **Review** (agent)
-   - Read PR context from `${GITHUB_CONTEXT_DIR}/github/`
-   - Analyze changes according to `prompts/review.md` guidelines
-   - Generate `review.md` and `review.json`
-   - Write to `${GITHUB_OUTPUT_DIR}/`
-
-3. **Publishing** (publish.sh)
-   - Read agent artifacts from `${GITHUB_OUTPUT_DIR}/`
-   - Post structured review to GitHub API
-   - Inline comments for findings with path+line
-   - Summary from review.md
-
 ## Integration Examples
 
 ### Holon Skill Mode
@@ -263,16 +235,16 @@ export GITHUB_OUTPUT_DIR=./my-review
 mkdir -p $GITHUB_OUTPUT_DIR
 
 # Collect context
-/holon/workspace/skills/github-review/scripts/collect.sh "holon-run/holon#123"
+scripts/collect.sh "holon-run/holon#123"
 
 # Perform review (agent reads context, generates findings)
 # ... agent processes ...
 
 # Preview review
-/holon/workspace/skills/github-review/scripts/publish.sh --dry-run
+scripts/publish.sh --dry-run
 
 # Publish review
-/holon/workspace/skills/github-review/scripts/publish.sh
+scripts/publish.sh
 ```
 
 ## Important Notes

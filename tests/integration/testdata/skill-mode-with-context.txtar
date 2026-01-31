@@ -18,7 +18,7 @@ exec chmod +x bundle-src/bin/agent
 exec tar -czf agent-bundle.tar.gz -C bundle-src .
 
 # Run with skill mode and existing context
-exec holon run --goal 'test skill mode with context' --workspace work --output out --context context --agent agent-bundle.tar.gz --skill github-solve --log-level minimal --no-preflight
+exec holon run --goal 'test skill mode with context' --workspace work --output out --context context --agent agent-bundle.tar.gz --skill github-context --log-level minimal --no-preflight
 
 # Verify agent received the context
 exists out/manifest.json

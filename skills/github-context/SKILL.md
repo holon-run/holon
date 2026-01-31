@@ -5,7 +5,17 @@ description: "Shared GitHub context collection skill used by other skills. Colle
 
 # GitHub Context Skill
 
-Reusable GitHub collector used by `github-solve`, `github-review`, and other skills. Produces a consistent context bundle for issues and pull requests.
+Foundational skill for collecting GitHub issue and pull request context into a standardized, structured format.
+
+## Why Use This Skill?
+
+Instead of running multiple `gh` commands manually, this skill provides:
+
+- **Structured Output**: Consistent JSON format with all metadata in predictable locations
+- **Comprehensive Collection**: Automatically gathers issues/PRs, comments, diffs, review threads, commits, and CI logs in one pass
+- **Configurable Scope**: Fine-grained control over what to collect (diffs, checks, threads, etc.) via environment variables
+- **Manifest Generation**: Produces `manifest.json` with collection metadata for downstream processing
+- **Reusability**: Can be invoked standalone or as a dependency by other skills
 
 ## Environment and Paths
 
@@ -22,16 +32,12 @@ Reusable GitHub collector used by `github-solve`, `github-review`, and other ski
 
 ## Usage
 
+Use the skill runner (Holon or host) to invoke `scripts/collect.sh` with the reference; examples assume the script is on PATH or referenced relative to the skill directory:
+
 ```bash
-# Issue or PR reference (URL, owner/repo#num, or numeric with repo hint)
-/holon/workspace/skills/github-context/scripts/collect.sh "holon-run/holon#123"
-
-# Numeric ref with repo hint
-/holon/workspace/skills/github-context/scripts/collect.sh 123 holon-run/holon
-
-# Customize toggles
-INCLUDE_CHECKS=false MAX_FILES=50 \
-  /holon/workspace/skills/github-context/scripts/collect.sh https://github.com/holon-run/holon/pull/123
+collect.sh "holon-run/holon#123"
+collect.sh 123 holon-run/holon
+INCLUDE_CHECKS=false MAX_FILES=50 collect.sh https://github.com/holon-run/holon/pull/123
 ```
 
 ## Output Contract
@@ -49,5 +55,50 @@ Artifacts are written to `${GITHUB_CONTEXT_DIR}/github/`:
 
 ## Integration Notes
 
-- Wrapper skills (`github-solve`, `github-review`) set their own defaults and `MANIFEST_PROVIDER` before delegating to this collector.
+- Wrapper skills set their own defaults and `MANIFEST_PROVIDER` before delegating to this collector.
 - The helper library lives at `scripts/lib/helpers.sh` and provides parsing, dependency checks, fetching helpers, and manifest writing. Source it instead of copying.
+
+## Input Payload
+
+When invoking this skill, you can provide a payload file with metadata:
+
+- **`/holon/input/payload.json`** (optional): Contains task metadata with GitHub reference
+  ```json
+  {
+    "ref": "holon-run/holon#502",
+    "repo": "holon-run/holon",
+    "type": "issue|pr",
+    "trigger_comment_id": 123456
+  }
+  ```
+
+The agent should extract the `ref` field from `payload.json` and pass it to the collection script. If `payload.json` doesn't exist or `ref` is not provided, check for:
+1. Command-line arguments or environment variables with the reference
+2. Fallback to requesting the reference from the user
+
+## Reference Formats
+
+The collection script accepts GitHub references in multiple formats:
+
+- `holon-run/holon#502` - owner/repo#number format
+- `502` - numeric (requires repo_hint as second argument)
+- `https://github.com/holon-run/holon/issues/502` - full URL
+
+## Context Files
+
+When collection completes, the following files are available under `${GITHUB_CONTEXT_DIR}/github/`:
+
+### Issue Context Files
+- `issue.json`: Issue metadata
+- `comments.json`: Issue comments
+
+### PR Context Files
+- `pr.json`: Pull request metadata including reviews and stats
+- `files.json`: Changed files list (capped by `MAX_FILES`)
+- `review_threads.json`: Review threads with line-specific comments (includes `comment_id`)
+- `comments.json`: PR discussion comments
+- `pr.diff`: The code changes being reviewed
+- `commits.json`: PR commits (when `INCLUDE_COMMITS=true`)
+- `check_runs.json`: CI/check run metadata (when `INCLUDE_CHECKS=true`)
+- `test-failure-logs.txt`: Complete workflow logs for failed tests (when `INCLUDE_CHECKS=true`)
+

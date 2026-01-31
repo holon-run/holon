@@ -1,7 +1,7 @@
 #!/bin/bash
 # collect.sh - Shared GitHub context collection script (issues + PRs)
 #
-# Used by github-context directly and wrapped by github-solve/github-review.
+# Used by github-context directly and wrapped by github-issue-solve/github-pr-fix/github-review.
 # Provides toggles for diff, checks, threads, files, and commits.
 #
 # Usage: collect.sh <ref> [repo_hint]
