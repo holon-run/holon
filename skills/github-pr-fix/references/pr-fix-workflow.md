@@ -106,39 +106,29 @@ Add to `follow_up_issues` array in `pr-fix.json`:
 
 ## Posting Review Replies
 
-After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies:
+After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies, create a `publish-intent.json` for `github-publish`:
 
-### 1. Use the Reply Script
-
-```bash
-# Navigate to skill directory
-cd /holon/workspace/skills/github-pr-fix
-
-# Preview replies (recommended before posting)
-scripts/reply-reviews.sh --dry-run
-
-# Post replies to PR
-scripts/reply-reviews.sh --pr=owner/repo#123
+```json
+{
+  "actions": [
+    {
+      "type": "reply_review",
+      "pr": "owner/repo#123",
+      "comment_id": 123,
+      "body": "Your reply text here"
+    }
+  ]
+}
 ```
 
-### 2. Reply Format
+Then invoke `github-publish`:
 
-Automatically applied by script:
-- Emoji based on status: ✅ fixed, ⚠️ wontfix, ❓ need-info, 🔜 deferred
-- Status label in uppercase
-- Your message
-- Optional "Action taken" section
+```bash
+cd /holon/workspace/skills/github-publish
+scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+```
 
-### 3. Idempotency
-
-- Script checks if bot already replied to each comment
-- Skips already-responded comments
-- Supports `--from=N` to resume from specific index
-
-### 4. Output Files
-
-- `reply-results.json`: Detailed results for each reply attempt
-- Console summary: total, posted, skipped, failed counts
+`github-publish` handles idempotency and batching for replies.
 
 ## pr-fix.json Format
 

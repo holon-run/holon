@@ -17,33 +17,30 @@ This skill helps you:
 
 ## Prerequisites
 
-This skill depends on:
-- **`github-context`**: For collecting PR metadata, reviews, diffs, and CI logs
-- **`github-publish`**: For posting review replies
+This skill depends on (co-installed and callable by the agent):
+- **`github-context`**: Agent should invoke it to collect PR metadata, reviews, diffs, and CI logs
+- **`github-publish`**: Agent should invoke it to post review replies from the produced artifacts
 
-## Environment Variables
+## Environment & Paths
 
-- **`GITHUB_OUTPUT_DIR`**: Output directory for artifacts
-  - Default: `/holon/output` when the path exists; otherwise a temp dir under `/tmp/holon-ghprfix-*`
-- **`GITHUB_CONTEXT_DIR`**: Directory for collected GitHub context
+- **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
+  - Default: `/holon/output` if present; otherwise a temp dir `/tmp/holon-ghprfix-*`
+- **`GITHUB_CONTEXT_DIR`**: Where `github-context` writes collected data  
   - Default: `${GITHUB_OUTPUT_DIR}/github-context`
-- **`GITHUB_TOKEN` / `GH_TOKEN`**: GitHub authentication token (required for publishing)
-- **`HOLON_GITHUB_BOT_LOGIN`**: Bot login name for idempotency checks
-  - Default: `holonbot[bot]`
+- **`GITHUB_TOKEN` / `GH_TOKEN`**: Token for GitHub operations (scopes: `repo` or `public_repo`)
+- **`HOLON_GITHUB_BOT_LOGIN`**: Bot login for idempotency (default `holonbot[bot]`)
 
-## Workflow
+## Inputs & Outputs
+
+- **Inputs** (agent obtains via `github-context`): `${GITHUB_CONTEXT_DIR}/github/pr.json`, `review_threads.json`, `check_runs.json`, `pr.diff`, etc.
+- **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
+  - `pr-fix.json` (reply plan)
+  - `summary.md`
+  - `manifest.json`
 
 ### 1. Context Collection
 
-If context is not pre-populated, collect it using the `github-context` skill with PR-specific options:
-
-```bash
-# The github-context skill should be invoked with:
-# INCLUDE_DIFF=true
-# INCLUDE_CHECKS=true
-# INCLUDE_THREADS=true
-# INCLUDE_FILES=true
-```
+If context is not pre-populated, invoke the `github-context` skill with PR options (e.g., INCLUDE_DIFF= true, INCLUDE_CHECKS=true, INCLUDE_THREADS=true, INCLUDE_FILES=true).
 
 ### 2. Analyze PR Feedback
 
@@ -142,20 +139,7 @@ Execution metadata:
 
 ### 5. Reply to Reviews
 
-Use the `scripts/reply-reviews.sh` script to post replies:
-
-```bash
-# Preview replies without posting
-scripts/reply-reviews.sh --dry-run --pr=owner/repo#123
-
-# Post all replies
-scripts/reply-reviews.sh --pr=owner/repo#123
-
-# Resume from specific reply (for error recovery)
-scripts/reply-reviews.sh --from=5 --pr=owner/repo#123
-```
-
-The script reads `${GITHUB_OUTPUT_DIR}/pr-fix.json` and posts formatted replies with idempotency checks.
+Use `${GITHUB_OUTPUT_DIR}/pr-fix.json` to produce `publish-intent.json` with `reply_review` actions, then invoke the `github-publish` skill to post replies. `reply-reviews.sh` is removed; publishing is unified via `github-publish`.
 
 ## Output Contract
 

@@ -248,11 +248,11 @@ validate_intent() {
         fi
 
         case "$action_type" in
-            create_pr|update_pr|post_comment|reply_review)
+            create_pr|update_pr|post_comment|reply_review|post_review)
                 # Valid action type
                 ;;
             *)
-                log_error "Action $i: Invalid type '$action_type' (must be: create_pr, update_pr, post_comment, reply_review)"
+                log_error "Action $i: Invalid type '$action_type' (must be: create_pr, update_pr, post_comment, reply_review, post_review)"
                 return 1
                 ;;
         esac
@@ -389,6 +389,9 @@ execute_action() {
             ;;
         reply_review)
             action_reply_review "$params"
+            ;;
+        post_review)
+            action_post_review "$params"
             ;;
         *)
             log_error "Unknown action type: $action_type"

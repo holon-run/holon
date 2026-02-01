@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARED_COLLECTOR="$SCRIPT_DIR/../../github-context/scripts/collect.sh"
 
-# Default output and context dirs (preserve previous behavior)
+# Default output and context dirs (aligned with shared github-context layout)
 if [[ -d /holon/output ]]; then
     GITHUB_OUTPUT_DIR="${GITHUB_OUTPUT_DIR:-/holon/output}"
 else
@@ -14,7 +14,7 @@ else
 fi
 
 if [[ -z "${GITHUB_CONTEXT_DIR:-}" ]]; then
-    GITHUB_CONTEXT_DIR="$GITHUB_OUTPUT_DIR/github-review-context"
+    GITHUB_CONTEXT_DIR="$GITHUB_OUTPUT_DIR/github-context"
 fi
 
 # Review prefers leaner collection (no checks by default)

@@ -21,7 +21,7 @@ Instead of manually calling `gh pr create` or `gh pr comment`, this skill provid
 
 - **`GITHUB_OUTPUT_DIR`**: Directory containing artifacts to publish
   - Default: `/holon/output` when the path exists; otherwise a temp dir under `/tmp/holon-ghpub-*`
-- **`GITHUB_TOKEN` / `GH_TOKEN`**: GitHub authentication token (required)
+- **`GITHUB_TOKEN` / `GH_TOKEN`**: GitHub authentication token (required). Scopes: `repo` for private repos (or `public_repo` for public).
 - **`HOLON_GITHUB_BOT_LOGIN`**: Bot login name for idempotency checks
   - Default: `holonbot[bot]`
   - Purpose: Skip bot's own comments/replies when checking for duplicates

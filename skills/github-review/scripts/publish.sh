@@ -21,7 +21,7 @@
 # Required artifacts:
 #   ${GITHUB_OUTPUT_DIR}/review.json      - Structured review findings
 #   ${GITHUB_OUTPUT_DIR}/review.md        - Review summary in markdown
-#   ${GITHUB_OUTPUT_DIR}/github-review-context/manifest.json - Collection manifest
+#   ${GITHUB_OUTPUT_DIR}/github-context/manifest.json - Collection manifest
 #
 # Exit codes:
 #   0: Success
@@ -120,7 +120,7 @@ fi
 # Define artifact paths
 REVIEW_JSON="$GITHUB_OUTPUT_DIR/review.json"
 REVIEW_MD="$GITHUB_OUTPUT_DIR/review.md"
-MANIFEST_JSON="$GITHUB_OUTPUT_DIR/github-review-context/manifest.json"
+MANIFEST_JSON="$GITHUB_OUTPUT_DIR/github-context/manifest.json"
 SUMMARY_MD="$GITHUB_OUTPUT_DIR/summary.md"
 
 # Verify required artifacts
@@ -137,7 +137,7 @@ if [[ ! -f "$REVIEW_MD" ]]; then
 fi
 
 if [[ ! -f "$MANIFEST_JSON" ]]; then
-    MISSING+=("github-review-context/manifest.json")
+    MISSING+=("github-context/manifest.json")
 fi
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
@@ -267,7 +267,7 @@ if [[ ${#INLINE_COMMENTS[@]} -gt 0 ]]; then
 fi
 
 # Get PR head SHA for review
-HEAD_SHA=$(jq -r '.headRefOid // empty' "$GITHUB_OUTPUT_DIR/github-review-context/github/pr.json" 2>/dev/null)
+HEAD_SHA=$(jq -r '.headRefOid // empty' "$GITHUB_OUTPUT_DIR/github-context/github/pr.json" 2>/dev/null)
 
 if [[ -z "$HEAD_SHA" ]]; then
     log_warn "Could not get head SHA from PR metadata, fetching from API..."

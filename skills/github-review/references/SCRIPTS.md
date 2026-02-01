@@ -1,6 +1,6 @@
 # Script Reference
 
-This document provides detailed reference for the github-review skill scripts. Collection now delegates to the shared `github-context` collector with review-friendly defaults.
+This document describes the runner-facing wrapper scripts for github-review. Agents should not invoke these directly; runners may use them or call `github-publish` for posting.
 
 ## collect.sh - Context Collection Script
 
@@ -57,7 +57,7 @@ collect.sh <pr_ref> [repo_hint]
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GITHUB_OUTPUT_DIR` | `/holon/output` if present, else `/tmp/holon-ghreview-*` | Output directory for artifacts |
-| `GITHUB_CONTEXT_DIR` | `${GITHUB_OUTPUT_DIR}/github-review-context` | Context subdirectory |
+| `GITHUB_CONTEXT_DIR` | `${GITHUB_OUTPUT_DIR}/github-context` | Context subdirectory |
 | `MAX_FILES` | `100` | Maximum files to fetch (prevents overwhelming context) |
 | `INCLUDE_THREADS` | `true` | Include existing review threads |
 | `INCLUDE_DIFF` | `true` | Include `pr.diff` |
@@ -67,7 +67,7 @@ collect.sh <pr_ref> [repo_hint]
 
 ### Output Files
 
-All files written to `GITHUB_CONTEXT_DIR` (default: `GITHUB_OUTPUT_DIR/github-review-context/`):
+All files written to `GITHUB_CONTEXT_DIR` (default: `GITHUB_OUTPUT_DIR/github-context/`):
 
 - `github/pr.json` - PR metadata
 - `github/files.json` - Changed files list
@@ -103,53 +103,33 @@ MAX_FILES=50 collect.sh "owner/repo#456"
 
 ### Purpose
 
-Publishes structured PR reviews with inline comments via GitHub API.
+Posts a single PR review with inline comments using GitHub API, based on agent-generated artifacts.
 
 ### Usage
 
 ```bash
-# Execute from intent file
-publish.sh --intent=/holon/output/publish-intent.json
+# Preview without posting
+DRY_RUN=true publish.sh --pr=owner/repo#123
 
-# Direct command mode
-publish.sh create-pr --title "Review" --body-file review.md --head fix/x --base main
-publish.sh comment --body-file summary.md
+# Publish with limits
+MAX_INLINE=10 POST_EMPTY=false publish.sh --pr=owner/repo#123
 ```
 
-### Commands
+### Options
 
-#### create-pr - Create a new PR review
+- `--dry-run` or `DRY_RUN=true`: Preview review body and inline comments without posting
+- `--max-inline=N` or `MAX_INLINE`: Limit inline comments (default 20)
+- `--post-empty` or `POST_EMPTY=true`: Post even when `review.json` is empty
+- `--pr=OWNER/REPO#NUMBER`: Target PR (optional if `github-context` manifest is present)
 
-```bash
-publish.sh create-pr \
-  --title "Code Review Results" \
-  --body-file review.md \
-  --head fix/review-branch \
-  --base main
-```
+### Required artifacts (in `${GITHUB_OUTPUT_DIR}`; defaults to `/holon/output` or temp)
+- `review.md`: Review summary/body
+- `review.json`: Structured findings with `path`/`line`/`severity`/`message` (and optional `suggestion`)
+- `github-context/manifest.json`: Collection manifest (for PR ref and head SHA)
 
-**Parameters:**
-- `--title` (required): Review title
-- `--body` or `--body-file` (required): Review body (file or inline)
-- `--head` (required): Head branch name
-- `--base` (required): Base branch name
-- `--draft`: Create as draft PR (default: false)
-- `--labels`: Comma-separated labels
-
-#### update-pr - Update existing review
-
-```bash
-publish.sh update-pr \
-  --pr-number 123 \
-  --body-file updated-review.md
-```
-
-#### comment - Post PR-level comment
-
-```bash
-publish.sh comment \
-  --body-file summary.md
-```
+### Output
+- Updates GitHub with one review (event=COMMENT) plus inline comments (up to `MAX_INLINE`).
+- Writes `summary.md` describing what was posted.
 
 ### Environment Variables
 
@@ -250,7 +230,7 @@ jobs:
 # 1. Collect
 GITHUB_OUTPUT_DIR=./review collect.sh "owner/repo#123"
 
-# 2. Agent performs review (reads ./review/github-review-context/)
+# 2. Agent performs review (reads ./review/github-context/)
 #    Agent writes to ./review/review.md and review.json
 
 # 3. Publish

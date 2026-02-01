@@ -17,28 +17,31 @@ This skill helps you:
 
 ## Prerequisites
 
-This skill depends on:
-- **`github-context`**: For collecting issue metadata and comments
-- **`github-publish`**: For creating pull requests
+This skill depends on (co-installed and callable by the agent):
+- **`github-context`**: Agent should invoke it to collect issue metadata and comments when context is missing
+- **`github-publish`**: Agent should invoke it to publish PRs from the produced artifacts
 
-## Environment Variables
+## Environment & Paths
 
-- **`GITHUB_OUTPUT_DIR`**: Output directory for artifacts
-  - Default: `/holon/output` when the path exists; otherwise a temp dir under `/tmp/holon-ghissue-*`
-- **`GITHUB_CONTEXT_DIR`**: Directory for collected GitHub context
+- **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
+  - Default: `/holon/output` if present; otherwise a temp dir `/tmp/holon-ghissue-*`
+- **`GITHUB_CONTEXT_DIR`**: Where `github-context` writes collected data  
   - Default: `${GITHUB_OUTPUT_DIR}/github-context`
-- **`GITHUB_TOKEN` / `GH_TOKEN`**: GitHub authentication token (required for publishing)
+- **`GITHUB_TOKEN` / `GH_TOKEN`**: Token used for GitHub operations (scopes: `repo` or `public_repo`)
+
+## Inputs & Outputs
+
+- **Inputs** (agent should obtain via `github-context`): `${GITHUB_CONTEXT_DIR}/github/issue.json`, `comments.json`
+- **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
+  - `summary.md`
+  - `manifest.json`
+  - Optional `publish-intent.json` for `github-publish`
 
 ## Workflow
 
 ### 1. Context Collection
 
-If context is not pre-populated, collect it using the `github-context` skill:
-
-```bash
-# The github-context skill should be invoked with the issue reference
-# Context will be available at ${GITHUB_CONTEXT_DIR}/github/
-```
+If context is not pre-populated, call the `github-context` skill’s collector with the issue reference. After collection, context is under `${GITHUB_CONTEXT_DIR}/github/`.
 
 ### 2. Analyze Issue
 
@@ -97,9 +100,7 @@ Execution metadata:
 
 ### 5. Create Pull Request
 
-Use the `github-publish` skill to create a PR:
-
-Create `${GITHUB_OUTPUT_DIR}/publish-intent.json`:
+Produce `${GITHUB_OUTPUT_DIR}/publish-intent.json` and invoke the `github-publish` skill to create the PR:
 ```json
 {
   "actions": [
@@ -115,7 +116,7 @@ Create `${GITHUB_OUTPUT_DIR}/publish-intent.json`:
 }
 ```
 
-Then invoke the publish script (or let the skill runner handle it).
+Run `github-publish` with this intent file (scripts/publish.sh in that skill bundle).
 
 ## Output Contract
 

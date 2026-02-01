@@ -210,8 +210,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		WorkingDir: "/holon/workspace",
 		Tty:        false,
 	}, &container.HostConfig{
-		Mounts:     mounts,
-		AutoRemove: true,
+		Mounts: mounts,
 	}, nil, nil, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to create container: %w", err)

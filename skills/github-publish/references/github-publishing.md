@@ -182,7 +182,7 @@ For batch mode, create a `${GITHUB_OUTPUT_DIR}/publish-intent.json` file:
   "pr_ref": "holon-run/holon#123",
   "actions": [
     {
-      "type": "create_pr|update_pr|post_comment|reply_review",
+      "type": "create_pr|update_pr|post_comment|reply_review|post_review",
       "description": "Human-readable description",
       "params": { }
     }
@@ -317,6 +317,31 @@ Posts formatted replies to PR review comments.
       "action_taken": "Updated file X line Y"
     }
   ]
+}
+```
+
+### 5. post_review - Post a PR Review with Inline Comments
+
+Posts a single PR review (`event=COMMENT`) with optional inline comments.
+
+**Parameters**:
+- `body` (required): Review body (inline markdown or path relative to output dir, e.g., `review.md`)
+- `comments_file` (optional): Path to findings file (default: `review.json`)
+- `max_inline` (optional): Limit inline comments (default: 20)
+- `post_empty` (optional): Post even when there are zero findings (default: false)
+- `commit_id` (optional): PR head SHA (auto-fetched if omitted)
+
+**Example**:
+```json
+{
+  "type": "post_review",
+  "description": "Post code review with inline comments",
+  "params": {
+    "body": "review.md",
+    "comments_file": "review.json",
+    "max_inline": 15,
+    "post_empty": false
+  }
 }
 ```
 

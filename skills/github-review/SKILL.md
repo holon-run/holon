@@ -7,37 +7,20 @@ description: "Automated PR code review skill that collects context, performs AI-
 
 Automated code review skill for pull requests. Collects PR context, performs AI-powered code review, and publishes structured reviews with inline comments.
 
+**Prerequisites:** This skill requires the `github-context` skill to collect PR data and must be distributed together with it.
+
 ## Environment and Paths
 
-This skill uses environment variables to stay portable across Holon, local shells, and CI. It delegates context collection to the shared `github-context` skill; no absolute install paths are assumed.
+This skill uses environment variables to stay portable across Holon, local shells, and CI. It delegates context collection to the shared `github-context` skill; no absolute install paths are assumed. Agents should invoke `github-context` when context is missing, then invoke `github-publish` (or the included wrapper) to publish.
 
 ### Key Environment Variables
 
-- **`GITHUB_OUTPUT_DIR`**: Output directory for artifacts and review results
-  - **Default**: `/holon/output` when the path exists (Holon container); otherwise a temp dir under `/tmp/holon-ghreview-*`
-  - **Custom**: Set to any directory (e.g., `./output`, `/tmp/github-work`)
-
-- **`GITHUB_CONTEXT_DIR`**: Directory for collected GitHub context (passed to `github-context`)
-  - **Default**: `${GITHUB_OUTPUT_DIR}/github-review-context`
-  - **Custom**: Set to override the context directory
-
-- **`GITHUB_TOKEN` / `GH_TOKEN`**: GitHub authentication token
-  - Required for both collection and publishing
-  - Must have `pull:read` and `pull:write` scopes
-
-- **`MAX_INLINE`**: Maximum inline comments to post (default: 20)
-  - Limits the number of inline comments to avoid overwhelming reviewers
-
-- **`POST_EMPTY`**: Post review even when no findings (default: false)
-  - When `false`, skill exits silently if no issues are found
-  - When `true`, posts a "no issues found" review comment
-
-- **`MAX_FILES`**: Maximum number of files to collect from the pull request (default wrapper value: 100)
-- **`INCLUDE_THREADS`**: Include review comment threads (default: true)
-- **`INCLUDE_FILES`**: Include changed files list (default: true)
-- **`INCLUDE_DIFF`**: Include full diff (default: true)
-- **`INCLUDE_COMMITS`**: Include commits (default: true)
-- **`INCLUDE_CHECKS`**: Include check runs (wrapper default: false to keep collection light)
+- **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
+  - Default: `/holon/output` if present; otherwise a temp dir `/tmp/holon-ghreview-*`
+- **`GITHUB_CONTEXT_DIR`**: Where `github-context` writes collected PR data  
+  - Default: `${GITHUB_OUTPUT_DIR}/github-context`
+- **`GITHUB_TOKEN` / `GH_TOKEN`**: Token used when invoking `github-context` / `github-publish` (scopes: `repo` or `public_repo`)
+- Publishing options (e.g., inline limits) can be passed to `github-publish` (`MAX_INLINE`, `POST_EMPTY`, etc.) before calling it.
 
 ### Path Examples
 
@@ -57,7 +40,7 @@ export MAX_INLINE=10
 
 ## Workflow
 
-This skill follows a three-step workflow:
+This skill follows a three-step workflow and assumes `github-context` is co-installed (same skill bundle) for collection. Agents collect via `github-context`, generate artifacts, then publish via `github-publish` (or the provided wrapper).
 
 ### 1. Collect Context
 Collect PR information via the `github-context` skill (review-friendly defaults recommended):
@@ -75,30 +58,15 @@ Agent analyzes the collected context and generates:
 Agent follows review guidelines in `prompts/review.md`.
 
 ### 3. Publish Review
-Run `scripts/publish.sh` to post the review:
-- Creates or updates a PR review via GitHub API
-- Posts inline comments for findings with path+line information
-- Limits inline comments via `MAX_INLINE` (default: 20)
+Use `github-publish` (or this skill’s `publish.sh` wrapper) with the produced artifacts (`review.md`, `review.json`, `summary.md`, `manifest.json`) to post the PR review and inline comments.
 
 ## Usage
 
 ### Basic Usage
 
-```bash
-# Review a PR
-holon --skill github-review holon-run/holon#123
-
-# Review using full URL
-holon --skill github-review https://github.com/holon-run/holon/pull/123
-```
-
-### With Collection Script
-
-```bash
-# Step 1: Collect PR context (via github-context skill)
-# Step 2: Agent performs review and generates artifacts in ${GITHUB_OUTPUT_DIR}
-# Step 3: Publish review with scripts/publish.sh
-```
+- Collect PR context with `github-context` (agent-triggered if missing).
+- Run `github-review` to produce `review.md`, `review.json`, `summary.md`.
+- Publish via `github-publish` (or this skill’s `publish.sh`) using those artifacts.
 
 ### Advanced Options
 
@@ -122,12 +90,7 @@ holon --skill github-review holon-run/holon#123
 
 ## Scripts
 
-This skill includes executable scripts in `scripts/`:
-
-- **`collect.sh`**: Collects PR context (metadata, diff, comments, etc.) via `github-context`
-- **`publish.sh`**: Publishes reviews with inline comments via GitHub API
-
-For detailed script documentation, usage, and examples, see [references/SCRIPTS.md](references/SCRIPTS.md).
+Wrapper scripts remain for convenience (`collect.sh` delegates to `github-context`; `publish.sh` can post a review). Agents may call them when available; the recommended flow is still: call `github-context` to collect, then `github-publish` to post.
 
 ## Agent Prompts
 

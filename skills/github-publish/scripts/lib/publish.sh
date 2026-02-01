@@ -9,6 +9,7 @@
 #   - action_update_pr()      - Update an existing pull request
 #   - action_post_comment()   - Post a PR-level comment
 #   - action_reply_review()   - Reply to review comments
+#   - action_post_review()    - Post a PR review with inline comments
 #
 # Usage:
 #   source "${SCRIPT_DIR}/lib/publish.sh"
@@ -402,135 +403,200 @@ action_reply_review() {
 
     log_info "Processing review replies..."
 
-    # Check if replies_file is specified (recommended)
+    # Load replies from file if provided
+    local replies_json="[]"
     if echo "$params" | jq -e '.replies_file' >/dev/null; then
         local replies_file
         replies_file=$(echo "$params" | jq -r '.replies_file')
 
-        # Security: Validate path doesn't escape GITHUB_OUTPUT_DIR
         if [[ "$replies_file" =~ ^/ ]]; then
-            log_error "Absolute paths not allowed for security: $replies_file"
+            log_error "Absolute paths not allowed for replies_file: $replies_file"
             return 1
         fi
-
-        # Resolve relative to GITHUB_OUTPUT_DIR
         local resolved_file="$GITHUB_OUTPUT_DIR/$replies_file"
-
-        # Validate the resolved path is within GITHUB_OUTPUT_DIR
         if [[ "$resolved_file" != "$GITHUB_OUTPUT_DIR"/* ]]; then
-            log_error "Invalid replies file path (outside output directory): $replies_file"
+            log_error "Invalid replies_file path (outside output dir): $replies_file"
             return 1
         fi
-
-        replies_file="$resolved_file"
-
-        if [[ ! -f "$replies_file" ]]; then
-            log_error "Replies file not found: $replies_file"
+        if [[ ! -f "$resolved_file" ]]; then
+            log_error "Replies file not found: $resolved_file"
             return 1
         fi
+        replies_json=$(jq -c '.review_replies // []' "$resolved_file" 2>/dev/null || echo "[]")
+    else
+        replies_json=$(echo "$params" | jq -c '.replies // []')
+    fi
 
-        log_info "Using replies file: $replies_file"
-
-        # Delegate to reply-reviews.sh
-        log_info "Delegating to reply-reviews.sh..."
-
-        # Set environment variables for reply-reviews.sh
-        local old_pr_ref="$PR_REF"
-        export PR_REF="$PR_OWNER/$PR_REPO#$PR_NUMBER"
-        export PR_FIX_JSON="$replies_file"
-
-        # Run reply-reviews.sh
-        if bash "${SCRIPT_DIR}/reply-reviews.sh"; then
-            export PR_REF="$old_pr_ref"
-
-            # Parse and include results
-            local results_file="$GITHUB_OUTPUT_DIR/reply-results.json"
-            if [[ -f "$results_file" ]]; then
-                log_info "Reply results: $(cat "$results_file" | jq '{total, posted, skipped, failed}')"
-                cat "$results_file"
-            else
-                # Fallback results
-                jq -n '{total: 0, posted: 0, skipped: 0, failed: 0}'
-            fi
-        else
-            local status=$?
-            export PR_REF="$old_pr_ref"
-            log_error "reply-reviews.sh failed with status $status"
-            return 1
-        fi
-
+    if [[ "$replies_json" == "[]" ]]; then
+        log_warn "No replies provided"
+        jq -n '{total:0, posted:0, skipped:0, failed:0}'
         return 0
     fi
 
-    # Inline replies (backward compatibility)
-    log_info "Processing inline replies..."
+    local count posted skipped failed
+    count=$(echo "$replies_json" | jq 'length')
+    posted=0; skipped=0; failed=0
 
-    local inline_replies
-    inline_replies=$(echo "$params" | jq -r '.replies // []')
+    for reply in $(echo "$replies_json" | jq -c '.[]'); do
+        local comment_id status message action_taken
+        comment_id=$(echo "$reply" | jq -r '.comment_id // empty')
+        status=$(echo "$reply" | jq -r '.status // "info"')
+        message=$(echo "$reply" | jq -r '.message // empty')
+        action_taken=$(echo "$reply" | jq -r '.action_taken // empty')
 
-    if [[ "$inline_replies" == "null" || "$inline_replies" == "[]" ]]; then
-        log_error "No replies found in params"
-        return 1
-    fi
+        if [[ -z "$comment_id" || -z "$message" ]]; then
+            log_warn "Skipping reply missing comment_id or message"
+            ((skipped++))
+            continue
+        fi
 
-    # Process inline replies
-    local count
-    count=$(echo "$inline_replies" | jq 'length')
-    log_info "Processing $count inline replies"
-
-    local posted=0 skipped=0 failed=0
-
-    # Process each reply
-    for ((i=0; i<count; i++)); do
-        local reply
-        reply=$(echo "$inline_replies" | jq ".[$i]")
-
-        local comment_id status message
-        comment_id=$(echo "$reply" | jq -r '.comment_id')
-        status=$(echo "$reply" | jq -r '.status // "fixed"')
-        message=$(echo "$reply" | jq -r '.message // ""')
-
-        log_info "Replying to comment #$comment_id..."
-
-        # Format reply with emoji
-        local emoji
+        local emoji="📝"
         case "$status" in
             fixed) emoji="✅" ;;
             deferred) emoji="⏳" ;;
             wontfix) emoji="🙅" ;;
-            *) emoji="📝" ;;
+            need-info|need_info|needinfo) emoji="❓" ;;
         esac
 
-        local formatted_msg
-        formatted_msg="$emoji **$(echo "$status" | tr '[:lower:]' '[:upper:]')**: $message"
-
-        local action_taken
-        action_taken=$(echo "$reply" | jq -r '.action_taken // ""')
+        local body="$emoji **$(echo "$status" | tr '[:lower:]' '[:upper:]')**: $message"
         if [[ -n "$action_taken" ]]; then
-            formatted_msg="$formatted_msg
+            body="$body
 
 **Action taken**: $action_taken"
         fi
 
-        # Post reply using JSON format (handles newlines correctly)
-        if echo "$formatted_msg" | jq -Rs '{body: .}' | \
-            gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/comments/$comment_id/replies" \
-            --input - >/dev/null 2>&1; then
-            log_info "  ✅ Posted reply"
+        log_info "Replying to comment_id: $comment_id"
+        if echo "$body" | jq -Rs '{body: .}' | gh api "repos/$PR_OWNER/$PR_REPO/pulls/comments/$comment_id/replies" --input - >/dev/null 2>&1; then
             ((posted++))
         else
-            log_warn "  ⚠️  Failed to post reply"
+            log_warn "Failed to post reply for comment_id $comment_id"
             ((failed++))
         fi
     done
 
-    # Return results as JSON
-    jq -n \
-        --argjson total "$count" \
-        --argjson posted "$posted" \
-        --argjson skipped "$skipped" \
-        --argjson failed "$failed" \
-        '{total: $total, posted: $posted, skipped: $skipped, failed: $failed}'
+    jq -n         --argjson total "$count"         --argjson posted "$posted"         --argjson skipped "$skipped"         --argjson failed "$failed"         '{total:$total, posted:$posted, skipped:$skipped, failed:$failed}'
+}
+
+# ============================================================================
+# Action: Post Review (body + inline comments)
+# ============================================================================
+
+# Usage: action_post_review <params_json>
+# Params:
+#   - body (required): review body (inline or .md file relative to GITHUB_OUTPUT_DIR)
+#   - comments_file (optional): path to review.json (default: review.json in output dir)
+#   - max_inline (optional): limit inline comments (default: 20)
+#   - post_empty (optional): post even with zero findings (default: false)
+#   - commit_id (optional): head SHA; fetched if missing
+action_post_review() {
+    local params="$1"
+
+    local comments_file max_inline post_empty commit_id
+    comments_file=$(echo "$params" | jq -r '.comments_file // "review.json"')
+    max_inline=$(echo "$params" | jq -r '.max_inline // 20')
+    post_empty=$(echo "$params" | jq -r '.post_empty // "false"')
+    commit_id=$(echo "$params" | jq -r '.commit_id // empty')
+
+    # Resolve body
+    local body_content
+    body_content=$(parse_body_param "$params") || return 1
+
+    # Resolve comments file path (relative to output dir)
+    if [[ "$comments_file" =~ ^/ ]]; then
+        log_error "Absolute paths not allowed for comments_file: $comments_file"
+        return 1
+    fi
+    local comments_path="$GITHUB_OUTPUT_DIR/$comments_file"
+
+    local inline_comments=()
+    if [[ -f "$comments_path" ]]; then
+        while IFS= read -r finding; do
+            local path line message suggestion
+            path=$(echo "$finding" | jq -r '.path // empty')
+            line=$(echo "$finding" | jq -r '.line // empty')
+            message=$(echo "$finding" | jq -r '.message // empty')
+            suggestion=$(echo "$finding" | jq -r '.suggestion // empty')
+
+            if [[ -z "$path" || -z "$line" || -z "$message" ]]; then
+                log_warn "Skipping finding missing path/line/message"
+                continue
+            fi
+            if ! [[ "$line" =~ ^[0-9]+$ ]]; then
+                log_warn "Skipping finding with non-numeric line: $line"
+                continue
+            fi
+
+            local comment_body="$message"
+            if [[ -n "$suggestion" ]]; then
+                comment_body="$comment_body\n\n**Suggestion:** $suggestion"
+            fi
+
+            local comment_json
+            comment_json=$(jq -n \
+                --arg path "$path" \
+                --argjson line "$line" \
+                --arg body "$comment_body" \
+                '{path:$path, line:$line, side:"RIGHT", body:$body}')
+            inline_comments+=("$comment_json")
+        done < <(jq -c '.[]' "$comments_path" 2>/dev/null)
+    else
+        log_warn "comments_file not found, proceeding with summary-only review: $comments_path"
+    fi
+
+    # Limit inline
+    if [[ ${#inline_comments[@]} -gt "$max_inline" ]]; then
+        log_warn "Found ${#inline_comments[@]} inline comments, limiting to $max_inline"
+        inline_comments=("${inline_comments[@]:0:$max_inline}")
+    fi
+
+    if [[ ${#inline_comments[@]} -eq 0 && "$post_empty" != "true" ]]; then
+        log_info "No findings and post_empty=false; skipping review post."
+        return 0
+    fi
+
+    # Get commit id if missing
+    if [[ -z "$commit_id" ]]; then
+        commit_id=$(gh pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" --json headRefOid -q '.headRefOid' 2>/dev/null || true)
+    fi
+    if [[ -z "$commit_id" ]]; then
+        log_error "Unable to determine commit_id for review"
+        return 1
+    fi
+
+    # Build comments JSON
+    local comments_json="[]"
+    if [[ ${#inline_comments[@]} -gt 0 ]]; then
+        comments_json=$(printf '%s\n' "${inline_comments[@]}" | jq -s '.')
+    fi
+
+    # Build payload
+    local payload
+    payload=$(cat <<EOF
+{
+  "commit_id": "$commit_id",
+  "body": $(printf '%s' "$body_content" | jq -Rs .),
+  "event": "COMMENT",
+  "comments": $comments_json
+}
+EOF
+)
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_dry "Would post review to $PR_OWNER/$PR_REPO#$PR_NUMBER with ${#inline_comments[@]} inline comments"
+        return 0
+    fi
+
+    local response
+    if ! response=$(gh api -X POST "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/reviews" --input - <<<"$payload" 2>&1); then
+        log_error "Failed to post review"
+        log_error "$response"
+        return 1
+    fi
+
+    local review_id
+    review_id=$(echo "$response" | jq -r '.id // empty' 2>/dev/null)
+    log_info "Posted review (id: ${review_id:-unknown}) with ${#inline_comments[@]} inline comments"
+    return 0
 }
 
 # Mark library as sourced
