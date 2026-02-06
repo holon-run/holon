@@ -1,0 +1,21 @@
+name: Holon Auto Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    uses: holon-run/holon/.github/workflows/holon-solve.yml@main
+    with:
+      issue_number: ${{ github.event.pull_request.number }}
+      auto_review: true
+    secrets:
+      anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+      anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL }}
+      holon_github_token: ${{ secrets.HOLON_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}

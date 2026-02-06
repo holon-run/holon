@@ -48,6 +48,11 @@ on:
         required: false
         type: string
         default: ''
+      auto_review:
+        description: 'Automatically run review on PR events (uses github-review skill by default)'
+        required: false
+        type: boolean
+        default: false
       mode:
         description: 'Execution mode (solve, pr-fix, plan, review). Empty = auto-detect'
         required: false
@@ -481,6 +486,12 @@ jobs:
             fi
           fi
 
+          # Auto-review: run on PRs when enabled (even without explicit trigger).
+          if [ "$SHOULD_RUN" != 'true' ] && [ "$INPUT_AUTO_REVIEW" = 'true' ] && [ "$IS_PR" = 'true' ]; then
+            SHOULD_RUN='true'
+            REASON='Auto-review enabled'
+          fi
+
           # Label/assignment triggers rely on the event payload (label_name / assignee_login) to avoid false positives.
           if [ "$SHOULD_RUN" != 'true' ] && [ "$LABEL_NAME" = 'holon' ]; then
             SHOULD_RUN='true'
@@ -522,6 +533,7 @@ jobs:
           INPUT_REVIEW_BODY: ${{ inputs.review_body }}
           EVENT_REVIEW_BODY: ${{ github.event.review.body }}
           INPUT_MODE: ${{ inputs.mode }}
+          INPUT_AUTO_REVIEW: ${{ inputs.auto_review }}
 
       - name: Gate summary
         if: always()
@@ -1046,12 +1058,20 @@ jobs:
 
           PROVIDED_MODE="${{ inputs.mode }}"
           PROVIDED_SKILL="${{ inputs.skill }}"
+          AUTO_REVIEW='${{ inputs.auto_review }}'
 
           IS_PR='${{ steps.ctx.outputs.is_pr }}'
+
+          # If auto_review is enabled for PRs, default the skill to github-review when none is provided.
+          if [ -z "$PROVIDED_SKILL" ] && [ "$AUTO_REVIEW" = 'true' ] && [ "$IS_PR" = 'true' ]; then
+            PROVIDED_SKILL='github-review'
+            echo "✅ Auto-review enabled → using skill: github-review"
+          fi
 
           # If skill is provided, skip mode detection (skill mode takes precedence)
           if [ -n "$PROVIDED_SKILL" ]; then
             echo "mode=" >> "$GITHUB_OUTPUT"
+            echo "skill=$PROVIDED_SKILL" >> "$GITHUB_OUTPUT"
             echo "✅ Skill mode enabled (skill: $PROVIDED_SKILL)"
             exit 0
           fi
@@ -1059,6 +1079,7 @@ jobs:
           # If mode is explicitly provided, use it
           if [ -n "$PROVIDED_MODE" ]; then
             echo "mode=$PROVIDED_MODE" >> "$GITHUB_OUTPUT"
+            echo "skill=" >> "$GITHUB_OUTPUT"
             echo "✅ Using provided mode: $PROVIDED_MODE"
             exit 0
           fi
@@ -1066,9 +1087,11 @@ jobs:
           # Auto-detect mode based on ref type
           if [ "$IS_PR" = 'true' ]; then
             echo "mode=pr-fix" >> "$GITHUB_OUTPUT"
+            echo "skill=" >> "$GITHUB_OUTPUT"
             echo "✅ Detected: PR → mode=pr-fix"
           else
             echo "mode=solve" >> "$GITHUB_OUTPUT"
+            echo "skill=" >> "$GITHUB_OUTPUT"
             echo "✅ Detected: Issue → mode=solve"
           fi
         env:
@@ -1152,7 +1175,7 @@ jobs:
         with:
           ref: "${{ github.repository }}#${{ steps.ctx.outputs.issue_number }}"
           mode: ${{ steps.detect.outputs.mode }}
-          skill: ${{ inputs.skill }}
+          skill: ${{ steps.detect.outputs.skill }}
           base: ${{ steps.base.outputs.base }}
           agent: ${{ inputs.agent }}
           anthropic_auth_token: ${{ secrets.anthropic_auth_token || secrets.anthropic_api_key }}
