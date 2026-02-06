@@ -75,8 +75,16 @@ func NewResolver(workspace string) *Resolver {
 func (r *Resolver) Resolve(cliSkills []string, configSkills []string, specSkills []string) ([]Skill, error) {
 	var skills []Skill
 
+	// Compatibility aliases for renamed skills
+	alias := map[string]string{
+		"github-solve": "github-issue-solve",
+	}
+
 	// Add CLI skills (highest precedence)
 	for _, ref := range cliSkills {
+		if target, ok := alias[ref]; ok {
+			ref = target
+		}
 		resolved, err := r.resolveSkillRef(ref, "cli")
 		if err != nil {
 			return nil, fmt.Errorf("invalid skill from CLI: %w", err)
@@ -86,6 +94,9 @@ func (r *Resolver) Resolve(cliSkills []string, configSkills []string, specSkills
 
 	// Add config skills
 	for _, ref := range configSkills {
+		if target, ok := alias[ref]; ok {
+			ref = target
+		}
 		resolved, err := r.resolveSkillRef(ref, "config")
 		if err != nil {
 			return nil, fmt.Errorf("invalid skill from config: %w", err)
@@ -95,6 +106,9 @@ func (r *Resolver) Resolve(cliSkills []string, configSkills []string, specSkills
 
 	// Add spec skills
 	for _, ref := range specSkills {
+		if target, ok := alias[ref]; ok {
+			ref = target
+		}
 		resolved, err := r.resolveSkillRef(ref, "spec")
 		if err != nil {
 			return nil, fmt.Errorf("invalid skill from spec: %w", err)
