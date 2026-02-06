@@ -7,10 +7,6 @@ on:
     types: [labeled, assigned]
   pull_request:
     types: [labeled]
-  pull_request_review:
-    types: [submitted, edited]
-  pull_request_review_comment:
-    types: [created]
 
 permissions:
   contents: write
@@ -28,6 +24,7 @@ jobs:
       assignee_login: ${{ github.event.assignee.login || '' }}
       comment_id: ${{ github.event.comment.id || 0 }}
       review_id: ${{ github.event.review.id || 0 }}
+      auto_review: ${{ vars.HOLON_AUTO_REVIEW || false }}
 
       # Use skill mode for GitHub workflows
       skill: 'github-solve'

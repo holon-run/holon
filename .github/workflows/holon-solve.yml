@@ -370,6 +370,18 @@ jobs:
             REVIEW_ID='0'
           fi
 
+          # Skip PR review events by default to avoid per-inline triggers unless explicitly requested.
+          if { [ "$EVENT_NAME" = 'pull_request_review' ] || [ "$EVENT_NAME" = 'pull_request_review_comment' ]; } && \
+             [ -z "$INPUT_MODE" ] && [ -z "$INPUT_SKILL" ] && [ "$INPUT_AUTO_REVIEW" != 'true' ]; then
+            REASON='PR review events are ignored by default to avoid multiple inline triggers'
+            echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+            echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+            echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
+            echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+            echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Determine if this issue number is a PR
           IS_PR='false'
           if [ -n "$EVENT_PR_NUMBER" ] || [ -n "$EVENT_ISSUE_PR_URL" ]; then
@@ -533,6 +545,7 @@ jobs:
           INPUT_REVIEW_BODY: ${{ inputs.review_body }}
           EVENT_REVIEW_BODY: ${{ github.event.review.body }}
           INPUT_MODE: ${{ inputs.mode }}
+          INPUT_SKILL: ${{ inputs.skill }}
           INPUT_AUTO_REVIEW: ${{ inputs.auto_review }}
 
       - name: Gate summary
