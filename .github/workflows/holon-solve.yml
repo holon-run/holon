@@ -547,7 +547,6 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SKILL: ${{ inputs.skill }}
           INPUT_AUTO_REVIEW: ${{ inputs.auto_review }}
-          INPUT_AUTO_REVIEW: ${{ inputs.auto_review }}
 
       - name: Gate summary
         if: always()
