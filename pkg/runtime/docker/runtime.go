@@ -776,14 +776,16 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 }
 
 // builtinSkillsManifestFields returns the manifest fields for builtin skill provenance.
-// - embedded/default or embedded fallback: commit set, source/ref empty
-// - remote builtin used: source/ref set, commit empty
+// - remote builtin configured (even if fell back to embedded): source/ref set, commit empty
+// - embedded/default: commit set, source/ref empty
 func builtinSkillsManifestFields(cfg *ContainerConfig, resolved []skills.Skill) (commit, source, ref string) {
-	for _, s := range resolved {
-		if s.Source == "builtin-remote" {
-			return "", cfg.BuiltinSkillsSource, cfg.BuiltinSkillsRef
-		}
+	// If remote builtin skills were configured, record the source/ref in the manifest
+	// regardless of whether they loaded successfully or fell back to embedded skills.
+	// This provides an audit trail of what was intended vs what actually happened.
+	if cfg.BuiltinSkillsSource != "" {
+		return "", cfg.BuiltinSkillsSource, cfg.BuiltinSkillsRef
 	}
+	// No remote source configured, using embedded builtin skills
 	return builtin.GitCommit(), "", ""
 }
 

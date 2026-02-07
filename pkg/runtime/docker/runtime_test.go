@@ -1141,12 +1141,13 @@ func TestResolveSkills_RemoteBuiltinSourceUsesSourceURL(t *testing.T) {
 }
 
 func TestBuiltinSkillsManifestFields(t *testing.T) {
-	cfg := &ContainerConfig{
-		BuiltinSkillsSource: "https://example.com/skills.zip",
-		BuiltinSkillsRef:    "v1.2.3",
+	// Test 1: Config without BuiltinSkillsSource set (embedded mode)
+	cfgEmbedded := &ContainerConfig{
+		BuiltinSkillsSource: "",
+		BuiltinSkillsRef:    "",
 	}
 
-	commit, source, ref := builtinSkillsManifestFields(cfg, []skills.Skill{
+	commit, source, ref := builtinSkillsManifestFields(cfgEmbedded, []skills.Skill{
 		{Name: "github-context", Source: "builtin-default", Builtin: true},
 	})
 	if commit == "" {
@@ -1156,13 +1157,31 @@ func TestBuiltinSkillsManifestFields(t *testing.T) {
 		t.Fatalf("expected empty source/ref for embedded mode, got source=%q ref=%q", source, ref)
 	}
 
-	commit, source, ref = builtinSkillsManifestFields(cfg, []skills.Skill{
+	// Test 2: Config with BuiltinSkillsSource set (remote mode)
+	// Even if skills fell back to embedded, the manifest should show source/ref
+	cfgRemote := &ContainerConfig{
+		BuiltinSkillsSource: "https://example.com/skills.zip",
+		BuiltinSkillsRef:    "v1.2.3",
+	}
+
+	commit, source, ref = builtinSkillsManifestFields(cfgRemote, []skills.Skill{
+		{Name: "github-context", Source: "builtin-default", Builtin: true},
+	})
+	if commit != "" {
+		t.Fatalf("expected empty commit when remote source configured, got %q", commit)
+	}
+	if source != cfgRemote.BuiltinSkillsSource || ref != cfgRemote.BuiltinSkillsRef {
+		t.Fatalf("unexpected source/ref for remote mode: source=%q ref=%q", source, ref)
+	}
+
+	// Test 3: Config with remote source and successfully loaded remote skills
+	commit, source, ref = builtinSkillsManifestFields(cfgRemote, []skills.Skill{
 		{Name: "remote-builtin", Source: "builtin-remote", Builtin: false},
 	})
 	if commit != "" {
 		t.Fatalf("expected empty commit for remote builtin skills, got %q", commit)
 	}
-	if source != cfg.BuiltinSkillsSource || ref != cfg.BuiltinSkillsRef {
+	if source != cfgRemote.BuiltinSkillsSource || ref != cfgRemote.BuiltinSkillsRef {
 		t.Fatalf("unexpected source/ref for remote mode: source=%q ref=%q", source, ref)
 	}
 }
