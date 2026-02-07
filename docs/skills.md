@@ -73,7 +73,7 @@ Holon defines a canonical package format for distributing skill collections. Thi
 **Package Structure:**
 
 ```
-holon-skills-v1.0.0.zip
+holon-skills-v1.0.0.zip         # Package archive
 ├── skills/                    # Root directory for all skills
 │   ├── github-context/        # Individual skill directories
 │   │   ├── SKILL.md
@@ -81,8 +81,9 @@ holon-skills-v1.0.0.zip
 │   └── github-issue-solve/
 │       ├── SKILL.md
 │       └── references/
-├── package.json               # Package metadata
-└── checksums.txt             # Optional per-file checksums
+└── package.json               # Package metadata
+
+holon-skills-v1.0.0.zip.sha256 # SHA256 checksum (sidecar file)
 ```
 
 **package.json Schema:**
@@ -140,8 +141,6 @@ VERSION=v1.0.0 make build-skills-package
 
 # Output: dist/skills/holon-skills-v1.0.0.zip + .sha256
 ```
-
-See [Package Format Specification](/holon/output/package-format-spec.md) for complete details on the format, versioning rules, and build process.
 
 **Package Verification:**
 

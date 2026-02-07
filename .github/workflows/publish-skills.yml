@@ -1,15 +1,19 @@
 name: Publish Skills Package
 
+# Only triggers manually via workflow_dispatch to avoid conflicts with release.yml
+# The main release.yml workflow will call this to build skills packages
 on:
-  push:
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
         description: 'Version tag (e.g., v1.0.0)'
         required: true
         type: string
+      upload_to_release:
+        description: 'Upload artifacts to GitHub Release (must be run after release exists)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,23 +27,15 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Set version from tag
-      if: github.event_name == 'push'
-      run: |
-        VERSION="${GITHUB_REF#refs/tags/}"
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
-      id: version
-
     - name: Set version from input
-      if: github.event_name == 'workflow_dispatch'
       run: |
         VERSION="${{ github.event.inputs.version }}"
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
-      id: version_manual
+      id: version
 
     - name: Build skills package
       env:
-        VERSION: ${{ steps.version.outputs.version || steps.version_manual.outputs.version }}
+        VERSION: ${{ steps.version.outputs.version }}
       run: |
         make build-skills-package
 
@@ -50,17 +46,17 @@ jobs:
         path: dist/skills/*
         retention-days: 90
 
-  publish-skills-package:
-    name: Publish Skills Package to Release
+  upload-to-release:
+    name: Upload Skills Package to Release
     needs: build-skills-package
-    if: github.event_name == 'push'
+    if: ${{ github.event.inputs.upload_to_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set version from tag
+    - name: Set version from input
       run: |
-        VERSION="${GITHUB_REF#refs/tags/}"
+        VERSION="${{ github.event.inputs.version }}"
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
       id: version
 
