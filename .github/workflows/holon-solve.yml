@@ -405,8 +405,10 @@ jobs:
             PARSE_TEXT="$REVIEW_BODY"
           fi
 
-          # Avoid bot loops
-          if [ "$ACTOR" = 'holonbot[bot]' ]; then
+          # Avoid bot loops for command-style triggers.
+          # Allow PR auto-review runs initiated by holonbot.
+          if [ "$ACTOR" = 'holonbot[bot]' ] && \
+             { [ "$EVENT_NAME" = 'issue_comment' ] || [ "$EVENT_NAME" = 'pull_request_review' ] || [ "$EVENT_NAME" = 'pull_request_review_comment' ]; }; then
             REASON='Actor is holonbot[bot]'
             echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
             echo "reason=$REASON" >> "$GITHUB_OUTPUT"
