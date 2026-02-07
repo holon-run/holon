@@ -28,6 +28,11 @@ on:
         required: false
         type: number
         default: 0
+      lane:
+        description: 'Concurrency lane (e.g., review, command, meta)'
+        required: false
+        type: string
+        default: ''
       comment_id:
         description: 'Comment ID for feedback reactions and replies'
         required: false
@@ -498,16 +503,24 @@ jobs:
             fi
           fi
 
-          # Auto-review: run on PRs when enabled (even without explicit trigger).
+          # Auto-review: run only for pull_request / pull_request_review events.
+          # Do NOT auto-run on issue_comment for PRs (avoids bot comment storms).
           if [ "$SHOULD_RUN" != 'true' ] && [ "$INPUT_AUTO_REVIEW" = 'true' ] && [ "$IS_PR" = 'true' ]; then
-            SHOULD_RUN='true'
-            REASON='Auto-review enabled'
+            if [ "$EVENT_NAME" = 'pull_request' ] || [ "$EVENT_NAME" = 'pull_request_review' ]; then
+              SHOULD_RUN='true'
+              REASON="Auto-review enabled (${EVENT_NAME})"
+            fi
           fi
 
           # Label/assignment triggers rely on the event payload (label_name / assignee_login) to avoid false positives.
+          # Skip issues events that are actually PRs to avoid duplicate executions (PRs emit both issues and pull_request events on label).
           if [ "$SHOULD_RUN" != 'true' ] && [ "$LABEL_NAME" = 'holon' ]; then
-            SHOULD_RUN='true'
-            REASON='Labeled holon'
+            if [ "$EVENT_NAME" = 'issues' ] && [ -n "$EVENT_ISSUE_PR_URL" ]; then
+              REASON='Skipped issues event for PR (pull_request event will handle)'
+            else
+              SHOULD_RUN='true'
+              REASON='Labeled holon'
+            fi
           fi
 
           if [ "$SHOULD_RUN" != 'true' ] && { [ "$ASSIGNEE_LOGIN" = 'holonbot[bot]' ] || [ "$ASSIGNEE_LOGIN" = 'holonbot' ]; }; then
@@ -566,7 +579,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     concurrency:
-      group: holon-${{ github.repository }}-${{ inputs.issue_number != 0 && inputs.issue_number || github.event.issue.number || github.event.pull_request.number || github.run_id }}
+      group: holon-${{ github.repository }}-${{ needs.gate.outputs.issue_number || github.run_id }}-${{ inputs.lane || 'default' }}
       cancel-in-progress: true
     runs-on: ${{ (startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on)) || inputs.runs_on || 'ubuntu-latest' }}
     permissions:

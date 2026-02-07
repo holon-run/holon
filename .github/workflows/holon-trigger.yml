@@ -6,7 +6,7 @@ on:
   issues:
     types: [labeled, assigned]
   pull_request:
-    types: [labeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 permissions:
   contents: write
@@ -20,6 +20,7 @@ jobs:
     uses: ./.github/workflows/holon-solve.yml
     with:
       issue_number: ${{ github.event.issue.number || github.event.pull_request.number }}
+      lane: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && 'review' || (github.event_name == 'issue_comment' && 'command' || 'meta') }}
       label_name: ${{ github.event.label.name || '' }}
       assignee_login: ${{ github.event.assignee.login || '' }}
       comment_id: ${{ github.event.comment.id || 0 }}
