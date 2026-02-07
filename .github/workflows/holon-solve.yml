@@ -508,9 +508,14 @@ jobs:
           fi
 
           # Label/assignment triggers rely on the event payload (label_name / assignee_login) to avoid false positives.
+          # Skip issues events that are actually PRs to avoid duplicate executions (PRs emit both issues and pull_request events on label).
           if [ "$SHOULD_RUN" != 'true' ] && [ "$LABEL_NAME" = 'holon' ]; then
-            SHOULD_RUN='true'
-            REASON='Labeled holon'
+            if [ "$EVENT_NAME" = 'issues' ] && [ -n "$EVENT_ISSUE_PR_URL" ]; then
+              REASON='Skipped issues event for PR (pull_request event will handle)'
+            else
+              SHOULD_RUN='true'
+              REASON='Labeled holon'
+            fi
           fi
 
           if [ "$SHOULD_RUN" != 'true' ] && { [ "$ASSIGNEE_LOGIN" = 'holonbot[bot]' ] || [ "$ASSIGNEE_LOGIN" = 'holonbot' ]; }; then
