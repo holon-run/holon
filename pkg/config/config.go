@@ -44,6 +44,15 @@ type ProjectConfig struct {
 	// Skills is a list of paths to skill directories to include
 	Skills []string `yaml:"skills,omitempty"`
 
+	// BuiltinSkillsSource is the default remote source for builtin skills
+	// Can be a direct URL or a catalog reference (e.g., "https://github.com/holon-run/holon/releases/download/v1.0.0/holon-skills-v1.0.0.zip")
+	// When set, builtin skills will be loaded from this source instead of embedded copies
+	BuiltinSkillsSource string `yaml:"builtin_skills_source,omitempty"`
+
+	// BuiltinSkillsRef is the version/ref tag for builtin skills (e.g., "v1.0.0", "main")
+	// Used in combination with BuiltinSkillsSource to construct the download URL
+	BuiltinSkillsRef string `yaml:"builtin_skills_ref,omitempty"`
+
 	// Git configuration overrides for container operations
 	Git GitConfig `yaml:"git,omitempty"`
 }
@@ -191,6 +200,30 @@ func (c *ProjectConfig) IsImageAutoDetectEnabled() bool {
 // GetSkills returns the configured skills list
 func (c *ProjectConfig) GetSkills() []string {
 	return c.Skills
+}
+
+// GetBuiltinSkillsSource returns the configured builtin skills source
+func (c *ProjectConfig) GetBuiltinSkillsSource() string {
+	return c.BuiltinSkillsSource
+}
+
+// GetBuiltinSkillsRef returns the configured builtin skills ref
+func (c *ProjectConfig) GetBuiltinSkillsRef() string {
+	return c.BuiltinSkillsRef
+}
+
+// ResolveBuiltinSkillsSource returns the effective builtin skills source and its source.
+// Precedence: cliValue > configValue > defaultValue.
+// Returns the effective value and its source ("cli", "config", or "default").
+func (c *ProjectConfig) ResolveBuiltinSkillsSource(cliValue, defaultValue string) (string, string) {
+	return c.ResolveString(cliValue, c.BuiltinSkillsSource, defaultValue)
+}
+
+// ResolveBuiltinSkillsRef returns the effective builtin skills ref and its source.
+// Precedence: cliValue > configValue > defaultValue.
+// Returns the effective value and its source ("cli", "config", or "default").
+func (c *ProjectConfig) ResolveBuiltinSkillsRef(cliValue, defaultValue string) (string, string) {
+	return c.ResolveString(cliValue, c.BuiltinSkillsRef, defaultValue)
 }
 
 // ResolveAssistantOutput returns the effective assistant output mode and its source.

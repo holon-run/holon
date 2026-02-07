@@ -22,6 +22,8 @@ func WriteManifest(dest string, result PrepareResult) error {
 		IsShallow:           result.IsShallow,
 		Notes:               result.Notes,
 		BuiltinSkillsCommit: result.BuiltinSkillsCommit,
+		BuiltinSkillsSource: result.BuiltinSkillsSource,
+		BuiltinSkillsRef:    result.BuiltinSkillsRef,
 	}
 
 	data, err := json.MarshalIndent(manifest, "", "  ")
