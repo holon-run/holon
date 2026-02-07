@@ -28,6 +28,11 @@ on:
         required: false
         type: number
         default: 0
+      lane:
+        description: 'Concurrency lane (e.g., review, command, meta)'
+        required: false
+        type: string
+        default: ''
       comment_id:
         description: 'Comment ID for feedback reactions and replies'
         required: false
@@ -574,7 +579,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     concurrency:
-      group: holon-${{ github.repository }}-${{ inputs.issue_number != 0 && inputs.issue_number || github.event.issue.number || github.event.pull_request.number || github.run_id }}
+      group: holon-${{ github.repository }}-${{ needs.gate.outputs.issue_number || github.run_id }}-${{ inputs.lane || 'default' }}
       cancel-in-progress: true
     runs-on: ${{ (startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on)) || inputs.runs_on || 'ubuntu-latest' }}
     permissions:

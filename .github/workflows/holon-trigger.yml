@@ -20,6 +20,7 @@ jobs:
     uses: ./.github/workflows/holon-solve.yml
     with:
       issue_number: ${{ github.event.issue.number || github.event.pull_request.number }}
+      lane: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && 'review' || (github.event_name == 'issue_comment' && 'command' || 'meta') }}
       label_name: ${{ github.event.label.name || '' }}
       assignee_login: ${{ github.event.assignee.login || '' }}
       comment_id: ${{ github.event.comment.id || 0 }}
