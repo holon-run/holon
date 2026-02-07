@@ -35,7 +35,18 @@ This skill depends on (co-installed and callable by the agent):
 - **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
   - `summary.md`
   - `manifest.json`
-  - Optional `publish-intent.json` for `github-publish`
+  - `publish-intent.json` for `github-publish`
+
+## Definition of Done (Strict)
+
+The run is successful only if all of the following are true:
+1. Code changes are implemented for the target issue.
+2. `${GITHUB_OUTPUT_DIR}/publish-intent.json` is created.
+3. The `github-publish` skill is invoked to execute publishing.
+4. A GitHub PR is actually created or updated.
+5. `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json` include publish result details (`pr_number` and/or `pr_url`).
+
+Generating `publish-intent.json` alone is not success.
 
 ## Workflow
 
@@ -116,7 +127,7 @@ Produce `${GITHUB_OUTPUT_DIR}/publish-intent.json` and invoke the `github-publis
 }
 ```
 
-Run `github-publish` with this intent file (scripts/publish.sh in that skill bundle).
+Run `github-publish` with this intent file. Treat publish execution as mandatory completion work, not optional cleanup.
 
 ## Output Contract
 
@@ -140,9 +151,14 @@ Run `github-publish` with this intent file (scripts/publish.sh in that skill bun
    }
    ```
 
-### Optional Outputs
-
 3. **`${GITHUB_OUTPUT_DIR}/publish-intent.json`**: PR creation intent (for `github-publish`)
+
+### Failure Rules
+
+- If `github-publish` is not invoked, mark the run as failed.
+- If publish execution fails (push/auth/API/validation), mark the run as failed.
+- Do not report success when only artifacts were generated without a PR side effect.
+- On failure, write actionable publish error details and next steps in `${GITHUB_OUTPUT_DIR}/summary.md`.
 
 ## Git Operations
 

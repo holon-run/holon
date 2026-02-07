@@ -26,7 +26,16 @@ When issue context is detected (no PR):
      --body-file ${GITHUB_OUTPUT_DIR}/summary.md \
      --base main
    ```
+   Or create `${GITHUB_OUTPUT_DIR}/publish-intent.json` and execute publishing via `github-publish`.
 5. **Document**: Write `${GITHUB_OUTPUT_DIR}/summary.md` explaining what was done
+
+## Completion Criteria (Mandatory)
+
+Do not mark the run successful unless a PR was actually created or updated.
+
+- `publish-intent.json` by itself is not sufficient.
+- A successful run must include publish result data (`pr_number` and/or `pr_url`) in `summary.md` and `manifest.json`.
+- If publishing fails, mark the run as failed and record the actionable error details.
 
 ## Output Files
 
