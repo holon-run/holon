@@ -1218,3 +1218,166 @@ func TestIsIncompatibleClaudeConfig(t *testing.T) {
 		}
 	})
 }
+
+// TestBuiltinSkillsManifestConsistency tests that the workspace manifest
+// correctly records builtin skills provenance based on configuration
+func TestBuiltinSkillsManifestConsistency(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows - requires Unix shell")
+	}
+
+	// Helper function to create a test git repository
+	createTestRepo := func(t *testing.T) string {
+		t.Helper()
+		sourceRepo := t.TempDir()
+		if err := runCmd(sourceRepo, "git", "init"); err != nil {
+			t.Skipf("git not available: %v", err)
+		}
+		if err := runCmd(sourceRepo, "git", "config", "user.email", "test@example.com"); err != nil {
+			t.Fatalf("git config failed: %v", err)
+		}
+		if err := runCmd(sourceRepo, "git", "config", "user.name", "Test User"); err != nil {
+			t.Fatalf("git config failed: %v", err)
+		}
+		testFile := filepath.Join(sourceRepo, "test.txt")
+		if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+			t.Fatalf("write test file failed: %v", err)
+		}
+		if err := runCmd(sourceRepo, "git", "add", "test.txt"); err != nil {
+			t.Fatalf("git add failed: %v", err)
+		}
+		if err := runCmd(sourceRepo, "git", "commit", "-m", "initial commit"); err != nil {
+			t.Fatalf("git commit failed: %v", err)
+		}
+		if err := runCmd(sourceRepo, "git", "branch", "-M", "main"); err != nil {
+			t.Fatalf("git branch failed: %v", err)
+		}
+		return sourceRepo
+	}
+
+	t.Run("embedded skills - manifest has commit, empty source/ref", func(t *testing.T) {
+		sourceRepo := createTestRepo(t)
+		outDir := t.TempDir()
+
+		// Create config with no BuiltinSkillsSource (uses embedded skills)
+		cfg := &ContainerConfig{
+			Workspace:              sourceRepo,
+			OutDir:                 outDir,
+			AgentBundle:            "/tmp/bundle.tar.gz",
+			BaseImage:              "node:20",
+			BuiltinSkillsSource:    "", // Empty = use embedded skills
+			BuiltinSkillsRef:       "",
+			WorkspaceIsTemporary:   true,
+		}
+
+		// Prepare workspace
+		ctx := context.Background()
+		snapshotDir, skillsDir, _, err := prepareWorkspace(ctx, cfg)
+		if err != nil {
+			t.Fatalf("prepareWorkspace failed: %v", err)
+		}
+		defer os.RemoveAll(snapshotDir)
+		defer os.RemoveAll(skillsDir)
+
+		// Read the manifest
+		manifest, err := workspace.ReadManifest(outDir)
+		if err != nil {
+			t.Fatalf("ReadManifest failed: %v", err)
+		}
+
+		// For embedded skills: commit should be set, source/ref should be empty
+		if manifest.BuiltinSkillsCommit == "" {
+			t.Error("expected BuiltinSkillsCommit to be set for embedded skills")
+		}
+		if manifest.BuiltinSkillsSource != "" {
+			t.Errorf("expected BuiltinSkillsSource to be empty for embedded skills, got %s", manifest.BuiltinSkillsSource)
+		}
+		if manifest.BuiltinSkillsRef != "" {
+			t.Errorf("expected BuiltinSkillsRef to be empty for embedded skills, got %s", manifest.BuiltinSkillsRef)
+		}
+	})
+
+	t.Run("remote skills - manifest has source/ref, empty commit", func(t *testing.T) {
+		sourceRepo := createTestRepo(t)
+		outDir := t.TempDir()
+
+		// Create config with BuiltinSkillsSource set (uses remote skills)
+		cfg := &ContainerConfig{
+			Workspace:              sourceRepo,
+			OutDir:                 outDir,
+			AgentBundle:            "/tmp/bundle.tar.gz",
+			BaseImage:              "node:20",
+			BuiltinSkillsSource:    "https://example.com/skills.zip",
+			BuiltinSkillsRef:       "v1.0.0",
+			WorkspaceIsTemporary:   true,
+		}
+
+		// Prepare workspace
+		ctx := context.Background()
+		snapshotDir, skillsDir, _, err := prepareWorkspace(ctx, cfg)
+		if err != nil {
+			t.Fatalf("prepareWorkspace failed: %v", err)
+		}
+		defer os.RemoveAll(snapshotDir)
+		defer os.RemoveAll(skillsDir)
+
+		// Read the manifest
+		manifest, err := workspace.ReadManifest(outDir)
+		if err != nil {
+			t.Fatalf("ReadManifest failed: %v", err)
+		}
+
+		// For remote skills: source/ref should be set, commit should be empty
+		if manifest.BuiltinSkillsSource != cfg.BuiltinSkillsSource {
+			t.Errorf("expected BuiltinSkillsSource %s, got %s", cfg.BuiltinSkillsSource, manifest.BuiltinSkillsSource)
+		}
+		if manifest.BuiltinSkillsRef != cfg.BuiltinSkillsRef {
+			t.Errorf("expected BuiltinSkillsRef %s, got %s", cfg.BuiltinSkillsRef, manifest.BuiltinSkillsRef)
+		}
+		if manifest.BuiltinSkillsCommit != "" {
+			t.Errorf("expected BuiltinSkillsCommit to be empty for remote skills, got %s", manifest.BuiltinSkillsCommit)
+		}
+	})
+
+	t.Run("remote skills with only source set - ref can be empty", func(t *testing.T) {
+		sourceRepo := createTestRepo(t)
+		outDir := t.TempDir()
+
+		// Create config with BuiltinSkillsSource but no ref
+		cfg := &ContainerConfig{
+			Workspace:              sourceRepo,
+			OutDir:                 outDir,
+			AgentBundle:            "/tmp/bundle.tar.gz",
+			BaseImage:              "node:20",
+			BuiltinSkillsSource:    "https://example.com/skills.zip",
+			BuiltinSkillsRef:       "", // Empty ref is allowed
+			WorkspaceIsTemporary:   true,
+		}
+
+		// Prepare workspace
+		ctx := context.Background()
+		snapshotDir, skillsDir, _, err := prepareWorkspace(ctx, cfg)
+		if err != nil {
+			t.Fatalf("prepareWorkspace failed: %v", err)
+		}
+		defer os.RemoveAll(snapshotDir)
+		defer os.RemoveAll(skillsDir)
+
+		// Read the manifest
+		manifest, err := workspace.ReadManifest(outDir)
+		if err != nil {
+			t.Fatalf("ReadManifest failed: %v", err)
+		}
+
+		// Source should be set, ref and commit should be empty
+		if manifest.BuiltinSkillsSource != cfg.BuiltinSkillsSource {
+			t.Errorf("expected BuiltinSkillsSource %s, got %s", cfg.BuiltinSkillsSource, manifest.BuiltinSkillsSource)
+		}
+		if manifest.BuiltinSkillsRef != "" {
+			t.Errorf("expected BuiltinSkillsRef to be empty, got %s", manifest.BuiltinSkillsRef)
+		}
+		if manifest.BuiltinSkillsCommit != "" {
+			t.Errorf("expected BuiltinSkillsCommit to be empty for remote skills, got %s", manifest.BuiltinSkillsCommit)
+		}
+	})
+}
