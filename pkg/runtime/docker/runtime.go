@@ -42,6 +42,7 @@ type ContainerConfig struct {
 	Workspace   string
 	InputPath   string // Path to input directory (contains spec.yaml, context/, prompts/)
 	OutDir      string
+	StateDir    string // Path to state directory for cross-run skill caches (optional)
 	Env         map[string]string
 	Cmd         []string // Optional command override
 
@@ -144,6 +145,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		SnapshotDir:    snapshotDir,
 		InputPath:      cfg.InputPath,
 		OutDir:         cfg.OutDir,
+		StateDir:       cfg.StateDir,
 		LocalSkillsDir: skillsDir, // NEW: Pass skills directory
 	}
 

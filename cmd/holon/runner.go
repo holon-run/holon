@@ -44,6 +44,7 @@ type RunnerConfig struct {
 	InputPath            string // Optional: path to input directory (if empty, creates temp dir)
 	OutDir               string
 	OutDirIsTemp         bool // true if output dir is a temporary directory (vs user-provided)
+	StateDir             string // Optional: path to state directory for cross-run skill caches
 	RoleName             string
 	EnvVarsList          []string
 	LogLevel             string
@@ -312,6 +313,7 @@ output:
 		Workspace:            absWorkspace,
 		InputPath:            absInputDir,
 		OutDir:               absOut,
+		StateDir:             cfg.StateDir,
 		Env:                  envVars,
 		AgentConfigMode:      cfg.AgentConfigMode,
 		WorkspaceIsTemporary: cfg.WorkspaceIsTemporary,

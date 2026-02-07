@@ -11,6 +11,7 @@ Design direction: Holon is built around a sandboxed run + standardized artifacts
 - Issue → PR, end to end: fetch context, run the agent, and create or update a PR in one command.
 - Patch-first, standardized artifacts: always produce `diff.patch`, `summary.md`, and `manifest.json` for review and CI.
 - Sandboxed execution: Docker + snapshot workspaces by default; nothing touches your repo unless you opt in.
+- State persistence: optional `--state-dir` mount for cross-run skill caches (e.g., synced issues cache).
 - Pluggable agents & toolchains: swap agent engines or bundles without changing your workflow.
 - Local or CI, same run: `holon solve` locally or in GitHub Actions with identical inputs and outputs.
 
@@ -64,8 +65,12 @@ Run against an issue or PR (auto collect context → run agent → publish resul
 export ANTHROPIC_AUTH_TOKEN=...
 export GITHUB_TOKEN=...   # or use gh auth login
 
+# Basic usage
 holon solve https://github.com/owner/repo/issues/123
 # or: holon solve owner/repo#456
+
+# With state persistence for skill caches
+holon solve owner/repo#123 --state-dir .holon/state
 ```
 
 Behavior:
@@ -104,6 +109,21 @@ holon run --goal "Add unit tests for user service"
 4. Auto-discovery: `.claude/skills/*/SKILL.md` directories
 
 **See** `docs/skills.md` for complete documentation, examples, and best practices.
+
+## State Persistence
+
+Skills can cache data across runs using the optional `--state-dir` flag:
+
+```bash
+# Enable state persistence
+holon run --goal "Analyze project trends" --state-dir .holon/state
+
+# Combine with actions/cache in CI for persistent caches
+```
+
+The state directory is mounted at `/holon/state` inside the container and persists across runs. Skills should use `/holon/state/<skill-name>/` for cache files.
+
+**See** `docs/state-mount.md` for complete documentation.
 
 ## Development & docs
 - Build CLI: `make build`; test: `make test`; agent bundle: `(cd agents/claude && npm run bundle)`.

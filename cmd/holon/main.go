@@ -32,6 +32,7 @@ var workspacePath string
 var contextPath string
 var inputPath string
 var outDir string
+var stateDir string
 var cleanupMode string
 var roleName string
 var envVarsList []string
@@ -339,6 +340,7 @@ var runCmd = &cobra.Command{
 			InputPath:          inputPath,
 			OutDir:             resolvedOutDir,
 			OutDirIsTemp:       outIsTemp,
+			StateDir:           stateDir,
 			RoleName:           roleName,
 			EnvVarsList:        envVarsList,
 			LogLevel:           resolved.logLevel,
@@ -371,6 +373,7 @@ func init() {
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVar(&inputPath, "input", "", "Path to input directory (default: creates temp dir, auto-cleaned)")
 	runCmd.Flags().StringVarP(&outDir, "output", "O", "", "Path to output directory (default: creates temp dir to avoid polluting workspace)")
+	runCmd.Flags().StringVar(&stateDir, "state-dir", "", "Path to state directory for cross-run skill caches (default: no state persistence)")
 	runCmd.Flags().StringVar(&cleanupMode, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
 	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. developer, reviewer)")
 	runCmd.Flags().StringVar(&mode, "mode", "solve", "Execution mode: solve, pr-fix, plan, review")

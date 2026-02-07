@@ -16,6 +16,7 @@ type MountConfig struct {
 	SnapshotDir          string
 	InputPath            string // Path to input directory (contains spec.yaml, context/, prompts/)
 	OutDir               string
+	StateDir             string // Path to state directory for cross-run skill caches (optional, for mounting)
 	LocalClaudeConfigDir string // Path to host ~/.claude directory (optional, for mounting)
 	LocalSkillsDir       string // Path to skills staging directory (optional, for mounting)
 }
@@ -47,6 +48,16 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 			Source: cfg.OutDir,
 			Target: "/holon/output",
 		},
+	}
+
+	// Add state directory mount (if provided)
+	// This mounts to /holon/state for cross-run skill caches
+	if cfg.StateDir != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: cfg.StateDir,
+			Target: "/holon/state",
+		})
 	}
 
 	// Add Claude config directory mount FIRST (if provided)
@@ -140,6 +151,16 @@ func ValidateMountTargets(cfg *MountConfig) error {
 	}
 	if _, err := os.Stat(cfg.OutDir); os.IsNotExist(err) {
 		return fmt.Errorf("output directory does not exist: %s", cfg.OutDir)
+	}
+
+	// Check state directory if provided (will be created if it doesn't exist)
+	if cfg.StateDir != "" {
+		if _, err := os.Stat(cfg.StateDir); os.IsNotExist(err) {
+			// Create state directory if it doesn't exist
+			if err := os.MkdirAll(cfg.StateDir, 0755); err != nil {
+				return fmt.Errorf("failed to create state directory: %s: %w", cfg.StateDir, err)
+			}
+		}
 	}
 
 	return nil

@@ -82,6 +82,10 @@ inputs:
     description: 'Output directory path for artifact packaging (preferred; default: temp dir, auto-cleaned)'
     required: false
     default: ''
+  state_dir:
+    description: 'State directory path for cross-run skill caches (default: no state persistence). Use .holon/state for workspace-local caches or an absolute path for persistent caches across runs.'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -289,6 +293,9 @@ runs:
         fi
         if [ -n "${{ inputs.input_dir }}" ]; then
           SOLVE_ARGS+=(--input "${{ inputs.input_dir }}")
+        fi
+        if [ -n "${{ inputs.state_dir }}" ]; then
+          SOLVE_ARGS+=(--state-dir "${{ inputs.state_dir }}")
         fi
 
         # Always add output directory (either user-specified or temp)
