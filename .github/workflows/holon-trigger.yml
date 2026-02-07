@@ -27,9 +27,6 @@ jobs:
       review_id: ${{ github.event.review.id || 0 }}
       auto_review: ${{ fromJSON(vars.HOLON_AUTO_REVIEW || 'false') }}
 
-      # Use skill mode for GitHub workflows
-      skill: 'github-solve'
-
       # Repo-local workflow uses the current branch Holon implementation.
       log_level: 'debug'
       build_from_source: true
