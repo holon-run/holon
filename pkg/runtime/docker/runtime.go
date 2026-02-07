@@ -64,6 +64,10 @@ type ContainerConfig struct {
 	// Skills configuration
 	Skills []string // Paths to skill directories to include
 
+	// Builtin skills configuration (optional, overrides embedded skills)
+	BuiltinSkillsSource string // Remote source URL for builtin skills (e.g., "https://github.com/holon-run/holon/releases/download/v1.0.0/holon-skills-v1.0.0.zip")
+	BuiltinSkillsRef    string // Version/ref tag for builtin skills (e.g., "v1.0.0")
+
 	// Skill mode configuration
 	UseSkillMode bool // True if using skill mode (agent handles collect/publish)
 }
@@ -525,6 +529,9 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 		if cfg.OutDir != "" {
 			// Record builtin skills commit for audit
 			prepareResult.BuiltinSkillsCommit = builtin.GitCommit()
+			// Record builtin skills source and ref for auditability
+			prepareResult.BuiltinSkillsSource = cfg.BuiltinSkillsSource
+			prepareResult.BuiltinSkillsRef = cfg.BuiltinSkillsRef
 			if err := writeWorkspaceManifest(cfg.OutDir, prepareResult); err != nil {
 				os.RemoveAll(skillsDir) // Cleanup on error
 				return "", "", nil, fmt.Errorf("failed to write workspace manifest: %w", err)
@@ -653,6 +660,9 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 	if cfg.OutDir != "" {
 		// Record builtin skills commit for audit
 		result.BuiltinSkillsCommit = builtin.GitCommit()
+		// Record builtin skills source and ref for auditability
+		result.BuiltinSkillsSource = cfg.BuiltinSkillsSource
+		result.BuiltinSkillsRef = cfg.BuiltinSkillsRef
 		if err := writeWorkspaceManifest(cfg.OutDir, result); err != nil {
 			holonlog.Warn("failed to write workspace manifest", "error", err)
 		}
@@ -692,11 +702,68 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 	// invoke shared helper skills (e.g. github-context, github-publish).
 	// Keep explicit/workspace skills first; append builtin defaults only if not
 	// already present by skill name.
-	builtinSkills, err := builtin.List()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list builtin skills: %w", err)
+	//
+	// If a remote builtin source is configured, use it instead of embedded skills.
+	// Otherwise, fall back to embedded builtin skills.
+	var builtinSkillsList []string
+	builtinSource := "builtin-default"
+
+	if cfg.BuiltinSkillsSource != "" {
+		// Use remote builtin skills
+		holonlog.Info("loading builtin skills from remote source", "url", cfg.BuiltinSkillsSource, "ref", cfg.BuiltinSkillsRef)
+
+		// Resolve the remote source to get skill paths
+		sourceRef := cfg.BuiltinSkillsSource
+		if cfg.BuiltinSkillsRef != "" {
+			// If ref is provided, check if it's already part of the URL
+			// If not, append it as a fragment or use it to construct the URL
+			if !strings.Contains(sourceRef, cfg.BuiltinSkillsRef) {
+				sourceRef = cfg.BuiltinSkillsRef // Use the ref from config as the full reference
+			}
+		}
+
+		// Resolve the remote source
+		remoteSkills, err := resolver.Resolve([]string{sourceRef}, []string{}, []string{})
+		if err != nil {
+			holonlog.Warn("failed to load remote builtin skills, falling back to embedded", "error", err)
+			// Fall back to embedded skills
+			builtinSkillsList, err = builtin.List()
+			if err != nil {
+				return nil, fmt.Errorf("failed to list builtin skills: %w", err)
+			}
+			builtinSource = "builtin-fallback"
+		} else {
+			// Use the remote skills as builtin skills
+			for _, skill := range remoteSkills {
+				name := filepath.Base(skill.Path)
+				alreadyPresent := false
+				for _, existingSkill := range resolved {
+					if existingSkill.Name == name {
+						alreadyPresent = true
+						break
+					}
+				}
+				if !alreadyPresent {
+					resolved = append(resolved, skills.Skill{
+						Path:    skill.Path,
+						Name:    name,
+						Source:  "builtin-remote",
+						Builtin: false, // Remote skills are not embedded
+					})
+				}
+			}
+			builtinSource = "builtin-remote"
+		}
+	} else {
+		// Use embedded builtin skills
+		builtinSkillsList, err = builtin.List()
+		if err != nil {
+			return nil, fmt.Errorf("failed to list builtin skills: %w", err)
+		}
 	}
-	for _, ref := range builtinSkills {
+
+	// Add builtin skills (either embedded or from list)
+	for _, ref := range builtinSkillsList {
 		name := filepath.Base(ref)
 		alreadyPresent := false
 		for _, skill := range resolved {
@@ -711,7 +778,7 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 		resolved = append(resolved, skills.Skill{
 			Path:    ref,
 			Name:    name,
-			Source:  "builtin-default",
+			Source:  builtinSource,
 			Builtin: true,
 		})
 	}

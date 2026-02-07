@@ -57,6 +57,8 @@ type RunnerConfig struct {
 	GitAuthorEmail       string   // Optional: git author email override
 	WorkspaceIsTemporary bool     // true if workspace is a temporary directory (vs user-provided)
 	Skills               []string // Skills to include (already resolved with precedence)
+	BuiltinSkillsSource  string   // Optional: remote source for builtin skills (e.g., URL or catalog ref)
+	BuiltinSkillsRef     string   // Optional: version/ref tag for builtin skills
 	AssistantOutput      string   // Assistant output mode: "none" or "stream"
 }
 
@@ -327,6 +329,8 @@ output:
 		GitAuthorName:        gitCfg.AuthorName,
 		GitAuthorEmail:       gitCfg.AuthorEmail,
 		Skills:               cfg.Skills,
+		BuiltinSkillsSource:  cfg.BuiltinSkillsSource,
+		BuiltinSkillsRef:     cfg.BuiltinSkillsRef,
 		UseSkillMode:         cfg.UseSkillMode,
 	}
 

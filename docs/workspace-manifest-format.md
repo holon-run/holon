@@ -45,6 +45,9 @@ The canonical JSON Schema is maintained at [`schemas/workspace.manifest.schema.j
 | `has_history` | boolean | Yes | Whether full git history is available |
 | `is_shallow` | boolean | Yes | Whether the git repository is a shallow clone |
 | `notes` | array | No | Additional information or warnings about preparation |
+| `builtin_skills_commit` | string | No | Git commit SHA of embedded builtin skills (if used) |
+| `builtin_skills_source` | string | No | Remote source URL for builtin skills (if remote skills were used) |
+| `builtin_skills_ref` | string | No | Version/ref tag for builtin skills (if remote skills were used) |
 
 ## Strategy Types
 
@@ -212,14 +215,17 @@ ajv validate -s schemas/workspace.manifest.schema.json -d workspace.manifest.jso
 ### Go (Runtime)
 ```go
 type Manifest struct {
-    Strategy   string    `json:"strategy"`
-    Source     string    `json:"source"`
-    Ref        string    `json:"ref,omitempty"`
-    HeadSHA    string    `json:"head_sha,omitempty"`
-    CreatedAt  time.Time `json:"created_at"`
-    HasHistory bool      `json:"has_history"`
-    IsShallow  bool      `json:"is_shallow"`
-    Notes      []string  `json:"notes,omitempty"`
+    Strategy            string    `json:"strategy"`
+    Source              string    `json:"source"`
+    Ref                 string    `json:"ref,omitempty"`
+    HeadSHA             string    `json:"head_sha,omitempty"`
+    CreatedAt           time.Time `json:"created_at"`
+    HasHistory          bool      `json:"has_history"`
+    IsShallow           bool      `json:"is_shallow"`
+    Notes               []string  `json:"notes,omitempty"`
+    BuiltinSkillsCommit string    `json:"builtin_skills_commit,omitempty"`
+    BuiltinSkillsSource string    `json:"builtin_skills_source,omitempty"`
+    BuiltinSkillsRef    string    `json:"builtin_skills_ref,omitempty"`
 }
 ```
 Location: [`pkg/workspace/types.go`](../pkg/workspace/types.go)
@@ -230,6 +236,9 @@ Location: [`pkg/workspace/types.go`](../pkg/workspace/types.go)
 - [Workspace Preparation](../pkg/workspace/) - Go implementation of workspace strategies
 
 ## Version History
+
+### v0.10.0
+- Added `builtin_skills_source`, `builtin_skills_ref`, and `builtin_skills_commit` fields for tracking builtin skills provenance
 
 ### v0.8.0
 - Output location changed from workspace root to `/holon/output/` directory

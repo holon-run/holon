@@ -80,6 +80,13 @@ type PrepareResult struct {
 
 	// BuiltinSkillsCommit is the git commit SHA of embedded builtin skills
 	BuiltinSkillsCommit string `json:"builtin_skills_commit,omitempty"`
+
+	// BuiltinSkillsSource is the effective source URL for builtin skills
+	// When empty, skills were loaded from embedded copies
+	BuiltinSkillsSource string `json:"builtin_skills_source,omitempty"`
+
+	// BuiltinSkillsRef is the version/ref tag for builtin skills
+	BuiltinSkillsRef string `json:"builtin_skills_ref,omitempty"`
 }
 
 // Manifest contains workspace metadata
@@ -111,6 +118,13 @@ type Manifest struct {
 
 	// BuiltinSkillsCommit is the git commit SHA of embedded builtin skills
 	BuiltinSkillsCommit string `json:"builtin_skills_commit,omitempty"`
+
+	// BuiltinSkillsSource is the effective source URL for builtin skills
+	// When empty, skills were loaded from embedded copies
+	BuiltinSkillsSource string `json:"builtin_skills_source,omitempty"`
+
+	// BuiltinSkillsRef is the version/ref tag for builtin skills
+	BuiltinSkillsRef string `json:"builtin_skills_ref,omitempty"`
 }
 
 // Preparer is the interface for preparing workspaces

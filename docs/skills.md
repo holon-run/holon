@@ -17,6 +17,77 @@ Skills provide a way to:
 
 ## Skill Discovery
 
+### Builtin Skills Configuration
+
+Holon includes builtin skills (e.g., `github-issue-solve`, `github-pr-fix`, `github-review`, `github-context`, `github-publish`) that are automatically available. By default, these skills are loaded from embedded copies in the Holon binary.
+
+You can configure Holon to use remote builtin skills instead of embedded ones by setting the `builtin_skills_source` in your `.holon/config.yaml`:
+
+```yaml
+# .holon/config.yaml
+# Use a specific version of Holon's builtin skills from a remote source
+builtin_skills_source: "https://github.com/holon-run/holon/releases/download/v1.0.0/holon-skills-v1.0.0.zip"
+builtin_skills_ref: "v1.0.0"  # Optional: version tag for auditing
+```
+
+**Benefits of Remote Builtin Skills:**
+- **Independent Updates:** Update builtin skills without upgrading the Holon binary
+- **Version Pinning:** Pin to specific skill versions for reproducibility
+- **Audit Trail:** The workspace manifest records which skill version was used
+- **Checksum Verification:** Verify skill integrity with SHA256 checksums
+
+**Using with Checksum:**
+```yaml
+builtin_skills_source: "https://github.com/holon-run/holon/releases/download/v1.0.0/holon-skills-v1.0.0.zip#sha256=abc123def456..."
+```
+
+**Catalog References:**
+You can also use catalog references for builtin skills:
+```yaml
+builtin_skills_source: "skills:holon-builtin"  # Uses skills.sh catalog
+builtin_skills_source: "gh:holon-run/holon"     # Uses GitHub repository
+```
+
+**Migration from Embedded Skills:**
+
+If you're migrating from the default embedded skills to remote skills:
+
+1. **Verify Remote Access:** Ensure the remote source is accessible from your environment
+2. **Check Cache:** Remote skills are cached in `~/.holon/cache/skills/` for offline use
+3. **Fallback Behavior:** If the remote source fails, Holon falls back to embedded skills
+4. **Audit Manifest:** Check `workspace.manifest.json` for `builtin_skills_source` to verify which version was used
+
+**Example Migration:**
+
+```yaml
+# Before (embedded skills)
+# No configuration needed - uses embedded skills
+
+# After (remote skills)
+builtin_skills_source: "https://github.com/holon-run/holon/releases/download/v1.0.0/holon-skills-v1.0.0.zip"
+builtin_skills_ref: "v1.0.0"
+```
+
+The workspace manifest will show the effective source:
+```json
+{
+  "builtin_skills_source": "https://github.com/holon-run/holon/releases/download/v1.0.0/holon-skills-v1.0.0.zip",
+  "builtin_skills_ref": "v1.0.0",
+  "builtin_skills_commit": ""  // Empty when using remote skills
+}
+```
+
+When using embedded skills:
+```json
+{
+  "builtin_skills_source": "",  // Empty when using embedded skills
+  "builtin_skills_ref": "",
+  "builtin_skills_commit": "abc123def456..."  // Git commit of embedded skills
+}
+```
+
+### Skill Discovery and Resolution
+
 Holon automatically discovers skills from the `.claude/skills/` directory in your workspace. Skills are loaded with the following precedence:
 
 1. **CLI flags** (`--skill` or `--skills`) - highest priority
