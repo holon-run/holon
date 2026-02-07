@@ -154,7 +154,7 @@ state_dir: /var/lib/holon/state/${{ github.repository }}
 ## Security Considerations
 
 1. **Opt-in**: State mount is always opt-in via explicit flag
-2. **Workspace isolation**: Warns if state-dir points outside repo workspace
+2. **Workspace isolation**: Prefer workspace-relative `--state-dir` to avoid mounting arbitrary host paths (no automatic validation yet)
 3. **Read-write mount**: State directory is mounted read-write (skills can modify)
 4. **Future read-only mode**: May add `--state-dir:ro` for deterministic replay
 

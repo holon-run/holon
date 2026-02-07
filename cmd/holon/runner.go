@@ -43,7 +43,7 @@ type RunnerConfig struct {
 	ContextPath          string
 	InputPath            string // Optional: path to input directory (if empty, creates temp dir)
 	OutDir               string
-	OutDirIsTemp         bool // true if output dir is a temporary directory (vs user-provided)
+	OutDirIsTemp         bool   // true if output dir is a temporary directory (vs user-provided)
 	StateDir             string // Optional: path to state directory for cross-run skill caches
 	RoleName             string
 	EnvVarsList          []string
@@ -208,6 +208,13 @@ output:
 	if err != nil {
 		return fmt.Errorf("failed to resolve output path: %w", err)
 	}
+	absStateDir := ""
+	if cfg.StateDir != "" {
+		absStateDir, err = filepath.Abs(cfg.StateDir)
+		if err != nil {
+			return fmt.Errorf("failed to resolve state directory path: %w", err)
+		}
+	}
 
 	// Ensure out dir exists
 	if err := os.MkdirAll(absOut, 0755); err != nil {
@@ -313,7 +320,7 @@ output:
 		Workspace:            absWorkspace,
 		InputPath:            absInputDir,
 		OutDir:               absOut,
-		StateDir:             cfg.StateDir,
+		StateDir:             absStateDir,
 		Env:                  envVars,
 		AgentConfigMode:      cfg.AgentConfigMode,
 		WorkspaceIsTemporary: cfg.WorkspaceIsTemporary,

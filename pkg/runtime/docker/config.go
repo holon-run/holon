@@ -28,8 +28,7 @@ type EnvConfig struct {
 	HostGID int
 }
 
-// BuildContainerMounts assembles the Docker mounts configuration
-// This function is pure and deterministic - no Docker client interaction
+// BuildContainerMounts assembles the Docker mounts configuration.
 func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 	mounts := []mount.Mount{
 		{
@@ -60,7 +59,7 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 		})
 	}
 
-	// Add Claude config directory mount FIRST (if provided)
+	// Add Claude config directory mount (if provided)
 	// This mounts to /root/.claude
 	if cfg.LocalClaudeConfigDir != "" {
 		mounts = append(mounts, mount.Mount{
@@ -131,8 +130,7 @@ func ValidateRequiredArtifacts(outDir string, requiredArtifacts []v1.Artifact) e
 	return nil
 }
 
-// ValidateMountTargets validates that all mount sources exist
-// This function is pure and deterministic - no Docker client interaction
+// ValidateMountTargets validates mount sources and prepares optional state mounts.
 func ValidateMountTargets(cfg *MountConfig) error {
 	// Check required mount sources
 	if cfg.SnapshotDir == "" {
@@ -153,13 +151,18 @@ func ValidateMountTargets(cfg *MountConfig) error {
 		return fmt.Errorf("output directory does not exist: %s", cfg.OutDir)
 	}
 
-	// Check state directory if provided (will be created if it doesn't exist)
+	// Check state directory if provided (create if missing)
 	if cfg.StateDir != "" {
-		if _, err := os.Stat(cfg.StateDir); os.IsNotExist(err) {
-			// Create state directory if it doesn't exist
+		info, err := os.Stat(cfg.StateDir)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("failed to stat state directory: %s: %w", cfg.StateDir, err)
+			}
 			if err := os.MkdirAll(cfg.StateDir, 0755); err != nil {
 				return fmt.Errorf("failed to create state directory: %s: %w", cfg.StateDir, err)
 			}
+		} else if !info.IsDir() {
+			return fmt.Errorf("state path is not a directory: %s", cfg.StateDir)
 		}
 	}
 

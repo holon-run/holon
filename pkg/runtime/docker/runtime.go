@@ -202,6 +202,10 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		}
 	}
 
+	if err := ValidateMountTargets(mountConfig); err != nil {
+		return "", fmt.Errorf("validating mount targets: %w", err)
+	}
+
 	mounts := BuildContainerMounts(mountConfig)
 
 	holonlog.Progress("creating container", "image", finalImage)

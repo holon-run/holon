@@ -250,6 +250,38 @@ func TestBuildContainerMounts(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "includes state mount when configured",
+			cfg: &MountConfig{
+				SnapshotDir: snapshotDir,
+				InputPath:   inputDir,
+				OutDir:      outDir,
+				StateDir:    filepath.Join(tmpDir, "state"),
+			},
+			expected: []mount.Mount{
+				{
+					Type:   mount.TypeBind,
+					Source: snapshotDir,
+					Target: "/holon/workspace",
+				},
+				{
+					Type:     mount.TypeBind,
+					Source:   inputDir,
+					Target:   "/holon/input",
+					ReadOnly: true,
+				},
+				{
+					Type:   mount.TypeBind,
+					Source: outDir,
+					Target: "/holon/output",
+				},
+				{
+					Type:   mount.TypeBind,
+					Source: filepath.Join(tmpDir, "state"),
+					Target: "/holon/state",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -503,6 +535,66 @@ func TestValidateMountTargets(t *testing.T) {
 
 		if err := ValidateMountTargets(cfg); err == nil {
 			t.Error("ValidateMountTargets() expected error for empty input path, got nil")
+		}
+	})
+
+	t.Run("state directory auto-created when missing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		inputDir := filepath.Join(tmpDir, "input")
+		outDir := filepath.Join(tmpDir, "output")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
+		stateDir := filepath.Join(tmpDir, "state")
+
+		if err := os.MkdirAll(inputDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: snapshotDir,
+			InputPath:   inputDir,
+			OutDir:      outDir,
+			StateDir:    stateDir,
+		}
+
+		if err := ValidateMountTargets(cfg); err != nil {
+			t.Fatalf("ValidateMountTargets() error = %v", err)
+		}
+		if fi, err := os.Stat(stateDir); err != nil {
+			t.Fatalf("expected state directory to exist: %v", err)
+		} else if !fi.IsDir() {
+			t.Fatalf("expected state path to be directory, got file: %s", stateDir)
+		}
+	})
+
+	t.Run("state path must be directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		inputDir := filepath.Join(tmpDir, "input")
+		outDir := filepath.Join(tmpDir, "output")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
+		statePath := filepath.Join(tmpDir, "state-file")
+
+		if err := os.MkdirAll(inputDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(statePath, []byte("not-a-dir"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: snapshotDir,
+			InputPath:   inputDir,
+			OutDir:      outDir,
+			StateDir:    statePath,
+		}
+
+		if err := ValidateMountTargets(cfg); err == nil {
+			t.Fatalf("ValidateMountTargets() expected error for state file path, got nil")
 		}
 	})
 }
