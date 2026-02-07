@@ -39,7 +39,17 @@ When issue context is detected (no PR):
      PR_NUMBER="$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')"
    fi
 
+   if [ -z "$PR_NUMBER" ]; then
+     echo "ERROR: Failed to determine PR number for head branch '$HEAD_BRANCH' after create/edit." >&2
+     exit 1
+   fi
+
    PR_URL="$(gh pr view "$PR_NUMBER" --json url --jq .url)"
+
+   if [ -z "$PR_URL" ]; then
+     echo "ERROR: Failed to resolve PR URL for PR #$PR_NUMBER." >&2
+     exit 1
+   fi
    ```
 6. **Finalize outputs after publish**:
    - Update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json`
@@ -51,7 +61,7 @@ When issue context is detected (no PR):
 Do not mark the run successful unless a PR was actually created or updated.
 
 - `gh` publish commands (`gh pr create`/`gh pr edit`) are mandatory for completion.
-- A successful run must include publish result data (`pr_number` and/or `pr_url`) in `summary.md` and `manifest.json`.
+- A successful run must include publish result data (`pr_number` and `pr_url`) in `summary.md` and `manifest.json`.
 - If publishing fails, mark the run as failed and record the actionable error details.
 
 ## Output Files
