@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.holon.run/skill-package/v1",
+  "title": "Holon Skill Package Manifest",
+  "description": "Metadata for a Holon skill package archive",
+  "type": "object",
+  "required": ["name", "version", "skills", "source", "generated_at"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Package identifier (kebab-case)",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "version": {
+      "type": "string",
+      "description": "SemVer version with v prefix (supports pre-release identifiers)",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(-[a-zA-Z0-9.]+)?$"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable package description"
+    },
+    "skills": {
+      "type": "array",
+      "description": "List of skill directory names included in the package",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+      },
+      "minItems": 1
+    },
+    "source": {
+      "type": "object",
+      "description": "Origin information for reproducibility",
+      "required": ["type", "url", "ref", "commit"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Source type",
+          "enum": ["git", "registry"]
+        },
+        "url": {
+          "type": "string",
+          "description": "Repository or registry URL",
+          "pattern": "^https?://"
+        },
+        "ref": {
+          "type": "string",
+          "description": "Git tag, branch, or commit reference"
+        },
+        "commit": {
+          "type": "string",
+          "description": "Exact git commit SHA",
+          "pattern": "^[a-f0-9]{40}$"
+        }
+      }
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "ISO 8601 timestamp when package was created",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "generator": {
+      "type": "object",
+      "description": "Tool that generated the package",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Generator tool name"
+        },
+        "version": {
+          "type": "string",
+          "description": "Generator version"
+        }
+      }
+    }
+  }
+}

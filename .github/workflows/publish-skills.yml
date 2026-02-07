@@ -1,0 +1,76 @@
+name: Publish Skills Package
+
+# Only triggers manually via workflow_dispatch to avoid conflicts with release.yml
+# The main release.yml workflow will call this to build skills packages
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        type: string
+      upload_to_release:
+        description: 'Upload artifacts to GitHub Release (must be run after release exists)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-skills-package:
+    name: Build Skills Package
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set version from input
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+      id: version
+
+    - name: Build skills package
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        make build-skills-package
+
+    - name: Upload skills package artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: skills-package
+        path: dist/skills/*
+        retention-days: 90
+
+  upload-to-release:
+    name: Upload Skills Package to Release
+    needs: build-skills-package
+    if: ${{ github.event.inputs.upload_to_release == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set version from input
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+      id: version
+
+    - name: Download skills package
+      uses: actions/download-artifact@v4
+      with:
+        name: skills-package
+        path: dist/skills
+
+    - name: Upload to GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          dist/skills/*.zip
+          dist/skills/*.sha256
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

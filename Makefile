@@ -1,4 +1,4 @@
-.PHONY: build build-host test test-all clean run-example test-agent help release-build validate-schema test-contract build-agent-bundle
+.PHONY: build build-host test test-all clean run-example test-agent help release-build validate-schema test-contract build-agent-bundle build-skills-package validate-skills-package
 
 # Project variables
 BINARY_NAME=holon
@@ -177,3 +177,21 @@ test-skill-mode-collector:
 test-skill-mode-publisher:
 	@echo "Running publisher script tests..."
 	@./tests/skill-mode/test_publisher.sh
+
+## build-skills-package: Build skill package for distribution
+build-skills-package:
+	@echo "Building skill package..."
+	@./scripts/build-skills-package.sh
+
+## build-skills-package-release: Build skill package for release (uses git tag)
+build-skills-package-release:
+	@echo "Building skill package for release..."
+	@VERSION=$$(git describe --tags --exact-match 2>/dev/null || echo "v0.0.0-dev") \
+		./scripts/build-skills-package.sh
+
+## validate-skills-package: Validate skill package format
+validate-skills-package:
+	@echo "Validating skill package schema..."
+	@which ajv > /dev/null 2>&1 || (echo "ajv not found. Install with: npm install -g ajv-cli" && exit 1)
+	@ajv compile -s schemas/skill-package.schema.json
+	@echo "Skill package schema validation passed"

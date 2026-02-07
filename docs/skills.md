@@ -66,6 +66,95 @@ Downloaded skills are cached in `~/.holon/cache/skills/` based on URL and checks
 **Multiple Skills in One Zip:**
 When a zip contains multiple skill directories (each with `SKILL.md`), all skills are installed automatically. No need to specify individual skill paths.
 
+### Holon Builtin Skills Package Format
+
+Holon defines a canonical package format for distributing skill collections. This format is used for official Holon builtin skills and recommended for public skill distributions.
+
+**Package Structure:**
+
+```
+holon-skills-v1.0.0.zip         # Package archive
+├── skills/                    # Root directory for all skills
+│   ├── github-context/        # Individual skill directories
+│   │   ├── SKILL.md
+│   │   └── scripts/
+│   └── github-issue-solve/
+│       ├── SKILL.md
+│       └── references/
+└── package.json               # Package metadata
+
+holon-skills-v1.0.0.zip.sha256 # SHA256 checksum (sidecar file)
+```
+
+**package.json Schema:**
+
+```json
+{
+  "$schema": "https://schemas.holon.run/skill-package/v1",
+  "name": "holon-skills",
+  "version": "v1.0.0",
+  "description": "Official Holon builtin skills collection",
+  "skills": ["github-context", "github-issue-solve", "..."],
+  "source": {
+    "type": "git",
+    "url": "https://github.com/holon-run/holon",
+    "ref": "v1.0.0",
+    "commit": "abc123def..."
+  },
+  "generated_at": "2026-02-07T16:00:00Z"
+}
+```
+
+**Key Requirements:**
+
+- **Filename**: `<package>-<version>.zip` (e.g., `holon-skills-v1.0.0.zip`)
+- **Checksum**: Separate `.sha256` file with SHA256 of the zip archive
+- **Root Structure**: Must contain `skills/` directory and `package.json`
+- **Skill Directories**: Each skill must have `SKILL.md` file
+- **Versioning**: SemVer with `v` prefix (e.g., `v1.0.0`, `v1.2.3-beta`)
+
+**Using Official Holon Skills:**
+
+```bash
+# Download official skills package (with checksum verification)
+holon run --goal "Fix issue" \
+  --skill "https://github.com/holon-run/holon/releases/download/v1.0.0/holon-skills-v1.0.0.zip#sha256=<checksum>"
+
+# The package installs all builtin skills:
+# - github-context
+# - github-issue-solve
+# - github-pr-fix
+# - github-publish
+# - github-review
+```
+
+**Building Skill Packages:**
+
+To build your own skill packages following the Holon format:
+
+```bash
+# Build from skills/ directory with version detection
+make build-skills-package
+
+# Build with explicit version
+VERSION=v1.0.0 make build-skills-package
+
+# Output: dist/skills/holon-skills-v1.0.0.zip + .sha256
+```
+
+**Package Verification:**
+
+When downloading skill packages, you can verify the checksum independently:
+
+```bash
+# Download package and checksum
+wget https://github.com/holon-run/holon/releases/download/v1.0.0/holon-skills-v1.0.0.zip{,.sha256}
+
+# Verify before using
+sha256sum -c holon-skills-v1.0.0.zip.sha256
+# Output: holon-skills-v1.0.0.zip: OK
+```
+
 ## Using Skills
 
 ### Method 1: Remote Skills (New!)
