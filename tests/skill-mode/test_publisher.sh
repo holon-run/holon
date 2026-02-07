@@ -296,6 +296,90 @@ INNEREOF
     cleanup_test_env "$tmp_dir"
 }
 
+test_reply_review_multiline_messages() {
+    local test_name="reply_review_multiline"
+    log_info "Running test: $test_name (regression test for issue #551)"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local output_dir="$tmp_dir/output"
+    local bin_dir="$tmp_dir/bin"
+
+    # Create intent with reply_review action containing multi-word/multiline messages
+    mkdir -p "$output_dir"
+    cat > "$output_dir/publish-intent.json" << 'EOF'
+{
+  "version": "1.0",
+  "pr_ref": "owner/repo#123",
+  "actions": [
+    {
+      "type": "reply_review",
+      "params": {
+        "replies": [
+          {
+            "comment_id": 123456,
+            "status": "fixed",
+            "message": "This is a multi-word message with spaces and punctuation.",
+            "action_taken": "Updated the function to use line-safe iteration."
+          },
+          {
+            "comment_id": 789012,
+            "status": "deferred",
+            "message": "Another reply with\nnewlines and\ttabs.",
+            "action_taken": "Will handle in a follow-up PR."
+          }
+        ]
+      }
+    }
+  ]
+}
+EOF
+
+    # Provide a stub gh on PATH
+    mkdir -p "$bin_dir"
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+# Minimal gh stub for tests
+if [[ "$1" == "auth" && "$2" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+# For reply_review, simulate success
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+    export GITHUB_OUTPUT_DIR="$output_dir"
+
+    cd "$tmp_dir"
+
+    # Run in dry-run mode and check for jq parse errors
+    local output
+    local status=0
+    if output=$(bash "$PUBLISHER_SCRIPT" --dry-run --intent="$output_dir/publish-intent.json" 2>&1); then
+        status=0
+    else
+        status=$?
+    fi
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    # Should succeed and NOT have jq parse errors (regression test for word-splitting bug)
+    if [[ $status -eq 0 && "$output" != *"jq parse error"* && "$output" != *"parse error"* ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ reply_review handles multi-word messages without jq parse errors"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ reply_review should handle multi-word messages (status=$status)"
+        if [[ "$output" == *"jq parse error"* ]]; then
+            log_error "  Found 'jq parse error' in output - word-splitting bug present!"
+        fi
+        log_error "  Output: $output"
+    fi
+
+    cleanup_test_env "$tmp_dir"
+}
+
 # Main test runner
 main() {
     log_info "=== Publisher Script Tests ==="
@@ -310,6 +394,7 @@ main() {
     test_publisher_missing_intent
     test_publisher_invalid_json
     test_publisher_valid_intent
+    test_reply_review_multiline_messages
     
     # Summary
     echo ""

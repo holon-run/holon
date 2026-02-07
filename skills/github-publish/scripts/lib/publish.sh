@@ -437,7 +437,11 @@ action_reply_review() {
     count=$(echo "$replies_json" | jq 'length')
     posted=0; skipped=0; failed=0
 
-    for reply in $(echo "$replies_json" | jq -c '.[]'); do
+    # Use mapfile for line-safe JSON iteration (avoiding word-splitting bug)
+    local replies_array=()
+    mapfile -t replies_array < <(echo "$replies_json" | jq -c '.[]')
+
+    for reply in "${replies_array[@]}"; do
         local comment_id status message action_taken
         comment_id=$(echo "$reply" | jq -r '.comment_id // empty')
         status=$(echo "$reply" | jq -r '.status // "info"')
