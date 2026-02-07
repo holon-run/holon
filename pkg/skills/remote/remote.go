@@ -134,7 +134,7 @@ func (c *Cache) DownloadAndExtract(ref *SkillRef) ([]string, error) {
 	// Download zip file
 	zipData, err := c.download(ref.URL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to download: %w", err)
+		return nil, fmt.Errorf("failed to download %s: %w (this may indicate a network issue or that the URL is incorrect)", ref.URL, err)
 	}
 
 	// Verify checksum if provided

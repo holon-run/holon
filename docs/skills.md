@@ -63,6 +63,26 @@ Add a SHA256 checksum via URL fragment to verify download integrity:
 **Caching:**
 Downloaded skills are cached in `~/.holon/cache/skills/` based on URL and checksum (if provided). Subsequent runs use the cache automatically.
 
+## Remote Skills Behavior Matrix
+
+| Status | Cache | Checksum | Behavior | Error Message |
+|--------|-------|----------|----------|---------------|
+| Online | Miss | None | Downloads and caches skill | - |
+| Online | Miss | Valid | Downloads, verifies checksum, caches skill | - |
+| Online | Miss | Invalid | Fails immediately | "checksum mismatch: expected X, got Y" |
+| Online | Hit | None | Uses cached version | - |
+| Online | Hit | Valid | Uses cached version if checksum matches | - |
+| Online | Hit | Invalid (mismatch) | Fails to use cache, checksum mismatch | "checksum mismatch" |
+| Offline | Hit | None | Uses cached version (no network needed) | - |
+| Offline | Hit | Valid | Uses cached version if checksum matches | - |
+| Offline | Miss | Any | Fails deterministically | "failed to download <URL>: HTTP request failed: ... (this may indicate a network issue...)" |
+
+**Key Behaviors:**
+- **Checksum verification** happens immediately after download, before caching
+- **Cache hit** occurs when the same URL (and checksum, if provided) was previously downloaded
+- **Offline mode** works automatically when cached versions are available
+- **Network failures** produce clear error messages indicating the issue
+
 **Multiple Skills in One Zip:**
 When a zip contains multiple skill directories (each with `SKILL.md`), all skills are installed automatically. No need to specify individual skill paths.
 
