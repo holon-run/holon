@@ -22,12 +22,34 @@ When issue context is detected (no PR):
 4. **Draft output artifacts before publish**:
    - Write an initial `${GITHUB_OUTPUT_DIR}/summary.md` (implementation/testing summary used for PR body)
    - Write `${GITHUB_OUTPUT_DIR}/manifest.json` with execution metadata
-   - Write `${GITHUB_OUTPUT_DIR}/publish-intent.json` for PR creation/update
-5. **Publish via `github-publish` (mandatory)**:
+5. **Publish via direct `gh` (mandatory)**:
    ```bash
-   # Preferred: invoke github-publish skill
-   # The skill executes scripts/publish.sh with the intent file
-   scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+   ISSUE_NUMBER=<issue number>
+   HEAD_BRANCH="$(git branch --show-current)"
+   BASE_BRANCH="${BASE_BRANCH:-main}"
+   PR_TITLE="Fix #${ISSUE_NUMBER}: <short title>"
+
+   EXISTING_PR_NUMBER="$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')"
+
+   if [ -n "$EXISTING_PR_NUMBER" ]; then
+     gh pr edit "$EXISTING_PR_NUMBER" --title "$PR_TITLE" --body-file "${GITHUB_OUTPUT_DIR}/summary.md" --base "$BASE_BRANCH"
+     PR_NUMBER="$EXISTING_PR_NUMBER"
+   else
+     gh pr create --base "$BASE_BRANCH" --head "$HEAD_BRANCH" --title "$PR_TITLE" --body-file "${GITHUB_OUTPUT_DIR}/summary.md"
+     PR_NUMBER="$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')"
+   fi
+
+   if [ -z "$PR_NUMBER" ]; then
+     echo "ERROR: Failed to determine PR number for head branch '$HEAD_BRANCH' after create/edit." >&2
+     exit 1
+   fi
+
+   PR_URL="$(gh pr view "$PR_NUMBER" --json url --jq .url)"
+
+   if [ -z "$PR_URL" ]; then
+     echo "ERROR: Failed to resolve PR URL for PR #$PR_NUMBER." >&2
+     exit 1
+   fi
    ```
 6. **Finalize outputs after publish**:
    - Update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json`
@@ -38,9 +60,8 @@ When issue context is detected (no PR):
 
 Do not mark the run successful unless a PR was actually created or updated.
 
-- `publish-intent.json` by itself is not sufficient.
-- `github-publish` invocation is mandatory for completion.
-- A successful run must include publish result data (`pr_number` and/or `pr_url`) in `summary.md` and `manifest.json`.
+- `gh` publish commands (`gh pr create`/`gh pr edit`) are mandatory for completion.
+- A successful run must include publish result data (`pr_number` and `pr_url`) in `summary.md` and `manifest.json`.
 - If publishing fails, mark the run as failed and record the actionable error details.
 
 ## Output Files

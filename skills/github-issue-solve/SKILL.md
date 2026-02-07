@@ -17,9 +17,8 @@ This skill helps you:
 
 ## Prerequisites
 
-This skill depends on (co-installed and callable by the agent):
+This skill depends on:
 - **`github-context`**: Agent should invoke it to collect issue metadata and comments when context is missing
-- **`github-publish`**: Agent should invoke it to publish PRs from the produced artifacts
 
 ## Environment & Paths
 
@@ -35,18 +34,15 @@ This skill depends on (co-installed and callable by the agent):
 - **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
   - `summary.md`
   - `manifest.json`
-  - `publish-intent.json` for `github-publish`
 
 ## Definition of Done (Strict)
 
 The run is successful only if all of the following are true:
 1. Code changes are implemented for the target issue.
-2. `${GITHUB_OUTPUT_DIR}/publish-intent.json` is created.
-3. The `github-publish` skill is invoked to execute publishing.
-4. A GitHub PR is actually created or updated.
-5. `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json` include publish result details (`pr_number` and/or `pr_url`).
-
-Generating `publish-intent.json` alone is not success.
+2. Changes are pushed to a branch.
+3. A GitHub PR is actually created or updated using `gh`.
+4. PR existence is verified via `gh pr view`.
+5. `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json` include publish result details (`pr_number` and `pr_url`).
 
 ## Workflow
 
@@ -111,25 +107,39 @@ Execution metadata:
 
 ### 5. Create Pull Request
 
-Produce `${GITHUB_OUTPUT_DIR}/publish-intent.json` and invoke the `github-publish` skill to create/update the PR:
-```json
-{
-  "actions": [
-    {
-      "type": "create_pr",
-      "base": "main",
-      "head": "feature/issue-502",
-      "title": "Fix: <issue title>",
-      "body": "Closes #502\n\n<description of changes>",
-      "draft": false
-    }
-  ]
-}
+Use a direct `gh` publish flow (single mandatory path):
+
+```bash
+ISSUE_NUMBER=<issue number>
+HEAD_BRANCH="$(git branch --show-current)"
+BASE_BRANCH="${BASE_BRANCH:-main}"
+PR_TITLE="Fix #${ISSUE_NUMBER}: <short title>"
+PR_BODY_FILE="${GITHUB_OUTPUT_DIR}/summary.md"
+
+EXISTING_PR_NUMBER="$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')"
+
+if [ -n "$EXISTING_PR_NUMBER" ]; then
+  gh pr edit "$EXISTING_PR_NUMBER" --title "$PR_TITLE" --body-file "$PR_BODY_FILE" --base "$BASE_BRANCH"
+  PR_NUMBER="$EXISTING_PR_NUMBER"
+else
+  gh pr create --base "$BASE_BRANCH" --head "$HEAD_BRANCH" --title "$PR_TITLE" --body-file "$PR_BODY_FILE"
+  PR_NUMBER="$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')"
+fi
+
+if [ -z "$PR_NUMBER" ]; then
+  echo "ERROR: failed to resolve PR number after publish" >&2
+  exit 1
+fi
+
+PR_URL="$(gh pr view "$PR_NUMBER" --json url --jq .url)"
+if [ -z "$PR_URL" ]; then
+  echo "ERROR: failed to resolve PR url after publish" >&2
+  exit 1
+fi
 ```
 
-Run `github-publish` with this intent file. Treat publish execution as mandatory completion work, not optional cleanup.
-
-After publish succeeds, update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json` to include `pr_number` and `pr_url`.
+Treat publish execution as mandatory completion work, not optional cleanup.
+Update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json` with `pr_number` and `pr_url`.
 
 ## Output Contract
 
@@ -149,16 +159,14 @@ After publish succeeds, update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_O
      "branch": "feature/issue-502",
      "status": "completed|failed",
      "commits": ["abc123"],
-     "pr_number": 123
+     "pr_number": 123,
+     "pr_url": "https://github.com/holon-run/holon/pull/123"
    }
    ```
 
-3. **`${GITHUB_OUTPUT_DIR}/publish-intent.json`**: PR creation intent (for `github-publish`)
-
 ### Failure Rules
 
-- If `github-publish` is not invoked, mark the run as failed.
-- If publish execution fails (push/auth/API/validation), mark the run as failed.
+- If PR create/edit or PR verification fails, mark the run as failed.
 - Do not report success when only artifacts were generated without a PR side effect.
 - On failure, write actionable publish error details and next steps in `${GITHUB_OUTPUT_DIR}/summary.md`.
 
@@ -185,7 +193,8 @@ git push -u origin feature/issue-<number>
 You MAY use these commands:
 - `gh issue view <number>` - View issue details
 - `gh issue comment <number>` - Comment on issues
-- `gh pr view <number>` - Inspect PR details when validating publish results
+- `gh pr create` / `gh pr edit` - Create or update PR
+- `gh pr view <number>` - Verify PR details after publish
 
 ## Important Notes
 
@@ -194,6 +203,7 @@ You MAY use these commands:
 - Write clear commit messages describing what was changed
 - Include "Closes #<number>" in PR body to auto-link the issue
 - Run tests if available before creating the PR
+- Do not mark success until `gh pr view` returns a valid PR URL
 
 ## Reference Documentation
 
