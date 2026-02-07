@@ -19,14 +19,29 @@ When issue context is detected (no PR):
    git commit -m "Feature: <brief description>"
    git push -u origin feature/issue-<number>
    ```
-4. **Create PR**:
+4. **Draft output artifacts before publish**:
+   - Write an initial `${GITHUB_OUTPUT_DIR}/summary.md` (implementation/testing summary used for PR body)
+   - Write `${GITHUB_OUTPUT_DIR}/manifest.json` with execution metadata
+   - Write `${GITHUB_OUTPUT_DIR}/publish-intent.json` for PR creation/update
+5. **Publish via `github-publish` (mandatory)**:
    ```bash
-   gh pr create \
-     --title "Feature: <title>" \
-     --body-file ${GITHUB_OUTPUT_DIR}/summary.md \
-     --base main
+   # Preferred: invoke github-publish skill
+   # The skill executes scripts/publish.sh with the intent file
+   scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
    ```
-5. **Document**: Write `${GITHUB_OUTPUT_DIR}/summary.md` explaining what was done
+6. **Finalize outputs after publish**:
+   - Update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json`
+   - Record publish result fields (`pr_number`, `pr_url`, branch/ref)
+   - If publish fails, mark failure and include actionable error details
+
+## Completion Criteria (Mandatory)
+
+Do not mark the run successful unless a PR was actually created or updated.
+
+- `publish-intent.json` by itself is not sufficient.
+- `github-publish` invocation is mandatory for completion.
+- A successful run must include publish result data (`pr_number` and/or `pr_url`) in `summary.md` and `manifest.json`.
+- If publishing fails, mark the run as failed and record the actionable error details.
 
 ## Output Files
 
