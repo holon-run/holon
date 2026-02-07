@@ -671,19 +671,43 @@ func writeWorkspaceManifest(outDir string, result workspace.PrepareResult) error
 func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, error) {
 	resolver := skills.NewResolver(cfg.Workspace)
 
-	// If no skills explicitly provided, just auto-discover from workspace
-	if len(cfg.Skills) == 0 {
-		return resolver.Resolve([]string{}, []string{}, []string{})
-	}
-
 	// Skills from ContainerConfig.Skills can be:
 	// - Builtin skill references (e.g., "github-context")
 	// - Local filesystem paths
 	// - Remote URLs
-	// Use Resolve to handle all types properly
+	// Use Resolve to handle all types properly. When no skills are explicitly
+	// provided, this still returns auto-discovered workspace skills.
 	resolved, err := resolver.Resolve(cfg.Skills, []string{}, []string{})
 	if err != nil {
 		return nil, err
+	}
+
+	// Always make builtin skills available in the container so entry skills can
+	// invoke shared helper skills (e.g. github-context, github-publish).
+	// Keep explicit/workspace skills first; append builtin defaults only if not
+	// already present by skill name.
+	builtinSkills, err := builtin.List()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list builtin skills: %w", err)
+	}
+	for _, ref := range builtinSkills {
+		name := filepath.Base(ref)
+		alreadyPresent := false
+		for _, skill := range resolved {
+			if skill.Name == name {
+				alreadyPresent = true
+				break
+			}
+		}
+		if alreadyPresent {
+			continue
+		}
+		resolved = append(resolved, skills.Skill{
+			Path:    ref,
+			Name:    name,
+			Source:  "builtin-default",
+			Builtin: true,
+		})
 	}
 
 	return resolved, nil

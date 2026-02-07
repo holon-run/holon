@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	holonGit "github.com/holon-run/holon/pkg/git"
+	"github.com/holon-run/holon/pkg/skills"
 	"github.com/holon-run/holon/pkg/workspace"
 )
 
@@ -1027,6 +1028,75 @@ func TestPrepareWorkspace_TemporaryWorkspace(t *testing.T) {
 	}
 }
 
+func TestResolveSkills_IncludesBuiltinDefaults(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := &ContainerConfig{
+		Workspace: workspace,
+		Skills:    []string{"github-issue-solve"},
+	}
+
+	resolved, err := resolveSkills(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resolveSkills failed: %v", err)
+	}
+
+	countByName := make(map[string]int)
+	skillByName := make(map[string]skills.Skill)
+	for _, skill := range resolved {
+		countByName[skill.Name]++
+		skillByName[skill.Name] = skill
+	}
+
+	if countByName["github-issue-solve"] != 1 {
+		t.Fatalf("expected github-issue-solve exactly once, got %d", countByName["github-issue-solve"])
+	}
+	if countByName["github-context"] != 1 {
+		t.Fatalf("expected github-context exactly once, got %d", countByName["github-context"])
+	}
+	if countByName["github-publish"] != 1 {
+		t.Fatalf("expected github-publish exactly once, got %d", countByName["github-publish"])
+	}
+	if !skillByName["github-context"].Builtin {
+		t.Fatal("expected github-context to be builtin")
+	}
+	if !skillByName["github-publish"].Builtin {
+		t.Fatal("expected github-publish to be builtin")
+	}
+}
+
+func TestResolveSkills_WorkspaceSkillOverridesBuiltinDefault(t *testing.T) {
+	workspace := t.TempDir()
+	workspaceSkillDir := filepath.Join(workspace, ".claude", "skills", "github-context")
+	if err := os.MkdirAll(workspaceSkillDir, 0o755); err != nil {
+		t.Fatalf("failed to create workspace skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceSkillDir, "SKILL.md"), []byte("# Workspace override\n"), 0o644); err != nil {
+		t.Fatalf("failed to write workspace skill manifest: %v", err)
+	}
+
+	cfg := &ContainerConfig{
+		Workspace: workspace,
+	}
+
+	resolved, err := resolveSkills(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resolveSkills failed: %v", err)
+	}
+
+	var githubContextMatches []skills.Skill
+	for _, skill := range resolved {
+		if skill.Name == "github-context" {
+			githubContextMatches = append(githubContextMatches, skill)
+		}
+	}
+	if len(githubContextMatches) != 1 {
+		t.Fatalf("expected exactly 1 github-context skill, got %d", len(githubContextMatches))
+	}
+	if githubContextMatches[0].Builtin {
+		t.Fatal("expected workspace github-context to take precedence over builtin default")
+	}
+}
+
 // TestIsIncompatibleClaudeConfig tests the isIncompatibleClaudeConfig function
 func TestIsIncompatibleClaudeConfig(t *testing.T) {
 	tests := []struct {
@@ -1148,4 +1218,3 @@ func TestIsIncompatibleClaudeConfig(t *testing.T) {
 		}
 	})
 }
-
