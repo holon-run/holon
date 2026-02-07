@@ -16,6 +16,7 @@ type MountConfig struct {
 	SnapshotDir          string
 	InputPath            string // Path to input directory (contains spec.yaml, context/, prompts/)
 	OutDir               string
+	StateDir             string // Path to state directory for cross-run skill caches (optional, for mounting)
 	LocalClaudeConfigDir string // Path to host ~/.claude directory (optional, for mounting)
 	LocalSkillsDir       string // Path to skills staging directory (optional, for mounting)
 }
@@ -27,8 +28,7 @@ type EnvConfig struct {
 	HostGID int
 }
 
-// BuildContainerMounts assembles the Docker mounts configuration
-// This function is pure and deterministic - no Docker client interaction
+// BuildContainerMounts assembles the Docker mounts configuration.
 func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 	mounts := []mount.Mount{
 		{
@@ -49,7 +49,17 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 		},
 	}
 
-	// Add Claude config directory mount FIRST (if provided)
+	// Add state directory mount (if provided)
+	// This mounts to /holon/state for cross-run skill caches
+	if cfg.StateDir != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: cfg.StateDir,
+			Target: "/holon/state",
+		})
+	}
+
+	// Add Claude config directory mount (if provided)
 	// This mounts to /root/.claude
 	if cfg.LocalClaudeConfigDir != "" {
 		mounts = append(mounts, mount.Mount{
@@ -120,8 +130,7 @@ func ValidateRequiredArtifacts(outDir string, requiredArtifacts []v1.Artifact) e
 	return nil
 }
 
-// ValidateMountTargets validates that all mount sources exist
-// This function is pure and deterministic - no Docker client interaction
+// ValidateMountTargets validates mount sources and prepares optional state mounts.
 func ValidateMountTargets(cfg *MountConfig) error {
 	// Check required mount sources
 	if cfg.SnapshotDir == "" {
@@ -140,6 +149,21 @@ func ValidateMountTargets(cfg *MountConfig) error {
 	}
 	if _, err := os.Stat(cfg.OutDir); os.IsNotExist(err) {
 		return fmt.Errorf("output directory does not exist: %s", cfg.OutDir)
+	}
+
+	// Check state directory if provided (create if missing)
+	if cfg.StateDir != "" {
+		info, err := os.Stat(cfg.StateDir)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("failed to stat state directory: %s: %w", cfg.StateDir, err)
+			}
+			if err := os.MkdirAll(cfg.StateDir, 0755); err != nil {
+				return fmt.Errorf("failed to create state directory: %s: %w", cfg.StateDir, err)
+			}
+		} else if !info.IsDir() {
+			return fmt.Errorf("state path is not a directory: %s", cfg.StateDir)
+		}
 	}
 
 	return nil
