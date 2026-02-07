@@ -498,10 +498,13 @@ jobs:
             fi
           fi
 
-          # Auto-review: run on PRs when enabled (even without explicit trigger).
+          # Auto-review: run only for pull_request / pull_request_review events.
+          # Do NOT auto-run on issue_comment for PRs (avoids bot comment storms).
           if [ "$SHOULD_RUN" != 'true' ] && [ "$INPUT_AUTO_REVIEW" = 'true' ] && [ "$IS_PR" = 'true' ]; then
-            SHOULD_RUN='true'
-            REASON='Auto-review enabled'
+            if [ "$EVENT_NAME" = 'pull_request' ] || [ "$EVENT_NAME" = 'pull_request_review' ]; then
+              SHOULD_RUN='true'
+              REASON="Auto-review enabled (${EVENT_NAME})"
+            fi
           fi
 
           # Label/assignment triggers rely on the event payload (label_name / assignee_login) to avoid false positives.
