@@ -407,3 +407,217 @@ func calculateChecksum(data []byte) string {
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
 }
+
+// TestOfflineBehavior tests offline scenarios for remote skills
+func TestOfflineBehavior(t *testing.T) {
+	// Create a test zip file with skills
+	zipData, err := createTestZip()
+	if err != nil {
+		t.Fatalf("failed to create test zip: %v", err)
+	}
+	checksum := calculateChecksum(zipData)
+
+	// Create a temporary cache directory
+	cacheDir, err := os.MkdirTemp("", "holon-offline-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp cache dir: %v", err)
+	}
+	defer os.RemoveAll(cacheDir)
+
+	cache := NewCache(cacheDir)
+
+	// Test 1: offline + cache hit (succeeds without network)
+	t.Run("offline + cache hit succeeds", func(t *testing.T) {
+		// Create a test server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/zip")
+			w.WriteHeader(http.StatusOK)
+			w.Write(zipData)
+		}))
+		serverURL := server.URL + "/skills.zip"
+
+		// First, download and cache the skill
+		skillRef := &SkillRef{
+			URL:      serverURL,
+			Checksum: checksum,
+		}
+
+		// Initial download
+		skills, err := cache.DownloadAndExtract(skillRef)
+		if err != nil {
+			t.Fatalf("initial download failed: %v", err)
+		}
+		if len(skills) != 2 {
+			t.Errorf("expected 2 skills from initial download, got %d", len(skills))
+		}
+
+		// Now simulate offline mode by closing the server
+		server.Close()
+
+		// Second request should use cache (no network needed)
+		skills, err = cache.DownloadAndExtract(skillRef)
+		if err != nil {
+			t.Errorf("offline cache hit failed: %v", err)
+		}
+		if len(skills) != 2 {
+			t.Errorf("expected 2 skills from cached version, got %d", len(skills))
+		}
+
+		// Verify skills exist in cache
+		for _, skillPath := range skills {
+			if _, err := os.Stat(skillPath); os.IsNotExist(err) {
+				t.Errorf("cached skill path does not exist: %s", skillPath)
+			}
+		}
+	})
+
+	// Test 2: offline + cache miss (fails deterministically with clear error)
+	t.Run("offline + cache miss fails clearly", func(t *testing.T) {
+		// Try to download a URL that has never been cached (cache miss)
+		offlineSkillRef := &SkillRef{
+			URL:      "http://localhost:9999/no-such-skills.zip",
+			Checksum: checksum,
+		}
+
+		_, err := cache.DownloadAndExtract(offlineSkillRef)
+		if err == nil {
+			t.Error("expected error for offline cache miss, got nil")
+		}
+
+		// Error should be clear and actionable
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "download") && !strings.Contains(errMsg, "HTTP") && !strings.Contains(errMsg, "network") {
+			t.Errorf("error message should mention download/network failure for clarity, got: %v", errMsg)
+		}
+	})
+
+	// Test 3: offline + cache hit + wrong checksum (should fail even with cache)
+	t.Run("offline + cache hit + checksum mismatch fails", func(t *testing.T) {
+		// Create a new test server for this subtest
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/zip")
+			w.WriteHeader(http.StatusOK)
+			w.Write(zipData)
+		}))
+		serverURL := server.URL + "/skills.zip"
+		defer server.Close()
+
+		// First, download and cache with correct checksum
+		skillRef := &SkillRef{
+			URL:      serverURL,
+			Checksum: checksum,
+		}
+
+		skills, err := cache.DownloadAndExtract(skillRef)
+		if err != nil {
+			t.Fatalf("initial download failed: %v", err)
+		}
+		if len(skills) != 2 {
+			t.Errorf("expected 2 skills from initial download, got %d", len(skills))
+		}
+
+		// Now try with wrong checksum - should fail due to metadata checksum mismatch
+		wrongChecksumRef := &SkillRef{
+			URL:      serverURL,
+			Checksum: strings.Repeat("0", 64), // Wrong checksum
+		}
+
+		_, err = cache.DownloadAndExtract(wrongChecksumRef)
+		if err == nil {
+			t.Error("expected checksum mismatch error, got nil")
+		}
+		// The error can be either "checksum mismatch" from getCachedDir or network error from download attempt
+		if !strings.Contains(err.Error(), "checksum") && !strings.Contains(err.Error(), "download") {
+			t.Errorf("error should mention checksum or download failure: %v", err)
+		}
+	})
+}
+
+// TestCacheMissWithoutChecksum tests cache miss when no checksum is provided
+func TestCacheMissWithoutChecksum(t *testing.T) {
+	// Create a test zip file
+	zipData, err := createTestZip()
+	if err != nil {
+		t.Fatalf("failed to create test zip: %v", err)
+	}
+
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.WriteHeader(http.StatusOK)
+		w.Write(zipData)
+	}))
+	defer server.Close()
+
+	// Create a temporary cache directory
+	cacheDir, err := os.MkdirTemp("", "holon-cache-miss-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp cache dir: %v", err)
+	}
+	defer os.RemoveAll(cacheDir)
+
+	cache := NewCache(cacheDir)
+
+	// Download without checksum - should succeed on first try
+	skillRef := &SkillRef{
+		URL: server.URL + "/skills.zip",
+	}
+
+	skills, err := cache.DownloadAndExtract(skillRef)
+	if err != nil {
+		t.Fatalf("first download failed: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Errorf("expected 2 skills, got %d", len(skills))
+	}
+}
+
+// TestChecksumMismatchFailsDownload tests that checksum mismatch fails the download
+func TestChecksumMismatchFailsDownload(t *testing.T) {
+	// Create a test zip file
+	zipData, err := createTestZip()
+	if err != nil {
+		t.Fatalf("failed to create test zip: %v", err)
+	}
+
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.WriteHeader(http.StatusOK)
+		w.Write(zipData)
+	}))
+	defer server.Close()
+
+	// Create a temporary cache directory
+	cacheDir, err := os.MkdirTemp("", "holon-checksum-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp cache dir: %v", err)
+	}
+	defer os.RemoveAll(cacheDir)
+
+	cache := NewCache(cacheDir)
+
+	// Try to download with wrong checksum
+	wrongChecksum := strings.Repeat("ff", 32)
+	skillRef := &SkillRef{
+		URL:      server.URL + "/skills.zip",
+		Checksum: wrongChecksum,
+	}
+
+	_, err = cache.DownloadAndExtract(skillRef)
+	if err == nil {
+		t.Error("expected checksum mismatch error, got nil")
+	}
+
+	// Verify error message is clear
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "checksum") || !strings.Contains(errMsg, "mismatch") {
+		t.Errorf("error message should clearly state checksum mismatch, got: %v", errMsg)
+	}
+
+	// Verify no cache was created for failed download
+	cachePath := cache.cachePath(skillRef)
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Error("failed download should not create cache entry")
+	}
+}
