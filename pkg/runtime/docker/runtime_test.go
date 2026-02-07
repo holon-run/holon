@@ -1407,6 +1407,15 @@ func TestBuiltinSkillsManifestConsistency(t *testing.T) {
 	t.Run("remote skills - manifest has source/ref, empty commit", func(t *testing.T) {
 		sourceRepo := createTestRepo(t)
 		outDir := t.TempDir()
+		zipData, err := buildSingleSkillZip("remote-builtin")
+		if err != nil {
+			t.Fatalf("failed to build test skill zip: %v", err)
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(zipData)
+		}))
+		defer server.Close()
 
 		// Create config with BuiltinSkillsSource set (uses remote skills)
 		cfg := &ContainerConfig{
@@ -1414,7 +1423,7 @@ func TestBuiltinSkillsManifestConsistency(t *testing.T) {
 			OutDir:                 outDir,
 			AgentBundle:            "/tmp/bundle.tar.gz",
 			BaseImage:              "node:20",
-			BuiltinSkillsSource:    "https://example.com/skills.zip",
+			BuiltinSkillsSource:    server.URL + "/skills.zip",
 			BuiltinSkillsRef:       "v1.0.0",
 			WorkspaceIsTemporary:   true,
 		}
@@ -1449,6 +1458,15 @@ func TestBuiltinSkillsManifestConsistency(t *testing.T) {
 	t.Run("remote skills with only source set - ref can be empty", func(t *testing.T) {
 		sourceRepo := createTestRepo(t)
 		outDir := t.TempDir()
+		zipData, err := buildSingleSkillZip("remote-builtin")
+		if err != nil {
+			t.Fatalf("failed to build test skill zip: %v", err)
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(zipData)
+		}))
+		defer server.Close()
 
 		// Create config with BuiltinSkillsSource but no ref
 		cfg := &ContainerConfig{
@@ -1456,7 +1474,7 @@ func TestBuiltinSkillsManifestConsistency(t *testing.T) {
 			OutDir:                 outDir,
 			AgentBundle:            "/tmp/bundle.tar.gz",
 			BaseImage:              "node:20",
-			BuiltinSkillsSource:    "https://example.com/skills.zip",
+			BuiltinSkillsSource:    server.URL + "/skills.zip",
 			BuiltinSkillsRef:       "", // Empty ref is allowed
 			WorkspaceIsTemporary:   true,
 		}
