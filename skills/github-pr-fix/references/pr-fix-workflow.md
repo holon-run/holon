@@ -39,7 +39,7 @@ If setup still fails, attempt a build/compile step (if possible) and report the 
 
 When CI tests fail, follow this workflow:
 
-1. **Check for test logs**: Look for `context/github/test-failure-logs.txt`
+1. **Check for test logs**: Look for `${GITHUB_CONTEXT_DIR}/github/test-failure-logs.txt`
 2. **Read the logs**: Use grep to find specific test failures
 3. **Analyze the failure**: What error/assertion failed? What file/line is failing?
 4. **Determine relevance**: Check if modified files relate to the failure by comparing against `pr.diff`
@@ -48,13 +48,13 @@ When CI tests fail, follow this workflow:
 
 ```bash
 # Find all failing tests
-grep -E "(FAIL|FAIL:|FAILED)" /holon/input/context/github/test-failure-logs.txt
+grep -E "(FAIL|FAIL:|FAILED)" "${GITHUB_CONTEXT_DIR}/github/test-failure-logs.txt"
 
 # Search for a specific test name
-grep "TestRunner_Run_EnvVariablePrecedence" /holon/input/context/github/test-failure-logs.txt
+grep "TestRunner_Run_EnvVariablePrecedence" "${GITHUB_CONTEXT_DIR}/github/test-failure-logs.txt"
 
 # Show context around a failure
-grep -A 20 "FAIL:" /holon/input/context/github/test-failure-logs.txt
+grep -A 20 "FAIL:" "${GITHUB_CONTEXT_DIR}/github/test-failure-logs.txt"
 ```
 
 ## Handling Non-Blocking Refactor Requests
@@ -124,11 +124,20 @@ After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies, create 
 Then invoke `github-publish`:
 
 ```bash
-cd /holon/workspace/skills/github-publish
-scripts/publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 ```
 
 `github-publish` handles idempotency and batching for replies.
+
+## Completion Criteria (Mandatory)
+
+Do not mark the run successful unless all of the following are true:
+
+1. Code fixes are pushed to the PR branch.
+2. `${GITHUB_OUTPUT_DIR}/pr-fix.json` exists and includes the planned replies/check statuses.
+3. `${GITHUB_OUTPUT_DIR}/publish-intent.json` exists and is used for publishing.
+4. `${GITHUB_OUTPUT_DIR}/publish-result.json` exists after publish.
+5. `publish-result.json` contains no failed `reply_review` action.
 
 ## pr-fix.json Format
 

@@ -37,6 +37,19 @@ This skill depends on (co-installed and callable by the agent):
   - `pr-fix.json` (reply plan)
   - `summary.md`
   - `manifest.json`
+  - `publish-intent.json`
+  - `publish-result.json`
+
+## Definition of Done (Strict)
+
+The run is successful only if all of the following are true:
+1. Required code fixes are committed and pushed to the existing PR branch.
+2. `${GITHUB_OUTPUT_DIR}/pr-fix.json` is generated with review reply decisions.
+3. `${GITHUB_OUTPUT_DIR}/publish-intent.json` is generated from `pr-fix.json`.
+4. `github-publish` is executed and produces `${GITHUB_OUTPUT_DIR}/publish-result.json`.
+5. `publish-result.json` contains no failed `reply_review` action.
+
+If replies are planned but not published, the run is not successful.
 
 ### 1. Context Collection
 
@@ -139,7 +152,32 @@ Execution metadata:
 
 ### 5. Reply to Reviews
 
-Use `${GITHUB_OUTPUT_DIR}/pr-fix.json` to produce `publish-intent.json` with `reply_review` actions, then invoke the `github-publish` skill to post replies. `reply-reviews.sh` is removed; publishing is unified via `github-publish`.
+Use a single publish path via `github-publish`:
+
+```bash
+PR_REF="<owner>/<repo>#<pr_number>"
+
+jq -n \
+  --arg pr "$PR_REF" \
+  --slurpfile fix "${GITHUB_OUTPUT_DIR}/pr-fix.json" \
+  '{
+    actions: (
+      ($fix[0].review_replies // [])
+      | map(select(.comment_id != null) | {
+          type: "reply_review",
+          pr: $pr,
+          comment_id: .comment_id,
+          body: .message
+        })
+    )
+  }' > "${GITHUB_OUTPUT_DIR}/publish-intent.json"
+
+# Invoke github-publish skill/script
+publish.sh --intent="${GITHUB_OUTPUT_DIR}/publish-intent.json"
+```
+
+Run the publish command through the `github-publish` skill.  
+After publish, ensure `${GITHUB_OUTPUT_DIR}/publish-result.json` exists and check for failed `reply_review` actions.
 
 ## Output Contract
 
@@ -154,6 +192,8 @@ Use `${GITHUB_OUTPUT_DIR}/pr-fix.json` to produce `publish-intent.json` with `re
 2. **`${GITHUB_OUTPUT_DIR}/manifest.json`**: Execution metadata
 
 3. **`${GITHUB_OUTPUT_DIR}/pr-fix.json`**: Structured fix status and responses
+4. **`${GITHUB_OUTPUT_DIR}/publish-intent.json`**: Reply actions for publishing
+5. **`${GITHUB_OUTPUT_DIR}/publish-result.json`**: Publishing execution result
 
 ## Git Operations
 
@@ -175,36 +215,13 @@ git push
 
 **Note**: Push changes to the existing PR branch, do NOT create a new PR.
 
-## Scripts
-
-### reply-reviews.sh
-
-Post formatted replies to PR review comments.
-
-**Usage:**
-```bash
-# Preview without posting
-reply-reviews.sh --dry-run --pr=owner/repo#123
-
-# Post all replies
-reply-reviews.sh --pr=owner/repo#123
-
-# Resume from specific reply
-reply-reviews.sh --from=5 --pr=owner/repo#123
-```
-
-**Options:**
-- `--dry-run`: Show what would be posted without actually posting
-- `--from=N`: Start from reply N (for error recovery)
-- `--pr=OWNER/REPO#NUMBER`: Target PR
-- `--bot-login=NAME`: Bot login name for idempotency
-
 ## Important Notes
 
 - You are running **HEADLESSLY** - do not wait for user input or confirmation
 - Fix issues in priority order: build → test → import → lint
 - Commit fixes BEFORE replying to reviews
-- Use idempotency - the script will skip duplicate replies
+- Use a single publish path (`github-publish`) to avoid mode confusion
+- Verify publish-result and fail when any `reply_review` action fails
 - For non-blocking refactor requests, consider deferring to follow-up issues
 
 ## Reference Documentation
