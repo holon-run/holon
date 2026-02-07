@@ -527,19 +527,10 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 
 		// Write workspace manifest to output directory if specified
 		if cfg.OutDir != "" {
-			// Record builtin skills provenance for audit
-			// For remote builtin skills: record source/ref, leave commit empty
-			// For embedded builtin skills: record commit, leave source/ref empty
-			if cfg.BuiltinSkillsSource != "" {
-				// Remote builtin skills
-				prepareResult.BuiltinSkillsSource = cfg.BuiltinSkillsSource
-				prepareResult.BuiltinSkillsRef = cfg.BuiltinSkillsRef
-				// BuiltinSkillsCommit intentionally left empty for remote skills
-			} else {
-				// Embedded builtin skills
-				prepareResult.BuiltinSkillsCommit = builtin.GitCommit()
-				// BuiltinSkillsSource/Ref intentionally left empty for embedded skills
-			}
+			commit, source, ref := builtinSkillsManifestFields(cfg, resolvedSkills)
+			prepareResult.BuiltinSkillsCommit = commit
+			prepareResult.BuiltinSkillsSource = source
+			prepareResult.BuiltinSkillsRef = ref
 			if err := writeWorkspaceManifest(cfg.OutDir, prepareResult); err != nil {
 				os.RemoveAll(skillsDir) // Cleanup on error
 				return "", "", nil, fmt.Errorf("failed to write workspace manifest: %w", err)
@@ -666,19 +657,10 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 	// Write workspace manifest to output directory (not workspace)
 	// This avoids polluting the workspace with metadata files
 	if cfg.OutDir != "" {
-		// Record builtin skills provenance for audit
-		// For remote builtin skills: record source/ref, leave commit empty
-		// For embedded builtin skills: record commit, leave source/ref empty
-		if cfg.BuiltinSkillsSource != "" {
-			// Remote builtin skills
-			result.BuiltinSkillsSource = cfg.BuiltinSkillsSource
-			result.BuiltinSkillsRef = cfg.BuiltinSkillsRef
-			// BuiltinSkillsCommit intentionally left empty for remote skills
-		} else {
-			// Embedded builtin skills
-			result.BuiltinSkillsCommit = builtin.GitCommit()
-			// BuiltinSkillsSource/Ref intentionally left empty for embedded skills
-		}
+		commit, source, ref := builtinSkillsManifestFields(cfg, resolvedSkills)
+		result.BuiltinSkillsCommit = commit
+		result.BuiltinSkillsSource = source
+		result.BuiltinSkillsRef = ref
 		if err := writeWorkspaceManifest(cfg.OutDir, result); err != nil {
 			holonlog.Warn("failed to write workspace manifest", "error", err)
 		}
@@ -728,8 +710,8 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 		// Use remote builtin skills
 		holonlog.Info("loading builtin skills from remote source", "url", cfg.BuiltinSkillsSource, "ref", cfg.BuiltinSkillsRef)
 
-		// Resolve the remote source - use BuiltinSkillsSource as-is
-		// BuiltinSkillsRef is treated as metadata/audit only, not used for URL construction
+		// Resolve the configured remote source directly.
+		// BuiltinSkillsRef is metadata for auditing/version pin visibility.
 		remoteSkills, err := resolver.Resolve([]string{cfg.BuiltinSkillsSource}, []string{}, []string{})
 		if err != nil {
 			holonlog.Warn("failed to load remote builtin skills, falling back to embedded", "error", err)
@@ -791,6 +773,18 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 	}
 
 	return resolved, nil
+}
+
+// builtinSkillsManifestFields returns the manifest fields for builtin skill provenance.
+// - embedded/default or embedded fallback: commit set, source/ref empty
+// - remote builtin used: source/ref set, commit empty
+func builtinSkillsManifestFields(cfg *ContainerConfig, resolved []skills.Skill) (commit, source, ref string) {
+	for _, s := range resolved {
+		if s.Source == "builtin-remote" {
+			return "", cfg.BuiltinSkillsSource, cfg.BuiltinSkillsRef
+		}
+	}
+	return builtin.GitCommit(), "", ""
 }
 
 // containsSkill checks if a skill is already in the list (by path)

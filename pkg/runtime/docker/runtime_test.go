@@ -1,9 +1,13 @@
 package docker
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1095,6 +1099,90 @@ func TestResolveSkills_WorkspaceSkillOverridesBuiltinDefault(t *testing.T) {
 	if githubContextMatches[0].Builtin {
 		t.Fatal("expected workspace github-context to take precedence over builtin default")
 	}
+}
+
+func TestResolveSkills_RemoteBuiltinSourceUsesSourceURL(t *testing.T) {
+	workspaceDir := t.TempDir()
+	zipData, err := buildSingleSkillZip("remote-builtin")
+	if err != nil {
+		t.Fatalf("failed to build test skill zip: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipData)
+	}))
+	defer server.Close()
+
+	cfg := &ContainerConfig{
+		Workspace:           workspaceDir,
+		BuiltinSkillsSource: server.URL + "/skills.zip",
+		// Should not replace source URL during resolution.
+		BuiltinSkillsRef: "v9.9.9",
+	}
+
+	resolved, err := resolveSkills(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resolveSkills failed: %v", err)
+	}
+
+	foundRemote := false
+	for _, skill := range resolved {
+		if skill.Name == "remote-builtin" {
+			foundRemote = true
+			if skill.Source != "builtin-remote" {
+				t.Fatalf("expected source builtin-remote, got %s", skill.Source)
+			}
+		}
+	}
+	if !foundRemote {
+		t.Fatal("expected remote-builtin skill to be resolved from BuiltinSkillsSource")
+	}
+}
+
+func TestBuiltinSkillsManifestFields(t *testing.T) {
+	cfg := &ContainerConfig{
+		BuiltinSkillsSource: "https://example.com/skills.zip",
+		BuiltinSkillsRef:    "v1.2.3",
+	}
+
+	commit, source, ref := builtinSkillsManifestFields(cfg, []skills.Skill{
+		{Name: "github-context", Source: "builtin-default", Builtin: true},
+	})
+	if commit == "" {
+		t.Fatal("expected embedded commit for builtin-default")
+	}
+	if source != "" || ref != "" {
+		t.Fatalf("expected empty source/ref for embedded mode, got source=%q ref=%q", source, ref)
+	}
+
+	commit, source, ref = builtinSkillsManifestFields(cfg, []skills.Skill{
+		{Name: "remote-builtin", Source: "builtin-remote", Builtin: false},
+	})
+	if commit != "" {
+		t.Fatalf("expected empty commit for remote builtin skills, got %q", commit)
+	}
+	if source != cfg.BuiltinSkillsSource || ref != cfg.BuiltinSkillsRef {
+		t.Fatalf("unexpected source/ref for remote mode: source=%q ref=%q", source, ref)
+	}
+}
+
+func buildSingleSkillZip(skillName string) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	skillPath := "skills/" + skillName + "/SKILL.md"
+	w, err := zw.Create(skillPath)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write([]byte("---\nname: " + skillName + "\ndescription: test skill\n---\n\n# " + skillName + "\n")); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // TestIsIncompatibleClaudeConfig tests the isIncompatibleClaudeConfig function
