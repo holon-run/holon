@@ -111,7 +111,7 @@ Execution metadata:
 
 ### 5. Create Pull Request
 
-Produce `${GITHUB_OUTPUT_DIR}/publish-intent.json` and invoke the `github-publish` skill to create the PR:
+Produce `${GITHUB_OUTPUT_DIR}/publish-intent.json` and invoke the `github-publish` skill to create/update the PR:
 ```json
 {
   "actions": [
@@ -128,6 +128,8 @@ Produce `${GITHUB_OUTPUT_DIR}/publish-intent.json` and invoke the `github-publis
 ```
 
 Run `github-publish` with this intent file. Treat publish execution as mandatory completion work, not optional cleanup.
+
+After publish succeeds, update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json` to include `pr_number` and `pr_url`.
 
 ## Output Contract
 
@@ -183,7 +185,7 @@ git push -u origin feature/issue-<number>
 You MAY use these commands:
 - `gh issue view <number>` - View issue details
 - `gh issue comment <number>` - Comment on issues
-- `gh pr create` - Create pull requests (or use `github-publish` skill)
+- `gh pr view <number>` - Inspect PR details when validating publish results
 
 ## Important Notes
 

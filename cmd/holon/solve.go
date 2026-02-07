@@ -862,7 +862,7 @@ func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, trigger
 		}
 	} else {
 		if useSkillMode {
-			baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Generate publish-intent.json, (4) Invoke github-publish, and (5) Actually create or update a GitHub PR and record its URL/number in outputs. Producing publish-intent.json alone is NOT success.", ref.URL())
+			baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Generate ${GITHUB_OUTPUT_DIR}/publish-intent.json, (4) Invoke github-publish so it actually creates or updates a GitHub PR, and (5) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/summary.md and ${GITHUB_OUTPUT_DIR}/manifest.json contain pr_number and pr_url for that PR. Producing publish-intent.json alone is NOT success.", ref.URL())
 		} else {
 			baseGoal = fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. Focus on implementing the solution; the system will handle committing changes and creating any pull requests.", ref.URL())
 		}
