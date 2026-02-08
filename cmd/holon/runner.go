@@ -654,9 +654,17 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 
 	contextEntries, contextFileNames := collectContextEntries(absContext)
 
-	// Determine if using skill mode: skills are specified AND mode is not explicitly provided
-	// In skill mode, skip mode-specific prompt layers and let Claude Code discover skills natively
-	useSkillMode := len(cfg.Skills) > 0 && !cfg.ModeExplicit
+	// Determine if using skill mode.
+	// Prefer the value provided by the caller via UseSkillMode, but fall back to the
+	// previous derived behavior when mode is not explicit and skills are configured.
+	// In skill mode (default for solve command), skip mode-specific prompt layers
+	// and let Claude Code discover skills natively.
+	useSkillMode := cfg.UseSkillMode
+	if !cfg.ModeExplicit && len(cfg.Skills) > 0 && !useSkillMode {
+		// Restore legacy default: when skills are present and mode is not explicit,
+		// run in skill mode even if callers did not set UseSkillMode.
+		useSkillMode = true
+	}
 
 	sysPrompt, err = compiler.CompileSystemPrompt(prompt.Config{
 		Mode:            cfg.Mode,
