@@ -61,7 +61,7 @@ actions are handled by the agent inside that skill.`,
 			defer closer.Close()
 		}
 
-		handler, err := newCLIControllerHandler(serveRepo, serveControllerSkill, serveDryRun)
+		handler, err := newCLIControllerHandler(serveRepo, absStateDir, serveControllerSkill, serveDryRun)
 		if err != nil {
 			return err
 		}
@@ -95,11 +95,12 @@ func openServeInput(input string) (io.Reader, io.Closer, error) {
 type cliControllerHandler struct {
 	execPath        string
 	repoHint        string
+	stateDir        string
 	controllerSkill string
 	dryRun          bool
 }
 
-func newCLIControllerHandler(repoHint, controllerSkill string, dryRun bool) (*cliControllerHandler, error) {
+func newCLIControllerHandler(repoHint, stateDir, controllerSkill string, dryRun bool) (*cliControllerHandler, error) {
 	execPath, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve current executable: %w", err)
@@ -110,6 +111,7 @@ func newCLIControllerHandler(repoHint, controllerSkill string, dryRun bool) (*cl
 	return &cliControllerHandler{
 		execPath:        execPath,
 		repoHint:        repoHint,
+		stateDir:        stateDir,
 		controllerSkill: controllerSkill,
 		dryRun:          dryRun,
 	}, nil
@@ -131,6 +133,7 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 		ref,
 		"--skill", h.controllerSkill,
 		"--input", inputDir,
+		"--state-dir", filepath.Join(h.stateDir, "controller-state"),
 		"--cleanup", "all",
 	}
 	if h.repoHint != "" {
@@ -189,6 +192,10 @@ func (h *cliControllerHandler) buildInputDir(env serve.EventEnvelope) (string, f
 		cleanup()
 		return "", nil, fmt.Errorf("failed to write event context: %w", err)
 	}
+	if err := h.copyControllerMemoryToInput(contextDir); err != nil {
+		cleanup()
+		return "", nil, err
+	}
 
 	workflow := map[string]any{
 		"trigger": map[string]any{
@@ -206,6 +213,22 @@ func (h *cliControllerHandler) buildInputDir(env serve.EventEnvelope) (string, f
 	}
 
 	return inputDir, cleanup, nil
+}
+
+func (h *cliControllerHandler) copyControllerMemoryToInput(contextDir string) error {
+	src := filepath.Join(h.stateDir, "controller-state", "controller-memory.md")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read controller memory: %w", err)
+	}
+	dst := filepath.Join(contextDir, "controller-memory.md")
+	if err := os.WriteFile(dst, data, 0644); err != nil {
+		return fmt.Errorf("failed to write input controller memory: %w", err)
+	}
+	return nil
 }
 
 func init() {
