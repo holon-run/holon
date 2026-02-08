@@ -19,9 +19,9 @@
 - `issue_state`: `open` or `all`
 - `pr_state`: `open` or `all`
 - `fetched_at`: UTC timestamp
-- `previous_max_updated`: previous cursor timestamp
-- `current_max_updated`: latest `updatedAt` in fetched dataset
-- `updated_since_last`: count of issues updated after previous cursor
+- `previous_max_updated`: previous issues cursor timestamp (max issue `updatedAt` from last run)
+- `current_max_updated`: latest issue `updatedAt` among fetched issues
+- `updated_since_last`: count of issues updated after previous issues cursor
 
 ## totals
 

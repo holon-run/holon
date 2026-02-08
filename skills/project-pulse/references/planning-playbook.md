@@ -29,7 +29,7 @@ Do not parallelize two streams that mutate the same PR branch or same high-risk 
 
 Based on report signals, generate a compact action list:
 
-- `action`: one of `solve_issue`, `fix_pr`, `review_pr`, `wait`
+- `action`: one of `solve_issue`, `fix_pr`, `wait`
 - `target`: `owner/repo#number`
 - `reason`: one-sentence rationale from pulse signal
 - `priority`: `critical|high|medium|low`

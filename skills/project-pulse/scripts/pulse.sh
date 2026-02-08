@@ -74,24 +74,50 @@ SYNC_STATE="$PULSE_STATE_DIR/sync-state.json"
 WORK_ISSUES_JSON="$(mktemp /tmp/project-pulse-issues-XXXXXX.json)"
 WORK_PRS_JSON="$(mktemp /tmp/project-pulse-prs-XXXXXX.json)"
 
+cleanup() {
+  rm -f "$WORK_ISSUES_JSON" "$WORK_PRS_JSON"
+}
+trap cleanup EXIT
+
 PREV_MAX_UPDATED=""
 if [[ -f "$SYNC_STATE" ]]; then
-  PREV_MAX_UPDATED="$(jq -r '.last_max_updated_at // ""' "$SYNC_STATE")"
+  PREV_MAX_UPDATED="$(jq -r '.last_max_updated_at // ""' "$SYNC_STATE" 2>/dev/null || true)"
 fi
 
-if [[ "$FORCE_REFRESH" != "true" && -f "$REPORT_JSON" && -f "$ISSUES_INDEX_JSON" && -f "$PRS_INDEX_JSON" ]]; then
+ISSUES_CACHE_READY=false
+if [[ "$SPLIT_ISSUES" == "true" ]]; then
+  [[ -f "$ISSUES_INDEX_JSON" ]] && ISSUES_CACHE_READY=true
+else
+  [[ -f "$ISSUES_JSON" ]] && ISSUES_CACHE_READY=true
+fi
+
+PRS_CACHE_READY=false
+if [[ "$SPLIT_PRS" == "true" ]]; then
+  [[ -f "$PRS_INDEX_JSON" ]] && PRS_CACHE_READY=true
+else
+  [[ -f "$PRS_JSON" ]] && PRS_CACHE_READY=true
+fi
+
+if [[ "$FORCE_REFRESH" != "true" && -f "$REPORT_JSON" && "$ISSUES_CACHE_READY" == "true" && "$PRS_CACHE_READY" == "true" ]]; then
   REPORT_AGE_MINUTES="$(jq -r 'if .metadata.fetched_at then ((now - (.metadata.fetched_at | fromdateiso8601)) / 60 | floor) else 999999 end' "$REPORT_JSON" 2>/dev/null || echo "999999")"
   if [[ "$REPORT_AGE_MINUTES" =~ ^[0-9]+$ ]] && [[ "$REPORT_AGE_MINUTES" -le "$MAX_AGE_MINUTES" ]]; then
     echo "project-pulse cache hit"
     echo "cache age:   ${REPORT_AGE_MINUTES}m (max ${MAX_AGE_MINUTES}m)"
-    echo "issues dir:  $ISSUES_DIR"
-    echo "issues idx:  $ISSUES_INDEX_JSON"
-    echo "prs dir:     $PRS_DIR"
-    echo "prs idx:     $PRS_INDEX_JSON"
+    if [[ "$SPLIT_ISSUES" == "true" ]]; then
+      echo "issues dir:  $ISSUES_DIR"
+      echo "issues idx:  $ISSUES_INDEX_JSON"
+    else
+      echo "issues:      $ISSUES_JSON"
+    fi
+    if [[ "$SPLIT_PRS" == "true" ]]; then
+      echo "prs dir:     $PRS_DIR"
+      echo "prs idx:     $PRS_INDEX_JSON"
+    else
+      echo "prs:         $PRS_JSON"
+    fi
     echo "report json: $REPORT_JSON"
     echo "report md:   $REPORT_MD"
     echo "sync state:  $SYNC_STATE"
-    rm -f "$WORK_ISSUES_JSON" "$WORK_PRS_JSON"
     exit 0
   fi
 fi
@@ -110,6 +136,7 @@ gh pr list \
   --json number,title,state,isDraft,mergeStateStatus,reviewDecision,statusCheckRollup,createdAt,updatedAt,url,labels,assignees,baseRefName,headRefName > "$WORK_PRS_JSON"
 
 if [[ "$SPLIT_ISSUES" == "true" ]]; then
+  rm -rf "$ISSUES_DIR"
   mkdir -p "$ISSUES_DIR"
   jq -c '.[]' "$WORK_ISSUES_JSON" | while IFS= read -r issue; do
     issue_number="$(jq -r '.number' <<<"$issue")"
@@ -134,6 +161,7 @@ if [[ "$SPLIT_ISSUES" != "true" || "$KEEP_RAW_ISSUES" == "true" ]]; then
 fi
 
 if [[ "$SPLIT_PRS" == "true" ]]; then
+  rm -rf "$PRS_DIR"
   mkdir -p "$PRS_DIR"
   jq -c '.[]' "$WORK_PRS_JSON" | while IFS= read -r pr; do
     pr_number="$(jq -r '.number' <<<"$pr")"
@@ -443,5 +471,3 @@ fi
 echo "report json: $REPORT_JSON"
 echo "report md:   $REPORT_MD"
 echo "sync state:  $SYNC_STATE"
-
-rm -f "$WORK_ISSUES_JSON" "$WORK_PRS_JSON"
