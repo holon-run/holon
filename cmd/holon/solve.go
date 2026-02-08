@@ -668,7 +668,11 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 
 	// Determine goal from the reference (skill mode already determined earlier)
 	// Pass useSkillMode to generate appropriate goal
-	goal := buildGoal(inputDir, solveRef, refType, workflowMeta.TriggerGoalHint, useSkillMode)
+	selectedSkill := ""
+	if len(allSkills) > 0 {
+		selectedSkill = strings.TrimSpace(allSkills[0])
+	}
+	goal := buildGoal(inputDir, solveRef, refType, workflowMeta.TriggerGoalHint, useSkillMode, selectedSkill)
 
 	// Resolve output directory with precedence: CLI flag > temp dir
 	// For solve command, we use a temp directory by default to avoid polluting the workspace
@@ -854,17 +858,29 @@ func getGitHubToken() (string, error) {
 // buildGoal builds a goal description from the reference
 // triggerGoalHint is the optional goal hint from free-form triggers (e.g., "@holonbot fix this bug")
 // useSkillMode indicates whether we're in skill mode (agent should use skills instead of direct implementation)
-func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, triggerGoalHint string, useSkillMode bool) string {
+func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, triggerGoalHint string, useSkillMode bool, selectedSkill string) string {
 	baseGoal := ""
 	if refType == "pr" {
 		if useSkillMode {
-			baseGoal = fmt.Sprintf("Use the github-pr-fix skill to fix the PR %s. The skill will guide you through: (1) Analyzing review comments, (2) Implementing fixes, (3) Publishing replies to GitHub.", ref.URL())
+			switch selectedSkill {
+			case "github-review":
+				baseGoal = fmt.Sprintf("Use the github-review skill to review the PR %s. The skill will guide you through: (1) Collecting PR context, (2) Analyzing code changes for issues, and (3) Publishing structured review findings to GitHub.", ref.URL())
+			case "github-pr-fix", "":
+				baseGoal = fmt.Sprintf("Use the github-pr-fix skill to fix the PR %s. The skill will guide you through: (1) Analyzing review comments, (2) Implementing fixes, (3) Publishing replies to GitHub.", ref.URL())
+			default:
+				baseGoal = fmt.Sprintf("Use the %s skill to process the PR %s according to the skill instructions, and publish the expected results back to GitHub.", selectedSkill, ref.URL())
+			}
 		} else {
 			baseGoal = fmt.Sprintf("Fix the review comments and issues in PR %s. Address all unresolved review comments and make necessary code changes.", ref.URL())
 		}
 	} else {
 		if useSkillMode {
-			baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Generate ${GITHUB_OUTPUT_DIR}/publish-intent.json, (4) Invoke github-publish so it actually creates or updates a GitHub PR, and (5) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/summary.md and ${GITHUB_OUTPUT_DIR}/manifest.json contain pr_number and pr_url for that PR. Producing publish-intent.json alone is NOT success.", ref.URL())
+			switch selectedSkill {
+			case "github-issue-solve", "":
+				baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Generate ${GITHUB_OUTPUT_DIR}/publish-intent.json, (4) Invoke github-publish so it actually creates or updates a GitHub PR, and (5) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/summary.md and ${GITHUB_OUTPUT_DIR}/manifest.json contain pr_number and pr_url for that PR. Producing publish-intent.json alone is NOT success.", ref.URL())
+			default:
+				baseGoal = fmt.Sprintf("Use the %s skill to solve the GitHub issue %s end-to-end following the skill instructions and publish the expected results to GitHub.", selectedSkill, ref.URL())
+			}
 		} else {
 			baseGoal = fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. Focus on implementing the solution; the system will handle committing changes and creating any pull requests.", ref.URL())
 		}
