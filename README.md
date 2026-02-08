@@ -128,6 +128,7 @@ The state directory is mounted at `/holon/state` inside the container and persis
 ## Development & docs
 - Build CLI: `make build`; test: `make test`; agent bundle: `(cd agents/claude && npm run bundle)`.
 - Skills guide: `docs/skills.md`
+- Serve GitHub MVP: `docs/serve-github-mvp.md`
 - Design/architecture: `docs/holon-architecture.md`
 - Agent contract: `rfc/0002-agent-scheme.md`
 - Modes: `docs/modes.md`
