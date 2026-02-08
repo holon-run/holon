@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,18 +13,20 @@ import (
 	"time"
 
 	holonlog "github.com/holon-run/holon/pkg/log"
+	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/serve"
 	"github.com/spf13/cobra"
 )
 
 var (
-	serveRepo            string
-	serveInput           string
-	serveStateDir        string
-	serveMaxEvents       int
-	serveDryRun          bool
-	serveLogLevel        string
-	serveControllerSkill string
+	serveRepo                string
+	serveInput               string
+	serveStateDir            string
+	serveMaxEvents           int
+	serveDryRun              bool
+	serveLogLevel            string
+	serveControllerSkill     string
+	serveControllerWorkspace string
 )
 
 var serveCmd = &cobra.Command{
@@ -35,8 +36,7 @@ var serveCmd = &cobra.Command{
 
 The command reads event JSON (one object per line) from stdin by default,
 normalizes events into an internal envelope, writes controller logs, and
-forwards each event to a controller skill. Business decisions and follow-up
-actions are handled by the agent inside that skill.`,
+forwards each event to a persistent controller skill session.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		logCfg := holonlog.Config{
 			Level:  holonlog.LogLevel(serveLogLevel),
@@ -56,6 +56,21 @@ actions are handled by the agent inside that skill.`,
 			return fmt.Errorf("failed to resolve state dir: %w", err)
 		}
 
+		controllerWorkspace := serveControllerWorkspace
+		if controllerWorkspace == "" {
+			controllerWorkspace, err = defaultControllerWorkspace()
+			if err != nil {
+				return err
+			}
+		}
+		controllerWorkspace, err = filepath.Abs(controllerWorkspace)
+		if err != nil {
+			return fmt.Errorf("failed to resolve controller workspace: %w", err)
+		}
+		if err := os.MkdirAll(controllerWorkspace, 0755); err != nil {
+			return fmt.Errorf("failed to create controller workspace: %w", err)
+		}
+
 		reader, closer, err := openServeInput(serveInput)
 		if err != nil {
 			return err
@@ -64,7 +79,7 @@ actions are handled by the agent inside that skill.`,
 			defer closer.Close()
 		}
 
-		handler, err := newCLIControllerHandler(serveRepo, absStateDir, serveControllerSkill, serveDryRun)
+		handler, err := newCLIControllerHandler(serveRepo, absStateDir, controllerWorkspace, serveControllerSkill, serveLogLevel, serveDryRun, nil)
 		if err != nil {
 			return err
 		}
@@ -80,7 +95,14 @@ actions are handled by the agent inside that skill.`,
 		}
 		defer svc.Close()
 
-		holonlog.Info("serve started", "repo", serveRepo, "state_dir", absStateDir, "input", serveInput, "controller_skill", serveControllerSkill)
+		holonlog.Info(
+			"serve started",
+			"repo", serveRepo,
+			"state_dir", absStateDir,
+			"workspace", controllerWorkspace,
+			"input", serveInput,
+			"controller_skill", serveControllerSkill,
+		)
 		return svc.Run(context.Background(), reader, serveMaxEvents)
 	},
 }
@@ -97,42 +119,55 @@ func openServeInput(input string) (io.Reader, io.Closer, error) {
 }
 
 type cliControllerHandler struct {
-	execPath        string
-	repoHint        string
-	stateDir        string
-	controllerSkill string
-	dryRun          bool
-
-	mu                 sync.Mutex
-	controllerCmd      *exec.Cmd
-	controllerCancel   context.CancelFunc
-	controllerDone     <-chan error
-	controllerChannel  string
-	controllerInputDir string
-	controllerOutput   string
-	restartAttempts    int
-	commandFactory     func(context.Context, string, ...string) *exec.Cmd
+	repoHint            string
+	stateDir            string
+	controllerWorkspace string
+	controllerSkill     string
+	logLevel            string
+	dryRun              bool
+	sessionRunner       SessionRunner
+	controllerSession   *docker.SessionHandle
+	controllerDone      <-chan error
+	controllerChannel   string
+	controllerInputDir  string
+	controllerOutput    string
+	restartAttempts     int
+	mu                  sync.Mutex
 }
 
 var (
 	maxEventChannelSizeBytes int64 = 8 * 1024 * 1024
 )
 
-func newCLIControllerHandler(repoHint, stateDir, controllerSkill string, dryRun bool) (*cliControllerHandler, error) {
-	execPath, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve current executable: %w", err)
-	}
+func newCLIControllerHandler(
+	repoHint,
+	stateDir,
+	controllerWorkspace,
+	controllerSkill,
+	logLevel string,
+	dryRun bool,
+	sessionRunner SessionRunner,
+) (*cliControllerHandler, error) {
 	if controllerSkill == "" {
 		controllerSkill = filepath.Join("skills", "github-controller")
 	}
+
+	if sessionRunner == nil && !dryRun {
+		rt, err := docker.NewRuntime()
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize runtime: %w", err)
+		}
+		sessionRunner = newDockerSessionRunner(rt)
+	}
+
 	return &cliControllerHandler{
-		execPath:        execPath,
-		repoHint:        repoHint,
-		stateDir:        stateDir,
-		controllerSkill: controllerSkill,
-		dryRun:          dryRun,
-		commandFactory:  exec.CommandContext,
+		repoHint:            repoHint,
+		stateDir:            stateDir,
+		controllerWorkspace: controllerWorkspace,
+		controllerSkill:     controllerSkill,
+		logLevel:            logLevel,
+		dryRun:              dryRun,
+		sessionRunner:       sessionRunner,
 	}, nil
 }
 
@@ -177,7 +212,7 @@ func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error)
 	return fmt.Sprintf("%s#%s", repo, env.Subject.ID), nil
 }
 
-func (h *cliControllerHandler) buildInputDir() (string, error) {
+func (h *cliControllerHandler) buildInputDir(ref string) (string, error) {
 	inputDir := filepath.Join(h.stateDir, "controller-runtime", "input")
 	if err := os.RemoveAll(inputDir); err != nil {
 		return "", fmt.Errorf("failed to reset controller input dir: %w", err)
@@ -197,6 +232,7 @@ func (h *cliControllerHandler) buildInputDir() (string, error) {
 	workflow := map[string]any{
 		"trigger": map[string]any{
 			"goal_hint": "Persistent controller runtime. Read events from HOLON_CONTROLLER_EVENT_CHANNEL and decide actions autonomously using available skills.",
+			"ref":       ref,
 		},
 	}
 	workflowBytes, err := json.MarshalIndent(workflow, "", "  ")
@@ -207,7 +243,59 @@ func (h *cliControllerHandler) buildInputDir() (string, error) {
 		return "", fmt.Errorf("failed to write workflow metadata: %w", err)
 	}
 
+	if err := h.writeControllerSpecAndPrompts(inputDir); err != nil {
+		return "", err
+	}
+
 	return inputDir, nil
+}
+
+func (h *cliControllerHandler) writeControllerSpecAndPrompts(inputDir string) error {
+	specContent := fmt.Sprintf(`version: "v1"
+kind: Holon
+metadata:
+  name: "github-controller-session"
+  skills:
+    - %q
+goal:
+  description: "Run as a persistent GitHub controller. Read events from HOLON_CONTROLLER_EVENT_CHANNEL and decide actions autonomously using available skills."
+output:
+  artifacts:
+    - path: "manifest.json"
+      required: true
+`, h.controllerSkill)
+
+	if err := os.WriteFile(filepath.Join(inputDir, "spec.yaml"), []byte(specContent), 0644); err != nil {
+		return fmt.Errorf("failed to write controller spec: %w", err)
+	}
+
+	promptsDir := filepath.Join(inputDir, "prompts")
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create prompts dir: %w", err)
+	}
+
+	systemPrompt := strings.TrimSpace(`
+You are Holon's persistent GitHub controller agent.
+
+Operate continuously in session mode. For each incoming event, decide the best next action and execute it with available skills/tools.
+Prioritize keeping delivery flow moving: create/advance PRs, request fixes, review updates, and report clear outcomes.
+`)
+
+	userPrompt := strings.TrimSpace(`
+Controller runtime contract:
+1. The event stream is available at HOLON_CONTROLLER_EVENT_CHANNEL.
+2. Cursor state is persisted at HOLON_CONTROLLER_EVENT_CURSOR.
+3. Session identity is persisted at HOLON_CONTROLLER_SESSION_STATE_PATH.
+4. For each event, decide and execute actions autonomously. Keep responses concise and action-oriented.
+`)
+
+	if err := os.WriteFile(filepath.Join(promptsDir, "system.md"), []byte(systemPrompt+"\n"), 0644); err != nil {
+		return fmt.Errorf("failed to write system prompt: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(promptsDir, "user.md"), []byte(userPrompt+"\n"), 0644); err != nil {
+		return fmt.Errorf("failed to write user prompt: %w", err)
+	}
+	return nil
 }
 
 func (h *cliControllerHandler) copyControllerMemoryToInput(contextDir string) error {
@@ -246,13 +334,12 @@ func (h *cliControllerHandler) sessionStatePath() string {
 }
 
 func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref string) error {
-	if h.controllerCmd != nil {
+	if h.controllerSession != nil {
 		select {
 		case err := <-h.controllerDone:
 			holonlog.Warn("controller runtime exited", "error", err)
-			h.controllerCmd = nil
+			h.controllerSession = nil
 			h.controllerDone = nil
-			h.controllerCancel = nil
 		default:
 			return nil
 		}
@@ -265,7 +352,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	if err := touchFile(channelPath); err != nil {
 		return fmt.Errorf("failed to initialize event channel: %w", err)
 	}
-	inputDir, err := h.buildInputDir()
+	inputDir, err := h.buildInputDir(ref)
 	if err != nil {
 		return err
 	}
@@ -274,50 +361,40 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		return fmt.Errorf("failed to create controller output dir: %w", err)
 	}
 
-	controllerCtx, cancel := context.WithCancel(ctx)
-	args := []string{
-		"solve",
-		ref,
-		"--skill", h.controllerSkill,
-		"--input", inputDir,
-		"--state-dir", filepath.Join(h.stateDir, "controller-state"),
-		"--output", outputDir,
-		"--cleanup", "none",
-	}
-	if h.repoHint != "" {
-		args = append(args, "--repo", h.repoHint)
+	if h.sessionRunner == nil {
+		return fmt.Errorf("session runner is not initialized")
 	}
 
-	cmdFactory := h.commandFactory
-	if cmdFactory == nil {
-		cmdFactory = exec.CommandContext
+	env := map[string]string{
+		"HOLON_AGENT_SESSION_MODE":            "serve",
+		"CLAUDE_CONFIG_DIR":                   "/holon/state/claude-config",
+		"HOLON_CONTROLLER_EVENT_CHANNEL":      "/holon/state/event-channel.ndjson",
+		"HOLON_CONTROLLER_EVENT_CURSOR":       "/holon/state/event-channel.cursor",
+		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/holon/state/controller-session.json",
 	}
-	cmd := cmdFactory(controllerCtx, h.execPath, args...)
-	cmd.Env = append(os.Environ(),
-		"HOLON_AGENT_SESSION_MODE=serve",
-		"CLAUDE_CONFIG_DIR=/holon/state/claude-config",
-		"HOLON_CONTROLLER_EVENT_CHANNEL=/holon/state/event-channel.ndjson",
-		"HOLON_CONTROLLER_EVENT_CURSOR=/holon/state/event-channel.cursor",
-		"HOLON_CONTROLLER_SESSION_STATE_PATH=/holon/state/controller-session.json",
-	)
 	if sessionID := h.readSessionID(); sessionID != "" {
-		cmd.Env = append(cmd.Env, "HOLON_CONTROLLER_SESSION_ID="+sessionID)
+		env["HOLON_CONTROLLER_SESSION_ID"] = sessionID
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = nil
-	if err := cmd.Start(); err != nil {
-		cancel()
+
+	session, err := h.sessionRunner.Start(ctx, ControllerSessionConfig{
+		Workspace:       h.controllerWorkspace,
+		InputPath:       inputDir,
+		OutputPath:      outputDir,
+		StateDir:        filepath.Join(h.stateDir, "controller-state"),
+		ControllerSkill: h.controllerSkill,
+		LogLevel:        h.logLevel,
+		Env:             env,
+	})
+	if err != nil {
 		return fmt.Errorf("failed to start controller runtime: %w", err)
 	}
 
 	done := make(chan error, 1)
 	go func() {
-		done <- cmd.Wait()
+		done <- h.sessionRunner.Wait(context.Background(), session)
 	}()
 
-	h.controllerCmd = cmd
-	h.controllerCancel = cancel
+	h.controllerSession = session
 	h.controllerDone = done
 	h.controllerChannel = channelPath
 	h.controllerInputDir = inputDir
@@ -326,7 +403,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 
 	holonlog.Info(
 		"controller runtime connected",
-		"pid", cmd.Process.Pid,
+		"container_id", session.ContainerID,
 		"channel", channelPath,
 		"restart_attempt", h.restartAttempts,
 	)
@@ -369,22 +446,22 @@ func (h *cliControllerHandler) compactChannelBestEffortLocked() {
 func (h *cliControllerHandler) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.controllerCancel == nil {
+	if h.controllerSession == nil {
 		return nil
 	}
-	holonlog.Info("stopping controller runtime")
-	h.controllerCancel()
-	if h.controllerDone != nil {
-		select {
-		case <-h.controllerDone:
-		case <-time.After(5 * time.Second):
-			if h.controllerCmd != nil && h.controllerCmd.Process != nil {
-				_ = h.controllerCmd.Process.Kill()
-			}
-		}
+	if h.sessionRunner == nil {
+		h.controllerSession = nil
+		h.controllerDone = nil
+		return nil
 	}
-	h.controllerCmd = nil
-	h.controllerCancel = nil
+
+	holonlog.Info("stopping controller runtime")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.sessionRunner.Stop(ctx, h.controllerSession); err != nil {
+		return err
+	}
+	h.controllerSession = nil
 	h.controllerDone = nil
 	return nil
 }
@@ -431,6 +508,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveRepo, "repo", "", "Default repository in owner/repo format")
 	serveCmd.Flags().StringVar(&serveInput, "input", "-", "Input source for events ('-' for stdin, or path to file)")
 	serveCmd.Flags().StringVar(&serveStateDir, "state-dir", "", "State directory (default: .holon/serve-state)")
+	serveCmd.Flags().StringVar(&serveControllerWorkspace, "controller-workspace", "", "Controller workspace path (default: $HOME/.holon/workspace)")
 	serveCmd.Flags().IntVar(&serveMaxEvents, "max-events", 0, "Stop after processing N events (0 = unlimited)")
 	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without running controller skill")
 	serveCmd.Flags().StringVar(&serveControllerSkill, "controller-skill", filepath.Join("skills", "github-controller"), "Controller skill path or reference")

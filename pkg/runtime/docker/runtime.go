@@ -73,6 +73,13 @@ type ContainerConfig struct {
 	UseSkillMode bool // True if using skill mode (agent handles collect/publish)
 }
 
+// SessionHandle tracks a long-running runtime session container.
+type SessionHandle struct {
+	ContainerID string
+	SnapshotDir string
+	SkillsDir   string
+}
+
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, error) {
 	// 1. Prepare Workspace using WorkspacePreparer
 	snapshotDir, skillsDir, _, err := prepareWorkspace(ctx, cfg)
@@ -276,6 +283,208 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	}
 
 	return snapshotDir, nil
+}
+
+// StartSession starts a long-running Holon container session.
+// Unlike RunHolon, this does not wait for completion or validate output artifacts.
+func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*SessionHandle, error) {
+	// 1. Prepare Workspace using WorkspacePreparer
+	snapshotDir, skillsDir, _, err := prepareWorkspace(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Prepare Image (Build-on-Run composition)
+	if cfg.AgentBundle == "" {
+		_ = os.RemoveAll(skillsDir)
+		return nil, fmt.Errorf("agent bundle is required")
+	}
+	if cfg.BaseImage == "" {
+		_ = os.RemoveAll(skillsDir)
+		return nil, fmt.Errorf("base image is required")
+	}
+
+	holonlog.Progress("composing execution image", "base_image", cfg.BaseImage, "agent_bundle", cfg.AgentBundle)
+	composedImage, err := r.buildComposedImageFromBundle(ctx, cfg.BaseImage, cfg.AgentBundle)
+	if err != nil {
+		_ = os.RemoveAll(skillsDir)
+		return nil, fmt.Errorf("failed to compose image: %w", err)
+	}
+	finalImage := composedImage
+
+	// Pull final image if not present locally
+	_, err = r.cli.ImageInspect(ctx, finalImage)
+	if err != nil {
+		holonlog.Info("image not found locally, attempting to pull", "image", finalImage)
+		reader, err := r.cli.ImagePull(ctx, finalImage, image.PullOptions{})
+		if err != nil {
+			holonlog.Warn("failed to pull image", "image", finalImage, "error", err)
+		} else {
+			defer reader.Close()
+			_, _ = io.Copy(io.Discard, reader)
+		}
+	} else {
+		holonlog.Debug("image found locally", "image", finalImage)
+	}
+
+	// 3. Create Container
+	if cfg.Env == nil {
+		cfg.Env = make(map[string]string)
+	}
+	if cfg.GitAuthorName != "" {
+		cfg.Env["GIT_AUTHOR_NAME"] = cfg.GitAuthorName
+		cfg.Env["GIT_COMMITTER_NAME"] = cfg.GitAuthorName
+	}
+	if cfg.GitAuthorEmail != "" {
+		cfg.Env["GIT_AUTHOR_EMAIL"] = cfg.GitAuthorEmail
+		cfg.Env["GIT_COMMITTER_EMAIL"] = cfg.GitAuthorEmail
+	}
+
+	env := BuildContainerEnv(&EnvConfig{
+		UserEnv: cfg.Env,
+		HostUID: os.Getuid(),
+		HostGID: os.Getgid(),
+	})
+
+	mountConfig := &MountConfig{
+		SnapshotDir:    snapshotDir,
+		InputPath:      cfg.InputPath,
+		OutDir:         cfg.OutDir,
+		StateDir:       cfg.StateDir,
+		LocalSkillsDir: skillsDir,
+	}
+
+	configMode, err := ParseAgentConfigMode(cfg.AgentConfigMode)
+	if err != nil {
+		holonlog.Warn("invalid agent config mode, defaulting to 'no'", "mode", cfg.AgentConfigMode, "error", err)
+		configMode = AgentConfigModeNo
+	}
+	if configMode != AgentConfigModeNo {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			holonlog.Warn("failed to get home directory", "error", err)
+		} else {
+			claudeDir := filepath.Join(homeDir, ".claude")
+			dirExists := true
+			if _, err := os.Stat(claudeDir); err != nil {
+				if os.IsNotExist(err) {
+					dirExists = false
+				} else {
+					holonlog.Warn("failed to stat ~/.claude", "error", err)
+					dirExists = false
+				}
+			}
+			shouldMount := configMode.ShouldMount(dirExists)
+			shouldWarn := configMode.WarnIfMissing() && !dirExists
+			if shouldWarn {
+				holonlog.Warn("--agent-config-mode=yes specified, but ~/.claude does not exist")
+			}
+			if shouldMount && dirExists {
+				if configMode == AgentConfigModeAuto && isIncompatibleClaudeConfig(claudeDir) {
+					holonlog.Warn("skipping mount of ~/.claude: config appears incompatible (likely headless/container Claude)")
+					holonlog.Info("to force mount anyway, use --agent-config-mode=yes (use with caution)")
+				} else {
+					mountConfig.LocalClaudeConfigDir = claudeDir
+					holonlog.Warn("mounting host ~/.claude into container")
+					holonlog.Warn("this exposes your personal Claude login and session to the container")
+					holonlog.Warn("do NOT use this in CI or shared environments")
+					env = append(env, "HOLON_MOUNTED_CLAUDE_CONFIG=1")
+				}
+			}
+		}
+	}
+
+	if err := ValidateMountTargets(mountConfig); err != nil {
+		_ = os.RemoveAll(skillsDir)
+		return nil, fmt.Errorf("validating mount targets: %w", err)
+	}
+
+	mounts := BuildContainerMounts(mountConfig)
+	holonlog.Progress("creating session container", "image", finalImage)
+	resp, err := r.cli.ContainerCreate(ctx, &container.Config{
+		Image:      finalImage,
+		Cmd:        cfg.Cmd,
+		Env:        env,
+		WorkingDir: "/holon/workspace",
+		Tty:        false,
+	}, &container.HostConfig{
+		Mounts: mounts,
+	}, nil, nil, "")
+	if err != nil {
+		_ = os.RemoveAll(skillsDir)
+		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
+
+	holonlog.Progress("starting session container", "id", resp.ID[:12])
+	if err := r.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		_ = os.RemoveAll(skillsDir)
+		return nil, fmt.Errorf("failed to start container: %w", err)
+	}
+
+	out, err := r.cli.ContainerLogs(ctx, resp.ID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+	})
+	if err == nil {
+		go func() {
+			defer out.Close()
+			_, _ = io.Copy(os.Stdout, out)
+		}()
+	}
+
+	return &SessionHandle{
+		ContainerID: resp.ID,
+		SnapshotDir: snapshotDir,
+		SkillsDir:   skillsDir,
+	}, nil
+}
+
+// WaitSession waits for a session container to exit.
+func (r *Runtime) WaitSession(ctx context.Context, handle *SessionHandle) error {
+	if handle == nil || handle.ContainerID == "" {
+		return fmt.Errorf("session handle is required")
+	}
+	statusCh, errCh := r.cli.ContainerWait(ctx, handle.ContainerID, container.WaitConditionNotRunning)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("container wait error: %w", err)
+		}
+	case status := <-statusCh:
+		if status.StatusCode != 0 {
+			return fmt.Errorf("container failed with exit code %d", status.StatusCode)
+		}
+	}
+	if err := r.cli.ContainerRemove(ctx, handle.ContainerID, container.RemoveOptions{Force: true}); err != nil {
+		holonlog.Debug("container remove returned error", "id", handle.ContainerID, "error", err)
+	}
+	r.cleanupSessionHandle(handle)
+	return nil
+}
+
+// StopSession stops and removes a session container.
+func (r *Runtime) StopSession(ctx context.Context, handle *SessionHandle) error {
+	if handle == nil || handle.ContainerID == "" {
+		return nil
+	}
+	timeout := 5
+	if err := r.cli.ContainerStop(ctx, handle.ContainerID, container.StopOptions{Timeout: &timeout}); err != nil {
+		// Container may already be stopped/removed.
+		holonlog.Debug("container stop returned error", "id", handle.ContainerID, "error", err)
+	}
+	if err := r.cli.ContainerRemove(ctx, handle.ContainerID, container.RemoveOptions{Force: true}); err != nil {
+		holonlog.Debug("container remove returned error", "id", handle.ContainerID, "error", err)
+	}
+	r.cleanupSessionHandle(handle)
+	return nil
+}
+
+func (r *Runtime) cleanupSessionHandle(handle *SessionHandle) {
+	if handle.SkillsDir != "" {
+		_ = os.RemoveAll(handle.SkillsDir)
+		handle.SkillsDir = ""
+	}
 }
 
 func (r *Runtime) buildComposedImageFromBundle(ctx context.Context, baseImage, bundlePath string) (string, error) {

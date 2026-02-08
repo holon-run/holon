@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/serve"
 )
 
@@ -132,17 +135,17 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	t.Parallel()
 
 	td := t.TempDir()
-	scriptPath := filepath.Join(td, "controller.sh")
-	script := "#!/bin/sh\nwhile true; do sleep 1; done\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write controller script: %v", err)
+	mockRunner := &mockSessionRunner{
+		waitCh: make(chan error, 2),
 	}
 
 	h := &cliControllerHandler{
-		execPath:        scriptPath,
-		repoHint:        "holon-run/holon",
-		stateDir:        td,
-		controllerSkill: "skills/github-controller",
+		repoHint:            "holon-run/holon",
+		stateDir:            td,
+		controllerWorkspace: t.TempDir(),
+		controllerSkill:     "skills/github-controller",
+		logLevel:            "progress",
+		sessionRunner:       mockRunner,
 	}
 	defer h.Close()
 
@@ -172,6 +175,9 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if h.restartAttempts != 1 {
 		t.Fatalf("restartAttempts after 2 events = %d, want 1", h.restartAttempts)
 	}
+	if mockRunner.startCount != 1 {
+		t.Fatalf("startCount after 2 events = %d, want 1", mockRunner.startCount)
+	}
 
 	data, err := os.ReadFile(filepath.Join(td, "controller-state", "event-channel.ndjson"))
 	if err != nil {
@@ -182,12 +188,9 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 		t.Fatalf("channel line count = %d, want 2", len(lines))
 	}
 
-	// Force controller exit and wait for process reap.
-	if h.controllerCancel == nil {
-		t.Fatalf("controllerCancel not set")
-	}
-	h.controllerCancel()
-	time.Sleep(200 * time.Millisecond)
+	// Force controller session exit and trigger reconnect on next event.
+	mockRunner.waitCh <- errors.New("session exited")
+	time.Sleep(20 * time.Millisecond)
 
 	if err := h.HandleEvent(ctx, env3); err != nil {
 		t.Fatalf("handle event3 after stop: %v", err)
@@ -195,6 +198,12 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if h.restartAttempts != 2 {
 		t.Fatalf("restartAttempts after reconnect = %d, want 2", h.restartAttempts)
 	}
+	if mockRunner.startCount != 2 {
+		t.Fatalf("startCount after reconnect = %d, want 2", mockRunner.startCount)
+	}
+
+	// Let close finish gracefully.
+	mockRunner.waitCh <- nil
 }
 
 func bytesToLines(raw []byte) []string {
@@ -214,4 +223,29 @@ func bytesToLines(raw []byte) []string {
 		start = i + 1
 	}
 	return parts
+}
+
+type mockSessionRunner struct {
+	mu         sync.Mutex
+	startCount int
+	stopCount  int
+	waitCh     chan error
+}
+
+func (m *mockSessionRunner) Start(_ context.Context, _ ControllerSessionConfig) (*docker.SessionHandle, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.startCount++
+	return &docker.SessionHandle{ContainerID: "session-" + strconv.Itoa(m.startCount)}, nil
+}
+
+func (m *mockSessionRunner) Wait(_ context.Context, _ *docker.SessionHandle) error {
+	return <-m.waitCh
+}
+
+func (m *mockSessionRunner) Stop(_ context.Context, _ *docker.SessionHandle) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopCount++
+	return nil
 }
