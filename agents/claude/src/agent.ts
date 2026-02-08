@@ -681,6 +681,74 @@ function buildSessionOptions(env: NodeJS.ProcessEnv): SDKSessionOptions {
   };
 }
 
+type ChannelBatch = {
+  lines: string[];
+  nextOffset: number;
+};
+
+function readCursorOffset(pathname: string): number {
+  try {
+    const raw = fs.readFileSync(pathname, "utf8").trim();
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeCursorOffset(pathname: string, offset: number): void {
+  fs.mkdirSync(path.dirname(pathname), { recursive: true });
+  fs.writeFileSync(pathname, `${offset}`);
+}
+
+function readChannelBatch(channelPath: string, startOffset: number): ChannelBatch {
+  if (!fs.existsSync(channelPath)) {
+    return { lines: [], nextOffset: startOffset };
+  }
+
+  const stats = fs.statSync(channelPath);
+  let offset = startOffset;
+  if (stats.size < offset) {
+    offset = 0;
+  }
+  if (stats.size === offset) {
+    return { lines: [], nextOffset: offset };
+  }
+
+  const fd = fs.openSync(channelPath, "r");
+  try {
+    const length = stats.size - offset;
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
+    if (bytesRead <= 0) {
+      return { lines: [], nextOffset: offset };
+    }
+    const chunk = buffer.toString("utf8", 0, bytesRead);
+    const lastNewline = chunk.lastIndexOf("\n");
+    if (lastNewline < 0) {
+      return { lines: [], nextOffset: offset };
+    }
+
+    const completeChunk = chunk.slice(0, lastNewline);
+    const lines = completeChunk
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    const consumed = Buffer.byteLength(chunk.slice(0, lastNewline + 1), "utf8");
+    return {
+      lines,
+      nextOffset: offset + consumed,
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function runServeClaudeSession(
   logger: ProgressLogger,
   systemInstruction: string,
@@ -719,19 +787,22 @@ async function runServeClaudeSession(
   const session = resumeID ? await resumeSession(resumeID, sessionOptions) : await createSession(sessionOptions);
   logger.info(`Controller session ready: ${session.sessionId}`);
 
+  const sessionStatePath = env.HOLON_CONTROLLER_SESSION_STATE_PATH?.trim();
   const writeSessionState = (): void => {
-    fs.writeFileSync(
-      path.join(evidenceDir, "session.json"),
-      JSON.stringify(
-        {
-          session_id: session.sessionId,
-          mode: "serve",
-          updated_at: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
+    const payload = JSON.stringify(
+      {
+        session_id: session.sessionId,
+        mode: "serve",
+        updated_at: new Date().toISOString(),
+      },
+      null,
+      2,
     );
+    fs.writeFileSync(path.join(evidenceDir, "session.json"), payload);
+    if (sessionStatePath) {
+      fs.mkdirSync(path.dirname(sessionStatePath), { recursive: true });
+      fs.writeFileSync(sessionStatePath, payload);
+    }
   };
 
   writeSessionState();
@@ -752,6 +823,47 @@ async function runServeClaudeSession(
 
     await session.send(bootstrapPrompt);
     await streamSessionTurn(session, logger, logFile);
+
+    const channelPath = env.HOLON_CONTROLLER_EVENT_CHANNEL?.trim();
+    if (channelPath) {
+      const cursorPath = env.HOLON_CONTROLLER_EVENT_CURSOR?.trim() || "/holon/state/event-channel.cursor";
+      logger.info(`Controller event channel connected: ${channelPath}`);
+      let offset = readCursorOffset(cursorPath);
+      let running = true;
+
+      process.on("SIGTERM", () => {
+        running = false;
+      });
+      process.on("SIGINT", () => {
+        running = false;
+      });
+
+      while (running) {
+        const batch = readChannelBatch(channelPath, offset);
+        if (batch.lines.length === 0) {
+          await sleep(1000);
+          continue;
+        }
+        offset = batch.nextOffset;
+        writeCursorOffset(cursorPath, offset);
+
+        for (const line of batch.lines) {
+          const turnPrompt = [
+            "New event payload (JSON):",
+            line,
+            "",
+            "Process this event. Decide actions autonomously and execute via available skills/tools.",
+            "After actions complete, summarize what you decided and what changed.",
+          ].join("\n");
+          await session.send(turnPrompt);
+          await streamSessionTurn(session, logger, logFile);
+          writeSessionState();
+        }
+      }
+      logger.info("Controller event channel disconnected");
+      return;
+    }
+
     const eventPath = "/holon/input/context/event.json";
     if (!fs.existsSync(eventPath)) {
       logger.info("No event payload found at /holon/input/context/event.json; session initialized only");
