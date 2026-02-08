@@ -255,6 +255,35 @@ func TestResolveServeLLMEnv_PrefersProcessEnv(t *testing.T) {
 	}
 }
 
+func TestResolveServeLLMEnv_MergesSettingsFallbackForMissingKeys(t *testing.T) {
+	td := t.TempDir()
+	claudeDir := filepath.Join(td, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "token-from-settings",
+    "ANTHROPIC_BASE_URL": "https://settings.ai"
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	t.Setenv("HOME", td)
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://env.ai")
+
+	got := resolveServeLLMEnv()
+	if got["ANTHROPIC_BASE_URL"] != "https://env.ai" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q, want env value", got["ANTHROPIC_BASE_URL"])
+	}
+	if got["ANTHROPIC_AUTH_TOKEN"] != "token-from-settings" {
+		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q, want settings fallback value", got["ANTHROPIC_AUTH_TOKEN"])
+	}
+}
+
 func bytesToLines(raw []byte) []string {
 	text := string(raw)
 	if text == "" {

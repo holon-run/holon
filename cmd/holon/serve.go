@@ -430,38 +430,34 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 }
 
 func resolveServeLLMEnv() map[string]string {
+	// Priority is per-key: process env wins, settings fallback fills only missing keys.
 	result := map[string]string{}
-
-	// Priority: current process env first, then ~/.claude/settings.json fallback.
-	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")); v != "" {
-		result["ANTHROPIC_AUTH_TOKEN"] = v
-	}
-	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")); v != "" {
-		result["ANTHROPIC_BASE_URL"] = v
-	}
-	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); v != "" {
-		result["ANTHROPIC_API_KEY"] = v
-	}
-	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_API_URL")); v != "" {
-		result["ANTHROPIC_API_URL"] = v
-	}
-
-	if len(result) > 0 {
-		return result
-	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return result
+		home = ""
 	}
-	settingsPath := filepath.Join(home, ".claude", "settings.json")
-	fallback, err := readAnthropicEnvFromClaudeSettings(settingsPath)
-	if err != nil {
-		holonlog.Debug("failed to read Anthropic fallback from Claude settings", "path", settingsPath, "error", err)
-		return result
+	if home != "" {
+		settingsPath := filepath.Join(home, ".claude", "settings.json")
+		fallback, readErr := readAnthropicEnvFromClaudeSettings(settingsPath)
+		if readErr != nil {
+			holonlog.Debug("failed to read Anthropic fallback from Claude settings", "path", settingsPath, "error", readErr)
+		} else {
+			for k, v := range fallback {
+				result[k] = v
+			}
+		}
 	}
-	for k, v := range fallback {
-		result[k] = v
+
+	for _, key := range []string{
+		"ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL",
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_API_URL",
+	} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			result[key] = v
+		}
 	}
 	return result
 }
