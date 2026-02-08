@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Pulse"
+  short_description: "Sync GitHub issues and produce PM priority/risk reports"
+  default_prompt: "Run project pulse for this repo and propose priorities/next actions."
