@@ -19,6 +19,9 @@ const (
 	ModeBasic Mode = "basic"
 	// ModeAggressive enables aggressive redaction with high-entropy detection.
 	ModeAggressive Mode = "aggressive"
+
+	// minEntropyCandidateLen is the minimum token length considered for entropy-based redaction.
+	minEntropyCandidateLen = 20
 )
 
 // DefaultMode is the default redaction mode when running in CI.
@@ -166,9 +169,9 @@ func (r *Redactor) redactHTTPHeaderValues(content string) string {
 	}
 
 	for _, header := range headers {
-		// Match: Header: value or Header: value (case insensitive)
-		re := regexp.MustCompile(`(?i)(^|\n)\s*` + header + `\s*:\s*[^\n\r]+`)
-		content = re.ReplaceAllString(content, fmt.Sprintf("$1%s: %s", header, r.replacement))
+		// Match: Header: value (case insensitive) while preserving the original header casing in output.
+		re := regexp.MustCompile(`(?i)(^|\n)\s*(` + regexp.QuoteMeta(header) + `)\s*:\s*[^\n\r]+`)
+		content = re.ReplaceAllString(content, fmt.Sprintf("$1$2: %s", r.replacement))
 	}
 
 	return content
@@ -251,7 +254,9 @@ func (r *Redactor) redactHighEntropyStrings(content string) (string, error) {
 	// - Mixed alphanumeric with symbols (16+ chars)
 
 	// Regex to find potential secrets
-	potentialSecretRe := regexp.MustCompile(`\b[A-Za-z0-9_\-\.]{20,}\b`)
+	potentialSecretRe := regexp.MustCompile(
+		fmt.Sprintf(`\b[A-Za-z0-9_\-\.]{%d,}\b`, minEntropyCandidateLen),
+	)
 
 	lines := strings.Split(content, "\n")
 	var redactedLines []string
@@ -279,7 +284,7 @@ func (r *Redactor) redactHighEntropyStrings(content string) (string, error) {
 
 // isHighEntropy calculates Shannon entropy of a string to determine if it looks like a secret.
 func (r *Redactor) isHighEntropy(s string) bool {
-	if len(s) < 16 {
+	if len(s) < minEntropyCandidateLen {
 		return false
 	}
 

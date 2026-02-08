@@ -876,6 +876,7 @@ func redactLogs(outDir string) error {
 	// Also scan for other .log files in the output directory
 	walkErr := filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// Best-effort scan: ignore per-path access errors and continue redacting other files.
 			return nil // Skip errors accessing individual files
 		}
 		if info.IsDir() {

@@ -72,6 +72,7 @@ func TestRedactHTTPHeaderValues(t *testing.T) {
 		input    string
 		mode     Mode
 		contains string
+		exact    string
 	}{
 		{
 			name:     "redact Authorization header",
@@ -92,6 +93,13 @@ func TestRedactHTTPHeaderValues(t *testing.T) {
 			contains: "***REDACTED***",
 		},
 		{
+			name:     "preserve lowercase header name",
+			input:    "authorization: Bearer ghp_1234567890",
+			mode:     ModeBasic,
+			contains: "***REDACTED***",
+			exact:    "authorization: ***REDACTED***",
+		},
+		{
 			name:     "no redaction in off mode",
 			input:    "Authorization: Bearer ghp_1234567890",
 			mode:     ModeOff,
@@ -106,6 +114,9 @@ func TestRedactHTTPHeaderValues(t *testing.T) {
 			resultStr := string(result)
 			if !strings.Contains(resultStr, tt.contains) {
 				t.Errorf("Expected result to contain %q, got %q", tt.contains, resultStr)
+			}
+			if tt.exact != "" && !strings.Contains(resultStr, tt.exact) {
+				t.Errorf("Expected result to contain exact header %q, got %q", tt.exact, resultStr)
 			}
 		})
 	}
