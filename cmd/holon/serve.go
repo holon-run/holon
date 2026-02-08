@@ -283,17 +283,9 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"--state-dir", filepath.Join(h.stateDir, "controller-state"),
 		"--output", outputDir,
 		"--cleanup", "none",
-		"--env", "HOLON_AGENT_SESSION_MODE=serve",
-		"--env", "CLAUDE_CONFIG_DIR=/holon/state/claude-config",
-		"--env", "HOLON_CONTROLLER_EVENT_CHANNEL=/holon/state/event-channel.ndjson",
-		"--env", "HOLON_CONTROLLER_EVENT_CURSOR=/holon/state/event-channel.cursor",
-		"--env", "HOLON_CONTROLLER_SESSION_STATE_PATH=/holon/state/controller-session.json",
 	}
 	if h.repoHint != "" {
 		args = append(args, "--repo", h.repoHint)
-	}
-	if sessionID := h.readSessionID(); sessionID != "" {
-		args = append(args, "--env", "HOLON_CONTROLLER_SESSION_ID="+sessionID)
 	}
 
 	cmdFactory := h.commandFactory
@@ -301,6 +293,16 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		cmdFactory = exec.CommandContext
 	}
 	cmd := cmdFactory(controllerCtx, h.execPath, args...)
+	cmd.Env = append(os.Environ(),
+		"HOLON_AGENT_SESSION_MODE=serve",
+		"CLAUDE_CONFIG_DIR=/holon/state/claude-config",
+		"HOLON_CONTROLLER_EVENT_CHANNEL=/holon/state/event-channel.ndjson",
+		"HOLON_CONTROLLER_EVENT_CURSOR=/holon/state/event-channel.cursor",
+		"HOLON_CONTROLLER_SESSION_STATE_PATH=/holon/state/controller-session.json",
+	)
+	if sessionID := h.readSessionID(); sessionID != "" {
+		cmd.Env = append(cmd.Env, "HOLON_CONTROLLER_SESSION_ID="+sessionID)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = nil
