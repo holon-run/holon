@@ -27,6 +27,8 @@ var (
 	serveLogLevel            string
 	serveControllerSkill     string
 	serveControllerWorkspace string
+	serveWebhookPort         int
+	serveWebhookMode         bool
 )
 
 var serveCmd = &cobra.Command{
@@ -36,7 +38,12 @@ var serveCmd = &cobra.Command{
 
 The command reads event JSON (one object per line) from stdin by default,
 normalizes events into an internal envelope, writes controller logs, and
-forwards each event to a persistent controller skill session.`,
+forwards each event to a persistent controller skill session.
+
+Webhook Mode:
+When --webhook-port is specified, serve runs an HTTP server on that port
+to receive GitHub webhook events directly. This integrates with 'gh webhook forward'
+for local development and testing.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		logCfg := holonlog.Config{
 			Level:  holonlog.LogLevel(serveLogLevel),
@@ -46,6 +53,8 @@ forwards each event to a persistent controller skill session.`,
 			return fmt.Errorf("failed to initialize logger: %w", err)
 		}
 		defer holonlog.Sync()
+
+		serveWebhookMode = serveWebhookPort > 0
 
 		stateDir := serveStateDir
 		if stateDir == "" {
@@ -71,6 +80,40 @@ forwards each event to a persistent controller skill session.`,
 			return fmt.Errorf("failed to create controller workspace: %w", err)
 		}
 
+		handler, err := newCLIControllerHandler(serveRepo, absStateDir, controllerWorkspace, serveControllerSkill, serveLogLevel, serveDryRun, nil)
+		if err != nil {
+			return err
+		}
+		defer handler.Close()
+
+		// Webhook mode
+		if serveWebhookMode {
+			if serveRepo == "" {
+				return fmt.Errorf("--repo is required in webhook mode (e.g., --repo owner/repo)")
+			}
+			webhookSrv, err := serve.NewWebhookServer(serve.WebhookConfig{
+				Port:     serveWebhookPort,
+				RepoHint: serveRepo,
+				StateDir: absStateDir,
+				Handler:  handler,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create webhook server: %w", err)
+			}
+			defer webhookSrv.Close()
+
+			holonlog.Info(
+				"serve started (webhook mode)",
+				"repo", serveRepo,
+				"state_dir", absStateDir,
+				"workspace", controllerWorkspace,
+				"port", serveWebhookPort,
+				"controller_skill", serveControllerSkill,
+			)
+			return webhookSrv.Start(context.Background())
+		}
+
+		// Stdin/File mode
 		reader, closer, err := openServeInput(serveInput)
 		if err != nil {
 			return err
@@ -78,12 +121,6 @@ forwards each event to a persistent controller skill session.`,
 		if closer != nil {
 			defer closer.Close()
 		}
-
-		handler, err := newCLIControllerHandler(serveRepo, absStateDir, controllerWorkspace, serveControllerSkill, serveLogLevel, serveDryRun, nil)
-		if err != nil {
-			return err
-		}
-		defer handler.Close()
 
 		svc, err := serve.New(serve.Config{
 			RepoHint: serveRepo,
@@ -584,13 +621,14 @@ func appendJSONLine(path string, value any) error {
 }
 
 func init() {
-	serveCmd.Flags().StringVar(&serveRepo, "repo", "", "Default repository in owner/repo format")
+	serveCmd.Flags().StringVar(&serveRepo, "repo", "", "Default repository in owner/repo format (required for webhook mode)")
 	serveCmd.Flags().StringVar(&serveInput, "input", "-", "Input source for events ('-' for stdin, or path to file)")
 	serveCmd.Flags().StringVar(&serveStateDir, "state-dir", "", "State directory (default: .holon/serve-state)")
 	serveCmd.Flags().StringVar(&serveControllerWorkspace, "controller-workspace", "", "Controller workspace path (default: $HOME/.holon/workspace)")
-	serveCmd.Flags().IntVar(&serveMaxEvents, "max-events", 0, "Stop after processing N events (0 = unlimited)")
+	serveCmd.Flags().IntVar(&serveMaxEvents, "max-events", 0, "Stop after processing N events (0 = unlimited, not supported in webhook mode)")
 	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without running controller skill")
 	serveCmd.Flags().StringVar(&serveControllerSkill, "controller-skill", filepath.Join("skills", "github-controller"), "Controller skill path or reference")
 	serveCmd.Flags().StringVar(&serveLogLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
+	serveCmd.Flags().IntVar(&serveWebhookPort, "webhook-port", 0, "Enable webhook mode and listen on this port (requires --repo)")
 	rootCmd.AddCommand(serveCmd)
 }
