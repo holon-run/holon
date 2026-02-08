@@ -178,10 +178,10 @@ func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error)
 		return "", fmt.Errorf("missing repo for event %s", env.ID)
 	}
 	if env.Subject.ID == "" {
-		return "", fmt.Errorf("missing subject id for event %s", env.ID)
+		return "", serve.NewSkipEventError(fmt.Sprintf("missing subject id for event %s", env.ID))
 	}
 	if _, err := strconv.Atoi(env.Subject.ID); err != nil {
-		return "", fmt.Errorf("invalid subject id for event %s: %w", env.ID, err)
+		return "", serve.NewSkipEventError(fmt.Sprintf("invalid subject id for event %s: %v", env.ID, err))
 	}
 	return fmt.Sprintf("%s#%s", repo, env.Subject.ID), nil
 }

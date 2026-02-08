@@ -28,12 +28,12 @@ type EventSubject struct {
 }
 
 type DecisionRecord struct {
-	ID       string    `json:"id"`
-	EventID  string    `json:"event_id"`
-	Type     string    `json:"type"`
-	Reason   string    `json:"reason,omitempty"`
-	Skipped  bool      `json:"skipped,omitempty"`
-	CreateAt time.Time `json:"created_at"`
+	ID        string    `json:"id"`
+	EventID   string    `json:"event_id"`
+	Type      string    `json:"type"`
+	Reason    string    `json:"reason,omitempty"`
+	Skipped   bool      `json:"skipped,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type ActionResult struct {

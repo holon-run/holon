@@ -20,6 +20,27 @@ type EventHandler interface {
 	HandleEvent(ctx context.Context, env EventEnvelope) error
 }
 
+// SkipEventError indicates the event is valid but should not trigger execution.
+type SkipEventError struct {
+	Reason string
+}
+
+func (e *SkipEventError) Error() string {
+	if e.Reason == "" {
+		return "event skipped"
+	}
+	return e.Reason
+}
+
+func NewSkipEventError(reason string) error {
+	return &SkipEventError{Reason: reason}
+}
+
+func IsSkipEventError(err error) bool {
+	var skipErr *SkipEventError
+	return errors.As(err, &skipErr)
+}
+
 type Service struct {
 	handler    EventHandler
 	repoHint   string
@@ -126,10 +147,10 @@ func (s *Service) Run(ctx context.Context, r io.Reader, maxEvents int) error {
 		}
 
 		decision := DecisionRecord{
-			ID:       newID("decision", s.now().UTC()),
-			EventID:  env.ID,
-			Type:     "forward_event",
-			CreateAt: s.now().UTC(),
+			ID:        newID("decision", s.now().UTC()),
+			EventID:   env.ID,
+			Type:      "forward_event",
+			CreatedAt: s.now().UTC(),
 		}
 		if env.DedupeKey != "" {
 			if _, exists := s.state.ProcessedAt[env.DedupeKey]; exists {
@@ -162,8 +183,13 @@ func (s *Service) Run(ctx context.Context, r io.Reader, maxEvents int) error {
 		}
 
 		if err := s.handler.HandleEvent(ctx, env); err != nil {
-			result.Status = "failed"
-			result.Message = err.Error()
+			if IsSkipEventError(err) {
+				result.Status = "skipped"
+				result.Message = err.Error()
+			} else {
+				result.Status = "failed"
+				result.Message = err.Error()
+			}
 		} else {
 			result.Status = "ok"
 		}
