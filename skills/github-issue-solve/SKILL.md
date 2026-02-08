@@ -33,7 +33,7 @@ This skill can use:
 
 ## Inputs & Outputs
 
-- **Inputs**: `${GITHUB_CONTEXT_DIR}/github/issue.json`, `comments.json` (produced via `ghx` by default; fallback via `gh` commands only if `ghx` fails)
+- **Inputs**: `${GITHUB_CONTEXT_DIR}/github/issue.json`, `${GITHUB_CONTEXT_DIR}/github/comments.json` (produced via `ghx` by default; fallback via `gh` commands only if `ghx` fails)
 - **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
   - `summary.md`
   - `manifest.json`
@@ -57,6 +57,8 @@ If context is not pre-populated, always follow this decision order:
 3. Record the collector and fallback reason (if any) in outputs:
    - `context_collector`: `ghx` or `gh`
    - `fallback_reason`: non-empty only when `context_collector=gh`
+     - Example: `ghx command not found in PATH`
+     - Example: `ghx context collect failed with exit code 1`
 
 ### 2. Analyze Issue
 
@@ -107,6 +109,8 @@ Execution metadata:
 {
   "provider": "github-issue-solve",
   "issue_ref": "holon-run/holon#502",
+  "context_collector": "ghx|gh",
+  "fallback_reason": "",
   "branch": "feature/issue-502",
   "status": "completed|failed",
   "commits": ["abc123", "def456"]
