@@ -907,9 +907,9 @@ func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, trigger
 		if useSkillMode {
 			switch selectedSkill {
 			case "github-issue-solve", "":
-				baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Generate ${GITHUB_OUTPUT_DIR}/publish-intent.json, (4) Invoke github-publish so it actually creates or updates a GitHub PR, and (5) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/summary.md and ${GITHUB_OUTPUT_DIR}/manifest.json contain pr_number and pr_url for that PR. Producing publish-intent.json alone is NOT success.", ref.URL())
+				baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/summary.md and ${GITHUB_OUTPUT_DIR}/manifest.json contain pr_number and pr_url for the created PR. The runtime will validate success based on the generic manifest contract (status/outcome), not skill-specific artifacts.", ref.URL())
 			default:
-				baseGoal = fmt.Sprintf("Use the %s skill to solve the GitHub issue %s end-to-end following the skill instructions and publish the expected results to GitHub.", selectedSkill, ref.URL())
+				baseGoal = fmt.Sprintf("Use the %s skill to solve the GitHub issue %s end-to-end following the skill instructions and publish the expected results to GitHub. Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success' for successful execution.", selectedSkill, ref.URL())
 			}
 		} else {
 			baseGoal = fmt.Sprintf("Implement a solution for the issue described in %s. Make the necessary code changes to resolve the issue. Focus on implementing the solution; the system will handle committing changes and creating any pull requests.", ref.URL())
@@ -927,34 +927,74 @@ func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, trigger
 // publishResults publishes the holon execution results
 // In skill mode, validate that the skill published and skip Go publisher
 func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string, inputDir string, outDir string, cleanupMode string, useSkillMode bool) error {
-	// In skill mode: validate skill outputs and skip Go publisher
+	// In skill mode: validate skill outputs based on generic contract, not skill-specific artifacts
 	// The skill is responsible for publishing (e.g., via github-publish skill)
 	if useSkillMode {
 		fmt.Println("Skill-first mode enabled: validating skill-driven publishing")
 
-		// Check for publish-intent.json which indicates skill-driven publishing
-		publishIntentPath := filepath.Join(outDir, "publish-intent.json")
-		if _, err := os.Stat(publishIntentPath); err != nil {
-			if os.IsNotExist(err) {
-				// No publish-intent.json found - check if this is an error or expected
-				// In skill-first mode, the skill should always create publish-intent.json
-				// If it's missing, the skill may have failed or not completed properly
-				return fmt.Errorf("skill-first mode: expected %s not found in output directory %s (skill may have failed to publish; check summary.md for details)", publishIntentPath, outDir)
-			}
-			// Any other filesystem error should be surfaced, not treated as success
-			return fmt.Errorf("skill-first mode: failed to stat %s: %w", publishIntentPath, err)
+		// Validate manifest.json exists and has successful status
+		manifestPath := filepath.Join(outDir, "manifest.json")
+		manifestData, err := os.ReadFile(manifestPath)
+		if err != nil {
+			return fmt.Errorf("skill-first mode: required manifest.json not found in output directory %s: %w", outDir, err)
 		}
 
-		// Verify that summary.md contains pr_number and pr_url
-		summaryPath := filepath.Join(outDir, "summary.md")
-		if summaryData, err := os.ReadFile(summaryPath); err == nil {
-			summary := string(summaryData)
-			if !strings.Contains(summary, "pr_number") || !strings.Contains(summary, "pr_url") {
-				fmt.Fprintf(os.Stderr, "Warning: summary.md does not contain pr_number and pr_url - skill publishing may not have completed successfully\n")
+		var manifest struct {
+			Status   string                 `json:"status"`
+			Outcome  string                 `json:"outcome"`
+			Metadata map[string]interface{} `json:"metadata,omitempty"`
+		}
+		if err := json.Unmarshal(manifestData, &manifest); err != nil {
+			return fmt.Errorf("skill-first mode: failed to parse manifest.json: %w", err)
+		}
+
+		// Check that execution completed successfully
+		if manifest.Status != "completed" {
+			return fmt.Errorf("skill-first mode: execution did not complete (status=%s); check summary.md for details", manifest.Status)
+		}
+		if manifest.Outcome != "success" {
+			return fmt.Errorf("skill-first mode: execution did not succeed (outcome=%s); check summary.md for details", manifest.Outcome)
+		}
+
+		// For issue-solve skills that create PRs, verify publish evidence
+		// This is a generic check that works for all publish-capable skills
+		// without requiring skill-specific files like publish-intent.json
+		hasPublishEvidence := false
+
+		// Check manifest metadata for publish result
+		if manifest.Metadata != nil {
+			if _, hasPRNumber := manifest.Metadata["pr_number"]; hasPRNumber {
+				if _, hasPRURL := manifest.Metadata["pr_url"]; hasPRURL {
+					hasPublishEvidence = true
+				}
 			}
 		}
 
-		fmt.Println("Skill-driven publishing validated successfully (found publish-intent.json)")
+		// Also check summary.md as a fallback (for backward compatibility)
+		if !hasPublishEvidence {
+			summaryPath := filepath.Join(outDir, "summary.md")
+			if summaryData, err := os.ReadFile(summaryPath); err == nil {
+				summary := string(summaryData)
+				// Check for common PR evidence patterns
+				if strings.Contains(summary, "pr_number") && strings.Contains(summary, "pr_url") {
+					hasPublishEvidence = true
+				}
+				// Also accept patterns like "PR #123" or "pull/123"
+				if strings.Contains(summary, "pull/") || (strings.Contains(summary, "PR #") && strings.Contains(summary, "http")) {
+					hasPublishEvidence = true
+				}
+			}
+		}
+
+		// For issue-type refs, expect publish evidence unless this is clearly a non-publishing skill
+		// (e.g., github-review which posts reviews, not PRs)
+		if refType == "issue" && !hasPublishEvidence {
+			// Check if this might be a non-publishing skill by looking at skill indicators
+			// For now, we warn rather than fail since some skills may have different publish flows
+			fmt.Fprintf(os.Stderr, "Warning: manifest.json and summary.md do not contain clear PR publish evidence (pr_number/pr_url)\n")
+		}
+
+		fmt.Println("Skill-driven publishing validated successfully (manifest indicates success)")
 		return nil
 	}
 
