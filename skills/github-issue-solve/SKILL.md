@@ -17,8 +17,9 @@ This skill helps you:
 
 ## Prerequisites
 
-This skill depends on:
-- **`ghx`**: Agent should invoke it to collect issue metadata and comments when context is missing
+This skill can use:
+- **`ghx`** (preferred): Fast-path context collection/publishing helper
+- **`gh` CLI** (fallback): Fully supported path when `ghx` is unavailable
 
 ## Environment & Paths
 
@@ -30,7 +31,7 @@ This skill depends on:
 
 ## Inputs & Outputs
 
-- **Inputs** (agent should obtain via `ghx`): `${GITHUB_CONTEXT_DIR}/github/issue.json`, `comments.json`
+- **Inputs**: `${GITHUB_CONTEXT_DIR}/github/issue.json`, `comments.json` (produced via `ghx` when available, otherwise via `gh` commands)
 - **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
   - `summary.md`
   - `manifest.json`
@@ -48,7 +49,9 @@ The run is successful only if all of the following are true:
 
 ### 1. Context Collection
 
-If context is not pre-populated, call the `ghx` skill’s collector with the issue reference. After collection, context is under `${GITHUB_CONTEXT_DIR}/github/`.
+If context is not pre-populated, collect issue data with either:
+- preferred: `ghx` collector
+- fallback: `gh issue view` / `gh api` and write equivalent context files under `${GITHUB_CONTEXT_DIR}/github/`
 
 ### 2. Analyze Issue
 

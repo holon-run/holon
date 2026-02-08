@@ -7,20 +7,20 @@ description: "Automated PR code review skill that collects context, performs AI-
 
 Automated code review skill for pull requests. Collects PR context, performs AI-powered code review, and publishes structured reviews with inline comments.
 
-**Prerequisites:** This skill requires the `ghx` skill to collect PR data and must be distributed together with it.
+**Prerequisites:** `gh` CLI authentication is required. `ghx` is an optional accelerator for faster context collection/publishing, but not a hard dependency.
 
 ## Environment and Paths
 
-This skill uses environment variables to stay portable across Holon, local shells, and CI. It delegates context collection to the shared `ghx` skill; no absolute install paths are assumed. Agents should invoke `ghx` when context is missing, then invoke `ghx` (or the included wrapper) to publish.
+This skill uses environment variables to stay portable across Holon, local shells, and CI. It defines required inputs/outputs and publish outcomes. Prefer `ghx` when available; otherwise use `gh` commands to satisfy the same contract.
 
 ### Key Environment Variables
 
 - **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
   - Default: `/holon/output` if present; otherwise a temp dir `/tmp/holon-ghreview-*`
-- **`GITHUB_CONTEXT_DIR`**: Where `ghx` writes collected PR data  
+- **`GITHUB_CONTEXT_DIR`**: Directory for collected PR data  
   - Default: `${GITHUB_OUTPUT_DIR}/github-context`
-- **`GITHUB_TOKEN` / `GH_TOKEN`**: Token used when invoking `ghx` / `ghx` (scopes: `repo` or `public_repo`)
-- Publishing options (e.g., inline limits) can be passed to `ghx` (`MAX_INLINE`, `POST_EMPTY`, etc.) before calling it.
+- **`GITHUB_TOKEN` / `GH_TOKEN`**: Token used for GitHub operations (scopes: `repo` or `public_repo`)
+- Publishing options (e.g., inline limits) apply regardless of implementation (`ghx` or direct `gh`).
 
 ### Path Examples
 
@@ -40,10 +40,10 @@ export MAX_INLINE=10
 
 ## Workflow
 
-This skill follows a three-step workflow and assumes `ghx` is co-installed (same skill bundle) for collection. Agents collect via `ghx`, generate artifacts, then publish via `ghx` (or the provided wrapper).
+This skill follows a three-step workflow. Agents gather context, generate artifacts, then publish. Use `ghx` if present; otherwise execute equivalent `gh` commands.
 
 ### 1. Collect Context
-Collect PR information via the `ghx` skill (review-friendly defaults recommended):
+Collect PR information (review-friendly defaults recommended):
 - PR metadata (title, description, author, stats)
 - Changed files list with full diff
 - Existing review threads (to avoid duplicates)
@@ -58,7 +58,11 @@ Agent analyzes the collected context and generates:
 Agent follows review guidelines in `prompts/review.md`.
 
 ### 3. Publish Review
-Use `ghx` with the produced artifacts (`review.md`, `review.json`, `summary.md`, `manifest.json`) to post the PR review and inline comments.
+Publish the produced artifacts (`review.md`, `review.json`, `summary.md`, `manifest.json`) as one PR review with inline comments.
+
+Implementation guidance:
+- Preferred: use `ghx` publish flow.
+- Fallback: use `gh api graphql`/`gh api repos/.../pulls/.../reviews` to create a single review with inline comments.
 
 ## Usage
 
@@ -88,9 +92,9 @@ export MAX_INLINE=15 POST_EMPTY=true
 holon --skill github-review holon-run/holon#123
 ```
 
-## Scripts
+## Implementation Note
 
-Wrapper scripts remain for convenience (`collect.sh` delegates to `ghx`). The recommended flow is still: call `ghx` to collect, generate `review.md/review.json`, then call `ghx` to post.
+This skill specifies behavior and artifacts, not a mandatory script path. `ghx` may be used when installed; otherwise direct `gh` commands are valid if outputs and publish semantics match this contract.
 
 ## Agent Prompts
 
@@ -197,14 +201,14 @@ export GITHUB_TOKEN=ghp_xxx
 export GITHUB_OUTPUT_DIR=./my-review
 mkdir -p $GITHUB_OUTPUT_DIR
 
-# Collect context
-scripts/collect.sh "holon-run/holon#123"
+# Collect context (implementation-defined)
+# Prefer ghx; fallback to gh commands that produce equivalent artifacts.
 
 # Perform review (agent reads context, generates findings)
 # ... agent processes ...
 
 # Publish review with inline comments
-../ghx/scripts/ghx.sh review publish --pr=holon-run/holon#123 --body-file=review.md --comments-file=review.json
+# Prefer ghx; fallback to gh api review endpoints.
 ```
 
 ## Important Notes
@@ -223,9 +227,11 @@ You MAY use these commands directly via `gh` CLI:
 - `gh pr diff` - Get PR diff
 - `gh api` - Make API calls
 
-You MUST NOT use these directly (use artifacts instead):
-- `gh pr review` - Prefer `ghx.sh review publish` instead
+If `ghx` is available, prefer it for lower implementation cost. If not, direct `gh` usage is acceptable.
 
 ## Reference Documentation
 
 See [prompts/review.md](prompts/review.md) for detailed review guidelines and instructions.
+Implementation guidance:
+- Preferred: use `ghx` context collection.
+- Fallback: use `gh pr view`, `gh pr diff`, `gh api` to collect equivalent artifacts under `${GITHUB_CONTEXT_DIR}/github/`.
