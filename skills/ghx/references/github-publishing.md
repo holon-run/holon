@@ -38,6 +38,10 @@ scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --commen
 }
 ```
 
+Notes:
+- `version` is optional; default is `1.0`.
+- Action parameters are read from `params`, and legacy inline action fields are also accepted.
+
 Supported action types:
 - `create_pr`
 - `update_pr`
