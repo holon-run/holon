@@ -7,7 +7,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 
 helpers=($(find "$REPO_ROOT/skills" -path '*/scripts/lib/helpers.sh' | sort))
-expected="$REPO_ROOT/skills/github-context/scripts/lib/helpers.sh"
+expected="$REPO_ROOT/skills/ghx/scripts/lib/helpers.sh"
 
 if [[ ${#helpers[@]} -ne 1 || "${helpers[0]}" != "$expected" ]]; then
     echo "[ERROR] Expected single shared helpers.sh at $expected" >&2

@@ -106,7 +106,7 @@ Add to `follow_up_issues` array in `pr-fix.json`:
 
 ## Posting Review Replies
 
-After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies, create a `publish-intent.json` for `github-publish`:
+After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies, create a `publish-intent.json` for publishing:
 
 ```json
 {
@@ -121,13 +121,17 @@ After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies, create 
 }
 ```
 
-Then invoke `github-publish`:
+Then invoke publish (preferred path via `ghx`):
 
 ```bash
-publish.sh --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+ghx.sh intent run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 ```
 
-`github-publish` handles idempotency and batching for replies.
+`ghx` handles idempotency and batching for replies.
+
+Fallback when `ghx` is unavailable:
+- Use `gh api` to post replies described by `publish-intent.json`.
+- Write `${GITHUB_OUTPUT_DIR}/publish-result.json` with equivalent per-action success/failure results.
 
 ## Completion Criteria (Mandatory)
 

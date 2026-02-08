@@ -13,14 +13,14 @@ These tests validate the skill-mode workflow (collector/publisher scripts) with 
 
 ### Shell Script Tests
 
-- **test_helper_drift.sh**: Ensures only the shared `skills/github-context/scripts/lib/helpers.sh` exists (prevents forked copies)
-- **test_collector.sh**: Tests the collector script (`skills/github-context/scripts/collect.sh`)
+- **test_helper_drift.sh**: Ensures only the shared `skills/ghx/scripts/lib/helpers.sh` exists (prevents forked copies)
+- **test_collector.sh**: Tests the collector script (`skills/ghx/scripts/collect.sh`)
   - Missing dependencies (gh, jq)
   - Issue collection
   - Empty comments
   - Error handling
 
-- **test_publisher.sh**: Tests the publisher script (`skills/github-publish/scripts/publish.sh`)
+- **test_publisher.sh**: Tests the ghx publish entrypoint (`skills/ghx/scripts/ghx.sh intent run`)
   - Help functionality
   - Missing intent files
   - Invalid JSON

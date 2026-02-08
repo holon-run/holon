@@ -1,7 +1,7 @@
-# E2E test for pr-fix mode with local bare repo
+# E2E test for PR-fix publishing flow with local bare repo
 # This test verifies the complete pr-fix publishing flow:
 # 1. Context collection (simulated with fixtures)
-# 2. Agent execution in pr-fix mode (mock driver)
+# 2. Agent execution (mock driver)
 # 3. Publish: apply/commit/push diff.patch to PR head branch
 # 4. Publish: GitHub publisher posts replies/summary (with mock server)
 #
@@ -50,10 +50,9 @@ mkdir input
 mkdir input/context
 mkdir input/context/github
 
-# Set environment for mock driver and pr-fix mode
+# Set environment for mock driver
 env HOLON_CLAUDE_DRIVER=mock
 env HOLON_CLAUDE_MOCK_FIXTURE=/holon/input/context/fixture.json
-env HOLON_MODE=pr-fix
 
 # Run holon run with the pre-populated PR context
 exec holon run --agent default --goal 'Fix the review comments in PR https://github.com/test/repo/pull/456' --workspace work --input input --output out --image golang:1.22

@@ -222,8 +222,7 @@ Controller does not reinterpret worker artifacts. It records references in `acti
 - `github-issue-solve`
 - `github-review`
 - `github-pr-fix`
-- `github-context`
-- `github-publish`
+- `ghx`
 
 ### 8.2 Typical Action Mapping
 

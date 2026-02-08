@@ -1,5 +1,5 @@
 #!/bin/bash
-# lib/publish.sh - Publishing action functions for github-publish skill
+# lib/publish.sh - Publishing action functions for ghx skill
 #
 # This library contains action implementations for the publish.sh script.
 # Each action function handles a specific GitHub publishing operation.
@@ -21,7 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Source helpers if not already loaded
-[[ -z "${helpers_sourced:-}" ]] && source "${SCRIPT_DIR}/../../github-context/scripts/lib/helpers.sh"
+[[ -z "${helpers_sourced:-}" ]] && source "${SCRIPT_DIR}/lib/helpers.sh"
 
 # ============================================================================
 # Helper Functions

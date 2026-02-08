@@ -1054,23 +1054,17 @@ func TestResolveSkills_IncludesBuiltinDefaults(t *testing.T) {
 	if countByName["github-issue-solve"] != 1 {
 		t.Fatalf("expected github-issue-solve exactly once, got %d", countByName["github-issue-solve"])
 	}
-	if countByName["github-context"] != 1 {
-		t.Fatalf("expected github-context exactly once, got %d", countByName["github-context"])
+	if countByName["ghx"] != 1 {
+		t.Fatalf("expected ghx exactly once, got %d", countByName["ghx"])
 	}
-	if countByName["github-publish"] != 1 {
-		t.Fatalf("expected github-publish exactly once, got %d", countByName["github-publish"])
-	}
-	if !skillByName["github-context"].Builtin {
-		t.Fatal("expected github-context to be builtin")
-	}
-	if !skillByName["github-publish"].Builtin {
-		t.Fatal("expected github-publish to be builtin")
+	if !skillByName["ghx"].Builtin {
+		t.Fatal("expected ghx to be builtin")
 	}
 }
 
 func TestResolveSkills_WorkspaceSkillOverridesBuiltinDefault(t *testing.T) {
 	workspace := t.TempDir()
-	workspaceSkillDir := filepath.Join(workspace, ".claude", "skills", "github-context")
+	workspaceSkillDir := filepath.Join(workspace, ".claude", "skills", "ghx")
 	if err := os.MkdirAll(workspaceSkillDir, 0o755); err != nil {
 		t.Fatalf("failed to create workspace skill dir: %v", err)
 	}
@@ -1087,17 +1081,17 @@ func TestResolveSkills_WorkspaceSkillOverridesBuiltinDefault(t *testing.T) {
 		t.Fatalf("resolveSkills failed: %v", err)
 	}
 
-	var githubContextMatches []skills.Skill
+	var ghxMatches []skills.Skill
 	for _, skill := range resolved {
-		if skill.Name == "github-context" {
-			githubContextMatches = append(githubContextMatches, skill)
+		if skill.Name == "ghx" {
+			ghxMatches = append(ghxMatches, skill)
 		}
 	}
-	if len(githubContextMatches) != 1 {
-		t.Fatalf("expected exactly 1 github-context skill, got %d", len(githubContextMatches))
+	if len(ghxMatches) != 1 {
+		t.Fatalf("expected exactly 1 ghx skill, got %d", len(ghxMatches))
 	}
-	if githubContextMatches[0].Builtin {
-		t.Fatal("expected workspace github-context to take precedence over builtin default")
+	if ghxMatches[0].Builtin {
+		t.Fatal("expected workspace ghx to take precedence over builtin default")
 	}
 }
 
@@ -1148,7 +1142,7 @@ func TestBuiltinSkillsManifestFields(t *testing.T) {
 	}
 
 	commit, source, ref := builtinSkillsManifestFields(cfgEmbedded, []skills.Skill{
-		{Name: "github-context", Source: "builtin-default", Builtin: true},
+		{Name: "ghx", Source: "builtin-default", Builtin: true},
 	})
 	if commit == "" {
 		t.Fatal("expected embedded commit for builtin-default")
@@ -1165,7 +1159,7 @@ func TestBuiltinSkillsManifestFields(t *testing.T) {
 	}
 
 	commit, source, ref = builtinSkillsManifestFields(cfgRemote, []skills.Skill{
-		{Name: "github-context", Source: "builtin-default", Builtin: true},
+		{Name: "ghx", Source: "builtin-default", Builtin: true},
 	})
 	if commit != "" {
 		t.Fatalf("expected empty commit when remote source configured, got %q", commit)

@@ -10,7 +10,7 @@ set -euo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 FIXTURES_DIR="$TEST_DIR/fixtures"
-COLLECTOR_SCRIPT="$REPO_ROOT/skills/github-context/scripts/collect.sh"
+COLLECTOR_SCRIPT="$REPO_ROOT/skills/ghx/scripts/collect.sh"
 
 # Test counters
 TESTS_RUN=0

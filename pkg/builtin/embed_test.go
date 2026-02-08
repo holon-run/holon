@@ -20,7 +20,7 @@ func TestHas(t *testing.T) {
 	}{
 		{
 			name: "existing builtin skill",
-			ref:  "github-context",
+			ref:  "ghx",
 			want: true,
 		},
 		{
@@ -54,7 +54,7 @@ func TestLoad(t *testing.T) {
 	}{
 		{
 			name:    "existing builtin skill",
-			ref:     "github-context",
+			ref:     "ghx",
 			wantErr: false,
 			validate: func(content []byte) error {
 				if len(content) == 0 {
@@ -104,7 +104,7 @@ func TestLoadDir(t *testing.T) {
 	}{
 		{
 			name:         "existing builtin skill directory",
-			ref:          "github-context",
+			ref:          "ghx",
 			wantErr:      false,
 			minFileCount: 1, // At least SKILL.md
 		},
@@ -152,7 +152,7 @@ func TestLoadDir(t *testing.T) {
 func TestLoadDirEdgeCase(t *testing.T) {
 	// Test the edge case where ref equals path (directory itself during walk)
 	// This should not cause a slicing panic
-	files, err := LoadDir("github-context")
+	files, err := LoadDir("ghx")
 	if err != nil {
 		t.Fatalf("LoadDir() error = %v", err)
 	}
@@ -175,13 +175,13 @@ func TestList(t *testing.T) {
 	// Should at least contain github-solve
 	found := false
 	for _, skill := range skills {
-		if skill == "github-context" {
+		if skill == "ghx" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("List() did not return 'github-context' skill")
+		t.Error("List() did not return 'ghx' skill")
 	}
 	// All returned skills should be non-empty
 	for _, skill := range skills {

@@ -1,7 +1,7 @@
 #!/bin/bash
 # helpers.sh - Reusable helper functions for GitHub context collection
 #
-# Shared by github-context, github-issue-solve, github-pr-fix, github-review, and github-publish skills.
+# Shared by ghx, github-issue-solve, github-pr-fix, and github-review skills.
 
 set -euo pipefail
 
@@ -539,7 +539,7 @@ write_manifest() {
     local ref_type="$5"
     local success="$6"
 
-    local provider="${MANIFEST_PROVIDER:-github-context}"
+    local provider="${MANIFEST_PROVIDER:-ghx}"
     local manifest_file="$output_dir/manifest.json"
     local timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

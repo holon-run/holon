@@ -1,6 +1,6 @@
 # Script Reference
 
-This document describes the runner-facing wrapper scripts for github-review. Agents should not invoke these directly; runners may use them or call `github-publish` for posting.
+This document describes the runner-facing wrapper scripts for github-review. Agents should not invoke these directly; runners may use them or call `ghx` for posting.
 
 ## collect.sh - Context Collection Script
 
@@ -99,7 +99,7 @@ MAX_FILES=50 collect.sh "owner/repo#456"
 
 ---
 
-## publish.sh - Review Publishing Script
+## GHX Review Publish
 
 ### Purpose
 
@@ -109,10 +109,10 @@ Posts a single PR review with inline comments using GitHub API, based on agent-g
 
 ```bash
 # Preview without posting
-DRY_RUN=true publish.sh --pr=owner/repo#123
+DRY_RUN=true skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 
 # Publish with limits
-MAX_INLINE=10 POST_EMPTY=false publish.sh --pr=owner/repo#123
+MAX_INLINE=10 POST_EMPTY=false skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 
 ### Options
@@ -120,7 +120,7 @@ MAX_INLINE=10 POST_EMPTY=false publish.sh --pr=owner/repo#123
 - `--dry-run` or `DRY_RUN=true`: Preview review body and inline comments without posting
 - `--max-inline=N` or `MAX_INLINE`: Limit inline comments (default 20)
 - `--post-empty` or `POST_EMPTY=true`: Post even when `review.json` is empty
-- `--pr=OWNER/REPO#NUMBER`: Target PR (optional if `github-context` manifest is present)
+- `--pr=OWNER/REPO#NUMBER`: Target PR reference
 
 ### Required artifacts (in `${GITHUB_OUTPUT_DIR}`; defaults to `/holon/output` or temp)
 - `review.md`: Review summary/body
@@ -142,7 +142,7 @@ MAX_INLINE=10 POST_EMPTY=false publish.sh --pr=owner/repo#123
 
 ### Input Files (Agent-Generated)
 
-The script expects these artifacts in `GITHUB_OUTPUT_DIR`:
+The publish command expects these artifacts in `GITHUB_OUTPUT_DIR`:
 
 - `review.md` - Human-readable review summary
 - `review.json` - Structured findings with inline comments:
@@ -161,7 +161,7 @@ The script expects these artifacts in `GITHUB_OUTPUT_DIR`:
 
 ### Publishing Behavior
 
-1. **Creates PR review** using `gh pr review` command
+1. **Creates PR review** via GitHub API
 2. **Posts inline comments** for findings with path+line information
 3. **Limits inline comments** via `MAX_INLINE` (most important findings first)
 4. **Skips posting** if `POST_EMPTY=false` and no findings
@@ -171,16 +171,16 @@ The script expects these artifacts in `GITHUB_OUTPUT_DIR`:
 
 ```bash
 # Preview review
-DRY_RUN=true publish.sh create-pr --title "Review" --body-file review.md --head fix/x --base main
+DRY_RUN=true skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 
 # Limit inline comments
-MAX_INLINE=10 publish.sh create-pr ...
+MAX_INLINE=10 skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 
 # Post even if no findings
-POST_EMPTY=true publish.sh create-pr ...
+POST_EMPTY=true skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 
 # Use intent file
-publish.sh --intent=/holon/output/publish-intent.json
+skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 
 ---
@@ -204,7 +204,7 @@ jobs:
       - name: Collect context
         run: |
           GITHUB_OUTPUT_DIR=${PWD}/context \
-          /holon/workspace/skills/github-review/scripts/collect.sh "${{ github.repository }}#${{ github.event.pull_request.number }}"
+          skills/github-review/scripts/collect.sh "${{ github.repository }}#${{ github.event.pull_request.number }}"
 
       - name: Run review
         uses: holon-run/holon@main
@@ -217,8 +217,7 @@ jobs:
 
       - name: Publish review
         run: |
-          cd /holon/workspace/skills/github-review
-          ./scripts/publish.sh
+          skills/ghx/scripts/ghx.sh review publish --pr="${{ github.repository }}#${{ github.event.pull_request.number }}" --body-file=review.md --comments-file=review.json
         env:
           GITHUB_OUTPUT_DIR: ${PWD}/context
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -234,8 +233,7 @@ GITHUB_OUTPUT_DIR=./review collect.sh "owner/repo#123"
 #    Agent writes to ./review/review.md and review.json
 
 # 3. Publish
-cd review/github-review/scripts
-./publish.sh
+skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 
 ## Error Handling
