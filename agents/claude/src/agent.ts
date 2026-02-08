@@ -367,7 +367,7 @@ async function runClaude(
   systemInstruction: string,
   userPrompt: string,
   logFile: fs.WriteStream
-): Promise<{ success: boolean; result: string }> {
+): Promise<{ success: boolean; result: string; sessionId?: string }> {
   const env = { ...process.env } as NodeJS.ProcessEnv;
   const isMountedConfig = env.HOLON_MOUNTED_CLAUDE_CONFIG === "1";
 
@@ -456,11 +456,17 @@ async function runClaude(
   if (fallbackModel) {
     options.fallbackModel = fallbackModel;
   }
+  const resumeSessionId = env.HOLON_CONTROLLER_SESSION_ID?.trim();
+  if (resumeSessionId) {
+    options.resume = resumeSessionId;
+    logger.info(`Resuming Claude session: ${resumeSessionId}`);
+  }
 
   let success = true;
   let finalOutput = "";
   let resultReceived = false;
   let resultText = "";
+  let observedSessionId = "";
   let timeoutError: Error | null = null;
   let queryError: Error | null = null;
 
@@ -536,6 +542,12 @@ async function runClaude(
 
       logFile.write(`${messageStr}\n`);
 
+      const messageSessionId =
+        typeof (message as any).session_id === "string" ? String((message as any).session_id) : "";
+      if (messageSessionId) {
+        observedSessionId = messageSessionId;
+      }
+
       // Only increment counter for valid, serialized messages
       msgCount += 1;
 
@@ -600,7 +612,11 @@ async function runClaude(
 
   const finalResult = resultText || finalOutput;
 
-  return { success, result: finalResult };
+  return {
+    success,
+    result: finalResult,
+    sessionId: observedSessionId || resumeSessionId || undefined,
+  };
 }
 
 async function runAgent(): Promise<void> {
@@ -920,6 +936,18 @@ async function runAgent(): Promise<void> {
 
     fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(path.join(outputDir, "diff.patch"), patchContent);
+    fs.writeFileSync(
+      path.join(evidenceDir, "session.json"),
+      JSON.stringify(
+        {
+          session_id: response.sessionId ?? "",
+          mode,
+          updated_at: new Date().toISOString(),
+        },
+        null,
+        2
+      )
+    );
 
     const summaryOut = path.join(outputDir, "summary.md");
     let summaryText = "";

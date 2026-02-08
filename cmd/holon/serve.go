@@ -127,6 +127,11 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 		return err
 	}
 	defer cleanup()
+	outputDir, err := os.MkdirTemp("", "holon-serve-output-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp output dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(outputDir) }()
 
 	args := []string{
 		"solve",
@@ -134,6 +139,7 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 		"--skill", h.controllerSkill,
 		"--input", inputDir,
 		"--state-dir", filepath.Join(h.stateDir, "controller-state"),
+		"--output", outputDir,
 		"--cleanup", "all",
 	}
 	if h.repoHint != "" {
@@ -149,7 +155,17 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = nil
-	return cmd.Run()
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR=/holon/state/claude-config")
+	if sessionID := h.readSessionID(); sessionID != "" {
+		cmd.Env = append(cmd.Env, "HOLON_CONTROLLER_SESSION_ID="+sessionID)
+	}
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	if err := h.captureSessionID(outputDir); err != nil {
+		holonlog.Warn("failed to capture controller session id", "error", err)
+	}
+	return nil
 }
 
 func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error) {
@@ -227,6 +243,50 @@ func (h *cliControllerHandler) copyControllerMemoryToInput(contextDir string) er
 	dst := filepath.Join(contextDir, "controller-memory.md")
 	if err := os.WriteFile(dst, data, 0644); err != nil {
 		return fmt.Errorf("failed to write input controller memory: %w", err)
+	}
+	return nil
+}
+
+func (h *cliControllerHandler) readSessionID() string {
+	type sessionState struct {
+		SessionID string `json:"session_id"`
+	}
+	data, err := os.ReadFile(filepath.Join(h.stateDir, "controller-session.json"))
+	if err != nil {
+		return ""
+	}
+	var state sessionState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return ""
+	}
+	return state.SessionID
+}
+
+func (h *cliControllerHandler) captureSessionID(outputDir string) error {
+	type sessionRecord struct {
+		SessionID string `json:"session_id"`
+	}
+	path := filepath.Join(outputDir, "evidence", "session.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read session artifact: %w", err)
+	}
+	var record sessionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return fmt.Errorf("failed to parse session artifact: %w", err)
+	}
+	if record.SessionID == "" {
+		return nil
+	}
+	stateBytes, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal session state: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(h.stateDir, "controller-session.json"), stateBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write session state: %w", err)
 	}
 	return nil
 }
