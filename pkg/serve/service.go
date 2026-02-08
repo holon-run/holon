@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,6 +30,8 @@ type Service struct {
 	state      persistentState
 	now        func() time.Time
 }
+
+var idCounter uint64
 
 type Config struct {
 	RepoHint string
@@ -101,6 +104,8 @@ func (s *Service) Close() error {
 
 func (s *Service) Run(ctx context.Context, r io.Reader, maxEvents int) error {
 	scanner := bufio.NewScanner(r)
+	// GitHub payload lines can exceed Scanner's default 64 KiB token limit.
+	scanner.Buffer(make([]byte, 0, 128*1024), 10*1024*1024)
 	processed := 0
 	for scanner.Scan() {
 		select {
@@ -123,6 +128,14 @@ func (s *Service) Run(ctx context.Context, r io.Reader, maxEvents int) error {
 		intent := s.decide(env)
 		if intent.Type == "skip" && intent.Skipped {
 			if err := s.decLog.Write(intent); err != nil {
+				return err
+			}
+			// Even for duplicate events, advance cursor state to avoid replay loops.
+			s.state.LastEventID = env.ID
+			if err := s.compactState(); err != nil {
+				return err
+			}
+			if err := s.saveState(); err != nil {
 				return err
 			}
 			continue
@@ -210,6 +223,9 @@ func (s *Service) decide(env EventEnvelope) ActionIntent {
 }
 
 func shouldRunPRFix(env EventEnvelope) bool {
+	if !validPRSubject(env.Subject) {
+		return false
+	}
 	if len(env.Payload) == 0 {
 		return false
 	}
@@ -282,12 +298,18 @@ func normalizeGitHubEvent(raw []byte, repoHint string, now func() time.Time) (Ev
 		event.Type = "github.issue." + strings.ToLower(action)
 	case "issue_comment":
 		num, _ := nestedInt(payload, "issue", "number")
+		normalizedAction := strings.ToLower(action)
+		switch normalizedAction {
+		case "created", "edited", "deleted":
+		default:
+			return EventEnvelope{}, fmt.Errorf("unsupported issue_comment action: %s", action)
+		}
 		if _, hasPR := nestedMap(payload, "issue", "pull_request"); hasPR {
 			event.Subject = EventSubject{Kind: "pull_request", ID: strconv.Itoa(num)}
-			event.Type = "github.pull_request.comment.created"
+			event.Type = "github.pull_request.comment." + normalizedAction
 		} else {
 			event.Subject = EventSubject{Kind: "issue", ID: strconv.Itoa(num)}
-			event.Type = "github.issue.comment.created"
+			event.Type = "github.issue.comment." + normalizedAction
 		}
 	case "pull_request":
 		num := getPRNumber(payload)
@@ -296,7 +318,13 @@ func normalizeGitHubEvent(raw []byte, repoHint string, now func() time.Time) (Ev
 	case "pull_request_review":
 		num := getPRNumber(payload)
 		event.Subject = EventSubject{Kind: "pull_request", ID: strconv.Itoa(num)}
-		event.Type = "github.pull_request_review.submitted"
+		normalizedAction := strings.ToLower(action)
+		switch normalizedAction {
+		case "submitted", "edited", "dismissed":
+			event.Type = "github.pull_request_review." + normalizedAction
+		default:
+			return EventEnvelope{}, fmt.Errorf("unsupported pull_request_review action: %s", action)
+		}
 	case "check_suite":
 		prs, ok := payload["pull_requests"].([]interface{})
 		if ok && len(prs) > 0 {
@@ -325,7 +353,8 @@ func buildDedupeKey(env EventEnvelope) string {
 }
 
 func newID(prefix string, t time.Time) string {
-	return fmt.Sprintf("%s_%d", prefix, t.UnixNano())
+	seq := atomic.AddUint64(&idCounter, 1)
+	return fmt.Sprintf("%s_%d_%d", prefix, t.UnixNano(), seq)
 }
 
 func (s *Service) loadState() error {
@@ -386,6 +415,17 @@ func sortByTimeDesc(items []stateItem) {
 type stateItem struct {
 	key string
 	at  time.Time
+}
+
+func validPRSubject(subject EventSubject) bool {
+	if subject.Kind != "pull_request" {
+		return false
+	}
+	id, err := strconv.Atoi(subject.ID)
+	if err != nil {
+		return false
+	}
+	return id > 0
 }
 
 func getPRNumber(payload map[string]interface{}) int {

@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,7 +98,36 @@ func TestService_Run_WritesState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read state file: %v", err)
 	}
-	if !strings.Contains(string(stateData), `"last_event_id": "evt_2"`) {
-		t.Fatalf("unexpected state content: %s", string(stateData))
+	var state struct {
+		LastEventID string `json:"last_event_id"`
+	}
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatalf("failed to parse state json: %v", err)
+	}
+	if state.LastEventID != "evt_2" {
+		t.Fatalf("unexpected last_event_id: %q", state.LastEventID)
+	}
+}
+
+func TestNormalizeGitHubEvent_IssueCommentEdited(t *testing.T) {
+	now := func() time.Time { return time.Date(2026, 2, 8, 0, 0, 0, 0, time.UTC) }
+	raw := []byte(`{"event":"issue_comment","action":"edited","repository":{"full_name":"holon-run/holon"},"issue":{"number":527}}`)
+	env, err := normalizeGitHubEvent(raw, "", now)
+	if err != nil {
+		t.Fatalf("normalizeGitHubEvent failed: %v", err)
+	}
+	if env.Type != "github.issue.comment.edited" {
+		t.Fatalf("unexpected type: %s", env.Type)
+	}
+}
+
+func TestShouldRunPRFix_RequiresValidPRSubject(t *testing.T) {
+	env := EventEnvelope{
+		Type:    "github.check_suite.completed",
+		Subject: EventSubject{Kind: "pull_request", ID: ""},
+		Payload: json.RawMessage(`{"check_suite":{"conclusion":"failure"}}`),
+	}
+	if shouldRunPRFix(env) {
+		t.Fatalf("expected shouldRunPRFix to be false for invalid PR subject")
 	}
 }
