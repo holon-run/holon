@@ -12,9 +12,9 @@ import (
 	"github.com/holon-run/holon/pkg/image"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/preflight"
-	_ "github.com/holon-run/holon/pkg/publisher/git"      // Register git publisher
-	_ "github.com/holon-run/holon/pkg/publisher/github"   // Register GitHub publisher
-	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher
+	_ "github.com/holon-run/holon/pkg/publisher/git"      // Register git publisher (for publish command)
+	_ "github.com/holon-run/holon/pkg/publisher/github"   // Register GitHub publisher (for publish command)
+	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher (for publish command)
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/skills"
 	"github.com/spf13/cobra"
@@ -38,7 +38,6 @@ var roleName string
 var envVarsList []string
 var logLevel string
 var assistantOutput string
-var mode string
 var agentConfigMode string
 var skipPreflight bool
 var skillPaths []string
@@ -221,21 +220,6 @@ var runCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 
-		// Validate --skill/--skills and --mode mutual exclusivity
-		// Parse CLI skills
-		cliSkills := skillPaths
-		for _, s := range skills.ParseSkillsList(skillsList) {
-			cliSkills = append(cliSkills, s)
-		}
-		// Check if --skill/--skills was explicitly provided
-		hasSkills := cmd.Flags().Changed("skill") || cmd.Flags().Changed("skills")
-		// Check if --mode was explicitly provided (not default)
-		hasMode := cmd.Flags().Changed("mode")
-		if hasSkills && hasMode {
-			return fmt.Errorf("--skill/--skills and --mode flags are mutually exclusive (both were provided)")
-		}
-		// Note: If only one of --mode or --skill/--skills is provided, it will control the behavior
-
 		// Resolve workspace path early for auto-detection
 		absWorkspace, err := filepath.Abs(workspacePath)
 		if err != nil {
@@ -345,8 +329,8 @@ var runCmd = &cobra.Command{
 			EnvVarsList:          envVarsList,
 			LogLevel:             resolved.logLevel,
 			AssistantOutput:      resolved.assistantOutput,
-			Mode:                 mode,
-			ModeExplicit:         hasMode,
+			Mode:                 "",
+			ModeExplicit:         false,
 			Cleanup:              cleanupMode,
 			AgentConfigMode:      agentConfigMode,
 			GitAuthorName:        projectCfg.GetGitAuthorName(),
@@ -378,7 +362,6 @@ func init() {
 	runCmd.Flags().StringVar(&stateDir, "state-dir", "", "Path to state directory for cross-run skill caches (default: no state persistence)")
 	runCmd.Flags().StringVar(&cleanupMode, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
 	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. developer, reviewer)")
-	runCmd.Flags().StringVar(&mode, "mode", "solve", "Execution mode: solve, pr-fix, plan, review")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	runCmd.Flags().StringVar(&assistantOutput, "assistant-output", "none", "Assistant output mode: none (default), stream (stream assistant text to logs)")
