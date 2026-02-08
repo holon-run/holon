@@ -1,6 +1,6 @@
 ---
 name: github-controller
-description: Controller skill for proactive GitHub automation. Given a normalized event in /holon/input/context/event.json, decide whether to run issue solve, PR review, PR fix, or no-op, then execute using existing GitHub skills.
+description: Controller skill for proactive GitHub automation. Run as a long-lived controller session, continuously consume events from HOLON_CONTROLLER_EVENT_CHANNEL, decide whether to run issue solve, PR review, PR fix, or no-op, then execute using existing GitHub skills.
 ---
 
 # GitHub Controller Skill
@@ -9,21 +9,26 @@ Use this skill when running in proactive `holon serve` mode.
 
 ## Purpose
 
-You are the decision layer. For each incoming GitHub event, decide if action is needed, then execute the action with existing skills.
+You are the decision layer for a persistent controller session.
 
-Input is provided in:
+Event stream input:
 
-- `/holon/input/context/event.json`: normalized event envelope
-- `/holon/input/context/controller-memory.md` (optional): prior controller memory from previous events
+- `HOLON_CONTROLLER_EVENT_CHANNEL`: newline-delimited JSON events (required)
+- `HOLON_CONTROLLER_EVENT_CURSOR`: byte offset cursor file (required)
 
-Persistent state path:
+Controller state:
 
-- `/holon/state/controller-memory.md`: shared across runs in the same `holon serve` state dir
+- `HOLON_CONTROLLER_SESSION_STATE_PATH`: path to session metadata JSON (required)
+- `/holon/state/controller-memory.md`: persistent controller memory across events/runs
 
 ## Required behavior
 
-1. Read and parse `/holon/input/context/event.json`.
-2. Decide one of:
+1. Start/continue a long-running loop:
+   - Read current cursor offset from `HOLON_CONTROLLER_EVENT_CURSOR` (default `0` if missing).
+   - Read new bytes from `HOLON_CONTROLLER_EVENT_CHANNEL` from that offset.
+   - Split complete JSONL lines; for each parsed event, process sequentially.
+   - After each successfully handled event, persist updated cursor offset immediately.
+2. For each event, decide one of:
    - `no-op`
    - `issue-solve`
    - `pr-review`
@@ -32,14 +37,20 @@ Persistent state path:
    - `github-issue-solve`
    - `github-review`
    - `github-pr-fix`
-4. Include a short rationale in `summary.md`:
+4. Maintain `summary.md` as rolling controller status with latest decision:
    - event type
    - decision
    - executed skill or why skipped
 5. Update persistent controller memory:
-   - Read `/holon/input/context/controller-memory.md` if present.
+   - Read `/holon/state/controller-memory.md` if present.
    - Write updated memory to `/holon/state/controller-memory.md`.
    - Keep it concise (priorities, open threads, recent outcomes), not full transcripts.
+6. Keep session metadata in `HOLON_CONTROLLER_SESSION_STATE_PATH`:
+   - Persist the current Claude session id as `session_id`.
+   - Update metadata on startup and after notable state transitions.
+7. Idle behavior:
+   - If no new complete line is available, sleep briefly and continue polling.
+   - Do not terminate only because there is no event right now.
 
 ## Decision guidance
 
@@ -49,3 +60,9 @@ Persistent state path:
 - If event is irrelevant, duplicated, or lacks enough context, choose `no-op`.
 
 Do not hard fail only because action is not required. `no-op` is a valid result.
+
+## Notes
+
+- Event channel data is append-only JSONL. Treat malformed trailing partial lines as incomplete and wait for more data.
+- Cursor updates must be monotonic and durable to avoid replay loops after restart.
+- Prefer idempotent behavior when the same event appears again.
