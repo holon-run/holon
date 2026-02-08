@@ -111,6 +111,7 @@ type cliControllerHandler struct {
 	controllerInputDir string
 	controllerOutput   string
 	restartAttempts    int
+	commandFactory     func(context.Context, string, ...string) *exec.Cmd
 }
 
 var (
@@ -131,6 +132,7 @@ func newCLIControllerHandler(repoHint, stateDir, controllerSkill string, dryRun 
 		stateDir:        stateDir,
 		controllerSkill: controllerSkill,
 		dryRun:          dryRun,
+		commandFactory:  exec.CommandContext,
 	}, nil
 }
 
@@ -294,7 +296,11 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		args = append(args, "--env", "HOLON_CONTROLLER_SESSION_ID="+sessionID)
 	}
 
-	cmd := exec.CommandContext(controllerCtx, h.execPath, args...)
+	cmdFactory := h.commandFactory
+	if cmdFactory == nil {
+		cmdFactory = exec.CommandContext
+	}
+	cmd := cmdFactory(controllerCtx, h.execPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = nil

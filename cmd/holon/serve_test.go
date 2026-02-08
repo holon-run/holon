@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
+
+	"github.com/holon-run/holon/pkg/serve"
 )
 
 func TestAppendJSONLine(t *testing.T) {
@@ -121,6 +125,75 @@ func TestCompactChannelBestEffortLocked(t *testing.T) {
 	}
 	if string(gotCursor) != "0" {
 		t.Fatalf("cursor after compact = %q, want 0", string(gotCursor))
+	}
+}
+
+func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	scriptPath := filepath.Join(td, "controller.sh")
+	script := "#!/bin/sh\nwhile true; do sleep 1; done\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write controller script: %v", err)
+	}
+
+	h := &cliControllerHandler{
+		execPath:        scriptPath,
+		repoHint:        "holon-run/holon",
+		stateDir:        td,
+		controllerSkill: "skills/github-controller",
+	}
+	defer h.Close()
+
+	ctx := context.Background()
+	env1 := serve.EventEnvelope{
+		ID:   "evt-1",
+		Type: "issue_comment",
+		Scope: serve.EventScope{
+			Repo: "holon-run/holon",
+		},
+		Subject: serve.EventSubject{
+			Kind: "issue",
+			ID:   "579",
+		},
+	}
+	env2 := env1
+	env2.ID = "evt-2"
+	env3 := env1
+	env3.ID = "evt-3"
+
+	if err := h.HandleEvent(ctx, env1); err != nil {
+		t.Fatalf("handle event1: %v", err)
+	}
+	if err := h.HandleEvent(ctx, env2); err != nil {
+		t.Fatalf("handle event2: %v", err)
+	}
+	if h.restartAttempts != 1 {
+		t.Fatalf("restartAttempts after 2 events = %d, want 1", h.restartAttempts)
+	}
+
+	data, err := os.ReadFile(filepath.Join(td, "controller-state", "event-channel.ndjson"))
+	if err != nil {
+		t.Fatalf("read channel file: %v", err)
+	}
+	lines := bytesToLines(data)
+	if len(lines) != 2 {
+		t.Fatalf("channel line count = %d, want 2", len(lines))
+	}
+
+	// Force controller exit and wait for process reap.
+	if h.controllerCancel == nil {
+		t.Fatalf("controllerCancel not set")
+	}
+	h.controllerCancel()
+	time.Sleep(200 * time.Millisecond)
+
+	if err := h.HandleEvent(ctx, env3); err != nil {
+		t.Fatalf("handle event3 after stop: %v", err)
+	}
+	if h.restartAttempts != 2 {
+		t.Fatalf("restartAttempts after reconnect = %d, want 2", h.restartAttempts)
 	}
 }
 
