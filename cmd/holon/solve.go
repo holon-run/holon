@@ -566,13 +566,25 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Skill-first is the default: use skill mode when mode is not explicitly provided
-	// If no skills are configured, add the default github-issue-solve skill
+	// If no skills are configured, add a default skill bundle for issues only.
+	// For PRs, leave skills empty so PR-specific defaults can be applied later.
 	useSkillMode := !modeExplicitByUser
 	if useSkillMode && len(allSkills) == 0 {
-		// Add default skill bundle for skill-first mode
-		// This ensures skill-first IO is used by default
-		allSkills = []string{"github-issue-solve"}
-		fmt.Printf("Config: skills = %q (source: default skill bundle for skill-first mode)\n", allSkills)
+		if refType == "pr" {
+			// In PR solves, do not force an issue-solve default skill.
+			// Leaving skills empty allows buildGoal's PR defaults to select appropriate skills.
+			fmt.Printf("Config: skills = [] (source: skill-first mode for PR; deferring to PR-specific defaults)\n")
+		} else {
+			// Add default skill bundle for skill-first mode on issues
+			// This ensures skill-first IO is used by default
+			allSkills = []string{"github-issue-solve"}
+			fmt.Printf("Config: skills = %q (source: default skill bundle for skill-first mode)\n", allSkills)
+		}
+	}
+
+	// Validate that --mode and --skill flags are mutually exclusive
+	if modeExplicitByUser && len(cliSkills) > 0 {
+		return fmt.Errorf("--mode and --skill/--skills are mutually exclusive flags; cannot use both simultaneously")
 	}
 
 	// Collect context based on type
@@ -922,19 +934,23 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 
 		// Check for publish-intent.json which indicates skill-driven publishing
 		publishIntentPath := filepath.Join(outDir, "publish-intent.json")
-		if _, err := os.Stat(publishIntentPath); os.IsNotExist(err) {
-			// No publish-intent.json found - check if this is an error or expected
-			// In skill-first mode, the skill should always create publish-intent.json
-			// If it's missing, the skill may have failed or not completed properly
-			return fmt.Errorf("skill-first mode: expected %s not found in output directory %s (skill may have failed to publish; check summary.md for details)", publishIntentPath, outDir)
+		if _, err := os.Stat(publishIntentPath); err != nil {
+			if os.IsNotExist(err) {
+				// No publish-intent.json found - check if this is an error or expected
+				// In skill-first mode, the skill should always create publish-intent.json
+				// If it's missing, the skill may have failed or not completed properly
+				return fmt.Errorf("skill-first mode: expected %s not found in output directory %s (skill may have failed to publish; check summary.md for details)", publishIntentPath, outDir)
+			}
+			// Any other filesystem error should be surfaced, not treated as success
+			return fmt.Errorf("skill-first mode: failed to stat %s: %w", publishIntentPath, err)
 		}
 
 		// Verify that summary.md contains pr_number and pr_url
 		summaryPath := filepath.Join(outDir, "summary.md")
 		if summaryData, err := os.ReadFile(summaryPath); err == nil {
 			summary := string(summaryData)
-			if !strings.Contains(summary, "pr_number") && !strings.Contains(summary, "pr_url") {
-				fmt.Fprintf(os.Stderr, "Warning: summary.md does not contain pr_number or pr_url - skill publishing may not have completed successfully\n")
+			if !strings.Contains(summary, "pr_number") || !strings.Contains(summary, "pr_url") {
+				fmt.Fprintf(os.Stderr, "Warning: summary.md does not contain pr_number and pr_url - skill publishing may not have completed successfully\n")
 			}
 		}
 
