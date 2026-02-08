@@ -975,7 +975,7 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 	resolver := skills.NewResolver(cfg.Workspace)
 
 	// Skills from ContainerConfig.Skills can be:
-	// - Builtin skill references (e.g., "github-context")
+	// - Builtin skill references (e.g., "ghx")
 	// - Local filesystem paths
 	// - Remote URLs
 	// Use Resolve to handle all types properly. When no skills are explicitly
@@ -986,7 +986,7 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 	}
 
 	// Always make builtin skills available in the container so entry skills can
-	// invoke shared helper skills (e.g. github-context, github-publish).
+	// invoke shared helper skills (e.g. ghx).
 	// Keep explicit/workspace skills first; append builtin defaults only if not
 	// already present by skill name.
 	//

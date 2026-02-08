@@ -1,10 +1,10 @@
 #!/bin/bash
-# Wrapper collector for github-review -> delegates to shared github-context collector
+# Wrapper collector for github-review -> delegates to shared ghx collector
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SHARED_COLLECTOR="$SCRIPT_DIR/../../github-context/scripts/collect.sh"
+SHARED_COLLECTOR="$SCRIPT_DIR/../../ghx/scripts/collect.sh"
 
 # Default output and context dirs (aligned with shared github-context layout)
 if [[ -d /holon/output ]]; then

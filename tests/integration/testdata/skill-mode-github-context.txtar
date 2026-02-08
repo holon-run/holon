@@ -21,7 +21,7 @@ exec git -C work commit -m 'test commit'
 
 # Run holon to verify gh CLI is available
 # This tests that the collector script can run in skill mode
-exec holon run --goal 'verify gh CLI available' --workspace work --output out --agent agent-bundle.tar.gz --skill github-context --log-level minimal --no-preflight
+exec holon run --goal 'verify gh CLI available' --workspace work --output out --agent agent-bundle.tar.gz --skill ghx --log-level minimal --no-preflight
 
 # Verify outputs
 exists out/manifest.json
@@ -67,14 +67,14 @@ else
 fi
 
 # Verify collector script exists
-if [ -f "/root/.claude/skills/github-context/scripts/collect.sh" ]; then
+if [ -f "/root/.claude/skills/ghx/scripts/collect.sh" ]; then
     tools_found="$tools_found collector-script"
 else
     tools_missing="$tools_missing collector-script"
 fi
 
 # Verify publisher script exists
-if [ -f "/root/.claude/skills/github-publish/scripts/publish.sh" ]; then
+if [ -f "/root/.claude/skills/ghx/scripts/publish.sh" ]; then
     tools_found="$tools_found publisher-script"
 else
     tools_missing="$tools_missing publisher-script"

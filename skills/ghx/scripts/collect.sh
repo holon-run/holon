@@ -1,7 +1,7 @@
 #!/bin/bash
 # collect.sh - Shared GitHub context collection script (issues + PRs)
 #
-# Used by github-context directly and wrapped by github-issue-solve/github-pr-fix/github-review.
+# Used by ghx directly and wrapped by github-issue-solve/github-pr-fix/github-review.
 # Provides toggles for diff, checks, threads, files, and commits.
 #
 # Usage: collect.sh <ref> [repo_hint]
@@ -18,7 +18,7 @@
 #   INCLUDE_COMMITS      Include PR commits (default: true)
 #   MAX_FILES            Max files to fetch (default: 200)
 #   UNRESOLVED_ONLY      Deprecated; kept for compatibility (default: false)
-#   MANIFEST_PROVIDER    Provider name written to manifest (default: github-context)
+#   MANIFEST_PROVIDER    Provider name written to manifest (default: ghx)
 #   COLLECT_PROVIDER     Alias for MANIFEST_PROVIDER (if set)
 
 set -euo pipefail
@@ -32,7 +32,7 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 if [[ -n "${COLLECT_PROVIDER:-}" && -z "${MANIFEST_PROVIDER:-}" ]]; then
     MANIFEST_PROVIDER="$COLLECT_PROVIDER"
 fi
-MANIFEST_PROVIDER="${MANIFEST_PROVIDER:-github-context}"
+MANIFEST_PROVIDER="${MANIFEST_PROVIDER:-ghx}"
 
 # Default output directory
 if [[ -z "${GITHUB_CONTEXT_DIR:-}" ]]; then

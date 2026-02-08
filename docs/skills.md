@@ -19,7 +19,7 @@ Skills provide a way to:
 
 ### Builtin Skills Configuration
 
-Holon includes builtin skills (e.g., `github-issue-solve`, `github-pr-fix`, `github-review`, `github-context`, `github-publish`) that are automatically available. By default, these skills are loaded from embedded copies in the Holon binary.
+Holon includes builtin skills (e.g., `github-issue-solve`, `github-pr-fix`, `github-review`, `ghx`) that are automatically available. By default, these skills are loaded from embedded copies in the Holon binary.
 
 You can configure Holon to use remote builtin skills instead of embedded ones by setting the `builtin_skills_source` in your `.holon/config.yaml`:
 
@@ -101,7 +101,7 @@ Skills can be specified using any of these formats:
 - **Direct URLs**: `https://example.com/skill.zip#sha256=<checksum>`
 - **Local paths**: `/path/to/skill`, `./relative/skill`
 - **Workspace references**: `skill-name` (resolves to `.claude/skills/skill-name`)
-- **Built-in**: `github-issue-solve`, `github-pr-fix`, `github-review`, `github-context`, `github-publish` (built-in skills)
+- **Built-in**: `github-issue-solve`, `github-pr-fix`, `github-review`, `ghx` (built-in skills)
 
 Auto-discovered skills are loaded alphabetically by directory name.
 
@@ -166,7 +166,7 @@ Holon defines a canonical package format for distributing skill collections. Thi
 ```
 holon-skills-v1.0.0.zip         # Package archive
 ├── skills/                    # Root directory for all skills
-│   ├── github-context/        # Individual skill directories
+│   ├── ghx/        # Individual skill directories
 │   │   ├── SKILL.md
 │   │   └── scripts/
 │   └── github-issue-solve/
@@ -185,7 +185,7 @@ holon-skills-v1.0.0.zip.sha256 # SHA256 checksum (sidecar file)
   "name": "holon-skills",
   "version": "v1.0.0",
   "description": "Official Holon builtin skills collection",
-  "skills": ["github-context", "github-issue-solve", "..."],
+  "skills": ["ghx", "github-issue-solve", "..."],
   "source": {
     "type": "git",
     "url": "https://github.com/holon-run/holon",
@@ -212,10 +212,9 @@ holon run --goal "Fix issue" \
   --skill "https://github.com/holon-run/holon/releases/download/v1.0.0/holon-skills-v1.0.0.zip#sha256=<checksum>"
 
 # The package installs all builtin skills:
-# - github-context
+# - ghx
 # - github-issue-solve
 # - github-pr-fix
-# - github-publish
 # - github-review
 ```
 

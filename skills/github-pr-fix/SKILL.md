@@ -18,21 +18,21 @@ This skill helps you:
 ## Prerequisites
 
 This skill depends on (co-installed and callable by the agent):
-- **`github-context`**: Agent should invoke it to collect PR metadata, reviews, diffs, and CI logs
-- **`github-publish`**: Agent should invoke it to post review replies from the produced artifacts
+- **`ghx`**: Agent should invoke it to collect PR metadata, reviews, diffs, and CI logs
+- **`ghx`**: Agent should invoke it to post review replies from the produced artifacts
 
 ## Environment & Paths
 
 - **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
   - Default: `/holon/output` if present; otherwise a temp dir `/tmp/holon-ghprfix-*`
-- **`GITHUB_CONTEXT_DIR`**: Where `github-context` writes collected data  
+- **`GITHUB_CONTEXT_DIR`**: Where `ghx` writes collected data  
   - Default: `${GITHUB_OUTPUT_DIR}/github-context`
 - **`GITHUB_TOKEN` / `GH_TOKEN`**: Token for GitHub operations (scopes: `repo` or `public_repo`)
 - **`HOLON_GITHUB_BOT_LOGIN`**: Bot login for idempotency (default `holonbot[bot]`)
 
 ## Inputs & Outputs
 
-- **Inputs** (agent obtains via `github-context`): `${GITHUB_CONTEXT_DIR}/github/pr.json`, `review_threads.json`, `check_runs.json`, `pr.diff`, etc.
+- **Inputs** (agent obtains via `ghx`): `${GITHUB_CONTEXT_DIR}/github/pr.json`, `review_threads.json`, `check_runs.json`, `pr.diff`, etc.
 - **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
   - `pr-fix.json` (reply plan)
   - `summary.md`
@@ -46,14 +46,14 @@ The run is successful only if all of the following are true:
 1. Required code fixes are committed and pushed to the existing PR branch.
 2. `${GITHUB_OUTPUT_DIR}/pr-fix.json` is generated with review reply decisions.
 3. `${GITHUB_OUTPUT_DIR}/publish-intent.json` is generated from `pr-fix.json`.
-4. `github-publish` is executed and produces `${GITHUB_OUTPUT_DIR}/publish-result.json`.
+4. `ghx` is executed and produces `${GITHUB_OUTPUT_DIR}/publish-result.json`.
 5. `publish-result.json` contains no failed `reply_review` action.
 
 If replies are planned but not published, the run is not successful.
 
 ### 1. Context Collection
 
-If context is not pre-populated, invoke the `github-context` skill with PR options (e.g., INCLUDE_DIFF= true, INCLUDE_CHECKS=true, INCLUDE_THREADS=true, INCLUDE_FILES=true).
+If context is not pre-populated, invoke the `ghx` skill with PR options (e.g., INCLUDE_DIFF= true, INCLUDE_CHECKS=true, INCLUDE_THREADS=true, INCLUDE_FILES=true).
 
 ### 2. Analyze PR Feedback
 
@@ -152,7 +152,7 @@ Execution metadata:
 
 ### 5. Reply to Reviews
 
-Use a single publish path via `github-publish`:
+Use a single publish path via `ghx`:
 
 ```bash
 PR_REF="<owner>/<repo>#<pr_number>"
@@ -172,11 +172,11 @@ jq -n \
     )
   }' > "${GITHUB_OUTPUT_DIR}/publish-intent.json"
 
-# Invoke github-publish skill/script
-publish.sh --intent="${GITHUB_OUTPUT_DIR}/publish-intent.json"
+# Invoke ghx skill/script
+ghx.sh intent run --intent="${GITHUB_OUTPUT_DIR}/publish-intent.json"
 ```
 
-Run the publish command through the `github-publish` skill.  
+Run the publish command through the `ghx` skill.  
 After publish, ensure `${GITHUB_OUTPUT_DIR}/publish-result.json` exists and check for failed `reply_review` actions.
 
 ## Output Contract
@@ -220,7 +220,7 @@ git push
 - You are running **HEADLESSLY** - do not wait for user input or confirmation
 - Fix issues in priority order: build → test → import → lint
 - Commit fixes BEFORE replying to reviews
-- Use a single publish path (`github-publish`) to avoid mode confusion
+- Use a single publish path (`ghx`) to avoid mode confusion
 - Verify publish-result and fail when any `reply_review` action fails
 - For non-blocking refactor requests, consider deferring to follow-up issues
 

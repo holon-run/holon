@@ -8,7 +8,7 @@ set -euo pipefail
 # Test directory setup
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-PUBLISHER_SCRIPT="$REPO_ROOT/skills/github-publish/scripts/publish.sh"
+PUBLISHER_SCRIPT="$REPO_ROOT/skills/ghx/scripts/publish.sh"
 
 # Test counters
 TESTS_RUN=0
