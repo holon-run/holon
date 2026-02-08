@@ -16,12 +16,12 @@ import (
 	"time"
 )
 
-type Executor interface {
-	Execute(ctx context.Context, action ActionIntent) error
+type EventHandler interface {
+	HandleEvent(ctx context.Context, env EventEnvelope) error
 }
 
 type Service struct {
-	exec       Executor
+	handler    EventHandler
 	repoHint   string
 	statePath  string
 	eventsLog  *ndjsonWriter
@@ -36,7 +36,7 @@ var idCounter uint64
 type Config struct {
 	RepoHint string
 	StateDir string
-	Exec     Executor
+	Handler  EventHandler
 }
 
 type persistentState struct {
@@ -46,8 +46,8 @@ type persistentState struct {
 }
 
 func New(cfg Config) (*Service, error) {
-	if cfg.Exec == nil {
-		return nil, errors.New("executor is required")
+	if cfg.Handler == nil {
+		return nil, errors.New("event handler is required")
 	}
 	if cfg.StateDir == "" {
 		return nil, errors.New("state dir is required")
@@ -69,7 +69,7 @@ func New(cfg Config) (*Service, error) {
 	}
 
 	s := &Service{
-		exec:       cfg.Exec,
+		handler:    cfg.Handler,
 		repoHint:   cfg.RepoHint,
 		statePath:  filepath.Join(cfg.StateDir, "serve-state.json"),
 		eventsLog:  eventsLog,
@@ -125,36 +125,43 @@ func (s *Service) Run(ctx context.Context, r io.Reader, maxEvents int) error {
 			return err
 		}
 
-		intent := s.decide(env)
-		if intent.Type == "skip" && intent.Skipped {
-			if err := s.decLog.Write(intent); err != nil {
-				return err
-			}
-			// Even for duplicate events, advance cursor state to avoid replay loops.
-			s.state.LastEventID = env.ID
-			if err := s.compactState(); err != nil {
-				return err
-			}
-			if err := s.saveState(); err != nil {
-				return err
-			}
-			continue
+		decision := DecisionRecord{
+			ID:       newID("decision", s.now().UTC()),
+			EventID:  env.ID,
+			Type:     "forward_event",
+			CreateAt: s.now().UTC(),
 		}
-		if err := s.decLog.Write(intent); err != nil {
+		if env.DedupeKey != "" {
+			if _, exists := s.state.ProcessedAt[env.DedupeKey]; exists {
+				decision.Skipped = true
+				decision.Reason = "duplicate dedupe_key"
+				if err := s.decLog.Write(decision); err != nil {
+					return err
+				}
+				// Even for duplicate events, advance cursor state to avoid replay loops.
+				s.state.LastEventID = env.ID
+				if err := s.compactState(); err != nil {
+					return err
+				}
+				if err := s.saveState(); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		if err := s.decLog.Write(decision); err != nil {
 			return err
 		}
+
 		start := s.now().UTC()
 		result := ActionResult{
 			ID:        newID("actres", start),
 			EventID:   env.ID,
-			ActionID:  intent.ID,
 			StartedAt: start,
 			EndedAt:   start,
 		}
-		if intent.Type == "wait" {
-			result.Status = "skipped"
-			result.Message = "no-op decision"
-		} else if err := s.exec.Execute(ctx, intent); err != nil {
+
+		if err := s.handler.HandleEvent(ctx, env); err != nil {
 			result.Status = "failed"
 			result.Message = err.Error()
 		} else {
@@ -184,63 +191,6 @@ func (s *Service) Run(ctx context.Context, r io.Reader, maxEvents int) error {
 		return fmt.Errorf("failed to read events: %w", err)
 	}
 	return nil
-}
-
-func (s *Service) decide(env EventEnvelope) ActionIntent {
-	action := ActionIntent{
-		ID:     newID("decision", s.now().UTC()),
-		Target: ActionTarget{Repo: env.Scope.Repo, Kind: env.Subject.Kind, ID: env.Subject.ID},
-	}
-	if env.DedupeKey != "" {
-		if _, exists := s.state.ProcessedAt[env.DedupeKey]; exists {
-			action.Type = "skip"
-			action.Skipped = true
-			action.Reason = "duplicate dedupe_key"
-			return action
-		}
-	}
-
-	switch env.Type {
-	case "github.issue.opened", "github.issue.reopened", "github.issue.comment.created":
-		action.Type = "run_issue_solve"
-		action.Reason = "issue event requires implementation follow-up"
-	case "github.pull_request.opened", "github.pull_request.reopened", "github.pull_request.synchronize":
-		action.Type = "run_pr_review"
-		action.Reason = "pr update should trigger review"
-	case "github.pull_request_review.submitted", "github.pull_request.comment.created", "github.check_suite.completed":
-		if shouldRunPRFix(env) {
-			action.Type = "run_pr_fix"
-			action.Reason = "review/check requested fixes"
-		} else {
-			action.Type = "wait"
-			action.Reason = "event does not require action"
-		}
-	default:
-		action.Type = "wait"
-		action.Reason = "unsupported event type"
-	}
-	return action
-}
-
-func shouldRunPRFix(env EventEnvelope) bool {
-	if !validPRSubject(env.Subject) {
-		return false
-	}
-	if len(env.Payload) == 0 {
-		return false
-	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return false
-	}
-	if state, _ := nestedString(payload, "review", "state"); strings.EqualFold(state, "changes_requested") {
-		return true
-	}
-	if conclusion, _ := nestedString(payload, "check_suite", "conclusion"); strings.EqualFold(conclusion, "failure") {
-		return true
-	}
-	body, _ := nestedString(payload, "comment", "body")
-	return strings.Contains(strings.ToLower(body), "@holonbot")
 }
 
 func normalizeLine(line []byte, repoHint string, now func() time.Time) (EventEnvelope, error) {
@@ -415,17 +365,6 @@ func sortByTimeDesc(items []stateItem) {
 type stateItem struct {
 	key string
 	at  time.Time
-}
-
-func validPRSubject(subject EventSubject) bool {
-	if subject.Kind != "pull_request" {
-		return false
-	}
-	id, err := strconv.Atoi(subject.ID)
-	if err != nil {
-		return false
-	}
-	return id > 0
 }
 
 func getPRNumber(payload map[string]interface{}) int {

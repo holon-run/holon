@@ -27,25 +27,18 @@ type EventSubject struct {
 	ID   string `json:"id,omitempty"`
 }
 
-type ActionIntent struct {
-	ID      string            `json:"id"`
-	Type    string            `json:"type"`
-	Target  ActionTarget      `json:"target,omitempty"`
-	Args    map[string]string `json:"args,omitempty"`
-	Reason  string            `json:"reason,omitempty"`
-	Skipped bool              `json:"skipped,omitempty"`
-}
-
-type ActionTarget struct {
-	Repo string `json:"repo,omitempty"`
-	Kind string `json:"kind,omitempty"`
-	ID   string `json:"id,omitempty"`
+type DecisionRecord struct {
+	ID       string    `json:"id"`
+	EventID  string    `json:"event_id"`
+	Type     string    `json:"type"`
+	Reason   string    `json:"reason,omitempty"`
+	Skipped  bool      `json:"skipped,omitempty"`
+	CreateAt time.Time `json:"created_at"`
 }
 
 type ActionResult struct {
 	ID        string    `json:"id"`
 	EventID   string    `json:"event_id"`
-	ActionID  string    `json:"action_id"`
 	Status    string    `json:"status"`
 	Message   string    `json:"message,omitempty"`
 	StartedAt time.Time `json:"started_at"`
