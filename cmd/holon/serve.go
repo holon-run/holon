@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -112,6 +113,10 @@ type cliControllerHandler struct {
 	restartAttempts    int
 }
 
+var (
+	maxEventChannelSizeBytes int64 = 8 * 1024 * 1024
+)
+
 func newCLIControllerHandler(repoHint, stateDir, controllerSkill string, dryRun bool) (*cliControllerHandler, error) {
 	execPath, err := os.Executable()
 	if err != nil {
@@ -149,6 +154,7 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 	if err := appendJSONLine(h.controllerChannel, env); err != nil {
 		return fmt.Errorf("failed to write event to channel: %w", err)
 	}
+	h.compactChannelBestEffortLocked()
 	return nil
 }
 
@@ -222,7 +228,7 @@ func (h *cliControllerHandler) readSessionID() string {
 	type sessionState struct {
 		SessionID string `json:"session_id"`
 	}
-	data, err := os.ReadFile(filepath.Join(h.stateDir, "controller-session.json"))
+	data, err := os.ReadFile(h.sessionStatePath())
 	if err != nil {
 		return ""
 	}
@@ -231,6 +237,10 @@ func (h *cliControllerHandler) readSessionID() string {
 		return ""
 	}
 	return state.SessionID
+}
+
+func (h *cliControllerHandler) sessionStatePath() string {
+	return filepath.Join(h.stateDir, "controller-state", "controller-session.json")
 }
 
 func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref string) error {
@@ -315,6 +325,39 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	return nil
 }
 
+func (h *cliControllerHandler) compactChannelBestEffortLocked() {
+	info, err := os.Stat(h.controllerChannel)
+	if err != nil || info.Size() <= maxEventChannelSizeBytes {
+		return
+	}
+	cursorPath := filepath.Join(h.stateDir, "controller-state", "event-channel.cursor")
+	rawCursor, err := os.ReadFile(cursorPath)
+	if err != nil {
+		return
+	}
+	cursor, err := strconv.ParseInt(strings.TrimSpace(string(rawCursor)), 10, 64)
+	if err != nil || cursor <= 0 || cursor >= info.Size() {
+		return
+	}
+	data, err := os.ReadFile(h.controllerChannel)
+	if err != nil {
+		return
+	}
+	if cursor >= int64(len(data)) {
+		return
+	}
+	remaining := data[cursor:]
+	if err := os.WriteFile(h.controllerChannel, remaining, 0644); err != nil {
+		holonlog.Warn("failed to compact event channel", "error", err)
+		return
+	}
+	if err := os.WriteFile(cursorPath, []byte("0"), 0644); err != nil {
+		holonlog.Warn("failed to reset event channel cursor", "error", err)
+		return
+	}
+	holonlog.Info("compacted event channel", "old_bytes", info.Size(), "new_bytes", len(remaining))
+}
+
 func (h *cliControllerHandler) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -355,8 +398,22 @@ func appendJSONLine(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if _, err := f.Write(append(data, '\n')); err != nil {
+	buf := append(data, '\n')
+	for len(buf) > 0 {
+		n, writeErr := f.Write(buf)
+		if writeErr != nil {
+			if closeErr := f.Close(); closeErr != nil {
+				return fmt.Errorf("write error: %w; close error: %v", writeErr, closeErr)
+			}
+			return writeErr
+		}
+		if n == 0 {
+			_ = f.Close()
+			return io.ErrShortWrite
+		}
+		buf = buf[n:]
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return nil

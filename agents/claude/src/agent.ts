@@ -682,9 +682,10 @@ function buildSessionOptions(env: NodeJS.ProcessEnv): SDKSessionOptions {
 }
 
 type ChannelBatch = {
-  lines: string[];
-  nextOffset: number;
+  events: Array<{ line: string; nextOffset: number }>;
 };
+
+const maxChannelReadBytes = 1024 * 1024;
 
 function readCursorOffset(pathname: string): number {
   try {
@@ -703,7 +704,7 @@ function writeCursorOffset(pathname: string, offset: number): void {
 
 function readChannelBatch(channelPath: string, startOffset: number): ChannelBatch {
   if (!fs.existsSync(channelPath)) {
-    return { lines: [], nextOffset: startOffset };
+    return { events: [] };
   }
 
   const stats = fs.statSync(channelPath);
@@ -712,33 +713,39 @@ function readChannelBatch(channelPath: string, startOffset: number): ChannelBatc
     offset = 0;
   }
   if (stats.size === offset) {
-    return { lines: [], nextOffset: offset };
+    return { events: [] };
   }
 
   const fd = fs.openSync(channelPath, "r");
   try {
-    const length = stats.size - offset;
+    const remaining = stats.size - offset;
+    const length = Math.min(remaining, maxChannelReadBytes);
     const buffer = Buffer.alloc(length);
     const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
     if (bytesRead <= 0) {
-      return { lines: [], nextOffset: offset };
+      return { events: [] };
     }
     const chunk = buffer.toString("utf8", 0, bytesRead);
     const lastNewline = chunk.lastIndexOf("\n");
     if (lastNewline < 0) {
-      return { lines: [], nextOffset: offset };
+      return { events: [] };
     }
 
-    const completeChunk = chunk.slice(0, lastNewline);
-    const lines = completeChunk
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+    const completeChunk = chunk.slice(0, lastNewline + 1);
+    const events: Array<{ line: string; nextOffset: number }> = [];
+    let runningOffset = offset;
+    for (const rawLine of completeChunk.split(/\r?\n/)) {
+      const lineBytes = Buffer.byteLength(rawLine, "utf8") + 1;
+      runningOffset += lineBytes;
+      const trimmed = rawLine.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      events.push({ line: trimmed, nextOffset: runningOffset });
+    }
 
-    const consumed = Buffer.byteLength(chunk.slice(0, lastNewline + 1), "utf8");
     return {
-      lines,
-      nextOffset: offset + consumed,
+      events,
     };
   } finally {
     fs.closeSync(fd);
@@ -840,23 +847,23 @@ async function runServeClaudeSession(
 
       while (running) {
         const batch = readChannelBatch(channelPath, offset);
-        if (batch.lines.length === 0) {
+        if (batch.events.length === 0) {
           await sleep(1000);
           continue;
         }
-        offset = batch.nextOffset;
-        writeCursorOffset(cursorPath, offset);
 
-        for (const line of batch.lines) {
+        for (const event of batch.events) {
           const turnPrompt = [
             "New event payload (JSON):",
-            line,
+            event.line,
             "",
             "Process this event. Decide actions autonomously and execute via available skills/tools.",
             "After actions complete, summarize what you decided and what changed.",
           ].join("\n");
           await session.send(turnPrompt);
           await streamSessionTurn(session, logger, logFile);
+          offset = event.nextOffset;
+          writeCursorOffset(cursorPath, offset);
           writeSessionState();
         }
       }
