@@ -61,6 +61,14 @@ This is a high-level command that orchestrates the full workflow:
 3. Run Holon with the collected context
 4. Publish results (create PR for issues, or push/fix for PRs)
 
+Skill-First Mode (Default):
+  By default, holon solve uses skill-first IO mode, which delegates context
+  collection and publishing to skills (e.g., github-issue-solve, github-publish).
+  This is the recommended workflow as it provides more flexibility and control.
+
+  To use the legacy Go-based collector/publisher, explicitly specify --mode:
+  --mode solve (for issues) or --mode pr-fix (for PRs).
+
 Workspace Preparation:
   The workspace is prepared automatically based on the context:
   - If --workspace PATH is provided: uses the existing directory (no cloning)
@@ -78,11 +86,14 @@ Supported Reference Formats:
     - #<n> (when --repo <owner>/<repo> is provided)
 
 Examples:
-  # Solve an issue (creates/updates a PR)
+  # Solve an issue (creates/updates a PR) - uses skill-first mode by default
   holon solve https://github.com/holon-run/holon/issues/123
 
-  # Solve a PR (fixes review comments)
+  # Solve a PR (fixes review comments) - uses skill-first mode by default
   holon solve https://github.com/holon-run/holon/pull/456
+
+  # Use legacy Go collector/publisher (not recommended)
+  holon solve holon-run/holon#789 --mode solve
 
   # Short form
   holon solve holon-run/holon#789
@@ -554,8 +565,15 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		allSkills = configSkills
 	}
 
-	// Determine if we're in skill mode based on CLI or config skills
-	useSkillMode := len(allSkills) > 0 && !modeExplicitByUser
+	// Skill-first is the default: use skill mode when mode is not explicitly provided
+	// If no skills are configured, add the default github-issue-solve skill
+	useSkillMode := !modeExplicitByUser
+	if useSkillMode && len(allSkills) == 0 {
+		// Add default skill bundle for skill-first mode
+		// This ensures skill-first IO is used by default
+		allSkills = []string{"github-issue-solve"}
+		fmt.Printf("Config: skills = %q (source: default skill bundle for skill-first mode)\n", allSkills)
+	}
 
 	// Collect context based on type
 	// In skill mode, skip the Go collector - the skill (agent) is responsible for invoking
@@ -895,12 +913,32 @@ func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, trigger
 }
 
 // publishResults publishes the holon execution results
-// In skill mode, the Go publisher is skipped - the skill is responsible for publishing
+// In skill mode, validate that the skill published and skip Go publisher
 func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string, inputDir string, outDir string, cleanupMode string, useSkillMode bool) error {
-	// In skill mode: skip the Go publisher entirely
-	// The skill is responsible for publishing (e.g., via gh or its own mechanism)
+	// In skill mode: validate skill outputs and skip Go publisher
+	// The skill is responsible for publishing (e.g., via github-publish skill)
 	if useSkillMode {
-		fmt.Println("Skill mode enabled: skipping Go publisher, expecting skill-driven publishing")
+		fmt.Println("Skill-first mode enabled: validating skill-driven publishing")
+
+		// Check for publish-intent.json which indicates skill-driven publishing
+		publishIntentPath := filepath.Join(outDir, "publish-intent.json")
+		if _, err := os.Stat(publishIntentPath); os.IsNotExist(err) {
+			// No publish-intent.json found - check if this is an error or expected
+			// In skill-first mode, the skill should always create publish-intent.json
+			// If it's missing, the skill may have failed or not completed properly
+			return fmt.Errorf("skill-first mode: expected %s not found in output directory %s (skill may have failed to publish; check summary.md for details)", publishIntentPath, outDir)
+		}
+
+		// Verify that summary.md contains pr_number and pr_url
+		summaryPath := filepath.Join(outDir, "summary.md")
+		if summaryData, err := os.ReadFile(summaryPath); err == nil {
+			summary := string(summaryData)
+			if !strings.Contains(summary, "pr_number") && !strings.Contains(summary, "pr_url") {
+				fmt.Fprintf(os.Stderr, "Warning: summary.md does not contain pr_number or pr_url - skill publishing may not have completed successfully\n")
+			}
+		}
+
+		fmt.Println("Skill-driven publishing validated successfully (found publish-intent.json)")
 		return nil
 	}
 
