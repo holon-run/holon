@@ -211,6 +211,79 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	mockRunner.waitCh <- nil
 }
 
+func TestReadAnthropicEnvFromClaudeSettings(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	settingsPath := filepath.Join(td, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "token-from-settings",
+    "ANTHROPIC_BASE_URL": "https://example.ai",
+    "OTHER": "ignored"
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	got, err := readAnthropicEnvFromClaudeSettings(settingsPath)
+	if err != nil {
+		t.Fatalf("readAnthropicEnvFromClaudeSettings() error: %v", err)
+	}
+
+	if got["ANTHROPIC_AUTH_TOKEN"] != "token-from-settings" {
+		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q", got["ANTHROPIC_AUTH_TOKEN"])
+	}
+	if got["ANTHROPIC_BASE_URL"] != "https://example.ai" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q", got["ANTHROPIC_BASE_URL"])
+	}
+	if _, ok := got["OTHER"]; ok {
+		t.Fatalf("unexpected key OTHER in result")
+	}
+}
+
+func TestResolveServeLLMEnv_PrefersProcessEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "token-from-env")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://env.ai")
+
+	got := resolveServeLLMEnv()
+	if got["ANTHROPIC_AUTH_TOKEN"] != "token-from-env" {
+		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q", got["ANTHROPIC_AUTH_TOKEN"])
+	}
+	if got["ANTHROPIC_BASE_URL"] != "https://env.ai" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q", got["ANTHROPIC_BASE_URL"])
+	}
+}
+
+func TestResolveServeLLMEnv_MergesSettingsFallbackForMissingKeys(t *testing.T) {
+	td := t.TempDir()
+	claudeDir := filepath.Join(td, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "token-from-settings",
+    "ANTHROPIC_BASE_URL": "https://settings.ai"
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	t.Setenv("HOME", td)
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://env.ai")
+
+	got := resolveServeLLMEnv()
+	if got["ANTHROPIC_BASE_URL"] != "https://env.ai" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q, want env value", got["ANTHROPIC_BASE_URL"])
+	}
+	if got["ANTHROPIC_AUTH_TOKEN"] != "token-from-settings" {
+		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q, want settings fallback value", got["ANTHROPIC_AUTH_TOKEN"])
+	}
+}
+
 func bytesToLines(raw []byte) []string {
 	text := string(raw)
 	if text == "" {
