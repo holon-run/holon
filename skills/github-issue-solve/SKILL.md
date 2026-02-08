@@ -21,6 +21,8 @@ This skill can use:
 - **`ghx`** (default): Must be attempted first for context collection
 - **`gh` CLI** (fallback): Use only when `ghx` is unavailable or fails
 
+`ghx` here means the `ghx` skill (for example `skills/ghx/scripts/ghx.sh`), not a standalone `ghx` binary on `PATH`.
+
 ## Environment & Paths
 
 - **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
