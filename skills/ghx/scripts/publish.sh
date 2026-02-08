@@ -7,7 +7,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-GITHUB_OUTPUT_DIR="${GITHUB_OUTPUT_DIR:-/holon/output}"
+if [[ -z "${GITHUB_OUTPUT_DIR:-}" ]]; then
+  if [[ -d /holon/output && -w /holon/output ]]; then
+    GITHUB_OUTPUT_DIR="/holon/output"
+  else
+    GITHUB_OUTPUT_DIR="$(mktemp -d /tmp/holon-ghpub-XXXXXX)"
+  fi
+fi
 INTENT_FILE=""
 DRY_RUN=false
 FROM_INDEX=0
@@ -288,11 +294,16 @@ parse_direct_params() {
       --marker=*) marker="${1#*=}" ;;
       --marker) shift; marker="${1:-}" ;;
       --pr-fix-json=*) replies_file="${1#*=}" ;;
+      --pr-fix-json) shift; replies_file="${1:-}" ;;
       --replies-file=*) replies_file="${1#*=}" ;;
+      --replies-file) shift; replies_file="${1:-}" ;;
       --comments-file=*) comments_file="${1#*=}" ;;
+      --comments-file) shift; comments_file="${1:-}" ;;
       --max-inline=*) max_inline="${1#*=}" ;;
+      --max-inline) shift; max_inline="${1:-}" ;;
       --post-empty) post_empty="true" ;;
       --commit-id=*) commit_id="${1#*=}" ;;
+      --commit-id) shift; commit_id="${1:-}" ;;
       *)
         log_error "Unknown direct-command option: $1"
         return 2

@@ -1,9 +1,9 @@
 [!docker] skip 'docker not available'
 
-# Test the `holon solve` flow end-to-end with mock agent and pre-populated PR context
+# Test the `holon solve` flow end-to-end with a local deterministic agent bundle and pre-populated PR context
 # This test verifies:
 # 1. PR context collection (simulated by pre-populating context directory)
-# 2. Agent execution with mock driver
+# 2. Agent execution from a local bundled agent binary (offline/deterministic)
 # 3. Output artifact generation including pr-fix.json
 
 # Create workspace and output directories

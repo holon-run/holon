@@ -380,6 +380,61 @@ INNEREOF
     cleanup_test_env "$tmp_dir"
 }
 
+test_direct_command_space_args() {
+    local test_name="direct_space_args"
+    log_info "Running test: $test_name"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local output_dir="$tmp_dir/output"
+    local bin_dir="$tmp_dir/bin"
+    local pr_fix_json="$tmp_dir/pr-fix.json"
+
+    mkdir -p "$output_dir" "$bin_dir"
+    cat > "$pr_fix_json" << 'EOF'
+{
+  "review_replies": []
+}
+EOF
+
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+if [[ "$1" == "auth" && "$2" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+    export GITHUB_OUTPUT_DIR="$output_dir"
+
+    cd "$tmp_dir"
+
+    local output
+    local status=0
+    if output=$(bash "$GHX_SCRIPT" intent run --pr=owner/repo#123 --dry-run reply-reviews --pr-fix-json "$pr_fix_json" 2>&1); then
+        status=0
+    else
+        status=$?
+    fi
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ $status -eq 0 && "$output" == *"Would execute reply-reviews"* ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ Direct command accepts space-separated --pr-fix-json"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ Direct command should accept space-separated --pr-fix-json (status=$status, output=$output)"
+    fi
+
+    assert_file_exists "$output_dir/publish-results.json" "Direct command writes publish results"
+    assert_json_valid "$output_dir/publish-results.json" "Direct command results JSON is valid"
+
+    cleanup_test_env "$tmp_dir"
+}
+
 # Main test runner
 main() {
     log_info "=== Publisher Script Tests ==="
@@ -395,6 +450,7 @@ main() {
     test_publisher_invalid_json
     test_publisher_valid_intent
     test_reply_review_multiline_messages
+    test_direct_command_space_args
     
     # Summary
     echo ""
