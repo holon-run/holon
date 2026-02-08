@@ -3,6 +3,11 @@
 // loaded by reference (in this repo, builtin skill refs are flat names like
 // "github-context").
 //
+// DEPRECATED: Embedded builtin skills are deprecated. Please use remote skill
+// sources via catalog references (skills:, gh:) or direct URLs instead.
+// Configure BuiltinSkillsSource in .holon/config.yaml or use --builtin-skills-source flag.
+// The embedded path will be removed in a future release.
+//
 //go:generate sh -c "rm -rf skills && cp -r ../../skills . && git rev-parse HEAD > skills/.git-commit"
 package builtin
 
@@ -12,6 +17,16 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+
+	holonlog "github.com/holon-run/holon/pkg/log"
+)
+
+const (
+	// DeprecationWarning is the warning message shown when using embedded builtin skills
+	DeprecationWarning = "Embedded builtin skills are deprecated. " +
+		"Please use remote skill sources via catalog references (skills:, gh:) or direct URLs. " +
+		"Configure BuiltinSkillsSource in .holon/config.yaml or use --builtin-skills-source flag. " +
+		"See https://github.com/holon-run/holon/issues/562 for migration details."
 )
 
 //go:embed skills/*
@@ -43,7 +58,14 @@ func Has(ref string) bool {
 	// Check if SKILL.md exists in the skill directory
 	skillManifestPath := filepath.Join(ref, "SKILL.md")
 	_, err := fs.Stat(f, skillManifestPath)
-	return err == nil
+	exists := err == nil
+
+	// Log deprecation warning if skill exists (will be used)
+	if exists {
+		holonlog.Warn(DeprecationWarning, "skill", ref, "source", "embedded")
+	}
+
+	return exists
 }
 
 // Load reads the SKILL.md file for a builtin skill.
@@ -56,6 +78,9 @@ func Load(ref string) ([]byte, error) {
 		return nil, errors.New("builtin skills filesystem not available")
 	}
 
+	// Log deprecation warning
+	holonlog.Warn(DeprecationWarning, "skill", ref, "source", "embedded")
+
 	skillManifestPath := filepath.Join(ref, "SKILL.md")
 	return fs.ReadFile(f, skillManifestPath)
 }
@@ -67,6 +92,9 @@ func LoadDir(ref string) (map[string][]byte, error) {
 	if f == nil {
 		return nil, errors.New("builtin skills filesystem not available")
 	}
+
+	// Log deprecation warning
+	holonlog.Warn(DeprecationWarning, "skill", ref, "source", "embedded")
 
 	files := make(map[string][]byte)
 

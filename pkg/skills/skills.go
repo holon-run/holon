@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/builtin"
 	"github.com/holon-run/holon/pkg/skills/catalog"
 	"github.com/holon-run/holon/pkg/skills/remote"
@@ -21,6 +22,14 @@ const (
 	SkillsDir = ".claude/skills"
 	// SkillManifestFile is the required manifest file in each skill directory
 	SkillManifestFile = "SKILL.md"
+
+	// TelemetryEventBuiltinSkillUsed is the telemetry event marker for builtin skill usage
+	// This can be used to track how often embedded builtin skills are being used as fallback
+	TelemetryEventBuiltinSkillUsed = "builtin_skill_used"
+	// TelemetryLabelSource is the telemetry label key for skill source
+	TelemetryLabelSource = "source"
+	// TelemetryLabelSkillName is the telemetry label key for skill name
+	TelemetryLabelSkillName = "skill"
 )
 
 // Skill represents a discovered or specified skill
@@ -261,6 +270,23 @@ func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
 	if builtin.Has(ref) {
 		// Use the reference as the path (for builtin skills, Path is the ref)
 		skillName := filepath.Base(ref)
+
+		// Log additional context about where the skill was referenced from
+		holonlog.Warn(
+			"Using embedded builtin skill as fallback",
+			"skill", ref,
+			"source", source,
+			"hint", "configure remote builtin skills source to avoid this warning",
+			"telemetry_event", TelemetryEventBuiltinSkillUsed,
+		)
+
+		// Log telemetry marker for analytics/tracking
+		holonlog.Info(
+			TelemetryEventBuiltinSkillUsed,
+			TelemetryLabelSkillName, ref,
+			TelemetryLabelSource, source,
+		)
+
 		return []Skill{{
 			Path:    ref,
 			Name:    skillName,
@@ -419,6 +445,7 @@ func StageWithPrefix(workspaceDest string, skills []Skill, includeSkillsPrefix b
 
 		// Handle builtin skills differently - extract from embedded FS
 		if skill.Builtin {
+			holonlog.Debug("Staging builtin skill from embedded filesystem", "skill", skill.Name, "dest", destPath)
 			if err := stageBuiltinSkill(skill.Path, destPath); err != nil {
 				return fmt.Errorf("failed to stage builtin skill %s: %w", skill.Name, err)
 			}
