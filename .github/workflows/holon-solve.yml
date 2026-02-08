@@ -1087,11 +1087,17 @@ jobs:
           PROVIDED_MODE="${{ inputs.mode }}"
           PROVIDED_SKILL="${{ inputs.skill }}"
           AUTO_REVIEW='${{ inputs.auto_review }}'
+          EVENT_NAME='${{ inputs.event_name }}'
+          if [ -z "$EVENT_NAME" ]; then
+            EVENT_NAME='${{ github.event_name }}'
+          fi
 
           IS_PR='${{ steps.ctx.outputs.is_pr }}'
 
-          # If auto_review is enabled for PRs, default the skill to github-review when none is provided.
-          if [ -z "$PROVIDED_SKILL" ] && [ "$AUTO_REVIEW" = 'true' ] && [ "$IS_PR" = 'true' ]; then
+          # If auto_review is enabled for PR lifecycle events, default to github-review when none is provided.
+          # Keep issue_comment-triggered PR commands on pr-fix path.
+          if [ -z "$PROVIDED_SKILL" ] && [ "$AUTO_REVIEW" = 'true' ] && [ "$IS_PR" = 'true' ] && \
+             { [ "$EVENT_NAME" = 'pull_request' ] || [ "$EVENT_NAME" = 'pull_request_review' ]; }; then
             PROVIDED_SKILL='github-review'
             echo "✅ Auto-review enabled → using skill: github-review"
           fi
