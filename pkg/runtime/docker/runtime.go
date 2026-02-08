@@ -20,6 +20,7 @@ import (
 	"github.com/holon-run/holon/pkg/builtin"
 	"github.com/holon-run/holon/pkg/git"
 	holonlog "github.com/holon-run/holon/pkg/log"
+	"github.com/holon-run/holon/pkg/logs/redact"
 	"github.com/holon-run/holon/pkg/skills"
 	"github.com/holon-run/holon/pkg/workspace"
 )
@@ -258,7 +259,16 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		}
 	}
 
-	// 6. Artifact Validation (RFC-0002)
+	// 6. Log Redaction (CI security)
+	// Redact sensitive information from logs before artifact validation
+	// This prevents secret leakage in public CI logs
+	if err := redactLogs(cfg.OutDir); err != nil {
+		// Log but don't fail on redaction errors
+		// Redaction is a security best-effort, not a blocking operation
+		holonlog.Warn("failed to redact logs", "error", err)
+	}
+
+	// 7. Artifact Validation (RFC-0002)
 	// Read the spec to verify required artifacts, plus manifest.json
 	// For now, validate basic manifest.json requirement
 	if err := ValidateRequiredArtifacts(cfg.OutDir, nil); err != nil {
@@ -837,4 +847,60 @@ func isIncompatibleClaudeConfig(claudeDir string) bool {
 	}
 
 	return false
+}
+
+// redactLogs applies log redaction to sensitive files in the output directory.
+// This prevents secret leakage in CI logs and artifacts.
+func redactLogs(outDir string) error {
+	// Create redactor from environment variables
+	redactor := redact.RedactFromEnv()
+
+	// Files to redact (if they exist)
+	// - execution.log: Main execution log from the agent
+	// - *.log: Any other log files
+	filesToRedact := []string{
+		"evidence/execution.log",
+		"execution.log",
+	}
+
+	for _, file := range filesToRedact {
+		filePath := filepath.Join(outDir, file)
+		if _, err := os.Stat(filePath); err == nil {
+			holonlog.Info("redacting sensitive data from log", "file", file)
+			if err := redactor.RedactFile(filePath); err != nil {
+				return fmt.Errorf("failed to redact %s: %w", file, err)
+			}
+		}
+	}
+
+	// Also scan for other .log files in the output directory
+	walkErr := filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip errors accessing individual files
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(info.Name(), ".log") {
+			// Skip already processed files
+			relPath, err := filepath.Rel(outDir, path)
+			if err != nil {
+				return nil
+			}
+			for _, skip := range filesToRedact {
+				if relPath == skip {
+					return nil
+				}
+			}
+
+			holonlog.Debug("redacting sensitive data from log", "file", relPath)
+			if err := redactor.RedactFile(path); err != nil {
+				// Log but continue on error
+				holonlog.Warn("failed to redact log file", "file", relPath, "error", err)
+			}
+		}
+		return nil
+	})
+
+	return walkErr
 }
