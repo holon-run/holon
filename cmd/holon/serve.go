@@ -388,6 +388,9 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"HOLON_CONTROLLER_EVENT_CURSOR":       "/holon/state/event-channel.cursor",
 		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/holon/state/controller-session.json",
 	}
+	for k, v := range resolveServeLLMEnv() {
+		env[k] = v
+	}
 	if sessionID := h.readSessionID(); sessionID != "" {
 		env["HOLON_CONTROLLER_SESSION_ID"] = sessionID
 	}
@@ -424,6 +427,70 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"restart_attempt", h.restartAttempts,
 	)
 	return nil
+}
+
+func resolveServeLLMEnv() map[string]string {
+	result := map[string]string{}
+
+	// Priority: current process env first, then ~/.claude/settings.json fallback.
+	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")); v != "" {
+		result["ANTHROPIC_AUTH_TOKEN"] = v
+	}
+	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")); v != "" {
+		result["ANTHROPIC_BASE_URL"] = v
+	}
+	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); v != "" {
+		result["ANTHROPIC_API_KEY"] = v
+	}
+	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_API_URL")); v != "" {
+		result["ANTHROPIC_API_URL"] = v
+	}
+
+	if len(result) > 0 {
+		return result
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return result
+	}
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	fallback, err := readAnthropicEnvFromClaudeSettings(settingsPath)
+	if err != nil {
+		holonlog.Debug("failed to read Anthropic fallback from Claude settings", "path", settingsPath, "error", err)
+		return result
+	}
+	for k, v := range fallback {
+		result[k] = v
+	}
+	return result
+}
+
+func readAnthropicEnvFromClaudeSettings(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse settings.json: %w", err)
+	}
+
+	result := map[string]string{}
+	for _, key := range []string{
+		"ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL",
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_API_URL",
+	} {
+		if v := strings.TrimSpace(payload.Env[key]); v != "" {
+			result[key] = v
+		}
+	}
+	return result, nil
 }
 
 func (h *cliControllerHandler) compactChannelBestEffortLocked() {
