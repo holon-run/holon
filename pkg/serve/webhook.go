@@ -128,7 +128,10 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/webhook", ws.handleWebhook)
+	// Provider-specific ingress path (new)
+	mux.HandleFunc("/ingress/github/webhook", ws.handleWebhook)
+	// Legacy path (deprecated for backward compatibility)
+	mux.HandleFunc("/webhook", ws.handleLegacyWebhook)
 	mux.HandleFunc("/health", ws.handleHealth)
 
 	ws.server = &http.Server{
@@ -144,7 +147,7 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 
 // Start begins accepting webhook requests
 func (ws *WebhookServer) Start(ctx context.Context) error {
-	holonlog.Info("webhook server listening", "port", ws.server.Addr, "path", "/webhook")
+	holonlog.Info("webhook server listening", "port", ws.server.Addr, "path", "/ingress/github/webhook")
 
 	// Start event processor in background
 	go ws.processEvents(ctx)
@@ -233,6 +236,13 @@ func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server busy", http.StatusServiceUnavailable)
 		return
 	}
+}
+
+// handleLegacyWebhook handles requests to the old /webhook path with deprecation warning
+func (ws *WebhookServer) handleLegacyWebhook(w http.ResponseWriter, r *http.Request) {
+	holonlog.Warn("webhook legacy path accessed", "path", r.URL.Path, "deprecated_path", "/webhook", "new_path", "/ingress/github/webhook")
+	// Forward to the new handler
+	ws.handleWebhook(w, r)
 }
 
 func (ws *WebhookServer) handleHealth(w http.ResponseWriter, r *http.Request) {

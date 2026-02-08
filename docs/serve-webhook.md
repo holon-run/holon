@@ -2,6 +2,15 @@
 
 `holon serve` supports webhook mode for consuming GitHub events in real-time via `gh webhook forward`. This enables local development and testing of the controller without setting up external webhook infrastructure.
 
+## API Direction
+
+**Important**: `holon serve` is following a provider-specific ingress path strategy as documented in [RFC-0005](../rfc/0005-serve-api-direction.md). The webhook endpoint uses the provider-specific path `/ingress/github/webhook` to keep ingress separate from the future control-plane API.
+
+See the RFC for details on:
+- Provider-specific ingress paths (`/ingress/<provider>/webhook`)
+- Codex/OpenAI-style JSON-RPC control plane (future)
+- Deferred generic `/v1/events` endpoint
+
 ## Prerequisites
 
 1. **GitHub CLI (gh) installed**: The runtime Docker image now includes `gh` CLI and the `gh-webhook` extension.
@@ -17,10 +26,12 @@ holon serve --repo holon-run/holon --webhook-port 8080
 ```
 
 This starts an HTTP server on port 8080 that:
-- Listens for webhook POST requests at `/webhook`
+- Listens for webhook POST requests at `/ingress/github/webhook` (new path)
 - Provides a health check endpoint at `/health`
 - Normalizes incoming GitHub webhook events to EventEnvelope format
 - Forwards events to the controller agent
+
+**Note**: The legacy `/webhook` path is still supported for backward compatibility but is deprecated. See [Migration](#migration) below.
 
 ### 2. Forward webhooks from GitHub
 
@@ -170,6 +181,32 @@ Returns:
 }
 ```
 
+## Migration
+
+### Webhook Path Change
+
+**Old path (deprecated)**: `/webhook`
+**New path**: `/ingress/github/webhook`
+
+The legacy `/webhook` path remains supported for backward compatibility but will log a deprecation warning. Please update your integrations to use the new provider-specific path.
+
+#### Why this change?
+
+This aligns with [RFC-0005](../rfc/0005-serve-api-direction.md) which establishes:
+- Provider-specific ingress paths (`/ingress/<provider>/webhook`)
+- Separation of ingress from control plane APIs
+- Future-proof design for multi-provider support
+
+#### Updating integrations
+
+If you're using `gh webhook forward`, no changes are needed - just ensure you're targeting the correct port.
+
+For custom integrations, update your webhook URLs:
+- Before: `http://localhost:8080/webhook`
+- After: `http://localhost:8080/ingress/github/webhook`
+
+The old path will be removed in a future release after a deprecation period.
+
 ## Limitations
 
 - **Local-only**: Webhook mode requires `gh webhook forward`, which only works locally (not in CI/production)
@@ -184,6 +221,13 @@ See GitHub issue [#573](https://github.com/holon-run/holon/issues/573) for plann
 - `since_id` catch-up/replay protocol
 - Auth model for App-installed and non-App usage
 - Production deployment support
+
+## Future: JSON-RPC Control Plane
+
+See [RFC-0005](../rfc/0005-serve-api-direction.md) for the planned JSON-RPC control plane API:
+- Status/pause/resume methods
+- Log streaming
+- Structured RPC protocol based on OpenAI Codex schemas
 
 ## See Also
 
