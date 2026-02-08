@@ -141,9 +141,14 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 		"--state-dir", filepath.Join(h.stateDir, "controller-state"),
 		"--output", outputDir,
 		"--cleanup", "all",
+		"--env", "HOLON_AGENT_SESSION_MODE=serve",
+		"--env", "CLAUDE_CONFIG_DIR=/holon/state/claude-config",
 	}
 	if h.repoHint != "" {
 		args = append(args, "--repo", h.repoHint)
+	}
+	if sessionID := h.readSessionID(); sessionID != "" {
+		args = append(args, "--env", "HOLON_CONTROLLER_SESSION_ID="+sessionID)
 	}
 
 	if h.dryRun {
@@ -155,10 +160,6 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = nil
-	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR=/holon/state/claude-config")
-	if sessionID := h.readSessionID(); sessionID != "" {
-		cmd.Env = append(cmd.Env, "HOLON_CONTROLLER_SESSION_ID="+sessionID)
-	}
 	if err := cmd.Run(); err != nil {
 		return err
 	}
