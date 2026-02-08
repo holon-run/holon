@@ -18,25 +18,32 @@ import (
 
 // WebhookServer handles incoming GitHub webhook HTTP requests
 type WebhookServer struct {
-	server     *http.Server
-	eventChan  chan []byte
-	handler    EventHandler
-	repoHint   string
-	statePath  string
-	eventsLog  *ndjsonWriter
-	decLog     *ndjsonWriter
-	actionsLog *ndjsonWriter
-	state      persistentState
-	now        func() time.Time
-	mu         sync.RWMutex
+	server         *http.Server
+	eventChan      chan []byte
+	handler        EventHandler
+	repoHint       string
+	statePath      string
+	eventsLog      *ndjsonWriter
+	decLog         *ndjsonWriter
+	actionsLog     *ndjsonWriter
+	state          persistentState
+	now            func() time.Time
+	mu             sync.RWMutex
+	maxBodySize    int64
+	channelTimeout time.Duration
 }
 
 // WebhookConfig configures the webhook server
 type WebhookConfig struct {
-	Port       int
-	RepoHint   string
-	StateDir   string
-	Handler    EventHandler
+	Port            int
+	RepoHint        string
+	StateDir        string
+	Handler         EventHandler
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	IdleTimeout     time.Duration
+	MaxBodySize     int64
+	ChannelTimeout  time.Duration
 }
 
 // NewWebhookServer creates a new webhook server for GitHub events
@@ -50,20 +57,46 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		return nil, fmt.Errorf("invalid port: %d", cfg.Port)
 	}
-	if err := ensureStateDir(cfg.StateDir); err != nil {
+	if err := os.MkdirAll(cfg.StateDir, 0755); err != nil {
 		return nil, err
 	}
 
-	eventsLog, err := newNDJSONWriter(joinPath(cfg.StateDir, "events.ndjson"))
+	// Set default timeouts if not specified
+	readTimeout := cfg.ReadTimeout
+	if readTimeout == 0 {
+		readTimeout = 10 * time.Second
+	}
+	writeTimeout := cfg.WriteTimeout
+	if writeTimeout == 0 {
+		writeTimeout = 10 * time.Second
+	}
+	idleTimeout := cfg.IdleTimeout
+	if idleTimeout == 0 {
+		idleTimeout = 60 * time.Second
+	}
+
+	// Set default max body size (10MB)
+	maxBodySize := cfg.MaxBodySize
+	if maxBodySize == 0 {
+		maxBodySize = 10 * 1024 * 1024
+	}
+
+	// Set default channel timeout (5 seconds)
+	channelTimeout := cfg.ChannelTimeout
+	if channelTimeout == 0 {
+		channelTimeout = 5 * time.Second
+	}
+
+	eventsLog, err := newNDJSONWriter(filepath.Join(cfg.StateDir, "events.ndjson"))
 	if err != nil {
 		return nil, err
 	}
-	decLog, err := newNDJSONWriter(joinPath(cfg.StateDir, "decisions.ndjson"))
+	decLog, err := newNDJSONWriter(filepath.Join(cfg.StateDir, "decisions.ndjson"))
 	if err != nil {
 		eventsLog.Close()
 		return nil, err
 	}
-	actionsLog, err := newNDJSONWriter(joinPath(cfg.StateDir, "actions.ndjson"))
+	actionsLog, err := newNDJSONWriter(filepath.Join(cfg.StateDir, "actions.ndjson"))
 	if err != nil {
 		eventsLog.Close()
 		decLog.Close()
@@ -71,14 +104,16 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	}
 
 	ws := &WebhookServer{
-		eventChan:  make(chan []byte, 100),
-		handler:    cfg.Handler,
-		repoHint:   cfg.RepoHint,
-		statePath:  joinPath(cfg.StateDir, "serve-state.json"),
-		eventsLog:  eventsLog,
-		decLog:     decLog,
-		actionsLog: actionsLog,
-		now:        time.Now,
+		eventChan:     make(chan []byte, 100),
+		handler:       cfg.Handler,
+		repoHint:      cfg.RepoHint,
+		statePath:     filepath.Join(cfg.StateDir, "serve-state.json"),
+		eventsLog:     eventsLog,
+		decLog:        decLog,
+		actionsLog:    actionsLog,
+		now:           time.Now,
+		maxBodySize:   maxBodySize,
+		channelTimeout: channelTimeout,
 		state: persistentState{
 			ProcessedAt: make(map[string]string),
 			ProcessedMax: 2000,
@@ -97,8 +132,11 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	mux.HandleFunc("/health", ws.handleHealth)
 
 	ws.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Port),
-		Handler: mux,
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      mux,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
+		IdleTimeout:  idleTimeout,
 	}
 
 	return ws, nil
@@ -125,7 +163,11 @@ func (ws *WebhookServer) Start(ctx context.Context) error {
 		holonlog.Info("shutting down webhook server")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = ws.server.Shutdown(shutdownCtx)
+		if err := ws.server.Shutdown(shutdownCtx); err != nil {
+			holonlog.Error("webhook server shutdown error", "error", err)
+			return fmt.Errorf("server shutdown failed: %w", err)
+		}
+		holonlog.Info("webhook server shutdown complete")
 		return ctx.Err()
 	case err := <-errChan:
 		return err
@@ -152,9 +194,12 @@ func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Limit body size to prevent memory exhaustion
+	limitedReader := http.MaxBytesReader(w, r.Body, ws.maxBodySize)
+
 	// Read body
-	body, err := io.ReadAll(r.Body)
-	r.Body.Close()
+	body, err := io.ReadAll(limitedReader)
+	limitedReader.Close()
 	if err != nil {
 		holonlog.Error("failed to read webhook body", "error", err)
 		http.Error(w, "failed to read body", http.StatusBadRequest)
@@ -178,13 +223,13 @@ func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	// Wrap payload with headers for normalization
 	wrapped := ws.wrapWithHeaders(body, headers)
 
-	// Send to event channel (non-blocking)
+	// Send to event channel with timeout to prevent indefinite blocking
 	select {
 	case ws.eventChan <- wrapped:
 		w.WriteHeader(http.StatusAccepted)
 		holonlog.Debug("webhook accepted", "event", headers["x_github_event"], "delivery", headers["x_github_delivery"])
-	default:
-		holonlog.Warn("webhook channel full, dropping event", "event", headers["x_github_event"])
+	case <-time.After(ws.channelTimeout):
+		holonlog.Warn("webhook channel timeout after waiting, dropping event", "event", headers["x_github_event"], "timeout", ws.channelTimeout)
 		http.Error(w, "server busy", http.StatusServiceUnavailable)
 		return
 	}
@@ -266,7 +311,9 @@ func (ws *WebhookServer) processOne(raw []byte) error {
 				return err
 			}
 			// Advance cursor state even for duplicates
-			ws.updateCursor(env)
+			if err := ws.updateCursor(env); err != nil {
+				holonlog.Error("failed to update cursor for duplicate event", "error", err, "event_id", env.ID)
+			}
 			return nil
 		}
 	}
@@ -275,7 +322,7 @@ func (ws *WebhookServer) processOne(raw []byte) error {
 		return err
 	}
 
-	// Handle event
+	// Handle event with request context
 	start := ws.now().UTC()
 	result := ActionResult{
 		ID:        newID("actres", start),
@@ -284,7 +331,11 @@ func (ws *WebhookServer) processOne(raw []byte) error {
 		EndedAt:   start,
 	}
 
-	if err := ws.handler.HandleEvent(context.Background(), env); err != nil {
+	// Create a context for event handling with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if err := ws.handler.HandleEvent(ctx, env); err != nil {
 		if IsSkipEventError(err) {
 			result.Status = "skipped"
 			result.Message = err.Error()
@@ -301,11 +352,13 @@ func (ws *WebhookServer) processOne(raw []byte) error {
 		return err
 	}
 
-	ws.updateCursor(env)
+	if err := ws.updateCursor(env); err != nil {
+		holonlog.Error("failed to update cursor after event processing", "error", err, "event_id", env.ID)
+	}
 	return nil
 }
 
-func (ws *WebhookServer) updateCursor(env EventEnvelope) {
+func (ws *WebhookServer) updateCursor(env EventEnvelope) error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
@@ -320,16 +373,19 @@ func (ws *WebhookServer) updateCursor(env EventEnvelope) {
 	}
 
 	// Save state
-	ws.saveStateLocked()
+	if err := ws.saveStateLocked(); err != nil {
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+	return nil
 }
 
 func (ws *WebhookServer) loadState() error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
-	data, err := readFile(ws.statePath)
+	data, err := os.ReadFile(ws.statePath)
 	if err != nil {
-		if isNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			ws.state = persistentState{ProcessedAt: make(map[string]string), ProcessedMax: 2000}
 			return nil
 		}
@@ -354,7 +410,7 @@ func (ws *WebhookServer) saveStateLocked() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal serve state: %w", err)
 	}
-	if err := writeFile(ws.statePath, data, 0644); err != nil {
+	if err := os.WriteFile(ws.statePath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write serve state: %w", err)
 	}
 	return nil
@@ -387,25 +443,4 @@ func (ws *WebhookServer) compactStateLocked() {
 	}
 
 	holonlog.Info("compacted serve state", "entries", len(ws.state.ProcessedAt))
-}
-
-// Helper functions
-func ensureStateDir(dir string) error {
-	return os.MkdirAll(dir, 0755)
-}
-
-func joinPath(dir, file string) string {
-	return filepath.Join(dir, file)
-}
-
-func readFile(path string) ([]byte, error) {
-	return os.ReadFile(path)
-}
-
-func writeFile(path string, data []byte, perm int) error {
-	return os.WriteFile(path, data, os.FileMode(perm))
-}
-
-func isNotExist(err error) bool {
-	return errors.Is(err, os.ErrNotExist)
 }
