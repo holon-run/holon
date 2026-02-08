@@ -20,7 +20,7 @@ These tests validate the skill-mode workflow (collector/publisher scripts) with 
   - Empty comments
   - Error handling
 
-- **test_publisher.sh**: Tests the publisher script (`skills/ghx/scripts/publish.sh`)
+- **test_publisher.sh**: Tests the ghx publish entrypoint (`skills/ghx/scripts/ghx.sh intent run`)
   - Help functionality
   - Missing intent files
   - Invalid JSON

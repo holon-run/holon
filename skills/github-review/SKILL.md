@@ -204,7 +204,7 @@ scripts/collect.sh "holon-run/holon#123"
 # ... agent processes ...
 
 # Publish review with inline comments
-/holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr=holon-run/holon#123 --body-file=review.md --comments-file=review.json
+../ghx/scripts/ghx.sh review publish --pr=holon-run/holon#123 --body-file=review.md --comments-file=review.json
 ```
 
 ## Important Notes

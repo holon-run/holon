@@ -109,10 +109,10 @@ Posts a single PR review with inline comments using GitHub API, based on agent-g
 
 ```bash
 # Preview without posting
-DRY_RUN=true /holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
+DRY_RUN=true skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 
 # Publish with limits
-MAX_INLINE=10 POST_EMPTY=false /holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
+MAX_INLINE=10 POST_EMPTY=false skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 
 ### Options
@@ -171,16 +171,16 @@ The publish command expects these artifacts in `GITHUB_OUTPUT_DIR`:
 
 ```bash
 # Preview review
-DRY_RUN=true /holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
+DRY_RUN=true skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 
 # Limit inline comments
-MAX_INLINE=10 /holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
+MAX_INLINE=10 skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 
 # Post even if no findings
-POST_EMPTY=true /holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
+POST_EMPTY=true skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 
 # Use intent file
-/holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
+skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 
 ---
@@ -204,7 +204,7 @@ jobs:
       - name: Collect context
         run: |
           GITHUB_OUTPUT_DIR=${PWD}/context \
-          /holon/workspace/skills/github-review/scripts/collect.sh "${{ github.repository }}#${{ github.event.pull_request.number }}"
+          skills/github-review/scripts/collect.sh "${{ github.repository }}#${{ github.event.pull_request.number }}"
 
       - name: Run review
         uses: holon-run/holon@main
@@ -217,7 +217,7 @@ jobs:
 
       - name: Publish review
         run: |
-          /holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr="${{ github.repository }}#${{ github.event.pull_request.number }}" --body-file=review.md --comments-file=review.json
+          skills/ghx/scripts/ghx.sh review publish --pr="${{ github.repository }}#${{ github.event.pull_request.number }}" --body-file=review.md --comments-file=review.json
         env:
           GITHUB_OUTPUT_DIR: ${PWD}/context
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -233,7 +233,7 @@ GITHUB_OUTPUT_DIR=./review collect.sh "owner/repo#123"
 #    Agent writes to ./review/review.md and review.json
 
 # 3. Publish
-/holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
+skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 
 ## Error Handling

@@ -1,14 +1,14 @@
 #!/bin/bash
-# test_publisher.sh - Tests for the publisher script
+# test_publisher.sh - Tests for the ghx publish entrypoint
 #
-# These tests validate the publisher script behavior using real jq.
+# These tests validate ghx intent/publish behavior using real jq.
 
 set -euo pipefail
 
 # Test directory setup
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-PUBLISHER_SCRIPT="$REPO_ROOT/skills/ghx/scripts/publish.sh"
+GHX_SCRIPT="$REPO_ROOT/skills/ghx/scripts/ghx.sh"
 
 # Test counters
 TESTS_RUN=0
@@ -102,12 +102,12 @@ test_publisher_script_exists() {
     log_info "Running test: $test_name"
     
     TESTS_RUN=$((TESTS_RUN + 1))
-    if [[ -f "$PUBLISHER_SCRIPT" ]]; then
+    if [[ -f "$GHX_SCRIPT" ]]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
-        log_info "✓ Publisher script exists"
+        log_info "✓ GHX entry script exists"
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
-        log_error "✗ Publisher script not found: $PUBLISHER_SCRIPT"
+        log_error "✗ GHX entry script not found: $GHX_SCRIPT"
     fi
 }
 
@@ -116,12 +116,12 @@ test_publisher_script_executable() {
     log_info "Running test: $test_name"
     
     TESTS_RUN=$((TESTS_RUN + 1))
-    if [[ -x "$PUBLISHER_SCRIPT" ]]; then
+    if [[ -x "$GHX_SCRIPT" ]]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
-        log_info "✓ Publisher script is executable"
+        log_info "✓ GHX entry script is executable"
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
-        log_error "✗ Publisher script is not executable"
+        log_error "✗ GHX entry script is not executable"
     fi
 }
 
@@ -130,10 +130,10 @@ test_publisher_help() {
     log_info "Running test: $test_name"
     
     local output
-    output=$(bash "$PUBLISHER_SCRIPT" --help 2>&1 || true)
+    output=$(bash "$GHX_SCRIPT" --help 2>&1 || true)
     
     assert_contains "$output" "Usage:" "Help text shows usage"
-    assert_contains "$output" "publish.sh" "Help text mentions script name"
+    assert_contains "$output" "ghx.sh" "Help text mentions script name"
 }
 
 test_publisher_missing_intent() {
@@ -168,7 +168,7 @@ INNEREOF
 
     # Run publisher without intent file and expect error
     local output
-    output=$(bash "$PUBLISHER_SCRIPT" --intent=/nonexistent/intent.json 2>&1 || true)
+    output=$(bash "$GHX_SCRIPT" intent run --intent=/nonexistent/intent.json 2>&1 || true)
 
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$output" == *"Error"* ]] || [[ "$output" == *"error"* ]] || [[ "$output" == *"not found"* ]] || [[ "$output" == *"No such file"* ]]; then
@@ -218,7 +218,7 @@ INNEREOF
 
     # Run publisher and expect failure
     local output
-    output=$(bash "$PUBLISHER_SCRIPT" --intent="$output_dir/publish-intent.json" 2>&1 || true)
+    output=$(bash "$GHX_SCRIPT" intent run --intent="$output_dir/publish-intent.json" 2>&1 || true)
 
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$output" == *"parse error"* ]] || [[ "$output" == *"invalid"* ]] || [[ "$output" == *"Error"* ]]; then
@@ -277,7 +277,7 @@ INNEREOF
     # Test dry-run mode (should succeed and not crash)
     local output
     local status=0
-    if output=$(bash "$PUBLISHER_SCRIPT" --dry-run --intent="$output_dir/publish-intent.json" 2>&1); then
+    if output=$(bash "$GHX_SCRIPT" intent run --dry-run --intent="$output_dir/publish-intent.json" 2>&1); then
         status=0
     else
         status=$?
@@ -357,7 +357,7 @@ INNEREOF
     # Run in dry-run mode and check for jq parse errors
     local output
     local status=0
-    if output=$(bash "$PUBLISHER_SCRIPT" --dry-run --intent="$output_dir/publish-intent.json" 2>&1); then
+    if output=$(bash "$GHX_SCRIPT" intent run --dry-run --intent="$output_dir/publish-intent.json" 2>&1); then
         status=0
     else
         status=$?

@@ -7,15 +7,15 @@
 1. Intent mode (batch actions)
 
 ```bash
-/holon/workspace/skills/ghx/scripts/ghx.sh intent run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+scripts/ghx.sh intent run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 ```
 
 2. Direct mode (single action)
 
 ```bash
-/holon/workspace/skills/ghx/scripts/ghx.sh pr comment --pr=owner/repo#123 --body-file=summary.md
-/holon/workspace/skills/ghx/scripts/ghx.sh pr reply-reviews --pr=owner/repo#123 --pr-fix-json=pr-fix.json
-/holon/workspace/skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
+scripts/ghx.sh pr comment --pr=owner/repo#123 --body-file=summary.md
+scripts/ghx.sh pr reply-reviews --pr=owner/repo#123 --pr-fix-json=pr-fix.json
+scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 
 ## Intent Schema

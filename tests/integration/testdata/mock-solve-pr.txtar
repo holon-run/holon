@@ -1,9 +1,9 @@
 [!docker] skip 'docker not available'
 
-# Test the `holon solve` command in PR-fix mode end-to-end with mock agent and pre-populated context
+# Test the `holon solve` flow end-to-end with mock agent and pre-populated PR context
 # This test verifies:
 # 1. PR context collection (simulated by pre-populating context directory)
-# 2. Agent execution in pr-fix mode with mock driver
+# 2. Agent execution with mock driver
 # 3. Output artifact generation including pr-fix.json
 
 # Create workspace and output directories
@@ -28,9 +28,6 @@ exec git -C work commit -m 'Initial commit'
 
 # Pre-populate context directory with mock GitHub PR data
 # This simulates what the PR collector would create
-
-# Set mode for pr-fix
-env HOLON_MODE=pr-fix
 
 # Create a local mock agent bundle to keep this test offline/deterministic
 exec chmod +x bundle-src/bin/agent
