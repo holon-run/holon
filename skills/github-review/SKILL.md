@@ -9,6 +9,8 @@ Automated code review skill for pull requests. Collects PR context, performs AI-
 
 **Prerequisites:** `gh` CLI authentication is required. `ghx` is an optional accelerator for faster context collection/publishing, but not a hard dependency.
 
+`ghx` here means the `ghx` skill (for example `skills/ghx/scripts/ghx.sh`), not a standalone `ghx` binary on `PATH`.
+
 ## Environment and Paths
 
 This skill uses environment variables to stay portable across Holon, local shells, and CI. It defines required inputs/outputs and publish outcomes. Prefer `ghx` when available; otherwise use `gh` commands to satisfy the same contract.
@@ -57,12 +59,40 @@ Agent analyzes the collected context and generates:
 
 Agent follows review guidelines in `prompts/review.md`.
 
+Behavior requirements for this step:
+- **Incremental-first**: prioritize newly introduced changes (new commits/diff hunks), and only expand scope when needed for validation.
+- **Historical dedup**: consult existing review threads/comments and avoid repeating already-raised findings unless there is new evidence or changed impact.
+- **Concise output**: keep review text short, direct, and action-oriented; avoid repetitive background narration.
+
 ### 3. Publish Review
 Publish the produced artifacts (`review.md`, `review.json`, `summary.md`, `manifest.json`) as one PR review with inline comments.
 
 Implementation guidance:
-- Preferred: use `ghx` publish flow.
+- Preferred: use `ghx` skill publish flow.
 - Fallback: use `gh api graphql`/`gh api repos/.../pulls/.../reviews` to create a single review with inline comments.
+
+### Direct API Example (Inline Comment)
+
+When posting inline comments directly with `gh api`, use typed fields (`-F`) so numeric fields are sent as integers:
+
+```bash
+PR=597
+REPO=holon-run/holon
+HEAD_SHA="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+
+gh api "repos/$REPO/pulls/$PR/comments" \
+  -X POST \
+  -H "Accept: application/vnd.github+json" \
+  -F body='[warn] Example inline finding message' \
+  -F commit_id="$HEAD_SHA" \
+  -F path='skills/github-issue-solve/SKILL.md' \
+  -F line=166 \
+  -F side='RIGHT'
+```
+
+Notes:
+- `path` + `line` must map to a line in the PR diff for the selected `commit_id`.
+- Use `-F` for `line`/`position`; avoid `-f` for numeric fields to prevent string-type API errors.
 
 ## Usage
 
@@ -94,7 +124,7 @@ holon --skill github-review holon-run/holon#123
 
 ## Implementation Note
 
-This skill specifies behavior and artifacts, not a mandatory script path. `ghx` may be used when installed; otherwise direct `gh` commands are valid if outputs and publish semantics match this contract.
+This skill specifies behavior and artifacts, not a mandatory script path. Prefer `ghx` skill/script when available in the skill runtime; otherwise direct `gh` commands are valid if outputs and publish semantics match this contract.
 
 ## Agent Prompts
 
@@ -214,6 +244,9 @@ mkdir -p $GITHUB_OUTPUT_DIR
 ## Important Notes
 
 - **Idempotency**: The skill fetches existing review threads to avoid duplicating comments
+- **Incremental review default**: repeated PR updates should be reviewed with incremental priority, not full re-review by default
+- **Dedup by history**: previously explicit feedback should not be repeated unless context materially changes
+- **No workflow trigger changes**: this skill update does not alter `.github/workflows/` trigger behavior
 - **Rate limits**: GitHub API has rate limits; the skill uses pagination and batching appropriately
 - **Large PRs**: Use `MAX_FILES` to limit context collection for PRs with many changed files
 - **Inline limits**: Use `MAX_INLINE` to avoid overwhelming reviewers with too many comments

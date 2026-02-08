@@ -18,8 +18,10 @@ This skill helps you:
 ## Prerequisites
 
 This skill can use:
-- **`ghx`** (preferred): Fast-path context collection/publishing helper
-- **`gh` CLI** (fallback): Fully supported path when `ghx` is unavailable
+- **`ghx`** (default): Must be attempted first for context collection
+- **`gh` CLI** (fallback): Use only when `ghx` is unavailable or fails
+
+`ghx` here means the `ghx` skill (for example `skills/ghx/scripts/ghx.sh`), not a standalone `ghx` binary on `PATH`.
 
 ## Environment & Paths
 
@@ -31,7 +33,7 @@ This skill can use:
 
 ## Inputs & Outputs
 
-- **Inputs**: `${GITHUB_CONTEXT_DIR}/github/issue.json`, `comments.json` (produced via `ghx` when available, otherwise via `gh` commands)
+- **Inputs**: `${GITHUB_CONTEXT_DIR}/github/issue.json`, `${GITHUB_CONTEXT_DIR}/github/comments.json` (produced via `ghx` by default; fallback via `gh` commands only if `ghx` fails)
 - **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
   - `summary.md`
   - `manifest.json`
@@ -49,9 +51,14 @@ The run is successful only if all of the following are true:
 
 ### 1. Context Collection
 
-If context is not pre-populated, collect issue data with either:
-- preferred: `ghx` collector
-- fallback: `gh issue view` / `gh api` and write equivalent context files under `${GITHUB_CONTEXT_DIR}/github/`
+If context is not pre-populated, always follow this decision order:
+1. Attempt `ghx` collection first.
+2. If `ghx` is unavailable or fails, fall back to `gh issue view` / `gh api` and write equivalent context files under `${GITHUB_CONTEXT_DIR}/github/`.
+3. Record the collector and fallback reason (if any) in outputs:
+   - `context_collector`: `ghx` or `gh`
+   - `fallback_reason`: non-empty only when `context_collector=gh`
+     - Example: `ghx command not found in PATH`
+     - Example: `ghx context collect failed with exit code 1`
 
 ### 2. Analyze Issue
 
@@ -102,6 +109,8 @@ Execution metadata:
 {
   "provider": "github-issue-solve",
   "issue_ref": "holon-run/holon#502",
+  "context_collector": "ghx|gh",
+  "fallback_reason": "",
   "branch": "feature/issue-502",
   "status": "completed|failed",
   "commits": ["abc123", "def456"]
@@ -159,6 +168,8 @@ Update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json
    {
      "provider": "github-issue-solve",
      "issue_ref": "holon-run/holon#502",
+     "context_collector": "ghx|gh",
+     "fallback_reason": "",
      "branch": "feature/issue-502",
      "status": "completed|failed",
      "commits": ["abc123"],
@@ -172,6 +183,7 @@ Update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json
 - If PR create/edit or PR verification fails, mark the run as failed.
 - Do not report success when only artifacts were generated without a PR side effect.
 - On failure, write actionable publish error details and next steps in `${GITHUB_OUTPUT_DIR}/summary.md`.
+- If `ghx` is available but not attempted first for context collection, treat as process failure and correct before reporting success.
 
 ## Git Operations
 
@@ -202,6 +214,7 @@ You MAY use these commands:
 ## Important Notes
 
 - You are running **HEADLESSLY** - do not wait for user input or confirmation
+- Attempt `ghx` first for context collection; use `gh` only as explicit fallback with documented reason
 - Create feature branches following the pattern `feature/issue-<number>` or `fix/issue-<number>`
 - Write clear commit messages describing what was changed
 - Include "Closes #<number>" in PR body to auto-link the issue

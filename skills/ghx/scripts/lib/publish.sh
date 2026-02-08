@@ -472,7 +472,10 @@ action_reply_review() {
         fi
 
         log_info "Replying to comment_id: $comment_id"
-        if echo "$body" | jq -Rs '{body: .}' | gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/comments/$comment_id/replies" --input - >/dev/null 2>&1; then
+        if gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/comments" \
+            -X POST \
+            -F in_reply_to="$comment_id" \
+            -f body="$body" >/dev/null 2>&1; then
             ((posted++))
         else
             log_warn "Failed to post reply for comment_id $comment_id"
@@ -481,6 +484,9 @@ action_reply_review() {
     done
 
     jq -n         --argjson total "$count"         --argjson posted "$posted"         --argjson skipped "$skipped"         --argjson failed "$failed"         '{total:$total, posted:$posted, skipped:$skipped, failed:$failed}'
+    if [[ "$failed" -gt 0 ]]; then
+        return 1
+    fi
 }
 
 # ============================================================================

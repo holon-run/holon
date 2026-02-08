@@ -108,18 +108,14 @@ validate_intent() {
   fi
 
   local version
-  version=$(jq -r '.version' "$intent_file" 2>/dev/null)
-  if [[ "$version" == "null" || -z "$version" ]]; then
-    log_error "Missing or invalid 'version' field in intent file"
-    return 1
-  fi
+  version=$(jq -r '.version // "1.0"' "$intent_file" 2>/dev/null)
   if [[ "$version" != "1.0" ]]; then
     log_error "Unsupported version: $version (supported: 1.0)"
     return 1
   fi
 
-  if ! jq -e 'has("version") and has("pr_ref") and has("actions")' "$intent_file" >/dev/null 2>&1; then
-    log_error "Missing required fields in intent file (version, pr_ref, actions)"
+  if ! jq -e 'has("pr_ref") and has("actions")' "$intent_file" >/dev/null 2>&1; then
+    log_error "Missing required fields in intent file (pr_ref, actions)"
     return 1
   fi
 
@@ -240,7 +236,7 @@ execute_intent() {
   for ((i=FROM_INDEX; i<action_count; i++)); do
     local action_type action_params
     action_type=$(jq -r ".actions[$i].type" "$intent_file")
-    action_params=$(jq ".actions[$i].params" "$intent_file")
+    action_params=$(jq ".actions[$i].params // (.actions[$i] | del(.type, .description))" "$intent_file")
     total=$((total + 1))
 
     if [[ "$DRY_RUN" == "true" ]]; then
