@@ -223,3 +223,52 @@ func TestService_Run_DedupeSkipsDuplicateDeliveryID(t *testing.T) {
 		t.Fatalf("expected 1 forwarded event, got %d", len(fake.events))
 	}
 }
+
+func TestService_Run_DedupeAllowsDistinctPRIssueComments(t *testing.T) {
+	td := t.TempDir()
+	fake := &fakeExecutor{}
+	svc, err := New(Config{
+		RepoHint: "holon-run/holon",
+		StateDir: td,
+		Handler:  fake,
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer svc.Close()
+	svc.now = func() time.Time { return time.Date(2026, 2, 8, 0, 0, 0, 0, time.UTC) }
+
+	line1 := `{"event":"issue_comment","action":"created","repository":{"full_name":"holon-run/holon"},"issue":{"number":579,"pull_request":{"url":"https://api.github.com/repos/holon-run/holon/pulls/579"}},"comment":{"id":11}}`
+	line2 := `{"event":"issue_comment","action":"created","repository":{"full_name":"holon-run/holon"},"issue":{"number":579,"pull_request":{"url":"https://api.github.com/repos/holon-run/holon/pulls/579"}},"comment":{"id":12}}`
+	input := strings.NewReader(line1 + "\n" + line2 + "\n")
+	if err := svc.Run(context.Background(), input, 0); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if len(fake.events) != 2 {
+		t.Fatalf("expected 2 forwarded events, got %d", len(fake.events))
+	}
+}
+
+func TestBuildGitHubDedupeKey_LabelUsesSubjectKind(t *testing.T) {
+	envIssue := EventEnvelope{
+		Source:  "github",
+		Type:    "github.issue.labeled",
+		Scope:   EventScope{Repo: "holon-run/holon"},
+		Subject: EventSubject{Kind: "issue", ID: "123"},
+	}
+	envPR := EventEnvelope{
+		Source:  "github",
+		Type:    "github.pull_request.labeled",
+		Scope:   EventScope{Repo: "holon-run/holon"},
+		Subject: EventSubject{Kind: "pull_request", ID: "123"},
+	}
+	payload := map[string]interface{}{
+		"label": map[string]interface{}{"name": "needs-review"},
+	}
+
+	issueKey := buildGitHubDedupeKey(envIssue, payload)
+	prKey := buildGitHubDedupeKey(envPR, payload)
+	if issueKey == prKey {
+		t.Fatalf("expected distinct keys for issue vs pull_request label events, got %q", issueKey)
+	}
+}

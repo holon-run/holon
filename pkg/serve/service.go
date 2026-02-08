@@ -360,7 +360,7 @@ func buildGitHubDedupeKey(env EventEnvelope, payload map[string]interface{}) str
 		return strings.Trim(strings.Join([]string{
 			"github",
 			env.Scope.Repo,
-			"pull_request",
+			env.Subject.Kind,
 			env.Subject.ID,
 			"label",
 			labelAction,
@@ -373,6 +373,12 @@ func buildGitHubDedupeKey(env EventEnvelope, payload map[string]interface{}) str
 		if id, ok := nestedInt(payload, "comment", "id"); ok {
 			return strings.Trim(strings.Join([]string{
 				"github", env.Scope.Repo, env.Subject.Kind, env.Subject.ID, "issue_comment", strconv.Itoa(id), actionFromType(env.Type),
+			}, ":"), ":")
+		}
+	case "github.pull_request.comment.created", "github.pull_request.comment.edited", "github.pull_request.comment.deleted":
+		if id, ok := nestedInt(payload, "comment", "id"); ok {
+			return strings.Trim(strings.Join([]string{
+				"github", env.Scope.Repo, "pull_request", env.Subject.ID, "comment", strconv.Itoa(id), actionFromType(env.Type),
 			}, ":"), ":")
 		}
 	case "github.pull_request_review_comment.created", "github.pull_request_review_comment.edited", "github.pull_request_review_comment.deleted":
