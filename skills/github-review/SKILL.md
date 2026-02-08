@@ -57,6 +57,11 @@ Agent analyzes the collected context and generates:
 
 Agent follows review guidelines in `prompts/review.md`.
 
+Behavior requirements for this step:
+- **Incremental-first**: prioritize newly introduced changes (new commits/diff hunks), and only expand scope when needed for validation.
+- **Historical dedup**: consult existing review threads/comments and avoid repeating already-raised findings unless there is new evidence or changed impact.
+- **Concise output**: keep review text short, direct, and action-oriented; avoid repetitive background narration.
+
 ### 3. Publish Review
 Publish the produced artifacts (`review.md`, `review.json`, `summary.md`, `manifest.json`) as one PR review with inline comments.
 
@@ -214,6 +219,9 @@ mkdir -p $GITHUB_OUTPUT_DIR
 ## Important Notes
 
 - **Idempotency**: The skill fetches existing review threads to avoid duplicating comments
+- **Incremental review default**: repeated PR updates should be reviewed with incremental priority, not full re-review by default
+- **Dedup by history**: previously explicit feedback should not be repeated unless context materially changes
+- **No workflow trigger changes**: this skill update does not alter `.github/workflows/` trigger behavior
 - **Rate limits**: GitHub API has rate limits; the skill uses pagination and batching appropriately
 - **Large PRs**: Use `MAX_FILES` to limit context collection for PRs with many changed files
 - **Inline limits**: Use `MAX_INLINE` to avoid overwhelming reviewers with too many comments
