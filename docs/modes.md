@@ -1,39 +1,69 @@
-# Holon Modes (current behavior)
+# Holon Skill-First Architecture
 
-Holon uses a single `mode` to express what kind of work should be done and how results are published. The runner passes `HOLON_MODE` to the agent and enforces workspace/publishing semantics for each mode.
+Holon uses a **skill-first** execution model where context collection and publishing are delegated to skills, not the runtime. This provides flexibility and control over the IO workflow.
 
-## User-facing modes today
+## Architecture Overview
 
-### `solve` (issue -> PR)
-- Intended for GitHub Issues.
-- Workspace: writable snapshot (temp clone by default; use `--workspace` to override).
-- Artifacts: expects `manifest.json`; typically produces `diff.patch` and `summary.md`.
-- Publish: creates or updates a branch + PR with the patch and summary.
+### Skill-First IO (Default)
+- **Context collection**: Skills (e.g., `github-issue-solve`) are responsible for collecting their own context via tools like `gh` CLI
+- **Publishing**: Skills handle publishing directly (e.g., creating PRs, posting comments)
+- **Runtime role**: Validates generic contracts (`manifest.json` with `status` and `outcome` fields) without skill-specific logic
 
-### `pr-fix` (update an existing PR)
-- Intended for GitHub PRs with review comments or CI fixes.
-- Workspace: writable snapshot targeting the PR branch.
-- Artifacts: `manifest.json`; optional `diff.patch`, `summary.md`, and `pr-fix.json` for replies.
-- Publish: applies/pushes `diff.patch` to the PR head branch and posts replies/comments when provided.
+### Built-in Skills
+- `github-issue-solve`: Solves GitHub issues end-to-end (collect context → implement solution → create PR)
+- `github-pr-fix`: Fixes PR review comments (collect PR context → implement fixes → post replies)
+- `github-review`: Reviews PRs (collect PR context → analyze code → publish review findings)
 
-## CLI behavior
-- `holon solve <ref>` (recommended): auto-detects mode based on the reference.
-  - Issue reference → `mode=solve`
-  - PR reference → `mode=pr-fix`
-  - You can override with `--mode`, but defaults above match the publishing flow.
-- `holon run --mode <mode>`: lower-level entrypoint; default mode is `solve` if not set.
-- Runner always sets `HOLON_MODE` for the agent; agents may use this to pick prompt/behavior.
+## CLI Behavior
 
-## Publishing semantics by mode
-- `solve`: create/update a PR from Issue context; commits and pushes the patch on a branch, then opens/updates the PR with `summary.md`.
-- `pr-fix`: push fixes to the existing PR branch; optional inline replies driven by `pr-fix.json`.
+### `holon solve <ref>` (recommended)
+- Auto-detects reference type (issue vs PR)
+- Loads default skill based on reference type:
+  - Issue reference → `github-issue-solve`
+  - PR reference → `github-pr-fix`
+- Skills are loaded from project config (`--skill` flag for overrides)
 
-## Workspace and safety
-- Both modes run in Docker with a snapshot workspace by default. Use `--workspace` to point at an existing checkout; otherwise, Holon clones or re-clones to a temp dir.
-- Output goes to a temp directory unless `--output` is set; artifacts are validated before publish.
+### `holon run`
+- Lower-level entrypoint for running with custom goals/specs
+- Always uses skill-first mode
+- Skills loaded from project config or `--skill` flag
 
-## Roadmap (not yet implemented in the runner)
-- `plan`: read-only planning, producing `plan.md` (and optionally structured JSON); no code writes.
-- `review`: read-only code review, producing `review.json` + `summary.md`; no code writes.
-- Composite flows (e.g., plan-then-solve, review-then-fix) would run as separate mode invocations to preserve RO/RW guarantees.
+## Publishing Semantics
+
+### Skill-Driven Publishing
+- Skills are responsible for all publishing operations
+- Runtime validates success via `manifest.json`:
+  - `status: "completed"` - execution finished
+  - `outcome: "success"` - execution succeeded
+- For issue-solve skills, runtime checks for PR evidence in `manifest.json`:
+  - `metadata.pr_number` - created PR number
+  - `metadata.pr_url` - created PR URL
+
+### Generic Contract Validation
+The runtime validates outputs based on the generic manifest contract, not skill-specific artifacts:
+- `manifest.json` (required) - execution status and outcome
+- `summary.md` (optional) - human-readable summary
+- `diff.patch` (optional) - code changes (applied by skill if needed)
+
+## Workspace and Safety
+- All executions run in Docker with a snapshot workspace by default
+- Use `--workspace` to point at an existing checkout; otherwise, Holon clones to a temp dir
+- Output goes to a temp directory unless `--output` is set
+- Artifacts are validated before completion
+
+## Configuration
+
+### Project Config (`/.holon/config.yaml`)
+```yaml
+skills:
+  - github-issue-solve  # Default skill for issues
+  - github-pr-fix       # Default skill for PRs
+base_image: auto-detect
+```
+
+### CLI Flags
+- `--skill <path>`: Override skill (repeatable)
+- `--skills <list>`: Comma-separated skill paths
+- `--workspace <path>`: Use existing workspace
+- `--output <dir>`: Output directory
 
