@@ -11,11 +11,11 @@ import (
 )
 
 type fakeExecutor struct {
-	actions []ActionIntent
+	events []EventEnvelope
 }
 
-func (f *fakeExecutor) Execute(_ context.Context, action ActionIntent) error {
-	f.actions = append(f.actions, action)
+func (f *fakeExecutor) HandleEvent(_ context.Context, env EventEnvelope) error {
+	f.events = append(f.events, env)
 	return nil
 }
 
@@ -58,7 +58,7 @@ func TestService_Run_Dedupe(t *testing.T) {
 	svc, err := New(Config{
 		RepoHint: "holon-run/holon",
 		StateDir: td,
-		Exec:     fake,
+		Handler:  fake,
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -71,8 +71,8 @@ func TestService_Run_Dedupe(t *testing.T) {
 	if err := svc.Run(context.Background(), input, 0); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
-	if len(fake.actions) != 1 {
-		t.Fatalf("expected 1 executed action after dedupe, got %d", len(fake.actions))
+	if len(fake.events) != 1 {
+		t.Fatalf("expected 1 forwarded event after dedupe, got %d", len(fake.events))
 	}
 }
 
@@ -82,7 +82,7 @@ func TestService_Run_WritesState(t *testing.T) {
 	svc, err := New(Config{
 		RepoHint: "holon-run/holon",
 		StateDir: td,
-		Exec:     fake,
+		Handler:  fake,
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -118,16 +118,5 @@ func TestNormalizeGitHubEvent_IssueCommentEdited(t *testing.T) {
 	}
 	if env.Type != "github.issue.comment.edited" {
 		t.Fatalf("unexpected type: %s", env.Type)
-	}
-}
-
-func TestShouldRunPRFix_RequiresValidPRSubject(t *testing.T) {
-	env := EventEnvelope{
-		Type:    "github.check_suite.completed",
-		Subject: EventSubject{Kind: "pull_request", ID: ""},
-		Payload: json.RawMessage(`{"check_suite":{"conclusion":"failure"}}`),
-	}
-	if shouldRunPRFix(env) {
-		t.Fatalf("expected shouldRunPRFix to be false for invalid PR subject")
 	}
 }

@@ -21,7 +21,7 @@
  */
 
 // Re-export Options type from real SDK for 100% type compatibility
-import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-sdk";
 
 /**
  * Wrapper implementation of Claude SDK's query() function.
@@ -60,6 +60,37 @@ export async function* query(
     const { query: realQuery } = await import("@anthropic-ai/claude-agent-sdk");
     yield* realQuery(params);
   }
+}
+
+/**
+ * Create a persistent Claude SDK session (V2 API).
+ *
+ * Note: mock driver currently does not emulate session API.
+ */
+export async function createSession(options: SDKSessionOptions): Promise<SDKSession> {
+  const driver = process.env.HOLON_CLAUDE_DRIVER || "real";
+  if (driver === "mock") {
+    throw new Error("mock driver does not support persistent session API");
+  }
+  const { unstable_v2_createSession } = await import("@anthropic-ai/claude-agent-sdk");
+  return unstable_v2_createSession(options);
+}
+
+/**
+ * Resume a persistent Claude SDK session (V2 API).
+ *
+ * Note: mock driver currently does not emulate session API.
+ */
+export async function resumeSession(
+  sessionId: string,
+  options: SDKSessionOptions
+): Promise<SDKSession> {
+  const driver = process.env.HOLON_CLAUDE_DRIVER || "real";
+  if (driver === "mock") {
+    throw new Error("mock driver does not support persistent session API");
+  }
+  const { unstable_v2_resumeSession } = await import("@anthropic-ai/claude-agent-sdk");
+  return unstable_v2_resumeSession(sessionId, options);
 }
 
 // Re-export Options type for external use

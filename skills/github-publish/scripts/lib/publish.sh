@@ -437,9 +437,11 @@ action_reply_review() {
     count=$(echo "$replies_json" | jq 'length')
     posted=0; skipped=0; failed=0
 
-    # Use mapfile for line-safe JSON iteration (avoiding word-splitting bug)
+    # Use read loop for line-safe JSON iteration (compatible with Bash 3.x)
     local replies_array=()
-    mapfile -t replies_array < <(echo "$replies_json" | jq -c '.[]')
+    while IFS= read -r line; do
+        replies_array+=("$line")
+    done < <(echo "$replies_json" | jq -c '.[]')
 
     for reply in "${replies_array[@]}"; do
         local comment_id status message action_taken
@@ -470,7 +472,7 @@ action_reply_review() {
         fi
 
         log_info "Replying to comment_id: $comment_id"
-        if echo "$body" | jq -Rs '{body: .}' | gh api "repos/$PR_OWNER/$PR_REPO/pulls/comments/$comment_id/replies" --input - >/dev/null 2>&1; then
+        if echo "$body" | jq -Rs '{body: .}' | gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/comments/$comment_id/replies" --input - >/dev/null 2>&1; then
             ((posted++))
         else
             log_warn "Failed to post reply for comment_id $comment_id"

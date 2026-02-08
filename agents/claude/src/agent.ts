@@ -3,8 +3,9 @@ import path from "path";
 import os from "os";
 import { spawnSync } from "child_process";
 import { parse as parseYaml } from "yaml";
-import { query } from "./claudeSdk.js";
+import { createSession, query, resumeSession } from "./claudeSdk.js";
 import type { Options } from "./claudeSdk.js";
+import type { SDKMessage, SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-sdk";
 import { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
 
 // Re-export for testing
@@ -367,7 +368,7 @@ async function runClaude(
   systemInstruction: string,
   userPrompt: string,
   logFile: fs.WriteStream
-): Promise<{ success: boolean; result: string }> {
+): Promise<{ success: boolean; result: string; sessionId?: string }> {
   const env = { ...process.env } as NodeJS.ProcessEnv;
   const isMountedConfig = env.HOLON_MOUNTED_CLAUDE_CONFIG === "1";
 
@@ -456,11 +457,17 @@ async function runClaude(
   if (fallbackModel) {
     options.fallbackModel = fallbackModel;
   }
+  const resumeSessionId = env.HOLON_CONTROLLER_SESSION_ID?.trim();
+  if (resumeSessionId) {
+    options.resume = resumeSessionId;
+    logger.info(`Resuming Claude session: ${resumeSessionId}`);
+  }
 
   let success = true;
   let finalOutput = "";
   let resultReceived = false;
   let resultText = "";
+  let observedSessionId = "";
   let timeoutError: Error | null = null;
   let queryError: Error | null = null;
 
@@ -536,6 +543,12 @@ async function runClaude(
 
       logFile.write(`${messageStr}\n`);
 
+      const messageSessionId =
+        typeof (message as any).session_id === "string" ? String((message as any).session_id) : "";
+      if (messageSessionId) {
+        observedSessionId = messageSessionId;
+      }
+
       // Only increment counter for valid, serialized messages
       msgCount += 1;
 
@@ -600,7 +613,165 @@ async function runClaude(
 
   const finalResult = resultText || finalOutput;
 
-  return { success, result: finalResult };
+  return {
+    success,
+    result: finalResult,
+    sessionId: observedSessionId || resumeSessionId || undefined,
+  };
+}
+
+async function streamSessionTurn(
+  session: SDKSession,
+  logger: ProgressLogger,
+  logFile: fs.WriteStream
+): Promise<{ success: boolean; result: string; sessionId: string }> {
+  let success = true;
+  let resultReceived = false;
+  let resultText = "";
+  let finalOutput = "";
+
+  for await (const message of session.stream()) {
+    const safeMessage = message as SDKMessage & { [key: string]: unknown };
+    logFile.write(`${JSON.stringify(safeMessage)}\n`);
+
+    if (safeMessage.type === "assistant" && safeMessage.message && Array.isArray(safeMessage.message.content)) {
+      for (const block of safeMessage.message.content) {
+        if (block.type === "text" && typeof block.text === "string") {
+          finalOutput += block.text;
+          logger.streamAssistantText(block.text);
+        } else if (block.type === "tool_use") {
+          const toolName = typeof block.name === "string" ? block.name : "UnknownTool";
+          logger.logToolUse(toolName);
+        }
+      }
+    } else if (safeMessage.type === "result") {
+      const isError =
+        typeof safeMessage.is_error === "boolean"
+          ? safeMessage.is_error
+          : Boolean(safeMessage.is_error);
+      if (isError) {
+        success = false;
+      }
+      if (typeof safeMessage.result === "string") {
+        resultText = safeMessage.result;
+      } else if (Array.isArray(safeMessage.errors)) {
+        resultText = safeMessage.errors.join("\n");
+      }
+      resultReceived = true;
+      break;
+    }
+  }
+
+  if (!resultReceived) {
+    throw new Error("Claude session turn finished without a result message");
+  }
+
+  return {
+    success,
+    result: resultText || finalOutput,
+    sessionId: session.sessionId,
+  };
+}
+
+function buildSessionOptions(env: NodeJS.ProcessEnv): SDKSessionOptions {
+  const model = env.HOLON_MODEL || "sonnet";
+  return {
+    model,
+    env,
+  };
+}
+
+async function runServeClaudeSession(
+  logger: ProgressLogger,
+  systemInstruction: string,
+  userPrompt: string,
+  evidenceDir: string,
+): Promise<void> {
+  const env = { ...process.env } as NodeJS.ProcessEnv;
+  const authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
+  const baseUrl = env.ANTHROPIC_BASE_URL || env.ANTHROPIC_API_URL || "https://api.anthropic.com";
+  if (authToken) {
+    if (!env.ANTHROPIC_AUTH_TOKEN) {
+      env.ANTHROPIC_AUTH_TOKEN = authToken;
+    }
+    if (!env.ANTHROPIC_API_KEY) {
+      env.ANTHROPIC_API_KEY = authToken;
+    }
+  }
+  if (baseUrl) {
+    if (!env.ANTHROPIC_BASE_URL) {
+      env.ANTHROPIC_BASE_URL = baseUrl;
+    }
+    if (!env.ANTHROPIC_API_URL) {
+      env.ANTHROPIC_API_URL = baseUrl;
+    }
+    if (!env.CLAUDE_CODE_API_URL) {
+      env.CLAUDE_CODE_API_URL = baseUrl;
+    }
+  }
+  env.IS_SANDBOX = "1";
+
+  const logFilePath = path.join(evidenceDir, "execution.log");
+  const logFile = fs.createWriteStream(logFilePath, { flags: "a" });
+
+  const sessionOptions = buildSessionOptions(env);
+  const resumeID = env.HOLON_CONTROLLER_SESSION_ID?.trim();
+  const session = resumeID ? await resumeSession(resumeID, sessionOptions) : await createSession(sessionOptions);
+  logger.info(`Controller session ready: ${session.sessionId}`);
+
+  const writeSessionState = (): void => {
+    fs.writeFileSync(
+      path.join(evidenceDir, "session.json"),
+      JSON.stringify(
+        {
+          session_id: session.sessionId,
+          mode: "serve",
+          updated_at: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+    );
+  };
+
+  writeSessionState();
+
+  try {
+    const bootstrapPrompt = [
+      "You are running in persistent controller session mode.",
+      "Follow the system instructions and user contract below for all future events.",
+      "",
+      "### System Instructions",
+      systemInstruction,
+      "",
+      "### User Contract",
+      userPrompt,
+      "",
+      "Acknowledge readiness briefly, then wait for events.",
+    ].join("\n");
+
+    await session.send(bootstrapPrompt);
+    await streamSessionTurn(session, logger, logFile);
+    const eventPath = "/holon/input/context/event.json";
+    if (!fs.existsSync(eventPath)) {
+      logger.info("No event payload found at /holon/input/context/event.json; session initialized only");
+      return;
+    }
+    const eventPayload = fs.readFileSync(eventPath, "utf8");
+    const turnPrompt = [
+      "New event payload (JSON):",
+      eventPayload,
+      "",
+      "Process this event. Decide actions autonomously and execute via available skills/tools.",
+      "After actions complete, summarize what you decided and what changed.",
+    ].join("\n");
+    await session.send(turnPrompt);
+    await streamSessionTurn(session, logger, logFile);
+    writeSessionState();
+  } finally {
+    logFile.end();
+    session.close();
+  }
 }
 
 async function runAgent(): Promise<void> {
@@ -673,6 +844,30 @@ async function runAgent(): Promise<void> {
   }
   const userPrompt = fs.readFileSync(userPromptPath, "utf8");
   logger.info(`Loading compiled user prompt from ${userPromptPath}`);
+
+  if (process.env.HOLON_AGENT_SESSION_MODE === "serve") {
+    logger.logPhase("Running persistent controller session");
+    await runServeClaudeSession(logger, systemInstruction, userPrompt, evidenceDir);
+
+    const bundleManifest = readBundleManifest();
+    const agentMetadata = getAgentMetadata(bundleManifest);
+    const manifest = {
+      metadata: {
+        agent: agentMetadata.agent,
+        version: agentMetadata.version,
+        mode: "serve",
+        ...(agentMetadata.engine && { engine: agentMetadata.engine }),
+      },
+      status: "completed",
+      outcome: "success",
+      artifacts: [
+        { name: "evidence", path: "evidence/" },
+      ],
+    };
+    fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+    fixPermissions(outputDir, logger);
+    return;
+  }
 
   logger.logPhase("Setting up git workspace");
   const workspacePath = "/holon/workspace";
@@ -920,6 +1115,18 @@ async function runAgent(): Promise<void> {
 
     fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
     fs.writeFileSync(path.join(outputDir, "diff.patch"), patchContent);
+    fs.writeFileSync(
+      path.join(evidenceDir, "session.json"),
+      JSON.stringify(
+        {
+          session_id: response.sessionId ?? "",
+          mode,
+          updated_at: new Date().toISOString(),
+        },
+        null,
+        2
+      )
+    );
 
     const summaryOut = path.join(outputDir, "summary.md");
     let summaryText = "";
