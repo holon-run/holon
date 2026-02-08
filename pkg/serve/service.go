@@ -250,6 +250,9 @@ func normalizeGitHubEvent(raw []byte, repoHint string, now func() time.Time) (Ev
 		eventName, _ = getString(payload, "x_github_event")
 	}
 	if eventName == "" {
+		eventName = getHeaderValue(payload, "x-github-event")
+	}
+	if eventName == "" {
 		return EventEnvelope{}, errors.New("missing event or x_github_event")
 	}
 
@@ -270,8 +273,12 @@ func normalizeGitHubEvent(raw []byte, repoHint string, now func() time.Time) (Ev
 	switch eventName {
 	case "issues":
 		num, _ := nestedInt(payload, "issue", "number")
-		event.Subject = EventSubject{Kind: "issue", ID: strconv.Itoa(num)}
-		event.Type = "github.issue." + strings.ToLower(action)
+		subjectKind := "issue"
+		if _, hasPR := nestedMap(payload, "issue", "pull_request"); hasPR {
+			subjectKind = "pull_request"
+		}
+		event.Subject = EventSubject{Kind: subjectKind, ID: strconv.Itoa(num)}
+		event.Type = "github." + subjectKind + "." + strings.ToLower(action)
 	case "issue_comment":
 		num, _ := nestedInt(payload, "issue", "number")
 		normalizedAction := strings.ToLower(action)
@@ -291,6 +298,16 @@ func normalizeGitHubEvent(raw []byte, repoHint string, now func() time.Time) (Ev
 		num := getPRNumber(payload)
 		event.Subject = EventSubject{Kind: "pull_request", ID: strconv.Itoa(num)}
 		event.Type = "github.pull_request." + strings.ToLower(action)
+	case "pull_request_review_comment":
+		num := getPRNumber(payload)
+		event.Subject = EventSubject{Kind: "pull_request", ID: strconv.Itoa(num)}
+		normalizedAction := strings.ToLower(action)
+		switch normalizedAction {
+		case "created", "edited", "deleted":
+			event.Type = "github.pull_request_review_comment." + normalizedAction
+		default:
+			return EventEnvelope{}, fmt.Errorf("unsupported pull_request_review_comment action: %s", action)
+		}
 	case "pull_request_review":
 		num := getPRNumber(payload)
 		event.Subject = EventSubject{Kind: "pull_request", ID: strconv.Itoa(num)}
@@ -317,7 +334,7 @@ func normalizeGitHubEvent(raw []byte, repoHint string, now func() time.Time) (Ev
 	if len(event.Payload) == 0 {
 		event.Payload = json.RawMessage(raw)
 	}
-	event.DedupeKey = buildDedupeKey(event)
+	event.DedupeKey = buildGitHubDedupeKey(event, payload)
 	return event, nil
 }
 
@@ -326,6 +343,71 @@ func buildDedupeKey(env EventEnvelope) string {
 		return ""
 	}
 	return strings.Trim(strings.Join([]string{env.Source, env.Scope.Repo, env.Subject.Kind, env.Subject.ID, env.Type}, ":"), ":")
+}
+
+func buildGitHubDedupeKey(env EventEnvelope, payload map[string]interface{}) string {
+	if deliveryID, ok := getString(payload, "x_github_delivery"); ok && deliveryID != "" {
+		return "github:delivery:" + deliveryID
+	}
+	if deliveryID := getHeaderValue(payload, "x-github-delivery"); deliveryID != "" {
+		return "github:delivery:" + deliveryID
+	}
+
+	// Some GitHub events are emitted from multiple sources (issues + pull_request)
+	// for the same user action. Normalize label-change keys to avoid double work.
+	if labelAction, ok := isLabelAction(env.Type); ok {
+		labelName, _ := nestedString(payload, "label", "name")
+		return strings.Trim(strings.Join([]string{
+			"github",
+			env.Scope.Repo,
+			"pull_request",
+			env.Subject.ID,
+			"label",
+			labelAction,
+			strings.ToLower(labelName),
+		}, ":"), ":")
+	}
+
+	switch env.Type {
+	case "github.issue.comment.created", "github.issue.comment.edited", "github.issue.comment.deleted":
+		if id, ok := nestedInt(payload, "comment", "id"); ok {
+			return strings.Trim(strings.Join([]string{
+				"github", env.Scope.Repo, env.Subject.Kind, env.Subject.ID, "issue_comment", strconv.Itoa(id), actionFromType(env.Type),
+			}, ":"), ":")
+		}
+	case "github.pull_request_review_comment.created", "github.pull_request_review_comment.edited", "github.pull_request_review_comment.deleted":
+		if id, ok := nestedInt(payload, "comment", "id"); ok {
+			return strings.Trim(strings.Join([]string{
+				"github", env.Scope.Repo, "pull_request", env.Subject.ID, "review_comment", strconv.Itoa(id), actionFromType(env.Type),
+			}, ":"), ":")
+		}
+	case "github.pull_request_review.submitted", "github.pull_request_review.edited", "github.pull_request_review.dismissed":
+		if id, ok := nestedInt(payload, "review", "id"); ok {
+			return strings.Trim(strings.Join([]string{
+				"github", env.Scope.Repo, "pull_request", env.Subject.ID, "review", strconv.Itoa(id), actionFromType(env.Type),
+			}, ":"), ":")
+		}
+	}
+
+	return buildDedupeKey(env)
+}
+
+func actionFromType(eventType string) string {
+	if idx := strings.LastIndex(eventType, "."); idx >= 0 && idx < len(eventType)-1 {
+		return eventType[idx+1:]
+	}
+	return eventType
+}
+
+func isLabelAction(eventType string) (string, bool) {
+	switch {
+	case strings.HasSuffix(eventType, ".labeled"):
+		return "labeled", true
+	case strings.HasSuffix(eventType, ".unlabeled"):
+		return "unlabeled", true
+	default:
+		return "", false
+	}
 }
 
 func newID(prefix string, t time.Time) string {
@@ -462,4 +544,28 @@ func nestedMap(m map[string]interface{}, path ...string) (map[string]interface{}
 	}
 	next, ok := cur[path[len(path)-1]].(map[string]interface{})
 	return next, ok
+}
+
+func getHeaderValue(payload map[string]interface{}, key string) string {
+	headers, ok := payload["headers"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	for k, v := range headers {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		switch val := v.(type) {
+		case string:
+			return val
+		case []interface{}:
+			if len(val) == 0 {
+				return ""
+			}
+			if first, ok := val[0].(string); ok {
+				return first
+			}
+		}
+	}
+	return ""
 }

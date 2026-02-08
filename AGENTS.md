@@ -60,6 +60,11 @@ _ = os.Remove(tempFile)
 - PRs should link the relevant issue, describe behavior changes, and mention how you validated (e.g., `make test`, `make test-integration`).
 - If your change affects automation, include notes about workflows touched under `.github/workflows/`.
 
+## GitHub CLI Conventions
+
+- For `gh issue comment/create/edit` and `gh pr create/edit/review`, always write the body to a file first and pass it via `--body-file` (or `-F`).
+- Do not use inline multi-line `--body "..."` for substantive content; this avoids shell escaping and newline/backtick interpolation issues.
+
 ## Agent-Specific Notes
 
 Holon runs agents in containers with a standardized layout: workspace at `/holon/workspace`, inputs under `/holon/input/`, and artifacts under `/holon/output/`. Design changes that affect these paths should update relevant RFCs and keep backward compatibility where feasible.
