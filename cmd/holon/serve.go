@@ -214,14 +214,22 @@ func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error)
 
 func (h *cliControllerHandler) buildInputDir(ref string) (string, error) {
 	inputDir := filepath.Join(h.stateDir, "controller-runtime", "input")
-	if err := os.RemoveAll(inputDir); err != nil {
-		return "", fmt.Errorf("failed to reset controller input dir: %w", err)
-	}
-	if err := os.MkdirAll(inputDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create controller input dir: %w", err)
-	}
+	stageDir := inputDir + ".tmp"
 
-	contextDir := filepath.Join(inputDir, "context")
+	if err := os.RemoveAll(stageDir); err != nil {
+		return "", fmt.Errorf("failed to reset controller input staging dir: %w", err)
+	}
+	if err := os.MkdirAll(stageDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create controller input staging dir: %w", err)
+	}
+	cleanupStage := true
+	defer func() {
+		if cleanupStage {
+			_ = os.RemoveAll(stageDir)
+		}
+	}()
+
+	contextDir := filepath.Join(stageDir, "context")
 	if err := os.MkdirAll(contextDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create context dir: %w", err)
 	}
@@ -239,13 +247,21 @@ func (h *cliControllerHandler) buildInputDir(ref string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to serialize workflow metadata: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(inputDir, "workflow.json"), workflowBytes, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(stageDir, "workflow.json"), workflowBytes, 0644); err != nil {
 		return "", fmt.Errorf("failed to write workflow metadata: %w", err)
 	}
 
-	if err := h.writeControllerSpecAndPrompts(inputDir); err != nil {
+	if err := h.writeControllerSpecAndPrompts(stageDir); err != nil {
 		return "", err
 	}
+
+	if err := os.RemoveAll(inputDir); err != nil {
+		return "", fmt.Errorf("failed to reset controller input dir: %w", err)
+	}
+	if err := os.Rename(stageDir, inputDir); err != nil {
+		return "", fmt.Errorf("failed to activate controller input dir: %w", err)
+	}
+	cleanupStage = false
 
 	return inputDir, nil
 }
@@ -334,6 +350,10 @@ func (h *cliControllerHandler) sessionStatePath() string {
 }
 
 func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref string) error {
+	if h.sessionRunner == nil {
+		return fmt.Errorf("session runner is not initialized")
+	}
+
 	if h.controllerSession != nil {
 		select {
 		case err := <-h.controllerDone:
@@ -359,10 +379,6 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	outputDir := filepath.Join(h.stateDir, "controller-runtime", "output")
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create controller output dir: %w", err)
-	}
-
-	if h.sessionRunner == nil {
-		return fmt.Errorf("session runner is not initialized")
 	}
 
 	env := map[string]string{

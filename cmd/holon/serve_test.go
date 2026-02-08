@@ -136,7 +136,8 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 
 	td := t.TempDir()
 	mockRunner := &mockSessionRunner{
-		waitCh: make(chan error, 2),
+		waitCh:       make(chan error, 2),
+		waitObserved: make(chan struct{}, 2),
 	}
 
 	h := &cliControllerHandler{
@@ -190,7 +191,11 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 
 	// Force controller session exit and trigger reconnect on next event.
 	mockRunner.waitCh <- errors.New("session exited")
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-mockRunner.waitObserved:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timed out waiting for controller session exit to be observed")
+	}
 
 	if err := h.HandleEvent(ctx, env3); err != nil {
 		t.Fatalf("handle event3 after stop: %v", err)
@@ -226,10 +231,11 @@ func bytesToLines(raw []byte) []string {
 }
 
 type mockSessionRunner struct {
-	mu         sync.Mutex
-	startCount int
-	stopCount  int
-	waitCh     chan error
+	mu           sync.Mutex
+	startCount   int
+	stopCount    int
+	waitCh       chan error
+	waitObserved chan struct{}
 }
 
 func (m *mockSessionRunner) Start(_ context.Context, _ ControllerSessionConfig) (*docker.SessionHandle, error) {
@@ -240,7 +246,12 @@ func (m *mockSessionRunner) Start(_ context.Context, _ ControllerSessionConfig) 
 }
 
 func (m *mockSessionRunner) Wait(_ context.Context, _ *docker.SessionHandle) error {
-	return <-m.waitCh
+	err := <-m.waitCh
+	select {
+	case m.waitObserved <- struct{}{}:
+	default:
+	}
+	return err
 }
 
 func (m *mockSessionRunner) Stop(_ context.Context, _ *docker.SessionHandle) error {

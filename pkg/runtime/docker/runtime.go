@@ -17,6 +17,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/errdefs"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/holon-run/holon/pkg/builtin"
 	"github.com/holon-run/holon/pkg/git"
 	holonlog "github.com/holon-run/holon/pkg/log"
@@ -75,10 +77,16 @@ type ContainerConfig struct {
 
 // SessionHandle tracks a long-running runtime session container.
 type SessionHandle struct {
-	ContainerID string
-	SnapshotDir string
-	SkillsDir   string
+	ContainerID         string
+	SnapshotDir         string
+	OwnsSnapshotDir     bool
+	SkillsDir           string
+	logsReadCloser      io.ReadCloser
+	logsPumpErr         chan error
+	logsPumpInitialized bool
 }
+
+const sessionStopTimeoutSeconds = 10
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, error) {
 	// 1. Prepare Workspace using WorkspacePreparer
@@ -293,21 +301,30 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 	if err != nil {
 		return nil, err
 	}
+	ownsSnapshotDir := snapshotDir != cfg.Workspace
+	cleanupOnError := func() {
+		if skillsDir != "" {
+			_ = os.RemoveAll(skillsDir)
+		}
+		if ownsSnapshotDir && snapshotDir != "" {
+			_ = os.RemoveAll(snapshotDir)
+		}
+	}
 
 	// 2. Prepare Image (Build-on-Run composition)
 	if cfg.AgentBundle == "" {
-		_ = os.RemoveAll(skillsDir)
+		cleanupOnError()
 		return nil, fmt.Errorf("agent bundle is required")
 	}
 	if cfg.BaseImage == "" {
-		_ = os.RemoveAll(skillsDir)
+		cleanupOnError()
 		return nil, fmt.Errorf("base image is required")
 	}
 
 	holonlog.Progress("composing execution image", "base_image", cfg.BaseImage, "agent_bundle", cfg.AgentBundle)
 	composedImage, err := r.buildComposedImageFromBundle(ctx, cfg.BaseImage, cfg.AgentBundle)
 	if err != nil {
-		_ = os.RemoveAll(skillsDir)
+		cleanupOnError()
 		return nil, fmt.Errorf("failed to compose image: %w", err)
 	}
 	finalImage := composedImage
@@ -395,7 +412,7 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 	}
 
 	if err := ValidateMountTargets(mountConfig); err != nil {
-		_ = os.RemoveAll(skillsDir)
+		cleanupOnError()
 		return nil, fmt.Errorf("validating mount targets: %w", err)
 	}
 
@@ -411,14 +428,25 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 		Mounts: mounts,
 	}, nil, nil, "")
 	if err != nil {
-		_ = os.RemoveAll(skillsDir)
+		cleanupOnError()
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
 
 	holonlog.Progress("starting session container", "id", resp.ID[:12])
 	if err := r.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		_ = os.RemoveAll(skillsDir)
+		// Best-effort cleanup for created but not started container.
+		if rmErr := r.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true}); rmErr != nil {
+			holonlog.Debug("container remove after start failure returned error", "id", resp.ID, "error", rmErr)
+		}
+		cleanupOnError()
 		return nil, fmt.Errorf("failed to start container: %w", err)
+	}
+
+	handle := &SessionHandle{
+		ContainerID:     resp.ID,
+		SnapshotDir:     snapshotDir,
+		OwnsSnapshotDir: ownsSnapshotDir,
+		SkillsDir:       skillsDir,
 	}
 
 	out, err := r.cli.ContainerLogs(ctx, resp.ID, container.LogsOptions{
@@ -427,17 +455,21 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 		Follow:     true,
 	})
 	if err == nil {
+		handle.logsReadCloser = out
+		handle.logsPumpErr = make(chan error, 1)
+		handle.logsPumpInitialized = true
 		go func() {
 			defer out.Close()
-			_, _ = io.Copy(os.Stdout, out)
+			_, cpErr := stdcopy.StdCopy(os.Stdout, os.Stderr, out)
+			if cpErr != nil {
+				handle.logsPumpErr <- cpErr
+				return
+			}
+			handle.logsPumpErr <- nil
 		}()
 	}
 
-	return &SessionHandle{
-		ContainerID: resp.ID,
-		SnapshotDir: snapshotDir,
-		SkillsDir:   skillsDir,
-	}, nil
+	return handle, nil
 }
 
 // WaitSession waits for a session container to exit.
@@ -459,6 +491,7 @@ func (r *Runtime) WaitSession(ctx context.Context, handle *SessionHandle) error 
 	if err := r.cli.ContainerRemove(ctx, handle.ContainerID, container.RemoveOptions{Force: true}); err != nil {
 		holonlog.Debug("container remove returned error", "id", handle.ContainerID, "error", err)
 	}
+	r.closeSessionLogStream(handle)
 	r.cleanupSessionHandle(handle)
 	return nil
 }
@@ -468,15 +501,30 @@ func (r *Runtime) StopSession(ctx context.Context, handle *SessionHandle) error 
 	if handle == nil || handle.ContainerID == "" {
 		return nil
 	}
-	timeout := 5
+	timeout := sessionStopTimeoutSeconds
+	var stopErr error
 	if err := r.cli.ContainerStop(ctx, handle.ContainerID, container.StopOptions{Timeout: &timeout}); err != nil {
-		// Container may already be stopped/removed.
-		holonlog.Debug("container stop returned error", "id", handle.ContainerID, "error", err)
+		if !errdefs.IsNotFound(err) {
+			stopErr = fmt.Errorf("failed to stop session container %s: %w", handle.ContainerID, err)
+		}
 	}
+	var removeErr error
 	if err := r.cli.ContainerRemove(ctx, handle.ContainerID, container.RemoveOptions{Force: true}); err != nil {
-		holonlog.Debug("container remove returned error", "id", handle.ContainerID, "error", err)
+		if !errdefs.IsNotFound(err) {
+			removeErr = fmt.Errorf("failed to remove session container %s: %w", handle.ContainerID, err)
+		}
 	}
+	r.closeSessionLogStream(handle)
 	r.cleanupSessionHandle(handle)
+	if stopErr != nil {
+		if removeErr != nil {
+			return fmt.Errorf("%v; %w", stopErr, removeErr)
+		}
+		return stopErr
+	}
+	if removeErr != nil {
+		return removeErr
+	}
 	return nil
 }
 
@@ -485,6 +533,28 @@ func (r *Runtime) cleanupSessionHandle(handle *SessionHandle) {
 		_ = os.RemoveAll(handle.SkillsDir)
 		handle.SkillsDir = ""
 	}
+	if handle.OwnsSnapshotDir && handle.SnapshotDir != "" {
+		_ = os.RemoveAll(handle.SnapshotDir)
+		handle.SnapshotDir = ""
+	}
+}
+
+func (r *Runtime) closeSessionLogStream(handle *SessionHandle) {
+	if handle == nil || !handle.logsPumpInitialized {
+		return
+	}
+	if handle.logsReadCloser != nil {
+		_ = handle.logsReadCloser.Close()
+		handle.logsReadCloser = nil
+	}
+	select {
+	case err := <-handle.logsPumpErr:
+		if err != nil {
+			holonlog.Debug("session log stream exited with error", "container_id", handle.ContainerID, "error", err)
+		}
+	default:
+	}
+	handle.logsPumpInitialized = false
 }
 
 func (r *Runtime) buildComposedImageFromBundle(ctx context.Context, baseImage, bundlePath string) (string, error) {
