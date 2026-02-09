@@ -366,3 +366,135 @@ func splitLines(data []byte) [][]byte {
 	}
 	return lines
 }
+
+// Codex-compatible session/turn types
+
+// ThreadStartRequest represents parameters for thread/start
+type ThreadStartRequest struct {
+	// ExtendedContext is optional context for the thread
+	ExtendedContext map[string]interface{} `json:"extended_context,omitempty"`
+}
+
+// ThreadStartResponse is the response for thread/start
+type ThreadStartResponse struct {
+	ThreadID string `json:"thread_id"`
+	// Holon maps thread concept to controller session
+	SessionID string `json:"session_id"`
+	StartedAt string `json:"started_at"`
+}
+
+// TurnStartRequest represents parameters for turn/start
+type TurnStartRequest struct {
+	ThreadID string `json:"thread_id,omitempty"`
+	// ExtendedContext is optional context for the turn
+	ExtendedContext map[string]interface{} `json:"extended_context,omitempty"`
+}
+
+// TurnStartResponse is the response for turn/start
+type TurnStartResponse struct {
+	TurnID string `json:"turn_id"`
+	// In Holon, a turn maps to an event processing cycle
+	State string `json:"state"`
+	StartedAt string `json:"started_at"`
+}
+
+// TurnInterruptRequest represents parameters for turn/interrupt
+type TurnInterruptRequest struct {
+	TurnID string `json:"turn_id,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// TurnInterruptResponse is the response for turn/interrupt
+type TurnInterruptResponse struct {
+	TurnID string `json:"turn_id"`
+	State string `json:"state"`
+	InterruptedAt string `json:"interrupted_at"`
+	Message string `json:"message"`
+}
+
+// HandleThreadStart is the JSON-RPC handler for thread/start
+// This maps to starting/resuming the controller session in Holon
+func (rt *Runtime) HandleThreadStart(params json.RawMessage) (interface{}, *JSONRPCError) {
+	var req ThreadStartRequest
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, NewJSONRPCError(ErrCodeInvalidParams, fmt.Sprintf("invalid params: %s", err))
+		}
+	}
+
+	// In Holon, thread maps to controller session
+	// Generate a new session ID for this thread
+	sessionID := fmt.Sprintf("thread_%d", rt.now().UnixNano())
+	rt.SetControllerSession(sessionID)
+
+	// Resume if paused to ensure thread is active
+	if rt.IsPaused() {
+		_ = rt.Resume()
+	}
+
+	return ThreadStartResponse{
+		ThreadID:   sessionID,
+		SessionID:  sessionID,
+		StartedAt:  rt.now().Format(time.RFC3339),
+	}, nil
+}
+
+// HandleTurnStart is the JSON-RPC handler for turn/start
+// This maps to starting a new turn (event processing cycle) in Holon
+func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRPCError) {
+	var req TurnStartRequest
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, NewJSONRPCError(ErrCodeInvalidParams, fmt.Sprintf("invalid params: %s", err))
+		}
+	}
+
+	// In Holon, a turn represents an event processing cycle
+	// Resume if paused to ensure turn can process
+	if rt.IsPaused() {
+		_ = rt.Resume()
+	}
+
+	// Generate turn ID
+	turnID := fmt.Sprintf("turn_%d", rt.now().UnixNano())
+
+	return TurnStartResponse{
+		TurnID:    turnID,
+		State:     "active",
+		StartedAt: rt.now().Format(time.RFC3339),
+	}, nil
+}
+
+// HandleTurnInterrupt is the JSON-RPC handler for turn/interrupt
+// This maps to pausing event processing in Holon
+func (rt *Runtime) HandleTurnInterrupt(params json.RawMessage) (interface{}, *JSONRPCError) {
+	var req TurnInterruptRequest
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, NewJSONRPCError(ErrCodeInvalidParams, fmt.Sprintf("invalid params: %s", err))
+		}
+	}
+
+	// In Holon, interrupting a turn maps to pausing the runtime
+	if err := rt.Pause(); err != nil {
+		return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to interrupt: %s", err))
+	}
+
+	message := "Turn interrupted"
+	if req.Reason != "" {
+		message = fmt.Sprintf("Turn interrupted: %s", req.Reason)
+	}
+
+	// Use provided turn ID or generate one
+	turnID := req.TurnID
+	if turnID == "" {
+		turnID = fmt.Sprintf("turn_%d", rt.now().UnixNano())
+	}
+
+	return TurnInterruptResponse{
+		TurnID:        turnID,
+		State:         "interrupted",
+		InterruptedAt: rt.now().Format(time.RFC3339),
+		Message:       message,
+	}, nil
+}

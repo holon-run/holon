@@ -451,3 +451,319 @@ func TestReadLogsFromPath(t *testing.T) {
 		t.Errorf("Got %d logs with max_lines=2, want 2", len(logs))
 	}
 }
+
+func TestHandleThreadStart(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	// Test with no params
+	result, rpcErr := rt.HandleThreadStart(nil)
+	if rpcErr != nil {
+		t.Fatalf("HandleThreadStart() error = %v", rpcErr)
+	}
+
+	resp, ok := result.(ThreadStartResponse)
+	if !ok {
+		t.Fatalf("HandleThreadStart() result type = %T, want ThreadStartResponse", result)
+	}
+
+	if resp.ThreadID == "" {
+		t.Error("ThreadID is empty")
+	}
+
+	if resp.SessionID == "" {
+		t.Error("SessionID is empty")
+	}
+
+	if resp.SessionID != resp.ThreadID {
+		t.Errorf("SessionID %s != ThreadID %s", resp.SessionID, resp.ThreadID)
+	}
+
+	if resp.StartedAt == "" {
+		t.Error("StartedAt is empty")
+	}
+
+	// Verify session was set
+	state := rt.GetState()
+	if state.ControllerSession != resp.SessionID {
+		t.Errorf("ControllerSession = %s, want %s", state.ControllerSession, resp.SessionID)
+	}
+
+	// Test with params
+	params, _ := json.Marshal(map[string]interface{}{
+		"extended_context": map[string]string{
+			"test_key": "test_value",
+		},
+	})
+	result, rpcErr = rt.HandleThreadStart(params)
+	if rpcErr != nil {
+		t.Fatalf("HandleThreadStart() with params error = %v", rpcErr)
+	}
+
+	resp, ok = result.(ThreadStartResponse)
+	if !ok {
+		t.Fatalf("HandleThreadStart() with params result type = %T, want ThreadStartResponse", result)
+	}
+
+	if resp.ThreadID == "" {
+		t.Error("ThreadID with params is empty")
+	}
+}
+
+func TestHandleThreadStartResumesIfPaused(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	// Pause the runtime
+	if err := rt.Pause(); err != nil {
+		t.Fatalf("Pause() error = %v", err)
+	}
+
+	if !rt.IsPaused() {
+		t.Error("Runtime should be paused")
+	}
+
+	// Thread start should resume
+	result, rpcErr := rt.HandleThreadStart(nil)
+	if rpcErr != nil {
+		t.Fatalf("HandleThreadStart() error = %v", rpcErr)
+	}
+
+	_, ok := result.(ThreadStartResponse)
+	if !ok {
+		t.Fatalf("HandleThreadStart() result type = %T, want ThreadStartResponse", result)
+	}
+
+	// Verify runtime is no longer paused
+	if rt.IsPaused() {
+		t.Error("Runtime should be running after thread/start")
+	}
+}
+
+func TestHandleTurnStart(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	// Test with no params
+	result, rpcErr := rt.HandleTurnStart(nil)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	}
+
+	resp, ok := result.(TurnStartResponse)
+	if !ok {
+		t.Fatalf("HandleTurnStart() result type = %T, want TurnStartResponse", result)
+	}
+
+	if resp.TurnID == "" {
+		t.Error("TurnID is empty")
+	}
+
+	if resp.State != "active" {
+		t.Errorf("State = %s, want 'active'", resp.State)
+	}
+
+	if resp.StartedAt == "" {
+		t.Error("StartedAt is empty")
+	}
+
+	// Test with params
+	params, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_test123",
+		"extended_context": map[string]string{
+			"test_key": "test_value",
+		},
+	})
+	result, rpcErr = rt.HandleTurnStart(params)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnStart() with params error = %v", rpcErr)
+	}
+
+	resp, ok = result.(TurnStartResponse)
+	if !ok {
+		t.Fatalf("HandleTurnStart() with params result type = %T, want TurnStartResponse", result)
+	}
+
+	if resp.TurnID == "" {
+		t.Error("TurnID with params is empty")
+	}
+}
+
+func TestHandleTurnStartResumesIfPaused(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	// Pause the runtime
+	if err := rt.Pause(); err != nil {
+		t.Fatalf("Pause() error = %v", err)
+	}
+
+	if !rt.IsPaused() {
+		t.Error("Runtime should be paused")
+	}
+
+	// Turn start should resume
+	result, rpcErr := rt.HandleTurnStart(nil)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	}
+
+	_, ok := result.(TurnStartResponse)
+	if !ok {
+		t.Fatalf("HandleTurnStart() result type = %T, want TurnStartResponse", result)
+	}
+
+	// Verify runtime is no longer paused
+	if rt.IsPaused() {
+		t.Error("Runtime should be running after turn/start")
+	}
+}
+
+func TestHandleTurnInterrupt(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	// Test with no params
+	result, rpcErr := rt.HandleTurnInterrupt(nil)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnInterrupt() error = %v", rpcErr)
+	}
+
+	resp, ok := result.(TurnInterruptResponse)
+	if !ok {
+		t.Fatalf("HandleTurnInterrupt() result type = %T, want TurnInterruptResponse", result)
+	}
+
+	if resp.TurnID == "" {
+		t.Error("TurnID is empty")
+	}
+
+	if resp.State != "interrupted" {
+		t.Errorf("State = %s, want 'interrupted'", resp.State)
+	}
+
+	if resp.InterruptedAt == "" {
+		t.Error("InterruptedAt is empty")
+	}
+
+	if resp.Message == "" {
+		t.Error("Message is empty")
+	}
+
+	// Verify runtime is paused
+	if !rt.IsPaused() {
+		t.Error("Runtime should be paused after turn/interrupt")
+	}
+
+	// Test with params
+	// Resume first for the second test
+	if err := rt.Resume(); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"turn_id": "turn_test123",
+		"reason":  "User requested interruption",
+	})
+	result, rpcErr = rt.HandleTurnInterrupt(params)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnInterrupt() with params error = %v", rpcErr)
+	}
+
+	resp, ok = result.(TurnInterruptResponse)
+	if !ok {
+		t.Fatalf("HandleTurnInterrupt() with params result type = %T, want TurnInterruptResponse", result)
+	}
+
+	if resp.TurnID != "turn_test123" {
+		t.Errorf("TurnID = %s, want 'turn_test123'", resp.TurnID)
+	}
+
+	if resp.Message != "Turn interrupted: User requested interruption" {
+		t.Errorf("Message = %s, want 'Turn interrupted: User requested interruption'", resp.Message)
+	}
+}
+
+func TestHandleTurnInterruptWhenAlreadyPaused(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	// Pause the runtime
+	if err := rt.Pause(); err != nil {
+		t.Fatalf("Pause() error = %v", err)
+	}
+
+	if !rt.IsPaused() {
+		t.Error("Runtime should be paused")
+	}
+
+	// Turn interrupt should return error when already paused
+	_, rpcErr := rt.HandleTurnInterrupt(nil)
+	if rpcErr == nil {
+		t.Error("Expected error when interrupting already paused runtime, got nil")
+	}
+
+	if rpcErr.Code != ErrCodeInternalError {
+		t.Errorf("Error code = %d, want %d", rpcErr.Code, ErrCodeInternalError)
+	}
+}
+
+func TestCodexMethodsInvalidParams(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	// Test thread/start with invalid JSON
+	_, rpcErr := rt.HandleThreadStart([]byte("{invalid json"))
+	if rpcErr == nil {
+		t.Error("Expected error for thread/start with invalid JSON, got nil")
+	}
+	if rpcErr.Code != ErrCodeInvalidParams {
+		t.Errorf("Error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
+	}
+
+	// Test turn/start with invalid JSON
+	_, rpcErr = rt.HandleTurnStart([]byte("{invalid json"))
+	if rpcErr == nil {
+		t.Error("Expected error for turn/start with invalid JSON, got nil")
+	}
+	if rpcErr.Code != ErrCodeInvalidParams {
+		t.Errorf("Error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
+	}
+
+	// Test turn/interrupt with invalid JSON
+	_, rpcErr = rt.HandleTurnInterrupt([]byte("{invalid json"))
+	if rpcErr == nil {
+		t.Error("Expected error for turn/interrupt with invalid JSON, got nil")
+	}
+	if rpcErr.Code != ErrCodeInvalidParams {
+		t.Errorf("Error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
+	}
+}
