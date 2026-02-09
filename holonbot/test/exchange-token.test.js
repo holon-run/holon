@@ -20,6 +20,44 @@ const { verifyOIDCToken, validateClaims } = await import('../lib/oidc.js');
 describe('exchange-token handler', () => {
     let req, res;
     const originalEnv = process.env;
+    let appOctokit;
+    let installationOctokit;
+
+    function setupDefaultOctokits() {
+        appOctokit = {
+            rest: {
+                apps: {
+                    getRepoInstallation: jest.fn().mockResolvedValue({
+                        data: { id: 123 }
+                    }),
+                    createInstallationAccessToken: jest.fn().mockResolvedValue({
+                        data: { token: 'gh-installation-token', expires_at: '2025-01-01T00:00:00Z', permissions: {} }
+                    })
+                }
+            }
+        };
+        installationOctokit = {
+            rest: {
+                repos: {
+                    get: jest.fn().mockResolvedValue({
+                        data: { id: 42, default_branch: 'main' }
+                    }),
+                    getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({
+                        data: { permission: 'write' }
+                    }),
+                }
+            }
+        };
+        probot.auth.mockImplementation((installationId) => {
+            if (installationId === undefined) {
+                return Promise.resolve(appOctokit);
+            }
+            if (installationId === 123) {
+                return Promise.resolve(installationOctokit);
+            }
+            throw new Error(`unexpected installation id: ${installationId}`);
+        });
+    }
 
     beforeEach(() => {
         process.env = {
@@ -40,6 +78,7 @@ describe('exchange-token handler', () => {
         };
         jest.clearAllMocks();
         resetSecurityCachesForTests();
+        setupDefaultOctokits();
     });
 
     afterAll(() => {
@@ -60,29 +99,6 @@ describe('exchange-token handler', () => {
             jti: 'jti-1',
         });
 
-        // 2. Mock Probot and Octokit
-        const mockOctokit = {
-            rest: {
-                repos: {
-                    get: jest.fn().mockResolvedValue({
-                        data: { id: 42, default_branch: 'main' }
-                    }),
-                    getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({
-                        data: { permission: 'write' }
-                    }),
-                },
-                apps: {
-                    getRepoInstallation: jest.fn().mockResolvedValue({
-                        data: { id: 123 }
-                    }),
-                    createInstallationAccessToken: jest.fn().mockResolvedValue({
-                        data: { token: 'gh-installation-token', expires_at: '2025-01-01T00:00:00Z', permissions: {} }
-                    })
-                }
-            }
-        };
-        probot.auth.mockResolvedValue(mockOctokit);
-
         await handler(req, res);
 
         expect(res.status).toHaveBeenCalledWith(200);
@@ -91,8 +107,8 @@ describe('exchange-token handler', () => {
         }));
 
         // Verify correct API namespace usage
-        expect(mockOctokit.rest.apps.getRepoInstallation).toHaveBeenCalled();
-        expect(mockOctokit.rest.apps.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({
+        expect(appOctokit.rest.apps.getRepoInstallation).toHaveBeenCalled();
+        expect(appOctokit.rest.apps.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({
             installation_id: 123,
             repository_ids: [42],
             permissions: { contents: 'write', pull_requests: 'write' }
@@ -119,22 +135,7 @@ describe('exchange-token handler', () => {
             jti: 'jti-1',
         });
 
-        const mockOctokit = {
-            rest: {
-                repos: {
-                    get: jest.fn().mockResolvedValue({
-                        data: { id: 42, default_branch: 'main' }
-                    }),
-                    getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({
-                        data: { permission: 'write' }
-                    }),
-                },
-                apps: {
-                    getRepoInstallation: jest.fn().mockRejectedValue({ status: 404 })
-                }
-            }
-        };
-        probot.auth.mockResolvedValue(mockOctokit);
+        appOctokit.rest.apps.getRepoInstallation.mockRejectedValue({ status: 404 });
 
         await handler(req, res);
 
@@ -155,20 +156,7 @@ describe('exchange-token handler', () => {
             jti: 'jti-1',
         });
 
-        const mockOctokit = {
-            rest: {
-                repos: {
-                    get: jest.fn().mockResolvedValue({
-                        data: { id: 42, default_branch: 'main' }
-                    }),
-                    getCollaboratorPermissionLevel: jest.fn().mockRejectedValue({ status: 404 }),
-                },
-                apps: {
-                    getRepoInstallation: jest.fn()
-                }
-            }
-        };
-        probot.auth.mockResolvedValue(mockOctokit);
+        installationOctokit.rest.repos.getCollaboratorPermissionLevel.mockRejectedValue({ status: 404 });
 
         await handler(req, res);
 
@@ -191,27 +179,43 @@ describe('exchange-token handler', () => {
             jti: 'same-jti',
         });
 
-        const mockOctokit = {
-            rest: {
-                repos: {
-                    get: jest.fn().mockResolvedValue({
-                        data: { id: 42, default_branch: 'main' }
-                    }),
-                    getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({
-                        data: { permission: 'write' }
-                    }),
-                },
-                apps: {
-                    getRepoInstallation: jest.fn().mockResolvedValue({
-                        data: { id: 123 }
-                    }),
-                    createInstallationAccessToken: jest.fn().mockResolvedValue({
-                        data: { token: 'gh-installation-token', expires_at: '2025-01-01T00:00:00Z', permissions: {} }
-                    }),
-                }
-            }
-        };
-        probot.auth.mockResolvedValue(mockOctokit);
+        await handler(req, res);
+        await handler(req, res);
+
+        expect(res.status).toHaveBeenLastCalledWith(403);
+        expect(res.json).toHaveBeenLastCalledWith(expect.objectContaining({
+            error: 'Token request rejected by security policy',
+            code: 'policy.replay.detected',
+            message: 'Replay detected for jti/run_id',
+        }));
+    });
+
+    test('should reject when rate limit is exceeded', async () => {
+        process.env.HOLON_RATE_LIMIT_MAX_REQUESTS = '1';
+        process.env.HOLON_ENABLE_REPLAY_PROTECTION = 'false';
+
+        verifyOIDCToken.mockResolvedValue({});
+        validateClaims
+            .mockReturnValueOnce({
+                repository: 'owner/repo',
+                owner: 'owner',
+                repo: 'repo',
+                repositoryId: '42',
+                actor: 'jolestar',
+                ref: 'refs/heads/main',
+                runId: 'run-1',
+                jti: 'jti-1',
+            })
+            .mockReturnValueOnce({
+                repository: 'owner/repo',
+                owner: 'owner',
+                repo: 'repo',
+                repositoryId: '42',
+                actor: 'jolestar',
+                ref: 'refs/heads/main',
+                runId: 'run-2',
+                jti: 'jti-2',
+            });
 
         await handler(req, res);
         await handler(req, res);
@@ -219,7 +223,8 @@ describe('exchange-token handler', () => {
         expect(res.status).toHaveBeenLastCalledWith(403);
         expect(res.json).toHaveBeenLastCalledWith(expect.objectContaining({
             error: 'Token request rejected by security policy',
-            message: 'Replay detected for jti/run_id',
+            code: 'policy.rate_limited',
+            message: 'Rate limit exceeded',
         }));
     });
 });

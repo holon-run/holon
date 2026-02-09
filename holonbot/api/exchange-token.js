@@ -3,6 +3,7 @@ import { verifyOIDCToken, validateClaims } from '../lib/oidc.js';
 
 const replayCache = new Map();
 const rateLimitCache = new Map();
+let lastCleanupAtMs = 0;
 const permissionRank = {
     none: 0,
     read: 1,
@@ -11,6 +12,15 @@ const permissionRank = {
     maintain: 4,
     admin: 5,
 };
+
+class HttpError extends Error {
+    constructor(status, code, message) {
+        super(message);
+        this.name = 'HttpError';
+        this.status = status;
+        this.code = code;
+    }
+}
 
 function parseBool(value, defaultValue) {
     if (value === undefined || value === null || value === '') {
@@ -40,7 +50,7 @@ function parseCSV(value) {
 function getRequiredAudiences(env = process.env) {
     const audiences = parseCSV(env.HOLON_OIDC_AUDIENCE);
     if (audiences.length === 0) {
-        throw new Error('Missing HOLON_OIDC_AUDIENCE configuration');
+        throw new HttpError(500, 'config.invalid', 'Missing HOLON_OIDC_AUDIENCE configuration');
     }
     return audiences;
 }
@@ -53,11 +63,28 @@ function getInstallationPermissions(env = process.env) {
     try {
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            throw new Error('not an object');
+            throw new HttpError(500, 'config.invalid', 'HOLON_INSTALLATION_PERMISSIONS_JSON must be an object');
         }
         return parsed;
     } catch (error) {
-        throw new Error(`Invalid HOLON_INSTALLATION_PERMISSIONS_JSON: ${error.message}`);
+        if (error instanceof HttpError) {
+            throw error;
+        }
+        throw new HttpError(500, 'config.invalid', `Invalid HOLON_INSTALLATION_PERMISSIONS_JSON: ${error.message}`);
+    }
+}
+
+function sanitizeForLog(value) {
+    return String(value ?? '').replace(/[\r\n\t]/g, ' ').replace(/[^\x20-\x7E]/g, '?');
+}
+
+function enforceCacheLimit(map, maxSize) {
+    while (map.size > maxSize) {
+        const firstKey = map.keys().next().value;
+        if (firstKey === undefined) {
+            break;
+        }
+        map.delete(firstKey);
     }
 }
 
@@ -74,6 +101,15 @@ function cleanExpiredEntries(now) {
     }
 }
 
+function maybeCleanupCaches(now, env = process.env) {
+    const cleanupIntervalMs = parseIntEnv(env.HOLON_CACHE_CLEANUP_INTERVAL_MS, 5000);
+    if ((now - lastCleanupAtMs) < cleanupIntervalMs) {
+        return;
+    }
+    cleanExpiredEntries(now);
+    lastCleanupAtMs = now;
+}
+
 function applyReplayProtection(claims, repository, env = process.env) {
     const enabled = parseBool(env.HOLON_ENABLE_REPLAY_PROTECTION, true);
     if (!enabled) {
@@ -82,18 +118,21 @@ function applyReplayProtection(claims, repository, env = process.env) {
 
     const replayId = claims.jti || claims.runId;
     if (!replayId) {
-        throw new Error('Missing jti/run_id claim required for replay protection');
+        throw new HttpError(403, 'policy.replay.invalid_claim', 'Missing jti/run_id claim required for replay protection');
     }
 
     const windowSeconds = parseIntEnv(env.HOLON_REPLAY_WINDOW_SECONDS, 3600);
+    const maxCacheSize = parseIntEnv(env.HOLON_REPLAY_CACHE_MAX_SIZE, 10000);
     const now = Date.now();
-    cleanExpiredEntries(now);
+    maybeCleanupCaches(now, env);
 
     const key = `${repository}:${replayId}`;
     if (replayCache.has(key)) {
-        throw new Error('Replay detected for jti/run_id');
+        throw new HttpError(403, 'policy.replay.detected', 'Replay detected for jti/run_id');
     }
+    replayCache.delete(key);
     replayCache.set(key, now + (windowSeconds * 1000));
+    enforceCacheLimit(replayCache, maxCacheSize);
 }
 
 function applyRateLimit(claims, repository, env = process.env) {
@@ -104,9 +143,10 @@ function applyRateLimit(claims, repository, env = process.env) {
 
     const windowSeconds = parseIntEnv(env.HOLON_RATE_LIMIT_WINDOW_SECONDS, 60);
     const maxRequests = parseIntEnv(env.HOLON_RATE_LIMIT_MAX_REQUESTS, 10);
+    const maxCacheSize = parseIntEnv(env.HOLON_RATE_LIMIT_CACHE_MAX_SIZE, 10000);
     const actor = claims.actor || 'unknown';
     const now = Date.now();
-    cleanExpiredEntries(now);
+    maybeCleanupCaches(now, env);
 
     const key = `${repository}:${actor}`;
     const windowMs = windowSeconds * 1000;
@@ -117,14 +157,16 @@ function applyRateLimit(claims, repository, env = process.env) {
     }
 
     if (state.count >= maxRequests) {
-        throw new Error('Rate limit exceeded');
+        throw new HttpError(403, 'policy.rate_limited', 'Rate limit exceeded');
     }
 
-    state.count += 1;
-    rateLimitCache.set(key, state);
+    const updated = { ...state, count: state.count + 1 };
+    rateLimitCache.delete(key);
+    rateLimitCache.set(key, updated);
+    enforceCacheLimit(rateLimitCache, maxCacheSize);
 }
 
-async function assertActorPermission(appOctokit, claims, env = process.env) {
+async function assertActorPermission(installationOctokit, claims, env = process.env) {
     const enabled = parseBool(env.HOLON_REQUIRE_ACTOR_COLLABORATOR, true);
     if (!enabled) {
         return;
@@ -132,12 +174,12 @@ async function assertActorPermission(appOctokit, claims, env = process.env) {
 
     const minPermission = String(env.HOLON_MIN_ACTOR_PERMISSION || 'read').toLowerCase();
     if (!Object.prototype.hasOwnProperty.call(permissionRank, minPermission)) {
-        throw new Error(`Invalid HOLON_MIN_ACTOR_PERMISSION: ${minPermission}`);
+        throw new HttpError(500, 'config.invalid', `Invalid HOLON_MIN_ACTOR_PERMISSION: ${minPermission}`);
     }
 
-    let permission = 'none';
+    let permission;
     try {
-        const response = await appOctokit.rest.repos.getCollaboratorPermissionLevel({
+        const response = await installationOctokit.rest.repos.getCollaboratorPermissionLevel({
             owner: claims.owner,
             repo: claims.repo,
             username: claims.actor,
@@ -145,7 +187,13 @@ async function assertActorPermission(appOctokit, claims, env = process.env) {
         permission = String(response.data.permission || 'none').toLowerCase();
     } catch (error) {
         if (error.status === 404) {
-            throw new Error(`Actor ${claims.actor} is not a collaborator/member`);
+            throw new HttpError(403, 'policy.actor_not_collaborator', `Actor ${claims.actor} is not a collaborator/member`);
+        }
+        if (error.status === 401 || error.status === 403) {
+            throw new HttpError(500, 'github.auth_failed', `Failed to verify collaborator permission: ${error.message}`);
+        }
+        if (error.status === 429) {
+            throw new HttpError(503, 'github.rate_limited', 'GitHub API rate limit while verifying collaborator permission');
         }
         throw error;
     }
@@ -153,13 +201,18 @@ async function assertActorPermission(appOctokit, claims, env = process.env) {
     const actualRank = permissionRank[permission] ?? permissionRank.none;
     const requiredRank = permissionRank[minPermission];
     if (actualRank < requiredRank) {
-        throw new Error(`Insufficient actor permission: ${claims.actor} has ${permission}, requires ${minPermission}`);
+        throw new HttpError(
+            403,
+            'policy.actor_permission_insufficient',
+            `Insufficient actor permission: ${claims.actor} has ${permission}, requires ${minPermission}`
+        );
     }
 }
 
 export function resetSecurityCachesForTests() {
     replayCache.clear();
     rateLimitCache.clear();
+    lastCleanupAtMs = 0;
 }
 
 export default async function handler(req, res) {
@@ -180,45 +233,29 @@ export default async function handler(req, res) {
         const audiences = getRequiredAudiences(process.env);
 
         // 2. Verify OIDC Token and strict claims policy
-        const claimsPayload = await verifyOIDCToken(token, { audiences });
-        const appOctokit = await probot.auth();
-        const claims = validateClaims(claimsPayload, {
-            requireWorkflowRef: parseBool(process.env.HOLON_REQUIRE_JOB_WORKFLOW_REF, true),
-            allowedWorkflowRefs: parseCSV(process.env.HOLON_ALLOWED_WORKFLOW_REFS),
-        });
-
-        // 3. Resolve repository and bind token issuance to the same repository_id
-        const repoResponse = await appOctokit.rest.repos.get({
-            owner: claims.owner,
-            repo: claims.repo,
-        });
-        const repository = claims.repository;
-        const repositoryId = String(repoResponse.data.id);
-        if (claims.repositoryId !== repositoryId) {
-            return res.status(403).json({
-                error: 'OIDC repository_id does not match target repository',
-            });
+        let claimsPayload;
+        try {
+            claimsPayload = await verifyOIDCToken(token, { audiences });
+        } catch (error) {
+            if (String(error.message || '').startsWith('Invalid OIDC Token:')) {
+                throw new HttpError(401, 'oidc.invalid_token', error.message);
+            }
+            throw error;
         }
 
-        const enforceDefaultRef = parseBool(process.env.HOLON_REQUIRE_DEFAULT_BRANCH_REF, true);
-        if (enforceDefaultRef) {
-            const validated = validateClaims(claimsPayload, {
+        let claims;
+        try {
+            claims = validateClaims(claimsPayload, {
                 requireWorkflowRef: parseBool(process.env.HOLON_REQUIRE_JOB_WORKFLOW_REF, true),
                 allowedWorkflowRefs: parseCSV(process.env.HOLON_ALLOWED_WORKFLOW_REFS),
-                requireDefaultBranchRef: true,
-                defaultBranch: repoResponse.data.default_branch,
             });
-            claims.ref = validated.ref;
+        } catch (error) {
+            throw new HttpError(403, 'oidc.invalid_claims', error.message);
         }
 
-        console.log(`Token request for repository: ${repository} by actor: ${claims.actor}`);
+        const appOctokit = await probot.auth();
 
-        // 4. Abuse protections and actor permission gate
-        applyReplayProtection(claims, repository, process.env);
-        applyRateLimit(claims, repository, process.env);
-        await assertActorPermission(appOctokit, claims, process.env);
-
-        // 5. Find the app installation for this repository
+        // 3. Find the app installation for this repository using app-authenticated client.
         let installation;
         try {
             const response = await appOctokit.rest.apps.getRepoInstallation({
@@ -230,14 +267,74 @@ export default async function handler(req, res) {
             if (err.status === 404) {
                 return res.status(404).json({ error: 'HolonBot is not installed on this repository' });
             }
+            if (err.status === 401 || err.status === 403) {
+                throw new HttpError(500, 'github.auth_failed', `GitHub app authentication failed: ${err.message}`);
+            }
+            if (err.status === 429) {
+                throw new HttpError(503, 'github.rate_limited', 'GitHub API rate limit while resolving repository installation');
+            }
             throw err;
         }
 
-        // 6. Generate least-privilege installation token scoped to this repository only
+        const installationOctokit = await probot.auth(installation.id);
+
+        // 4. Resolve repository metadata and bind token issuance to the same repository_id.
+        let repoResponse;
+        try {
+            repoResponse = await installationOctokit.rest.repos.get({
+                owner: claims.owner,
+                repo: claims.repo,
+            });
+        } catch (error) {
+            if (error.status === 404) {
+                throw new HttpError(403, 'oidc.invalid_claims', 'Repository in OIDC token does not exist or is not accessible');
+            }
+            if (error.status === 401 || error.status === 403) {
+                throw new HttpError(500, 'github.auth_failed', `Failed to query repository metadata: ${error.message}`);
+            }
+            if (error.status === 429) {
+                throw new HttpError(503, 'github.rate_limited', 'GitHub API rate limit while reading repository metadata');
+            }
+            throw error;
+        }
+
+        const repository = claims.repository;
+        const repositoryId = String(repoResponse.data.id);
+        if (claims.repositoryId !== repositoryId) {
+            return res.status(403).json({
+                error: 'OIDC repository_id does not match target repository',
+            });
+        }
+
+        const enforceDefaultRef = parseBool(process.env.HOLON_REQUIRE_DEFAULT_BRANCH_REF, true);
+        if (enforceDefaultRef) {
+            let validated;
+            try {
+                validated = validateClaims(claimsPayload, {
+                    requireWorkflowRef: parseBool(process.env.HOLON_REQUIRE_JOB_WORKFLOW_REF, true),
+                    allowedWorkflowRefs: parseCSV(process.env.HOLON_ALLOWED_WORKFLOW_REFS),
+                    requireDefaultBranchRef: true,
+                    defaultBranch: repoResponse.data.default_branch,
+                });
+            } catch (error) {
+                throw new HttpError(403, 'oidc.invalid_claims', error.message);
+            }
+            claims.ref = validated.ref;
+        }
+
+        console.log(
+            `Token request for repository: ${sanitizeForLog(repository)} by actor: ${sanitizeForLog(claims.actor)}`
+        );
+
+        // 5. Abuse protections and actor permission gate
+        applyReplayProtection(claims, repository, process.env);
+        applyRateLimit(claims, repository, process.env);
+        await assertActorPermission(installationOctokit, claims, process.env);
+
+        // 6. Generate least-privilege installation token scoped to this repository only.
         const installationPermissions = getInstallationPermissions(process.env);
-        const installationId = installation.id;
         const installationTokenResponse = await appOctokit.rest.apps.createInstallationAccessToken({
-            installation_id: installationId,
+            installation_id: installation.id,
             repository_ids: [repoResponse.data.id],
             permissions: installationPermissions,
         });
@@ -251,23 +348,24 @@ export default async function handler(req, res) {
 
     } catch (error) {
         console.error('Token Exchange Error:', error);
-        if (/^Invalid OIDC Token:/.test(error.message)) {
-            return res.status(401).json({
-                error: 'Invalid OIDC token',
+        if (error instanceof HttpError) {
+            const response = {
+                error: 'Token exchange failed',
+                code: error.code,
                 message: error.message,
-            });
-        }
-        if (/Missing HOLON_OIDC_AUDIENCE|Missing .* claim|repository_id|job_workflow_ref|sub claim|default branch|repository_owner|repository format/.test(error.message)) {
-            return res.status(403).json({
-                error: 'OIDC claims validation failed',
-                message: error.message,
-            });
-        }
-        if (/Replay detected|Rate limit exceeded|collaborator\/member|Insufficient actor permission/.test(error.message)) {
-            return res.status(403).json({
-                error: 'Token request rejected by security policy',
-                message: error.message,
-            });
+            };
+            if (error.status === 401) {
+                response.error = 'Invalid OIDC token';
+            } else if (error.status === 403 && error.code.startsWith('oidc.')) {
+                response.error = 'OIDC claims validation failed';
+            } else if (error.status === 403 && error.code.startsWith('policy.')) {
+                response.error = 'Token request rejected by security policy';
+            } else if (error.status >= 500 && error.code.startsWith('github.')) {
+                response.error = 'GitHub API error';
+            } else if (error.status >= 500 && error.code.startsWith('config.')) {
+                response.error = 'Token broker misconfiguration';
+            }
+            return res.status(error.status).json(response);
         }
         return res.status(500).json({
             error: 'Token exchange failed',
