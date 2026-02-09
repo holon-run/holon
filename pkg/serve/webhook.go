@@ -300,11 +300,28 @@ func (ws *WebhookServer) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this is a notification (no id field)
+	// JSON-RPC 2.0 spec: notifications must not receive a response
+	isNotification := (req.ID == nil)
+
 	// Dispatch to method handler
 	result, rpcErr := ws.rpcRegistry.Dispatch(req.Method, req.Params)
 	if rpcErr != nil {
+		// Don't send response for notifications
+		if isNotification {
+			w.WriteHeader(http.StatusNoContent)
+			holonlog.Debug("jsonrpc notification error", "method", req.Method, "error", rpcErr.Message, "code", rpcErr.Code)
+			return
+		}
 		WriteJSONRPCResponse(w, req.ID, nil, rpcErr)
 		holonlog.Error("jsonrpc method error", "method", req.Method, "error", rpcErr.Message, "code", rpcErr.Code)
+		return
+	}
+
+	// Don't send response for notifications
+	if isNotification {
+		w.WriteHeader(http.StatusNoContent)
+		holonlog.Debug("jsonrpc notification success", "method", req.Method)
 		return
 	}
 

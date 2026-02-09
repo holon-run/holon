@@ -1004,3 +1004,149 @@ func TestWebhookServer_JSONRPC_WithParams(t *testing.T) {
 		t.Errorf("expected key 'value', got %v", result["key"])
 	}
 }
+
+// TestWebhookServer_JSONRPC_NotificationNoResponse tests that notifications (requests without id) return 204 No Content
+func TestWebhookServer_JSONRPC_NotificationNoResponse(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	// Register a test method
+	methodCalled := false
+	ws.rpcRegistry.RegisterMethod("test.notify", func(params json.RawMessage) (interface{}, *JSONRPCError) {
+		methodCalled = true
+		return map[string]string{"result": "success"}, nil
+	})
+
+	// Create JSON-RPC notification (no id field)
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "test.notify",
+		"params":  map[string]string{"key": "value"},
+	}
+	body, _ := json.Marshal(requestBody)
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	// Should return No Content (204) for notifications
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected status No Content (204), got %d", w.Code)
+	}
+
+	// Verify method was still called
+	if !methodCalled {
+		t.Error("notification handler was not called")
+	}
+
+	// Verify response body is empty
+	if w.Body.Len() != 0 {
+		t.Errorf("expected empty response body for notification, got %d bytes", w.Body.Len())
+	}
+}
+
+// TestWebhookServer_JSONRPC_NotificationWithError tests that notifications with errors also return 204
+func TestWebhookServer_JSONRPC_NotificationWithError(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	// Register a method that returns an error
+	ws.rpcRegistry.RegisterMethod("failing.notify", func(params json.RawMessage) (interface{}, *JSONRPCError) {
+		return nil, NewJSONRPCError(ErrCodeInvalidParams, "invalid parameters")
+	})
+
+	// Create JSON-RPC notification (no id field)
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "failing.notify",
+	}
+	body, _ := json.Marshal(requestBody)
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	// Should return No Content (204) even for errors in notifications
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected status No Content (204) for notification error, got %d", w.Code)
+	}
+
+	// Verify response body is empty
+	if w.Body.Len() != 0 {
+		t.Errorf("expected empty response body for notification with error, got %d bytes", w.Body.Len())
+	}
+}
+
+// TestWebhookServer_JSONRPC_WithIDReturnsResponse tests that regular requests with id return normal response
+func TestWebhookServer_JSONRPC_WithIDReturnsResponse(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	// Register a test method
+	ws.rpcRegistry.RegisterMethod("test.method", func(params json.RawMessage) (interface{}, *JSONRPCError) {
+		return map[string]string{"result": "success"}, nil
+	})
+
+	// Create JSON-RPC request WITH id
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "test-id-123",
+		"method":  "test.method",
+	}
+	body, _ := json.Marshal(requestBody)
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	// Should return OK with response
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d", w.Code)
+	}
+
+	// Verify response body is NOT empty
+	if w.Body.Len() == 0 {
+		t.Error("expected non-empty response body for request with id")
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify id is echoed back
+	if resp.ID != "test-id-123" {
+		t.Errorf("expected id 'test-id-123', got %v", resp.ID)
+	}
+
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %s", resp.Error.Message)
+	}
+}

@@ -163,13 +163,13 @@ func (sh *StreamHandler) HandleStream(ctx context.Context, w http.ResponseWriter
 func (sh *StreamHandler) handleRequest(req *JSONRPCRequest, writer *StreamWriter) {
 	// Create method registry
 	registry := NewMethodRegistry()
-	logPath := "" // TODO: pass log path from configuration
 
 	// Register control methods
 	registry.RegisterMethod("holon/status", sh.runtime.HandleStatus)
 	registry.RegisterMethod("holon/pause", sh.runtime.HandlePause)
 	registry.RegisterMethod("holon/resume", sh.runtime.HandleResume)
-	registry.RegisterMethod("holon/logStream", sh.runtime.HandleLogStream(logPath))
+	// Note: holon/logStream is not available in streaming mode
+	// Use the HTTP /rpc endpoint for log streaming with proper log path configuration
 
 	// Register session/turn methods
 	registry.RegisterMethod("thread/start", sh.runtime.HandleThreadStart)
@@ -178,6 +178,15 @@ func (sh *StreamHandler) handleRequest(req *JSONRPCRequest, writer *StreamWriter
 
 	// Dispatch request
 	result, rpcErr := registry.Dispatch(req.Method, req.Params)
+
+	// Check if this is a notification (no id field)
+	// JSON-RPC 2.0 spec: notifications must not receive a response
+	isNotification := (req.ID == nil)
+
+	// Don't send response for notifications
+	if isNotification {
+		return
+	}
 
 	// Send response as a notification (server-sent style)
 	resp := JSONRPCResponse{

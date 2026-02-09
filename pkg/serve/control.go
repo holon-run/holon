@@ -429,7 +429,9 @@ func (rt *Runtime) HandleThreadStart(params json.RawMessage) (interface{}, *JSON
 
 	// Resume if paused to ensure thread is active
 	if rt.IsPaused() {
-		_ = rt.Resume()
+		if err := rt.Resume(); err != nil {
+			return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to resume: %s", err))
+		}
 	}
 
 	return ThreadStartResponse{
@@ -452,7 +454,9 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 	// In Holon, a turn represents an event processing cycle
 	// Resume if paused to ensure turn can process
 	if rt.IsPaused() {
-		_ = rt.Resume()
+		if err := rt.Resume(); err != nil {
+			return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to resume: %s", err))
+		}
 	}
 
 	// Generate turn ID
