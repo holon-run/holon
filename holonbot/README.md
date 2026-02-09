@@ -96,6 +96,7 @@ PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----
 WEBHOOK_SECRET=your_webhook_secret_here
 NODE_ENV=development
 LOG_LEVEL=debug
+HOLON_OIDC_AUDIENCE=holon-token-broker
 ```
 
 ### 3. Run Locally
@@ -151,6 +152,50 @@ LOG_LEVEL=info
 1. Go back to your GitHub App settings
 2. Update the **Webhook URL** to: `https://your-vercel-domain.vercel.app/api/github-webhook`
 3. Click "Save changes"
+
+## OIDC Token Exchange Security Model
+
+`api/exchange-token.js` is hardened for GitHub Actions OIDC to GitHub App installation token exchange.
+
+- OIDC JWT verification enforces:
+  - signature via GitHub JWKS
+  - `iss` = `https://token.actions.githubusercontent.com`
+  - `aud` in `HOLON_OIDC_AUDIENCE` (required)
+  - standard JWT time checks (`exp`, `nbf`)
+- Claim validation enforces repository binding:
+  - `repository` / `repository_owner` format and consistency
+  - `repository_id` present and numeric
+  - `sub` starts with `repo:<owner>/<repo>:`
+- Token issuance is bound to the same repository:
+  - broker fetches repo and verifies `repository_id`
+  - installation token is scoped with `repository_ids: [repo.id]`
+- Default policy requires actor collaborator/member check before issuing token.
+- `job_workflow_ref` can be required and restricted by allowlist.
+- Replay protection denies duplicate `jti`/`run_id` within a TTL window.
+- Rate limiting throttles repeated requests by `(repository, actor)`.
+- Installation token defaults to least privilege:
+  - `contents: write`
+  - `pull_requests: write`
+
+### Security Configuration
+
+Required:
+
+- `HOLON_OIDC_AUDIENCE`: Comma-separated accepted OIDC audiences.
+
+Optional (defaults shown):
+
+- `HOLON_REQUIRE_ACTOR_COLLABORATOR=true`
+- `HOLON_MIN_ACTOR_PERMISSION=read`
+- `HOLON_REQUIRE_JOB_WORKFLOW_REF=true`
+- `HOLON_ALLOWED_WORKFLOW_REFS=` (comma-separated exact refs)
+- `HOLON_REQUIRE_DEFAULT_BRANCH_REF=true`
+- `HOLON_ENABLE_REPLAY_PROTECTION=true`
+- `HOLON_REPLAY_WINDOW_SECONDS=3600`
+- `HOLON_ENABLE_RATE_LIMIT=true`
+- `HOLON_RATE_LIMIT_WINDOW_SECONDS=60`
+- `HOLON_RATE_LIMIT_MAX_REQUESTS=10`
+- `HOLON_INSTALLATION_PERMISSIONS_JSON=` (JSON object; default is `{"contents":"write","pull_requests":"write"}`)
 
 ## Bot Behavior
 

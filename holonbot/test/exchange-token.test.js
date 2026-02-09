@@ -1,4 +1,4 @@
-import { jest, describe, test, expect, beforeEach } from '@jest/globals';
+import { jest, describe, test, expect, beforeEach, afterAll } from '@jest/globals';
 
 // Mock dependencies
 jest.unstable_mockModule('../lib/probot-client.js', () => ({
@@ -13,14 +13,20 @@ jest.unstable_mockModule('../lib/oidc.js', () => ({
 }));
 
 // Import after mocking
-const { default: handler } = await import('../api/exchange-token.js');
+const { default: handler, resetSecurityCachesForTests } = await import('../api/exchange-token.js');
 const { probot } = await import('../lib/probot-client.js');
 const { verifyOIDCToken, validateClaims } = await import('../lib/oidc.js');
 
 describe('exchange-token handler', () => {
     let req, res;
+    const originalEnv = process.env;
 
     beforeEach(() => {
+        process.env = {
+            ...originalEnv,
+            HOLON_OIDC_AUDIENCE: 'holon-broker',
+            HOLON_REQUIRE_DEFAULT_BRANCH_REF: 'false',
+        };
         req = {
             method: 'POST',
             headers: {
@@ -33,16 +39,38 @@ describe('exchange-token handler', () => {
             setHeader: jest.fn()
         };
         jest.clearAllMocks();
+        resetSecurityCachesForTests();
+    });
+
+    afterAll(() => {
+        process.env = originalEnv;
     });
 
     test('should exchange token successfully', async () => {
         // 1. Mock OIDC verification
         verifyOIDCToken.mockResolvedValue({ sub: 'repo:owner/repo' });
-        validateClaims.mockReturnValue({ repository: 'owner/repo', owner: 'owner' });
+        validateClaims.mockReturnValue({
+            repository: 'owner/repo',
+            owner: 'owner',
+            repo: 'repo',
+            repositoryId: '42',
+            actor: 'jolestar',
+            ref: 'refs/heads/main',
+            runId: 'run-1',
+            jti: 'jti-1',
+        });
 
         // 2. Mock Probot and Octokit
         const mockOctokit = {
             rest: {
+                repos: {
+                    get: jest.fn().mockResolvedValue({
+                        data: { id: 42, default_branch: 'main' }
+                    }),
+                    getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({
+                        data: { permission: 'write' }
+                    }),
+                },
                 apps: {
                     getRepoInstallation: jest.fn().mockResolvedValue({
                         data: { id: 123 }
@@ -64,7 +92,11 @@ describe('exchange-token handler', () => {
 
         // Verify correct API namespace usage
         expect(mockOctokit.rest.apps.getRepoInstallation).toHaveBeenCalled();
-        expect(mockOctokit.rest.apps.createInstallationAccessToken).toHaveBeenCalled();
+        expect(mockOctokit.rest.apps.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({
+            installation_id: 123,
+            repository_ids: [42],
+            permissions: { contents: 'write', pull_requests: 'write' }
+        }));
     });
 
     test('should return 401 if auth header is missing', async () => {
@@ -76,10 +108,27 @@ describe('exchange-token handler', () => {
 
     test('should return 404 if app is not installed', async () => {
         verifyOIDCToken.mockResolvedValue({});
-        validateClaims.mockReturnValue({ repository: 'owner/repo', owner: 'owner' });
+        validateClaims.mockReturnValue({
+            repository: 'owner/repo',
+            owner: 'owner',
+            repo: 'repo',
+            repositoryId: '42',
+            actor: 'jolestar',
+            ref: 'refs/heads/main',
+            runId: 'run-1',
+            jti: 'jti-1',
+        });
 
         const mockOctokit = {
             rest: {
+                repos: {
+                    get: jest.fn().mockResolvedValue({
+                        data: { id: 42, default_branch: 'main' }
+                    }),
+                    getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({
+                        data: { permission: 'write' }
+                    }),
+                },
                 apps: {
                     getRepoInstallation: jest.fn().mockRejectedValue({ status: 404 })
                 }
@@ -91,5 +140,86 @@ describe('exchange-token handler', () => {
 
         expect(res.status).toHaveBeenCalledWith(404);
         expect(res.json).toHaveBeenCalledWith({ error: 'HolonBot is not installed on this repository' });
+    });
+
+    test('should reject when actor is not collaborator', async () => {
+        verifyOIDCToken.mockResolvedValue({});
+        validateClaims.mockReturnValue({
+            repository: 'owner/repo',
+            owner: 'owner',
+            repo: 'repo',
+            repositoryId: '42',
+            actor: 'outsider',
+            ref: 'refs/heads/main',
+            runId: 'run-1',
+            jti: 'jti-1',
+        });
+
+        const mockOctokit = {
+            rest: {
+                repos: {
+                    get: jest.fn().mockResolvedValue({
+                        data: { id: 42, default_branch: 'main' }
+                    }),
+                    getCollaboratorPermissionLevel: jest.fn().mockRejectedValue({ status: 404 }),
+                },
+                apps: {
+                    getRepoInstallation: jest.fn()
+                }
+            }
+        };
+        probot.auth.mockResolvedValue(mockOctokit);
+
+        await handler(req, res);
+
+        expect(res.status).toHaveBeenCalledWith(403);
+        expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+            error: 'Token request rejected by security policy',
+        }));
+    });
+
+    test('should reject replayed request by jti', async () => {
+        verifyOIDCToken.mockResolvedValue({});
+        validateClaims.mockReturnValue({
+            repository: 'owner/repo',
+            owner: 'owner',
+            repo: 'repo',
+            repositoryId: '42',
+            actor: 'jolestar',
+            ref: 'refs/heads/main',
+            runId: 'run-1',
+            jti: 'same-jti',
+        });
+
+        const mockOctokit = {
+            rest: {
+                repos: {
+                    get: jest.fn().mockResolvedValue({
+                        data: { id: 42, default_branch: 'main' }
+                    }),
+                    getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({
+                        data: { permission: 'write' }
+                    }),
+                },
+                apps: {
+                    getRepoInstallation: jest.fn().mockResolvedValue({
+                        data: { id: 123 }
+                    }),
+                    createInstallationAccessToken: jest.fn().mockResolvedValue({
+                        data: { token: 'gh-installation-token', expires_at: '2025-01-01T00:00:00Z', permissions: {} }
+                    }),
+                }
+            }
+        };
+        probot.auth.mockResolvedValue(mockOctokit);
+
+        await handler(req, res);
+        await handler(req, res);
+
+        expect(res.status).toHaveBeenLastCalledWith(403);
+        expect(res.json).toHaveBeenLastCalledWith(expect.objectContaining({
+            error: 'Token request rejected by security policy',
+            message: 'Replay detected for jti/run_id',
+        }));
     });
 });
