@@ -31,6 +31,7 @@ type WebhookServer struct {
 	mu             sync.RWMutex
 	maxBodySize    int64
 	channelTimeout time.Duration
+	rpcRegistry    *MethodRegistry
 }
 
 // WebhookConfig configures the webhook server
@@ -104,16 +105,17 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	}
 
 	ws := &WebhookServer{
-		eventChan:     make(chan []byte, 100),
-		handler:       cfg.Handler,
-		repoHint:      cfg.RepoHint,
-		statePath:     filepath.Join(cfg.StateDir, "serve-state.json"),
-		eventsLog:     eventsLog,
-		decLog:        decLog,
-		actionsLog:    actionsLog,
-		now:           time.Now,
-		maxBodySize:   maxBodySize,
+		eventChan:      make(chan []byte, 100),
+		handler:        cfg.Handler,
+		repoHint:       cfg.RepoHint,
+		statePath:      filepath.Join(cfg.StateDir, "serve-state.json"),
+		eventsLog:      eventsLog,
+		decLog:         decLog,
+		actionsLog:     actionsLog,
+		now:            time.Now,
+		maxBodySize:    maxBodySize,
 		channelTimeout: channelTimeout,
+		rpcRegistry:    NewMethodRegistry(),
 		state: persistentState{
 			ProcessedAt: make(map[string]string),
 			ProcessedMax: 2000,
@@ -128,6 +130,8 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	}
 
 	mux := http.NewServeMux()
+	// JSON-RPC control plane
+	mux.HandleFunc("/rpc", ws.handleJSONRPC)
 	// Provider-specific ingress path (new)
 	mux.HandleFunc("/ingress/github/webhook", ws.handleWebhook)
 	// Legacy path (deprecated for backward compatibility)
@@ -252,6 +256,38 @@ func (ws *WebhookServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"time":   ws.now().UTC().Format(time.RFC3339Nano),
 	})
+}
+
+// handleJSONRPC handles JSON-RPC 2.0 requests on /rpc
+func (ws *WebhookServer) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Limit body size to prevent memory exhaustion
+	r.Body = http.MaxBytesReader(w, r.Body, ws.maxBodySize)
+
+	// Read and parse JSON-RPC request
+	req, rpcErr := ReadJSONRPCRequest(r)
+	if rpcErr != nil {
+		// Parse errors should return HTTP 400 with error response
+		w.WriteHeader(http.StatusBadRequest)
+		WriteJSONRPCResponse(w, nil, nil, rpcErr)
+		holonlog.Error("jsonrpc parse error", "error", rpcErr.Message, "code", rpcErr.Code)
+		return
+	}
+
+	// Dispatch to method handler
+	result, rpcErr := ws.rpcRegistry.Dispatch(req.Method, req.Params)
+	if rpcErr != nil {
+		WriteJSONRPCResponse(w, req.ID, nil, rpcErr)
+		holonlog.Error("jsonrpc method error", "method", req.Method, "error", rpcErr.Message, "code", rpcErr.Code)
+		return
+	}
+
+	WriteJSONRPCResponse(w, req.ID, result, nil)
+	holonlog.Debug("jsonrpc success", "id", req.ID, "method", req.Method)
 }
 
 func (ws *WebhookServer) wrapWithHeaders(body []byte, headers map[string]string) []byte {
