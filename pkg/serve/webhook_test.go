@@ -613,3 +613,394 @@ type failingReader struct{}
 func (f *failingReader) Read(p []byte) (n int, err error) {
 	return 0, io.ErrClosedPipe
 }
+
+// JSON-RPC Handler Tests
+
+func TestWebhookServer_JSONRPC_ValidRequest(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	// Register a test method
+	ws.rpcRegistry.RegisterMethod("test.method", func(params json.RawMessage) (interface{}, *JSONRPCError) {
+		return map[string]string{"result": "success"}, nil
+	})
+
+	// Create valid JSON-RPC request
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "test.method",
+	}
+	body, _ := json.Marshal(requestBody)
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	// Should return OK with JSON-RPC response
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d", w.Code)
+	}
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Fatalf("expected content-type application/json, got %s", ct)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.JSONRPC != "2.0" {
+		t.Errorf("expected jsonrpc version 2.0, got %s", resp.JSONRPC)
+	}
+
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %s", resp.Error.Message)
+	}
+
+	var result map[string]string
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+
+	if result["result"] != "success" {
+		t.Errorf("expected result 'success', got %s", result["result"])
+	}
+}
+
+func TestWebhookServer_JSONRPC_InvalidJSON(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	req := httptest.NewRequest("POST", "/rpc", strings.NewReader("not json"))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	// Should return BadRequest with JSON-RPC error response
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status BadRequest, got %d", w.Code)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Error == nil {
+		t.Fatal("expected error response, got nil")
+	}
+
+	if resp.Error.Code != ErrCodeParseError {
+		t.Errorf("expected error code %d, got %d", ErrCodeParseError, resp.Error.Code)
+	}
+}
+
+func TestWebhookServer_JSONRPC_MissingJSONRPCVersion(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	requestBody := map[string]interface{}{
+		"id":     1,
+		"method": "test.method",
+	}
+	body, _ := json.Marshal(requestBody)
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status BadRequest, got %d", w.Code)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Error == nil {
+		t.Fatal("expected error response, got nil")
+	}
+
+	if resp.Error.Code != ErrCodeInvalidRequest {
+		t.Errorf("expected error code %d, got %d", ErrCodeInvalidRequest, resp.Error.Code)
+	}
+}
+
+func TestWebhookServer_JSONRPC_MethodNotFound(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "unknown.method",
+	}
+	body, _ := json.Marshal(requestBody)
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d", w.Code)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Error == nil {
+		t.Fatal("expected error response, got nil")
+	}
+
+	if resp.Error.Code != ErrCodeMethodNotFound {
+		t.Errorf("expected error code %d, got %d", ErrCodeMethodNotFound, resp.Error.Code)
+	}
+}
+
+func TestWebhookServer_JSONRPC_InvalidMethod(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		// Missing method field
+	}
+	body, _ := json.Marshal(requestBody)
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status BadRequest, got %d", w.Code)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Error == nil {
+		t.Fatal("expected error response, got nil")
+	}
+
+	if resp.Error.Code != ErrCodeInvalidRequest {
+		t.Errorf("expected error code %d, got %d", ErrCodeInvalidRequest, resp.Error.Code)
+	}
+}
+
+func TestWebhookServer_JSONRPC_NonPostMethod(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	req := httptest.NewRequest("GET", "/rpc", nil)
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status MethodNotAllowed, got %d", w.Code)
+	}
+}
+
+func TestWebhookServer_JSONRPC_EmptyBody(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader([]byte("")))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status BadRequest, got %d", w.Code)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Error == nil {
+		t.Fatal("expected error response, got nil")
+	}
+
+	if resp.Error.Code != ErrCodeInvalidRequest {
+		t.Errorf("expected error code %d, got %d", ErrCodeInvalidRequest, resp.Error.Code)
+	}
+}
+
+func TestWebhookServer_JSONRPC_HandlerReturnsError(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	// Register a method that returns an error
+	ws.rpcRegistry.RegisterMethod("failing.method", func(params json.RawMessage) (interface{}, *JSONRPCError) {
+		return nil, NewJSONRPCError(ErrCodeInvalidParams, "invalid parameters")
+	})
+
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "failing.method",
+	}
+	body, _ := json.Marshal(requestBody)
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d", w.Code)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Error == nil {
+		t.Fatal("expected error response, got nil")
+	}
+
+	if resp.Error.Code != ErrCodeInvalidParams {
+		t.Errorf("expected error code %d, got %d", ErrCodeInvalidParams, resp.Error.Code)
+	}
+
+	if resp.Error.Message != "invalid parameters" {
+		t.Errorf("expected error message 'invalid parameters', got %s", resp.Error.Message)
+	}
+}
+
+func TestWebhookServer_JSONRPC_WithParams(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	// Register a method that uses params
+	ws.rpcRegistry.RegisterMethod("echo.params", func(params json.RawMessage) (interface{}, *JSONRPCError) {
+		var data map[string]interface{}
+		if err := json.Unmarshal(params, &data); err != nil {
+			return nil, NewJSONRPCError(ErrCodeInvalidParams, "invalid params")
+		}
+		return data, nil
+	})
+
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "echo.params",
+		"params": map[string]string{"key": "value"},
+	}
+	body, _ := json.Marshal(requestBody)
+
+	req := httptest.NewRequest("POST", "/rpc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ws.handleJSONRPC(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d", w.Code)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %s", resp.Error.Message)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+
+	if result["key"] != "value" {
+		t.Errorf("expected key 'value', got %v", result["key"])
+	}
+}
