@@ -64,7 +64,7 @@ export GIT_COMMITTER_EMAIL="ci@example.com"
 holon run --goal "Fix the bug"
 ```
 
-**Note**: Environment variables are only respected by the `holon run` command. For `holon solve` and `holon publish`, use host git config or ProjectConfig.
+**Note**: Environment variables are only respected by the `holon run` command. For `holon solve`, use host git config or ProjectConfig.
 
 ## Scenarios and Recommendations
 
@@ -158,7 +158,6 @@ sudo -u holon-bot git config --global user.email "250454749+holonbot[bot]@users.
 Holon uses a centralized git configuration resolver (`git.ResolveConfig()`) that ensures consistent behavior across all commands:
 
 - **`holon run`**: Resolves git config once using the centralized resolver, passes to runtime
-- **`holon publish`**: Uses the centralized resolver to inject git config into manifest metadata
 - **`holon solve`**: Uses the centralized resolver for consistency
 
 This eliminates the previous confusion where `runner.go` would set ProjectConfig values, then `runtime.go` would override with host git config. Now the priority is explicit and enforced in one place.

@@ -44,7 +44,7 @@ on:
         type: number
         default: 0
       comment_body:
-        description: 'Comment body (for auto mode detection)'
+        description: 'Comment body (for auto trigger detection)'
         required: false
         type: string
         default: ''
@@ -58,13 +58,8 @@ on:
         required: false
         type: boolean
         default: false
-      mode:
-        description: 'Execution mode (solve, pr-fix, plan, review). Empty = auto-detect'
-        required: false
-        type: string
-        default: ''
       skill:
-        description: 'Skill reference (e.g., github-solve). When provided, uses skill mode instead of mode-based prompts.'
+        description: 'Skill reference (e.g., github-issue-solve, github-pr-fix, github-review). Empty = auto-detect by target/event.'
         required: false
         type: string
         default: ''
@@ -377,7 +372,7 @@ jobs:
 
           # Skip PR review events by default to avoid per-inline triggers unless explicitly requested.
           if { [ "$EVENT_NAME" = 'pull_request_review' ] || [ "$EVENT_NAME" = 'pull_request_review_comment' ]; } && \
-             [ -z "$INPUT_MODE" ] && [ -z "$INPUT_SKILL" ] && [ "$INPUT_AUTO_REVIEW" != 'true' ]; then
+             [ -z "$INPUT_SKILL" ] && [ "$INPUT_AUTO_REVIEW" != 'true' ]; then
             REASON='PR review events are ignored by default to avoid multiple inline triggers'
             echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
             echo "reason=$REASON" >> "$GITHUB_OUTPUT"
@@ -425,12 +420,6 @@ jobs:
               SHOULD_RUN='true'
               REASON='workflow_call without trigger context (assume caller gated)'
             fi
-          fi
-
-          # Allow explicit mode input (manual/custom callers).
-          if [ "$SHOULD_RUN" != 'true' ] && [ -n "$INPUT_MODE" ]; then
-            SHOULD_RUN='true'
-            REASON='Explicit inputs.mode provided'
           fi
 
           # Comment triggers: prefer explicit comment_id to fetch body, which avoids passing raw body through workflow_call.
@@ -559,7 +548,6 @@ jobs:
           EVENT_REVIEW_ID: ${{ github.event.review.id }}
           INPUT_REVIEW_BODY: ${{ inputs.review_body }}
           EVENT_REVIEW_BODY: ${{ github.event.review.body }}
-          INPUT_MODE: ${{ inputs.mode }}
           INPUT_SKILL: ${{ inputs.skill }}
           INPUT_AUTO_REVIEW: ${{ inputs.auto_review }}
 
@@ -1078,13 +1066,12 @@ jobs:
           ref: ${{ steps.pr-ref.outputs.ref }}
           fetch-depth: 0  # Fetch all history to avoid shallow clone issues
 
-      - name: Detect execution mode
+      - name: Detect execution skill
         id: detect
         if: steps.gate.outputs.should_run == 'true'
         run: |
           set -euo pipefail
 
-          PROVIDED_MODE="${{ inputs.mode }}"
           PROVIDED_SKILL="${{ inputs.skill }}"
           AUTO_REVIEW='${{ inputs.auto_review }}'
           EVENT_NAME='${{ inputs.event_name }}'
@@ -1102,32 +1089,20 @@ jobs:
             echo "✅ Auto-review enabled → using skill: github-review"
           fi
 
-          # If skill is provided, skip mode detection (skill mode takes precedence)
-          if [ -n "$PROVIDED_SKILL" ]; then
-            echo "mode=" >> "$GITHUB_OUTPUT"
-            echo "skill=$PROVIDED_SKILL" >> "$GITHUB_OUTPUT"
-            echo "✅ Skill mode enabled (skill: $PROVIDED_SKILL)"
-            exit 0
-          fi
-
-          # If mode is explicitly provided, use it
-          if [ -n "$PROVIDED_MODE" ]; then
-            echo "mode=$PROVIDED_MODE" >> "$GITHUB_OUTPUT"
-            echo "skill=" >> "$GITHUB_OUTPUT"
-            echo "✅ Using provided mode: $PROVIDED_MODE"
-            exit 0
-          fi
-
-          # Auto-detect mode based on ref type
-          if [ "$IS_PR" = 'true' ]; then
-            echo "mode=pr-fix" >> "$GITHUB_OUTPUT"
-            echo "skill=" >> "$GITHUB_OUTPUT"
-            echo "✅ Detected: PR → mode=pr-fix"
+          # Auto-detect default solve skill when none is provided.
+          if [ -z "$PROVIDED_SKILL" ]; then
+            if [ "$IS_PR" = 'true' ]; then
+              PROVIDED_SKILL='github-pr-fix'
+              echo "✅ Detected: PR → skill=github-pr-fix"
+            else
+              PROVIDED_SKILL='github-issue-solve'
+              echo "✅ Detected: Issue → skill=github-issue-solve"
+            fi
           else
-            echo "mode=solve" >> "$GITHUB_OUTPUT"
-            echo "skill=" >> "$GITHUB_OUTPUT"
-            echo "✅ Detected: Issue → mode=solve"
+            echo "✅ Using provided skill: $PROVIDED_SKILL"
           fi
+
+          echo "skill=$PROVIDED_SKILL" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ secrets.holon_github_token || github.token }}
 
@@ -1163,11 +1138,6 @@ jobs:
             COMMENT_ID='0'
           fi
 
-          MODE=''
-          if [ "$SHOULD_RUN" = 'true' ]; then
-            MODE='${{ steps.detect.outputs.mode }}'
-          fi
-
           jq -n \
             --arg event_name "$EVENT_NAME" \
             --arg event_action "$EVENT_ACTION" \
@@ -1177,14 +1147,12 @@ jobs:
             --arg is_pr "$IS_PR" \
             --arg should_run "$SHOULD_RUN" \
             --arg reason "$REASON" \
-            --arg mode "$MODE" \
             --arg goal_hint "$GOAL_HINT" \
             --argjson comment_id "$COMMENT_ID" \
             '{
               event: {name: $event_name, action: $event_action, actor: $actor},
               target: {repository: $repository, issue_number: ($issue_number | tonumber), is_pr: ($is_pr == "true")},
               gate: {should_run: ($should_run == "true"), reason: $reason},
-              mode: $mode,
               trigger: {goal_hint: $goal_hint, comment_id: $comment_id}
             }' > "$INPUT_DIR/workflow.json"
         env:
@@ -1208,7 +1176,6 @@ jobs:
           HOLON_MODEL: ${{ vars.HOLON_MODEL || 'claude-sonnet-4-5-20250929' }}
         with:
           ref: "${{ github.repository }}#${{ steps.ctx.outputs.issue_number }}"
-          mode: ${{ steps.detect.outputs.mode }}
           skill: ${{ steps.detect.outputs.skill }}
           base: ${{ steps.base.outputs.base }}
           agent: ${{ inputs.agent }}

@@ -118,29 +118,14 @@ See:
 - `docs/manifest-format.md`
 - `docs/workspace-manifest-format.md`
 
-## Publishing and publishers
-Publishing applies Holon’s artifacts to external systems (e.g. pushing commits, creating/updating PRs, posting PR comments).
+## Publishing
+Publishing is handled in skill workflows (for example `ghx`) rather than by a standalone `holon publish` command.
 
-- `holon solve` runs end-to-end and includes publishing as part of the flow.
-- `holon publish` publishes an existing `holon-output/` directory using a chosen provider and writes `publish-result.json`.
+- `holon solve` runs end-to-end in skill-first mode.
+- `holon run` executes a spec/goal and emits artifacts (`manifest.json`, `diff.patch`, `summary.md`) for downstream tooling.
 
-Built-in publishers live in `pkg/publisher/`:
-- `github-pr`: create/update a PR from `diff.patch` + `summary.md` (target: `owner/repo[:base_branch]`)
-- `github`: post PR comments/replies (target: `owner/repo#123` or `owner/repo/pr/123`)
-- `git`: apply `diff.patch` to a local git repo and optionally commit/push (target: e.g. `origin/main`)
-
-Registration:
-- Publishers are registered via `init()` and enabled for the CLI through blank imports in `cmd/holon/main.go`.
-
-Discover and use publishers:
-```bash
-holon publish list
-holon publish --provider github-pr --target owner/repo:main --output ./holon-output
-holon publish --provider github --target owner/repo#123 --output ./holon-output
-```
-
-## GitHub helper library (for collectors/publishers)
-Holon centralizes GitHub API behavior in `pkg/github/` so collectors and publishers share:
+## GitHub helper library
+Holon centralizes GitHub API behavior in `pkg/github/` so GitHub-facing flows share:
 - auth/token handling
 - pagination and rate-limit behavior
 - typed API helpers (issues, PRs, comments, review threads, diffs, CI)
