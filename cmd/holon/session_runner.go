@@ -58,7 +58,7 @@ func (r *dockerSessionRunner) Start(ctx context.Context, cfg ControllerSessionCo
 		InputPath:            cfg.InputPath,
 		OutDir:               cfg.OutputPath,
 		StateDir:             cfg.StateDir,
-		Env:                  map[string]string{"LOG_LEVEL": cfg.LogLevel, "HOLON_MODE": "solve", "ASSISTANT_OUTPUT": "none"},
+		Env:                  map[string]string{"LOG_LEVEL": cfg.LogLevel, "ASSISTANT_OUTPUT": "none"},
 		AgentConfigMode:      "no",
 		WorkspaceIsTemporary: true,
 		Skills:               []string{cfg.ControllerSkill},
