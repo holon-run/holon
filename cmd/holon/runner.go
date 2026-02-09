@@ -495,103 +495,13 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 		}
 	}
 
-	// 1. Automatic Secret Injection (v0.1: Anthropic Key & URL)
-	// Priority: ANTHROPIC_AUTH_TOKEN > ANTHROPIC_API_KEY (legacy)
-	anthropicKey := os.Getenv("ANTHROPIC_AUTH_TOKEN")
-	if anthropicKey == "" {
-		anthropicKey = os.Getenv("ANTHROPIC_API_KEY")
-		if anthropicKey != "" {
-			holonlog.Warn("using legacy ANTHROPIC_API_KEY; consider migrating to ANTHROPIC_AUTH_TOKEN")
-		}
-	}
-	if anthropicKey != "" {
-		envVars["ANTHROPIC_AUTH_TOKEN"] = anthropicKey
-		envVars["ANTHROPIC_API_KEY"] = anthropicKey // For backward compatibility
-	}
-
-	// Support both ANTHROPIC_BASE_URL (standard) and ANTHROPIC_API_URL (alias for convenience)
-	anthropicURL := os.Getenv("ANTHROPIC_BASE_URL")
-	if anthropicURL == "" {
-		anthropicURL = os.Getenv("ANTHROPIC_API_URL")
-	}
-	if anthropicURL != "" {
-		envVars["ANTHROPIC_BASE_URL"] = anthropicURL
-		envVars["ANTHROPIC_API_URL"] = anthropicURL // For backward compatibility
-	}
-
-	// 1.5. Automatic GitHub Secret Injection
-	var githubToken string
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		githubToken = token
-		envVars["GITHUB_TOKEN"] = token
-		envVars["GH_TOKEN"] = token
-	} else if token := os.Getenv("GH_TOKEN"); token != "" {
-		githubToken = token
-		envVars["GITHUB_TOKEN"] = token
-		envVars["GH_TOKEN"] = token
-	}
-
-	// 1.55. Resolve GitHub actor identity if token is available
-	// This allows the agent to know its own identity and avoid self-replies
-	// Priority: explicit HOLON_ACTOR_* env vars > API lookup
-	actorInfoProvided := false
-
-	// First, check if actor identity is explicitly provided via environment variables
-	// This allows source-based identity injection (e.g., holonbot broker, GitHub Actions)
-	if actorLogin := os.Getenv("HOLON_ACTOR_LOGIN"); actorLogin != "" {
-		envVars["HOLON_ACTOR_LOGIN"] = actorLogin
-		actorInfoProvided = true
-
-		// Copy other actor fields if provided
-		actorType := ""
-		if actorType = os.Getenv("HOLON_ACTOR_TYPE"); actorType != "" {
-			envVars["HOLON_ACTOR_TYPE"] = actorType
-		}
-		if actorSource := os.Getenv("HOLON_ACTOR_SOURCE"); actorSource != "" {
-			envVars["HOLON_ACTOR_SOURCE"] = actorSource
-		}
-		if actorAppSlug := os.Getenv("HOLON_ACTOR_APP_SLUG"); actorAppSlug != "" {
-			envVars["HOLON_ACTOR_APP_SLUG"] = actorAppSlug
-		}
-
-		holonlog.Info("using explicit github actor identity", "login", actorLogin, "type", actorType)
-	}
-
-	// If actor identity is not explicitly provided and we have a token, resolve via API
-	if !actorInfoProvided && githubToken != "" {
-		// Skip API lookup if HOLON_ACTOR_TYPE is explicitly set to "App" without login
-		// (indicates an App installation token where identity cannot be determined)
-		if actorType := os.Getenv("HOLON_ACTOR_TYPE"); actorType == "App" {
-			holonlog.Info("skipping github actor identity lookup for App token without explicit login")
-		} else {
-			actorInfo := r.resolveGitHubActorIdentity(context.Background(), githubToken)
-			if actorInfo != nil {
-				envVars["HOLON_ACTOR_LOGIN"] = actorInfo.Login
-				envVars["HOLON_ACTOR_TYPE"] = actorInfo.Type
-				if actorInfo.Source != "" {
-					envVars["HOLON_ACTOR_SOURCE"] = actorInfo.Source
-				}
-				if actorInfo.AppSlug != "" {
-					envVars["HOLON_ACTOR_APP_SLUG"] = actorInfo.AppSlug
-				}
-				// Log identity resolution (without exposing sensitive data)
-				holonlog.Info("github actor identity resolved", "login", actorInfo.Login, "type", actorInfo.Type)
-			} else {
-				// Identity lookup failed - non-critical, log and continue
-				holonlog.Info("github actor identity lookup failed, continuing without identity")
-			}
-		}
-	}
-
-	// 1.6. Automatic Holon Configuration Injection (for testing and agent behavior)
-	// HOLON_CLAUDE_DRIVER: Select driver implementation (mock, real SDK, etc.)
-	if driver := os.Getenv("HOLON_CLAUDE_DRIVER"); driver != "" {
-		envVars["HOLON_CLAUDE_DRIVER"] = driver
-	}
-	// HOLON_CLAUDE_MOCK_FIXTURE: Path to mock driver fixture file
-	if fixture := os.Getenv("HOLON_CLAUDE_MOCK_FIXTURE"); fixture != "" {
-		envVars["HOLON_CLAUDE_MOCK_FIXTURE"] = fixture
-	}
+	// 1. Automatic secret and runtime configuration injection.
+	applyRuntimeAutoEnv(context.Background(), envVars, runtimeEnvOptions{
+		IncludeClaudeSettingsFallback: false,
+		IncludeGitHubActorIdentity:    true,
+		ResolveGitHubActor:            r.resolveGitHubActorIdentity,
+		IncludeHolonClaudeConfig:      true,
+	})
 
 	// 2. Custom Env Vars from CLI (--env K=V) - highest priority
 	for _, pair := range cfg.EnvVarsList {

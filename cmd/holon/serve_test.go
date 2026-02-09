@@ -242,11 +242,11 @@ func TestReadAnthropicEnvFromClaudeSettings(t *testing.T) {
 	}
 }
 
-func TestResolveServeLLMEnv_PrefersProcessEnv(t *testing.T) {
+func TestResolveServeRuntimeEnv_PrefersProcessEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "token-from-env")
 	t.Setenv("ANTHROPIC_BASE_URL", "https://env.ai")
 
-	got := resolveServeLLMEnv()
+	got := resolveServeRuntimeEnv(context.Background())
 	if got["ANTHROPIC_AUTH_TOKEN"] != "token-from-env" {
 		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q", got["ANTHROPIC_AUTH_TOKEN"])
 	}
@@ -255,7 +255,7 @@ func TestResolveServeLLMEnv_PrefersProcessEnv(t *testing.T) {
 	}
 }
 
-func TestResolveServeLLMEnv_MergesSettingsFallbackForMissingKeys(t *testing.T) {
+func TestResolveServeRuntimeEnv_MergesSettingsFallbackForMissingKeys(t *testing.T) {
 	td := t.TempDir()
 	claudeDir := filepath.Join(td, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
@@ -275,12 +275,25 @@ func TestResolveServeLLMEnv_MergesSettingsFallbackForMissingKeys(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("ANTHROPIC_BASE_URL", "https://env.ai")
 
-	got := resolveServeLLMEnv()
+	got := resolveServeRuntimeEnv(context.Background())
 	if got["ANTHROPIC_BASE_URL"] != "https://env.ai" {
 		t.Fatalf("ANTHROPIC_BASE_URL = %q, want env value", got["ANTHROPIC_BASE_URL"])
 	}
 	if got["ANTHROPIC_AUTH_TOKEN"] != "token-from-settings" {
 		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q, want settings fallback value", got["ANTHROPIC_AUTH_TOKEN"])
+	}
+}
+
+func TestResolveServeRuntimeEnv_InjectsGitHubToken(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "gh-token-from-env")
+	t.Setenv("GH_TOKEN", "")
+
+	got := resolveServeRuntimeEnv(context.Background())
+	if got["GITHUB_TOKEN"] != "gh-token-from-env" {
+		t.Fatalf("GITHUB_TOKEN = %q", got["GITHUB_TOKEN"])
+	}
+	if got["GH_TOKEN"] != "gh-token-from-env" {
+		t.Fatalf("GH_TOKEN = %q", got["GH_TOKEN"])
 	}
 }
 
