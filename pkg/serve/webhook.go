@@ -146,6 +146,11 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	ws.rpcRegistry.RegisterMethod("holon/resume", ws.runtime.HandleResume)
 	ws.rpcRegistry.RegisterMethod("holon/logStream", ws.runtime.HandleLogStream(filepath.Join(cfg.StateDir, "events.ndjson")))
 
+	// Register Codex-compatible session/turn methods
+	ws.rpcRegistry.RegisterMethod("thread/start", ws.runtime.HandleThreadStart)
+	ws.rpcRegistry.RegisterMethod("turn/start", ws.runtime.HandleTurnStart)
+	ws.rpcRegistry.RegisterMethod("turn/interrupt", ws.runtime.HandleTurnInterrupt)
+
 	mux := http.NewServeMux()
 	// JSON-RPC control plane
 	mux.HandleFunc("/rpc", ws.handleJSONRPC)
