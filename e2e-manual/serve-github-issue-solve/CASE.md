@@ -6,7 +6,7 @@ Validate `holon serve` end-to-end for GitHub issue solve trigger:
 
 - GitHub webhook event is ingested by serve.
 - Event is forwarded into controller runtime.
-- Controller attempts issue-solve workflow after `@holonbot` trigger comment.
+- Controller attempts issue-solve workflow from issue intent events without relying on `@holonbot` mention.
 
 ## Preconditions
 
@@ -22,14 +22,14 @@ Validate `holon serve` end-to-end for GitHub issue solve trigger:
 
 1. Start serve and webhook forwarder.
 2. Create a test issue in target repo.
-3. Post trigger comment with `@holonbot`.
+3. Post a plain follow-up comment (no bot mention).
 4. Observe state files and runtime logs.
 
 Use `run.sh` for the scripted flow.
 
 ## Expected
 
-- `events.ndjson` receives `github.issue.opened` and `github.issue.comment.created`.
+- `events.ndjson` receives `github.issue.opened` and `github.issue.comment.created` from user actions.
 - `decisions.ndjson` and `actions.ndjson` are updated for ingested events.
 - Controller runtime evidence log is generated.
 - Optional success goal: issue-solve execution produces a PR.
@@ -62,3 +62,4 @@ Use `collect.sh` to bundle evidence into `artifacts/`.
 - Anthropic env missing: controller cannot operate model.
 - `gh webhook forward` not running: no GitHub events reach local serve.
 - Agent drifts to generic shell workflow instead of skill-guided solve.
+- If `@holonbot` is used in comments, repo GitHub Actions may run in parallel and interfere with this local test.

@@ -74,11 +74,11 @@ ISSUE_NUMBER="${ISSUE_URL##*/}"
 echo "ISSUE_URL=$ISSUE_URL" | tee -a "$RUN_META"
 echo "ISSUE_NUMBER=$ISSUE_NUMBER" | tee -a "$RUN_META"
 
-echo "[4/4] posting trigger comment"
+echo "[4/4] posting plain comment (no @holonbot to avoid workflow interference)"
 COMMENT_BODY_FILE="$OUT_DIR/comment-body.md"
 cat > "$COMMENT_BODY_FILE" <<'EOT'
-@holonbot
-please solve this issue and open a PR.
+Please solve this issue and open a PR.
+This is a local serve E2E trigger comment without bot mention.
 EOT
 COMMENT_URL=$(gh issue comment --repo "$REPO" "$ISSUE_NUMBER" --body-file "$COMMENT_BODY_FILE")
 echo "COMMENT_URL=$COMMENT_URL" | tee -a "$RUN_META"
