@@ -27,6 +27,7 @@ type WebhookServer struct {
 	decLog         *ndjsonWriter
 	actionsLog     *ndjsonWriter
 	state          persistentState
+	runtime        *Runtime
 	now            func() time.Time
 	mu             sync.RWMutex
 	maxBodySize    int64
@@ -104,6 +105,15 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		return nil, err
 	}
 
+	// Initialize runtime state manager
+	runtime, err := NewRuntime(cfg.StateDir)
+	if err != nil {
+		eventsLog.Close()
+		decLog.Close()
+		actionsLog.Close()
+		return nil, fmt.Errorf("failed to initialize runtime: %w", err)
+	}
+
 	ws := &WebhookServer{
 		eventChan:      make(chan []byte, 100),
 		handler:        cfg.Handler,
@@ -112,6 +122,7 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		eventsLog:      eventsLog,
 		decLog:         decLog,
 		actionsLog:     actionsLog,
+		runtime:        runtime,
 		now:            time.Now,
 		maxBodySize:    maxBodySize,
 		channelTimeout: channelTimeout,
@@ -128,6 +139,12 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		actionsLog.Close()
 		return nil, err
 	}
+
+	// Register holon control methods
+	ws.rpcRegistry.RegisterMethod("holon/status", ws.runtime.HandleStatus)
+	ws.rpcRegistry.RegisterMethod("holon/pause", ws.runtime.HandlePause)
+	ws.rpcRegistry.RegisterMethod("holon/resume", ws.runtime.HandleResume)
+	ws.rpcRegistry.RegisterMethod("holon/logStream", ws.runtime.HandleLogStream(filepath.Join(cfg.StateDir, "events.ndjson")))
 
 	mux := http.NewServeMux()
 	// JSON-RPC control plane
@@ -327,6 +344,12 @@ func (ws *WebhookServer) processEvents(ctx context.Context) {
 }
 
 func (ws *WebhookServer) processOne(raw []byte) error {
+	// Check if runtime is paused
+	if ws.runtime.IsPaused() {
+		holonlog.Info("event skipped: runtime paused", "reason", "paused")
+		return nil
+	}
+
 	// Normalize event
 	env, err := normalizeLine(raw, ws.repoHint, ws.now)
 	if err != nil {
@@ -391,6 +414,8 @@ func (ws *WebhookServer) processOne(raw []byte) error {
 		}
 	} else {
 		result.Status = "ok"
+		// Record successful event in runtime
+		ws.runtime.RecordEvent(env.ID)
 	}
 	result.EndedAt = ws.now().UTC()
 
