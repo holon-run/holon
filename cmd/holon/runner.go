@@ -15,7 +15,6 @@ import (
 	"github.com/holon-run/holon/pkg/agent"
 	"github.com/holon-run/holon/pkg/agent/resolver"
 	v1 "github.com/holon-run/holon/pkg/api/v1"
-	"github.com/holon-run/holon/pkg/context/collector"
 	holonGit "github.com/holon-run/holon/pkg/git"
 	gh "github.com/holon-run/holon/pkg/github"
 	holonlog "github.com/holon-run/holon/pkg/log"
@@ -48,8 +47,6 @@ type RunnerConfig struct {
 	RoleName             string
 	EnvVarsList          []string
 	LogLevel             string
-	Mode                 string
-	ModeExplicit         bool     // true if --mode was explicitly provided (vs default)
 	UseSkillMode         bool     // true if using skill mode (agent handles collect/publish)
 	Cleanup              string   // Cleanup mode: "auto" (default), "none", "all"
 	AgentConfigMode      string   // Agent config mount mode: "auto", "yes", "no"
@@ -269,13 +266,6 @@ output:
 		envVars["LOG_LEVEL"] = cfg.LogLevel
 	} else {
 		envVars["LOG_LEVEL"] = "progress" // Default to progress mode
-	}
-
-	// Add mode to environment variables
-	if cfg.Mode != "" {
-		envVars["HOLON_MODE"] = cfg.Mode
-	} else {
-		envVars["HOLON_MODE"] = "solve" // Default to solve mode
 	}
 
 	// Add assistant_output to environment variables
@@ -602,10 +592,6 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 	if fixture := os.Getenv("HOLON_CLAUDE_MOCK_FIXTURE"); fixture != "" {
 		envVars["HOLON_CLAUDE_MOCK_FIXTURE"] = fixture
 	}
-	// HOLON_MODE: Execution mode (solve, pr-fix, etc.)
-	if mode := os.Getenv("HOLON_MODE"); mode != "" {
-		envVars["HOLON_MODE"] = mode
-	}
 
 	// 2. Custom Env Vars from CLI (--env K=V) - highest priority
 	for _, pair := range cfg.EnvVarsList {
@@ -655,19 +641,12 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	contextEntries, contextFileNames := collectContextEntries(absContext)
 
 	// Determine if using skill mode.
-	// Prefer the value provided by the caller via UseSkillMode, but fall back to the
-	// previous derived behavior when mode is not explicit and skills are configured.
+	// Use the value provided by the caller via UseSkillMode.
 	// In skill mode (default for solve command), skip mode-specific prompt layers
 	// and let Claude Code discover skills natively.
 	useSkillMode := cfg.UseSkillMode
-	if !cfg.ModeExplicit && len(cfg.Skills) > 0 && !useSkillMode {
-		// Restore legacy default: when skills are present and mode is not explicit,
-		// run in skill mode even if callers did not set UseSkillMode.
-		useSkillMode = true
-	}
 
 	sysPrompt, err = compiler.CompileSystemPrompt(prompt.Config{
-		Mode:            cfg.Mode,
 		Role:            cfg.RoleName,
 		Language:        "en", // TODO: Detect or flag
 		WorkingDir:      "/holon/workspace",
@@ -723,9 +702,17 @@ func collectContextEntries(absContext string) ([]prompt.ContextEntry, []string) 
 	fileNames := []string{}
 
 	// Prefer manifest if present
+	type contextFile struct {
+		Path        string `json:"path"`
+		Description string `json:"description"`
+	}
+	type contextManifest struct {
+		Files []contextFile `json:"files"`
+	}
+
 	manifestPath := filepath.Join(absContext, "manifest.json")
 	if data, err := os.ReadFile(manifestPath); err == nil {
-		var manifest collector.CollectResult
+		var manifest contextManifest
 		if err := json.Unmarshal(data, &manifest); err == nil {
 			for _, f := range manifest.Files {
 				entries = append(entries, prompt.ContextEntry{

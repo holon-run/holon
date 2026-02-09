@@ -28,7 +28,11 @@ func MkdirTempOutsideWorkspace(workspace, pattern string) (string, error) {
 	}
 
 	// Parent directory is a good, usually writable, fallback.
-	baseCandidates = append(baseCandidates, filepath.Dir(absWorkspace))
+	// Skip the root directory "/" as it's not writable without elevated permissions.
+	parentDir := filepath.Dir(absWorkspace)
+	if parentDir != absWorkspace && parentDir != "/" {
+		baseCandidates = append(baseCandidates, parentDir)
+	}
 
 	if runtime.GOOS != "windows" {
 		baseCandidates = append(baseCandidates, "/tmp")
@@ -44,7 +48,9 @@ func MkdirTempOutsideWorkspace(workspace, pattern string) (string, error) {
 			lastErr = err
 			continue
 		}
-		if isSubpath(absBase, absWorkspace) {
+		// Skip if base is the workspace itself, a parent of workspace, or a subpath of workspace
+		// We need the snapshot to be truly outside the workspace tree
+		if absBase == absWorkspace || isSubpath(absWorkspace, absBase) || isSubpath(absBase, absWorkspace) {
 			continue
 		}
 		if err := os.MkdirAll(absBase, 0o755); err != nil {
@@ -78,13 +84,31 @@ func cleanAbs(path string) (string, error) {
 }
 
 // isSubpath checks if candidate is a subpath of parent
+// Returns true if candidate is a subdirectory of parent (but not if candidate == parent)
 func isSubpath(candidate, parent string) bool {
 	rel, err := filepath.Rel(parent, candidate)
 	if err != nil {
 		return false
 	}
 	rel = filepath.Clean(rel)
-	return rel == "." || !strings.HasPrefix(rel, "..")
+	// Return true only if candidate is a proper subdirectory of parent
+	// rel == "." means candidate == parent (not a subpath)
+	// rel starting with ".." means candidate is outside parent
+	// Otherwise, candidate is a subdirectory of parent
+	return rel != "." && !strings.HasPrefix(rel, "..")
+}
+
+// isSameOrParent checks if candidate is the same as or a parent of child
+// Returns true if candidate == child or candidate is a parent directory of child
+func isSameOrParent(candidate, child string) bool {
+	rel, err := filepath.Rel(candidate, child)
+	if err != nil {
+		return false
+	}
+	rel = filepath.Clean(rel)
+	// rel == "." means child == candidate
+	// rel starting with ".." means child is outside candidate (candidate is a parent)
+	return rel == "." || strings.HasPrefix(rel, "..")
 }
 
 // copyDir copies a directory recursively using cp -a (Unix) or xcopy (Windows)

@@ -12,9 +12,6 @@ import (
 	"github.com/holon-run/holon/pkg/image"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/preflight"
-	_ "github.com/holon-run/holon/pkg/publisher/git"      // Register git publisher (for publish command)
-	_ "github.com/holon-run/holon/pkg/publisher/github"   // Register GitHub publisher (for publish command)
-	_ "github.com/holon-run/holon/pkg/publisher/githubpr" // Register GitHub PR publisher (for publish command)
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/skills"
 	"github.com/spf13/cobra"
@@ -329,8 +326,6 @@ var runCmd = &cobra.Command{
 			EnvVarsList:          envVarsList,
 			LogLevel:             resolved.logLevel,
 			AssistantOutput:      resolved.assistantOutput,
-			Mode:                 "",
-			ModeExplicit:         false,
 			Cleanup:              cleanupMode,
 			AgentConfigMode:      agentConfigMode,
 			GitAuthorName:        projectCfg.GetGitAuthorName(),
@@ -372,8 +367,6 @@ func init() {
 	runCmd.Flags().BoolVar(&skipPreflight, "skip-checks", false, "Skip preflight checks (alias for --no-preflight, not recommended)")
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(agentCmd)
-	rootCmd.AddCommand(contextCmd)
-	rootCmd.AddCommand(publishCmd)
 	rootCmd.AddCommand(detectCmd)
 	rootCmd.AddCommand(logCmd)
 }
