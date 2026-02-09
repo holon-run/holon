@@ -130,6 +130,29 @@ When `/v1/events` is revisited, it should:
 
 The initial control-plane methods under a `holon/*` namespace:
 
+### 5.0 Scope Alignment with OpenAI/Codex Protocol
+
+OpenAI/Codex app-server protocol defines a broad method surface (thread/turn lifecycle, item notifications, config/model/skills discovery, account/auth, feedback, MCP OAuth, platform-specific notifications).
+
+Holon does **not** need to implement the entire upstream method set in one phase.
+
+Implementation strategy:
+
+1. Implement a **compatible subset** first (protocol envelope + core serve runtime operations).
+2. Expand only when required by concrete Holon product needs.
+3. Keep provider ingress independent from control-plane method expansion.
+
+Method groups and Holon stance:
+
+- **Core session/turn/event flow (required early)**:
+  - `thread/start`, `thread/read` (or `thread/list`)
+  - `turn/start`, `turn/interrupt`
+  - notification flow for `item/*`, `turn/completed`, `thread/started` (or equivalent lifecycle notifications)
+- **Runtime capability/discovery (optional early)**:
+  - `config/read`, `model/list`, `skills/list`
+- **Platform-coupled methods (deferred)**:
+  - `account/*`, `feedback/upload`, `mcpServer/oauth/*`, and other provider-specific platform methods
+
 ### 5.1 Core Methods
 
 | Method | Parameters | Returns | Description |
@@ -141,14 +164,18 @@ The initial control-plane methods under a `holon/*` namespace:
 
 ### 5.2 Method Definitions (Draft)
 
-#### holon.getStatus
+Method naming convention follows Codex/OpenAI protocol style:
+- Use slash-delimited verbs/nouns (e.g., `thread/start`, `config/read`).
+- For Holon control-plane methods, use `holon/<action>` names.
+
+#### holon/status
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "holon.getStatus",
+  "method": "holon/status",
   "params": {}
 }
 ```
@@ -167,14 +194,14 @@ The initial control-plane methods under a `holon/*` namespace:
 }
 ```
 
-#### holon.pause
+#### holon/pause
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "holon.pause",
+  "method": "holon/pause",
   "params": {
     "timeout_seconds": 300
   }
@@ -193,14 +220,14 @@ The initial control-plane methods under a `holon/*` namespace:
 }
 ```
 
-#### holon.resume
+#### holon/resume
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "holon.resume",
+  "method": "holon/resume",
   "params": {}
 }
 ```
@@ -217,14 +244,14 @@ The initial control-plane methods under a `holon/*` namespace:
 }
 ```
 
-#### holon.logStream (Streaming)
+#### holon/logStream (Streaming)
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "holon.logStream",
+  "method": "holon/logStream",
   "params": {
     "from_position": 0,
     "max_lines": 100
@@ -310,7 +337,7 @@ New JSON-RPC endpoints will be added at a separate path (e.g., `/rpc` or `/contr
 ## 9. Open Questions
 
 1. Should JSON-RPC endpoints be at `/rpc`, `/control`, or `/v1/rpc`?
-2. Should `holon.logStream` use SSE, WebSocket, or chunked HTTP?
+2. Should `holon/logStream` use SSE, WebSocket, or chunked HTTP?
 3. What authentication/authorization model for control-plane endpoints?
 4. Should we vendor Codex schemas or reference them externally?
 
@@ -333,9 +360,11 @@ New JSON-RPC endpoints will be added at a separate path (e.g., `/rpc` or `/contr
 ### Implementation (Future)
 
 - [ ] Implement JSON-RPC handler skeleton
-- [ ] Add `holon.getStatus` method
-- [ ] Add `holon.pause` and `holon.resume` methods
-- [ ] Add `holon.logStream` streaming support
+- [ ] Implement protocol-compatible minimal subset only (not full Codex method surface)
+- [ ] Add `thread/start`, `turn/start`, `turn/interrupt` equivalents (Holon mapping)
+- [ ] Add `holon/status` method
+- [ ] Add `holon/pause` and `holon/resume` methods
+- [ ] Add `holon/logStream` streaming support
 - [ ] Add tests for control-plane endpoints
 - [ ] Generate TypeScript/Go types from JSON schemas
 
