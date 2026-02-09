@@ -74,6 +74,12 @@ func applyAnthropicAutoEnv(envVars map[string]string, fallback map[string]string
 }
 
 func applyGitHubTokenAutoEnv(envVars map[string]string) string {
+	if token := strings.TrimSpace(os.Getenv("HOLON_GITHUB_TOKEN")); token != "" {
+		envVars["HOLON_GITHUB_TOKEN"] = token
+		envVars["GITHUB_TOKEN"] = token
+		envVars["GH_TOKEN"] = token
+		return token
+	}
 	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
 		envVars["GITHUB_TOKEN"] = token
 		envVars["GH_TOKEN"] = token

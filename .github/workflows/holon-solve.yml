@@ -113,6 +113,11 @@ on:
         required: false
         type: string
         default: 'holon-run/holon'
+      holonbot_oidc_audience:
+        description: 'OIDC audience used when exchanging for Holonbot app installation token'
+        required: false
+        type: string
+        default: 'holon-token-broker'
       runs_on:
         description: >
           Runner labels as a plain string (e.g., 'ubuntu-latest' or 'self-hosted')
@@ -1190,6 +1195,7 @@ jobs:
           version: ${{ inputs.version }}
           build_from_source: ${{ inputs.build_from_source }}
           holon_repository: ${{ inputs.holon_repository }}
+          holonbot_oidc_audience: ${{ inputs.holonbot_oidc_audience }}
 
       - name: Post Summary
         id: result

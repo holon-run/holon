@@ -297,6 +297,23 @@ func TestResolveServeRuntimeEnv_InjectsGitHubToken(t *testing.T) {
 	}
 }
 
+func TestResolveServeRuntimeEnv_PrefersHolonGitHubToken(t *testing.T) {
+	t.Setenv("HOLON_GITHUB_TOKEN", "holon-token")
+	t.Setenv("GITHUB_TOKEN", "actions-token")
+	t.Setenv("GH_TOKEN", "")
+
+	got := resolveServeRuntimeEnv(context.Background())
+	if got["HOLON_GITHUB_TOKEN"] != "holon-token" {
+		t.Fatalf("HOLON_GITHUB_TOKEN = %q", got["HOLON_GITHUB_TOKEN"])
+	}
+	if got["GITHUB_TOKEN"] != "holon-token" {
+		t.Fatalf("GITHUB_TOKEN = %q", got["GITHUB_TOKEN"])
+	}
+	if got["GH_TOKEN"] != "holon-token" {
+		t.Fatalf("GH_TOKEN = %q", got["GH_TOKEN"])
+	}
+}
+
 func bytesToLines(raw []byte) []string {
 	text := string(raw)
 	if text == "" {
