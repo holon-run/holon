@@ -1,0 +1,28 @@
+# E2E Manual
+
+This directory stores manual end-to-end test cases for Holon.
+
+Each subdirectory under `e2e-manual/` is one test case.
+
+## Structure
+
+- `CASE.md`: Human-readable test case definition and pass/fail criteria.
+- `run.sh`: Optional script to execute the test flow.
+- `collect.sh`: Optional script to collect logs and evidence.
+- `artifacts/`: Optional local output directory for collected evidence (gitignored).
+
+## Case List
+
+- `serve-github-issue-solve`: Validate `holon serve` issue-comment trigger flow end-to-end.
+
+## Add a New Case
+
+1. Copy `e2e-manual/_template` to a new case directory.
+2. Fill `CASE.md` with concrete repo, trigger, and expectations.
+3. Implement or adjust `run.sh` and `collect.sh` if automation is useful.
+4. Ensure generated outputs are written to `artifacts/`.
+
+## Failure Classification
+
+- `infra-fail`: Event or runtime pipeline is broken (webhook, channel, runtime startup).
+- `agent-fail`: Pipeline works but agent behavior misses expected outcome.

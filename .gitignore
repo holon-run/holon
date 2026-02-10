@@ -42,3 +42,6 @@ dist
 # Run 'go generate ./pkg/builtin' to regenerate
 pkg/builtin/skills/
 pkg/builtin/skills/.git-commit
+
+# E2E manual artifacts
+e2e-manual/**/artifacts/
