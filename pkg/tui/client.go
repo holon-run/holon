@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,18 +14,19 @@ import (
 type RPCClient struct {
 	rpcURL    string
 	client    *http.Client
-	requestID int
+	requestID atomic.Int64
 }
 
 // NewRPCClient creates a new RPC client
 func NewRPCClient(rpcURL string) *RPCClient {
-	return &RPCClient{
+	c := &RPCClient{
 		rpcURL: rpcURL,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		requestID: 0,
 	}
+	c.requestID.Store(0)
+	return c
 }
 
 // StatusResponse is the response for holon/status
@@ -87,7 +89,7 @@ type rpcError struct {
 
 // call makes a JSON-RPC call
 func (c *RPCClient) call(method string, params interface{}, result interface{}) error {
-	c.requestID++
+	requestID := int(c.requestID.Add(1))
 
 	var paramsJSON json.RawMessage
 	if params != nil {
@@ -102,7 +104,7 @@ func (c *RPCClient) call(method string, params interface{}, result interface{}) 
 
 	reqBody := jsonrpcRequest{
 		JSONRPC: "2.0",
-		ID:      c.requestID,
+		ID:      requestID,
 		Method:  method,
 		Params:  paramsJSON,
 	}

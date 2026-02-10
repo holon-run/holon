@@ -136,21 +136,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.connected = true
 			a.lastUpdate = time.Now()
 		}
-		if a.autoRefresh {
-			return a, a.tick()
-		}
 		return a, nil
 
 	case logRefreshMsg:
-		if msg.err == nil {
+		if msg.err != nil {
+			a.err = msg.err
+			a.connected = false
+		} else {
 			a.logs = msg.logs
 			// Reset position to show latest logs
 			if len(a.logs) > 0 {
 				a.logPosition = len(a.logs)
 			}
-		}
-		if a.autoRefresh {
-			return a, a.tick()
 		}
 		return a, nil
 
@@ -166,9 +163,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			// Refresh status after pause/resume
 			return a, a.refreshStatus
-		}
-		if a.autoRefresh {
-			return a, a.tick()
 		}
 		return a, nil
 	}
@@ -268,7 +262,7 @@ func (a *App) renderStatusPanel() string {
 func (a *App) renderLogPanel() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("Event Logs (most recent first)"))
+	b.WriteString(titleStyle.Render("Event Logs"))
 	b.WriteString("\n")
 
 	if len(a.logs) == 0 {
