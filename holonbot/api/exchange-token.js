@@ -308,6 +308,7 @@ export default async function handler(req, res) {
         }
 
         const enforceDefaultRef = parseBool(process.env.HOLON_REQUIRE_DEFAULT_BRANCH_REF, true);
+        const allowPullRequestRef = parseBool(process.env.HOLON_ALLOW_PULL_REQUEST_REF, true);
         if (enforceDefaultRef) {
             let validated;
             try {
@@ -316,6 +317,7 @@ export default async function handler(req, res) {
                     allowedWorkflowRefs: parseCSV(process.env.HOLON_ALLOWED_WORKFLOW_REFS),
                     requireDefaultBranchRef: true,
                     defaultBranch: repoResponse.data.default_branch,
+                    allowPullRequestRef,
                 });
             } catch (error) {
                 throw new HttpError(403, 'oidc.invalid_claims', error.message);

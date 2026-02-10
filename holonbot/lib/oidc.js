@@ -44,6 +44,7 @@ export async function verifyOIDCToken(token, options = {}) {
  * @param {string[]} options.allowedWorkflowRefs - Allowed workflow refs
  * @param {boolean} options.requireDefaultBranchRef - Require ref to be default branch
  * @param {string} options.defaultBranch - Default branch name
+ * @param {boolean} options.allowPullRequestRef - Allow pull-request refs (refs/pull/<number>/(merge|head)) when requireDefaultBranchRef is enabled
  * @returns {Object} - Validated info (repository, owner, installationId logic candidates)
  */
 export function validateClaims(claims, options = {}) {
@@ -57,6 +58,7 @@ export function validateClaims(claims, options = {}) {
         : [];
     const requireDefaultBranchRef = options.requireDefaultBranchRef === true;
     const defaultBranch = typeof options.defaultBranch === 'string' ? options.defaultBranch.trim() : '';
+    const allowPullRequestRef = options.allowPullRequestRef !== false;
 
     if (!claims.repository || !claims.repository_owner) {
         throw new Error('Missing repository information in OIDC token');
@@ -99,8 +101,14 @@ export function validateClaims(claims, options = {}) {
         if (!defaultBranch) {
             throw new Error('default branch is required when HOLON_REQUIRE_DEFAULT_BRANCH_REF=true');
         }
-        if (claims.ref !== `refs/heads/${defaultBranch}`) {
-            throw new Error(`ref is not default branch: expected refs/heads/${defaultBranch}`);
+        const defaultRef = `refs/heads/${defaultBranch}`;
+        const isDefaultRef = claims.ref === defaultRef;
+        const isPullRequestRef = /^refs\/pull\/\d+\/(?:merge|head)$/.test(claims.ref);
+        if (!isDefaultRef && !(allowPullRequestRef && isPullRequestRef)) {
+            if (allowPullRequestRef) {
+                throw new Error(`ref is not allowed: expected ${defaultRef} or refs/pull/<number>/(merge|head)`);
+            }
+            throw new Error(`ref is not default branch: expected ${defaultRef}`);
         }
     }
 
