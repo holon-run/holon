@@ -142,70 +142,7 @@ func (s *Service) Run(ctx context.Context, r io.Reader, maxEvents int) error {
 		if err != nil {
 			return fmt.Errorf("failed to normalize event line: %w", err)
 		}
-		if err := s.eventsLog.Write(env); err != nil {
-			return err
-		}
-
-		decision := DecisionRecord{
-			ID:        newID("decision", s.now().UTC()),
-			EventID:   env.ID,
-			Type:      "forward_event",
-			CreatedAt: s.now().UTC(),
-		}
-		if env.DedupeKey != "" {
-			if _, exists := s.state.ProcessedAt[env.DedupeKey]; exists {
-				decision.Skipped = true
-				decision.Reason = "duplicate dedupe_key"
-				if err := s.decLog.Write(decision); err != nil {
-					return err
-				}
-				// Even for duplicate events, advance cursor state to avoid replay loops.
-				s.state.LastEventID = env.ID
-				if err := s.compactState(); err != nil {
-					return err
-				}
-				if err := s.saveState(); err != nil {
-					return err
-				}
-				continue
-			}
-		}
-		if err := s.decLog.Write(decision); err != nil {
-			return err
-		}
-
-		start := s.now().UTC()
-		result := ActionResult{
-			ID:        newID("actres", start),
-			EventID:   env.ID,
-			StartedAt: start,
-			EndedAt:   start,
-		}
-
-		if err := s.handler.HandleEvent(ctx, env); err != nil {
-			if IsSkipEventError(err) {
-				result.Status = "skipped"
-				result.Message = err.Error()
-			} else {
-				result.Status = "failed"
-				result.Message = err.Error()
-			}
-		} else {
-			result.Status = "ok"
-		}
-		result.EndedAt = s.now().UTC()
-		if err := s.actionsLog.Write(result); err != nil {
-			return err
-		}
-
-		if env.DedupeKey != "" {
-			s.state.ProcessedAt[env.DedupeKey] = result.EndedAt.Format(time.RFC3339Nano)
-		}
-		s.state.LastEventID = env.ID
-		if err := s.compactState(); err != nil {
-			return err
-		}
-		if err := s.saveState(); err != nil {
+		if err := s.processEnvelope(ctx, env); err != nil {
 			return err
 		}
 		processed++
@@ -215,6 +152,92 @@ func (s *Service) Run(ctx context.Context, r io.Reader, maxEvents int) error {
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("failed to read events: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) InjectEvent(ctx context.Context, env EventEnvelope) error {
+	if env.ID == "" {
+		env.ID = newID("evt", s.now().UTC())
+	}
+	if env.At.IsZero() {
+		env.At = s.now().UTC()
+	}
+	if env.Scope.Repo == "" {
+		env.Scope.Repo = s.repoHint
+	}
+	if env.DedupeKey == "" {
+		env.DedupeKey = buildDedupeKey(env)
+	}
+	return s.processEnvelope(ctx, env)
+}
+
+func (s *Service) processEnvelope(ctx context.Context, env EventEnvelope) error {
+	if err := s.eventsLog.Write(env); err != nil {
+		return err
+	}
+
+	decision := DecisionRecord{
+		ID:        newID("decision", s.now().UTC()),
+		EventID:   env.ID,
+		Type:      "forward_event",
+		CreatedAt: s.now().UTC(),
+	}
+	if env.DedupeKey != "" {
+		if _, exists := s.state.ProcessedAt[env.DedupeKey]; exists {
+			decision.Skipped = true
+			decision.Reason = "duplicate dedupe_key"
+			if err := s.decLog.Write(decision); err != nil {
+				return err
+			}
+			// Even for duplicate events, advance cursor state to avoid replay loops.
+			s.state.LastEventID = env.ID
+			if err := s.compactState(); err != nil {
+				return err
+			}
+			if err := s.saveState(); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+	if err := s.decLog.Write(decision); err != nil {
+		return err
+	}
+
+	start := s.now().UTC()
+	result := ActionResult{
+		ID:        newID("actres", start),
+		EventID:   env.ID,
+		StartedAt: start,
+		EndedAt:   start,
+	}
+
+	if err := s.handler.HandleEvent(ctx, env); err != nil {
+		if IsSkipEventError(err) {
+			result.Status = "skipped"
+			result.Message = err.Error()
+		} else {
+			result.Status = "failed"
+			result.Message = err.Error()
+		}
+	} else {
+		result.Status = "ok"
+	}
+	result.EndedAt = s.now().UTC()
+	if err := s.actionsLog.Write(result); err != nil {
+		return err
+	}
+
+	if env.DedupeKey != "" {
+		s.state.ProcessedAt[env.DedupeKey] = result.EndedAt.Format(time.RFC3339Nano)
+	}
+	s.state.LastEventID = env.ID
+	if err := s.compactState(); err != nil {
+		return err
+	}
+	if err := s.saveState(); err != nil {
+		return err
 	}
 	return nil
 }

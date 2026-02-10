@@ -13,6 +13,7 @@ import (
 	"time"
 
 	holonlog "github.com/holon-run/holon/pkg/log"
+	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/serve"
 	"github.com/spf13/cobra"
@@ -29,6 +30,9 @@ var (
 	serveControllerWorkspace string
 	serveWebhookPort         int
 	serveWebhookMode         bool
+	serveControllerRole      string
+	serveControllerRoleFile  string
+	serveTickInterval        time.Duration
 )
 
 var serveCmd = &cobra.Command{
@@ -55,6 +59,9 @@ for local development and testing.`,
 		defer holonlog.Sync()
 
 		serveWebhookMode = serveWebhookPort > 0
+		if err := validateControllerRole(serveControllerRole); err != nil {
+			return err
+		}
 
 		stateDir := serveStateDir
 		if stateDir == "" {
@@ -80,7 +87,17 @@ for local development and testing.`,
 			return fmt.Errorf("failed to create controller workspace: %w", err)
 		}
 
-		handler, err := newCLIControllerHandler(serveRepo, absStateDir, controllerWorkspace, serveControllerSkill, serveLogLevel, serveDryRun, nil)
+		handler, err := newCLIControllerHandler(
+			serveRepo,
+			absStateDir,
+			controllerWorkspace,
+			serveControllerSkill,
+			serveControllerRole,
+			serveControllerRoleFile,
+			serveLogLevel,
+			serveDryRun,
+			nil,
+		)
 		if err != nil {
 			return err
 		}
@@ -102,6 +119,14 @@ for local development and testing.`,
 			}
 			defer webhookSrv.Close()
 
+			tickCtx, tickCancel := context.WithCancel(context.Background())
+			defer tickCancel()
+			if serveTickInterval > 0 {
+				startServeTickEmitter(tickCtx, serveTickInterval, serveRepo, func(ctx context.Context, env serve.EventEnvelope) error {
+					return webhookSrv.InjectEvent(ctx, env)
+				})
+			}
+
 			holonlog.Info(
 				"serve started (webhook mode)",
 				"repo", serveRepo,
@@ -109,8 +134,10 @@ for local development and testing.`,
 				"workspace", controllerWorkspace,
 				"port", serveWebhookPort,
 				"controller_skill", serveControllerSkill,
+				"controller_role", serveControllerRole,
+				"tick_interval", serveTickInterval,
 			)
-			return webhookSrv.Start(context.Background())
+			return webhookSrv.Start(tickCtx)
 		}
 
 		// Stdin/File mode
@@ -132,6 +159,14 @@ for local development and testing.`,
 		}
 		defer svc.Close()
 
+		tickCtx, tickCancel := context.WithCancel(context.Background())
+		defer tickCancel()
+		if serveTickInterval > 0 {
+			startServeTickEmitter(tickCtx, serveTickInterval, serveRepo, func(ctx context.Context, env serve.EventEnvelope) error {
+				return svc.InjectEvent(ctx, env)
+			})
+		}
+
 		holonlog.Info(
 			"serve started",
 			"repo", serveRepo,
@@ -139,9 +174,65 @@ for local development and testing.`,
 			"workspace", controllerWorkspace,
 			"input", serveInput,
 			"controller_skill", serveControllerSkill,
+			"controller_role", serveControllerRole,
+			"tick_interval", serveTickInterval,
 		)
-		return svc.Run(context.Background(), reader, serveMaxEvents)
+		return svc.Run(tickCtx, reader, serveMaxEvents)
 	},
+}
+
+func validateControllerRole(role string) error {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return fmt.Errorf("--controller-role is required (pm|dev)")
+	}
+	if role != "pm" && role != "dev" {
+		return fmt.Errorf("invalid --controller-role %q (expected pm or dev)", role)
+	}
+	return nil
+}
+
+func startServeTickEmitter(ctx context.Context, interval time.Duration, repo string, sink func(context.Context, serve.EventEnvelope) error) {
+	if interval <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				env := buildTickEvent(repo, now, interval)
+				if err := sink(ctx, env); err != nil {
+					holonlog.Warn("failed to inject timer tick", "error", err, "event_id", env.ID)
+				}
+			}
+		}
+	}()
+}
+
+func buildTickEvent(repo string, at time.Time, interval time.Duration) serve.EventEnvelope {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	bucket := at.UTC().Truncate(interval)
+	bucketID := strconv.FormatInt(bucket.Unix(), 10)
+	return serve.EventEnvelope{
+		ID:     fmt.Sprintf("tick_%d", at.UTC().UnixNano()),
+		Source: "timer",
+		Type:   "timer.tick",
+		At:     at.UTC(),
+		Scope: serve.EventScope{
+			Repo: repo,
+		},
+		Subject: serve.EventSubject{
+			Kind: "timer",
+			ID:   bucketID,
+		},
+		DedupeKey: fmt.Sprintf("timer:%s:%s", repo, bucketID),
+	}
 }
 
 func openServeInput(input string) (io.Reader, io.Closer, error) {
@@ -160,6 +251,8 @@ type cliControllerHandler struct {
 	stateDir            string
 	controllerWorkspace string
 	controllerSkill     string
+	controllerRole      string
+	controllerRoleFile  string
 	logLevel            string
 	dryRun              bool
 	sessionRunner       SessionRunner
@@ -181,6 +274,8 @@ func newCLIControllerHandler(
 	stateDir,
 	controllerWorkspace,
 	controllerSkill,
+	controllerRole,
+	controllerRoleFile,
 	logLevel string,
 	dryRun bool,
 	sessionRunner SessionRunner,
@@ -202,6 +297,8 @@ func newCLIControllerHandler(
 		stateDir:            stateDir,
 		controllerWorkspace: controllerWorkspace,
 		controllerSkill:     controllerSkill,
+		controllerRole:      controllerRole,
+		controllerRoleFile:  controllerRoleFile,
 		logLevel:            logLevel,
 		dryRun:              dryRun,
 		sessionRunner:       sessionRunner,
@@ -239,6 +336,9 @@ func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error)
 	}
 	if repo == "" {
 		return "", fmt.Errorf("missing repo for event %s", env.ID)
+	}
+	if env.Type == "timer.tick" || env.Source == "timer" {
+		return fmt.Sprintf("%s#0", repo), nil
 	}
 	if env.Subject.ID == "" {
 		return "", serve.NewSkipEventError(fmt.Sprintf("missing subject id for event %s", env.ID))
@@ -327,20 +427,10 @@ output:
 		return fmt.Errorf("failed to create prompts dir: %w", err)
 	}
 
-	systemPrompt := strings.TrimSpace(`
-You are Holon's persistent GitHub controller agent.
-
-Operate continuously in session mode. For each incoming event, decide the best next action and execute it with available skills/tools.
-Prioritize keeping delivery flow moving: create/advance PRs, request fixes, review updates, and report clear outcomes.
-`)
-
-	userPrompt := strings.TrimSpace(`
-Controller runtime contract:
-1. The event stream is available at HOLON_CONTROLLER_EVENT_CHANNEL.
-2. Cursor state is persisted at HOLON_CONTROLLER_EVENT_CURSOR.
-3. Session identity is persisted at HOLON_CONTROLLER_SESSION_STATE_PATH.
-4. For each event, decide and execute actions autonomously. Keep responses concise and action-oriented.
-`)
+	systemPrompt, userPrompt, err := h.controllerPrompts()
+	if err != nil {
+		return err
+	}
 
 	if err := os.WriteFile(filepath.Join(promptsDir, "system.md"), []byte(systemPrompt+"\n"), 0644); err != nil {
 		return fmt.Errorf("failed to write system prompt: %w", err)
@@ -350,6 +440,32 @@ Controller runtime contract:
 	}
 	return nil
 }
+
+func (h *cliControllerHandler) controllerPrompts() (string, string, error) {
+	if path := strings.TrimSpace(h.controllerRoleFile); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to read --controller-role-file: %w", err)
+		}
+		return strings.TrimSpace(string(data)), strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
+	}
+
+	assetPath := fmt.Sprintf("roles/%s.md", h.controllerRole)
+	data, err := prompt.ReadAsset(assetPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to load role prompt asset %s: %w", assetPath, err)
+	}
+	return strings.TrimSpace(string(data)), strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
+}
+
+const defaultControllerRuntimeUserPrompt = `
+Controller runtime contract:
+1. Role identity is HOLON_CONTROLLER_ROLE.
+2. The event stream is at HOLON_CONTROLLER_EVENT_CHANNEL and cursor at HOLON_CONTROLLER_EVENT_CURSOR.
+3. Session metadata path is HOLON_CONTROLLER_SESSION_STATE_PATH.
+4. Goal state path is HOLON_CONTROLLER_GOAL_STATE_PATH.
+5. Process events continuously, keep role boundaries strict, and produce concise action-oriented outcomes.
+`
 
 func (h *cliControllerHandler) copyControllerMemoryToInput(contextDir string) error {
 	src := filepath.Join(h.stateDir, "controller-state", "controller-memory.md")
@@ -405,6 +521,9 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	if err := os.MkdirAll(filepath.Join(h.stateDir, "controller-state"), 0755); err != nil {
 		return fmt.Errorf("failed to create controller state dir: %w", err)
 	}
+	if err := h.ensureGoalStateFile(); err != nil {
+		return err
+	}
 	channelPath := filepath.Join(h.stateDir, "controller-state", "event-channel.ndjson")
 	if err := touchFile(channelPath); err != nil {
 		return fmt.Errorf("failed to initialize event channel: %w", err)
@@ -421,9 +540,11 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	env := map[string]string{
 		"HOLON_AGENT_SESSION_MODE":            "serve",
 		"CLAUDE_CONFIG_DIR":                   "/holon/state/claude-config",
+		"HOLON_CONTROLLER_ROLE":               h.controllerRole,
 		"HOLON_CONTROLLER_EVENT_CHANNEL":      "/holon/state/event-channel.ndjson",
 		"HOLON_CONTROLLER_EVENT_CURSOR":       "/holon/state/event-channel.cursor",
 		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/holon/state/controller-session.json",
+		"HOLON_CONTROLLER_GOAL_STATE_PATH":    "/holon/state/goal-state.json",
 	}
 	for k, v := range resolveServeRuntimeEnv(ctx) {
 		env[k] = v
@@ -463,6 +584,32 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"channel", channelPath,
 		"restart_attempt", h.restartAttempts,
 	)
+	return nil
+}
+
+func (h *cliControllerHandler) ensureGoalStateFile() error {
+	path := filepath.Join(h.stateDir, "controller-state", "goal-state.json")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat goal state file: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	state := map[string]any{
+		"version":          1,
+		"goal":             "",
+		"milestones":       []any{},
+		"active_issue_ids": []any{},
+		"updated_at":       now,
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal initial goal state: %w", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0644); err != nil {
+		return fmt.Errorf("failed to write initial goal state: %w", err)
+	}
 	return nil
 }
 
@@ -578,6 +725,9 @@ func init() {
 	serveCmd.Flags().IntVar(&serveMaxEvents, "max-events", 0, "Stop after processing N events (0 = unlimited, not supported in webhook mode)")
 	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without running controller skill")
 	serveCmd.Flags().StringVar(&serveControllerSkill, "controller-skill", filepath.Join("skills", "github-controller"), "Controller skill path or reference")
+	serveCmd.Flags().StringVar(&serveControllerRole, "controller-role", "", "Controller role identity: pm or dev")
+	serveCmd.Flags().StringVar(&serveControllerRoleFile, "controller-role-file", "", "Override controller system prompt with a custom role prompt file")
+	serveCmd.Flags().DurationVar(&serveTickInterval, "tick-interval", 0, "Emit timer.tick events periodically (e.g. 5m)")
 	serveCmd.Flags().StringVar(&serveLogLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	serveCmd.Flags().IntVar(&serveWebhookPort, "webhook-port", 0, "Enable webhook mode and listen on this port (requires --repo)")
 	rootCmd.AddCommand(serveCmd)

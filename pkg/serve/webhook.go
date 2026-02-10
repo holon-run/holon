@@ -37,15 +37,15 @@ type WebhookServer struct {
 
 // WebhookConfig configures the webhook server
 type WebhookConfig struct {
-	Port            int
-	RepoHint        string
-	StateDir        string
-	Handler         EventHandler
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	IdleTimeout     time.Duration
-	MaxBodySize     int64
-	ChannelTimeout  time.Duration
+	Port           int
+	RepoHint       string
+	StateDir       string
+	Handler        EventHandler
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	IdleTimeout    time.Duration
+	MaxBodySize    int64
+	ChannelTimeout time.Duration
 }
 
 // NewWebhookServer creates a new webhook server for GitHub events
@@ -128,7 +128,7 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		channelTimeout: channelTimeout,
 		rpcRegistry:    NewMethodRegistry(),
 		state: persistentState{
-			ProcessedAt: make(map[string]string),
+			ProcessedAt:  make(map[string]string),
 			ProcessedMax: 2000,
 		},
 	}
@@ -377,6 +377,28 @@ func (ws *WebhookServer) processOne(raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to normalize event: %w", err)
 	}
+	return ws.processEnvelope(env)
+}
+
+// InjectEvent allows internal producers (e.g. timer source) to route events
+// through the same webhook processing pipeline.
+func (ws *WebhookServer) InjectEvent(_ context.Context, env EventEnvelope) error {
+	if env.ID == "" {
+		env.ID = newID("evt", ws.now().UTC())
+	}
+	if env.At.IsZero() {
+		env.At = ws.now().UTC()
+	}
+	if env.Scope.Repo == "" {
+		env.Scope.Repo = ws.repoHint
+	}
+	if env.DedupeKey == "" {
+		env.DedupeKey = buildDedupeKey(env)
+	}
+	return ws.processEnvelope(env)
+}
+
+func (ws *WebhookServer) processEnvelope(env EventEnvelope) error {
 
 	// Write to events log
 	if err := ws.eventsLog.Write(env); err != nil {

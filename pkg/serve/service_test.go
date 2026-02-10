@@ -272,3 +272,38 @@ func TestBuildGitHubDedupeKey_LabelUsesSubjectKind(t *testing.T) {
 		t.Fatalf("expected distinct keys for issue vs pull_request label events, got %q", issueKey)
 	}
 }
+
+func TestService_InjectEvent_UsesSameDedupePipeline(t *testing.T) {
+	td := t.TempDir()
+	fake := &fakeExecutor{}
+	svc, err := New(Config{
+		RepoHint: "holon-run/holon",
+		StateDir: td,
+		Handler:  fake,
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer svc.Close()
+	svc.now = func() time.Time { return time.Date(2026, 2, 10, 0, 0, 0, 0, time.UTC) }
+
+	env := EventEnvelope{
+		Source: "timer",
+		Type:   "timer.tick",
+		Scope:  EventScope{Repo: "holon-run/holon"},
+		Subject: EventSubject{
+			Kind: "timer",
+			ID:   "1739145600",
+		},
+		DedupeKey: "timer:holon-run/holon:1739145600",
+	}
+	if err := svc.InjectEvent(context.Background(), env); err != nil {
+		t.Fatalf("InjectEvent first: %v", err)
+	}
+	if err := svc.InjectEvent(context.Background(), env); err != nil {
+		t.Fatalf("InjectEvent second: %v", err)
+	}
+	if len(fake.events) != 1 {
+		t.Fatalf("expected 1 forwarded event after dedupe, got %d", len(fake.events))
+	}
+}
