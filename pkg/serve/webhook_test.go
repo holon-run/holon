@@ -75,7 +75,7 @@ func TestWebhookServer_Deduplication(t *testing.T) {
 	defer ws.Close()
 
 	payload := map[string]interface{}{
-		"action":    "created",
+		"action":     "created",
 		"repository": map[string]interface{}{"full_name": "test/repo"},
 		"issue":      map[string]interface{}{"number": 123},
 		"comment":    map[string]interface{}{"id": 456},
@@ -110,6 +110,74 @@ func TestWebhookServer_Deduplication(t *testing.T) {
 	}
 }
 
+func TestWebhookServer_InjectEvent_UsesSameProcessingPipeline(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+	ws.now = func() time.Time { return time.Date(2026, 2, 10, 0, 0, 0, 0, time.UTC) }
+
+	env := EventEnvelope{
+		Source: "timer",
+		Type:   "timer.tick",
+		Scope:  EventScope{Repo: "holon-run/holon"},
+		Subject: EventSubject{
+			Kind: "timer",
+			ID:   "1739145600",
+		},
+		DedupeKey: "timer:holon-run/holon:1739145600",
+	}
+	if err := ws.InjectEvent(context.Background(), env); err != nil {
+		t.Fatalf("InjectEvent first failed: %v", err)
+	}
+	if err := ws.InjectEvent(context.Background(), env); err != nil {
+		t.Fatalf("InjectEvent second failed: %v", err)
+	}
+	if len(handler.events) != 1 {
+		t.Fatalf("expected 1 event after dedupe, got %d", len(handler.events))
+	}
+}
+
+func TestWebhookServer_InjectEvent_RespectsPauseState(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+	if err := ws.runtime.Pause(); err != nil {
+		t.Fatalf("Pause failed: %v", err)
+	}
+
+	env := EventEnvelope{
+		Source: "timer",
+		Type:   "timer.tick",
+		Scope:  EventScope{Repo: "holon-run/holon"},
+		Subject: EventSubject{
+			Kind: "timer",
+			ID:   "1739145600",
+		},
+	}
+	if err := ws.InjectEvent(context.Background(), env); err != nil {
+		t.Fatalf("InjectEvent failed: %v", err)
+	}
+	if len(handler.events) != 0 {
+		t.Fatalf("expected paused runtime to skip injected events, got %d", len(handler.events))
+	}
+}
+
 func TestWebhookServer_ChannelFull(t *testing.T) {
 	td := t.TempDir()
 	handler := &mockEventHandler{}
@@ -126,7 +194,7 @@ func TestWebhookServer_ChannelFull(t *testing.T) {
 
 	// Fill the channel by sending many requests rapidly
 	payload := map[string]interface{}{
-		"action":    "created",
+		"action":     "created",
 		"repository": map[string]interface{}{"full_name": "test/repo"},
 		"issue":      map[string]interface{}{"number": 123},
 	}
@@ -252,7 +320,7 @@ func TestWebhookServer_StatePersistence(t *testing.T) {
 	}
 
 	payload := map[string]interface{}{
-		"action":    "created",
+		"action":     "created",
 		"repository": map[string]interface{}{"full_name": "test/repo"},
 		"issue":      map[string]interface{}{"number": 123},
 		"comment":    map[string]interface{}{"id": 456},
@@ -485,7 +553,7 @@ func TestWebhookServer_ChannelTimeoutBehavior(t *testing.T) {
 	}
 
 	payload := map[string]interface{}{
-		"action":    "created",
+		"action":     "created",
 		"repository": map[string]interface{}{"full_name": "test/repo"},
 		"issue":      map[string]interface{}{"number": 123},
 	}
@@ -974,7 +1042,7 @@ func TestWebhookServer_JSONRPC_WithParams(t *testing.T) {
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "echo.params",
-		"params": map[string]string{"key": "value"},
+		"params":  map[string]string{"key": "value"},
 	}
 	body, _ := json.Marshal(requestBody)
 

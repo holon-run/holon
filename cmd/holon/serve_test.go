@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -145,6 +146,7 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 		stateDir:            td,
 		controllerWorkspace: t.TempDir(),
 		controllerSkill:     "skills/github-controller",
+		controllerRole:      "dev",
 		logLevel:            "progress",
 		sessionRunner:       mockRunner,
 	}
@@ -209,6 +211,124 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 
 	// Let close finish gracefully.
 	mockRunner.waitCh <- nil
+}
+
+func TestValidateControllerRole(t *testing.T) {
+	t.Parallel()
+
+	if err := validateControllerRole("pm"); err != nil {
+		t.Fatalf("validate pm: %v", err)
+	}
+	if err := validateControllerRole("dev"); err != nil {
+		t.Fatalf("validate dev: %v", err)
+	}
+	if err := validateControllerRole(""); err == nil {
+		t.Fatalf("expected error for empty role")
+	}
+	if err := validateControllerRole("reviewer"); err == nil {
+		t.Fatalf("expected error for invalid role")
+	}
+}
+
+func TestCanonicalControllerRole_Trimmed(t *testing.T) {
+	t.Parallel()
+
+	got, err := canonicalControllerRole("  pm  ")
+	if err != nil {
+		t.Fatalf("canonicalControllerRole() error: %v", err)
+	}
+	if got != "pm" {
+		t.Fatalf("canonical role = %q, want pm", got)
+	}
+}
+
+func TestBuildTickEvent(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 2, 10, 15, 4, 59, 0, time.UTC)
+	env := buildTickEvent("holon-run/holon", at, 5*time.Minute)
+	if env.Source != "timer" {
+		t.Fatalf("source = %q", env.Source)
+	}
+	if env.Type != "timer.tick" {
+		t.Fatalf("type = %q", env.Type)
+	}
+	if env.Scope.Repo != "holon-run/holon" {
+		t.Fatalf("repo = %q", env.Scope.Repo)
+	}
+	if env.Subject.Kind != "timer" {
+		t.Fatalf("subject kind = %q", env.Subject.Kind)
+	}
+	if env.Subject.ID != "1770735600" {
+		t.Fatalf("subject id = %q", env.Subject.ID)
+	}
+	if env.DedupeKey != "timer:holon-run/holon:1770735600" {
+		t.Fatalf("dedupe key = %q", env.DedupeKey)
+	}
+}
+
+func TestControllerPrompts_RoleAssetAndRoleFileOverride(t *testing.T) {
+	t.Parallel()
+
+	h := &cliControllerHandler{controllerRole: "pm"}
+	systemPrompt, userPrompt, err := h.controllerPrompts()
+	if err != nil {
+		t.Fatalf("controllerPrompts() role asset error: %v", err)
+	}
+	if !strings.Contains(systemPrompt, "ROLE: PM") {
+		t.Fatalf("expected pm role prompt, got: %q", systemPrompt)
+	}
+	if !strings.Contains(userPrompt, "HOLON_CONTROLLER_GOAL_STATE_PATH") {
+		t.Fatalf("unexpected runtime user prompt: %q", userPrompt)
+	}
+
+	td := t.TempDir()
+	roleFile := filepath.Join(td, "role.md")
+	if err := os.WriteFile(roleFile, []byte("CUSTOM ROLE"), 0o644); err != nil {
+		t.Fatalf("write role file: %v", err)
+	}
+	h.controllerRoleFile = roleFile
+	systemPrompt, _, err = h.controllerPrompts()
+	if err != nil {
+		t.Fatalf("controllerPrompts() role file error: %v", err)
+	}
+	if systemPrompt != "CUSTOM ROLE" {
+		t.Fatalf("role file override failed, got %q", systemPrompt)
+	}
+
+	if err := os.WriteFile(roleFile, []byte(" \n\t "), 0o644); err != nil {
+		t.Fatalf("write empty role file: %v", err)
+	}
+	if _, _, err := h.controllerPrompts(); err == nil {
+		t.Fatalf("expected error for empty role file content")
+	}
+}
+
+func TestEnsureGoalStateFile(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	stateDir := filepath.Join(td, "controller-state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("mkdir controller-state: %v", err)
+	}
+
+	h := &cliControllerHandler{stateDir: td}
+	if err := h.ensureGoalStateFile(); err != nil {
+		t.Fatalf("ensureGoalStateFile() error: %v", err)
+	}
+	path := filepath.Join(stateDir, "goal-state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read goal-state.json: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal goal-state.json: %v", err)
+	}
+	if got["version"] != float64(1) {
+		t.Fatalf("version = %v", got["version"])
+	}
 }
 
 func TestReadAnthropicEnvFromClaudeSettings(t *testing.T) {

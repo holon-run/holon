@@ -37,15 +37,15 @@ type WebhookServer struct {
 
 // WebhookConfig configures the webhook server
 type WebhookConfig struct {
-	Port            int
-	RepoHint        string
-	StateDir        string
-	Handler         EventHandler
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	IdleTimeout     time.Duration
-	MaxBodySize     int64
-	ChannelTimeout  time.Duration
+	Port           int
+	RepoHint       string
+	StateDir       string
+	Handler        EventHandler
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	IdleTimeout    time.Duration
+	MaxBodySize    int64
+	ChannelTimeout time.Duration
 }
 
 // NewWebhookServer creates a new webhook server for GitHub events
@@ -128,7 +128,7 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		channelTimeout: channelTimeout,
 		rpcRegistry:    NewMethodRegistry(),
 		state: persistentState{
-			ProcessedAt: make(map[string]string),
+			ProcessedAt:  make(map[string]string),
 			ProcessedMax: 2000,
 		},
 	}
@@ -358,14 +358,14 @@ func (ws *WebhookServer) processEvents(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case raw := <-ws.eventChan:
-			if err := ws.processOne(raw); err != nil {
+			if err := ws.processOne(ctx, raw); err != nil {
 				holonlog.Error("failed to process event", "error", err)
 			}
 		}
 	}
 }
 
-func (ws *WebhookServer) processOne(raw []byte) error {
+func (ws *WebhookServer) processOne(ctx context.Context, raw []byte) error {
 	// Check if runtime is paused
 	if ws.runtime.IsPaused() {
 		holonlog.Info("event skipped: runtime paused", "reason", "paused")
@@ -377,6 +377,35 @@ func (ws *WebhookServer) processOne(raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to normalize event: %w", err)
 	}
+	return ws.processEnvelope(ctx, env)
+}
+
+// InjectEvent allows internal producers (e.g. timer source) to route events
+// through the same webhook processing pipeline.
+func (ws *WebhookServer) InjectEvent(ctx context.Context, env EventEnvelope) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ws.runtime.IsPaused() {
+		holonlog.Info("event skipped: runtime paused", "reason", "paused")
+		return nil
+	}
+	if env.ID == "" {
+		env.ID = newID("evt", ws.now().UTC())
+	}
+	if env.At.IsZero() {
+		env.At = ws.now().UTC()
+	}
+	if env.Scope.Repo == "" {
+		env.Scope.Repo = ws.repoHint
+	}
+	if env.DedupeKey == "" {
+		env.DedupeKey = buildDedupeKey(env)
+	}
+	return ws.processEnvelope(ctx, env)
+}
+
+func (ws *WebhookServer) processEnvelope(ctx context.Context, env EventEnvelope) error {
 
 	// Write to events log
 	if err := ws.eventsLog.Write(env); err != nil {
@@ -423,10 +452,14 @@ func (ws *WebhookServer) processOne(raw []byte) error {
 	}
 
 	// Create a context for event handling with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	handlerCtx := ctx
+	if handlerCtx == nil {
+		handlerCtx = context.Background()
+	}
+	handlerCtx, cancel := context.WithTimeout(handlerCtx, 5*time.Minute)
 	defer cancel()
 
-	if err := ws.handler.HandleEvent(ctx, env); err != nil {
+	if err := ws.handler.HandleEvent(handlerCtx, env); err != nil {
 		if IsSkipEventError(err) {
 			result.Status = "skipped"
 			result.Message = err.Error()
