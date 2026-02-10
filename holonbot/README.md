@@ -160,7 +160,7 @@ LOG_LEVEL=info
 - OIDC JWT verification enforces:
   - signature via GitHub JWKS
   - `iss` = `https://token.actions.githubusercontent.com`
-  - `aud` in `HOLON_OIDC_AUDIENCE` (required)
+  - `aud` in configured audiences (`HOLON_OIDC_AUDIENCE`, default: `holon-token-broker`)
   - standard JWT time checks (`exp`, `nbf`)
 - Claim validation enforces repository binding:
   - `repository` / `repository_owner` format and consistency
@@ -179,11 +179,9 @@ LOG_LEVEL=info
 
 ### Security Configuration
 
-Required:
-
-- `HOLON_OIDC_AUDIENCE`: Comma-separated accepted OIDC audiences.
-
 Optional (defaults shown):
+
+- `HOLON_OIDC_AUDIENCE=holon-token-broker` (comma-separated accepted OIDC audiences)
 
 - `HOLON_REQUIRE_ACTOR_COLLABORATOR=true`
 - `HOLON_MIN_ACTOR_PERMISSION=read`

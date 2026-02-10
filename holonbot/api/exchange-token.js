@@ -4,6 +4,7 @@ import { verifyOIDCToken, validateClaims } from '../lib/oidc.js';
 const replayCache = new Map();
 const rateLimitCache = new Map();
 let lastCleanupAtMs = 0;
+const defaultOIDCAudiences = ['holon-token-broker'];
 const permissionRank = {
     none: 0,
     read: 1,
@@ -50,7 +51,7 @@ function parseCSV(value) {
 function getRequiredAudiences(env = process.env) {
     const audiences = parseCSV(env.HOLON_OIDC_AUDIENCE);
     if (audiences.length === 0) {
-        throw new HttpError(500, 'config.invalid', 'Missing HOLON_OIDC_AUDIENCE configuration');
+        return defaultOIDCAudiences;
     }
     return audiences;
 }
