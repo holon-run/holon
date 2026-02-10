@@ -145,6 +145,39 @@ func TestWebhookServer_InjectEvent_UsesSameProcessingPipeline(t *testing.T) {
 	}
 }
 
+func TestWebhookServer_InjectEvent_RespectsPauseState(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+	if err := ws.runtime.Pause(); err != nil {
+		t.Fatalf("Pause failed: %v", err)
+	}
+
+	env := EventEnvelope{
+		Source: "timer",
+		Type:   "timer.tick",
+		Scope:  EventScope{Repo: "holon-run/holon"},
+		Subject: EventSubject{
+			Kind: "timer",
+			ID:   "1739145600",
+		},
+	}
+	if err := ws.InjectEvent(context.Background(), env); err != nil {
+		t.Fatalf("InjectEvent failed: %v", err)
+	}
+	if len(handler.events) != 0 {
+		t.Fatalf("expected paused runtime to skip injected events, got %d", len(handler.events))
+	}
+}
+
 func TestWebhookServer_ChannelFull(t *testing.T) {
 	td := t.TempDir()
 	handler := &mockEventHandler{}

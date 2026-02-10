@@ -230,6 +230,18 @@ func TestValidateControllerRole(t *testing.T) {
 	}
 }
 
+func TestCanonicalControllerRole_Trimmed(t *testing.T) {
+	t.Parallel()
+
+	got, err := canonicalControllerRole("  pm  ")
+	if err != nil {
+		t.Fatalf("canonicalControllerRole() error: %v", err)
+	}
+	if got != "pm" {
+		t.Fatalf("canonical role = %q, want pm", got)
+	}
+}
+
 func TestBuildTickEvent(t *testing.T) {
 	t.Parallel()
 
@@ -282,6 +294,13 @@ func TestControllerPrompts_RoleAssetAndRoleFileOverride(t *testing.T) {
 	}
 	if systemPrompt != "CUSTOM ROLE" {
 		t.Fatalf("role file override failed, got %q", systemPrompt)
+	}
+
+	if err := os.WriteFile(roleFile, []byte(" \n\t "), 0o644); err != nil {
+		t.Fatalf("write empty role file: %v", err)
+	}
+	if _, _, err := h.controllerPrompts(); err == nil {
+		t.Fatalf("expected error for empty role file content")
 	}
 }
 

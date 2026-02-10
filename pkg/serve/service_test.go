@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -306,4 +308,40 @@ func TestService_InjectEvent_UsesSameDedupePipeline(t *testing.T) {
 	if len(fake.events) != 1 {
 		t.Fatalf("expected 1 forwarded event after dedupe, got %d", len(fake.events))
 	}
+}
+
+func TestService_InjectEvent_ConcurrentSafe(t *testing.T) {
+	td := t.TempDir()
+	fake := &fakeExecutor{}
+	svc, err := New(Config{
+		RepoHint: "holon-run/holon",
+		StateDir: td,
+		Handler:  fake,
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer svc.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			env := EventEnvelope{
+				Source: "timer",
+				Type:   "timer.tick",
+				Scope:  EventScope{Repo: "holon-run/holon"},
+				Subject: EventSubject{
+					Kind: "timer",
+					ID:   "bucket-" + strconv.Itoa(n),
+				},
+				DedupeKey: "timer:holon-run/holon:bucket-" + strconv.Itoa(n),
+			}
+			if injectErr := svc.InjectEvent(context.Background(), env); injectErr != nil {
+				t.Errorf("InjectEvent(%d) failed: %v", n, injectErr)
+			}
+		}(i)
+	}
+	wg.Wait()
 }

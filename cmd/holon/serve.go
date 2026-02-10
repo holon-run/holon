@@ -59,8 +59,13 @@ for local development and testing.`,
 		defer holonlog.Sync()
 
 		serveWebhookMode = serveWebhookPort > 0
-		if err := validateControllerRole(serveControllerRole); err != nil {
+		canonicalRole, err := canonicalControllerRole(serveControllerRole)
+		if err != nil {
 			return err
+		}
+		serveControllerRole = canonicalRole
+		if serveTickInterval > 0 && strings.TrimSpace(serveRepo) == "" {
+			return fmt.Errorf("--repo is required when --tick-interval is enabled")
 		}
 
 		stateDir := serveStateDir
@@ -181,15 +186,20 @@ for local development and testing.`,
 	},
 }
 
+func canonicalControllerRole(role string) (string, error) {
+	trimmed := strings.TrimSpace(role)
+	if trimmed == "" {
+		return "", fmt.Errorf("--controller-role is required (pm|dev)")
+	}
+	if trimmed != "pm" && trimmed != "dev" {
+		return "", fmt.Errorf("invalid --controller-role %q (expected pm or dev)", trimmed)
+	}
+	return trimmed, nil
+}
+
 func validateControllerRole(role string) error {
-	role = strings.TrimSpace(role)
-	if role == "" {
-		return fmt.Errorf("--controller-role is required (pm|dev)")
-	}
-	if role != "pm" && role != "dev" {
-		return fmt.Errorf("invalid --controller-role %q (expected pm or dev)", role)
-	}
-	return nil
+	_, err := canonicalControllerRole(role)
+	return err
 }
 
 func startServeTickEmitter(ctx context.Context, interval time.Duration, repo string, sink func(context.Context, serve.EventEnvelope) error) {
@@ -207,6 +217,10 @@ func startServeTickEmitter(ctx context.Context, interval time.Duration, repo str
 				env := buildTickEvent(repo, now, interval)
 				if err := sink(ctx, env); err != nil {
 					holonlog.Warn("failed to inject timer tick", "error", err, "event_id", env.ID)
+					return
+				}
+				if ctx.Err() != nil {
+					return
 				}
 			}
 		}
@@ -447,7 +461,11 @@ func (h *cliControllerHandler) controllerPrompts() (string, string, error) {
 		if err != nil {
 			return "", "", fmt.Errorf("failed to read --controller-role-file: %w", err)
 		}
-		return strings.TrimSpace(string(data)), strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			return "", "", fmt.Errorf("--controller-role-file content is empty")
+		}
+		return content, strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
 	}
 
 	assetPath := fmt.Sprintf("roles/%s.md", h.controllerRole)
@@ -455,7 +473,11 @@ func (h *cliControllerHandler) controllerPrompts() (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("failed to load role prompt asset %s: %w", assetPath, err)
 	}
-	return strings.TrimSpace(string(data)), strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return "", "", fmt.Errorf("role prompt asset %s is empty", assetPath)
+	}
+	return content, strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
 }
 
 const defaultControllerRuntimeUserPrompt = `

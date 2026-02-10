@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -50,6 +51,7 @@ type Service struct {
 	actionsLog *ndjsonWriter
 	state      persistentState
 	now        func() time.Time
+	mu         sync.Mutex
 }
 
 var idCounter uint64
@@ -173,6 +175,9 @@ func (s *Service) InjectEvent(ctx context.Context, env EventEnvelope) error {
 }
 
 func (s *Service) processEnvelope(ctx context.Context, env EventEnvelope) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if err := s.eventsLog.Write(env); err != nil {
 		return err
 	}
