@@ -38,6 +38,10 @@ inputs:
     description: 'URL of the Holonbot Token Broker'
     required: false
     default: 'https://bot.holon.run/api/exchange-token'
+  holonbot_oidc_audience:
+    description: 'OIDC audience for Holonbot token broker exchange'
+    required: false
+    default: 'holon-token-broker'
   log_level:
     description: 'Log level for CI visibility (debug, info, progress, minimal)'
     required: false
@@ -104,7 +108,15 @@ runs:
 
         if [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
           echo "Fetching OIDC token from GitHub Actions runtime..."
-          OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r '.value')
+          OIDC_URL="$ACTIONS_ID_TOKEN_REQUEST_URL"
+          if [ -n "${{ inputs.holonbot_oidc_audience }}" ]; then
+            if [[ "$OIDC_URL" == *\?* ]]; then
+              OIDC_URL="${OIDC_URL}&audience=${{ inputs.holonbot_oidc_audience }}"
+            else
+              OIDC_URL="${OIDC_URL}?audience=${{ inputs.holonbot_oidc_audience }}"
+            fi
+          fi
+          OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$OIDC_URL" | jq -r '.value')
 
           if [ -n "$OIDC_TOKEN" ] && [ "$OIDC_TOKEN" != "null" ]; then
             if [ -z "${{ inputs.holonbot_broker_url }}" ]; then

@@ -113,6 +113,27 @@ describe('exchange-token handler', () => {
             repository_ids: [42],
             permissions: { contents: 'write', pull_requests: 'write' }
         }));
+        expect(verifyOIDCToken).toHaveBeenCalledWith('valid-oidc-token', { audiences: ['holon-broker'] });
+    });
+
+    test('should default OIDC audience when HOLON_OIDC_AUDIENCE is not configured', async () => {
+        delete process.env.HOLON_OIDC_AUDIENCE;
+        verifyOIDCToken.mockResolvedValue({ sub: 'repo:owner/repo' });
+        validateClaims.mockReturnValue({
+            repository: 'owner/repo',
+            owner: 'owner',
+            repo: 'repo',
+            repositoryId: '42',
+            actor: 'jolestar',
+            ref: 'refs/heads/main',
+            runId: 'run-1',
+            jti: 'jti-1',
+        });
+
+        await handler(req, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(verifyOIDCToken).toHaveBeenCalledWith('valid-oidc-token', { audiences: ['holon-token-broker'] });
     });
 
     test('should return 401 if auth header is missing', async () => {
