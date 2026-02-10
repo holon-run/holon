@@ -369,6 +369,7 @@ func init() {
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(detectCmd)
 	rootCmd.AddCommand(logCmd)
+	rootCmd.AddCommand(tuiCmd)
 }
 
 func main() {
