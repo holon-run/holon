@@ -188,6 +188,7 @@ Optional (defaults shown):
 - `HOLON_REQUIRE_JOB_WORKFLOW_REF=true`
 - `HOLON_ALLOWED_WORKFLOW_REFS=` (comma-separated exact refs)
 - `HOLON_REQUIRE_DEFAULT_BRANCH_REF=true`
+- `HOLON_ALLOW_PULL_REQUEST_REF=true` (when default-branch enforcement is on, also allow `refs/pull/*/(merge|head)`)
 - `HOLON_ENABLE_REPLAY_PROTECTION=true`
 - `HOLON_REPLAY_WINDOW_SECONDS=3600`
 - `HOLON_ENABLE_RATE_LIMIT=true`

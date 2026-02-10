@@ -70,6 +70,43 @@ describe('OIDC Validation', () => {
             allowedWorkflowRefs: ['holon-run/holon/.github/workflows/holon-trigger.yml@refs/heads/main']
         })).toThrow('job_workflow_ref is not allowed');
     });
+
+    test('should allow pull request refs when default-branch enforcement is enabled', () => {
+        const claims = {
+            repository: 'holon-run/holon',
+            repository_id: '123456',
+            repository_owner: 'holon-run',
+            actor: 'jolestar',
+            ref: 'refs/pull/621/merge',
+            sub: 'repo:holon-run/holon:pull_request',
+            job_workflow_ref: 'holon-run/holon/.github/workflows/holon-trigger.yml@refs/pull/621/merge',
+        };
+
+        const result = validateClaims(claims, {
+            requireDefaultBranchRef: true,
+            defaultBranch: 'main',
+        });
+
+        expect(result.ref).toBe('refs/pull/621/merge');
+    });
+
+    test('should reject pull request refs when explicitly disabled', () => {
+        const claims = {
+            repository: 'holon-run/holon',
+            repository_id: '123456',
+            repository_owner: 'holon-run',
+            actor: 'jolestar',
+            ref: 'refs/pull/621/merge',
+            sub: 'repo:holon-run/holon:pull_request',
+            job_workflow_ref: 'holon-run/holon/.github/workflows/holon-trigger.yml@refs/pull/621/merge',
+        };
+
+        expect(() => validateClaims(claims, {
+            requireDefaultBranchRef: true,
+            defaultBranch: 'main',
+            allowPullRequestRef: false,
+        })).toThrow('ref is not default branch: expected refs/heads/main');
+    });
 });
 
 describe('verifyOIDCToken', () => {

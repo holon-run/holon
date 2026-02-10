@@ -248,4 +248,41 @@ describe('exchange-token handler', () => {
             message: 'Rate limit exceeded',
         }));
     });
+
+    test('should pass allowPullRequestRef option during default-branch enforcement', async () => {
+        process.env.HOLON_REQUIRE_DEFAULT_BRANCH_REF = 'true';
+        process.env.HOLON_ALLOW_PULL_REQUEST_REF = 'true';
+
+        verifyOIDCToken.mockResolvedValue({ sub: 'repo:owner/repo:pull_request' });
+        validateClaims
+            .mockReturnValueOnce({
+                repository: 'owner/repo',
+                owner: 'owner',
+                repo: 'repo',
+                repositoryId: '42',
+                actor: 'jolestar',
+                ref: 'refs/pull/621/merge',
+                runId: 'run-1',
+                jti: 'jti-1',
+            })
+            .mockReturnValueOnce({
+                repository: 'owner/repo',
+                owner: 'owner',
+                repo: 'repo',
+                repositoryId: '42',
+                actor: 'jolestar',
+                ref: 'refs/pull/621/merge',
+                runId: 'run-1',
+                jti: 'jti-1',
+            });
+
+        await handler(req, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(validateClaims).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({
+            requireDefaultBranchRef: true,
+            defaultBranch: 'main',
+            allowPullRequestRef: true,
+        }));
+    });
 });
