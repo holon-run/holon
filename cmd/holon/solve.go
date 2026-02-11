@@ -167,7 +167,7 @@ type workspacePreparation struct {
 //  1. If --workspace PATH is provided: use preparer "existing" on PATH (no clone/copy)
 //  2. If not provided and current dir is a git repo matching the ref owner/repo:
 //     prepare a clean temp workspace via git-clone with Source=current repo (using --local internally)
-//  3. Otherwise: prepare via git-clone from the ref's repo URL into a temp dir (shallow by default)
+//  3. Otherwise: prepare via git-clone from the ref's repo URL into a temp dir (full history by default)
 //
 // Note: The token parameter is currently unused for authentication during git clone operations.
 // This means that private repositories may fail to clone if they require authentication.
@@ -1027,7 +1027,7 @@ func init() {
 	// Workspace preparation flags
 	solveCmd.Flags().StringVar(&solveWorkspace, "workspace", "", "Workspace path (uses existing directory, no cloning)")
 	solveCmd.Flags().StringVar(&solveWorkspaceRef, "workspace-ref", "", "Git ref to checkout (branch, tag, or SHA)")
-	solveCmd.Flags().StringVar(&solveWorkspaceHistory, "workspace-history", "", "Git history mode: full, shallow, or none (default: full for local, shallow for remote)")
+	solveCmd.Flags().StringVar(&solveWorkspaceHistory, "workspace-history", "", "Git history mode: full, shallow, or none (default: full for local and remote)")
 	solveCmd.Flags().BoolVar(&solveFetchRemote, "fetch-remote", false, "Fetch remote updates before solving (default: false)")
 
 	// Add subcommands
