@@ -12,10 +12,11 @@ import (
 
 // StreamWriter handles writing notifications to a streaming connection
 type StreamWriter struct {
-	mu     sync.Mutex
-	writer io.Writer
-	enc    *json.Encoder
-	closed bool
+	mu      sync.Mutex
+	writer  io.Writer
+	enc     *json.Encoder
+	flusher interface{ Flush() }
+	closed  bool
 }
 
 // NewStreamWriter creates a new stream writer for NDJSON streaming
@@ -25,6 +26,12 @@ func NewStreamWriter(w io.Writer) *StreamWriter {
 	return &StreamWriter{
 		writer: w,
 		enc:    enc,
+		flusher: func() interface{ Flush() } {
+			if f, ok := w.(interface{ Flush() }); ok {
+				return f
+			}
+			return nil
+		}(),
 		closed: false,
 	}
 }
@@ -40,6 +47,9 @@ func (sw *StreamWriter) WriteNotification(n Notification) error {
 
 	if err := sw.enc.Encode(n); err != nil {
 		return fmt.Errorf("failed to encode notification: %w", err)
+	}
+	if sw.flusher != nil {
+		sw.flusher.Flush()
 	}
 
 	return nil
@@ -174,6 +184,7 @@ func (sh *StreamHandler) handleRequest(req *JSONRPCRequest, writer *StreamWriter
 	// Register session/turn methods
 	registry.RegisterMethod("thread/start", sh.runtime.HandleThreadStart)
 	registry.RegisterMethod("turn/start", sh.runtime.HandleTurnStart)
+	registry.RegisterMethod("turn/steer", sh.runtime.HandleTurnSteer)
 	registry.RegisterMethod("turn/interrupt", sh.runtime.HandleTurnInterrupt)
 
 	// Dispatch request

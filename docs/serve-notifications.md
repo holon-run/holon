@@ -35,7 +35,7 @@ Connection: keep-alive
 ```bash
 curl -N -H "Accept: application/x-ndjson" \
      -H "Content-Type: application/x-ndjson" \
-     http://localhost:8080/stream
+     http://localhost:8080/rpc/stream
 ```
 
 ## Notification Types
@@ -257,7 +257,7 @@ The stream supports both server-to-client notifications and client-to-server req
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"holon/status","params":{}}
-{"jsonrpc":"2.0","id":2,"method":"turn/start","params":{"thread_id":"thread_abc"}}
+{"jsonrpc":"2.0","id":2,"method":"turn/start","params":{"thread_id":"thread_abc","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"请帮我分析这个 PR"}]}]}}
 ```
 
 ### Server Response Example
@@ -277,7 +277,7 @@ Client: → {"jsonrpc":"2.0","id":1,"method":"thread/start","params":{}}
 Server: ← {"jsonrpc":"2.0","method":"thread/started","params":{...}}
 Server: → {"jsonrpc":"2.0","id":1,"result":{"thread_id":"thread_abc","session_id":"thread_abc",...}}
 
-Client: → {"jsonrpc":"2.0","id":2,"method":"turn/start","params":{"thread_id":"thread_abc"}}
+Client: → {"jsonrpc":"2.0","id":2,"method":"turn/start","params":{"thread_id":"thread_abc","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"请分析这个告警"}]}]}}
 
 Server: ← {"jsonrpc":"2.0","method":"turn/started","params":{...}}
 Server: → {"jsonrpc":"2.0","id":2,"result":{"turn_id":"turn_123","state":"active",...}}
@@ -287,10 +287,74 @@ Server: ← {"jsonrpc":"2.0","method":"item/updated","params":{...}}
 
 Server: ← {"jsonrpc":"2.0","method":"turn/completed","params":{...}}
 
-Client: → {"jsonrpc":"2.0","id":3,"method":"turn/interrupt","params":{"turn_id":"turn_123"}}
+Client: → {"jsonrpc":"2.0","id":3,"method":"turn/steer","params":{"turn_id":"turn_123","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"补充：重点看 flaky 测试"}]}]}}
+
+Server: → {"jsonrpc":"2.0","id":3,"result":{"turn_id":"turn_123","state":"active","accepted_items":1,...}}
+Server: ← {"jsonrpc":"2.0","method":"item/created","params":{...}}
+
+Client: → {"jsonrpc":"2.0","id":4,"method":"turn/interrupt","params":{"turn_id":"turn_123"}}
 
 Server: ← {"jsonrpc":"2.0","method":"turn/interrupted","params":{...}}
-Server: → {"jsonrpc":"2.0","id":3,"result":{"turn_id":"turn_123","state":"interrupted",...}}
+Server: → {"jsonrpc":"2.0","id":4,"result":{"turn_id":"turn_123","state":"interrupted",...}}
+
+## `turn/start` Input Schema
+
+`turn/start` requires:
+
+- `thread_id` (string): target thread.
+- `input` (array): one or more user message items.
+
+Minimal example:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "turn/start",
+  "params": {
+    "thread_id": "thread_abc",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "请给我一个修复方案"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+## `turn/steer`
+
+`turn/steer` appends user input to an in-flight turn.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "turn/steer",
+  "params": {
+    "turn_id": "turn_123",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "补充上下文：只改 pkg/serve"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 ```
 
 ## Integration Testing
@@ -344,13 +408,13 @@ Following RFC-0005 and Codex protocol, all notification methods use **slash-styl
 
 This style is consistent across:
 - Notifications (server-to-client)
-- Control methods (client-to-server): `thread/start`, `turn/start`, `turn/interrupt`
+- Control methods (client-to-server): `thread/start`, `turn/start`, `turn/steer`, `turn/interrupt`
 - Runtime methods: `holon/status`, `holon/pause`, `holon/resume`, `holon/logStream`
 
 ## Implementation Files
 
 - **Types**: `pkg/serve/notification.go`
-- **Stream Handler**: `pkg/serve/stream.go`
+- **Stream Handler**: `pkg/serve/webhook.go` (`/rpc/stream`) and `pkg/serve/stream.go`
 - **Integration Tests**: `pkg/serve/notification_integration_test.go`
 
 ## Regression Prevention

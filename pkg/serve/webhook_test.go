@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1216,5 +1217,117 @@ func TestWebhookServer_JSONRPC_WithIDReturnsResponse(t *testing.T) {
 
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %s", resp.Error.Message)
+	}
+}
+
+func TestWebhookServer_RPCStream_RequiresAcceptHeader(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	req := httptest.NewRequest("GET", "/rpc/stream", nil)
+	w := httptest.NewRecorder()
+	ws.handleRPCStream(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when Accept header missing, got %d", w.Code)
+	}
+}
+
+func TestWebhookServer_RPCStream_ReceivesTurnEvents(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("GET", "/rpc/stream", nil).WithContext(ctx)
+	req.Header.Set("Accept", "application/x-ndjson")
+	w := httptest.NewRecorder()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ws.handleRPCStream(w, req)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	threadReqBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "thread/start",
+		"params":  map[string]interface{}{},
+	})
+	threadReq := httptest.NewRequest("POST", "/rpc", bytes.NewReader(threadReqBody))
+	threadResp := httptest.NewRecorder()
+	ws.handleJSONRPC(threadResp, threadReq)
+	if threadResp.Code != http.StatusOK {
+		t.Fatalf("thread/start expected 200, got %d", threadResp.Code)
+	}
+	var threadRPCResp JSONRPCResponse
+	if err := json.Unmarshal(threadResp.Body.Bytes(), &threadRPCResp); err != nil {
+		t.Fatalf("failed to decode thread/start response: %v", err)
+	}
+	var threadStartResp ThreadStartResponse
+	if err := json.Unmarshal(threadRPCResp.Result, &threadStartResp); err != nil {
+		t.Fatalf("failed to decode thread/start result: %v", err)
+	}
+
+	turnReqBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "turn/start",
+		"params": map[string]interface{}{
+			"thread_id": threadStartResp.ThreadID,
+			"input": []map[string]interface{}{
+				{
+					"type": "message",
+					"role": "user",
+					"content": []map[string]interface{}{
+						{"type": "input_text", "text": "hello"},
+					},
+				},
+			},
+		},
+	})
+	turnReq := httptest.NewRequest("POST", "/rpc", bytes.NewReader(turnReqBody))
+	turnResp := httptest.NewRecorder()
+	ws.handleJSONRPC(turnResp, turnReq)
+	if turnResp.Code != http.StatusOK {
+		t.Fatalf("turn/start expected 200, got %d", turnResp.Code)
+	}
+
+	time.Sleep(2200 * time.Millisecond)
+	cancel()
+	wg.Wait()
+
+	output := w.Body.String()
+	if !strings.Contains(output, "thread/started") {
+		t.Fatalf("expected thread/started in stream output, got: %s", output)
+	}
+	if !strings.Contains(output, "turn/started") {
+		t.Fatalf("expected turn/started in stream output, got: %s", output)
+	}
+	if !strings.Contains(output, "item/created") {
+		t.Fatalf("expected item/created in stream output, got: %s", output)
+	}
+	if !strings.Contains(output, "turn/completed") {
+		t.Fatalf("expected turn/completed in stream output, got: %s", output)
 	}
 }
