@@ -36,6 +36,7 @@ type WebhookServer struct {
 	channelTimeout time.Duration
 	rpcRegistry    *MethodRegistry
 	broadcaster    *NotificationBroadcaster
+	port           int
 }
 
 // WebhookConfig configures the webhook server
@@ -130,7 +131,11 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		maxBodySize:    maxBodySize,
 		channelTimeout: channelTimeout,
 		rpcRegistry:    NewMethodRegistry(),
+<<<<<<< HEAD
 		broadcaster:    NewNotificationBroadcaster(),
+=======
+		port:           cfg.Port,
+>>>>>>> 75975cc (feat: Config-driven GitHub subscriptions in agent.yaml (transport-transparent serve))
 		state: persistentState{
 			ProcessedAt:  make(map[string]string),
 			ProcessedMax: 2000,
@@ -222,6 +227,11 @@ func (ws *WebhookServer) Close() error {
 		}
 	}
 	return firstErr
+}
+
+// Port returns the port the webhook server is listening on
+func (ws *WebhookServer) Port() int {
+	return ws.port
 }
 
 func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {

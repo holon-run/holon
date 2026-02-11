@@ -27,11 +27,28 @@ type Resolution struct {
 }
 
 type Config struct {
-	Version string `yaml:"version"`
-	Agent   struct {
-		ID      string `yaml:"id"`
-		Profile string `yaml:"profile"`
-	} `yaml:"agent"`
+	Version       string        `yaml:"version"`
+	Agent         AgentConfig   `yaml:"agent"`
+	Subscriptions []Subscription `yaml:"subscriptions,omitempty"`
+}
+
+type AgentConfig struct {
+	ID      string `yaml:"id"`
+	Profile string `yaml:"profile"`
+}
+
+type Subscription struct {
+	GitHub *GitHubSubscription `yaml:"github,omitempty"`
+}
+
+type GitHubSubscription struct {
+	Repos     []string                   `yaml:"repos,omitempty"`
+	Transport GitHubSubscriptionTransport `yaml:"transport,omitempty"`
+}
+
+type GitHubSubscriptionTransport struct {
+	Mode        string `yaml:"mode,omitempty"`         // auto, gh_forward, websocket
+	WebsocketURL string `yaml:"websocket_url,omitempty"`
 }
 
 func ValidateAgentID(id string) error {
@@ -138,6 +155,17 @@ func EnsureLayout(agentHome string) error {
 		cfg := Config{Version: "v1"}
 		cfg.Agent.ID = filepath.Base(agentHome)
 		cfg.Agent.Profile = "default"
+		// Set default subscription with auto transport mode
+		cfg.Subscriptions = []Subscription{
+			{
+				GitHub: &GitHubSubscription{
+					Repos: []string{},
+					Transport: GitHubSubscriptionTransport{
+						Mode: "auto",
+					},
+				},
+			},
+		}
 		if err := SaveConfig(agentHome, cfg); err != nil {
 			return err
 		}
@@ -199,5 +227,41 @@ func LoadConfig(agentHome string) (Config, error) {
 	if strings.TrimSpace(cfg.Agent.ID) == "" {
 		return Config{}, fmt.Errorf("invalid config %s: agent.id is required", cfgPath)
 	}
+	// Validate subscriptions if present
+	if err := validateSubscriptions(cfg); err != nil {
+		return Config{}, fmt.Errorf("invalid subscriptions in %s: %w", cfgPath, err)
+	}
 	return cfg, nil
+}
+
+func validateSubscriptions(cfg Config) error {
+	for i, sub := range cfg.Subscriptions {
+		if sub.GitHub != nil {
+			// Validate repo format
+			for _, repo := range sub.GitHub.Repos {
+				if strings.TrimSpace(repo) == "" {
+					return fmt.Errorf("subscription[%d].github.repos contains empty repo", i)
+				}
+				parts := strings.Split(repo, "/")
+				if len(parts) != 2 {
+					return fmt.Errorf("subscription[%d].github.repos: invalid repo format %q (expected owner/repo)", i, repo)
+				}
+				if strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+					return fmt.Errorf("subscription[%d].github.repos: invalid repo format %q (expected owner/repo)", i, repo)
+				}
+			}
+			// Validate transport mode
+			mode := strings.TrimSpace(sub.GitHub.Transport.Mode)
+			if mode == "" {
+				mode = "auto"
+			}
+			if mode != "auto" && mode != "gh_forward" && mode != "websocket" {
+				return fmt.Errorf("subscription[%d].github.transport.mode: invalid mode %q (expected auto, gh_forward, or websocket)", i, mode)
+			}
+			if mode == "websocket" && strings.TrimSpace(sub.GitHub.Transport.WebsocketURL) == "" {
+				return fmt.Errorf("subscription[%d].github.transport.websocket_url is required when mode=websocket", i)
+			}
+		}
+	}
+	return nil
 }
