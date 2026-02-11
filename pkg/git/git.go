@@ -137,19 +137,35 @@ func (c *Client) execCommandWithDir(ctx context.Context, dir string, args ...str
 	cmdArgs := []string{"-C", dir}
 	cmdArgs = append(cmdArgs, args...)
 
+	// Save the original remote URL if this is a push
+	var originalURL string
+	if len(args) > 0 && args[0] == "push" {
+		out, err := exec.Command("git", "-C", dir, "config", "--get", "remote.origin.url").Output()
+		if err == nil {
+			originalURL = strings.TrimSpace(string(out))
+		}
+	}
+
 	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
 
 	// Disable terminal prompts to prevent hanging on credential prompts
-	// When authentication fails, git should return an error instead of prompting
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	output, err := cmd.CombinedOutput()
+
+	// Restore original remote URL after push
+	if len(args) > 0 && args[0] == "push" && originalURL != "" {
+		restoreCmd := exec.Command("git", "-C", dir, "remote", "set-url", "origin", originalURL)
+		_ = restoreCmd.Run() // ignore restore errors, optional: log if needed
+	}
+
 	if err != nil {
 		return output, fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 
 	return output, nil
 }
+
 
 // quietFlag returns the --quiet flag if enabled.
 func (c *Client) quietFlag() string {
