@@ -43,13 +43,15 @@ func TestResolveEphemeral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve ephemeral: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(res.AgentHome)
+	})
 	if !res.Ephemeral {
 		t.Fatalf("expected ephemeral resolution")
 	}
 	if _, err := os.Stat(res.AgentHome); err != nil {
 		t.Fatalf("temp home should exist: %v", err)
 	}
-	_ = os.RemoveAll(res.AgentHome)
 }
 
 func TestEnsureLayout(t *testing.T) {
@@ -74,5 +76,40 @@ func TestEnsureLayout(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s to exist: %v", path, err)
 		}
+	}
+}
+
+func TestEnsureLayout_InvalidExistingConfig(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	cfgPath := filepath.Join(home, "agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte("version: v1\nagent:\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := EnsureLayout(home); err == nil {
+		t.Fatalf("expected EnsureLayout to fail with invalid config")
+	}
+}
+
+func TestEnsureLayout_FailsWhenPersonaPathIsDirectory(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+	if err := os.MkdirAll(filepath.Join(home, "AGENT.md"), 0o755); err != nil {
+		t.Fatalf("mkdir AGENT.md dir: %v", err)
+	}
+	if err := EnsureLayout(home); err == nil {
+		t.Fatalf("expected EnsureLayout to fail when AGENT.md is a directory")
+	}
+}
+
+func TestResolveAgentHome_WithInvalidDerivedID(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "my agent")
+	_, err := Resolve(ResolveOptions{AgentHome: home})
+	if err == nil {
+		t.Fatalf("expected error for invalid derived agent id")
 	}
 }

@@ -67,7 +67,7 @@ func Resolve(opts ResolveOptions) (Resolution, error) {
 			id = filepath.Base(absHome)
 		}
 		if err := ValidateAgentID(id); err != nil {
-			return Resolution{}, err
+			return Resolution{}, fmt.Errorf("invalid agent id derived from --agent-home %q: %w", absHome, err)
 		}
 		return Resolution{AgentID: id, AgentHome: absHome}, nil
 	case id != "":
@@ -143,13 +143,24 @@ func EnsureLayout(agentHome string) error {
 		}
 	} else if err != nil {
 		return fmt.Errorf("failed to stat %s: %w", cfgPath, err)
+	} else {
+		cfg, err := LoadConfig(agentHome)
+		if err != nil {
+			return fmt.Errorf("existing agent config is invalid: %w", err)
+		}
+		if cfg.Version != "v1" {
+			return fmt.Errorf("unsupported agent config version %q in %s", cfg.Version, cfgPath)
+		}
 	}
 
 	return nil
 }
 
 func ensureFile(path, content string) error {
-	if _, err := os.Stat(path); err == nil {
+	if info, err := os.Stat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("path exists but is not a regular file: %s", path)
+		}
 		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("failed to stat %s: %w", path, err)
@@ -181,6 +192,12 @@ func LoadConfig(agentHome string) (Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("failed to parse %s: %w", cfgPath, err)
+	}
+	if strings.TrimSpace(cfg.Version) == "" {
+		return Config{}, fmt.Errorf("invalid config %s: version is required", cfgPath)
+	}
+	if strings.TrimSpace(cfg.Agent.ID) == "" {
+		return Config{}, fmt.Errorf("invalid config %s: agent.id is required", cfgPath)
 	}
 	return cfg, nil
 }

@@ -41,7 +41,11 @@ var agentInitCmd = &cobra.Command{
 		}
 		cfg, err := agenthome.LoadConfig(resolution.AgentHome)
 		if err != nil {
-			cfg = agenthome.Config{Version: "v1"}
+			if os.IsNotExist(err) {
+				cfg = agenthome.Config{Version: "v1"}
+			} else {
+				return fmt.Errorf("loading agent config: %w", err)
+			}
 		}
 		if cfg.Version == "" {
 			cfg.Version = "v1"

@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	holonlog "github.com/holon-run/holon/pkg/log"
@@ -264,25 +267,90 @@ func openServeInput(input string) (io.Reader, io.Closer, error) {
 func acquireServeAgentLock(agentHome string) (func(), error) {
 	lockPath := filepath.Join(agentHome, "agent.lock")
 	content := []byte(fmt.Sprintf("%d\n", os.Getpid()))
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-	if err != nil {
-		if os.IsExist(err) {
+
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err != nil {
+			if !os.IsExist(err) {
+				return nil, fmt.Errorf("failed to create agent lock file: %w", err)
+			}
+			stale, staleErr := removeStaleServeAgentLock(lockPath)
+			if staleErr != nil {
+				return nil, staleErr
+			}
+			if stale {
+				continue
+			}
 			return nil, fmt.Errorf("agent home is already locked by another serve process: %s", lockPath)
 		}
-		return nil, fmt.Errorf("failed to create agent lock file: %w", err)
+		if _, err := f.Write(content); err != nil {
+			_ = f.Close()
+			_ = os.Remove(lockPath)
+			return nil, fmt.Errorf("failed to write agent lock file: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			_ = os.Remove(lockPath)
+			return nil, fmt.Errorf("failed to close agent lock file: %w", err)
+		}
+		return func() {
+			_ = os.Remove(lockPath)
+		}, nil
 	}
-	if _, err := f.Write(content); err != nil {
-		_ = f.Close()
-		_ = os.Remove(lockPath)
-		return nil, fmt.Errorf("failed to write agent lock file: %w", err)
+
+	return nil, fmt.Errorf("agent home is already locked by another serve process: %s", lockPath)
+}
+
+func removeStaleServeAgentLock(lockPath string) (bool, error) {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to read agent lock file: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(lockPath)
-		return nil, fmt.Errorf("failed to close agent lock file: %w", err)
+
+	pidText := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidText)
+	if err != nil || pid <= 0 {
+		return false, fmt.Errorf("agent lock file is invalid: %s", lockPath)
 	}
-	return func() {
-		_ = os.Remove(lockPath)
-	}, nil
+
+	running, runErr := isProcessRunning(pid)
+	if runErr != nil {
+		return false, fmt.Errorf("failed to inspect lock holder process %d: %w", pid, runErr)
+	}
+	if running {
+		return false, nil
+	}
+
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("failed to remove stale agent lock: %w", err)
+	}
+	return true, nil
+}
+
+func isProcessRunning(pid int) (bool, error) {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false, err
+	}
+	if runtime.GOOS == "windows" {
+		return true, nil
+	}
+	err = proc.Signal(syscall.Signal(0))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrProcessDone) {
+		return false, nil
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		return false, nil
+	}
+	if errors.Is(err, syscall.EPERM) {
+		return true, nil
+	}
+	return false, nil
 }
 
 type cliControllerHandler struct {
