@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/holon-run/holon/pkg/agent"
 	"github.com/holon-run/holon/pkg/agent/cache"
+	"github.com/holon-run/holon/pkg/agenthome"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +24,46 @@ This command provides functionality for:
 - Installing agent aliases for easier reference
 - Listing configured aliases
 - Managing the local agent cache`,
+}
+
+var (
+	agentInitID   string
+	agentInitHome string
+)
+
+var agentInitCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Initialize an agent home layout",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resolution, err := resolveAgentHome("agent-init", agentInitID, agentInitHome, false)
+		if err != nil {
+			return err
+		}
+		cfg, err := agenthome.LoadConfig(resolution.AgentHome)
+		if err != nil {
+			cfg = agenthome.Config{Version: "v1"}
+		}
+		if cfg.Version == "" {
+			cfg.Version = "v1"
+		}
+		if strings.TrimSpace(cfg.Agent.ID) == "" {
+			cfg.Agent.ID = resolution.AgentID
+		}
+		if strings.TrimSpace(cfg.Agent.Profile) == "" {
+			cfg.Agent.Profile = "default"
+		}
+		if err := agenthome.SaveConfig(resolution.AgentHome, cfg); err != nil {
+			return err
+		}
+		abs, err := filepath.Abs(resolution.AgentHome)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Initialized agent home")
+		fmt.Printf("  agent_id: %s\n", resolution.AgentID)
+		fmt.Printf("  path:     %s\n", abs)
+		return nil
+	},
 }
 
 var agentInstallCmd = &cobra.Command{
@@ -335,9 +377,13 @@ unless needed.`,
 }
 
 func init() {
+	agentInitCmd.Flags().StringVar(&agentInitID, "agent-id", "main", "Agent ID (default: main)")
+	agentInitCmd.Flags().StringVar(&agentInitHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
+
 	agentInstallCmd.Flags().String("name", "", "Alias name for the agent bundle (required)")
 	_ = agentInstallCmd.MarkFlagRequired("name")
 
+	agentCmd.AddCommand(agentInitCmd)
 	agentCmd.AddCommand(agentInstallCmd)
 	agentCmd.AddCommand(agentListCmd)
 	agentCmd.AddCommand(agentRemoveCmd)
