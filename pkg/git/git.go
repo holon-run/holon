@@ -138,12 +138,38 @@ func (c *Client) execCommandWithDir(ctx context.Context, dir string, args ...str
 	cmdArgs = append(cmdArgs, args...)
 
 	// Save the original remote URL if this is a push
+// Save the original remote URL if this is a push
 	var originalURL string
+	shouldRestore := false
+
 	if len(args) > 0 && args[0] == "push" {
-		out, err := exec.Command("git", "-C", dir, "config", "--get", "remote.origin.url").Output()
+		out, err := exec.CommandContext(
+			ctx,
+			"git",
+			"-C", dir,
+			"config", "--get", "remote.origin.url",
+		).Output()
 		if err == nil {
 			originalURL = strings.TrimSpace(string(out))
+			shouldRestore = originalURL != ""
 		}
+	}
+
+	if shouldRestore {
+		defer func() {
+			restoreCmd := exec.CommandContext(
+				context.Background(), // ensure cleanup even if ctx is cancelled
+				"git",
+				"-C", dir,
+				"remote", "set-url", "origin", originalURL,
+			)
+			if err := restoreCmd.Run(); err != nil {
+				c.logger.Warn(
+					"failed to restore original git remote url",
+					"error", err,
+				)
+			}
+		}()
 	}
 
 	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
@@ -152,18 +178,17 @@ func (c *Client) execCommandWithDir(ctx context.Context, dir string, args ...str
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	output, err := cmd.CombinedOutput()
-
-	// Restore original remote URL after push
-	if len(args) > 0 && args[0] == "push" && originalURL != "" {
-		restoreCmd := exec.Command("git", "-C", dir, "remote", "set-url", "origin", originalURL)
-		_ = restoreCmd.Run() // ignore restore errors, optional: log if needed
-	}
-
 	if err != nil {
-		return output, fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		return output, fmt.Errorf(
+			"git %s failed: %w: %s",
+			strings.Join(args, " "),
+			err,
+			strings.TrimSpace(string(output)),
+		)
 	}
 
 	return output, nil
+
 }
 
 
