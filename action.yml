@@ -51,9 +51,10 @@ inputs:
     required: false
     default: 'none'
   skill:
-    description: 'Skill reference (e.g., github-issue-solve, github-pr-fix). When provided, uses skill mode. Default is auto-detected based on ref type.'
+    description: 'Deprecated. Skill selection is now driven by workflow goal hints; this input is ignored.'
     required: false
     default: ''
+    deprecationMessage: 'Deprecated: skill is no longer passed to holon solve. Use workflow goal hints (workflow.json trigger.goal_hint) to influence behavior.'
   role:
     description: 'Role to assume (e.g. developer, reviewer)'
     required: false
@@ -286,9 +287,6 @@ runs:
         fi
         if [ -n "${{ inputs.agent }}" ]; then
           SOLVE_ARGS+=(--agent "${{ inputs.agent }}")
-        fi
-        if [ -n "${{ inputs.skill }}" ]; then
-          SOLVE_ARGS+=(--skill "${{ inputs.skill }}")
         fi
         if [ -n "${{ inputs.role }}" ]; then
           SOLVE_ARGS+=(--role "${{ inputs.role }}")
