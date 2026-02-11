@@ -29,7 +29,8 @@ var workspacePath string
 var contextPath string
 var inputPath string
 var outDir string
-var stateDir string
+var agentID string
+var agentHome string
 var cleanupMode string
 var roleName string
 var envVarsList []string
@@ -232,6 +233,12 @@ var runCmd = &cobra.Command{
 		// Apply config with precedence: CLI flags > project config > defaults
 		resolved := resolveWithProjectConfig(cmd, projectCfg, absWorkspace)
 
+		agentResolution, err := resolveAgentHome("run", agentID, agentHome, true)
+		if err != nil {
+			return err
+		}
+		defer cleanupEphemeralAgentHome(agentResolution, cleanupMode)
+
 		// Validate assistant output value
 		if resolved.assistantOutput != "" && resolved.assistantOutput != "none" && resolved.assistantOutput != "stream" {
 			return fmt.Errorf("invalid assistant-output value: %q (must be \"none\" or \"stream\")", resolved.assistantOutput)
@@ -309,30 +316,31 @@ var runCmd = &cobra.Command{
 
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{
-			SpecPath:             specPath,
-			GoalStr:              goalStr,
-			TaskName:             taskName,
-			BaseImage:            resolved.baseImage,
-			AgentBundle:          resolved.agent,
-			AgentChannel:         resolved.agentChannel,
-			AgentChannelSource:   resolved.agentChannelSource,
-			WorkspacePath:        workspacePath,
-			ContextPath:          contextPath,
-			InputPath:            inputPath,
-			OutDir:               resolvedOutDir,
-			OutDirIsTemp:         outIsTemp,
-			StateDir:             stateDir,
-			RoleName:             roleName,
-			EnvVarsList:          envVarsList,
-			LogLevel:             resolved.logLevel,
-			AssistantOutput:      resolved.assistantOutput,
-			Cleanup:              cleanupMode,
-			AgentConfigMode:      agentConfigMode,
-			GitAuthorName:        projectCfg.GetGitAuthorName(),
-			GitAuthorEmail:       projectCfg.GetGitAuthorEmail(),
-			Skills:               resolvedSkillPaths,
-			BuiltinSkillsSource:  projectCfg.GetBuiltinSkillsSource(),
-			BuiltinSkillsRef:     projectCfg.GetBuiltinSkillsRef(),
+			SpecPath:            specPath,
+			GoalStr:             goalStr,
+			TaskName:            taskName,
+			BaseImage:           resolved.baseImage,
+			AgentBundle:         resolved.agent,
+			AgentChannel:        resolved.agentChannel,
+			AgentChannelSource:  resolved.agentChannelSource,
+			WorkspacePath:       workspacePath,
+			ContextPath:         contextPath,
+			InputPath:           inputPath,
+			OutDir:              resolvedOutDir,
+			OutDirIsTemp:        outIsTemp,
+			StateDir:            stateDirForAgentHome(agentResolution.AgentHome),
+			AgentHome:           agentResolution.AgentHome,
+			RoleName:            roleName,
+			EnvVarsList:         envVarsList,
+			LogLevel:            resolved.logLevel,
+			AssistantOutput:     resolved.assistantOutput,
+			Cleanup:             cleanupMode,
+			AgentConfigMode:     agentConfigMode,
+			GitAuthorName:       projectCfg.GetGitAuthorName(),
+			GitAuthorEmail:      projectCfg.GetGitAuthorEmail(),
+			Skills:              resolvedSkillPaths,
+			BuiltinSkillsSource: projectCfg.GetBuiltinSkillsSource(),
+			BuiltinSkillsRef:    projectCfg.GetBuiltinSkillsRef(),
 		})
 	},
 }
@@ -354,7 +362,8 @@ func init() {
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVar(&inputPath, "input", "", "Path to input directory (default: creates temp dir, auto-cleaned)")
 	runCmd.Flags().StringVarP(&outDir, "output", "O", "", "Path to output directory (default: creates temp dir to avoid polluting workspace)")
-	runCmd.Flags().StringVar(&stateDir, "state-dir", "", "Path to state directory for cross-run skill caches (default: no state persistence)")
+	runCmd.Flags().StringVar(&agentID, "agent-id", "", "Agent ID (default for run: temporary agent)")
+	runCmd.Flags().StringVar(&agentHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
 	runCmd.Flags().StringVar(&cleanupMode, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
 	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. developer, reviewer)")
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")

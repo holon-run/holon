@@ -44,6 +44,7 @@ type RunnerConfig struct {
 	OutDir               string
 	OutDirIsTemp         bool   // true if output dir is a temporary directory (vs user-provided)
 	StateDir             string // Optional: path to state directory for cross-run skill caches
+	AgentHome            string // Optional: path to agent home for persona prompt layering
 	RoleName             string
 	EnvVarsList          []string
 	LogLevel             string
@@ -572,6 +573,15 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to compile system prompt: %w", err)
 	}
+	if cfg.AgentHome != "" {
+		personaLayer, layerErr := loadAgentPersonaLayer(cfg.AgentHome)
+		if layerErr != nil {
+			return "", "", "", layerErr
+		}
+		if personaLayer != "" {
+			sysPrompt = sysPrompt + "\n\n" + personaLayer
+		}
+	}
 
 	// Create temp directory for prompts
 	promptTempDir, err = os.MkdirTemp("", "holon-prompt-*")
@@ -601,6 +611,27 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	}
 
 	return sysPrompt, userPrompt, promptTempDir, nil
+}
+
+func loadAgentPersonaLayer(agentHome string) (string, error) {
+	paths := []string{"AGENT.md", "ROLE.md", "IDENTITY.md", "SOUL.md"}
+	parts := make([]string, 0, len(paths))
+	for _, name := range paths {
+		path := filepath.Join(agentHome, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("failed to read agent persona file %s: %w", path, err)
+		}
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+		parts = append(parts, content)
+	}
+	return strings.Join(parts, "\n\n"), nil
 }
 
 func collectContextEntries(absContext string) ([]prompt.ContextEntry, []string) {

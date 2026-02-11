@@ -132,6 +132,44 @@ func TestCompactChannelBestEffortLocked(t *testing.T) {
 	}
 }
 
+func TestAcquireServeAgentLock_BasicLifecycle(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	release, err := acquireServeAgentLock(td)
+	if err != nil {
+		t.Fatalf("first acquire failed: %v", err)
+	}
+
+	if _, err := acquireServeAgentLock(td); err == nil {
+		t.Fatalf("expected second acquire to fail while locked")
+	}
+
+	release()
+
+	release2, err := acquireServeAgentLock(td)
+	if err != nil {
+		t.Fatalf("acquire after release failed: %v", err)
+	}
+	release2()
+}
+
+func TestAcquireServeAgentLock_RemovesStaleLock(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	lockPath := filepath.Join(td, "agent.lock")
+	if err := os.WriteFile(lockPath, []byte("999999\n"), 0o644); err != nil {
+		t.Fatalf("write stale lock: %v", err)
+	}
+
+	release, err := acquireServeAgentLock(td)
+	if err != nil {
+		t.Fatalf("acquire with stale lock failed: %v", err)
+	}
+	release()
+}
+
 func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	t.Parallel()
 

@@ -596,6 +596,39 @@ func TestRunner_writeDebugPrompts(t *testing.T) {
 	}
 }
 
+func TestLoadAgentPersonaLayer(t *testing.T) {
+	t.Run("loads existing files and ignores missing", func(t *testing.T) {
+		home := t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, "AGENT.md"), []byte("agent persona"), 0o644); err != nil {
+			t.Fatalf("write AGENT.md: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(home, "ROLE.md"), []byte("role persona"), 0o644); err != nil {
+			t.Fatalf("write ROLE.md: %v", err)
+		}
+
+		layer, err := loadAgentPersonaLayer(home)
+		if err != nil {
+			t.Fatalf("loadAgentPersonaLayer: %v", err)
+		}
+		if !strings.Contains(layer, "agent persona") {
+			t.Fatalf("missing AGENT.md content in layer: %q", layer)
+		}
+		if !strings.Contains(layer, "role persona") {
+			t.Fatalf("missing ROLE.md content in layer: %q", layer)
+		}
+	})
+
+	t.Run("fails on unreadable entry type", func(t *testing.T) {
+		home := t.TempDir()
+		if err := os.Mkdir(filepath.Join(home, "AGENT.md"), 0o755); err != nil {
+			t.Fatalf("mkdir AGENT.md: %v", err)
+		}
+		if _, err := loadAgentPersonaLayer(home); err == nil {
+			t.Fatalf("expected error when persona path is not a regular file")
+		}
+	})
+}
+
 // Integration test to verify the complete flow
 func TestRunner_Integration(t *testing.T) {
 	mockRuntime := &MockRuntime{
@@ -1369,8 +1402,8 @@ func TestRunner_GitConfigOverride(t *testing.T) {
 			gitAuthorName:  "",
 			gitAuthorEmail: "bot@example.com",
 			// Name will be resolved from host git config or defaults
-			expectedName: "", // Will be determined at runtime
-			expectedEmail:  "bot@example.com",
+			expectedName:  "", // Will be determined at runtime
+			expectedEmail: "bot@example.com",
 		},
 	}
 

@@ -26,7 +26,8 @@ var (
 	solveOutDir           string
 	solveContext          string
 	solveInput            string
-	solveStateDir         string
+	solveAgentID          string
+	solveAgentHome        string
 	solveCleanup          string
 	solveAgent            string
 	solveImage            string
@@ -474,6 +475,12 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		return fmt.Errorf("invalid cleanup mode: %q (must be one of: auto, none, all)", cleanupMode)
 	}
 
+	agentResolution, err := resolveAgentHome("solve", solveAgentID, solveAgentHome, true)
+	if err != nil {
+		return err
+	}
+	defer cleanupEphemeralAgentHome(agentResolution, cleanupMode)
+
 	// Cleanup input directory based on mode and whether it's temp
 	// For temp input: clean on "auto" or "all"
 	// For user input: clean only on "all"
@@ -729,7 +736,8 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		ContextPath:          contextDir,
 		InputPath:            inputDir,
 		OutDir:               outDir,
-		StateDir:             solveStateDir,
+		StateDir:             stateDirForAgentHome(agentResolution.AgentHome),
+		AgentHome:            agentResolution.AgentHome,
 		RoleName:             solveRole,
 		LogLevel:             solveLogLevel,
 		AssistantOutput:      resolvedAssistantOutput,
@@ -1000,7 +1008,8 @@ func init() {
 	solveCmd.Flags().StringVarP(&solveOutDir, "out", "o", "", "Deprecated: use --output")
 	solveCmd.Flags().StringVarP(&solveContext, "context", "c", "", "Additional context directory (deprecated)")
 	solveCmd.Flags().StringVar(&solveInput, "input", "", "Input directory path (default: creates temp dir, auto-cleaned)")
-	solveCmd.Flags().StringVar(&solveStateDir, "state-dir", "", "Path to state directory for cross-run skill caches (default: no state persistence)")
+	solveCmd.Flags().StringVar(&solveAgentID, "agent-id", "", "Agent ID (default for solve: temporary agent)")
+	solveCmd.Flags().StringVar(&solveAgentHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
 	solveCmd.Flags().StringVar(&solveCleanup, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
 	solveCmd.Flags().StringVar(&solveAgent, "agent", "", "Agent bundle reference")
 	solveCmd.Flags().StringVarP(&solveImage, "image", "i", "", "Docker base image (default: auto-detect from workspace)")

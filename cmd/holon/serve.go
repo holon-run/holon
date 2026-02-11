@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	holonlog "github.com/holon-run/holon/pkg/log"
@@ -20,19 +23,19 @@ import (
 )
 
 var (
-	serveRepo                string
-	serveInput               string
-	serveStateDir            string
-	serveMaxEvents           int
-	serveDryRun              bool
-	serveLogLevel            string
-	serveControllerSkill     string
-	serveControllerWorkspace string
-	serveWebhookPort         int
-	serveWebhookMode         bool
-	serveControllerRole      string
-	serveControllerRoleFile  string
-	serveTickInterval        time.Duration
+	serveRepo               string
+	serveInput              string
+	serveAgentID            string
+	serveAgentHome          string
+	serveMaxEvents          int
+	serveDryRun             bool
+	serveLogLevel           string
+	serveControllerSkill    string
+	serveWebhookPort        int
+	serveWebhookMode        bool
+	serveControllerRole     string
+	serveControllerRoleFile string
+	serveTickInterval       time.Duration
 )
 
 var serveCmd = &cobra.Command{
@@ -68,23 +71,20 @@ for local development and testing.`,
 			return fmt.Errorf("--repo is required when --tick-interval is enabled")
 		}
 
-		stateDir := serveStateDir
-		if stateDir == "" {
-			stateDir = filepath.Join(".holon", "serve-state")
-		}
-		absStateDir, err := filepath.Abs(stateDir)
+		agentResolution, err := resolveAgentHome("serve", serveAgentID, serveAgentHome, false)
 		if err != nil {
-			return fmt.Errorf("failed to resolve state dir: %w", err)
+			return err
 		}
-
-		controllerWorkspace := serveControllerWorkspace
-		if controllerWorkspace == "" {
-			controllerWorkspace, err = defaultControllerWorkspace()
-			if err != nil {
-				return err
-			}
+		releaseLock, err := acquireServeAgentLock(agentResolution.AgentHome)
+		if err != nil {
+			return err
 		}
-		controllerWorkspace, err = filepath.Abs(controllerWorkspace)
+		defer releaseLock()
+		absStateDir := stateDirForAgentHome(agentResolution.AgentHome)
+		if err := os.MkdirAll(absStateDir, 0755); err != nil {
+			return fmt.Errorf("failed to create state dir: %w", err)
+		}
+		controllerWorkspace, err := filepath.Abs(workspaceDirForAgentHome(agentResolution.AgentHome))
 		if err != nil {
 			return fmt.Errorf("failed to resolve controller workspace: %w", err)
 		}
@@ -136,6 +136,8 @@ for local development and testing.`,
 				"serve started (webhook mode)",
 				"repo", serveRepo,
 				"state_dir", absStateDir,
+				"agent_id", agentResolution.AgentID,
+				"agent_home", agentResolution.AgentHome,
 				"workspace", controllerWorkspace,
 				"port", serveWebhookPort,
 				"controller_skill", serveControllerSkill,
@@ -176,6 +178,8 @@ for local development and testing.`,
 			"serve started",
 			"repo", serveRepo,
 			"state_dir", absStateDir,
+			"agent_id", agentResolution.AgentID,
+			"agent_home", agentResolution.AgentHome,
 			"workspace", controllerWorkspace,
 			"input", serveInput,
 			"controller_skill", serveControllerSkill,
@@ -258,6 +262,95 @@ func openServeInput(input string) (io.Reader, io.Closer, error) {
 		return nil, nil, fmt.Errorf("failed to open serve input: %w", err)
 	}
 	return f, f, nil
+}
+
+func acquireServeAgentLock(agentHome string) (func(), error) {
+	lockPath := filepath.Join(agentHome, "agent.lock")
+	content := []byte(fmt.Sprintf("%d\n", os.Getpid()))
+
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err != nil {
+			if !os.IsExist(err) {
+				return nil, fmt.Errorf("failed to create agent lock file: %w", err)
+			}
+			stale, staleErr := removeStaleServeAgentLock(lockPath)
+			if staleErr != nil {
+				return nil, staleErr
+			}
+			if stale {
+				continue
+			}
+			return nil, fmt.Errorf("agent home is already locked by another serve process: %s", lockPath)
+		}
+		if _, err := f.Write(content); err != nil {
+			_ = f.Close()
+			_ = os.Remove(lockPath)
+			return nil, fmt.Errorf("failed to write agent lock file: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			_ = os.Remove(lockPath)
+			return nil, fmt.Errorf("failed to close agent lock file: %w", err)
+		}
+		return func() {
+			_ = os.Remove(lockPath)
+		}, nil
+	}
+
+	return nil, fmt.Errorf("agent home is already locked by another serve process: %s", lockPath)
+}
+
+func removeStaleServeAgentLock(lockPath string) (bool, error) {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to read agent lock file: %w", err)
+	}
+
+	pidText := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidText)
+	if err != nil || pid <= 0 {
+		return false, fmt.Errorf("agent lock file is invalid: %s", lockPath)
+	}
+
+	running, runErr := isProcessRunning(pid)
+	if runErr != nil {
+		return false, fmt.Errorf("failed to inspect lock holder process %d: %w", pid, runErr)
+	}
+	if running {
+		return false, nil
+	}
+
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("failed to remove stale agent lock: %w", err)
+	}
+	return true, nil
+}
+
+func isProcessRunning(pid int) (bool, error) {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false, err
+	}
+	if runtime.GOOS == "windows" {
+		return true, nil
+	}
+	err = proc.Signal(syscall.Signal(0))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrProcessDone) {
+		return false, nil
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		return false, nil
+	}
+	if errors.Is(err, syscall.EPERM) {
+		return true, nil
+	}
+	return false, nil
 }
 
 type cliControllerHandler struct {
@@ -742,8 +835,8 @@ func appendJSONLine(path string, value any) error {
 func init() {
 	serveCmd.Flags().StringVar(&serveRepo, "repo", "", "Default repository in owner/repo format (required for webhook mode)")
 	serveCmd.Flags().StringVar(&serveInput, "input", "-", "Input source for events ('-' for stdin, or path to file)")
-	serveCmd.Flags().StringVar(&serveStateDir, "state-dir", "", "State directory (default: .holon/serve-state)")
-	serveCmd.Flags().StringVar(&serveControllerWorkspace, "controller-workspace", "", "Controller workspace path (default: $HOME/.holon/workspace)")
+	serveCmd.Flags().StringVar(&serveAgentID, "agent-id", "main", "Agent ID (default: main)")
+	serveCmd.Flags().StringVar(&serveAgentHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
 	serveCmd.Flags().IntVar(&serveMaxEvents, "max-events", 0, "Stop after processing N events (0 = unlimited, not supported in webhook mode)")
 	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without running controller skill")
 	serveCmd.Flags().StringVar(&serveControllerSkill, "controller-skill", filepath.Join("skills", "github-controller"), "Controller skill path or reference")
