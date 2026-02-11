@@ -553,7 +553,6 @@ jobs:
           EVENT_REVIEW_ID: ${{ github.event.review.id }}
           INPUT_REVIEW_BODY: ${{ inputs.review_body }}
           EVENT_REVIEW_BODY: ${{ github.event.review.body }}
-          INPUT_SKILL: ${{ inputs.skill }}
           INPUT_AUTO_REVIEW: ${{ inputs.auto_review }}
 
       - name: Gate summary
@@ -1107,6 +1106,8 @@ jobs:
             echo "✅ Using provided skill: $PROVIDED_SKILL"
           fi
 
+          # The composite action no longer forwards --skill; keep this output so
+          # downstream steps can convert review intent into goal hints.
           echo "skill=$PROVIDED_SKILL" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ secrets.holon_github_token || github.token }}
@@ -1135,6 +1136,16 @@ jobs:
           SHOULD_RUN="$GATE_SHOULD_RUN"
           REASON="$GATE_REASON"
           GOAL_HINT="$GATE_GOAL_HINT"
+          DETECTED_SKILL="$DETECTED_SKILL_INPUT"
+
+          # Keep skill selection out of CLI flags and express review intent in goal text.
+          if [ "$DETECTED_SKILL" = 'github-review' ]; then
+            if [ -z "$GOAL_HINT" ]; then
+              GOAL_HINT='Review this PR using the github-review skill.'
+            elif ! printf '%s' "$GOAL_HINT" | grep -Eiq 'github-review'; then
+              GOAL_HINT="$GOAL_HINT"$'\n\n'"Review this PR using the github-review skill."
+            fi
+          fi
 
           # Get comment_id from input (if available)
           # Default to 0 if empty to ensure valid JSON for --argjson
@@ -1164,6 +1175,7 @@ jobs:
           GATE_SHOULD_RUN: ${{ steps.gate.outputs.should_run }}
           GATE_REASON: ${{ steps.gate.outputs.reason }}
           GATE_GOAL_HINT: ${{ steps.gate.outputs.goal_hint }}
+          DETECTED_SKILL_INPUT: ${{ steps.detect.outputs.skill }}
 
       - name: Ensure Docker daemon
         if: steps.gate.outputs.should_run == 'true' && runner.os == 'Linux'
@@ -1181,7 +1193,6 @@ jobs:
           HOLON_MODEL: ${{ vars.HOLON_MODEL || 'claude-sonnet-4-5-20250929' }}
         with:
           ref: "${{ github.repository }}#${{ steps.ctx.outputs.issue_number }}"
-          skill: ${{ steps.detect.outputs.skill }}
           base: ${{ steps.base.outputs.base }}
           agent: ${{ inputs.agent }}
           anthropic_auth_token: ${{ secrets.anthropic_auth_token || secrets.anthropic_api_key }}
