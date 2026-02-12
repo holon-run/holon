@@ -625,7 +625,7 @@ async function streamSessionTurn(
   session: SDKSession,
   logger: ProgressLogger,
   logFile: fs.WriteStream
-): Promise<{ success: boolean; result: string; sessionId: string }> {
+): Promise<{ success: boolean; result: string }> {
   let success = true;
   let resultReceived = false;
   let resultText = "";
@@ -670,8 +670,19 @@ async function streamSessionTurn(
   return {
     success,
     result: resultText || finalOutput,
-    sessionId: session.sessionId,
   };
+}
+
+function tryGetSessionID(session: SDKSession): string | undefined {
+  try {
+    const value = session.sessionId;
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  } catch {
+    // SDK may not expose sessionId until after first streamed response.
+  }
+  return undefined;
 }
 
 function buildSessionOptions(env: NodeJS.ProcessEnv): SDKSessionOptions {
@@ -794,19 +805,23 @@ async function runServeClaudeSession(
   const sessionOptions = buildSessionOptions(env);
   const resumeID = env.HOLON_CONTROLLER_SESSION_ID?.trim();
   const session = resumeID ? await resumeSession(resumeID, sessionOptions) : await createSession(sessionOptions);
-  logger.info(`Controller session ready: ${session.sessionId}`);
+  let currentSessionID = tryGetSessionID(session) || resumeID;
+  if (currentSessionID) {
+    logger.info(`Controller session ready: ${currentSessionID}`);
+  } else {
+    logger.info("Controller session initialized; waiting for first response to obtain session ID");
+  }
 
   const sessionStatePath = env.HOLON_CONTROLLER_SESSION_STATE_PATH?.trim();
   const writeSessionState = (): void => {
-    const payload = JSON.stringify(
-      {
-        session_id: session.sessionId,
-        mode: "serve",
-        updated_at: new Date().toISOString(),
-      },
-      null,
-      2,
-    );
+    const state: { session_id?: string; mode: "serve"; updated_at: string } = {
+      mode: "serve",
+      updated_at: new Date().toISOString(),
+    };
+    if (currentSessionID) {
+      state.session_id = currentSessionID;
+    }
+    const payload = JSON.stringify(state, null, 2);
     fs.writeFileSync(path.join(evidenceDir, "session.json"), payload);
     if (sessionStatePath) {
       fs.mkdirSync(path.dirname(sessionStatePath), { recursive: true });
@@ -832,6 +847,8 @@ async function runServeClaudeSession(
 
     await session.send(bootstrapPrompt);
     await streamSessionTurn(session, logger, logFile);
+    currentSessionID = tryGetSessionID(session) || currentSessionID;
+    writeSessionState();
 
     const channelPath = env.HOLON_CONTROLLER_EVENT_CHANNEL?.trim();
     if (channelPath) {
@@ -864,6 +881,7 @@ async function runServeClaudeSession(
           ].join("\n");
           await session.send(turnPrompt);
           await streamSessionTurn(session, logger, logFile);
+          currentSessionID = tryGetSessionID(session) || currentSessionID;
           offset = event.nextOffset;
           writeCursorOffset(cursorPath, offset);
           writeSessionState();
@@ -888,6 +906,7 @@ async function runServeClaudeSession(
     ].join("\n");
     await session.send(turnPrompt);
     await streamSessionTurn(session, logger, logFile);
+    currentSessionID = tryGetSessionID(session) || currentSessionID;
     writeSessionState();
   } finally {
     logFile.end();
