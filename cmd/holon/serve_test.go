@@ -219,6 +219,12 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if mockRunner.startCount != 1 {
 		t.Fatalf("startCount after 2 events = %d, want 1", mockRunner.startCount)
 	}
+	if got := mockRunner.lastConfig.Env["HOLON_WORKSPACE_INDEX_PATH"]; got != "/root/state/workspace-index.json" {
+		t.Fatalf("HOLON_WORKSPACE_INDEX_PATH = %q, want /root/state/workspace-index.json", got)
+	}
+	if mockRunner.lastConfig.Workspace != h.controllerWorkspace {
+		t.Fatalf("Workspace = %q, want %q", mockRunner.lastConfig.Workspace, h.controllerWorkspace)
+	}
 
 	data, err := os.ReadFile(filepath.Join(td, "controller-state", "event-channel.ndjson"))
 	if err != nil {
@@ -336,8 +342,33 @@ func TestControllerPrompts_IncludeAgentHomeContract(t *testing.T) {
 	if !strings.Contains(systemPrompt, "HOLON_AGENT_HOME") {
 		t.Fatalf("expected HOLON_AGENT_HOME contract, got: %q", systemPrompt)
 	}
+	if !strings.Contains(userPrompt, "HOLON_WORKSPACE_INDEX_PATH") {
+		t.Fatalf("expected HOLON_WORKSPACE_INDEX_PATH contract, got: %q", userPrompt)
+	}
 	if !strings.Contains(userPrompt, "HOLON_CONTROLLER_GOAL_STATE_PATH") {
 		t.Fatalf("unexpected runtime user prompt: %q", userPrompt)
+	}
+}
+
+func TestResolveControllerWorkspace(t *testing.T) {
+	t.Parallel()
+
+	agentHome := t.TempDir()
+	got, err := resolveControllerWorkspace(agentHome)
+	if err != nil {
+		t.Fatalf("resolveControllerWorkspace() error: %v", err)
+	}
+
+	want := filepath.Join(agentHome, "workspace")
+	if got != want {
+		t.Fatalf("resolveControllerWorkspace() = %q, want %q", got, want)
+	}
+	info, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat workspace: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("workspace path is not a directory: %s", got)
 	}
 }
 
@@ -522,12 +553,14 @@ type mockSessionRunner struct {
 	stopCount    int
 	waitCh       chan error
 	waitObserved chan struct{}
+	lastConfig   ControllerSessionConfig
 }
 
-func (m *mockSessionRunner) Start(_ context.Context, _ ControllerSessionConfig) (*docker.SessionHandle, error) {
+func (m *mockSessionRunner) Start(_ context.Context, cfg ControllerSessionConfig) (*docker.SessionHandle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startCount++
+	m.lastConfig = cfg
 	return &docker.SessionHandle{ContainerID: "session-" + strconv.Itoa(m.startCount)}, nil
 }
 
