@@ -46,11 +46,15 @@ func resolveRuntimeDevAgentSource(mode, explicit string) (string, error) {
 		}
 		info, err := os.Stat(abs)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("failed to stat runtime dev agent source path %q: %w", abs, err)
+		}
+		if !info.IsDir() {
 			continue
 		}
-		if info.IsDir() {
-			return abs, nil
-		}
+		return abs, nil
 	}
 
 	return "", fmt.Errorf("runtime-mode=dev requires a local agent source directory; set --runtime-dev-agent-source or HOLON_RUNTIME_DEV_AGENT_SOURCE")

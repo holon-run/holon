@@ -339,6 +339,12 @@ func TestBuildContainerMounts(t *testing.T) {
 				if result[i].Target != tt.expected[i].Target {
 					t.Errorf("mount %d: Target = %v, want %v", i, result[i].Target, tt.expected[i].Target)
 				}
+				if result[i].ReadOnly != tt.expected[i].ReadOnly {
+					t.Errorf("mount %d: ReadOnly = %v, want %v", i, result[i].ReadOnly, tt.expected[i].ReadOnly)
+				}
+				if tt.expected[i].BindOptions != nil && result[i].BindOptions == nil {
+					t.Errorf("mount %d: BindOptions missing", i)
+				}
 			}
 		})
 	}
