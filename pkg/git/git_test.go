@@ -504,6 +504,9 @@ func TestClient_ConfigCredentialHelper_GitHubScript(t *testing.T) {
 	if !strings.Contains(helper, "username=x-access-token") {
 		t.Fatalf("credential.helper must emit GitHub username, got: %q", helper)
 	}
+	if !strings.Contains(helper, `f "$@"`) {
+		t.Fatalf("credential.helper must forward git action args to helper function, got: %q", helper)
+	}
 
 	useHTTPPath, err := client.ConfigGet(ctx, "credential.https://github.com.useHttpPath")
 	if err != nil {
@@ -511,6 +514,33 @@ func TestClient_ConfigCredentialHelper_GitHubScript(t *testing.T) {
 	}
 	if useHTTPPath != "true" {
 		t.Fatalf("credential.https://github.com.useHttpPath = %q, want true", useHTTPPath)
+	}
+
+	// Execute the helper script in "get" mode and verify protocol output.
+	script := strings.TrimPrefix(helper, "!")
+	cmd := exec.Command("sh", "-c", script, "--", "get")
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN=test-token")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("credential helper execution failed: %v, output: %s", err, string(out))
+	}
+	output := string(out)
+	if !strings.Contains(output, "username=x-access-token") {
+		t.Fatalf("credential helper output missing username, output: %q", output)
+	}
+	if !strings.Contains(output, "password=test-token") {
+		t.Fatalf("credential helper output missing password, output: %q", output)
+	}
+
+	// Non-get actions should be no-op.
+	storeCmd := exec.Command("sh", "-c", script, "--", "store")
+	storeCmd.Env = append(os.Environ(), "GITHUB_TOKEN=test-token")
+	storeOut, err := storeCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("credential helper store execution failed: %v, output: %s", err, string(storeOut))
+	}
+	if strings.TrimSpace(string(storeOut)) != "" {
+		t.Fatalf("credential helper store should not emit output, got: %q", string(storeOut))
 	}
 }
 
@@ -878,8 +908,8 @@ func TestClient_PushToBareRemote(t *testing.T) {
 
 		// Push new branch
 		if err := client.Push(ctx, PushOptions{
-			Remote:     "origin",
-			Branch:     "feature-branch",
+			Remote:      "origin",
+			Branch:      "feature-branch",
 			SetUpstream: true,
 		}); err != nil {
 			t.Fatalf("Push failed: %v", err)
