@@ -1,11 +1,17 @@
 package tui
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -75,11 +81,11 @@ type jsonrpcRequest struct {
 // jsonrpcResponse represents a JSON-RPC 2.0 response
 type jsonrpcResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      interface{}      `json:"id"` // Can be int, string, or null for notifications
+	ID      interface{}     `json:"id"` // Can be int, string, or null for notifications
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
 	Method  string          `json:"method,omitempty"` // For notifications
-	Params  json.RawMessage `json:"params,omitempty"`  // For notifications
+	Params  json.RawMessage `json:"params,omitempty"` // For notifications
 }
 
 // rpcError represents a JSON-RPC error
@@ -88,6 +94,16 @@ type rpcError struct {
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
+
+// StreamNotification represents one JSON-RPC notification from /rpc/stream.
+type StreamNotification struct {
+	JSONRPC string          `json:"jsonrpc"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+}
+
+// NotificationHandler is called for each decoded stream notification.
+type NotificationHandler func(StreamNotification)
 
 // call makes a JSON-RPC call
 func (c *RPCClient) call(method string, params interface{}, result interface{}) error {
@@ -190,6 +206,81 @@ func (c *RPCClient) TestConnection() error {
 	return err
 }
 
+// StreamNotifications consumes JSON-RPC notifications from the server stream endpoint.
+func (c *RPCClient) StreamNotifications(ctx context.Context, handler NotificationHandler) error {
+	streamURL, err := c.streamURL()
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create stream request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("stream request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("stream request returned status %d", resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var msg jsonrpcResponse
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			return fmt.Errorf("failed to decode stream message: %w", err)
+		}
+
+		// Stream can include responses and notifications; only forward notifications.
+		if msg.Method == "" {
+			continue
+		}
+
+		handler(StreamNotification{
+			JSONRPC: msg.JSONRPC,
+			Method:  msg.Method,
+			Params:  msg.Params,
+		})
+	}
+
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return fmt.Errorf("stream read failed: %w", err)
+	}
+
+	return nil
+}
+
+func (c *RPCClient) streamURL() (string, error) {
+	u, err := url.Parse(c.rpcURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid rpc url: %w", err)
+	}
+
+	switch {
+	case strings.HasSuffix(u.Path, "/rpc"):
+		u.Path = strings.TrimSuffix(u.Path, "/rpc") + "/rpc/stream"
+	case u.Path == "" || u.Path == "/":
+		u.Path = "/rpc/stream"
+	default:
+		u.Path = path.Join(u.Path, "stream")
+	}
+
+	return u.String(), nil
+}
+
 // TurnStartRequest represents a request to start a new turn
 type TurnStartRequest struct {
 	ThreadID string             `json:"thread_id,omitempty"`
@@ -198,8 +289,8 @@ type TurnStartRequest struct {
 
 // TurnInputMessage represents a user message
 type TurnInputMessage struct {
-	Type    string                `json:"type,omitempty"`
-	Role    string                `json:"role,omitempty"`
+	Type    string                 `json:"type,omitempty"`
+	Role    string                 `json:"role,omitempty"`
 	Content []TurnInputContentPart `json:"content,omitempty"`
 }
 
@@ -212,8 +303,8 @@ type TurnInputContentPart struct {
 // TurnStartResponse is the response for turn/start
 type TurnStartResponse struct {
 	TurnID    string `json:"turn_id"`
-	State      string `json:"state"`
-	StartedAt  string `json:"started_at"`
+	State     string `json:"state"`
+	StartedAt string `json:"started_at"`
 }
 
 // StartTurn starts a new turn with a user message
