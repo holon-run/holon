@@ -380,7 +380,9 @@ func (ws *WebhookServer) handleRPCStream(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	ticker := time.NewTicker(15 * time.Second)
+	// Keep-alive must be shorter than server WriteTimeout (default 10s),
+	// otherwise long-lived stream responses can be closed by net/http.
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
