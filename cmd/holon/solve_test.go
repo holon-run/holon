@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,41 @@ func TestBuildGoal_SkillModeIssueUsesGithubIssueSolveSkill(t *testing.T) {
 	// Verify it mentions manifest status/outcome validation
 	if !strings.Contains(goal, "status='completed'") || !strings.Contains(goal, "outcome='success'") {
 		t.Fatalf("goal should mention manifest status/outcome validation, got: %s", goal)
+	}
+}
+
+func TestPrepareWorkspaceForSolve_WithWorkspace_UsesDirectWorkspace(t *testing.T) {
+	userWorkspace := t.TempDir()
+	ref := &pkggithub.SolveRef{Owner: "holon-run", Repo: "holon", Number: 627}
+
+	oldWorkspace := solveWorkspace
+	oldWorkspaceRef := solveWorkspaceRef
+	oldWorkspaceHistory := solveWorkspaceHistory
+	oldFetchRemote := solveFetchRemote
+	defer func() {
+		solveWorkspace = oldWorkspace
+		solveWorkspaceRef = oldWorkspaceRef
+		solveWorkspaceHistory = oldWorkspaceHistory
+		solveFetchRemote = oldFetchRemote
+	}()
+
+	solveWorkspace = userWorkspace
+	solveWorkspaceRef = ""
+	solveWorkspaceHistory = ""
+	solveFetchRemote = false
+
+	prep, err := prepareWorkspaceForSolve(context.Background(), ref, "")
+	if err != nil {
+		t.Fatalf("prepareWorkspaceForSolve() error = %v", err)
+	}
+	if prep.path != userWorkspace {
+		t.Fatalf("workspace path = %q, want %q", prep.path, userWorkspace)
+	}
+	if prep.cleanupNeeded {
+		t.Fatalf("cleanupNeeded = true, want false for user-provided workspace")
+	}
+	if !prep.useDirect {
+		t.Fatalf("useDirect = false, want true for user-provided workspace")
 	}
 }
 

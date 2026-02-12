@@ -46,8 +46,8 @@ The runtime validates outputs based on the generic manifest contract, not skill-
 - `diff.patch` (optional) - code changes (applied by skill if needed)
 
 ## Workspace and Safety
-- All executions run in Docker with a snapshot workspace by default
-- Use `--workspace` to point at an existing checkout; otherwise, Holon clones to a temp dir
+- All executions run in Docker. `run` and `solve --workspace` use the provided workspace directly by default.
+- `solve` without `--workspace` prepares an isolated temp workspace via clone/worktree strategy.
 - Output goes to a temp directory unless `--output` is set
 - Artifacts are validated before completion
 
@@ -66,4 +66,3 @@ base_image: auto-detect
 - `--skills <list>`: Comma-separated skill paths
 - `--workspace <path>`: Use existing workspace
 - `--output <dir>`: Output directory
-

@@ -53,7 +53,7 @@ type RunnerConfig struct {
 	AgentConfigMode      string   // Agent config mount mode: "auto", "yes", "no"
 	GitAuthorName        string   // Optional: git author name override
 	GitAuthorEmail       string   // Optional: git author email override
-	WorkspaceIsTemporary bool     // true if workspace is a temporary directory (vs user-provided)
+	WorkspaceIsTemporary bool     // true when workspace should be used directly (already prepared, no extra snapshot)
 	Skills               []string // Skills to include (already resolved with precedence)
 	BuiltinSkillsSource  string   // Optional: remote source for builtin skills (e.g., URL or catalog ref)
 	BuiltinSkillsRef     string   // Optional: version/ref tag for builtin skills

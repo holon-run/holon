@@ -316,31 +316,32 @@ var runCmd = &cobra.Command{
 
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{
-			SpecPath:            specPath,
-			GoalStr:             goalStr,
-			TaskName:            taskName,
-			BaseImage:           resolved.baseImage,
-			AgentBundle:         resolved.agent,
-			AgentChannel:        resolved.agentChannel,
-			AgentChannelSource:  resolved.agentChannelSource,
-			WorkspacePath:       workspacePath,
-			ContextPath:         contextPath,
-			InputPath:           inputPath,
-			OutDir:              resolvedOutDir,
-			OutDirIsTemp:        outIsTemp,
-			StateDir:            stateDirForAgentHome(agentResolution.AgentHome),
-			AgentHome:           agentResolution.AgentHome,
-			RoleName:            roleName,
-			EnvVarsList:         envVarsList,
-			LogLevel:            resolved.logLevel,
-			AssistantOutput:     resolved.assistantOutput,
-			Cleanup:             cleanupMode,
-			AgentConfigMode:     agentConfigMode,
-			GitAuthorName:       projectCfg.GetGitAuthorName(),
-			GitAuthorEmail:      projectCfg.GetGitAuthorEmail(),
-			Skills:              resolvedSkillPaths,
-			BuiltinSkillsSource: projectCfg.GetBuiltinSkillsSource(),
-			BuiltinSkillsRef:    projectCfg.GetBuiltinSkillsRef(),
+			SpecPath:             specPath,
+			GoalStr:              goalStr,
+			TaskName:             taskName,
+			BaseImage:            resolved.baseImage,
+			AgentBundle:          resolved.agent,
+			AgentChannel:         resolved.agentChannel,
+			AgentChannelSource:   resolved.agentChannelSource,
+			WorkspacePath:        workspacePath,
+			ContextPath:          contextPath,
+			InputPath:            inputPath,
+			OutDir:               resolvedOutDir,
+			OutDirIsTemp:         outIsTemp,
+			StateDir:             stateDirForAgentHome(agentResolution.AgentHome),
+			AgentHome:            agentResolution.AgentHome,
+			RoleName:             roleName,
+			EnvVarsList:          envVarsList,
+			LogLevel:             resolved.logLevel,
+			AssistantOutput:      resolved.assistantOutput,
+			Cleanup:              cleanupMode,
+			AgentConfigMode:      agentConfigMode,
+			WorkspaceIsTemporary: true, // run defaults to direct workspace mode
+			GitAuthorName:        projectCfg.GetGitAuthorName(),
+			GitAuthorEmail:       projectCfg.GetGitAuthorEmail(),
+			Skills:               resolvedSkillPaths,
+			BuiltinSkillsSource:  projectCfg.GetBuiltinSkillsSource(),
+			BuiltinSkillsRef:     projectCfg.GetBuiltinSkillsRef(),
 		})
 	},
 }
@@ -358,7 +359,7 @@ func init() {
 	runCmd.Flags().BoolVar(&imageAutoDetect, "image-auto-detect", true, "Enable automatic base image detection (default: true)")
 	runCmd.Flags().StringVar(&agentPath, "agent", "", "Agent bundle reference (path to .tar.gz, URL, or alias)")
 	runCmd.Flags().StringVar(&agentChannel, "agent-channel", "", "Agent channel: latest (default), builtin, pinned:<version>")
-	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace")
+	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace (modified directly by default)")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVar(&inputPath, "input", "", "Path to input directory (default: creates temp dir, auto-cleaned)")
 	runCmd.Flags().StringVarP(&outDir, "output", "O", "", "Path to output directory (default: creates temp dir to avoid polluting workspace)")
