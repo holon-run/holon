@@ -27,13 +27,12 @@ type sessionRuntime interface {
 
 // ControllerSessionConfig defines runtime config for serve controller sessions.
 type ControllerSessionConfig struct {
-	Workspace       string
-	InputPath       string
-	OutputPath      string
-	StateDir        string
-	ControllerSkill string
-	LogLevel        string
-	Env             map[string]string
+	Workspace  string
+	InputPath  string
+	OutputPath string
+	StateDir   string
+	LogLevel   string
+	Env        map[string]string
 }
 
 type dockerSessionRunner struct {
@@ -61,7 +60,6 @@ func (r *dockerSessionRunner) Start(ctx context.Context, cfg ControllerSessionCo
 		Env:                  map[string]string{"LOG_LEVEL": cfg.LogLevel, "ASSISTANT_OUTPUT": "none"},
 		AgentConfigMode:      "no",
 		WorkspaceIsTemporary: true,
-		Skills:               []string{cfg.ControllerSkill},
 		UseSkillMode:         true,
 	}
 	for k, v := range cfg.Env {

@@ -50,12 +50,11 @@ func TestDockerSessionRunnerStart_MapsConfig(t *testing.T) {
 	t.Setenv("HOLON_AGENT", agentPath)
 
 	_, err := runner.Start(context.Background(), ControllerSessionConfig{
-		Workspace:       workspace,
-		InputPath:       inputDir,
-		OutputPath:      outputDir,
-		StateDir:        stateDir,
-		ControllerSkill: "skills/github-controller",
-		LogLevel:        "progress",
+		Workspace:  workspace,
+		InputPath:  inputDir,
+		OutputPath: outputDir,
+		StateDir:   stateDir,
+		LogLevel:   "progress",
 		Env: map[string]string{
 			"HOLON_AGENT_SESSION_MODE": "serve",
 		},
@@ -75,8 +74,8 @@ func TestDockerSessionRunnerStart_MapsConfig(t *testing.T) {
 	if got := rt.startCfg.Env["HOLON_AGENT_SESSION_MODE"]; got != "serve" {
 		t.Fatalf("HOLON_AGENT_SESSION_MODE = %q, want serve", got)
 	}
-	if len(rt.startCfg.Skills) != 1 || rt.startCfg.Skills[0] != "skills/github-controller" {
-		t.Fatalf("Skills = %v, want [skills/github-controller]", rt.startCfg.Skills)
+	if len(rt.startCfg.Skills) != 0 {
+		t.Fatalf("Skills = %v, want empty", rt.startCfg.Skills)
 	}
 }
 

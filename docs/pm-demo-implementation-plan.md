@@ -135,9 +135,8 @@ Add:
 Suggested new flags:
 
 1. `--tick-interval <duration>`: periodic planning tick.
-2. `--controller-skill skills/github-controller` (shared for both processes).
-3. `--controller-role pm|dev` (required for demo role behavior).
-4. (optional) `--controller-role-file <path>` for custom role prompt.
+2. `--controller-role pm|dev` (required for demo role behavior).
+3. (optional) `--controller-role-file <path>` for custom role prompt.
 
 ## Demo Runbook
 
