@@ -903,18 +903,18 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 						holonlog.Warn("failed to preserve origin from source", "url", originURL, "error", err)
 					}
 
-					// Configure git credential helper to use gh CLI for authentication
-					// This works for both skill mode and traditional mode:
-					// - Skill mode: agent can push branches using gh auth
-					// - Traditional mode: publisher can push (simplifies publisher logic)
-					if err := snapshotClient.ConfigCredentialHelper(ctx, "!gh auth token"); err != nil {
-						holonlog.Warn("failed to configure git credential helper", "error", err)
-					} else {
-						holonlog.Info("configured git credential helper (using gh CLI)")
+						// Configure git credential helper for GitHub HTTPS authentication.
+						// This works for both skill mode and traditional mode:
+						// - Skill mode: agent can push branches using gh auth
+						// - Traditional mode: publisher can push (simplifies publisher logic)
+						if err := snapshotClient.ConfigCredentialHelper(ctx, git.GitHubCredentialHelperScript); err != nil {
+							holonlog.Warn("failed to configure git credential helper", "error", err)
+						} else {
+							holonlog.Info("configured git credential helper for GitHub auth")
+						}
 					}
 				}
 			}
-		}
 	}
 
 	// Log preparation details

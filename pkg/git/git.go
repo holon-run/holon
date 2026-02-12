@@ -25,6 +25,14 @@ type Client struct {
 	Options *ClientOptions
 }
 
+// GitHubCredentialHelperScript is a git credential helper command that supports
+// git's helper protocol ("get"/"store"/"erase") and returns credentials for
+// GitHub HTTPS remotes.
+//
+// It prefers GITHUB_TOKEN/GH_TOKEN from environment, and falls back to
+// `gh auth token` when env tokens are not present.
+const GitHubCredentialHelperScript = `!f(){ op="$1"; [ "$op" = get ] || exit 0; tok="${GITHUB_TOKEN:-${GH_TOKEN:-}}"; if [ -z "$tok" ]; then tok="$(gh auth token 2>/dev/null || true)"; fi; [ -n "$tok" ] || exit 0; echo username=x-access-token; echo password="$tok"; }; f`
+
 // ClientOptions holds configuration for git operations.
 type ClientOptions struct {
 	// UserName is the git user name for commits.

@@ -482,6 +482,38 @@ func TestClient_SetConfig(t *testing.T) {
 	}
 }
 
+func TestClient_ConfigCredentialHelper_GitHubScript(t *testing.T) {
+	ctx := context.Background()
+	repoDir := setupTestRepo(t)
+	client := NewClient(repoDir)
+
+	if err := client.ConfigCredentialHelper(ctx, GitHubCredentialHelperScript); err != nil {
+		t.Fatalf("ConfigCredentialHelper failed: %v", err)
+	}
+
+	helper, err := client.ConfigGet(ctx, "credential.helper")
+	if err != nil {
+		t.Fatalf("ConfigGet credential.helper failed: %v", err)
+	}
+	if helper != GitHubCredentialHelperScript {
+		t.Fatalf("credential.helper mismatch\n got: %q\nwant: %q", helper, GitHubCredentialHelperScript)
+	}
+	if !strings.Contains(helper, `op="$1"`) {
+		t.Fatalf("credential.helper must handle git helper action arg, got: %q", helper)
+	}
+	if !strings.Contains(helper, "username=x-access-token") {
+		t.Fatalf("credential.helper must emit GitHub username, got: %q", helper)
+	}
+
+	useHTTPPath, err := client.ConfigGet(ctx, "credential.https://github.com.useHttpPath")
+	if err != nil {
+		t.Fatalf("ConfigGet useHttpPath failed: %v", err)
+	}
+	if useHTTPPath != "true" {
+		t.Fatalf("credential.https://github.com.useHttpPath = %q, want true", useHTTPPath)
+	}
+}
+
 func TestClient_Apply(t *testing.T) {
 	ctx := context.Background()
 	repoDir := setupTestRepo(t)
