@@ -507,7 +507,6 @@ func extractSkillPathFromZip(zipData []byte, repoPath, destPath string) error {
 	defer os.RemoveAll(tmpDir)
 
 	targetSkillSuffix := "/" + path.Join(repoPath, "SKILL.md")
-	archivePaths := make(map[*zip.File]string, len(reader.File))
 	var skillArchiveRoots []string
 
 	for _, file := range reader.File {
@@ -515,7 +514,6 @@ func extractSkillPathFromZip(zipData []byte, repoPath, destPath string) error {
 		if err != nil {
 			return err
 		}
-		archivePaths[file] = sanitizedPath
 		if file.FileInfo().IsDir() {
 			continue
 		}
@@ -535,11 +533,14 @@ func extractSkillPathFromZip(zipData []byte, repoPath, destPath string) error {
 
 	// Extract only the target skill subtree to reduce extraction surface area.
 	for _, file := range reader.File {
-		sanitizedPath := archivePaths[file]
+		sanitizedPath, err := sanitizeArchiveEntryPath(file.Name)
+		if err != nil {
+			return err
+		}
 		if sanitizedPath != skillRoot && !strings.HasPrefix(sanitizedPath, skillRoot+"/") {
 			continue
 		}
-		if err := extractZipFile(file, sanitizedPath, tmpDir); err != nil {
+		if err := extractZipFile(file, tmpDir); err != nil {
 			return err
 		}
 	}
@@ -568,7 +569,12 @@ func sanitizeArchiveEntryPath(name string) (string, error) {
 	return cleanPath, nil
 }
 
-func extractZipFile(file *zip.File, sanitizedPath string, destDir string) error {
+func extractZipFile(file *zip.File, destDir string) error {
+	sanitizedPath, err := sanitizeArchiveEntryPath(file.Name)
+	if err != nil {
+		return err
+	}
+
 	joinedPath := filepath.Join(destDir, filepath.FromSlash(sanitizedPath))
 	cleanDest := filepath.Clean(destDir)
 	cleanPath := filepath.Clean(joinedPath)
