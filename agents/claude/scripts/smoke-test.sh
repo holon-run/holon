@@ -152,7 +152,8 @@ else
   PROBE_INPUT_DIR="${PROBE_HOLON_DIR}/input"
   PROBE_WORKSPACE_DIR="${PROBE_HOLON_DIR}/workspace"
   PROBE_OUTPUT_DIR="${PROBE_HOLON_DIR}/output"
-  mkdir -p "${PROBE_INPUT_DIR}" "${PROBE_WORKSPACE_DIR}" "${PROBE_OUTPUT_DIR}"
+  PROBE_STATE_DIR="${PROBE_HOLON_DIR}/state"
+  mkdir -p "${PROBE_INPUT_DIR}" "${PROBE_WORKSPACE_DIR}" "${PROBE_OUTPUT_DIR}" "${PROBE_STATE_DIR}"
 
   # Create minimal spec.yaml required by agent
   cat > "${PROBE_INPUT_DIR}/spec.yaml" <<'SPEC'
@@ -184,7 +185,13 @@ SPEC
     -v "${PROBE_INPUT_DIR}:/input:ro" \
     -v "${PROBE_WORKSPACE_DIR}:/workspace:ro" \
     -v "${PROBE_OUTPUT_DIR}:/output" \
+    -v "${PROBE_STATE_DIR}:/state" \
     -v "${TEST_DIR}:/holon/agent:ro" \
+    -e HOLON_INPUT_DIR=/input \
+    -e HOLON_WORKSPACE_DIR=/workspace \
+    -e HOLON_OUTPUT_DIR=/output \
+    -e HOLON_STATE_DIR=/state \
+    -e HOLON_AGENT_HOME=/root \
     --entrypoint /bin/sh \
     "${IMAGE}" -c "cd /holon/agent && NODE_ENV=production node dist/agent.js --probe" 2>&1)
   PROBE_EXIT_CODE=$?

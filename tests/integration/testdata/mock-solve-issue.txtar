@@ -29,9 +29,10 @@ exec git -C work commit -m 'Initial commit'
 # Set environment for mock driver
 env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/input/context/fixture.json
 
-# Run holon run with the pre-populated context
+# Run holon run with the pre-populated context.
+# Prefer repo-built test bundle when available.
 # This simulates what `holon solve` does internally
-exec holon run --agent default --goal 'Implement error handling for the main function as described in https://github.com/test/repo/issues/123' --workspace work --input input --output out --image golang:1.22
+exec sh -c 'AGENT="${HOLON_TEST_AGENT_BUNDLE:-default}"; holon run --agent "$AGENT" --goal "Implement error handling for the main function as described in https://github.com/test/repo/issues/123" --workspace work --input input --output out --image golang:1.22'
 
 # Verify expected outputs
 exists out/manifest.json

@@ -14,10 +14,11 @@ exec git -C work config user.name "Test User"
 exec git -C work add pkg/context/loader.go
 exec git -C work commit -m 'initial commit'
 
-# Run holon with mock driver
+# Run holon with mock driver.
+# Prefer repo-built test bundle when available.
 # The fixture file is provided as a txtar section below
 env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/input/context/fixture.json
-exec holon run --agent default --goal 'Fix PR review comments' --workspace work --input input --output out --image golang:1.22
+exec sh -c 'AGENT="${HOLON_TEST_AGENT_BUNDLE:-default}"; holon run --agent "$AGENT" --goal "Fix PR review comments" --workspace work --input input --output out --image golang:1.22'
 
 # Verify outputs
 exists out/manifest.json

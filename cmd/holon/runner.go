@@ -293,10 +293,8 @@ output:
 	if _, exists := envVars["HOLON_OUTPUT_DIR"]; !exists {
 		envVars["HOLON_OUTPUT_DIR"] = docker.ContainerOutputDir
 	}
-	if absStateDir != "" {
-		if _, exists := envVars["HOLON_STATE_DIR"]; !exists {
-			envVars["HOLON_STATE_DIR"] = docker.ContainerStateDir
-		}
+	if _, exists := envVars["HOLON_STATE_DIR"]; !exists {
+		envVars["HOLON_STATE_DIR"] = docker.ContainerStateDir
 	}
 	if absAgentHome != "" {
 		if _, exists := envVars["HOLON_AGENT_HOME"]; !exists {
