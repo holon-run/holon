@@ -2,6 +2,10 @@
 
 `ghx` provides a unified publishing surface for GitHub operations.
 
+Boundary:
+- External skills should call `ghx` capability commands and rely on `publish-results.json`.
+- `publish-intent.json` is an internal ghx action format; avoid coupling external skills to its schema.
+
 ## Modes
 
 1. Intent mode (batch actions)
@@ -18,7 +22,7 @@ scripts/ghx.sh pr reply-reviews --pr=owner/repo#123 --pr-fix-json=pr-fix.json
 scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 
-## Intent Schema
+## Intent Schema (Internal to ghx)
 
 `publish-intent.json`:
 

@@ -106,32 +106,19 @@ Add to `follow_up_issues` array in `pr-fix.json`:
 
 ## Posting Review Replies
 
-After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies, create a `publish-intent.json` for publishing:
-
-```json
-{
-  "actions": [
-    {
-      "type": "reply_review",
-      "pr": "owner/repo#123",
-      "comment_id": 123,
-      "body": "Your reply text here"
-    }
-  ]
-}
-```
+After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies, publish through `ghx` using the capability interface:
 
 Then invoke publish (preferred path via `ghx`):
 
 ```bash
-ghx.sh intent run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+ghx.sh pr reply-reviews --pr=owner/repo#123 --pr-fix-json=pr-fix.json
 ```
 
-`ghx` handles idempotency and batching for replies.
+`ghx` handles translation to internal publish intents, idempotency, and batching for replies.
 
 Fallback when `ghx` is unavailable:
-- Use `gh api` to post replies described by `publish-intent.json`.
-- Write `${GITHUB_OUTPUT_DIR}/publish-result.json` with equivalent per-action success/failure results.
+- Use `gh api` to post replies described by `pr-fix.json`.
+- Write `${GITHUB_OUTPUT_DIR}/publish-results.json` with equivalent per-action success/failure results.
 
 ## Completion Criteria (Mandatory)
 
@@ -139,9 +126,8 @@ Do not mark the run successful unless all of the following are true:
 
 1. Code fixes are pushed to the PR branch.
 2. `${GITHUB_OUTPUT_DIR}/pr-fix.json` exists and includes the planned replies/check statuses.
-3. `${GITHUB_OUTPUT_DIR}/publish-intent.json` exists and is used for publishing.
-4. `${GITHUB_OUTPUT_DIR}/publish-result.json` exists after publish.
-5. `publish-result.json` contains no failed `reply_review` action.
+3. `${GITHUB_OUTPUT_DIR}/publish-results.json` exists after publish.
+4. `publish-results.json` contains no failed `reply_review` action.
 
 ## pr-fix.json Format
 
