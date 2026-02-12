@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -190,56 +188,6 @@ func (c *RPCClient) GetLogs(maxLines int) (*LogStreamResponse, error) {
 func (c *RPCClient) TestConnection() error {
 	_, err := c.GetStatus()
 	return err
-}
-
-// StreamNotification represents a server-sent notification
-type StreamNotification struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-}
-
-// NotificationHandler is called when a streaming notification is received
-type NotificationHandler func(StreamNotification)
-
-// StreamNotifications connects to the streaming endpoint and receives notifications
-func (c *RPCClient) StreamNotifications(ctx context.Context, handler NotificationHandler) error {
-	// Build stream URL
-	streamURL := c.rpcURL[:len(c.rpcURL)-len("/rpc")] + "/rpc/stream"
-
-	req, err := http.NewRequestWithContext(ctx, "GET", streamURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create stream request: %w", err)
-	}
-	req.Header.Set("Accept", "application/x-ndjson")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to connect to stream: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("stream returned status %d", resp.StatusCode)
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue // Skip keep-alive newlines
-		}
-
-		var notif StreamNotification
-		if err := json.Unmarshal(line, &notif); err != nil {
-			continue // Skip unparseable lines
-		}
-
-		// Call handler in a goroutine to avoid blocking
-		go handler(notif)
-	}
-
-	return scanner.Err()
 }
 
 // TurnStartRequest represents a request to start a new turn
