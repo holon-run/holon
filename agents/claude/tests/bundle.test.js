@@ -143,26 +143,42 @@ describe('Agent Bundle', () => {
         // Use existing Holon environment
         console.log('  ℹ Running in Holon container environment');
         const agentPath = path.join(tmpDir, 'dist', 'agent.js');
+        const outputDir = process.env.HOLON_OUTPUT_DIR || '/output';
         const output = execSync(`node "${agentPath}" --probe`, {
           cwd: tmpDir,
-          env: { ...process.env, NODE_ENV: 'production' },
+          env: {
+            ...process.env,
+            NODE_ENV: 'production',
+            HOLON_INPUT_DIR: process.env.HOLON_INPUT_DIR || '/input',
+            HOLON_WORKSPACE_DIR: process.env.HOLON_WORKSPACE_DIR || '/workspace',
+            HOLON_OUTPUT_DIR: outputDir,
+            HOLON_STATE_DIR: process.env.HOLON_STATE_DIR || '/state',
+            HOLON_AGENT_HOME: process.env.HOLON_AGENT_HOME || '/root',
+          },
           stdio: 'pipe',
           timeout: 30000,
         }).toString();
 
-        assert.ok(output.includes('Probe completed'), 'Agent probe did not complete successfully');
+        const manifestPath = path.join(outputDir, 'manifest.json');
+        assert.ok(fs.existsSync(manifestPath), 'Agent probe did not write manifest.json');
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        assert.strictEqual(manifest.status, 'completed', 'Manifest status should be completed');
+        assert.strictEqual(manifest.outcome, 'success', 'Manifest outcome should be success');
+        assert.ok(output.includes('Probe completed') || output.length === 0, 'Unexpected probe output');
       } else {
         // Need to create Holon environment
         const holonDir = fs.mkdtempSync(path.join(os.tmpdir(), 'holon-test-'));
         const inputDir = path.join(holonDir, 'input');
         const workspaceDir = path.join(holonDir, 'workspace');
         const outputDir = path.join(holonDir, 'output');
+        const stateDir = path.join(holonDir, 'state');
 
         try {
           // Create minimal Holon environment
           fs.mkdirSync(inputDir, { recursive: true });
           fs.mkdirSync(workspaceDir, { recursive: true });
           fs.mkdirSync(outputDir, { recursive: true });
+          fs.mkdirSync(stateDir, { recursive: true });
 
           // Create minimal spec.yaml
           fs.writeFileSync(
@@ -210,7 +226,13 @@ output:
              -v "${inputDir}:/input:ro" \
              -v "${workspaceDir}:/workspace:ro" \
              -v "${outputDir}:/output" \
+             -v "${stateDir}:/state" \
              -v "${tmpDir}:/holon/agent:ro" \
+             -e HOLON_INPUT_DIR=/input \
+             -e HOLON_WORKSPACE_DIR=/workspace \
+             -e HOLON_OUTPUT_DIR=/output \
+             -e HOLON_STATE_DIR=/state \
+             -e HOLON_AGENT_HOME=/root \
              --entrypoint /bin/sh \
              "${image}" -c "cd /holon/agent && NODE_ENV=production node dist/agent.js --probe"`,
             {
