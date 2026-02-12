@@ -25,6 +25,9 @@ const (
 	RuntimeStateRunning = "running"
 	RuntimeStatePaused  = "paused"
 	defaultTurnIdleTTL  = 2 * time.Second
+
+	// DefaultPort is the default port for holon serve control plane and webhook/server
+	DefaultPort = 8080
 )
 
 // StatusResponse is the response for holon/status
