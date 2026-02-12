@@ -18,8 +18,8 @@ This skill helps you:
 ## Prerequisites
 
 This skill can use:
-- **`ghx`** (preferred): Fast-path for collection/publishing
-- **`gh` CLI** (fallback): Fully supported when `ghx` is unavailable
+- **`ghx`** (default): Preferred for context + publish because it reduces API-shape mistakes and retry loops
+- **`gh` CLI** (selective fallback): Use for simple read/one-off write operations, or when `ghx` is unavailable
 
 ## Environment & Paths
 
@@ -50,6 +50,15 @@ The run is successful only if all of the following are true:
 5. `publish-result.json` contains no failed `reply_review` action.
 
 If replies are planned but not published, the run is not successful.
+
+## Publishing Strategy (Token + Accuracy)
+
+Optimize for expected total token cost across the full run (including retries/rework), not shortest immediate command count.
+
+- Use `ghx` by default for multi-step/high-risk publish operations (`reply_review`, review posting, batch comment updates).
+- `gh` is acceptable for low-risk/simple operations (single read query, single top-level comment).
+- If not using `ghx` for publish, record `fallback_reason` in outputs and verify publish result explicitly.
+- Avoid ad-hoc API shapes for review replies. If direct REST fallback is required, use `POST /repos/{owner}/{repo}/pulls/{pull_number}/comments` with `in_reply_to`.
 
 ### 1. Context Collection
 
@@ -148,7 +157,8 @@ Execution metadata:
   "pr_ref": "holon-run/holon#123",
   "status": "completed|partial|failed",
   "fixes_applied": 5,
-  "reviews_replied": 3
+  "reviews_replied": 3,
+  "fallback_reason": ""
 }
 ```
 
@@ -157,8 +167,8 @@ Execution metadata:
 Publish review replies using the generated `publish-intent.json`.
 
 Implementation guidance:
-- preferred: run `ghx` intent publish
-- fallback: use `gh api` to post review comment replies and synthesize `${GITHUB_OUTPUT_DIR}/publish-result.json` in the same schema
+- default: run `ghx` intent publish
+- fallback: use `gh api` only when needed, and synthesize `${GITHUB_OUTPUT_DIR}/publish-result.json` in the same schema
 
 Example (preferred):
 
@@ -181,7 +191,7 @@ jq -n \
   }' > "${GITHUB_OUTPUT_DIR}/publish-intent.json"
 
 # Invoke ghx skill/script
-ghx.sh intent run --intent="${GITHUB_OUTPUT_DIR}/publish-intent.json"
+skills/ghx/scripts/ghx.sh intent run --intent="${GITHUB_OUTPUT_DIR}/publish-intent.json"
 ```
 
 Run publish via `ghx` or equivalent `gh` commands.  
@@ -228,7 +238,7 @@ git push
 - You are running **HEADLESSLY** - do not wait for user input or confirmation
 - Fix issues in priority order: build → test → import → lint
 - Commit fixes BEFORE replying to reviews
-- Prefer `ghx` for publish when available; fallback to `gh` is acceptable
+- Prefer `ghx` for publish when available; use `gh` fallback selectively and document `fallback_reason`
 - Verify publish-result and fail when any `reply_review` action fails
 - For non-blocking refactor requests, consider deferring to follow-up issues
 
