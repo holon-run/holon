@@ -27,8 +27,8 @@ type Resolution struct {
 }
 
 type Config struct {
-	Version       string        `yaml:"version"`
-	Agent         AgentConfig   `yaml:"agent"`
+	Version       string         `yaml:"version"`
+	Agent         AgentConfig    `yaml:"agent"`
 	Subscriptions []Subscription `yaml:"subscriptions,omitempty"`
 }
 
@@ -42,12 +42,12 @@ type Subscription struct {
 }
 
 type GitHubSubscription struct {
-	Repos     []string                   `yaml:"repos,omitempty"`
+	Repos     []string                    `yaml:"repos,omitempty"`
 	Transport GitHubSubscriptionTransport `yaml:"transport,omitempty"`
 }
 
 type GitHubSubscriptionTransport struct {
-	Mode        string `yaml:"mode,omitempty"`         // auto, gh_forward, websocket
+	Mode         string `yaml:"mode,omitempty"` // auto, gh_forward, websocket
 	WebsocketURL string `yaml:"websocket_url,omitempty"`
 }
 
@@ -130,7 +130,6 @@ func EnsureLayout(agentHome string) error {
 		filepath.Join(agentHome, "sessions"),
 		filepath.Join(agentHome, "channels"),
 		filepath.Join(agentHome, "jobs"),
-		filepath.Join(agentHome, "workspace"),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
