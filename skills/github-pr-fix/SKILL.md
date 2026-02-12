@@ -191,7 +191,7 @@ jq -n \
   }' > "${GITHUB_OUTPUT_DIR}/publish-intent.json"
 
 # Invoke ghx skill/script
-skills/ghx/scripts/ghx.sh intent run --intent="${GITHUB_OUTPUT_DIR}/publish-intent.json"
+ghx.sh intent run --intent="${GITHUB_OUTPUT_DIR}/publish-intent.json"
 ```
 
 Run publish via `ghx` or equivalent `gh` commands.  
