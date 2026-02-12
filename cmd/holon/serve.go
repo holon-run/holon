@@ -16,7 +16,6 @@ import (
 	"time"
 
 	holonlog "github.com/holon-run/holon/pkg/log"
-	"github.com/holon-run/holon/pkg/agenthome"
 	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/serve"
