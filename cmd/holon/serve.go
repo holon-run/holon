@@ -63,6 +63,10 @@ for local development and testing.`,
 		defer holonlog.Sync()
 
 		serveWebhookMode = serveWebhookPort > 0
+		parentCtx := cmd.Context()
+		if parentCtx == nil {
+			parentCtx = context.Background()
+		}
 		canonicalRole, err := canonicalControllerRole(serveControllerRole)
 		if err != nil {
 			return err
@@ -105,7 +109,7 @@ for local development and testing.`,
 
 		// Use subscription manager if subscriptions are enabled.
 		// A non-zero --webhook-port acts as an override for subscription ingress port.
-		if !serveNoSubscriptions && serveInput == "" {
+		if !serveNoSubscriptions && (serveInput == "" || serveInput == "-") {
 			subMgr, err := serve.NewSubscriptionManager(serve.ManagerConfig{
 				AgentHome:   agentResolution.AgentHome,
 				StateDir:    absStateDir,
@@ -117,7 +121,7 @@ for local development and testing.`,
 			}
 			defer subMgr.Stop()
 
-			tickCtx, tickCancel := context.WithCancel(context.Background())
+			tickCtx, tickCancel := context.WithCancel(parentCtx)
 			defer tickCancel()
 
 			// Determine repos for tick interval from CLI override or subscription config.
@@ -161,6 +165,9 @@ for local development and testing.`,
 
 		// Webhook mode (legacy, for backward compatibility)
 		if serveWebhookMode {
+			if serveTickInterval > 0 && strings.TrimSpace(serveRepo) == "" {
+				return fmt.Errorf("--repo is required when --tick-interval is set in webhook mode")
+			}
 			webhookSrv, err := serve.NewWebhookServer(serve.WebhookConfig{
 				Port:     serveWebhookPort,
 				RepoHint: serveRepo,
@@ -172,7 +179,7 @@ for local development and testing.`,
 			}
 			defer webhookSrv.Close()
 
-			tickCtx, tickCancel := context.WithCancel(context.Background())
+			tickCtx, tickCancel := context.WithCancel(parentCtx)
 			defer tickCancel()
 			if serveTickInterval > 0 {
 				startServeTickEmitter(tickCtx, serveTickInterval, serveRepo, func(ctx context.Context, env serve.EventEnvelope) error {
@@ -214,7 +221,7 @@ for local development and testing.`,
 		}
 		defer svc.Close()
 
-		tickCtx, tickCancel := context.WithCancel(context.Background())
+		tickCtx, tickCancel := context.WithCancel(parentCtx)
 		defer tickCancel()
 		if serveTickInterval > 0 {
 			if serveRepo == "" {

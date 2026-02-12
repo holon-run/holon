@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -140,6 +141,9 @@ func (s *WebSocketSource) readLoop(ctx context.Context, conn *websocket.Conn, ha
 		if len(message) == 0 {
 			continue
 		}
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			return err
+		}
 
 		s.mu.Lock()
 		s.lastMessageAt = time.Now().UTC()
@@ -158,7 +162,12 @@ func (s *WebSocketSource) setConnectionState(connected bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.connected = connected
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		s.lastError = err.Error()
+		return
+	}
+	if connected {
+		// Clear stale errors after successful reconnect.
+		s.lastError = ""
 	}
 }

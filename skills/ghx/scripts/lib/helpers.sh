@@ -255,25 +255,80 @@ fetch_pr_review_threads() {
         return 1
     fi
 
-    local query="repos/$owner/$repo/pulls/$number/comments"
+    echo "[]" > "$tmp_file"
 
-    gh api "$query" --paginate > "$tmp_file"
+    local has_next="true"
+    local cursor=""
+    local first_page="true"
+    while [[ "$has_next" == "true" ]]; do
+        local response
+        if [[ "$first_page" == "true" ]]; then
+            if ! response=$(gh api graphql \
+                -F owner="$owner" \
+                -F repo="$repo" \
+                -F number="$number" \
+                -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated path line startLine comments(first:100){nodes{id databaseId body url createdAt author{login}}} } pageInfo{hasNextPage endCursor}}}}}'); then
+                log_error "Failed to fetch review threads via GraphQL"
+                rm -f "$tmp_file"
+                return 1
+            fi
+        else
+            if ! response=$(gh api graphql \
+                -F owner="$owner" \
+                -F repo="$repo" \
+                -F number="$number" \
+                -F after="$cursor" \
+                -f query='query($owner:String!,$repo:String!,$number:Int!,$after:String!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$after){nodes{id isResolved isOutdated path line startLine comments(first:100){nodes{id databaseId body url createdAt author{login}}} } pageInfo{hasNextPage endCursor}}}}}'); then
+                log_error "Failed to fetch paginated review threads via GraphQL"
+                rm -f "$tmp_file"
+                return 1
+            fi
+        fi
 
-    if [[ $? -ne 0 ]]; then
-        log_error "Failed to fetch review threads"
-        rm -f "$tmp_file"
-        return 1
-    fi
+        local nodes
+        if ! nodes=$(echo "$response" | jq -c '.data.repository.pullRequest.reviewThreads.nodes // []'); then
+            log_error "Failed to parse review thread response payload"
+            rm -f "$tmp_file"
+            return 1
+        fi
 
-    local filter_cmd='map(select(.outdated != true))'
+        if ! jq -s '.[0] + .[1]' "$tmp_file" <(echo "$nodes") > "${tmp_file}.next"; then
+            log_error "Failed to merge paginated review thread payloads"
+            rm -f "$tmp_file" "${tmp_file}.next"
+            return 1
+        fi
+        mv "${tmp_file}.next" "$tmp_file"
+
+        if ! has_next=$(echo "$response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false'); then
+            log_error "Failed to read review thread pageInfo.hasNextPage"
+            rm -f "$tmp_file"
+            return 1
+        fi
+        if [[ "$has_next" == "true" ]]; then
+            if ! cursor=$(echo "$response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty'); then
+                log_error "Failed to read review thread pageInfo.endCursor"
+                rm -f "$tmp_file"
+                return 1
+            fi
+            if [[ -z "$cursor" ]]; then
+                log_error "Review threads pagination indicated hasNextPage=true but endCursor is empty"
+                rm -f "$tmp_file"
+                return 1
+            fi
+        fi
+        first_page="false"
+    done
+
+    local filter_cmd='map(select(.isOutdated != true))'
     if [[ "$unresolved_only" == "true" ]]; then
-        log_warn "Unresolved-only filtering is not supported for review comments; returning non-outdated comments."
+        filter_cmd+=' | map(select(.isResolved != true))'
     fi
+    filter_cmd+=' | map(. + {comments: ((.comments // {}) | .nodes // [] | map(. + {comment_id: (.databaseId // 0)}))})'
 
     if [[ -n "$trigger_comment_id" ]]; then
         if [[ "$trigger_comment_id" =~ ^[0-9]+$ ]]; then
             jq --argjson trigger_id "$trigger_comment_id" \
-               "$filter_cmd | map(. + {is_trigger: (.id == $trigger_id)})" \
+               "$filter_cmd | map(. + {comments: (.comments | map(. + {is_trigger: ((.databaseId // .comment_id // -1) == $trigger_id)}))})" \
                "$tmp_file" > "$output_file"
         else
             log_warn "Invalid trigger_comment_id '$trigger_comment_id'; skipping trigger marking"
@@ -283,7 +338,7 @@ fetch_pr_review_threads() {
         jq "$filter_cmd" "$tmp_file" > "$output_file"
     fi
 
-    rm -f "$tmp_file"
+    rm -f "$tmp_file" "${tmp_file}.next"
 
     local count
     if ! count=$(jq 'length' "$output_file" 2>/dev/null); then

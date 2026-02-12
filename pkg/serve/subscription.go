@@ -57,9 +57,9 @@ func NewSubscriptionManager(cfg ManagerConfig) (*SubscriptionManager, error) {
 // Start starts the subscription manager and all configured subscriptions
 func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	if sm.started {
+		sm.mu.Unlock()
 		return fmt.Errorf("subscription manager already started")
 	}
 
@@ -75,7 +75,9 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	if gitHubSub == nil {
 		holonlog.Info("no GitHub subscriptions configured, running in passive mode")
 		sm.started = true
-		if err := sm.writeStatusFileLocked(); err != nil {
+		status := sm.statusLocked()
+		sm.mu.Unlock()
+		if err := sm.writeStatusFile(status); err != nil {
 			return err
 		}
 		return nil
@@ -90,7 +92,9 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	if len(gitHubSub.Repos) == 0 {
 		holonlog.Info("GitHub subscription configured with no repos, running in passive mode")
 		sm.started = true
-		if err := sm.writeStatusFileLocked(); err != nil {
+		status := sm.statusLocked()
+		sm.mu.Unlock()
+		if err := sm.writeStatusFile(status); err != nil {
 			return err
 		}
 		return nil
@@ -99,18 +103,23 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	switch transportMode {
 	case "gh_forward":
 		if err := sm.startGHForwardMode(ctx, gitHubSub); err != nil {
+			sm.mu.Unlock()
 			return err
 		}
 	case "websocket":
 		if err := sm.startWebSocketMode(ctx, gitHubSub); err != nil {
+			sm.mu.Unlock()
 			return err
 		}
 	default:
+		sm.mu.Unlock()
 		return fmt.Errorf("unsupported transport mode: %s", transportMode)
 	}
 
 	sm.started = true
-	if err := sm.writeStatusFileLocked(); err != nil {
+	status := sm.statusLocked()
+	sm.mu.Unlock()
+	if err := sm.writeStatusFile(status); err != nil {
 		return err
 	}
 	return nil
@@ -188,12 +197,10 @@ func (sm *SubscriptionManager) startWebSocketMode(ctx context.Context, sub *agen
 	if err != nil {
 		return fmt.Errorf("failed to create websocket event service: %w", err)
 	}
-	sm.eventService = svc
 
 	src := NewWebSocketSource(WebSocketSourceConfig{
 		URL: sub.Transport.WebsocketURL,
 	})
-	sm.websocketSrc = src
 
 	if err := src.Start(ctx, func(_ context.Context, raw []byte) error {
 		normalizedRaw := normalizeWebSocketMessage(raw)
@@ -208,10 +215,10 @@ func (sm *SubscriptionManager) startWebSocketMode(ctx context.Context, sub *agen
 		return nil
 	}); err != nil {
 		svc.Close()
-		sm.eventService = nil
-		sm.websocketSrc = nil
 		return fmt.Errorf("failed to start websocket source: %w", err)
 	}
+	sm.eventService = svc
+	sm.websocketSrc = src
 
 	holonlog.Info(
 		"subscription manager started",
@@ -259,9 +266,9 @@ func normalizeHeaderKey(k string) string {
 // Stop stops the subscription manager and all active subscriptions
 func (sm *SubscriptionManager) Stop() error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	if !sm.started {
+		sm.mu.Unlock()
 		return nil
 	}
 
@@ -298,7 +305,9 @@ func (sm *SubscriptionManager) Stop() error {
 	}
 
 	sm.started = false
-	if err := sm.writeStatusFileLocked(); err != nil {
+	status := sm.statusLocked()
+	sm.mu.Unlock()
+	if err := sm.writeStatusFile(status); err != nil {
 		errs = append(errs, fmt.Errorf("failed to write status file: %w", err))
 	}
 
@@ -330,13 +339,17 @@ func (sm *SubscriptionManager) GetWebhookPort() int {
 // InjectEvent injects an event into the webhook server (for timer ticks, etc)
 func (sm *SubscriptionManager) InjectEvent(ctx context.Context, env EventEnvelope) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	webhookServer := sm.webhookServer
+	eventService := sm.eventService
+	sm.mu.Unlock()
 
-	if sm.webhookServer == nil {
-		return fmt.Errorf("webhook server not running")
+	if webhookServer != nil {
+		return webhookServer.InjectEvent(ctx, env)
 	}
-
-	return sm.webhookServer.InjectEvent(ctx, env)
+	if eventService != nil {
+		return eventService.InjectEvent(ctx, env)
+	}
+	return fmt.Errorf("no active subscription transport for event injection")
 }
 
 // Status returns the current status of the subscription manager
@@ -385,13 +398,12 @@ func (sm *SubscriptionManager) statusLocked() map[string]interface{} {
 // WriteStatusFile writes the current status to a file in the state directory
 func (sm *SubscriptionManager) WriteStatusFile() error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	return sm.writeStatusFileLocked()
+	status := sm.statusLocked()
+	sm.mu.Unlock()
+	return sm.writeStatusFile(status)
 }
 
-func (sm *SubscriptionManager) writeStatusFileLocked() error {
-	status := sm.statusLocked()
-
+func (sm *SubscriptionManager) writeStatusFile(status map[string]interface{}) error {
 	if sm.stateDir == "" {
 		holonlog.Info("subscription status", "status", status)
 		return nil
