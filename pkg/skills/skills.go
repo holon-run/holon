@@ -214,7 +214,10 @@ func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
 
 		skillManifestPath := filepath.Join(skillPath, SkillManifestFile)
 		if _, statErr := os.Stat(skillManifestPath); statErr != nil {
-			return nil, fmt.Errorf("resolved GitHub path skill missing %s: %s", SkillManifestFile, skillPath)
+			if os.IsNotExist(statErr) {
+				return nil, fmt.Errorf("resolved GitHub path skill missing %s at %s: %w", SkillManifestFile, skillPath, statErr)
+			}
+			return nil, fmt.Errorf("failed to stat resolved GitHub path skill manifest %s at %s: %w", SkillManifestFile, skillPath, statErr)
 		}
 
 		return []Skill{{

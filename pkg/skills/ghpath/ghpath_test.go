@@ -63,6 +63,16 @@ func TestParseRef(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "invalid windows backslash path",
+			input:   "ghpath:holon-run/holon/skills\\github-review@main",
+			wantErr: true,
+		},
+		{
+			name:    "invalid drive prefix path",
+			input:   "ghpath:holon-run/holon/C:/skills/github-review@main",
+			wantErr: true,
+		},
+		{
 			name:    "not github path ref",
 			input:   "https://example.com/skill.zip",
 			wantErr: true,
@@ -209,6 +219,57 @@ func TestResolver_Resolve_PrivateRepoFallbackUsesGitHubAPIToken(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(resolvedPath, "SKILL.md")); err != nil {
 		t.Fatalf("resolved skill missing SKILL.md: %v", err)
+	}
+}
+
+func TestResolver_Resolve_RejectsSymlinkSkillManifest(t *testing.T) {
+	cacheDir, err := os.MkdirTemp("", "holon-ghpath-cache-*")
+	if err != nil {
+		t.Fatalf("failed to create cache dir: %v", err)
+	}
+	defer os.RemoveAll(cacheDir)
+
+	zipData := buildZip(t, map[string]string{
+		"holon-main/skills/github-review/SKILL.md":  "# Review Skill\n",
+		"holon-main/skills/github-review/README.md": "docs\n",
+	})
+
+	tmpDir, err := os.MkdirTemp("", "holon-ghpath-tmp-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(zipData)
+	}))
+	defer server.Close()
+
+	resolver := NewResolver(
+		cacheDir,
+		WithGitRunner(&failingGitRunner{}),
+		WithCodeloadBaseURL(server.URL),
+		WithGitHubAPIBaseURL(server.URL),
+	)
+
+	ref, err := ParseRef("ghpath:holon-run/holon/skills/github-review@main")
+	if err != nil {
+		t.Fatalf("ParseRef failed: %v", err)
+	}
+
+	resolvedPath, err := resolver.Resolve(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	_ = os.Remove(filepath.Join(resolvedPath, "SKILL.md"))
+	if err := os.Symlink(filepath.Join(tmpDir, "outside.md"), filepath.Join(resolvedPath, "SKILL.md")); err != nil {
+		t.Fatalf("failed to create symlink manifest: %v", err)
+	}
+
+	if hasSkillManifest(resolvedPath) {
+		t.Fatalf("expected symlink SKILL.md to be rejected")
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -269,6 +270,12 @@ func normalizeRepoPath(repoPath string) (string, error) {
 	if repoPath == "" {
 		return "", fmt.Errorf("skill path is required")
 	}
+	if strings.Contains(repoPath, "\\") {
+		return "", fmt.Errorf("skill path must use forward slashes: %s", repoPath)
+	}
+	if len(repoPath) >= 2 && repoPath[1] == ':' {
+		return "", fmt.Errorf("skill path must not include a drive prefix: %s", repoPath)
+	}
 	if strings.HasPrefix(repoPath, "/") {
 		return "", fmt.Errorf("skill path must be repository-relative")
 	}
@@ -311,6 +318,9 @@ func (r *Resolver) Resolve(ctx context.Context, ref *Ref) (string, error) {
 
 	sparseErr := r.resolveViaSparseCheckout(ctx, ref, tmpSkillPath)
 	if sparseErr != nil {
+		if err := checkContextCanceled(ctx); err != nil {
+			return "", err
+		}
 		zipErr := r.resolveViaZip(ctx, ref, tmpSkillPath)
 		if zipErr != nil {
 			return "", fmt.Errorf("failed to resolve GitHub skill %s/%s path %q at ref %q (sparse checkout: %v; zip fallback: %v)",
@@ -324,18 +334,22 @@ func (r *Resolver) Resolve(ctx context.Context, ref *Ref) (string, error) {
 
 	if err := os.Rename(tmpSkillPath, cachePath); err != nil {
 		if err := copyDir(tmpSkillPath, cachePath); err != nil {
-			return "", fmt.Errorf("failed to move resolved skill into cache: %w", err)
+			return "", fmt.Errorf("failed to move/copy resolved skill into cache: %w", err)
 		}
 	}
 
-	if !hasSkillManifest(cachePath) {
-		return "", fmt.Errorf("resolved path %s does not contain SKILL.md", cachePath)
+	if err := ensureSkillManifestFile(cachePath); err != nil {
+		return "", fmt.Errorf("resolved path %s has invalid SKILL.md: %w", cachePath, err)
 	}
 
 	return cachePath, nil
 }
 
 func (r *Resolver) resolveViaSparseCheckout(ctx context.Context, ref *Ref, destPath string) error {
+	if err := checkContextCanceled(ctx); err != nil {
+		return err
+	}
+
 	tmpRepoDir, err := os.MkdirTemp("", "holon-ghpath-repo-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temporary repository directory: %w", err)
@@ -362,14 +376,23 @@ func (r *Resolver) resolveViaSparseCheckout(ctx context.Context, ref *Ref, destP
 	if err := r.gitRunner.Run(ctx, cloneArgs...); err != nil {
 		return fmt.Errorf("git clone failed: %w", err)
 	}
+	if err := checkContextCanceled(ctx); err != nil {
+		return err
+	}
 
 	if err := r.gitRunner.Run(ctx, "-C", tmpRepoDir, "sparse-checkout", "set", "--no-cone", ref.Path); err != nil {
 		return fmt.Errorf("git sparse-checkout failed: %w", err)
 	}
+	if err := checkContextCanceled(ctx); err != nil {
+		return err
+	}
 
 	skillPath := filepath.Join(tmpRepoDir, filepath.FromSlash(ref.Path))
-	if !hasSkillManifest(skillPath) {
-		return fmt.Errorf("repository path %q does not contain SKILL.md", ref.Path)
+	if err := ensureSkillManifestFile(skillPath); err != nil {
+		return fmt.Errorf("repository path %q has invalid SKILL.md: %w", ref.Path, err)
+	}
+	if err := checkContextCanceled(ctx); err != nil {
+		return err
 	}
 
 	if err := copyDir(skillPath, destPath); err != nil {
@@ -483,39 +506,47 @@ func extractSkillPathFromZip(zipData []byte, repoPath, destPath string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	targetSkillSuffix := "/" + path.Join(repoPath, "SKILL.md")
+	archivePaths := make(map[*zip.File]string, len(reader.File))
+	var skillArchiveRoots []string
+
 	for _, file := range reader.File {
-		if err := extractZipFile(file, tmpDir); err != nil {
-			return err
-		}
-	}
-
-	desiredSuffix := "/" + path.Join(repoPath, "SKILL.md")
-	var skillDir string
-
-	walkErr := filepath.Walk(tmpDir, func(p string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.IsDir() || info.Name() != "SKILL.md" {
-			return nil
-		}
-		rel, err := filepath.Rel(tmpDir, p)
+		sanitizedPath, err := sanitizeArchiveEntryPath(file.Name)
 		if err != nil {
 			return err
 		}
-		relSlash := filepath.ToSlash(rel)
-		if strings.HasSuffix(relSlash, desiredSuffix) {
-			skillDir = filepath.Dir(p)
-			return io.EOF
+		archivePaths[file] = sanitizedPath
+		if file.FileInfo().IsDir() {
+			continue
 		}
-		return nil
-	})
-	if walkErr != nil && !errors.Is(walkErr, io.EOF) {
-		return fmt.Errorf("failed to search extracted archive: %w", walkErr)
+
+		if strings.HasSuffix("/"+sanitizedPath, targetSkillSuffix) {
+			skillRoot := strings.TrimSuffix(sanitizedPath, "SKILL.md")
+			skillRoot = strings.TrimSuffix(skillRoot, "/")
+			skillArchiveRoots = append(skillArchiveRoots, skillRoot)
+		}
 	}
 
-	if skillDir == "" {
+	if len(skillArchiveRoots) == 0 {
 		return fmt.Errorf("skill path %q not found or missing SKILL.md", repoPath)
+	}
+	sort.Strings(skillArchiveRoots)
+	skillRoot := skillArchiveRoots[0]
+
+	// Extract only the target skill subtree to reduce extraction surface area.
+	for _, file := range reader.File {
+		sanitizedPath := archivePaths[file]
+		if sanitizedPath != skillRoot && !strings.HasPrefix(sanitizedPath, skillRoot+"/") {
+			continue
+		}
+		if err := extractZipFile(file, sanitizedPath, tmpDir); err != nil {
+			return err
+		}
+	}
+
+	skillDir := filepath.Join(tmpDir, filepath.FromSlash(skillRoot))
+	if err := ensureSkillManifestFile(skillDir); err != nil {
+		return fmt.Errorf("extracted skill has invalid SKILL.md: %w", err)
 	}
 
 	if err := copyDir(skillDir, destPath); err != nil {
@@ -525,11 +556,24 @@ func extractSkillPathFromZip(zipData []byte, repoPath, destPath string) error {
 	return nil
 }
 
-func extractZipFile(file *zip.File, destDir string) error {
-	joinedPath := filepath.Join(destDir, file.Name)
+func sanitizeArchiveEntryPath(name string) (string, error) {
+	slashPath := strings.ReplaceAll(name, "\\", "/")
+	cleanPath := path.Clean(slashPath)
+	if cleanPath == "." {
+		return "", fmt.Errorf("invalid archive entry path: %q", name)
+	}
+	if strings.HasPrefix(cleanPath, "/") || cleanPath == ".." || strings.HasPrefix(cleanPath, "../") {
+		return "", fmt.Errorf("invalid archive entry path: %q", name)
+	}
+	return cleanPath, nil
+}
+
+func extractZipFile(file *zip.File, sanitizedPath string, destDir string) error {
+	joinedPath := filepath.Join(destDir, filepath.FromSlash(sanitizedPath))
 	cleanDest := filepath.Clean(destDir)
 	cleanPath := filepath.Clean(joinedPath)
 	if cleanPath != cleanDest && !strings.HasPrefix(cleanPath, cleanDest+string(os.PathSeparator)) {
+		// Mitigates zip-slip path traversal during extraction.
 		return fmt.Errorf("invalid file path (zip-slip): %s", file.Name)
 	}
 
@@ -570,16 +614,26 @@ func extractZipFile(file *zip.File, destDir string) error {
 	return nil
 }
 
-func hasSkillManifest(skillDir string) bool {
+func ensureSkillManifestFile(skillDir string) error {
 	if skillDir == "" {
-		return false
+		return fmt.Errorf("empty skill directory")
 	}
 	manifest := filepath.Join(skillDir, "SKILL.md")
-	info, err := os.Stat(manifest)
+	info, err := os.Lstat(manifest)
 	if err != nil {
-		return false
+		return err
 	}
-	return !info.IsDir()
+	if info.IsDir() {
+		return fmt.Errorf("manifest is a directory")
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("manifest must not be a symlink")
+	}
+	return nil
+}
+
+func hasSkillManifest(skillDir string) bool {
+	return ensureSkillManifestFile(skillDir) == nil
 }
 
 func cacheKey(ref *Ref) string {
@@ -628,14 +682,7 @@ func copyDir(src, dst string) error {
 		dstPath := filepath.Join(dst, entry.Name())
 
 		if entry.Type()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(srcPath)
-			if err != nil {
-				return fmt.Errorf("failed to read symlink %s: %w", srcPath, err)
-			}
-			if err := os.Symlink(target, dstPath); err != nil {
-				return fmt.Errorf("failed to create symlink %s: %w", dstPath, err)
-			}
-			continue
+			return fmt.Errorf("symlink entries are not allowed in skill directory: %s", srcPath)
 		}
 
 		info, err := entry.Info()
@@ -679,4 +726,16 @@ func copyDir(src, dst string) error {
 	}
 
 	return nil
+}
+
+func checkContextCanceled(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
 }
