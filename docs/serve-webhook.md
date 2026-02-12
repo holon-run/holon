@@ -64,6 +64,8 @@ Any GitHub events matching the configured types will be forwarded to your local 
 - `--state-dir DIR`: State directory for cursor/dedupe persistence (default: `.holon/serve-state`)
 - `--controller-workspace DIR`: Controller workspace path
 - `--log-level LEVEL`: Log level (debug, info, progress, minimal)
+- `--runtime-mode MODE`: Runtime mode (`prod` default, `dev` for local agent dist overlay)
+- `--runtime-dev-agent-source DIR`: Local agent source for `--runtime-mode=dev` (defaults to `./agents/claude` when available)
 - `--dry-run`: Log events without running controller
 
 ### Example with options
@@ -74,7 +76,9 @@ holon serve \
   --webhook-port 8080 \
   --state-dir .holon/serve-state \
   --controller-workspace ~/.holon/workspace \
-  --log-level debug
+  --log-level debug \
+  --runtime-mode dev \
+  --runtime-dev-agent-source ./agents/claude
 ```
 
 ## Event Types

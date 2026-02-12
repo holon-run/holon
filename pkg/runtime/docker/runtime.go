@@ -73,6 +73,10 @@ type ContainerConfig struct {
 
 	// Skill mode configuration
 	UseSkillMode bool // True if using skill mode (agent handles collect/publish)
+
+	// Runtime mode configuration
+	RuntimeMode       string // Runtime mode: "prod" (default) or "dev"
+	DevAgentSourceDir string // Local agent source directory for runtime-mode=dev (expects dist/)
 }
 
 // SessionHandle tracks a long-running runtime session container.
@@ -155,6 +159,11 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		cfg.Env["GIT_COMMITTER_EMAIL"] = cfg.GitAuthorEmail
 	}
 
+	runtimeMode, err := ParseRuntimeMode(cfg.RuntimeMode)
+	if err != nil {
+		return "", err
+	}
+	cfg.Env["HOLON_RUNTIME_MODE"] = runtimeMode.String()
 	env := BuildContainerEnv(&EnvConfig{
 		UserEnv: cfg.Env,
 		HostUID: os.Getuid(),
@@ -167,6 +176,14 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		OutDir:         cfg.OutDir,
 		StateDir:       cfg.StateDir,
 		LocalSkillsDir: skillsDir, // NEW: Pass skills directory
+	}
+	if runtimeMode == RuntimeModeDev {
+		distDir, err := resolveDevAgentDistDir(cfg.DevAgentSourceDir)
+		if err != nil {
+			return "", err
+		}
+		mountConfig.LocalAgentDistDir = distDir
+		holonlog.Info("runtime mode dev enabled", "agent_dist", distDir)
 	}
 
 	// Handle agent config mounting based on mode
@@ -357,6 +374,12 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 		cfg.Env["GIT_COMMITTER_EMAIL"] = cfg.GitAuthorEmail
 	}
 
+	runtimeMode, err := ParseRuntimeMode(cfg.RuntimeMode)
+	if err != nil {
+		cleanupOnError()
+		return nil, err
+	}
+	cfg.Env["HOLON_RUNTIME_MODE"] = runtimeMode.String()
 	env := BuildContainerEnv(&EnvConfig{
 		UserEnv: cfg.Env,
 		HostUID: os.Getuid(),
@@ -369,6 +392,15 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 		OutDir:         cfg.OutDir,
 		StateDir:       cfg.StateDir,
 		LocalSkillsDir: skillsDir,
+	}
+	if runtimeMode == RuntimeModeDev {
+		distDir, err := resolveDevAgentDistDir(cfg.DevAgentSourceDir)
+		if err != nil {
+			cleanupOnError()
+			return nil, err
+		}
+		mountConfig.LocalAgentDistDir = distDir
+		holonlog.Info("runtime mode dev enabled", "agent_dist", distDir)
 	}
 
 	configMode, err := ParseAgentConfigMode(cfg.AgentConfigMode)
@@ -766,6 +798,36 @@ func prepareSkillsDir() (string, error) {
 		return "", fmt.Errorf("failed to get absolute path for skills dir: %w", err)
 	}
 	return absSkillsDir, nil
+}
+
+func resolveDevAgentDistDir(sourceDir string) (string, error) {
+	src := strings.TrimSpace(sourceDir)
+	if src == "" {
+		return "", fmt.Errorf("runtime-mode=dev requires a local agent source directory (--runtime-dev-agent-source or HOLON_RUNTIME_DEV_AGENT_SOURCE)")
+	}
+	absSource, err := filepath.Abs(src)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve runtime dev agent source path: %w", err)
+	}
+	distDir := filepath.Join(absSource, "dist")
+	info, err := os.Stat(distDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("runtime-mode=dev requires %s to exist; run 'npm run build' in %s first", distDir, absSource)
+		}
+		return "", fmt.Errorf("failed to stat dev agent dist directory %s: %w", distDir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("dev agent dist path is not a directory: %s", distDir)
+	}
+	agentEntry := filepath.Join(distDir, "agent.js")
+	if _, err := os.Stat(agentEntry); err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("runtime-mode=dev requires %s; run 'npm run build' in %s first", agentEntry, absSource)
+		}
+		return "", fmt.Errorf("failed to stat dev agent entry %s: %w", agentEntry, err)
+	}
+	return distDir, nil
 }
 
 // prepareWorkspace prepares the workspace using the configured strategy

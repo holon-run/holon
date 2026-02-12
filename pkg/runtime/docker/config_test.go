@@ -218,6 +218,9 @@ func TestBuildContainerMounts(t *testing.T) {
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "agent-dist"), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name     string
@@ -279,6 +282,39 @@ func TestBuildContainerMounts(t *testing.T) {
 					Type:   mount.TypeBind,
 					Source: filepath.Join(tmpDir, "state"),
 					Target: "/holon/state",
+				},
+			},
+		},
+		{
+			name: "includes local agent dist mount when configured",
+			cfg: &MountConfig{
+				SnapshotDir:       snapshotDir,
+				InputPath:         inputDir,
+				OutDir:            outDir,
+				LocalAgentDistDir: filepath.Join(tmpDir, "agent-dist"),
+			},
+			expected: []mount.Mount{
+				{
+					Type:   mount.TypeBind,
+					Source: snapshotDir,
+					Target: "/holon/workspace",
+				},
+				{
+					Type:     mount.TypeBind,
+					Source:   inputDir,
+					Target:   "/holon/input",
+					ReadOnly: true,
+				},
+				{
+					Type:   mount.TypeBind,
+					Source: outDir,
+					Target: "/holon/output",
+				},
+				{
+					Type:     mount.TypeBind,
+					Source:   filepath.Join(tmpDir, "agent-dist"),
+					Target:   "/holon/agent/dist",
+					ReadOnly: true,
 				},
 			},
 		},
@@ -595,6 +631,32 @@ func TestValidateMountTargets(t *testing.T) {
 
 		if err := ValidateMountTargets(cfg); err == nil {
 			t.Fatalf("ValidateMountTargets() expected error for state file path, got nil")
+		}
+	})
+
+	t.Run("local agent dist directory must exist in dev mode", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		inputDir := filepath.Join(tmpDir, "input")
+		outDir := filepath.Join(tmpDir, "output")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
+		distDir := filepath.Join(tmpDir, "missing-dist")
+
+		if err := os.MkdirAll(inputDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir:       snapshotDir,
+			InputPath:         inputDir,
+			OutDir:            outDir,
+			LocalAgentDistDir: distDir,
+		}
+
+		if err := ValidateMountTargets(cfg); err == nil {
+			t.Fatalf("ValidateMountTargets() expected error for missing local agent dist directory, got nil")
 		}
 	})
 }

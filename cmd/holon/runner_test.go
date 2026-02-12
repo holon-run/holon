@@ -320,6 +320,39 @@ func TestRunner_Run_UnsetsSnapshotEnvForDirectWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunner_Run_PropagatesRuntimeMode(t *testing.T) {
+	mockRuntime := &MockRuntime{}
+	runner := NewRunner(mockRuntime)
+
+	tempDir, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, tempDir)
+
+	err := runner.Run(context.Background(), RunnerConfig{
+		GoalStr:               "runtime mode test",
+		TaskName:              "runtime-mode-test",
+		BaseImage:             "test-image",
+		AgentBundle:           bundlePath,
+		WorkspacePath:         workspaceDir,
+		OutDir:                outDir,
+		RuntimeMode:           "dev",
+		RuntimeDevAgentSource: "/tmp/agent-src",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	calls := mockRuntime.GetCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 runtime call, got %d", len(calls))
+	}
+	if calls[0].cfg.RuntimeMode != "dev" {
+		t.Fatalf("RuntimeMode = %q, want dev", calls[0].cfg.RuntimeMode)
+	}
+	if calls[0].cfg.DevAgentSourceDir != "/tmp/agent-src" {
+		t.Fatalf("DevAgentSourceDir = %q, want /tmp/agent-src", calls[0].cfg.DevAgentSourceDir)
+	}
+}
+
 func TestRunner_Run_GoalExtractionFromSpec(t *testing.T) {
 	mockRuntime := &MockRuntime{}
 	runner := NewRunner(mockRuntime)

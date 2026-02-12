@@ -40,6 +40,8 @@ var agentConfigMode string
 var skipPreflight bool
 var skillPaths []string
 var skillsList string
+var runtimeMode string
+var runtimeDevAgentSource string
 
 // resolvedConfig holds the resolved configuration values
 type resolvedConfig struct {
@@ -295,6 +297,14 @@ var runCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to initialize runtime: %w", err)
 		}
+		resolvedRuntimeMode, err := resolveRuntimeMode(runtimeMode)
+		if err != nil {
+			return err
+		}
+		resolvedRuntimeDevAgentSource, err := resolveRuntimeDevAgentSource(resolvedRuntimeMode, runtimeDevAgentSource)
+		if err != nil {
+			return err
+		}
 
 		// Resolve skills with precedence: CLI > config > spec > auto-discovered
 		resolvedSkills, err := resolveSkills(ctx, absWorkspace, specPath, projectCfg)
@@ -316,32 +326,34 @@ var runCmd = &cobra.Command{
 
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{
-			SpecPath:             specPath,
-			GoalStr:              goalStr,
-			TaskName:             taskName,
-			BaseImage:            resolved.baseImage,
-			AgentBundle:          resolved.agent,
-			AgentChannel:         resolved.agentChannel,
-			AgentChannelSource:   resolved.agentChannelSource,
-			WorkspacePath:        workspacePath,
-			ContextPath:          contextPath,
-			InputPath:            inputPath,
-			OutDir:               resolvedOutDir,
-			OutDirIsTemp:         outIsTemp,
-			StateDir:             stateDirForAgentHome(agentResolution.AgentHome),
-			AgentHome:            agentResolution.AgentHome,
-			RoleName:             roleName,
-			EnvVarsList:          envVarsList,
-			LogLevel:             resolved.logLevel,
-			AssistantOutput:      resolved.assistantOutput,
-			Cleanup:              cleanupMode,
-			AgentConfigMode:      agentConfigMode,
-			WorkspaceIsTemporary: true, // run defaults to direct workspace mode
-			GitAuthorName:        projectCfg.GetGitAuthorName(),
-			GitAuthorEmail:       projectCfg.GetGitAuthorEmail(),
-			Skills:               resolvedSkillPaths,
-			BuiltinSkillsSource:  projectCfg.GetBuiltinSkillsSource(),
-			BuiltinSkillsRef:     projectCfg.GetBuiltinSkillsRef(),
+			SpecPath:              specPath,
+			GoalStr:               goalStr,
+			TaskName:              taskName,
+			BaseImage:             resolved.baseImage,
+			AgentBundle:           resolved.agent,
+			AgentChannel:          resolved.agentChannel,
+			AgentChannelSource:    resolved.agentChannelSource,
+			WorkspacePath:         workspacePath,
+			ContextPath:           contextPath,
+			InputPath:             inputPath,
+			OutDir:                resolvedOutDir,
+			OutDirIsTemp:          outIsTemp,
+			StateDir:              stateDirForAgentHome(agentResolution.AgentHome),
+			AgentHome:             agentResolution.AgentHome,
+			RoleName:              roleName,
+			EnvVarsList:           envVarsList,
+			LogLevel:              resolved.logLevel,
+			AssistantOutput:       resolved.assistantOutput,
+			Cleanup:               cleanupMode,
+			AgentConfigMode:       agentConfigMode,
+			WorkspaceIsTemporary:  true, // run defaults to direct workspace mode
+			GitAuthorName:         projectCfg.GetGitAuthorName(),
+			GitAuthorEmail:        projectCfg.GetGitAuthorEmail(),
+			Skills:                resolvedSkillPaths,
+			BuiltinSkillsSource:   projectCfg.GetBuiltinSkillsSource(),
+			BuiltinSkillsRef:      projectCfg.GetBuiltinSkillsRef(),
+			RuntimeMode:           resolvedRuntimeMode,
+			RuntimeDevAgentSource: resolvedRuntimeDevAgentSource,
 		})
 	},
 }
@@ -371,6 +383,8 @@ func init() {
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	runCmd.Flags().StringVar(&assistantOutput, "assistant-output", "none", "Assistant output mode: none (default), stream (stream assistant text to logs)")
 	runCmd.Flags().StringVar(&agentConfigMode, "agent-config-mode", "no", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount, default)")
+	runCmd.Flags().StringVar(&runtimeMode, "runtime-mode", "prod", "Runtime mode: prod (default), dev (mount local agent dist)")
+	runCmd.Flags().StringVar(&runtimeDevAgentSource, "runtime-dev-agent-source", "", "Local agent source directory for --runtime-mode=dev (defaults: HOLON_RUNTIME_DEV_AGENT_SOURCE, HOLON_DEV_AGENT_SOURCE, ./agents/claude)")
 	runCmd.Flags().StringSliceVar(&skillPaths, "skill", []string{}, "Path to skill directory (repeatable, higher precedence than --skills)")
 	runCmd.Flags().StringVar(&skillsList, "skills", "", "Comma-separated list of skill paths")
 	runCmd.Flags().BoolVar(&skipPreflight, "no-preflight", false, "Skip preflight checks (not recommended)")

@@ -75,6 +75,25 @@ Holon can optionally mount host agent configuration into the container (currentl
 
 Security note: mounting host config may expose local credentials/sessions to the container. Avoid enabling this in CI or shared environments.
 
+## Runtime mode (`--runtime-mode`)
+Holon supports runtime sourcing modes for the agent code:
+
+- `prod` (default): use the bundled agent code in the composed container image.
+- `dev`: overlay bundled agent code with local `dist/` from a source checkout.
+
+Useful flags:
+- `--runtime-mode prod|dev`
+- `--runtime-dev-agent-source <dir>` (defaults: `HOLON_RUNTIME_DEV_AGENT_SOURCE`, `HOLON_DEV_AGENT_SOURCE`, `./agents/claude`)
+
+When using `--runtime-mode dev`, ensure local agent build artifacts exist:
+```bash
+cd agents/claude
+npm install
+npm run build
+```
+
+`dev` mode is intended for local debugging iteration. CI should stay on `prod`.
+
 ## Preflight checks
 Holon runs preflight checks to fail fast when required tooling or credentials are missing.
 

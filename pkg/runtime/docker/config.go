@@ -19,6 +19,7 @@ type MountConfig struct {
 	StateDir             string // Path to state directory for cross-run skill caches (optional, for mounting)
 	LocalClaudeConfigDir string // Path to host ~/.claude directory (optional, for mounting)
 	LocalSkillsDir       string // Path to skills staging directory (optional, for mounting)
+	LocalAgentDistDir    string // Path to local agent dist directory for dev runtime mode (optional, for mounting)
 }
 
 // EnvConfig represents the environment configuration for a container
@@ -79,6 +80,18 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 			Source:      cfg.LocalSkillsDir,
 			Target:      "/root/.claude/skills",
 			ReadOnly:    true, // Mount read-only to prevent accidental modifications
+			BindOptions: &mount.BindOptions{Propagation: mount.PropagationRPrivate},
+		})
+	}
+
+	// Add local agent dist mount for runtime-mode=dev (if provided)
+	// This overlays bundled agent dist with locally built dist for faster iteration.
+	if cfg.LocalAgentDistDir != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:        mount.TypeBind,
+			Source:      cfg.LocalAgentDistDir,
+			Target:      "/holon/agent/dist",
+			ReadOnly:    true,
 			BindOptions: &mount.BindOptions{Propagation: mount.PropagationRPrivate},
 		})
 	}
@@ -163,6 +176,19 @@ func ValidateMountTargets(cfg *MountConfig) error {
 			}
 		} else if !info.IsDir() {
 			return fmt.Errorf("state path is not a directory: %s", cfg.StateDir)
+		}
+	}
+
+	if cfg.LocalAgentDistDir != "" {
+		info, err := os.Stat(cfg.LocalAgentDistDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("local agent dist directory does not exist: %s", cfg.LocalAgentDistDir)
+			}
+			return fmt.Errorf("failed to stat local agent dist directory: %s: %w", cfg.LocalAgentDistDir, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("local agent dist path is not a directory: %s", cfg.LocalAgentDistDir)
 		}
 	}
 
