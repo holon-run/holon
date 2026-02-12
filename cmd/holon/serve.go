@@ -36,6 +36,7 @@ var (
 	serveControllerRole     string
 	serveControllerRoleFile string
 	serveTickInterval       time.Duration
+	serveNoSubscriptions    bool
 )
 
 var serveCmd = &cobra.Command{
@@ -67,9 +68,6 @@ for local development and testing.`,
 			return err
 		}
 		serveControllerRole = canonicalRole
-		if serveTickInterval > 0 && strings.TrimSpace(serveRepo) == "" {
-			return fmt.Errorf("--repo is required when --tick-interval is enabled")
-		}
 
 		agentResolution, err := resolveAgentHome("serve", serveAgentID, serveAgentHome, false)
 		if err != nil {
@@ -108,7 +106,65 @@ for local development and testing.`,
 		}
 		defer handler.Close()
 
-		// Webhook mode
+		// Use subscription manager if subscriptions are enabled
+		if !serveNoSubscriptions && !serveWebhookMode && serveInput == "" {
+			subMgr, err := serve.NewSubscriptionManager(serve.ManagerConfig{
+				AgentHome:   agentResolution.AgentHome,
+				StateDir:    absStateDir,
+				Handler:     handler,
+				WebhookPort: serveWebhookPort,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create subscription manager: %w", err)
+			}
+			defer subMgr.Stop()
+
+			tickCtx, tickCancel := context.WithCancel(context.Background())
+			defer tickCancel()
+
+			// Determine repos for tick interval from subscription config
+			// Note: Config is already loaded and validated in SubscriptionManager.
+			// For --tick-interval, we use --repo if provided; otherwise
+			// subscriptions are configured in agent.yaml and will be used automatically.
+			var repos []string
+			if serveRepo != "" {
+				repos = []string{serveRepo}
+			}
+			if serveTickInterval > 0 && len(repos) == 0 {
+				return fmt.Errorf("--repo is required when --tick-interval is enabled (subscriptions.github.repos is configured in agent.yaml)")
+			}
+
+			if serveTickInterval > 0 && len(repos) > 0 {
+				for _, repo := range repos {
+					startServeTickEmitter(tickCtx, serveTickInterval, repo, func(ctx context.Context, env serve.EventEnvelope) error {
+						return subMgr.InjectEvent(ctx, env)
+					})
+				}
+			}
+
+			// Start subscription manager
+			if err := subMgr.Start(tickCtx); err != nil {
+				return fmt.Errorf("failed to start subscription manager: %w", err)
+			}
+
+			holonlog.Info(
+				"serve started (subscription mode)",
+				"agent_id", agentResolution.AgentID,
+				"agent_home", agentResolution.AgentHome,
+				"state_dir", absStateDir,
+				"workspace", controllerWorkspace,
+				"controller_skill", serveControllerSkill,
+				"controller_role", serveControllerRole,
+				"tick_interval", serveTickInterval,
+				"webhook_port", subMgr.GetWebhookPort(),
+			)
+
+			// Wait for context cancellation
+			<-tickCtx.Done()
+			return nil
+		}
+
+		// Webhook mode (legacy, for backward compatibility)
 		if serveWebhookMode {
 			if serveRepo == "" {
 				return fmt.Errorf("--repo is required in webhook mode (e.g., --repo owner/repo)")
@@ -169,6 +225,9 @@ for local development and testing.`,
 		tickCtx, tickCancel := context.WithCancel(context.Background())
 		defer tickCancel()
 		if serveTickInterval > 0 {
+			if serveRepo == "" {
+				return fmt.Errorf("--repo is required when --tick-interval is enabled")
+			}
 			startServeTickEmitter(tickCtx, serveTickInterval, serveRepo, func(ctx context.Context, env serve.EventEnvelope) error {
 				return svc.InjectEvent(ctx, env)
 			})
@@ -845,5 +904,6 @@ func init() {
 	serveCmd.Flags().DurationVar(&serveTickInterval, "tick-interval", 0, "Emit timer.tick events periodically (e.g. 5m)")
 	serveCmd.Flags().StringVar(&serveLogLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	serveCmd.Flags().IntVar(&serveWebhookPort, "webhook-port", 0, "Enable webhook mode and listen on this port (requires --repo)")
+	serveCmd.Flags().BoolVar(&serveNoSubscriptions, "no-subscriptions", false, "Disable agent.yaml subscriptions and use stdin/file input instead")
 	rootCmd.AddCommand(serveCmd)
 }
