@@ -22,17 +22,19 @@ import (
 )
 
 var (
-	serveRepo            string
-	serveInput           string
-	serveAgentID         string
-	serveAgentHome       string
-	serveMaxEvents       int
-	serveDryRun          bool
-	serveLogLevel        string
-	serveWebhookPort     int
-	serveWebhookMode     bool
-	serveTickInterval    time.Duration
-	serveNoSubscriptions bool
+	serveRepo                  string
+	serveInput                 string
+	serveAgentID               string
+	serveAgentHome             string
+	serveMaxEvents             int
+	serveDryRun                bool
+	serveLogLevel              string
+	serveWebhookPort           int
+	serveWebhookMode           bool
+	serveTickInterval          time.Duration
+	serveNoSubscriptions       bool
+	serveRuntimeMode           string
+	serveRuntimeDevAgentSource string
 )
 
 var serveCmd = &cobra.Command{
@@ -85,6 +87,14 @@ for local development and testing.`,
 		if err != nil {
 			return fmt.Errorf("failed to get current working directory for controller workspace: %w", err)
 		}
+		resolvedRuntimeMode, err := resolveRuntimeMode(serveRuntimeMode)
+		if err != nil {
+			return err
+		}
+		resolvedRuntimeDevAgentSource, err := resolveRuntimeDevAgentSource(resolvedRuntimeMode, serveRuntimeDevAgentSource)
+		if err != nil {
+			return err
+		}
 
 		handler, err := newCLIControllerHandler(
 			serveRepo,
@@ -93,6 +103,8 @@ for local development and testing.`,
 			rolePrompt,
 			roleLabel,
 			serveLogLevel,
+			resolvedRuntimeMode,
+			resolvedRuntimeDevAgentSource,
 			serveDryRun,
 			nil,
 		)
@@ -462,21 +474,23 @@ func isProcessRunning(pid int) (bool, error) {
 }
 
 type cliControllerHandler struct {
-	repoHint             string
-	stateDir             string
-	controllerWorkspace  string
-	controllerRoleLabel  string
-	controllerRolePrompt string
-	logLevel             string
-	dryRun               bool
-	sessionRunner        SessionRunner
-	controllerSession    *docker.SessionHandle
-	controllerDone       <-chan error
-	controllerChannel    string
-	controllerInputDir   string
-	controllerOutput     string
-	restartAttempts      int
-	mu                   sync.Mutex
+	repoHint              string
+	stateDir              string
+	controllerWorkspace   string
+	controllerRoleLabel   string
+	controllerRolePrompt  string
+	logLevel              string
+	runtimeMode           string
+	runtimeDevAgentSource string
+	dryRun                bool
+	sessionRunner         SessionRunner
+	controllerSession     *docker.SessionHandle
+	controllerDone        <-chan error
+	controllerChannel     string
+	controllerInputDir    string
+	controllerOutput      string
+	restartAttempts       int
+	mu                    sync.Mutex
 }
 
 var (
@@ -490,6 +504,8 @@ func newCLIControllerHandler(
 	controllerRolePrompt,
 	controllerRoleLabel,
 	logLevel string,
+	runtimeMode string,
+	runtimeDevAgentSource string,
 	dryRun bool,
 	sessionRunner SessionRunner,
 ) (*cliControllerHandler, error) {
@@ -502,14 +518,16 @@ func newCLIControllerHandler(
 	}
 
 	return &cliControllerHandler{
-		repoHint:             repoHint,
-		stateDir:             stateDir,
-		controllerWorkspace:  controllerWorkspace,
-		controllerRoleLabel:  controllerRoleLabel,
-		controllerRolePrompt: controllerRolePrompt,
-		logLevel:             logLevel,
-		dryRun:               dryRun,
-		sessionRunner:        sessionRunner,
+		repoHint:              repoHint,
+		stateDir:              stateDir,
+		controllerWorkspace:   controllerWorkspace,
+		controllerRoleLabel:   controllerRoleLabel,
+		controllerRolePrompt:  controllerRolePrompt,
+		logLevel:              logLevel,
+		runtimeMode:           runtimeMode,
+		runtimeDevAgentSource: runtimeDevAgentSource,
+		dryRun:                dryRun,
+		sessionRunner:         sessionRunner,
 	}, nil
 }
 
@@ -787,12 +805,14 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	}
 
 	session, err := h.sessionRunner.Start(ctx, ControllerSessionConfig{
-		Workspace:  h.controllerWorkspace,
-		InputPath:  inputDir,
-		OutputPath: outputDir,
-		StateDir:   filepath.Join(h.stateDir, "controller-state"),
-		LogLevel:   h.logLevel,
-		Env:        env,
+		Workspace:             h.controllerWorkspace,
+		InputPath:             inputDir,
+		OutputPath:            outputDir,
+		StateDir:              filepath.Join(h.stateDir, "controller-state"),
+		LogLevel:              h.logLevel,
+		Env:                   env,
+		RuntimeMode:           h.runtimeMode,
+		RuntimeDevAgentSource: h.runtimeDevAgentSource,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start controller runtime: %w", err)
@@ -958,6 +978,8 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without starting the controller runtime session")
 	serveCmd.Flags().DurationVar(&serveTickInterval, "tick-interval", 0, "Emit timer.tick events periodically (e.g. 5m)")
 	serveCmd.Flags().StringVar(&serveLogLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
+	serveCmd.Flags().StringVar(&serveRuntimeMode, "runtime-mode", "prod", "Runtime mode: prod (default), dev (mount local agent dist)")
+	serveCmd.Flags().StringVar(&serveRuntimeDevAgentSource, "runtime-dev-agent-source", "", "Local agent source directory for --runtime-mode=dev (defaults: HOLON_RUNTIME_DEV_AGENT_SOURCE, HOLON_DEV_AGENT_SOURCE, ./agents/claude)")
 	serveCmd.Flags().IntVar(&serveWebhookPort, "webhook-port", 0, "Override ingress webhook port for subscription mode; with --no-subscriptions, enables legacy webhook mode")
 	serveCmd.Flags().BoolVar(&serveNoSubscriptions, "no-subscriptions", false, "Disable agent.yaml subscriptions and use stdin/file input instead")
 	rootCmd.AddCommand(serveCmd)

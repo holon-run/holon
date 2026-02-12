@@ -31,33 +31,35 @@ type Runtime interface {
 
 // RunnerConfig holds the configuration for the Run function
 type RunnerConfig struct {
-	SpecPath             string
-	GoalStr              string
-	TaskName             string
-	BaseImage            string
-	AgentBundle          string
-	AgentChannel         string // Agent channel: "latest", "builtin", "pinned:<version>"
-	AgentChannelSource   string // Source of AgentChannel: "cli", "config", "default"
-	WorkspacePath        string
-	ContextPath          string
-	InputPath            string // Optional: path to input directory (if empty, creates temp dir)
-	OutDir               string
-	OutDirIsTemp         bool   // true if output dir is a temporary directory (vs user-provided)
-	StateDir             string // Optional: path to state directory for cross-run skill caches
-	AgentHome            string // Optional: path to agent home for persona prompt layering
-	RoleName             string
-	EnvVarsList          []string
-	LogLevel             string
-	UseSkillMode         bool     // true if using skill mode (agent handles collect/publish)
-	Cleanup              string   // Cleanup mode: "auto" (default), "none", "all"
-	AgentConfigMode      string   // Agent config mount mode: "auto", "yes", "no"
-	GitAuthorName        string   // Optional: git author name override
-	GitAuthorEmail       string   // Optional: git author email override
-	WorkspaceIsTemporary bool     // true when workspace should be used directly (already prepared, no extra snapshot)
-	Skills               []string // Skills to include (already resolved with precedence)
-	BuiltinSkillsSource  string   // Optional: remote source for builtin skills (e.g., URL or catalog ref)
-	BuiltinSkillsRef     string   // Optional: version/ref tag for builtin skills
-	AssistantOutput      string   // Assistant output mode: "none" or "stream"
+	SpecPath              string
+	GoalStr               string
+	TaskName              string
+	BaseImage             string
+	AgentBundle           string
+	AgentChannel          string // Agent channel: "latest", "builtin", "pinned:<version>"
+	AgentChannelSource    string // Source of AgentChannel: "cli", "config", "default"
+	WorkspacePath         string
+	ContextPath           string
+	InputPath             string // Optional: path to input directory (if empty, creates temp dir)
+	OutDir                string
+	OutDirIsTemp          bool   // true if output dir is a temporary directory (vs user-provided)
+	StateDir              string // Optional: path to state directory for cross-run skill caches
+	AgentHome             string // Optional: path to agent home for persona prompt layering
+	RoleName              string
+	EnvVarsList           []string
+	LogLevel              string
+	UseSkillMode          bool     // true if using skill mode (agent handles collect/publish)
+	Cleanup               string   // Cleanup mode: "auto" (default), "none", "all"
+	AgentConfigMode       string   // Agent config mount mode: "auto", "yes", "no"
+	GitAuthorName         string   // Optional: git author name override
+	GitAuthorEmail        string   // Optional: git author email override
+	WorkspaceIsTemporary  bool     // true when workspace should be used directly (already prepared, no extra snapshot)
+	Skills                []string // Skills to include (already resolved with precedence)
+	BuiltinSkillsSource   string   // Optional: remote source for builtin skills (e.g., URL or catalog ref)
+	BuiltinSkillsRef      string   // Optional: version/ref tag for builtin skills
+	AssistantOutput       string   // Assistant output mode: "none" or "stream"
+	RuntimeMode           string   // Runtime mode: "prod" (default) or "dev"
+	RuntimeDevAgentSource string   // Local agent source directory for runtime-mode=dev
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -323,6 +325,8 @@ output:
 		BuiltinSkillsSource:  cfg.BuiltinSkillsSource,
 		BuiltinSkillsRef:     cfg.BuiltinSkillsRef,
 		UseSkillMode:         cfg.UseSkillMode,
+		RuntimeMode:          cfg.RuntimeMode,
+		DevAgentSourceDir:    cfg.RuntimeDevAgentSource,
 	}
 
 	holonlog.Progress("running holon", "spec", cfg.SpecPath, "base_image", cfg.BaseImage, "agent", containerCfg.AgentBundle)

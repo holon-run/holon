@@ -21,29 +21,31 @@ import (
 )
 
 var (
-	solveRepo             string
-	solveBase             string
-	solveOutDir           string
-	solveContext          string
-	solveInput            string
-	solveAgentID          string
-	solveAgentHome        string
-	solveCleanup          string
-	solveAgent            string
-	solveImage            string
-	solveImageAutoDetect  bool
-	solveSkillPaths       []string // Skill paths (--skill flag, repeatable)
-	solveSkillsList       string   // Comma-separated skills (--skills flag)
-	solveRole             string
-	solveLogLevel         string
-	solveAssistantOutput  string
-	solveDryRun           bool
-	solveWorkspace        string
-	solveWorkspaceHistory string
-	solveWorkspaceRef     string
-	solveFetchRemote      bool
-	solveAgentConfigMode  string
-	solveSkipPreflight    bool
+	solveRepo                  string
+	solveBase                  string
+	solveOutDir                string
+	solveContext               string
+	solveInput                 string
+	solveAgentID               string
+	solveAgentHome             string
+	solveCleanup               string
+	solveAgent                 string
+	solveImage                 string
+	solveImageAutoDetect       bool
+	solveSkillPaths            []string // Skill paths (--skill flag, repeatable)
+	solveSkillsList            string   // Comma-separated skills (--skills flag)
+	solveRole                  string
+	solveLogLevel              string
+	solveAssistantOutput       string
+	solveDryRun                bool
+	solveWorkspace             string
+	solveWorkspaceHistory      string
+	solveWorkspaceRef          string
+	solveFetchRemote           bool
+	solveAgentConfigMode       string
+	solveSkipPreflight         bool
+	solveRuntimeMode           string
+	solveRuntimeDevAgentSource string
 )
 
 // solveCmd is the parent solve command
@@ -727,25 +729,35 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	runner := NewRunner(rt)
+	resolvedRuntimeMode, err := resolveRuntimeMode(solveRuntimeMode)
+	if err != nil {
+		return err
+	}
+	resolvedRuntimeDevAgentSource, err := resolveRuntimeDevAgentSource(resolvedRuntimeMode, solveRuntimeDevAgentSource)
+	if err != nil {
+		return err
+	}
 	err = runner.Run(ctx, RunnerConfig{
-		GoalStr:              goal,
-		TaskName:             fmt.Sprintf("solve-%s-%d", refType, solveRef.Number),
-		BaseImage:            resolvedImage,
-		AgentBundle:          solveAgent,
-		WorkspacePath:        workspacePrep.path,
-		ContextPath:          contextDir,
-		InputPath:            inputDir,
-		OutDir:               outDir,
-		StateDir:             stateDirForAgentHome(agentResolution.AgentHome),
-		AgentHome:            agentResolution.AgentHome,
-		RoleName:             solveRole,
-		LogLevel:             solveLogLevel,
-		AssistantOutput:      resolvedAssistantOutput,
-		UseSkillMode:         true, // Always skill-first now
-		Skills:               resolvedSkillPaths,
-		Cleanup:              cleanupMode,
-		AgentConfigMode:      solveAgentConfigMode,
-		WorkspaceIsTemporary: workspacePrep.useDirect,
+		GoalStr:               goal,
+		TaskName:              fmt.Sprintf("solve-%s-%d", refType, solveRef.Number),
+		BaseImage:             resolvedImage,
+		AgentBundle:           solveAgent,
+		WorkspacePath:         workspacePrep.path,
+		ContextPath:           contextDir,
+		InputPath:             inputDir,
+		OutDir:                outDir,
+		StateDir:              stateDirForAgentHome(agentResolution.AgentHome),
+		AgentHome:             agentResolution.AgentHome,
+		RoleName:              solveRole,
+		LogLevel:              solveLogLevel,
+		AssistantOutput:       resolvedAssistantOutput,
+		UseSkillMode:          true, // Always skill-first now
+		Skills:                resolvedSkillPaths,
+		Cleanup:               cleanupMode,
+		AgentConfigMode:       solveAgentConfigMode,
+		WorkspaceIsTemporary:  workspacePrep.useDirect,
+		RuntimeMode:           resolvedRuntimeMode,
+		RuntimeDevAgentSource: resolvedRuntimeDevAgentSource,
 	})
 
 	if err != nil {
@@ -1020,6 +1032,8 @@ func init() {
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")
 	solveCmd.Flags().StringVar(&solveAssistantOutput, "assistant-output", "none", "Assistant output mode: none (default), stream (stream assistant text to logs)")
 	solveCmd.Flags().StringVar(&solveAgentConfigMode, "agent-config-mode", "no", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount, default)")
+	solveCmd.Flags().StringVar(&solveRuntimeMode, "runtime-mode", "prod", "Runtime mode: prod (default), dev (mount local agent dist)")
+	solveCmd.Flags().StringVar(&solveRuntimeDevAgentSource, "runtime-dev-agent-source", "", "Local agent source directory for --runtime-mode=dev (defaults: HOLON_RUNTIME_DEV_AGENT_SOURCE, HOLON_DEV_AGENT_SOURCE, ./agents/claude)")
 	solveCmd.Flags().BoolVar(&solveDryRun, "dry-run", false, "Validate without running (not yet implemented)")
 	solveCmd.Flags().BoolVar(&solveSkipPreflight, "no-preflight", false, "Skip preflight checks (not recommended)")
 	solveCmd.Flags().BoolVar(&solveSkipPreflight, "skip-checks", false, "Skip preflight checks (alias for --no-preflight, not recommended)")

@@ -50,11 +50,13 @@ func TestDockerSessionRunnerStart_MapsConfig(t *testing.T) {
 	t.Setenv("HOLON_AGENT", agentPath)
 
 	_, err := runner.Start(context.Background(), ControllerSessionConfig{
-		Workspace:  workspace,
-		InputPath:  inputDir,
-		OutputPath: outputDir,
-		StateDir:   stateDir,
-		LogLevel:   "progress",
+		Workspace:             workspace,
+		InputPath:             inputDir,
+		OutputPath:            outputDir,
+		StateDir:              stateDir,
+		LogLevel:              "progress",
+		RuntimeMode:           "dev",
+		RuntimeDevAgentSource: workspace,
 		Env: map[string]string{
 			"HOLON_AGENT_SESSION_MODE": "serve",
 		},
@@ -76,6 +78,12 @@ func TestDockerSessionRunnerStart_MapsConfig(t *testing.T) {
 	}
 	if len(rt.startCfg.Skills) != 0 {
 		t.Fatalf("Skills = %v, want empty", rt.startCfg.Skills)
+	}
+	if rt.startCfg.RuntimeMode != "dev" {
+		t.Fatalf("RuntimeMode = %q, want dev", rt.startCfg.RuntimeMode)
+	}
+	if rt.startCfg.DevAgentSourceDir != workspace {
+		t.Fatalf("DevAgentSourceDir = %q, want %q", rt.startCfg.DevAgentSourceDir, workspace)
 	}
 }
 

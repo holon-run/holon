@@ -152,7 +152,8 @@ test-integration-artifacts: build build-agent-bundle
 ## run-example: Run the fix-bug example (requires ANTHROPIC_API_KEY)
 run-example: build
 	@echo "Running fix-bug example..."
-	./$(BIN_DIR)/$(BINARY_NAME) run --spec examples/fix-bug.yaml --image golang:1.22 --workspace . --output ./holon-output-fix
+	cd agents/claude && npm install && npm run build
+	./$(BIN_DIR)/$(BINARY_NAME) run --spec examples/fix-bug.yaml --image golang:1.22 --workspace . --output ./holon-output-fix --runtime-mode dev --runtime-dev-agent-source ./agents/claude
 
 ## help: Display help information
 help:
