@@ -34,7 +34,6 @@ This skill can use:
 
 - **Inputs**: `${GITHUB_CONTEXT_DIR}/github/pr.json`, `review_threads.json`, `check_runs.json`, `pr.diff`, etc. (from `ghx` when available, else collected with `gh` APIs)
 - **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
-  - `pr-fix.json` (reply plan)
   - `summary.md`
   - `manifest.json`
   - `publish-results.json`
@@ -43,9 +42,8 @@ This skill can use:
 
 The run is successful only if all of the following are true:
 1. Required code fixes are committed and pushed to the existing PR branch.
-2. `${GITHUB_OUTPUT_DIR}/pr-fix.json` is generated with review reply decisions.
-3. Publish step is executed via `ghx` capability commands (`pr reply-reviews` or equivalent) and `${GITHUB_OUTPUT_DIR}/publish-results.json` is produced.
-4. `publish-results.json` contains no failed `reply_review` action.
+2. Publish step is executed via ghx batch publish mechanism and `${GITHUB_OUTPUT_DIR}/publish-results.json` is produced.
+3. `publish-results.json` contains no failed reply action.
 
 If replies are planned but not published, the run is not successful.
 
@@ -105,39 +103,6 @@ git push
 
 Create the required output files:
 
-#### `${GITHUB_OUTPUT_DIR}/pr-fix.json`
-
-Structured JSON with fix status and responses:
-
-```json
-{
-  "review_replies": [
-    {
-      "comment_id": 123,
-      "status": "fixed|wontfix|need-info|deferred",
-      "message": "Response to reviewer",
-      "action_taken": "Description of code changes"
-    }
-  ],
-  "follow_up_issues": [
-    {
-      "title": "Issue title",
-      "body": "Issue body in Markdown",
-      "deferred_comment_ids": [123],
-      "labels": ["enhancement", "testing"]
-    }
-  ],
-  "checks": [
-    {
-      "name": "ci/test",
-      "conclusion": "failure",
-      "fix_status": "fixed|unfixed|unverified|not-applicable",
-      "message": "Explanation of what was fixed"
-    }
-  ]
-}
-```
-
 #### `${GITHUB_OUTPUT_DIR}/summary.md`
 
 Human-readable summary:
@@ -162,13 +127,13 @@ Execution metadata:
 
 ### 5. Reply to Reviews
 
-Publish review replies via `ghx` capability commands. External skills should express publish intent via `pr-fix.json` and delegate intent-schema details to `ghx`.
+Publish review replies via ghx batch publish mechanism. `github-pr-fix` should describe reply requirements in natural-language/structured planning, then follow ghx documentation to build the publish request and execute batch publish.
 
 Implementation guidance:
-- default: `ghx.sh pr reply-reviews --pr=<owner/repo#number> --pr-fix-json=<pr-fix.json>`
+- default: use `ghx.sh intent run --intent=...` as documented by ghx
 - fallback: use `gh api` only when needed, and synthesize `${GITHUB_OUTPUT_DIR}/publish-results.json` with equivalent per-action status
 
-After publish, ensure `${GITHUB_OUTPUT_DIR}/publish-results.json` exists and check for failed `reply_review` actions.
+After publish, ensure `${GITHUB_OUTPUT_DIR}/publish-results.json` exists and check for failed reply actions.
 
 ## Output Contract
 
@@ -182,8 +147,7 @@ After publish, ensure `${GITHUB_OUTPUT_DIR}/publish-results.json` exists and che
 
 2. **`${GITHUB_OUTPUT_DIR}/manifest.json`**: Execution metadata
 
-3. **`${GITHUB_OUTPUT_DIR}/pr-fix.json`**: Structured fix status and responses
-4. **`${GITHUB_OUTPUT_DIR}/publish-results.json`**: Publishing execution result
+3. **`${GITHUB_OUTPUT_DIR}/publish-results.json`**: Publishing execution result
 
 ## Git Operations
 
@@ -211,7 +175,7 @@ git push
 - Fix issues in priority order: build → test → import → lint
 - Commit fixes BEFORE replying to reviews
 - Prefer `ghx` for publish when available; use `gh` fallback selectively and document `fallback_reason`
-- Verify publish-results and fail when any `reply_review` action fails
+- Verify publish-results and fail when any reply action fails
 - For non-blocking refactor requests, consider deferring to follow-up issues
 
 ## Reference Documentation

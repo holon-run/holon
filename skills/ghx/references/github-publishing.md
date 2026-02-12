@@ -18,7 +18,6 @@ scripts/ghx.sh intent run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 
 ```bash
 scripts/ghx.sh pr comment --pr=owner/repo#123 --body-file=summary.md
-scripts/ghx.sh pr reply-reviews --pr=owner/repo#123 --pr-fix-json=pr-fix.json
 scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 

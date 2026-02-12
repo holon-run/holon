@@ -75,18 +75,12 @@ A refactor request is non-blocking if it:
 - Explain why it's being deferred (scope, complexity, etc.)
 - Reference that a follow-up issue has been created
 
-### 3. Create a Follow-Up Issue Entry
+### 3. Create a Follow-Up Issue
 
-Add to `follow_up_issues` array in `pr-fix.json`:
-
-```json
-{
-  "title": "Clear, actionable issue title",
-  "body": "Comprehensive issue description including context, requested changes, rationale, and suggested approach",
-  "deferred_comment_ids": [123, 456],
-  "labels": ["enhancement", "testing", "refactor"]
-}
-```
+Create an issue directly via `gh issue create` with:
+- Clear actionable title
+- Context and rationale from the deferred review comment
+- Link back to the PR and review thread
 
 ### 4. Defer vs Fix Guidelines
 
@@ -106,18 +100,16 @@ Add to `follow_up_issues` array in `pr-fix.json`:
 
 ## Posting Review Replies
 
-After generating `${GITHUB_OUTPUT_DIR}/pr-fix.json` with review replies, publish through `ghx` using the capability interface:
-
-Then invoke publish (preferred path via `ghx`):
+Publish through `ghx` batch mechanism. `github-pr-fix` should not define ghx internal publish schema; follow `ghx` docs for current request format.
 
 ```bash
-ghx.sh pr reply-reviews --pr=owner/repo#123 --pr-fix-json=pr-fix.json
+ghx.sh intent run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
 ```
 
-`ghx` handles translation to internal publish intents, idempotency, and batching for replies.
+`ghx` handles action execution, idempotency, and batching for replies.
 
 Fallback when `ghx` is unavailable:
-- Use `gh api` to post replies described by `pr-fix.json`.
+- Use `gh api` to post replies based on your collected review plan.
 - Write `${GITHUB_OUTPUT_DIR}/publish-results.json` with equivalent per-action success/failure results.
 
 ## Completion Criteria (Mandatory)
@@ -125,37 +117,5 @@ Fallback when `ghx` is unavailable:
 Do not mark the run successful unless all of the following are true:
 
 1. Code fixes are pushed to the PR branch.
-2. `${GITHUB_OUTPUT_DIR}/pr-fix.json` exists and includes the planned replies/check statuses.
-3. `${GITHUB_OUTPUT_DIR}/publish-results.json` exists after publish.
-4. `publish-results.json` contains no failed `reply_review` action.
-
-## pr-fix.json Format
-
-```json
-{
-  "review_replies": [
-    {
-      "comment_id": 123,
-      "status": "fixed|wontfix|need-info|deferred",
-      "message": "Response to reviewer",
-      "action_taken": "Description of code changes"
-    }
-  ],
-  "follow_up_issues": [
-    {
-      "title": "Issue title",
-      "body": "Issue body in Markdown",
-      "deferred_comment_ids": [123],
-      "labels": ["enhancement", "testing"]
-    }
-  ],
-  "checks": [
-    {
-      "name": "ci/test",
-      "conclusion": "failure",
-      "fix_status": "fixed|unfixed|unverified|not-applicable",
-      "message": "Explanation of what was fixed"
-    }
-  ]
-}
-```
+2. `${GITHUB_OUTPUT_DIR}/publish-results.json` exists after publish.
+3. `publish-results.json` contains no failed `reply_review` action.

@@ -27,7 +27,7 @@ Use `scripts/ghx.sh` as the primary entrypoint.
 
 - **Public capability contract (for other skills):** call `ghx.sh` commands and depend on stable output artifacts (for example `publish-results.json`).
 - **Internal implementation contract (within ghx):** files like `publish-intent.json` and action schema details are internal to ghx and may evolve.
-- Other skills should describe desired publish outcomes (for example replies from `pr-fix.json`), not hardcode ghx internal action schemas.
+- Other skills should describe desired publish outcomes, not hardcode ghx internal action schemas.
 
 ### Context
 
@@ -49,7 +49,6 @@ scripts/ghx.sh review publish --pr=holon-run/holon#123 --body-file=review.md --c
 scripts/ghx.sh pr create --repo=holon-run/holon --title="Title" --body-file=summary.md --head=feature/x --base=main
 scripts/ghx.sh pr update --pr=holon-run/holon#123 --title="New title" --body-file=summary.md
 scripts/ghx.sh pr comment --pr=holon-run/holon#123 --body-file=summary.md
-scripts/ghx.sh pr reply-reviews --pr=holon-run/holon#123 --pr-fix-json=pr-fix.json
 ```
 
 ## Output Contract
