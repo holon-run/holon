@@ -83,9 +83,9 @@ for local development and testing.`,
 		if err != nil {
 			return err
 		}
-		controllerWorkspace, err := os.Getwd()
+		controllerWorkspace, err := resolveControllerWorkspace(agentResolution.AgentHome)
 		if err != nil {
-			return fmt.Errorf("failed to get current working directory for controller workspace: %w", err)
+			return err
 		}
 		resolvedRuntimeMode, err := resolveRuntimeMode(serveRuntimeMode)
 		if err != nil {
@@ -711,7 +711,7 @@ const defaultControllerRuntimeSystemPrompt = `
 You are running as a persistent controller inside Holon.
 
 Rules of physics:
-1. Workspace root is /holon/workspace.
+1. Workspace root is HOLON_WORKSPACE_DIR.
 2. Artifacts and diagnostics must be written under /holon/output.
 3. Additional context files may be mounted under /holon/input/context.
 4. HOLON_AGENT_HOME points to your persistent agent home at /root.
@@ -729,10 +729,13 @@ const defaultControllerRuntimeUserPrompt = `
 Controller runtime contract:
 1. Role identity is HOLON_CONTROLLER_ROLE.
 2. Agent home root is HOLON_AGENT_HOME.
-2. The event stream is at HOLON_CONTROLLER_EVENT_CHANNEL and cursor at HOLON_CONTROLLER_EVENT_CURSOR.
-3. Session metadata path is HOLON_CONTROLLER_SESSION_STATE_PATH.
-4. Goal state path is HOLON_CONTROLLER_GOAL_STATE_PATH.
-5. Process events continuously, keep role boundaries strict, and produce concise action-oriented outcomes.
+3. Workspace root is HOLON_WORKSPACE_DIR.
+4. Persist project checkout mapping in HOLON_WORKSPACE_INDEX_PATH (repo -> local path under workspace root).
+5. Reuse existing checkout when repo is already indexed; otherwise clone/fetch as needed.
+6. The event stream is at HOLON_CONTROLLER_EVENT_CHANNEL and cursor at HOLON_CONTROLLER_EVENT_CURSOR.
+7. Session metadata path is HOLON_CONTROLLER_SESSION_STATE_PATH.
+8. Goal state path is HOLON_CONTROLLER_GOAL_STATE_PATH.
+9. Process events continuously, keep role boundaries strict, and produce concise action-oriented outcomes.
 `
 
 func (h *cliControllerHandler) copyControllerMemoryToInput(contextDir string) error {
@@ -809,6 +812,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"HOLON_AGENT_SESSION_MODE":            "serve",
 		"HOLON_AGENT_HOME":                    "/root",
 		"HOLON_WORKSPACE_DIR":                 "/holon/workspace",
+		"HOLON_WORKSPACE_INDEX_PATH":          "/root/state/workspace-index.json",
 		"HOLON_INPUT_DIR":                     "/holon/input",
 		"HOLON_OUTPUT_DIR":                    "/holon/output",
 		"HOLON_STATE_DIR":                     "/holon/state",
@@ -896,6 +900,14 @@ func resolveServeRuntimeEnv(ctx context.Context) map[string]string {
 		IncludeHolonClaudeConfig:      false,
 	})
 	return result
+}
+
+func resolveControllerWorkspace(agentHome string) (string, error) {
+	workspace := filepath.Join(agentHome, "workspace")
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		return "", fmt.Errorf("failed to create controller workspace at %s: %w", workspace, err)
+	}
+	return workspace, nil
 }
 
 func (h *cliControllerHandler) compactChannelBestEffortLocked() {
