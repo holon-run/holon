@@ -16,7 +16,7 @@ type PrepareRequest struct {
 	Ref string
 
 	// Dest is the host directory where the workspace will be created
-	// This directory will be mounted into the container at /holon/workspace
+	// This directory will be mounted into the container at /workspace
 	Dest string
 
 	// History specifies how much git history to include

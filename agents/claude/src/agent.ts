@@ -1364,8 +1364,13 @@ async function runAgent(): Promise<void> {
 // Only run agent when executed as main module, not when imported as a dependency
 // This check prevents the agent from auto-running when tests import the module
 // The spec file path only exists in actual Holon execution environment
-const SPEC_PATH = resolveRuntimePaths(process.env).specPath;
-const shouldRunAutomatically = fs.existsSync(SPEC_PATH);
+let shouldRunAutomatically = false;
+try {
+  const runtimePaths = resolveRuntimePaths(process.env);
+  shouldRunAutomatically = fs.existsSync(runtimePaths.specPath);
+} catch {
+  shouldRunAutomatically = false;
+}
 
 if (shouldRunAutomatically) {
   runAgent().catch((error) => {

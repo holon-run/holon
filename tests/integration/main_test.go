@@ -7,14 +7,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/rogpeppe/go-internal/testscript"
 )
 
 var (
-	repoRoot string
-	holonBin string
+	repoRoot        string
+	holonBin        string
+	testAgentBundle string
 )
 
 func TestMain(m *testing.M) {
@@ -44,6 +47,8 @@ func TestMain(m *testing.M) {
 		_ = os.RemoveAll(binDir)
 		os.Exit(2)
 	}
+
+	testAgentBundle = resolveTestAgentBundle(repoRoot)
 
 	exitCode := m.Run()
 	_ = os.RemoveAll(binDir)
@@ -75,6 +80,9 @@ func TestIntegration(t *testing.T) {
 			// Set HOLON_REPO_ROOT to point to the repository root
 			// This allows tests to access repo-built artifacts like agent bundles
 			env.Setenv("HOLON_REPO_ROOT", repoRoot)
+			if testAgentBundle != "" {
+				env.Setenv("HOLON_TEST_AGENT_BUNDLE", testAgentBundle)
+			}
 
 			return nil
 		},
@@ -87,6 +95,36 @@ func TestIntegration(t *testing.T) {
 			}
 		},
 	})
+}
+
+func resolveTestAgentBundle(repoRoot string) string {
+	agentDir := filepath.Join(repoRoot, "agents", "claude")
+	cmd := exec.Command("npm", "run", "bundle")
+	cmd.Dir = agentDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to build test agent bundle: %v\n%s\n", err, strings.TrimSpace(string(out)))
+		return ""
+	}
+
+	bundleDir := filepath.Join(agentDir, "dist", "agent-bundles")
+	entries, err := os.ReadDir(bundleDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to read test agent bundle dir: %v\n", err)
+		return ""
+	}
+	var bundles []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".tar.gz") {
+			continue
+		}
+		bundles = append(bundles, filepath.Join(bundleDir, entry.Name()))
+	}
+	if len(bundles) == 0 {
+		fmt.Fprintln(os.Stderr, "warning: no test agent bundle found after npm run bundle")
+		return ""
+	}
+	sort.Strings(bundles)
+	return bundles[len(bundles)-1]
 }
 
 func dockerAvailable() bool {

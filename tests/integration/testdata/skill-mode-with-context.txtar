@@ -48,17 +48,17 @@ set -eu
 issue_num=""
 
 # Verify context exists and is readable
-if [ -d /holon/input/context/github ]; then
-    echo "Context found in /holon/input/context/github"
+if [ -d /input/context/github ]; then
+    echo "Context found in /input/context/github"
 
     # Read issue number from context
-    if [ -f /holon/input/context/github/issue.json ]; then
-        issue_num=$(grep -o '"number": [0-9]*' /holon/input/context/github/issue.json | grep -o '[0-9]*')
+    if [ -f /input/context/github/issue.json ]; then
+        issue_num=$(grep -o '"number": [0-9]*' /input/context/github/issue.json | grep -o '[0-9]*')
         echo "Processing issue #$issue_num"
     fi
 fi
 
 # Create required outputs
-mkdir -p /holon/output
-echo '{"version":"v1"}' > /holon/output/manifest.json
-echo "Processed issue #${issue_num:-unknown}" > /holon/output/summary.md
+mkdir -p /output
+echo '{"version":"v1"}' > /output/manifest.json
+echo "Processed issue #${issue_num:-unknown}" > /output/summary.md

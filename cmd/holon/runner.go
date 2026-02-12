@@ -285,25 +285,23 @@ output:
 		envVars["ASSISTANT_OUTPUT"] = "none" // Default to none
 	}
 	if _, exists := envVars["HOLON_WORKSPACE_DIR"]; !exists {
-		envVars["HOLON_WORKSPACE_DIR"] = "/holon/workspace"
+		envVars["HOLON_WORKSPACE_DIR"] = docker.ContainerWorkspaceDir
 	}
 	if _, exists := envVars["HOLON_INPUT_DIR"]; !exists {
-		envVars["HOLON_INPUT_DIR"] = "/holon/input"
+		envVars["HOLON_INPUT_DIR"] = docker.ContainerInputDir
 	}
 	if _, exists := envVars["HOLON_OUTPUT_DIR"]; !exists {
-		envVars["HOLON_OUTPUT_DIR"] = "/holon/output"
+		envVars["HOLON_OUTPUT_DIR"] = docker.ContainerOutputDir
 	}
-	if absStateDir != "" {
-		if _, exists := envVars["HOLON_STATE_DIR"]; !exists {
-			envVars["HOLON_STATE_DIR"] = "/holon/state"
-		}
+	if _, exists := envVars["HOLON_STATE_DIR"]; !exists {
+		envVars["HOLON_STATE_DIR"] = docker.ContainerStateDir
 	}
 	if absAgentHome != "" {
 		if _, exists := envVars["HOLON_AGENT_HOME"]; !exists {
-			envVars["HOLON_AGENT_HOME"] = "/root"
+			envVars["HOLON_AGENT_HOME"] = docker.ContainerAgentHome
 		}
 	} else if _, exists := envVars["HOLON_AGENT_HOME"]; !exists {
-		envVars["HOLON_AGENT_HOME"] = "/root"
+		envVars["HOLON_AGENT_HOME"] = docker.ContainerAgentHome
 	}
 
 	// Compile prompts
@@ -598,7 +596,7 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	sysPrompt, err = compiler.CompileSystemPrompt(prompt.Config{
 		Role:            cfg.RoleName,
 		Language:        "en", // TODO: Detect or flag
-		WorkingDir:      "/holon/workspace",
+		WorkingDir:      docker.ContainerWorkspaceDir,
 		ContextFiles:    contextFileNames,
 		ContextEntries:  contextEntries,
 		SkipModePrompts: useSkillMode,

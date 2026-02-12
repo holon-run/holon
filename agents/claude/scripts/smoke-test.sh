@@ -108,7 +108,7 @@ echo "Running agent probe test..."
 
 # Check if we're already running in a Holon container environment
 IN_HOLON_CONTAINER=0
-if [ -d "/holon/workspace" ] && [ -d "/holon/input" ] && [ -d "/holon/output" ]; then
+if [ -d "/workspace" ] && [ -d "/input" ] && [ -d "/output" ]; then
   IN_HOLON_CONTAINER=1
 fi
 
@@ -140,19 +140,20 @@ if [ ${IN_HOLON_CONTAINER} -eq 1 ]; then
 elif ! command -v docker >/dev/null 2>&1; then
   echo "  ⚠ WARNING: Docker not available and not in Holon container, skipping agent probe test"
   echo "    The agent probe test requires either:"
-  echo "    - A Holon container environment (/holon/workspace, /holon/input, /holon/output)"
+  echo "    - A Holon container environment (/workspace, /input, /output)"
   echo "    - Docker to simulate the Holon container environment"
   echo "    Run 'npm run verify-bundle' for a full Docker-based verification"
 else
   # Create minimal Holon environment structure required for probe mode
-  # The agent's --probe mode expects /holon/workspace, /holon/input/spec.yaml, and /holon/output
+  # The agent's --probe mode expects /workspace, /input/spec.yaml, and /output
   PROBE_HOLON_DIR=$(mktemp -d)
   trap 'rm -rf "${TEST_DIR}" "${PROBE_HOLON_DIR}"' EXIT
 
   PROBE_INPUT_DIR="${PROBE_HOLON_DIR}/input"
   PROBE_WORKSPACE_DIR="${PROBE_HOLON_DIR}/workspace"
   PROBE_OUTPUT_DIR="${PROBE_HOLON_DIR}/output"
-  mkdir -p "${PROBE_INPUT_DIR}" "${PROBE_WORKSPACE_DIR}" "${PROBE_OUTPUT_DIR}"
+  PROBE_STATE_DIR="${PROBE_HOLON_DIR}/state"
+  mkdir -p "${PROBE_INPUT_DIR}" "${PROBE_WORKSPACE_DIR}" "${PROBE_OUTPUT_DIR}" "${PROBE_STATE_DIR}"
 
   # Create minimal spec.yaml required by agent
   cat > "${PROBE_INPUT_DIR}/spec.yaml" <<'SPEC'
@@ -161,7 +162,7 @@ kind: Holon
 metadata:
   name: "smoke-test-probe"
 context:
-  workspace: "/holon/workspace"
+  workspace: "/workspace"
 goal:
   description: "Smoke test probe validation"
 output:
@@ -181,10 +182,16 @@ SPEC
   # This simulates the actual Holon container environment
   set +e
   PROBE_OUTPUT=$(docker run --rm \
-    -v "${PROBE_INPUT_DIR}:/holon/input:ro" \
-    -v "${PROBE_WORKSPACE_DIR}:/holon/workspace:ro" \
-    -v "${PROBE_OUTPUT_DIR}:/holon/output" \
+    -v "${PROBE_INPUT_DIR}:/input:ro" \
+    -v "${PROBE_WORKSPACE_DIR}:/workspace:ro" \
+    -v "${PROBE_OUTPUT_DIR}:/output" \
+    -v "${PROBE_STATE_DIR}:/state" \
     -v "${TEST_DIR}:/holon/agent:ro" \
+    -e HOLON_INPUT_DIR=/input \
+    -e HOLON_WORKSPACE_DIR=/workspace \
+    -e HOLON_OUTPUT_DIR=/output \
+    -e HOLON_STATE_DIR=/state \
+    -e HOLON_AGENT_HOME=/root \
     --entrypoint /bin/sh \
     "${IMAGE}" -c "cd /holon/agent && NODE_ENV=production node dist/agent.js --probe" 2>&1)
   PROBE_EXIT_CODE=$?

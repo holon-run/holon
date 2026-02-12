@@ -106,9 +106,9 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 		}
 
 		expectedTargets := map[string]string{
-			"/holon/workspace": "/tmp/workspace-snapshot",
-			"/holon/input":     inputDir,
-			"/holon/output":    outDir,
+			"/workspace": "/tmp/workspace-snapshot",
+			"/input":     inputDir,
+			"/output":    outDir,
 		}
 
 		for target, expectedSource := range expectedTargets {
@@ -323,7 +323,6 @@ func TestMkdirTempOutsideWorkspace_DoesNotNest(t *testing.T) {
 	}
 }
 
-
 // TestCreateClone tests the GitClonePreparer workspace preparation
 func TestCreateClone(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -435,6 +434,7 @@ func TestCreateClone(t *testing.T) {
 		t.Errorf("source file content changed: got %q, want %q", string(sourceContent), "test content")
 	}
 }
+
 // runCmd is a helper to run a command in a directory
 func runCmd(dir string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
@@ -653,9 +653,9 @@ func TestGitEnvVarPrecedence(t *testing.T) {
 		{
 			name: "host git config overrides project config",
 			initialEnv: map[string]string{
-				"GIT_AUTHOR_NAME":    "Project Config Name",
-				"GIT_AUTHOR_EMAIL":   "project@example.com",
-				"GIT_COMMITTER_NAME": "Project Config Name",
+				"GIT_AUTHOR_NAME":     "Project Config Name",
+				"GIT_AUTHOR_EMAIL":    "project@example.com",
+				"GIT_COMMITTER_NAME":  "Project Config Name",
 				"GIT_COMMITTER_EMAIL": "project@example.com",
 			},
 			setupGitFunc: func() {
@@ -680,14 +680,14 @@ exit 1`
 				pathSeparator := string(filepath.ListSeparator)
 				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
-			expectedName:           "Host Git User",   // Host git config takes precedence
+			expectedName:           "Host Git User",    // Host git config takes precedence
 			expectedEmail:          "host@example.com", // Host git config takes precedence
 			precedenceScenario:     "host git config takes precedence over project config",
-			expectedCommitterName:  "Host Git User",   // GIT_COMMITTER_NAME from host
+			expectedCommitterName:  "Host Git User",    // GIT_COMMITTER_NAME from host
 			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host
 		},
 		{
-			name: "host git config used when project config not set",
+			name:       "host git config used when project config not set",
 			initialEnv: map[string]string{
 				// No git env vars set by project config
 			},
@@ -715,7 +715,7 @@ exit 1`
 			expectedName:           "Host Git User",
 			expectedEmail:          "host@example.com",
 			precedenceScenario:     "host git config should be used as fallback",
-			expectedCommitterName:  "Host Git User",  // GIT_COMMITTER_NAME from host
+			expectedCommitterName:  "Host Git User",    // GIT_COMMITTER_NAME from host
 			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host
 		},
 		{
@@ -744,10 +744,10 @@ exit 1`
 				pathSeparator := string(filepath.ListSeparator)
 				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
-			expectedName:      "Host Name",         // GIT_AUTHOR_NAME from host (highest priority)
-			expectedEmail:     "host@example.com",  // GIT_AUTHOR_EMAIL from host
-			precedenceScenario: "host git config takes precedence over project config",
-			expectedCommitterName: "Host Name",   // GIT_COMMITTER_NAME from host
+			expectedName:           "Host Name",        // GIT_AUTHOR_NAME from host (highest priority)
+			expectedEmail:          "host@example.com", // GIT_AUTHOR_EMAIL from host
+			precedenceScenario:     "host git config takes precedence over project config",
+			expectedCommitterName:  "Host Name",        // GIT_COMMITTER_NAME from host
 			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host
 		},
 		{
@@ -776,10 +776,10 @@ exit 1`
 				pathSeparator := string(filepath.ListSeparator)
 				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
-			expectedName:      "Host Name",         // GIT_AUTHOR_NAME from host (highest priority)
-			expectedEmail:     "host@example.com",  // GIT_AUTHOR_EMAIL from host (highest priority)
-			precedenceScenario: "host git config takes precedence over project config",
-			expectedCommitterName: "Host Name",   // GIT_COMMITTER_NAME from host
+			expectedName:           "Host Name",        // GIT_AUTHOR_NAME from host (highest priority)
+			expectedEmail:          "host@example.com", // GIT_AUTHOR_EMAIL from host (highest priority)
+			precedenceScenario:     "host git config takes precedence over project config",
+			expectedCommitterName:  "Host Name",        // GIT_COMMITTER_NAME from host
 			expectedCommitterEmail: "host@example.com", // GIT_COMMITTER_EMAIL from host
 		},
 		{
@@ -809,10 +809,10 @@ exit 1`
 				pathSeparator := string(filepath.ListSeparator)
 				t.Setenv("PATH", tempDir+pathSeparator+originalPath)
 			},
-			expectedName:      "Host Author",      // GIT_AUTHOR_NAME from host
-			expectedEmail:     "author@example.com", // GIT_AUTHOR_EMAIL from host
-			precedenceScenario: "host git config sets both author and committer",
-			expectedCommitterName: "Host Author",      // GIT_COMMITTER_NAME from host (overrides project)
+			expectedName:           "Host Author",        // GIT_AUTHOR_NAME from host
+			expectedEmail:          "author@example.com", // GIT_AUTHOR_EMAIL from host
+			precedenceScenario:     "host git config sets both author and committer",
+			expectedCommitterName:  "Host Author",        // GIT_COMMITTER_NAME from host (overrides project)
 			expectedCommitterEmail: "author@example.com", // GIT_COMMITTER_EMAIL from host (overrides project)
 		},
 	}
@@ -914,12 +914,12 @@ func TestPrepareWorkspace_TemporaryWorkspace(t *testing.T) {
 	outDir := t.TempDir()
 
 	tests := []struct {
-		name                    string
-		workspaceIsTemporary    bool
-		wantStrategy            string
-		wantWorkspacePath       string
-		wantManifestWritten     bool
-		wantNoSnapshotCreated   bool
+		name                  string
+		workspaceIsTemporary  bool
+		wantStrategy          string
+		wantWorkspacePath     string
+		wantManifestWritten   bool
+		wantNoSnapshotCreated bool
 	}{
 		{
 			name:                  "WorkspaceIsTemporary true - uses workspace directly, writes manifest",
@@ -1362,13 +1362,13 @@ func TestBuiltinSkillsManifestConsistency(t *testing.T) {
 
 		// Create config with no BuiltinSkillsSource (uses embedded skills)
 		cfg := &ContainerConfig{
-			Workspace:              sourceRepo,
-			OutDir:                 outDir,
-			AgentBundle:            "/tmp/bundle.tar.gz",
-			BaseImage:              "node:20",
-			BuiltinSkillsSource:    "", // Empty = use embedded skills
-			BuiltinSkillsRef:       "",
-			WorkspaceIsTemporary:   true,
+			Workspace:            sourceRepo,
+			OutDir:               outDir,
+			AgentBundle:          "/tmp/bundle.tar.gz",
+			BaseImage:            "node:20",
+			BuiltinSkillsSource:  "", // Empty = use embedded skills
+			BuiltinSkillsRef:     "",
+			WorkspaceIsTemporary: true,
 		}
 
 		// Prepare workspace
@@ -1413,13 +1413,13 @@ func TestBuiltinSkillsManifestConsistency(t *testing.T) {
 
 		// Create config with BuiltinSkillsSource set (uses remote skills)
 		cfg := &ContainerConfig{
-			Workspace:              sourceRepo,
-			OutDir:                 outDir,
-			AgentBundle:            "/tmp/bundle.tar.gz",
-			BaseImage:              "node:20",
-			BuiltinSkillsSource:    server.URL + "/skills.zip",
-			BuiltinSkillsRef:       "v1.0.0",
-			WorkspaceIsTemporary:   true,
+			Workspace:            sourceRepo,
+			OutDir:               outDir,
+			AgentBundle:          "/tmp/bundle.tar.gz",
+			BaseImage:            "node:20",
+			BuiltinSkillsSource:  server.URL + "/skills.zip",
+			BuiltinSkillsRef:     "v1.0.0",
+			WorkspaceIsTemporary: true,
 		}
 
 		// Prepare workspace
@@ -1464,13 +1464,13 @@ func TestBuiltinSkillsManifestConsistency(t *testing.T) {
 
 		// Create config with BuiltinSkillsSource but no ref
 		cfg := &ContainerConfig{
-			Workspace:              sourceRepo,
-			OutDir:                 outDir,
-			AgentBundle:            "/tmp/bundle.tar.gz",
-			BaseImage:              "node:20",
-			BuiltinSkillsSource:    server.URL + "/skills.zip",
-			BuiltinSkillsRef:       "", // Empty ref is allowed
-			WorkspaceIsTemporary:   true,
+			Workspace:            sourceRepo,
+			OutDir:               outDir,
+			AgentBundle:          "/tmp/bundle.tar.gz",
+			BaseImage:            "node:20",
+			BuiltinSkillsSource:  server.URL + "/skills.zip",
+			BuiltinSkillsRef:     "", // Empty ref is allowed
+			WorkspaceIsTemporary: true,
 		}
 
 		// Prepare workspace

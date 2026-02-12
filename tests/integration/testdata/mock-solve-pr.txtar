@@ -214,7 +214,7 @@ index abc123..def456 100644
 #!/usr/bin/env bash
 set -euo pipefail
 
-cat > /holon/workspace/pkg/handler/process.go <<'EOF'
+cat > /workspace/pkg/handler/process.go <<'EOF'
 package handler
 
 import (
@@ -249,8 +249,8 @@ func send(result string) error {
 }
 EOF
 
-mkdir -p /holon/output
-cat > /holon/output/manifest.json <<'EOF'
+mkdir -p /output
+cat > /output/manifest.json <<'EOF'
 {
   "version": "v1",
   "status": "completed",
@@ -260,12 +260,12 @@ cat > /holon/output/manifest.json <<'EOF'
   }
 }
 EOF
-cat > /holon/output/summary.md <<'EOF'
+cat > /output/summary.md <<'EOF'
 # Summary
 
 Fixed review comments by adding comprehensive error handling.
 EOF
-cat > /holon/output/diff.patch <<'EOF'
+cat > /output/diff.patch <<'EOF'
 diff --git a/pkg/handler/process.go b/pkg/handler/process.go
 index abc123..def456 100644
 --- a/pkg/handler/process.go
@@ -289,6 +289,6 @@ index abc123..def456 100644
      return s + " processed"
  }
 EOF
-cat > /holon/output/pr-fix.json <<'EOF'
+cat > /output/pr-fix.json <<'EOF'
 {"review_replies":[{"comment_id":789,"status":"fixed","message":"Added error handling to both transform and send functions","action_taken":"Modified ProcessData to return error, added error checks for transform() and send()","suggested_code":null}],"checks":[]}
 EOF

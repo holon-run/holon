@@ -180,7 +180,7 @@ describe("Logging Safety", () => {
 
     // Test with host paths that should be sanitized
     const dangerousPaths = [
-      "/holon/workspace/src/file.ts",
+      "/workspace/src/file.ts",
       "/etc/passwd",
       "/Users/username/.ssh/id_rsa",
     ];
@@ -192,7 +192,7 @@ describe("Logging Safety", () => {
     assert(toolLog);
 
     // Should not contain any path separators or full paths
-    assert(!toolLog.includes("/holon/workspace/"));
+    assert(!toolLog.includes("/workspace/"));
     assert(!toolLog.includes("/etc/"));
     assert(!toolLog.includes("/Users/"));
     assert(!toolLog.includes("../"));
@@ -210,10 +210,10 @@ describe("Logging Safety", () => {
 
     // Test with many files - should show count instead of individual names
     const manyPaths = [
-      "/holon/workspace/src/file1.ts",
-      "/holon/workspace/src/file2.ts",
-      "/holon/workspace/src/file3.ts",
-      "/holon/workspace/src/file4.ts",
+      "/workspace/src/file1.ts",
+      "/workspace/src/file2.ts",
+      "/workspace/src/file3.ts",
+      "/workspace/src/file4.ts",
       "/etc/passwd",
     ];
 

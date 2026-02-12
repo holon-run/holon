@@ -9,6 +9,14 @@ import (
 	"github.com/holon-run/holon/pkg/api/v1"
 )
 
+const (
+	ContainerWorkspaceDir = "/workspace"
+	ContainerInputDir     = "/input"
+	ContainerOutputDir    = "/output"
+	ContainerStateDir     = "/state"
+	ContainerAgentHome    = "/root"
+)
+
 // Pure helper functions for container configuration assembly
 
 // MountConfig represents the mount configuration for a container
@@ -36,28 +44,28 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 		{
 			Type:   mount.TypeBind,
 			Source: cfg.SnapshotDir,
-			Target: "/holon/workspace",
+			Target: ContainerWorkspaceDir,
 		},
 		{
 			Type:     mount.TypeBind,
 			Source:   cfg.InputPath,
-			Target:   "/holon/input",
+			Target:   ContainerInputDir,
 			ReadOnly: true,
 		},
 		{
 			Type:   mount.TypeBind,
 			Source: cfg.OutDir,
-			Target: "/holon/output",
+			Target: ContainerOutputDir,
 		},
 	}
 
 	// Add state directory mount (if provided)
-	// This mounts to /holon/state for cross-run skill caches
+	// This mounts to /state for cross-run skill caches
 	if cfg.StateDir != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
 			Source: cfg.StateDir,
-			Target: "/holon/state",
+			Target: ContainerStateDir,
 		})
 	}
 
@@ -67,7 +75,7 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
 			Source: cfg.AgentHome,
-			Target: "/root",
+			Target: ContainerAgentHome,
 		})
 	}
 
