@@ -338,9 +338,14 @@ output:
 		if err := os.Setenv("HOLON_WORKSPACE", snapshotDir); err != nil {
 			return fmt.Errorf("failed to set HOLON_WORKSPACE environment variable: %w", err)
 		}
-		// Export snapshotDir via environment variable for caller to clean up
-		if err := os.Setenv("HOLON_SNAPSHOT_DIR", snapshotDir); err != nil {
-			holonlog.Warn("failed to set HOLON_SNAPSHOT_DIR", "error", err)
+		// Export snapshot directory for caller cleanup only when runtime created
+		// a distinct workspace path from the original workspace input.
+		if snapshotDir != absWorkspace {
+			if err := os.Setenv("HOLON_SNAPSHOT_DIR", snapshotDir); err != nil {
+				holonlog.Warn("failed to set HOLON_SNAPSHOT_DIR", "error", err)
+			}
+		} else if err := os.Unsetenv("HOLON_SNAPSHOT_DIR"); err != nil {
+			holonlog.Warn("failed to unset HOLON_SNAPSHOT_DIR", "error", err)
 		}
 	}
 

@@ -251,6 +251,75 @@ func TestRunner_Run_EnvVariablePrecedence(t *testing.T) {
 	}
 }
 
+func TestRunner_Run_SnapshotEnvOnlyForDistinctSnapshot(t *testing.T) {
+	_, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, t.TempDir())
+
+	mockRuntime := &MockRuntime{
+		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) (string, error) {
+			return filepath.Join(workspaceDir, "..", "runtime-snapshot"), nil
+		},
+	}
+	runner := NewRunner(mockRuntime)
+
+	t.Setenv("HOLON_SNAPSHOT_DIR", "")
+	t.Setenv("HOLON_WORKSPACE", "")
+
+	err := runner.Run(context.Background(), RunnerConfig{
+		GoalStr:       "test",
+		TaskName:      "test-snapshot-env",
+		BaseImage:     "test-image",
+		AgentBundle:   bundlePath,
+		WorkspacePath: workspaceDir,
+		OutDir:        outDir,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got := os.Getenv("HOLON_SNAPSHOT_DIR"); got == "" {
+		t.Fatalf("HOLON_SNAPSHOT_DIR should be set for distinct snapshot path")
+	}
+	if got := os.Getenv("HOLON_WORKSPACE"); got == "" {
+		t.Fatalf("HOLON_WORKSPACE should be set")
+	}
+}
+
+func TestRunner_Run_UnsetsSnapshotEnvForDirectWorkspace(t *testing.T) {
+	_, workspaceDir, outDir := setupTestEnv(t)
+	bundlePath := createDummyBundle(t, t.TempDir())
+
+	mockRuntime := &MockRuntime{
+		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) (string, error) {
+			return cfg.Workspace, nil
+		},
+	}
+	runner := NewRunner(mockRuntime)
+
+	t.Setenv("HOLON_SNAPSHOT_DIR", "stale-value")
+	t.Setenv("HOLON_WORKSPACE", "")
+
+	err := runner.Run(context.Background(), RunnerConfig{
+		GoalStr:              "test",
+		TaskName:             "test-direct-workspace-env",
+		BaseImage:            "test-image",
+		AgentBundle:          bundlePath,
+		WorkspacePath:        workspaceDir,
+		OutDir:               outDir,
+		WorkspaceIsTemporary: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got := os.Getenv("HOLON_SNAPSHOT_DIR"); got != "" {
+		t.Fatalf("HOLON_SNAPSHOT_DIR = %q, want empty for direct workspace", got)
+	}
+	if got := os.Getenv("HOLON_WORKSPACE"); got == "" {
+		t.Fatalf("HOLON_WORKSPACE should be set")
+	}
+}
+
 func TestRunner_Run_GoalExtractionFromSpec(t *testing.T) {
 	mockRuntime := &MockRuntime{}
 	runner := NewRunner(mockRuntime)

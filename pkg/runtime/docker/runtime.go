@@ -795,7 +795,7 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 			CleanDest:  false,
 		})
 		if err != nil {
-			return "", "", nil, fmt.Errorf("failed to prepare temporary workspace: %w", err)
+			return "", "", nil, fmt.Errorf("failed to prepare workspace for direct use: %w", err)
 		}
 
 		// Create skills staging directory

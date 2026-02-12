@@ -47,7 +47,7 @@ The runtime validates outputs based on the generic manifest contract, not skill-
 
 ## Workspace and Safety
 - All executions run in Docker. `run` and `solve --workspace` use the provided workspace directly by default.
-- `solve` without `--workspace` prepares an isolated temp workspace via clone/worktree strategy.
+- `solve` without `--workspace` prepares an isolated temporary workspace (for example, by cloning the repository).
 - Output goes to a temp directory unless `--output` is set
 - Artifacts are validated before completion
 

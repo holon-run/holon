@@ -765,7 +765,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Cleanup snapshot directory after publish is complete
-	if snapshotDir != "" && cleanupMode != "none" {
+	if snapshotDir != "" && snapshotDir != workspacePrep.path && cleanupMode != "none" {
 		fmt.Printf("Cleaning up snapshot directory: %s\n", snapshotDir)
 		if err := os.RemoveAll(snapshotDir); err != nil {
 			fmt.Printf("Warning: failed to cleanup snapshot directory %s: %v\n", snapshotDir, err)
