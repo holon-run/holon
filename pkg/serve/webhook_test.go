@@ -1241,6 +1241,25 @@ func TestWebhookServer_RPCStream_RequiresAcceptHeader(t *testing.T) {
 	}
 }
 
+func TestAcceptsNDJSON(t *testing.T) {
+	tests := []struct {
+		header string
+		want   bool
+	}{
+		{header: "", want: false},
+		{header: "application/x-ndjson", want: true},
+		{header: "application/x-ndjson; charset=utf-8", want: true},
+		{header: "application/x-ndjson, application/json;q=0.9", want: true},
+		{header: "*/*", want: true},
+		{header: "application/json", want: false},
+	}
+	for _, tc := range tests {
+		if got := acceptsNDJSON(tc.header); got != tc.want {
+			t.Fatalf("acceptsNDJSON(%q)=%v, want %v", tc.header, got, tc.want)
+		}
+	}
+}
+
 func TestWebhookServer_RPCStream_ReceivesTurnEvents(t *testing.T) {
 	td := t.TempDir()
 	handler := &mockEventHandler{}
@@ -1253,6 +1272,7 @@ func TestWebhookServer_RPCStream_ReceivesTurnEvents(t *testing.T) {
 		t.Fatalf("NewWebhookServer failed: %v", err)
 	}
 	defer ws.Close()
+	ws.runtime.setTurnIdleTTLForTest(80 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest("GET", "/rpc/stream", nil).WithContext(ctx)
@@ -1313,7 +1333,18 @@ func TestWebhookServer_RPCStream_ReceivesTurnEvents(t *testing.T) {
 		t.Fatalf("turn/start expected 200, got %d", turnResp.Code)
 	}
 
-	time.Sleep(2200 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		output := w.Body.String()
+		if strings.Contains(output, "turn/completed") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for turn/completed in stream output; got: %s", output)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	cancel()
 	wg.Wait()
 

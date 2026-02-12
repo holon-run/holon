@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -339,7 +341,7 @@ func (ws *WebhookServer) handleRPCStream(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.Header.Get("Accept") != "application/x-ndjson" {
+	if !acceptsNDJSON(r.Header.Get("Accept")) {
 		http.Error(w, "accept header must be application/x-ndjson", http.StatusBadRequest)
 		return
 	}
@@ -362,12 +364,11 @@ func (ws *WebhookServer) handleRPCStream(w http.ResponseWriter, r *http.Request)
 	defer unsubscribe()
 
 	threadID := ws.runtime.GetState().ControllerSession
-	if threadID == "" {
-		threadID = fmt.Sprintf("thread_%d", ws.now().UnixNano())
-	}
-	threadNotif := NewThreadNotification(threadID, ThreadNotificationStarted, StateRunning)
-	if err := streamWriter.WriteThreadNotification(threadNotif); err == nil {
-		flusher.Flush()
+	if threadID != "" {
+		threadNotif := NewThreadNotification(threadID, ThreadNotificationStarted, StateRunning)
+		if err := streamWriter.WriteThreadNotification(threadNotif); err == nil {
+			flusher.Flush()
+		}
 	}
 
 	ticker := time.NewTicker(15 * time.Second)
@@ -384,6 +385,22 @@ func (ws *WebhookServer) handleRPCStream(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 		}
 	}
+}
+
+func acceptsNDJSON(acceptHeader string) bool {
+	if strings.TrimSpace(acceptHeader) == "" {
+		return false
+	}
+	for _, token := range strings.Split(acceptHeader, ",") {
+		mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(token))
+		if err != nil {
+			continue
+		}
+		if mediaType == "application/x-ndjson" || mediaType == "*/*" {
+			return true
+		}
+	}
+	return false
 }
 
 func (ws *WebhookServer) wrapWithHeaders(body []byte, headers map[string]string) []byte {

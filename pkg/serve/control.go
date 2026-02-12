@@ -24,6 +24,7 @@ type RuntimeState struct {
 const (
 	RuntimeStateRunning = "running"
 	RuntimeStatePaused  = "paused"
+	defaultTurnIdleTTL  = 2 * time.Second
 )
 
 // StatusResponse is the response for holon/status
@@ -77,6 +78,7 @@ type activeTurn struct {
 	ThreadID        string
 	StartedAt       time.Time
 	CompletionTimer *time.Timer
+	Generation      uint64
 }
 
 // NewRuntime creates a new runtime manager
@@ -89,7 +91,7 @@ func NewRuntime(stateDir string) (*Runtime, error) {
 		statePath:   filepath.Join(stateDir, "runtime-state.json"),
 		now:         time.Now,
 		turns:       make(map[string]*activeTurn),
-		turnIdleTTL: 2 * time.Second,
+		turnIdleTTL: defaultTurnIdleTTL,
 		state: RuntimeState{
 			State:           RuntimeStateRunning,
 			EventsProcessed: 0,
@@ -108,6 +110,12 @@ func (rt *Runtime) SetBroadcaster(b *NotificationBroadcaster) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	rt.broadcaster = b
+}
+
+func (rt *Runtime) setTurnIdleTTLForTest(ttl time.Duration) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.turnIdleTTL = ttl
 }
 
 func (rt *Runtime) getBroadcaster() *NotificationBroadcaster {
@@ -527,9 +535,20 @@ func (rt *Runtime) HandleThreadStart(params json.RawMessage) (interface{}, *JSON
 	}, nil
 }
 
+func newInvalidParamFieldError(field string, reason string) *JSONRPCError {
+	rpcErr, err := NewJSONRPCErrorWithData(ErrCodeInvalidParams, reason, map[string]string{
+		"field":  field,
+		"reason": reason,
+	})
+	if err != nil {
+		return NewJSONRPCError(ErrCodeInvalidParams, reason)
+	}
+	return rpcErr
+}
+
 func validateTurnInput(input []TurnInputMessage) ([]TurnInputMessage, []string, *JSONRPCError) {
 	if len(input) == 0 {
-		return nil, nil, NewJSONRPCError(ErrCodeInvalidParams, "input is required")
+		return nil, nil, newInvalidParamFieldError("input", "input is required")
 	}
 
 	normalized := make([]TurnInputMessage, 0, len(input))
@@ -540,7 +559,10 @@ func validateTurnInput(input []TurnInputMessage) ([]TurnInputMessage, []string, 
 			itemType = "message"
 		}
 		if itemType != "message" {
-			return nil, nil, NewJSONRPCError(ErrCodeInvalidParams, fmt.Sprintf("input[%d].type must be 'message'", idx))
+			return nil, nil, newInvalidParamFieldError(
+				fmt.Sprintf("input[%d].type", idx),
+				fmt.Sprintf("input[%d].type must be 'message'", idx),
+			)
 		}
 
 		role := strings.TrimSpace(item.Role)
@@ -549,7 +571,10 @@ func validateTurnInput(input []TurnInputMessage) ([]TurnInputMessage, []string, 
 		}
 
 		if len(item.Content) == 0 {
-			return nil, nil, NewJSONRPCError(ErrCodeInvalidParams, fmt.Sprintf("input[%d].content is required", idx))
+			return nil, nil, newInvalidParamFieldError(
+				fmt.Sprintf("input[%d].content", idx),
+				fmt.Sprintf("input[%d].content is required", idx),
+			)
 		}
 
 		normalizedParts := make([]TurnInputContentPart, 0, len(item.Content))
@@ -560,18 +585,27 @@ func validateTurnInput(input []TurnInputMessage) ([]TurnInputMessage, []string, 
 				partType = "input_text"
 			}
 			if partType != "input_text" && partType != "text" {
-				return nil, nil, NewJSONRPCError(ErrCodeInvalidParams, fmt.Sprintf("input[%d].content[%d].type must be 'input_text'", idx, partIdx))
+				return nil, nil, newInvalidParamFieldError(
+					fmt.Sprintf("input[%d].content[%d].type", idx, partIdx),
+					fmt.Sprintf("input[%d].content[%d].type must be 'input_text' or 'text'", idx, partIdx),
+				)
 			}
 			text := strings.TrimSpace(part.Text)
 			if text == "" {
-				return nil, nil, NewJSONRPCError(ErrCodeInvalidParams, fmt.Sprintf("input[%d].content[%d].text is required", idx, partIdx))
+				return nil, nil, newInvalidParamFieldError(
+					fmt.Sprintf("input[%d].content[%d].text", idx, partIdx),
+					fmt.Sprintf("input[%d].content[%d].text is required", idx, partIdx),
+				)
 			}
 			normalizedParts = append(normalizedParts, TurnInputContentPart{Type: "input_text", Text: text})
 			texts = append(texts, text)
 			hasText = true
 		}
 		if !hasText {
-			return nil, nil, NewJSONRPCError(ErrCodeInvalidParams, fmt.Sprintf("input[%d] must include at least one input_text part", idx))
+			return nil, nil, newInvalidParamFieldError(
+				fmt.Sprintf("input[%d]", idx),
+				fmt.Sprintf("input[%d] must include at least one input_text part", idx),
+			)
 		}
 
 		normalized = append(normalized, TurnInputMessage{
@@ -611,57 +645,80 @@ func (rt *Runtime) scheduleTurnAutoComplete(turnID string) {
 	if turn.CompletionTimer != nil {
 		turn.CompletionTimer.Stop()
 	}
+	turn.Generation++
+	generation := turn.Generation
 	ttl := rt.turnIdleTTL
 	if ttl <= 0 {
-		ttl = 2 * time.Second
+		ttl = defaultTurnIdleTTL
 	}
 	turn.CompletionTimer = time.AfterFunc(ttl, func() {
-		rt.completeTurn(turnID)
+		rt.completeTurn(turnID, generation)
 	})
 }
 
-func (rt *Runtime) completeTurn(turnID string) {
-	var turn *activeTurn
+func (rt *Runtime) completeTurn(turnID string, generation uint64) {
+	var threadID string
+	var startedAt time.Time
 	rt.mu.Lock()
 	if existing, ok := rt.turns[turnID]; ok {
-		turn = existing
+		if existing.Generation != generation {
+			rt.mu.Unlock()
+			return
+		}
+		threadID = existing.ThreadID
+		startedAt = existing.StartedAt
 		delete(rt.turns, turnID)
 	}
 	rt.mu.Unlock()
 
-	if turn == nil {
+	if threadID == "" {
 		return
 	}
 
 	notif := NewTurnNotification(turnID, TurnNotificationCompleted, StateCompleted)
-	notif.ThreadID = turn.ThreadID
-	notif.StartedAt = turn.StartedAt.Format(time.RFC3339)
+	notif.ThreadID = threadID
+	notif.StartedAt = startedAt.Format(time.RFC3339)
 	notif.CompletedAt = rt.now().Format(time.RFC3339)
 	rt.emitTurnNotification(notif)
 }
 
-func (rt *Runtime) loadTurn(turnID string) (*activeTurn, bool) {
+func (rt *Runtime) loadTurn(turnID string) (activeTurn, bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	turn, ok := rt.turns[turnID]
-	return turn, ok
+	if !ok || turn == nil {
+		return activeTurn{}, false
+	}
+	return activeTurn{
+		ID:        turn.ID,
+		ThreadID:  turn.ThreadID,
+		StartedAt: turn.StartedAt,
+	}, true
 }
 
-func (rt *Runtime) stopAndRemoveTurn(turnID string) (*activeTurn, bool) {
+func (rt *Runtime) stopAndRemoveTurn(turnID string) (activeTurn, bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	turn, ok := rt.turns[turnID]
 	if !ok {
-		return nil, false
+		return activeTurn{}, false
+	}
+	snapshot := activeTurn{
+		ID:        turn.ID,
+		ThreadID:  turn.ThreadID,
+		StartedAt: turn.StartedAt,
 	}
 	if turn.CompletionTimer != nil {
 		turn.CompletionTimer.Stop()
 	}
 	delete(rt.turns, turnID)
-	return turn, true
+	return snapshot, true
 }
 
 func (rt *Runtime) emitUserInputItems(threadID, turnID string, input []TurnInputMessage) {
+	if rt.getBroadcaster() == nil {
+		return
+	}
 	for _, item := range input {
 		itemID := fmt.Sprintf("item_%d", rt.now().UnixNano())
 		notif := NewItemNotification(itemID, ItemNotificationCreated, StateActive, map[string]interface{}{
@@ -679,7 +736,10 @@ func (rt *Runtime) emitAssistantOutput(threadID, turnID string, texts []string) 
 	if len(texts) == 0 {
 		return
 	}
-	assistantText := fmt.Sprintf("Acknowledged: %s", strings.Join(texts, "\n"))
+	if rt.getBroadcaster() == nil {
+		return
+	}
+	assistantText := fmt.Sprintf("Received: %s", strings.Join(texts, "\n"))
 	itemID := fmt.Sprintf("item_%d", rt.now().UnixNano())
 
 	created := NewItemNotification(itemID, ItemNotificationCreated, StateActive, map[string]interface{}{
@@ -717,7 +777,7 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 		}
 	}
 	if strings.TrimSpace(req.ThreadID) == "" {
-		return nil, NewJSONRPCError(ErrCodeInvalidParams, "thread_id is required")
+		return nil, newInvalidParamFieldError("thread_id", "thread_id is required")
 	}
 	normalizedInput, texts, rpcErr := validateTurnInput(req.Input)
 	if rpcErr != nil {
@@ -741,7 +801,6 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 	rt.emitTurnNotification(turnStarted)
 	rt.emitUserInputItems(req.ThreadID, turnID, normalizedInput)
 	rt.emitAssistantOutput(req.ThreadID, turnID, texts)
-	rt.scheduleTurnAutoComplete(turnID)
 
 	return TurnStartResponse{
 		TurnID:    turnID,
@@ -759,7 +818,7 @@ func (rt *Runtime) HandleTurnSteer(params json.RawMessage) (interface{}, *JSONRP
 		}
 	}
 	if strings.TrimSpace(req.TurnID) == "" {
-		return nil, NewJSONRPCError(ErrCodeInvalidParams, "turn_id is required")
+		return nil, newInvalidParamFieldError("turn_id", "turn_id is required")
 	}
 	normalizedInput, texts, rpcErr := validateTurnInput(req.Input)
 	if rpcErr != nil {
@@ -768,7 +827,7 @@ func (rt *Runtime) HandleTurnSteer(params json.RawMessage) (interface{}, *JSONRP
 
 	turn, ok := rt.loadTurn(req.TurnID)
 	if !ok {
-		return nil, NewJSONRPCError(ErrCodeInvalidParams, "turn_id is not active")
+		return nil, newInvalidParamFieldError("turn_id", "turn_id is not active")
 	}
 
 	rt.emitUserInputItems(turn.ThreadID, turn.ID, normalizedInput)
@@ -806,15 +865,20 @@ func (rt *Runtime) HandleTurnInterrupt(params json.RawMessage) (interface{}, *JS
 			return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to interrupt: %s", err))
 		}
 		turnID = fmt.Sprintf("turn_%d", rt.now().UnixNano())
+		turnInterrupted := NewTurnNotification(turnID, TurnNotificationInterrupted, StateInterrupted)
+		turnInterrupted.Message = message
+		rt.emitTurnNotification(turnInterrupted)
 	} else {
-		if _, ok := rt.stopAndRemoveTurn(turnID); !ok {
-			return nil, NewJSONRPCError(ErrCodeInvalidParams, "turn_id is not active")
+		activeTurn, ok := rt.stopAndRemoveTurn(turnID)
+		if !ok {
+			return nil, newInvalidParamFieldError("turn_id", "turn_id is not active")
 		}
+		turnInterrupted := NewTurnNotification(turnID, TurnNotificationInterrupted, StateInterrupted)
+		turnInterrupted.ThreadID = activeTurn.ThreadID
+		turnInterrupted.StartedAt = activeTurn.StartedAt.Format(time.RFC3339)
+		turnInterrupted.Message = message
+		rt.emitTurnNotification(turnInterrupted)
 	}
-
-	turnInterrupted := NewTurnNotification(turnID, TurnNotificationInterrupted, StateInterrupted)
-	turnInterrupted.Message = message
-	rt.emitTurnNotification(turnInterrupted)
 
 	if req.TurnID != "" {
 		// Keep runtime active for targeted turn interruption.

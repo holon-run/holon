@@ -257,19 +257,32 @@ func (nb *NotificationBroadcaster) Unsubscribe(sw *StreamWriter) {
 	delete(nb.subscribers, sw)
 }
 
+func (nb *NotificationBroadcaster) snapshotSubscribers() []*StreamWriter {
+	nb.mu.RLock()
+	defer nb.mu.RUnlock()
+
+	out := make([]*StreamWriter, 0, len(nb.subscribers))
+	for sw := range nb.subscribers {
+		out = append(out, sw)
+	}
+	return out
+}
+
+func (nb *NotificationBroadcaster) broadcast(rpcNotif Notification) {
+	for _, sw := range nb.snapshotSubscribers() {
+		if err := sw.WriteNotification(rpcNotif); err != nil {
+			nb.Unsubscribe(sw)
+		}
+	}
+}
+
 // BroadcastItemNotification broadcasts an item notification to all subscribers
 func (nb *NotificationBroadcaster) BroadcastItemNotification(n ItemNotification) {
 	rpcNotif, err := n.ToJSONRPCNotification()
 	if err != nil {
 		return
 	}
-
-	nb.mu.RLock()
-	defer nb.mu.RUnlock()
-
-	for sw := range nb.subscribers {
-		_ = sw.WriteNotification(rpcNotif)
-	}
+	nb.broadcast(rpcNotif)
 }
 
 // BroadcastTurnNotification broadcasts a turn notification to all subscribers
@@ -278,13 +291,7 @@ func (nb *NotificationBroadcaster) BroadcastTurnNotification(n TurnNotification)
 	if err != nil {
 		return
 	}
-
-	nb.mu.RLock()
-	defer nb.mu.RUnlock()
-
-	for sw := range nb.subscribers {
-		_ = sw.WriteNotification(rpcNotif)
-	}
+	nb.broadcast(rpcNotif)
 }
 
 // BroadcastThreadNotification broadcasts a thread notification to all subscribers
@@ -293,11 +300,5 @@ func (nb *NotificationBroadcaster) BroadcastThreadNotification(n ThreadNotificat
 	if err != nil {
 		return
 	}
-
-	nb.mu.RLock()
-	defer nb.mu.RUnlock()
-
-	for sw := range nb.subscribers {
-		_ = sw.WriteNotification(rpcNotif)
-	}
+	nb.broadcast(rpcNotif)
 }

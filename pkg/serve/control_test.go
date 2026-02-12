@@ -1,9 +1,11 @@
 package serve
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -964,5 +966,128 @@ func TestCodexMethodsInvalidParams(t *testing.T) {
 	}
 	if rpcErr.Code != ErrCodeInvalidParams {
 		t.Errorf("Error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
+	}
+}
+
+func TestTurnStartInvalidParamsIncludeFieldData(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+
+	_, rpcErr := rt.HandleTurnStart(params)
+	if rpcErr == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if len(rpcErr.Data) == 0 {
+		t.Fatalf("expected error data for invalid params")
+	}
+	var data map[string]string
+	if err := json.Unmarshal(rpcErr.Data, &data); err != nil {
+		t.Fatalf("failed to decode error data: %v", err)
+	}
+	if data["field"] != "thread_id" {
+		t.Fatalf("expected field=thread_id, got %q", data["field"])
+	}
+}
+
+func TestTurnAutoCompleteEmitsOnceAfterReschedule(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	rt.setTurnIdleTTLForTest(40 * time.Millisecond)
+
+	b := NewNotificationBroadcaster()
+	var buf bytes.Buffer
+	sw := NewStreamWriter(&buf)
+	b.Subscribe(sw)
+	rt.SetBroadcaster(b)
+
+	turnID, _ := rt.beginTurn("thread_test")
+	rt.scheduleTurnAutoComplete(turnID)
+	rt.scheduleTurnAutoComplete(turnID)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if strings.Count(buf.String(), "\"method\":\"turn/completed\"") >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for turn/completed notification; got: %s", buf.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	time.Sleep(80 * time.Millisecond)
+	if got := strings.Count(buf.String(), "\"method\":\"turn/completed\""); got != 1 {
+		t.Fatalf("expected exactly one turn/completed notification, got %d (%s)", got, buf.String())
+	}
+}
+
+func TestTurnInterruptNotificationIncludesTurnContext(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	rt.setTurnIdleTTLForTest(5 * time.Second)
+
+	b := NewNotificationBroadcaster()
+	var buf bytes.Buffer
+	sw := NewStreamWriter(&buf)
+	b.Subscribe(sw)
+	rt.SetBroadcaster(b)
+
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_test_ctx",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	startResult, rpcErr := rt.HandleTurnStart(startParams)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	}
+	startResp := startResult.(TurnStartResponse)
+
+	interruptParams, _ := json.Marshal(map[string]interface{}{
+		"turn_id": startResp.TurnID,
+		"reason":  "stop",
+	})
+	_, rpcErr = rt.HandleTurnInterrupt(interruptParams)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnInterrupt() error = %v", rpcErr)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "\"method\":\"turn/interrupted\"") {
+		t.Fatalf("expected turn/interrupted notification in output: %s", output)
+	}
+	if !strings.Contains(output, "\"thread_id\":\"thread_test_ctx\"") {
+		t.Fatalf("expected interrupted notification to include thread_id, got: %s", output)
 	}
 }
