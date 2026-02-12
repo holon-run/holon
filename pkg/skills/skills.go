@@ -5,15 +5,18 @@
 package skills
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/builtin"
+	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/skills/catalog"
+	"github.com/holon-run/holon/pkg/skills/ghpath"
 	"github.com/holon-run/holon/pkg/skills/remote"
 )
 
@@ -47,9 +50,10 @@ type Skill struct {
 
 // Resolver handles skill discovery, validation, and resolution
 type Resolver struct {
-	workspace       string
-	cache           *remote.Cache
-	catalogRegistry *catalog.Registry
+	workspace          string
+	cache              *remote.Cache
+	catalogRegistry    *catalog.Registry
+	githubPathResolver *ghpath.Resolver
 }
 
 // NewResolver creates a new skill resolver for the given workspace
@@ -71,9 +75,10 @@ func NewResolver(workspace string) *Resolver {
 	registry.Register(catalog.NewGitHubAdapter())
 
 	return &Resolver{
-		workspace:       workspace,
-		cache:           remote.NewCache(""),
-		catalogRegistry: registry,
+		workspace:          workspace,
+		cache:              remote.NewCache(""),
+		catalogRegistry:    registry,
+		githubPathResolver: ghpath.NewResolver(""),
 	}
 }
 
@@ -199,6 +204,33 @@ func (r *Resolver) discover() ([]Skill, error) {
 // 5. Builtin skill
 // Returns multiple skills for URLs (zip can contain multiple skills) or single skill for other types
 func (r *Resolver) resolveSkillRef(ref string, source string) ([]Skill, error) {
+	// 1. Check GitHub path-style references
+	gitHubPathRef, err := ghpath.ParseRef(ref)
+	if err == nil {
+		skillPath, resolveErr := r.githubPathResolver.Resolve(context.Background(), gitHubPathRef)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("failed to resolve GitHub path reference: %w", resolveErr)
+		}
+
+		skillManifestPath := filepath.Join(skillPath, SkillManifestFile)
+		if _, statErr := os.Stat(skillManifestPath); statErr != nil {
+			if os.IsNotExist(statErr) {
+				return nil, fmt.Errorf("resolved GitHub path skill missing %s at %s: %w", SkillManifestFile, skillPath, statErr)
+			}
+			return nil, fmt.Errorf("failed to stat resolved GitHub path skill manifest %s at %s: %w", SkillManifestFile, skillPath, statErr)
+		}
+
+		return []Skill{{
+			Path:    skillPath,
+			Name:    filepath.Base(gitHubPathRef.Path),
+			Source:  source,
+			Builtin: false,
+		}}, nil
+	}
+	if !errors.Is(err, ghpath.ErrNotGitHubPathRef) {
+		return nil, fmt.Errorf("invalid GitHub path reference: %w", err)
+	}
+
 	// 1. Check if it's a URL
 	if remote.IsURL(ref) {
 		// Parse the URL reference

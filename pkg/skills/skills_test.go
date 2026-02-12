@@ -3,6 +3,8 @@ package skills
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/holon-run/holon/pkg/skills/catalog"
+	"github.com/holon-run/holon/pkg/skills/ghpath"
 )
 
 func TestResolver_Discover(t *testing.T) {
@@ -450,6 +453,62 @@ func TestResolver_Resolve(t *testing.T) {
 	})
 }
 
+type resolverFailingGitRunner struct{}
+
+func (r *resolverFailingGitRunner) Run(_ context.Context, _ ...string) error {
+	return fmt.Errorf("git unavailable")
+}
+
+func TestResolver_Resolve_GitHubPathRef(t *testing.T) {
+	zipData := createRootedSkillZipData("holon-main", "skills/github-review")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/holon-run/holon/zip/refs/heads/main" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(zipData)
+	}))
+	defer server.Close()
+
+	workspaceDir, err := os.MkdirTemp("", "holon-ghpath-workspace-*")
+	if err != nil {
+		t.Fatalf("failed to create workspace dir: %v", err)
+	}
+	defer os.RemoveAll(workspaceDir)
+
+	cacheDir := filepath.Join(workspaceDir, ".cache", "ghpath")
+
+	resolver := NewResolver(workspaceDir)
+	resolver.githubPathResolver = ghpath.NewResolver(
+		cacheDir,
+		ghpath.WithGitRunner(&resolverFailingGitRunner{}),
+		ghpath.WithCodeloadBaseURL(server.URL),
+		ghpath.WithGitHubAPIBaseURL(server.URL),
+	)
+
+	resolved, err := resolver.Resolve([]string{"ghpath:holon-run/holon/skills/github-review@main"}, []string{}, []string{})
+	if err != nil {
+		t.Fatalf("Resolve failed for ghpath ref: %v", err)
+	}
+	if len(resolved) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(resolved))
+	}
+
+	if resolved[0].Name != "github-review" {
+		t.Fatalf("expected skill name github-review, got %s", resolved[0].Name)
+	}
+	if resolved[0].Source != "cli" {
+		t.Fatalf("expected source cli, got %s", resolved[0].Source)
+	}
+
+	if _, err := os.Stat(filepath.Join(resolved[0].Path, "SKILL.md")); err != nil {
+		t.Fatalf("resolved ghpath skill missing SKILL.md: %v", err)
+	}
+}
+
 // createTestZipData creates a test zip file with two skills
 func createTestZipData() []byte {
 	buf := new(bytes.Buffer)
@@ -471,6 +530,35 @@ func createTestZipData() []byte {
 	}
 	if _, err := w.Write([]byte("# Skill 2\n")); err != nil {
 		panic("failed to write to zip entry skill2/SKILL.md: " + err.Error())
+	}
+
+	if err := zipWriter.Close(); err != nil {
+		panic("failed to close zip writer: " + err.Error())
+	}
+	return buf.Bytes()
+}
+
+func createRootedSkillZipData(rootDir, skillPath string) []byte {
+	buf := new(bytes.Buffer)
+	zipWriter := zip.NewWriter(buf)
+
+	manifestPath := filepath.ToSlash(filepath.Join(rootDir, filepath.FromSlash(skillPath), "SKILL.md"))
+	readmePath := filepath.ToSlash(filepath.Join(rootDir, filepath.FromSlash(skillPath), "README.md"))
+
+	w, err := zipWriter.Create(manifestPath)
+	if err != nil {
+		panic("failed to create zip entry " + manifestPath + ": " + err.Error())
+	}
+	if _, err := w.Write([]byte("# Skill\n")); err != nil {
+		panic("failed to write to zip entry " + manifestPath + ": " + err.Error())
+	}
+
+	w, err = zipWriter.Create(readmePath)
+	if err != nil {
+		panic("failed to create zip entry " + readmePath + ": " + err.Error())
+	}
+	if _, err := w.Write([]byte("documentation\n")); err != nil {
+		panic("failed to write to zip entry " + readmePath + ": " + err.Error())
 	}
 
 	if err := zipWriter.Close(); err != nil {
