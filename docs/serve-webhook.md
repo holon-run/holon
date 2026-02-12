@@ -63,7 +63,6 @@ Any GitHub events matching the configured types will be forwarded to your local 
 - `--webhook-port PORT`: Enable webhook mode and listen on this port
 - `--state-dir DIR`: State directory for cursor/dedupe persistence (default: `.holon/serve-state`)
 - `--controller-workspace DIR`: Controller workspace path
-- `--controller-skill PATH`: Controller skill path (default: `skills/github-controller`)
 - `--log-level LEVEL`: Log level (debug, info, progress, minimal)
 - `--dry-run`: Log events without running controller
 

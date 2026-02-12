@@ -30,7 +30,6 @@ holon serve \
   --webhook-port 8787 \
   --state-dir .holon/pm-state \
   --controller-workspace .holon/pm-workspace \
-  --controller-skill skills/github-controller \
   --controller-role pm \
   --tick-interval 5m
 ```
@@ -44,7 +43,6 @@ holon serve \
   --webhook-port 8788 \
   --state-dir .holon/dev-state \
   --controller-workspace .holon/dev-workspace \
-  --controller-skill skills/github-controller \
   --controller-role dev
 ```
 

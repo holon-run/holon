@@ -183,7 +183,6 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 		repoHint:            "holon-run/holon",
 		stateDir:            td,
 		controllerWorkspace: t.TempDir(),
-		controllerSkill:     "skills/github-controller",
 		controllerRole:      "dev",
 		logLevel:            "progress",
 		sessionRunner:       mockRunner,
@@ -339,6 +338,32 @@ func TestControllerPrompts_RoleAssetAndRoleFileOverride(t *testing.T) {
 	}
 	if _, _, err := h.controllerPrompts(); err == nil {
 		t.Fatalf("expected error for empty role file content")
+	}
+}
+
+func TestWriteControllerSpecAndPrompts_ExcludesSkillsMetadata(t *testing.T) {
+	t.Parallel()
+
+	inputDir := t.TempDir()
+	h := &cliControllerHandler{
+		controllerRole: "pm",
+	}
+
+	if err := h.writeControllerSpecAndPrompts(inputDir); err != nil {
+		t.Fatalf("writeControllerSpecAndPrompts() error: %v", err)
+	}
+
+	specPath := filepath.Join(inputDir, "spec.yaml")
+	specData, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("read spec.yaml: %v", err)
+	}
+	spec := string(specData)
+	if strings.Contains(spec, "skills:") {
+		t.Fatalf("spec.yaml should not contain metadata.skills, got:\n%s", spec)
+	}
+	if !strings.Contains(spec, "name: \"github-controller-session\"") {
+		t.Fatalf("spec.yaml missing expected metadata.name, got:\n%s", spec)
 	}
 }
 

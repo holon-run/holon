@@ -30,7 +30,6 @@ var (
 	serveMaxEvents          int
 	serveDryRun             bool
 	serveLogLevel           string
-	serveControllerSkill    string
 	serveWebhookPort        int
 	serveWebhookMode        bool
 	serveControllerRole     string
@@ -95,7 +94,6 @@ for local development and testing.`,
 			serveRepo,
 			absStateDir,
 			controllerWorkspace,
-			serveControllerSkill,
 			serveControllerRole,
 			serveControllerRoleFile,
 			serveLogLevel,
@@ -152,7 +150,6 @@ for local development and testing.`,
 				"agent_home", agentResolution.AgentHome,
 				"state_dir", absStateDir,
 				"workspace", controllerWorkspace,
-				"controller_skill", serveControllerSkill,
 				"controller_role", serveControllerRole,
 				"tick_interval", serveTickInterval,
 				"webhook_port", subMgr.GetWebhookPort(),
@@ -195,7 +192,6 @@ for local development and testing.`,
 				"agent_home", agentResolution.AgentHome,
 				"workspace", controllerWorkspace,
 				"port", serveWebhookPort,
-				"controller_skill", serveControllerSkill,
 				"controller_role", serveControllerRole,
 				"tick_interval", serveTickInterval,
 			)
@@ -240,7 +236,6 @@ for local development and testing.`,
 			"agent_home", agentResolution.AgentHome,
 			"workspace", controllerWorkspace,
 			"input", serveInput,
-			"controller_skill", serveControllerSkill,
 			"controller_role", serveControllerRole,
 			"tick_interval", serveTickInterval,
 		)
@@ -415,7 +410,6 @@ type cliControllerHandler struct {
 	repoHint            string
 	stateDir            string
 	controllerWorkspace string
-	controllerSkill     string
 	controllerRole      string
 	controllerRoleFile  string
 	logLevel            string
@@ -438,17 +432,12 @@ func newCLIControllerHandler(
 	repoHint,
 	stateDir,
 	controllerWorkspace,
-	controllerSkill,
 	controllerRole,
 	controllerRoleFile,
 	logLevel string,
 	dryRun bool,
 	sessionRunner SessionRunner,
 ) (*cliControllerHandler, error) {
-	if controllerSkill == "" {
-		controllerSkill = filepath.Join("skills", "github-controller")
-	}
-
 	if sessionRunner == nil && !dryRun {
 		rt, err := docker.NewRuntime()
 		if err != nil {
@@ -461,7 +450,6 @@ func newCLIControllerHandler(
 		repoHint:            repoHint,
 		stateDir:            stateDir,
 		controllerWorkspace: controllerWorkspace,
-		controllerSkill:     controllerSkill,
 		controllerRole:      controllerRole,
 		controllerRoleFile:  controllerRoleFile,
 		logLevel:            logLevel,
@@ -569,19 +557,17 @@ func (h *cliControllerHandler) buildInputDir(ref string) (string, error) {
 }
 
 func (h *cliControllerHandler) writeControllerSpecAndPrompts(inputDir string) error {
-	specContent := fmt.Sprintf(`version: "v1"
+	specContent := `version: "v1"
 kind: Holon
 metadata:
   name: "github-controller-session"
-  skills:
-    - %q
 goal:
   description: "Run as a persistent GitHub controller. Read events from HOLON_CONTROLLER_EVENT_CHANNEL and decide actions autonomously using available skills."
 output:
   artifacts:
     - path: "manifest.json"
       required: true
-`, h.controllerSkill)
+`
 
 	if err := os.WriteFile(filepath.Join(inputDir, "spec.yaml"), []byte(specContent), 0644); err != nil {
 		return fmt.Errorf("failed to write controller spec: %w", err)
@@ -727,13 +713,12 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	}
 
 	session, err := h.sessionRunner.Start(ctx, ControllerSessionConfig{
-		Workspace:       h.controllerWorkspace,
-		InputPath:       inputDir,
-		OutputPath:      outputDir,
-		StateDir:        filepath.Join(h.stateDir, "controller-state"),
-		ControllerSkill: h.controllerSkill,
-		LogLevel:        h.logLevel,
-		Env:             env,
+		Workspace:  h.controllerWorkspace,
+		InputPath:  inputDir,
+		OutputPath: outputDir,
+		StateDir:   filepath.Join(h.stateDir, "controller-state"),
+		LogLevel:   h.logLevel,
+		Env:        env,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start controller runtime: %w", err)
@@ -896,8 +881,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveAgentID, "agent-id", "main", "Agent ID (default: main)")
 	serveCmd.Flags().StringVar(&serveAgentHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
 	serveCmd.Flags().IntVar(&serveMaxEvents, "max-events", 0, "Stop after processing N events (0 = unlimited, not supported in webhook mode)")
-	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without running controller skill")
-	serveCmd.Flags().StringVar(&serveControllerSkill, "controller-skill", filepath.Join("skills", "github-controller"), "Controller skill path or reference")
+	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without starting the controller runtime session")
 	serveCmd.Flags().StringVar(&serveControllerRole, "controller-role", "", "Controller role identity: pm or dev")
 	serveCmd.Flags().StringVar(&serveControllerRoleFile, "controller-role-file", "", "Override controller system prompt with a custom role prompt file")
 	serveCmd.Flags().DurationVar(&serveTickInterval, "tick-interval", 0, "Emit timer.tick events periodically (e.g. 5m)")
