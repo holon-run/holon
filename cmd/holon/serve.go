@@ -103,8 +103,9 @@ for local development and testing.`,
 		}
 		defer handler.Close()
 
-		// Use subscription manager if subscriptions are enabled
-		if !serveNoSubscriptions && !serveWebhookMode && serveInput == "" {
+		// Use subscription manager if subscriptions are enabled.
+		// A non-zero --webhook-port acts as an override for subscription ingress port.
+		if !serveNoSubscriptions && serveInput == "" {
 			subMgr, err := serve.NewSubscriptionManager(serve.ManagerConfig{
 				AgentHome:   agentResolution.AgentHome,
 				StateDir:    absStateDir,
@@ -119,16 +120,13 @@ for local development and testing.`,
 			tickCtx, tickCancel := context.WithCancel(context.Background())
 			defer tickCancel()
 
-			// Determine repos for tick interval from subscription config
-			// Note: Config is already loaded and validated in SubscriptionManager.
-			// For --tick-interval, we use --repo if provided; otherwise
-			// subscriptions are configured in agent.yaml and will be used automatically.
-			var repos []string
+			// Determine repos for tick interval from CLI override or subscription config.
+			repos := subMgr.SubscribedRepos()
 			if serveRepo != "" {
 				repos = []string{serveRepo}
 			}
 			if serveTickInterval > 0 && len(repos) == 0 {
-				return fmt.Errorf("--repo is required when --tick-interval is enabled (subscriptions.github.repos is configured in agent.yaml)")
+				return fmt.Errorf("at least one repo is required when --tick-interval is enabled (set subscriptions.github.repos in agent.yaml or pass --repo)")
 			}
 
 			if serveTickInterval > 0 && len(repos) > 0 {
@@ -163,9 +161,6 @@ for local development and testing.`,
 
 		// Webhook mode (legacy, for backward compatibility)
 		if serveWebhookMode {
-			if serveRepo == "" {
-				return fmt.Errorf("--repo is required in webhook mode (e.g., --repo owner/repo)")
-			}
 			webhookSrv, err := serve.NewWebhookServer(serve.WebhookConfig{
 				Port:     serveWebhookPort,
 				RepoHint: serveRepo,
@@ -889,7 +884,7 @@ func appendJSONLine(path string, value any) error {
 }
 
 func init() {
-	serveCmd.Flags().StringVar(&serveRepo, "repo", "", "Default repository in owner/repo format (required for webhook mode)")
+	serveCmd.Flags().StringVar(&serveRepo, "repo", "", "Default repository in owner/repo format (optional repo hint)")
 	serveCmd.Flags().StringVar(&serveInput, "input", "-", "Input source for events ('-' for stdin, or path to file)")
 	serveCmd.Flags().StringVar(&serveAgentID, "agent-id", "main", "Agent ID (default: main)")
 	serveCmd.Flags().StringVar(&serveAgentHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
@@ -900,7 +895,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveControllerRoleFile, "controller-role-file", "", "Override controller system prompt with a custom role prompt file")
 	serveCmd.Flags().DurationVar(&serveTickInterval, "tick-interval", 0, "Emit timer.tick events periodically (e.g. 5m)")
 	serveCmd.Flags().StringVar(&serveLogLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
-	serveCmd.Flags().IntVar(&serveWebhookPort, "webhook-port", 0, "Enable webhook mode and listen on this port (requires --repo)")
+	serveCmd.Flags().IntVar(&serveWebhookPort, "webhook-port", 0, "Override ingress webhook port for subscription mode; with --no-subscriptions, enables legacy webhook mode")
 	serveCmd.Flags().BoolVar(&serveNoSubscriptions, "no-subscriptions", false, "Disable agent.yaml subscriptions and use stdin/file input instead")
 	rootCmd.AddCommand(serveCmd)
 }
