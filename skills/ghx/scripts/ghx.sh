@@ -14,7 +14,6 @@ Usage:
   ghx.sh pr create --repo=OWNER/REPO --title=... --body-file=... --head=... --base=...
   ghx.sh pr update --pr=OWNER/REPO#NUM [--title=...] [--body-file=...] [--state=open|closed]
   ghx.sh pr comment --pr=OWNER/REPO#NUM --body-file=<summary.md>
-  ghx.sh pr reply-reviews --pr=OWNER/REPO#NUM --pr-fix-json=<pr-fix.json>
 USAGE
 }
 
@@ -55,18 +54,27 @@ case "$1" in
     shift
     sub="${1:-}"
     shift || true
+    global_opts=()
+    sub_args=()
+    for arg in "$@"; do
+      case "$arg" in
+        --pr=*|--repo=*|--dry-run|--from=*|--intent=*)
+          global_opts+=("$arg")
+          ;;
+        *)
+          sub_args+=("$arg")
+          ;;
+      esac
+    done
     case "$sub" in
       create)
-        exec "$SCRIPT_DIR/publish.sh" create-pr "$@"
+        exec "$SCRIPT_DIR/publish.sh" "${global_opts[@]}" create-pr "${sub_args[@]}"
         ;;
       update)
-        exec "$SCRIPT_DIR/publish.sh" update-pr "$@"
+        exec "$SCRIPT_DIR/publish.sh" "${global_opts[@]}" update-pr "${sub_args[@]}"
         ;;
       comment)
-        exec "$SCRIPT_DIR/publish.sh" comment "$@"
-        ;;
-      reply-reviews)
-        exec "$SCRIPT_DIR/publish.sh" reply-reviews "$@"
+        exec "$SCRIPT_DIR/publish.sh" "${global_opts[@]}" comment "${sub_args[@]}"
         ;;
       *)
         usage

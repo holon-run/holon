@@ -70,4 +70,5 @@ Under `${GITHUB_OUTPUT_DIR}`:
 
 - `ghx` is capability-oriented: upper-level skills should focus on final outputs and outcomes.
 - Prefer `ghx` commands for multi-step or error-prone GitHub operations.
-- Prefer direct capability commands (`pr reply-reviews`, `pr comment`, `review publish`) from external skills.
+- Prefer direct capability commands (`pr comment`, `review publish`) from external skills.
+- For multi-reply review workflows, use `intent run` with `reply_review` actions in `publish-intent.json`.

@@ -395,36 +395,21 @@ action_post_comment() {
 # Reply to review comments
 # Usage: action_reply_review <params_json>
 # Params:
-#   - replies_file (recommended): Path to pr-fix.json file
-#   - replies (optional): Array of inline reply objects
+#   - replies (optional): Array of reply objects
+#   - comment_id, message, status, action_taken (optional): single-reply form
 # Output: Summary of replies posted
 action_reply_review() {
     local params="$1"
 
     log_info "Processing review replies..."
 
-    # Load replies from file if provided
-    local replies_json="[]"
-    if echo "$params" | jq -e '.replies_file' >/dev/null; then
-        local replies_file
-        replies_file=$(echo "$params" | jq -r '.replies_file')
-
-        if [[ "$replies_file" =~ ^/ ]]; then
-            log_error "Absolute paths not allowed for replies_file: $replies_file"
-            return 1
-        fi
-        local resolved_file="$GITHUB_OUTPUT_DIR/$replies_file"
-        if [[ "$resolved_file" != "$GITHUB_OUTPUT_DIR"/* ]]; then
-            log_error "Invalid replies_file path (outside output dir): $replies_file"
-            return 1
-        fi
-        if [[ ! -f "$resolved_file" ]]; then
-            log_error "Replies file not found: $resolved_file"
-            return 1
-        fi
-        replies_json=$(jq -c '.review_replies // []' "$resolved_file" 2>/dev/null || echo "[]")
-    else
+    local replies_json
+    if echo "$params" | jq -e '.replies' >/dev/null 2>&1; then
         replies_json=$(echo "$params" | jq -c '.replies // []')
+    elif echo "$params" | jq -e '.comment_id and .message' >/dev/null 2>&1; then
+        replies_json=$(echo "$params" | jq -c '[{comment_id:.comment_id,status:(.status // "info"),message:.message,action_taken:(.action_taken // "")}]')
+    else
+        replies_json="[]"
     fi
 
     if [[ "$replies_json" == "[]" ]]; then

@@ -2,24 +2,31 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
-	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/agenthome"
+	holonlog "github.com/holon-run/holon/pkg/log"
 )
 
 // SubscriptionManager manages active subscriptions and their transport
 type SubscriptionManager struct {
-	agentHome      string
-	config         agenthome.Config
-	webhookServer  *WebhookServer
-	forwarder      *Forwarder
-	mu             sync.Mutex
-	started        bool
-	webhookPort    int
-	stateDir       string
-	handler        EventHandler
+	agentHome     string
+	config        agenthome.Config
+	webhookServer *WebhookServer
+	forwarder     *Forwarder
+	websocketSrc  *WebSocketSource
+	eventService  *Service
+	mu            sync.Mutex
+	started       bool
+	webhookPort   int
+	stateDir      string
+	handler       EventHandler
 }
 
 // ManagerConfig holds configuration for SubscriptionManager
@@ -50,9 +57,9 @@ func NewSubscriptionManager(cfg ManagerConfig) (*SubscriptionManager, error) {
 // Start starts the subscription manager and all configured subscriptions
 func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	if sm.started {
+		sm.mu.Unlock()
 		return fmt.Errorf("subscription manager already started")
 	}
 
@@ -68,6 +75,11 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	if gitHubSub == nil {
 		holonlog.Info("no GitHub subscriptions configured, running in passive mode")
 		sm.started = true
+		status := sm.statusLocked()
+		sm.mu.Unlock()
+		if err := sm.writeStatusFile(status); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -80,17 +92,37 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	if len(gitHubSub.Repos) == 0 {
 		holonlog.Info("GitHub subscription configured with no repos, running in passive mode")
 		sm.started = true
+		status := sm.statusLocked()
+		sm.mu.Unlock()
+		if err := sm.writeStatusFile(status); err != nil {
+			return err
+		}
 		return nil
 	}
 
 	switch transportMode {
 	case "gh_forward":
-		return sm.startGHForwardMode(ctx, gitHubSub)
+		if err := sm.startGHForwardMode(ctx, gitHubSub); err != nil {
+			sm.mu.Unlock()
+			return err
+		}
 	case "websocket":
-		return fmt.Errorf("websocket transport mode not yet implemented")
+		if err := sm.startWebSocketMode(ctx, gitHubSub); err != nil {
+			sm.mu.Unlock()
+			return err
+		}
 	default:
+		sm.mu.Unlock()
 		return fmt.Errorf("unsupported transport mode: %s", transportMode)
 	}
+
+	sm.started = true
+	status := sm.statusLocked()
+	sm.mu.Unlock()
+	if err := sm.writeStatusFile(status); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (sm *SubscriptionManager) startGHForwardMode(ctx context.Context, sub *agenthome.GitHubSubscription) error {
@@ -141,8 +173,6 @@ func (sm *SubscriptionManager) startGHForwardMode(ctx context.Context, sub *agen
 		return fmt.Errorf("failed to start gh webhook forward: %w", err)
 	}
 
-	sm.started = true
-
 	holonlog.Info(
 		"subscription manager started",
 		"transport", "gh_forward",
@@ -153,12 +183,92 @@ func (sm *SubscriptionManager) startGHForwardMode(ctx context.Context, sub *agen
 	return nil
 }
 
+func (sm *SubscriptionManager) startWebSocketMode(ctx context.Context, sub *agenthome.GitHubSubscription) error {
+	repoHint := ""
+	if len(sub.Repos) > 0 {
+		repoHint = sub.Repos[0]
+	}
+
+	svc, err := New(Config{
+		RepoHint: repoHint,
+		StateDir: sm.stateDir,
+		Handler:  sm.handler,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create websocket event service: %w", err)
+	}
+
+	src := NewWebSocketSource(WebSocketSourceConfig{
+		URL: sub.Transport.WebsocketURL,
+	})
+
+	if err := src.Start(ctx, func(_ context.Context, raw []byte) error {
+		normalizedRaw := normalizeWebSocketMessage(raw)
+		env, normErr := normalizeLine(normalizedRaw, repoHint, time.Now)
+		if normErr != nil {
+			holonlog.Warn("failed to normalize websocket event", "error", normErr)
+			return nil
+		}
+		if injectErr := svc.InjectEvent(ctx, env); injectErr != nil {
+			holonlog.Warn("failed to inject websocket event", "error", injectErr, "event_id", env.ID, "type", env.Type)
+		}
+		return nil
+	}); err != nil {
+		svc.Close()
+		return fmt.Errorf("failed to start websocket source: %w", err)
+	}
+	sm.eventService = svc
+	sm.websocketSrc = src
+
+	holonlog.Info(
+		"subscription manager started",
+		"transport", "websocket",
+		"url", sub.Transport.WebsocketURL,
+		"repos", sub.Repos,
+	)
+
+	return nil
+}
+
+func normalizeWebSocketMessage(raw []byte) []byte {
+	type wsMessage struct {
+		Payload json.RawMessage `json:"payload"`
+		Headers map[string]any  `json:"headers"`
+	}
+
+	var msg wsMessage
+	if err := json.Unmarshal(raw, &msg); err != nil || len(msg.Payload) == 0 {
+		return raw
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return msg.Payload
+	}
+	for k, v := range msg.Headers {
+		normKey := normalizeHeaderKey(k)
+		if _, exists := payload[normKey]; !exists {
+			payload[normKey] = v
+		}
+	}
+	merged, err := json.Marshal(payload)
+	if err != nil {
+		return msg.Payload
+	}
+	return merged
+}
+
+func normalizeHeaderKey(k string) string {
+	// Match webhook normalization style: X-GitHub-Event -> x_github_event.
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(k)), "-", "_")
+}
+
 // Stop stops the subscription manager and all active subscriptions
 func (sm *SubscriptionManager) Stop() error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	if !sm.started {
+		sm.mu.Unlock()
 		return nil
 	}
 
@@ -172,6 +282,20 @@ func (sm *SubscriptionManager) Stop() error {
 		sm.forwarder = nil
 	}
 
+	// Stop websocket source
+	if sm.websocketSrc != nil {
+		if err := sm.websocketSrc.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop websocket source: %w", err))
+		}
+		sm.websocketSrc = nil
+	}
+	if sm.eventService != nil {
+		if err := sm.eventService.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close websocket event service: %w", err))
+		}
+		sm.eventService = nil
+	}
+
 	// Stop webhook server
 	if sm.webhookServer != nil {
 		if err := sm.webhookServer.Close(); err != nil {
@@ -181,6 +305,11 @@ func (sm *SubscriptionManager) Stop() error {
 	}
 
 	sm.started = false
+	status := sm.statusLocked()
+	sm.mu.Unlock()
+	if err := sm.writeStatusFile(status); err != nil {
+		errs = append(errs, fmt.Errorf("failed to write status file: %w", err))
+	}
 
 	if len(errs) > 0 {
 		return fmt.Errorf("errors stopping subscription manager: %v", errs)
@@ -210,23 +339,32 @@ func (sm *SubscriptionManager) GetWebhookPort() int {
 // InjectEvent injects an event into the webhook server (for timer ticks, etc)
 func (sm *SubscriptionManager) InjectEvent(ctx context.Context, env EventEnvelope) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	webhookServer := sm.webhookServer
+	eventService := sm.eventService
+	sm.mu.Unlock()
 
-	if sm.webhookServer == nil {
-		return fmt.Errorf("webhook server not running")
+	if webhookServer != nil {
+		return webhookServer.InjectEvent(ctx, env)
 	}
-
-	return sm.webhookServer.InjectEvent(ctx, env)
+	if eventService != nil {
+		return eventService.InjectEvent(ctx, env)
+	}
+	return fmt.Errorf("no active subscription transport for event injection")
 }
 
 // Status returns the current status of the subscription manager
 func (sm *SubscriptionManager) Status() map[string]interface{} {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	return sm.statusLocked()
+}
 
+func (sm *SubscriptionManager) statusLocked() map[string]interface{} {
 	status := map[string]interface{}{
-		"running": sm.started,
+		"running":    sm.started,
 		"agent_home": sm.agentHome,
+		"state_dir":  sm.stateDir,
+		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
 	if sm.webhookServer != nil {
@@ -236,6 +374,9 @@ func (sm *SubscriptionManager) Status() map[string]interface{} {
 
 	if sm.forwarder != nil {
 		status["forwarder"] = sm.forwarder.Status()
+	}
+	if sm.websocketSrc != nil {
+		status["websocket"] = sm.websocketSrc.Status()
 	}
 
 	// Include subscription info
@@ -255,12 +396,63 @@ func (sm *SubscriptionManager) Status() map[string]interface{} {
 }
 
 // WriteStatusFile writes the current status to a file in the state directory
-// TODO: Implement actual file writing to state directory
 func (sm *SubscriptionManager) WriteStatusFile() error {
-	status := sm.Status()
+	sm.mu.Lock()
+	status := sm.statusLocked()
+	sm.mu.Unlock()
+	return sm.writeStatusFile(status)
+}
 
-	// For now, just log the status
-	// TODO: Write status to state directory (e.g., sm.stateDir/status.json)
-	holonlog.Info("subscription status", "status", status)
+func (sm *SubscriptionManager) writeStatusFile(status map[string]interface{}) error {
+	if sm.stateDir == "" {
+		holonlog.Info("subscription status", "status", status)
+		return nil
+	}
+	if err := os.MkdirAll(sm.stateDir, 0755); err != nil {
+		return fmt.Errorf("failed to create state dir for subscription status: %w", err)
+	}
+
+	data, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal subscription status: %w", err)
+	}
+	data = append(data, '\n')
+
+	statusPath := filepath.Join(sm.stateDir, "subscription-status.json")
+	tmp, err := os.CreateTemp(sm.stateDir, ".subscription-status-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp status file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to write temp status file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to close temp status file: %w", err)
+	}
+	if err := os.Rename(tmpPath, statusPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to replace status file: %w", err)
+	}
+
+	holonlog.Info("subscription status updated", "path", statusPath)
 	return nil
+}
+
+// SubscribedRepos returns the repos declared in agent.yaml subscriptions.
+func (sm *SubscriptionManager) SubscribedRepos() []string {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	var repos []string
+	for _, sub := range sm.config.Subscriptions {
+		if sub.GitHub == nil {
+			continue
+		}
+		repos = append(repos, sub.GitHub.Repos...)
+	}
+	return repos
 }
