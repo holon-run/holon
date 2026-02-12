@@ -124,22 +124,15 @@ for local development and testing.`,
 			defer tickCancel()
 
 			// Determine repos for tick interval from subscription config
+			// Note: Config is already loaded and validated in SubscriptionManager.
+			// For --tick-interval, we use --repo if provided; otherwise
+			// subscriptions are configured in agent.yaml and will be used automatically.
 			var repos []string
-			if !serveNoSubscriptions {
-				cfg, err := agenthome.LoadConfig(agentResolution.AgentHome)
-				if err == nil {
-					for _, sub := range cfg.Subscriptions {
-						if sub.GitHub != nil {
-							repos = append(repos, sub.GitHub.Repos...)
-						}
-					}
-				}
-			}
-			if len(repos) == 0 && serveRepo != "" {
+			if serveRepo != "" {
 				repos = []string{serveRepo}
 			}
 			if serveTickInterval > 0 && len(repos) == 0 {
-				return fmt.Errorf("--repo or subscriptions.github.repos is required when --tick-interval is enabled")
+				return fmt.Errorf("--repo is required when --tick-interval is enabled (subscriptions.github.repos is configured in agent.yaml)")
 			}
 
 			if serveTickInterval > 0 && len(repos) > 0 {

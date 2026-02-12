@@ -131,11 +131,8 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		maxBodySize:    maxBodySize,
 		channelTimeout: channelTimeout,
 		rpcRegistry:    NewMethodRegistry(),
-<<<<<<< HEAD
 		broadcaster:    NewNotificationBroadcaster(),
-=======
 		port:           cfg.Port,
->>>>>>> 75975cc (feat: Config-driven GitHub subscriptions in agent.yaml (transport-transparent serve))
 		state: persistentState{
 			ProcessedAt:  make(map[string]string),
 			ProcessedMax: 2000,

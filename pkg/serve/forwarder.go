@@ -107,12 +107,17 @@ func (f *Forwarder) Start(ctx context.Context) error {
 	stderr, err := f.cmd.StderrPipe()
 	if err != nil {
 		cancel()
+		// Clean up stdout pipe
+		_ = stdout.Close()
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
 	// Start the command
 	if err := f.cmd.Start(); err != nil {
 		cancel()
+		// Clean up pipes
+		_ = stdout.Close()
+		_ = stderr.Close()
 		return fmt.Errorf("failed to start gh webhook forward: %w", err)
 	}
 
@@ -239,9 +244,8 @@ func (f *Forwarder) HealthCheck() error {
 		return fmt.Errorf("forwarder not started")
 	}
 
-	if f.process == nil {
-		return fmt.Errorf("forwarder process is nil")
-	}
+	// f.process is guaranteed to be non-nil when f.started is true
+	// (it's set in Start() before f.started)
 
 	// Check if process is still running
 	err := f.process.Signal(syscall.Signal(0))

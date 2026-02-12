@@ -255,10 +255,12 @@ func (sm *SubscriptionManager) Status() map[string]interface{} {
 }
 
 // WriteStatusFile writes the current status to a file in the state directory
+// TODO: Implement actual file writing to state directory
 func (sm *SubscriptionManager) WriteStatusFile() error {
 	status := sm.Status()
 
 	// For now, just log the status
+	// TODO: Write status to state directory (e.g., sm.stateDir/status.json)
 	holonlog.Info("subscription status", "status", status)
 	return nil
 }
