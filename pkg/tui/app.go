@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -27,10 +30,17 @@ type App struct {
 	// Chat/conversation state
 	threadID     string
 	messages     []ConversationMessage
-	inputText    string
-	inputWidth   int
 	sending      bool
 	sendingError error
+	terminalW    int
+	terminalH    int
+	focus        focusArea
+	hasUnread    bool
+
+	// TUI components
+	input        textarea.Model
+	conversation viewport.Model
+	logViewport  viewport.Model
 
 	// Streaming
 	streamCtx     context.Context
@@ -40,6 +50,14 @@ type App struct {
 	streamErrors  chan error
 	streamClosed  chan struct{}
 }
+
+type focusArea int
+
+const (
+	focusInput focusArea = iota
+	focusConversation
+	focusLogs
+)
 
 // ConversationMessage represents a message in the conversation timeline
 type ConversationMessage struct {
@@ -52,12 +70,31 @@ type ConversationMessage struct {
 
 // NewApp creates a new TUI application
 func NewApp(client *RPCClient) *App {
+	input := textarea.New()
+	input.Placeholder = "Type a message..."
+	input.Prompt = "> "
+	input.ShowLineNumbers = false
+	input.CharLimit = 0
+	input.SetHeight(3)
+	input.SetWidth(80)
+	input.Focus()
+	input.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("ctrl+j"),
+		key.WithHelp("ctrl+j", "newline"),
+	)
+
+	conversation := viewport.New(80, 14)
+	logViewport := viewport.New(80, 8)
+
 	return &App{
 		client:        client,
 		logs:          make([]LogEntry, 0),
 		autoRefresh:   true,
 		messages:      make([]ConversationMessage, 0),
-		inputText:     "",
+		focus:         focusInput,
+		input:         input,
+		conversation:  conversation,
+		logViewport:   logViewport,
 		notifications: make(chan StreamNotification, 128),
 		streamErrors:  make(chan error, 8),
 		streamClosed:  make(chan struct{}, 1),
@@ -93,20 +130,15 @@ var (
 
 	userMsgStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("blue")).
-			Padding(0, 1)
+			Bold(true)
 
 	assistantMsgStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("green")).
-				Padding(0, 1)
+				Bold(true)
 
 	systemMsgStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("magenta")).
-			Padding(0, 1)
-
-	inputStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("white")).
-			Background(lipgloss.Color("blue")).
-			Padding(0, 1)
+			Bold(true)
 )
 
 // Messages
@@ -155,14 +187,27 @@ func (a *App) Init() tea.Cmd {
 // Update handles messages and updates state
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		a.terminalW = msg.Width
+		a.terminalH = msg.Height
+		a.resize()
+		return a, nil
+
 	case tea.KeyMsg:
-		switch msg.String() {
+		keyName := msg.String()
+		switch keyName {
 		case "q", "ctrl+c":
 			a.quitting = true
 			if a.streamCancel != nil {
 				a.streamCancel()
 			}
 			return a, tea.Quit
+
+		case "tab":
+			return a, a.nextFocus()
+
+		case "shift+tab":
+			return a, a.prevFocus()
 
 		case "p":
 			// Pause
@@ -184,50 +229,39 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 
-		case "up", "k":
-			// Scroll logs up
-			if a.logPosition > 0 {
-				a.logPosition--
-			}
-			return a, nil
-
-		case "down", "j":
-			// Scroll logs down
-			if a.logPosition < len(a.logs) {
-				a.logPosition++
-			}
-			return a, nil
-
 		case "enter":
-			// Send message
-			if strings.TrimSpace(a.inputText) != "" && !a.sending {
+			if a.focus == focusInput && strings.TrimSpace(a.input.Value()) != "" && !a.sending {
 				return a, a.sendMessage()
 			}
-			return a, nil
-
-		case "ctrl+h":
-			// Backspace
-			if len(a.inputText) > 0 {
-				a.inputText = a.inputText[:len(a.inputText)-1]
-			}
-			return a, nil
 
 		case "ctrl+u":
-			// Clear input
-			a.inputText = ""
-			return a, nil
-		}
-
-		// Handle regular character input for message box
-		if len(msg.String()) == 1 && !a.sending {
-			// Only allow printable characters
-			if msg.Runes != nil && len(msg.Runes) > 0 {
-				r := msg.Runes[0]
-				if r >= 32 && r <= 126 {
-					a.inputText += string(r)
-				}
+			if a.focus == focusInput {
+				a.input.SetValue("")
+				return a, nil
 			}
 		}
+
+		if a.focus == focusInput {
+			var cmd tea.Cmd
+			a.input, cmd = a.input.Update(msg)
+			return a, cmd
+		}
+
+		if a.focus == focusConversation {
+			var cmd tea.Cmd
+			a.conversation, cmd = a.conversation.Update(msg)
+			if a.conversation.AtBottom() {
+				a.hasUnread = false
+			}
+			return a, cmd
+		}
+
+		if a.focus == focusLogs {
+			var cmd tea.Cmd
+			a.logViewport, cmd = a.logViewport.Update(msg)
+			return a, cmd
+		}
+		return a, nil
 
 	case statusRefreshMsg:
 		if msg.err != nil {
@@ -251,9 +285,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.connected = false
 		} else {
 			a.logs = msg.logs
-			if len(a.logs) > 0 {
-				a.logPosition = len(a.logs)
-			}
+			a.updateLogViewport()
 		}
 		return a, nil
 
@@ -272,6 +304,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamErrorMsg:
 		a.err = fmt.Errorf("stream error: %w", msg.err)
 		a.streamActive = false
+		a.addSystemMessage("Notification stream disconnected")
 		return a, nil
 
 	case notificationMsg:
@@ -284,7 +317,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.sendingError = msg.err
 			a.addSystemMessage(fmt.Sprintf("Failed to send message: %s", msg.err))
 		} else if msg.response != nil {
-			a.inputText = "" // Clear input on success
+			a.input.SetValue("")
 			a.sendingError = nil
 			if msg.threadID != "" && a.threadID == "" {
 				a.threadID = msg.threadID
@@ -293,6 +326,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.message != "" {
 				a.addUserMessage(msg.message)
 			}
+		}
+		return a, nil
+
+	case pauseSuccessMsg:
+		if msg.err != nil {
+			a.addSystemMessage(fmt.Sprintf("Command failed: %s", msg.err))
+		} else {
+			a.addSystemMessage("Command sent successfully")
 		}
 		return a, nil
 	}
@@ -411,6 +452,7 @@ func (a *App) addUserMessage(content string) {
 		Timestamp: time.Now(),
 		Content:   content,
 	})
+	a.updateConversationViewport(true)
 }
 
 func (a *App) addAssistantMessage(content string) {
@@ -420,6 +462,7 @@ func (a *App) addAssistantMessage(content string) {
 		Timestamp: time.Now(),
 		Content:   content,
 	})
+	a.updateConversationViewport(true)
 }
 
 func (a *App) addSystemMessage(content string) {
@@ -429,6 +472,7 @@ func (a *App) addSystemMessage(content string) {
 		Timestamp: time.Now(),
 		Content:   content,
 	})
+	a.updateConversationViewport(true)
 }
 
 func (a *App) addTurnLifecycleMessage(content, state string) {
@@ -439,6 +483,7 @@ func (a *App) addTurnLifecycleMessage(content, state string) {
 		Content:   content,
 		State:     state,
 	})
+	a.updateConversationViewport(true)
 }
 
 // View renders the UI
@@ -448,12 +493,9 @@ func (a *App) View() string {
 	}
 
 	var b strings.Builder
-
-	// Header
 	b.WriteString(titleStyle.Render("Holon Serve TUI"))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
-	// Connection status
 	if a.connected {
 		connStatus := fmt.Sprintf("Connected: %s | Last Update: %s",
 			a.client.rpcURL,
@@ -464,21 +506,15 @@ func (a *App) View() string {
 	} else {
 		b.WriteString(statusStyle.Render("Connecting..."))
 	}
-	b.WriteString("\n\n")
-
-	// Status Panel
+	b.WriteString("\n")
 	if a.status != nil {
 		b.WriteString(a.renderStatusPanel())
+		b.WriteString("\n")
 	}
-
-	// Conversation Panel
 	b.WriteString(a.renderConversationPanel())
-
-	// Log Panel
+	b.WriteString("\n")
 	b.WriteString(a.renderLogPanel())
-
-	// Help
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 	b.WriteString(a.renderHelp())
 	b.WriteString("\n")
 	b.WriteString(a.renderInputBox())
@@ -513,115 +549,28 @@ func (a *App) renderStatusPanel() string {
 		b.WriteString(statusStyle.Render(fmt.Sprintf("Thread: %s", a.status.ControllerSession)))
 		b.WriteString("\n")
 	}
-
-	b.WriteString("\n")
-
-	return borderStyle.Width(60).Render(b.String())
+	return borderStyle.Width(a.panelWidth()).Render(b.String())
 }
 
 func (a *App) renderConversationPanel() string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("Conversation"))
-	b.WriteString("\n")
-
-	if len(a.messages) == 0 {
-		b.WriteString(statusStyle.Render("No messages yet"))
-		b.WriteString("\n")
-	} else {
-		// Show last 8 messages
-		start := len(a.messages) - 8
-		if start < 0 {
-			start = 0
-		}
-
-		for i := start; i < len(a.messages); i++ {
-			msg := a.messages[i]
-			timestamp := msg.Timestamp.Format("15:04:05")
-
-			var style lipgloss.Style
-			var prefix string
-
-			switch msg.Type {
-			case "user":
-				style = userMsgStyle
-				prefix = "[You]"
-			case "assistant":
-				style = assistantMsgStyle
-				prefix = "[Assistant]"
-			case "system":
-				style = systemMsgStyle
-				prefix = "[System]"
-			case "turn_lifecycle":
-				style = systemMsgStyle
-				if msg.State == "completed" {
-					prefix = "[✓]"
-				} else if msg.State == "active" {
-					prefix = "[…]"
-				} else {
-					prefix = "[!]"
-				}
-			}
-
-			// Truncate long messages
-			content := msg.Content
-			if len(content) > 60 {
-				content = content[:57] + "..."
-			}
-
-			b.WriteString(style.Render(fmt.Sprintf("%s %s: %s",
-				timestamp, prefix, content)))
-			b.WriteString("\n")
-		}
+	title := "Conversation"
+	if a.focus == focusConversation {
+		title += " [Focus]"
 	}
-
-	b.WriteString("\n")
-
-	return borderStyle.Width(80).Height(12).Render(b.String())
+	if a.hasUnread && a.focus != focusConversation {
+		title += " [New]"
+	}
+	panel := titleStyle.Render(title) + "\n" + a.conversation.View()
+	return borderStyle.Width(a.panelWidth()).Height(a.conversation.Height + 3).Render(panel)
 }
 
 func (a *App) renderLogPanel() string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("Event Logs"))
-	b.WriteString("\n")
-
-	if len(a.logs) == 0 {
-		b.WriteString(statusStyle.Render("No logs available"))
-		b.WriteString("\n")
-	} else {
-		// Show last 5 logs before logPosition
-		start := a.logPosition - 5
-		if start < 0 {
-			start = 0
-		}
-		end := a.logPosition
-		if end > len(a.logs) {
-			end = len(a.logs)
-		}
-
-		for i := start; i < end; i++ {
-			log := a.logs[i]
-			timestamp := log.Time.Format("15:04:05")
-			levelStyle := statusStyle
-			if log.Level == "error" || log.Level == "ERROR" {
-				levelStyle = errorStyle
-			}
-			b.WriteString(levelStyle.Render(fmt.Sprintf("[%s] %s: %s",
-				timestamp, log.Level, log.Message)))
-			b.WriteString("\n")
-		}
-
-		if len(a.logs) > 5 {
-			b.WriteString(helpStyle.Render(fmt.Sprintf("Showing %d-%d of %d logs (use ↑/↓ to scroll)",
-				start+1, end, len(a.logs))))
-			b.WriteString("\n")
-		}
+	title := "Event Logs"
+	if a.focus == focusLogs {
+		title += " [Focus]"
 	}
-
-	b.WriteString("\n")
-
-	return borderStyle.Width(80).Height(8).Render(b.String())
+	panel := titleStyle.Render(title) + "\n" + a.logViewport.View()
+	return borderStyle.Width(a.panelWidth()).Height(a.logViewport.Height + 3).Render(panel)
 }
 
 func (a *App) renderHelp() string {
@@ -632,24 +581,25 @@ func (a *App) renderHelp() string {
 		inputState = " [Send Failed]"
 	}
 
-	help := fmt.Sprintf("Commands: [Enter] Send Message%s | [p] Pause | [r] Resume | [R] Refresh | [Space] Toggle Auto-Refresh | [↑/↓] Scroll Logs | [Ctrl+U] Clear Input | [q] Quit",
+	help := fmt.Sprintf("Commands: [Tab] Switch Focus | [Enter] Send%s | [Ctrl+J] Newline | [p] Pause | [r] Resume | [R] Refresh | [Space] Toggle Auto-Refresh | [q] Quit",
 		inputState)
 	return helpStyle.Render(help)
 }
 
 // Render input box
 func (a *App) renderInputBox() string {
-	prefix := "Message: "
+	title := "Input"
+	if a.focus == focusInput {
+		title += " [Focus]"
+	}
 	if a.sending {
-		prefix = "Sending... "
+		title += " [Sending]"
 	}
-
-	displayText := a.inputText
-	if len(displayText) > 70 {
-		displayText = displayText[:67] + "..."
+	if a.sendingError != nil {
+		title += " [Last Send Failed]"
 	}
-
-	return inputStyle.Render(prefix + displayText + "_")
+	content := titleStyle.Render(title) + "\n" + a.input.View()
+	return borderStyle.Width(a.panelWidth()).Height(a.input.Height() + 3).Render(content)
 }
 
 // Commands
@@ -738,7 +688,7 @@ func (a *App) waitForStreamEventCmd() tea.Cmd {
 }
 
 func (a *App) sendMessage() tea.Cmd {
-	message := strings.TrimSpace(a.inputText)
+	message := strings.TrimSpace(a.input.Value())
 	if message == "" {
 		return nil
 	}
@@ -776,4 +726,152 @@ func (a *App) doSendMessage(message, threadID string) tea.Cmd {
 
 type pauseSuccessMsg struct {
 	err error
+}
+
+func (a *App) nextFocus() tea.Cmd {
+	a.focus = (a.focus + 1) % 3
+	return a.applyFocus()
+}
+
+func (a *App) prevFocus() tea.Cmd {
+	a.focus = (a.focus + 2) % 3
+	return a.applyFocus()
+}
+
+func (a *App) applyFocus() tea.Cmd {
+	if a.focus == focusInput {
+		return a.input.Focus()
+	}
+	a.input.Blur()
+	if a.focus == focusConversation && a.conversation.AtBottom() {
+		a.hasUnread = false
+	}
+	return nil
+}
+
+func (a *App) panelWidth() int {
+	if a.terminalW <= 0 {
+		return 90
+	}
+	if a.terminalW < 40 {
+		return a.terminalW
+	}
+	return a.terminalW - 2
+}
+
+func (a *App) resize() {
+	width := a.panelWidth() - 4
+	if width < 30 {
+		width = 30
+	}
+	conversationHeight := 14
+	logHeight := 8
+	inputHeight := 3
+	if a.terminalH > 0 {
+		usable := a.terminalH - 14
+		if usable > 24 {
+			conversationHeight = usable - 10
+			logHeight = 8
+		} else if usable > 14 {
+			conversationHeight = usable - 8
+			logHeight = 6
+		}
+	}
+	if conversationHeight < 8 {
+		conversationHeight = 8
+	}
+	if logHeight < 4 {
+		logHeight = 4
+	}
+
+	a.input.SetWidth(width)
+	a.input.SetHeight(inputHeight)
+	a.conversation.Width = width
+	a.conversation.Height = conversationHeight
+	a.logViewport.Width = width
+	a.logViewport.Height = logHeight
+	a.updateConversationViewport(false)
+	a.updateLogViewport()
+}
+
+func (a *App) updateConversationViewport(autoFollow bool) {
+	wasAtBottom := a.conversation.AtBottom()
+	a.conversation.SetContent(a.conversationContent())
+	if autoFollow && (wasAtBottom || a.focus == focusInput) {
+		a.conversation.GotoBottom()
+		a.hasUnread = false
+	} else if autoFollow {
+		a.hasUnread = true
+	}
+}
+
+func (a *App) updateLogViewport() {
+	wasAtBottom := a.logViewport.AtBottom()
+	a.logViewport.SetContent(a.logContent())
+	if wasAtBottom {
+		a.logViewport.GotoBottom()
+	}
+}
+
+func (a *App) conversationContent() string {
+	if len(a.messages) == 0 {
+		return statusStyle.Render("No messages yet.")
+	}
+
+	var lines []string
+	for _, msg := range a.messages {
+		timestamp := msg.Timestamp.Format("15:04:05")
+		roleLabel, roleStyle := a.messageLabel(msg)
+		header := fmt.Sprintf("%s %s", timestamp, roleStyle.Render(roleLabel))
+		lines = append(lines, header)
+		for _, contentLine := range strings.Split(msg.Content, "\n") {
+			lines = append(lines, "  "+contentLine)
+		}
+		lines = append(lines, "")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func (a *App) messageLabel(msg ConversationMessage) (string, lipgloss.Style) {
+	switch msg.Type {
+	case "user":
+		return "[You]", userMsgStyle
+	case "assistant":
+		return "[Assistant]", assistantMsgStyle
+	case "turn_lifecycle":
+		if msg.State == "completed" {
+			return "[Turn Done]", systemMsgStyle
+		}
+		if msg.State == "active" {
+			return "[Turn Running]", systemMsgStyle
+		}
+		return "[Turn]", systemMsgStyle
+	default:
+		return "[System]", systemMsgStyle
+	}
+}
+
+func (a *App) logContent() string {
+	if len(a.logs) == 0 {
+		return statusStyle.Render("No logs available.")
+	}
+
+	lines := make([]string, 0, len(a.logs))
+	for _, entry := range a.logs {
+		timestamp := entry.Time.Format("15:04:05")
+		level := strings.ToUpper(entry.Level)
+		levelLabel := "[" + level + "]"
+		if len(level) == 0 {
+			levelLabel = "[INFO]"
+		}
+		lines = append(lines, timestamp+" "+padRight(levelLabel, 8)+" "+entry.Message)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func padRight(s string, width int) string {
+	if width <= len(s) {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(s))
 }
