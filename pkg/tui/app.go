@@ -57,6 +57,7 @@ const (
 	focusInput focusArea = iota
 	focusConversation
 	focusLogs
+	focusCount
 )
 
 // ConversationMessage represents a message in the conversation timeline
@@ -241,7 +242,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if a.focus == focusInput {
+		if a.focus == focusInput && !a.sending {
 			var cmd tea.Cmd
 			a.input, cmd = a.input.Update(msg)
 			return a, cmd
@@ -581,7 +582,7 @@ func (a *App) renderHelp() string {
 		inputState = " [Send Failed]"
 	}
 
-	help := fmt.Sprintf("Commands: [Tab] Switch Focus | [Enter] Send%s | [Ctrl+J] Newline | [p] Pause | [r] Resume | [R] Refresh | [Space] Toggle Auto-Refresh | [q] Quit",
+	help := fmt.Sprintf("Commands: [Tab] Switch Focus | [Enter] Send%s | [Ctrl+J] Newline | [Ctrl+U] Clear Input | [↑/↓] Scroll Line | [PgUp/PgDn] Scroll Page | [p] Pause | [r] Resume | [R] Refresh | [Space] Toggle Auto-Refresh | [q] Quit",
 		inputState)
 	return helpStyle.Render(help)
 }
@@ -729,12 +730,12 @@ type pauseSuccessMsg struct {
 }
 
 func (a *App) nextFocus() tea.Cmd {
-	a.focus = (a.focus + 1) % 3
+	a.focus = (a.focus + 1) % focusCount
 	return a.applyFocus()
 }
 
 func (a *App) prevFocus() tea.Cmd {
-	a.focus = (a.focus + 2) % 3
+	a.focus = (a.focus + focusCount - 1) % focusCount
 	return a.applyFocus()
 }
 
@@ -761,8 +762,8 @@ func (a *App) panelWidth() int {
 
 func (a *App) resize() {
 	width := a.panelWidth() - 4
-	if width < 30 {
-		width = 30
+	if width < 1 {
+		width = 1
 	}
 	conversationHeight := 14
 	logHeight := 8

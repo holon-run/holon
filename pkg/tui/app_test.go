@@ -81,4 +81,16 @@ func TestAppTabSwitchesFocus(t *testing.T) {
 	if app.focus != focusLogs {
 		t.Fatalf("focus after second tab = %v, want %v", app.focus, focusLogs)
 	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = model.(*App)
+	if app.focus != focusInput {
+		t.Fatalf("focus after third tab = %v, want %v", app.focus, focusInput)
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	app = model.(*App)
+	if app.focus != focusLogs {
+		t.Fatalf("focus after shift+tab = %v, want %v", app.focus, focusLogs)
+	}
 }
