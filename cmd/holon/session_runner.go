@@ -31,6 +31,7 @@ type ControllerSessionConfig struct {
 	InputPath             string
 	OutputPath            string
 	StateDir              string
+	AgentHome             string
 	LogLevel              string
 	Env                   map[string]string
 	RuntimeMode           string
@@ -59,6 +60,7 @@ func (r *dockerSessionRunner) Start(ctx context.Context, cfg ControllerSessionCo
 		InputPath:            cfg.InputPath,
 		OutDir:               cfg.OutputPath,
 		StateDir:             cfg.StateDir,
+		AgentHome:            cfg.AgentHome,
 		Env:                  map[string]string{"LOG_LEVEL": cfg.LogLevel, "ASSISTANT_OUTPUT": "none"},
 		AgentConfigMode:      "no",
 		WorkspaceIsTemporary: true,

@@ -180,13 +180,13 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	}
 
 	h := &cliControllerHandler{
-		repoHint:             "holon-run/holon",
-		stateDir:             td,
-		controllerWorkspace:  t.TempDir(),
-		controllerRoleLabel:  "dev",
-		controllerRolePrompt: "ROLE: DEV",
-		logLevel:             "progress",
-		sessionRunner:        mockRunner,
+		repoHint:            "holon-run/holon",
+		stateDir:            td,
+		agentHome:           t.TempDir(),
+		controllerWorkspace: t.TempDir(),
+		controllerRoleLabel: "dev",
+		logLevel:            "progress",
+		sessionRunner:       mockRunner,
 	}
 	defer h.Close()
 
@@ -301,12 +301,9 @@ func TestLoadControllerRole(t *testing.T) {
 	if err := os.WriteFile(rolePath, []byte("ROLE: DEV\n"), 0o644); err != nil {
 		t.Fatalf("write role: %v", err)
 	}
-	systemPrompt, roleLabel, err := loadControllerRole(agentHome)
+	roleLabel, err := loadControllerRole(agentHome)
 	if err != nil {
 		t.Fatalf("loadControllerRole() error: %v", err)
-	}
-	if !strings.Contains(systemPrompt, "ROLE: DEV") {
-		t.Fatalf("unexpected role prompt: %q", systemPrompt)
 	}
 	if roleLabel != "dev" {
 		t.Fatalf("role label = %q, want dev", roleLabel)
@@ -321,23 +318,23 @@ func TestLoadControllerRole_EmptyFile(t *testing.T) {
 	if err := os.WriteFile(rolePath, []byte("   \n"), 0o644); err != nil {
 		t.Fatalf("write role: %v", err)
 	}
-	if _, _, err := loadControllerRole(agentHome); err == nil {
+	if _, err := loadControllerRole(agentHome); err == nil {
 		t.Fatalf("expected error for empty ROLE.md")
 	}
 }
 
-func TestControllerPrompts_FromRolePrompt(t *testing.T) {
+func TestControllerPrompts_IncludeAgentHomeContract(t *testing.T) {
 	t.Parallel()
 
 	h := &cliControllerHandler{
-		controllerRolePrompt: "ROLE: PM\nSystem prompt body",
+		controllerRoleLabel: "pm",
 	}
 	systemPrompt, userPrompt, err := h.controllerPrompts()
 	if err != nil {
 		t.Fatalf("controllerPrompts() error: %v", err)
 	}
-	if !strings.Contains(systemPrompt, "ROLE: PM") {
-		t.Fatalf("expected ROLE.md prompt, got: %q", systemPrompt)
+	if !strings.Contains(systemPrompt, "HOLON_AGENT_HOME") {
+		t.Fatalf("expected HOLON_AGENT_HOME contract, got: %q", systemPrompt)
 	}
 	if !strings.Contains(userPrompt, "HOLON_CONTROLLER_GOAL_STATE_PATH") {
 		t.Fatalf("unexpected runtime user prompt: %q", userPrompt)
@@ -349,7 +346,7 @@ func TestWriteControllerSpecAndPrompts_ExcludesSkillsMetadata(t *testing.T) {
 
 	inputDir := t.TempDir()
 	h := &cliControllerHandler{
-		controllerRolePrompt: "ROLE: PM",
+		controllerRoleLabel: "pm",
 	}
 
 	if err := h.writeControllerSpecAndPrompts(inputDir); err != nil {
