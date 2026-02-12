@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,7 @@ type SubscriptionManager struct {
 	handler       EventHandler
 	dispatcher    TurnDispatcher
 	mode          string
+	cancel        context.CancelFunc
 }
 
 // ManagerConfig holds configuration for SubscriptionManager
@@ -37,7 +39,7 @@ type ManagerConfig struct {
 	AgentHome      string
 	StateDir       string
 	Handler        EventHandler
-	WebhookPort    int // 0 means auto-select
+	WebhookPort    int // 0 means use the default port (8080)
 	TurnDispatcher TurnDispatcher
 }
 
@@ -69,6 +71,9 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 		return fmt.Errorf("subscription manager already started")
 	}
 
+	runCtx, cancel := context.WithCancel(ctx)
+	sm.cancel = cancel
+
 	// Find GitHub subscriptions
 	var gitHubSub *agenthome.GitHubSubscription
 	for _, sub := range sm.config.Subscriptions {
@@ -79,7 +84,9 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	}
 
 	if gitHubSub == nil {
-		if err := sm.startRPCOnlyMode(ctx); err != nil {
+		if err := sm.startRPCOnlyMode(runCtx); err != nil {
+			cancel()
+			sm.cancel = nil
 			sm.mu.Unlock()
 			return err
 		}
@@ -99,7 +106,9 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	}
 
 	if len(gitHubSub.Repos) == 0 {
-		if err := sm.startRPCOnlyMode(ctx); err != nil {
+		if err := sm.startRPCOnlyMode(runCtx); err != nil {
+			cancel()
+			sm.cancel = nil
 			sm.mu.Unlock()
 			return err
 		}
@@ -114,16 +123,22 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 
 	switch transportMode {
 	case "gh_forward":
-		if err := sm.startGHForwardMode(ctx, gitHubSub); err != nil {
+		if err := sm.startGHForwardMode(runCtx, gitHubSub); err != nil {
+			cancel()
+			sm.cancel = nil
 			sm.mu.Unlock()
 			return err
 		}
 	case "websocket":
-		if err := sm.startWebSocketMode(ctx, gitHubSub); err != nil {
+		if err := sm.startWebSocketMode(runCtx, gitHubSub); err != nil {
+			cancel()
+			sm.cancel = nil
 			sm.mu.Unlock()
 			return err
 		}
 	default:
+		cancel()
+		sm.cancel = nil
 		sm.mu.Unlock()
 		return fmt.Errorf("unsupported transport mode: %s", transportMode)
 	}
@@ -154,7 +169,10 @@ func (sm *SubscriptionManager) startGHForwardMode(ctx context.Context, sub *agen
 	}
 	sm.webhookServer = webhookSrv
 
-	go sm.runWebhookServer(ctx, webhookSrv)
+	if err := sm.startWebhookServer(ctx, webhookSrv); err != nil {
+		webhookSrv.Close()
+		return fmt.Errorf("failed to start webhook server: %w", err)
+	}
 
 	// Create gh webhook forward manager
 	forwarder, err := NewForwarder(ForwarderConfig{
@@ -199,7 +217,10 @@ func (sm *SubscriptionManager) startWebSocketMode(ctx context.Context, sub *agen
 		return fmt.Errorf("failed to create webhook server: %w", err)
 	}
 	sm.webhookServer = webhookSrv
-	go sm.runWebhookServer(ctx, webhookSrv)
+	if err := sm.startWebhookServer(ctx, webhookSrv); err != nil {
+		webhookSrv.Close()
+		return fmt.Errorf("failed to start webhook server: %w", err)
+	}
 
 	src := NewWebSocketSource(WebSocketSourceConfig{
 		URL: sub.Transport.WebsocketURL,
@@ -246,14 +267,54 @@ func (sm *SubscriptionManager) startRPCOnlyMode(ctx context.Context) error {
 	}
 	sm.webhookServer = webhookSrv
 	sm.mode = "rpc_only"
-	go sm.runWebhookServer(ctx, webhookSrv)
+	if err := sm.startWebhookServer(ctx, webhookSrv); err != nil {
+		webhookSrv.Close()
+		return fmt.Errorf("failed to start rpc server: %w", err)
+	}
 	holonlog.Info("no active subscriptions configured, starting in rpc-only mode", "port", port)
 	return nil
 }
 
-func (sm *SubscriptionManager) runWebhookServer(ctx context.Context, webhookSrv *WebhookServer) {
-	if err := webhookSrv.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		holonlog.Error("webhook server exited", "error", err)
+func (sm *SubscriptionManager) startWebhookServer(ctx context.Context, webhookSrv *WebhookServer) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- webhookSrv.Start(ctx)
+	}()
+
+	healthURL := BuildWebhookURL(webhookSrv.Port(), "/health")
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				return err
+			}
+			return fmt.Errorf("webhook server exited before becoming ready")
+		case <-deadline.C:
+			return fmt.Errorf("timeout waiting for webhook server readiness")
+		case <-ticker.C:
+			req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+			if reqErr != nil {
+				return fmt.Errorf("failed to build health request: %w", reqErr)
+			}
+			resp, doErr := (&http.Client{Timeout: 250 * time.Millisecond}).Do(req)
+			if doErr != nil {
+				continue
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				go func() {
+					if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) {
+						holonlog.Error("webhook server exited", "error", err)
+					}
+				}()
+				return nil
+			}
+		}
 	}
 }
 
@@ -307,6 +368,11 @@ func (sm *SubscriptionManager) Stop() error {
 	}
 
 	var errs []error
+
+	if sm.cancel != nil {
+		sm.cancel()
+		sm.cancel = nil
+	}
 
 	// Stop forwarder first
 	if sm.forwarder != nil {

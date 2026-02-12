@@ -672,6 +672,65 @@ func TestHandleTurnStart_DispatcherError(t *testing.T) {
 	}
 }
 
+func TestHandleTurnSteer_Dispatcher(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	dispatchedTurnID := ""
+	dispatchedThreadID := ""
+	rt.SetTurnDispatcher(func(_ context.Context, req TurnStartRequest, turnID string) error {
+		dispatchedTurnID = turnID
+		dispatchedThreadID = req.ThreadID
+		return nil
+	})
+
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_test123",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	startResult, startErr := rt.HandleTurnStart(startParams)
+	if startErr != nil {
+		t.Fatalf("HandleTurnStart() setup error = %v", startErr)
+	}
+	startResp, ok := startResult.(TurnStartResponse)
+	if !ok {
+		t.Fatalf("HandleTurnStart() setup result type = %T, want TurnStartResponse", startResult)
+	}
+
+	steerParams, _ := json.Marshal(map[string]interface{}{
+		"turn_id": startResp.TurnID,
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "follow up"},
+				},
+			},
+		},
+	})
+	if _, rpcErr := rt.HandleTurnSteer(steerParams); rpcErr != nil {
+		t.Fatalf("HandleTurnSteer() error = %v", rpcErr)
+	}
+	if dispatchedTurnID != startResp.TurnID {
+		t.Fatalf("dispatch turn_id = %q, want %q", dispatchedTurnID, startResp.TurnID)
+	}
+	if dispatchedThreadID != "thread_test123" {
+		t.Fatalf("dispatch thread_id = %q, want thread_test123", dispatchedThreadID)
+	}
+}
+
 func TestHandleTurnStartResumesIfPaused(t *testing.T) {
 	tmpDir := t.TempDir()
 

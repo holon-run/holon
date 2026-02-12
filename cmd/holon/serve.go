@@ -262,13 +262,16 @@ func loadControllerRole(agentHome string) (string, string, error) {
 	}
 	content := strings.TrimSpace(string(data))
 	if content == "" {
-		return "", "", fmt.Errorf("role prompt file is empty: %s", rolePath)
+		return "", "", fmt.Errorf("role prompt file is empty: %s (please add a role definition, e.g., '# ROLE: PM')", rolePath)
 	}
 	return content, inferControllerRole(content), nil
 }
 
 func inferControllerRole(content string) string {
 	lower := strings.ToLower(content)
+	if role := inferRoleFromFrontMatter(lower); role != "" {
+		return role
+	}
 	switch {
 	case strings.Contains(lower, "role: dev"),
 		strings.Contains(lower, "role dev"),
@@ -282,6 +285,33 @@ func inferControllerRole(content string) string {
 	default:
 		return "pm"
 	}
+}
+
+func inferRoleFromFrontMatter(lower string) string {
+	trimmed := strings.TrimSpace(lower)
+	if !strings.HasPrefix(trimmed, "---\n") {
+		return ""
+	}
+	lines := strings.Split(trimmed, "\n")
+	for i := 1; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "---" {
+			return ""
+		}
+		if !strings.HasPrefix(line, "role:") {
+			continue
+		}
+		role := strings.TrimSpace(strings.TrimPrefix(line, "role:"))
+		switch role {
+		case "pm", "product-manager", "product_manager":
+			return "pm"
+		case "dev", "developer", "engineer":
+			return "dev"
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 func startServeTickEmitter(ctx context.Context, interval time.Duration, repo string, sink func(context.Context, serve.EventEnvelope) error) {

@@ -765,6 +765,7 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 	if strings.TrimSpace(req.ThreadID) == "" {
 		return nil, newInvalidParamFieldError("thread_id", "thread_id is required")
 	}
+	req.ThreadID = strings.TrimSpace(req.ThreadID)
 	normalizedInput, _, rpcErr := validateTurnInput(req.Input)
 	if rpcErr != nil {
 		return nil, rpcErr
@@ -780,7 +781,6 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 	rt.SetControllerSession(req.ThreadID)
 
 	turnID, startedAt := rt.beginTurn(req.ThreadID)
-	req.ThreadID = strings.TrimSpace(req.ThreadID)
 	req.Input = normalizedInput
 
 	turnStarted := NewTurnNotification(turnID, TurnNotificationStarted, StateActive)
@@ -790,8 +790,16 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 	rt.emitUserInputItems(req.ThreadID, turnID, normalizedInput)
 	if dispatcher := rt.getTurnDispatcher(); dispatcher != nil {
 		if err := dispatcher(context.Background(), req, turnID); err != nil {
-			_, _ = rt.stopAndRemoveTurn(turnID)
-			return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to dispatch turn: %s", err))
+			if _, removed := rt.stopAndRemoveTurn(turnID); !removed {
+				rt.emitTurnNotification(TurnNotification{
+					TurnID:   turnID,
+					Type:     TurnNotificationInterrupted,
+					State:    StateInterrupted,
+					ThreadID: req.ThreadID,
+					Message:  "turn dispatch failed and cleanup could not confirm removal",
+				})
+			}
+			return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to dispatch turn %s for thread %s: %s", turnID, req.ThreadID, err))
 		}
 	}
 	return TurnStartResponse{
@@ -823,6 +831,16 @@ func (rt *Runtime) HandleTurnSteer(params json.RawMessage) (interface{}, *JSONRP
 	}
 
 	rt.emitUserInputItems(turn.ThreadID, turn.ID, normalizedInput)
+	if dispatcher := rt.getTurnDispatcher(); dispatcher != nil {
+		steerAsTurn := TurnStartRequest{
+			ThreadID:        turn.ThreadID,
+			Input:           normalizedInput,
+			ExtendedContext: req.ExtendedContext,
+		}
+		if err := dispatcher(context.Background(), steerAsTurn, turn.ID); err != nil {
+			return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to dispatch turn/steer for turn %s: %s", turn.ID, err))
+		}
+	}
 	rt.scheduleTurnAutoComplete(turn.ID)
 
 	return TurnSteerResponse{

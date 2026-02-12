@@ -38,6 +38,7 @@ type App struct {
 	streamActive  bool
 	notifications chan StreamNotification
 	streamErrors  chan error
+	streamClosed  chan struct{}
 }
 
 // ConversationMessage represents a message in the conversation timeline
@@ -59,6 +60,7 @@ func NewApp(client *RPCClient) *App {
 		inputText:     "",
 		notifications: make(chan StreamNotification, 128),
 		streamErrors:  make(chan error, 8),
+		streamClosed:  make(chan struct{}, 1),
 	}
 }
 
@@ -693,6 +695,7 @@ func (a *App) startStreamCmd() tea.Cmd {
 		ctx, cancel := context.WithCancel(context.Background())
 		notifs := a.notifications
 		errs := a.streamErrors
+		closed := a.streamClosed
 		go func() {
 			if err := a.client.StreamNotifications(ctx, func(notif StreamNotification) {
 				select {
@@ -704,6 +707,11 @@ func (a *App) startStreamCmd() tea.Cmd {
 				case errs <- err:
 				default:
 				}
+				return
+			}
+			select {
+			case closed <- struct{}{}:
+			default:
 			}
 		}()
 		return streamStartedMsg{ctx: ctx, cancel: cancel}
@@ -712,11 +720,19 @@ func (a *App) startStreamCmd() tea.Cmd {
 
 func (a *App) waitForStreamEventCmd() tea.Cmd {
 	return func() tea.Msg {
+		var done <-chan struct{}
+		if a.streamCtx != nil {
+			done = a.streamCtx.Done()
+		}
 		select {
 		case notif := <-a.notifications:
 			return notificationMsg{notification: notif}
 		case err := <-a.streamErrors:
 			return streamErrorMsg{err: err}
+		case <-a.streamClosed:
+			return streamErrorMsg{err: fmt.Errorf("stream closed")}
+		case <-done:
+			return streamErrorMsg{err: context.Canceled}
 		}
 	}
 }

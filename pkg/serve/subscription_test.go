@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -155,7 +156,7 @@ func TestSubscriptionManager_StartRPCOnlyWhenNoRepos(t *testing.T) {
 		AgentHome:   agentHome,
 		StateDir:    stateDir,
 		Handler:     handler,
-		WebhookPort: 18081,
+		WebhookPort: mustGetPort(t),
 	})
 	if err != nil {
 		t.Fatalf("new subscription manager: %v", err)
@@ -236,9 +237,10 @@ func TestSubscriptionManager_WebSocketMode_StartsAndProcessesEvents(t *testing.T
 	}
 
 	sm, err := NewSubscriptionManager(ManagerConfig{
-		AgentHome: agentHome,
-		StateDir:  stateDir,
-		Handler:   handler,
+		AgentHome:   agentHome,
+		StateDir:    stateDir,
+		Handler:     handler,
+		WebhookPort: mustGetPort(t),
 	})
 	if err != nil {
 		t.Fatalf("new subscription manager: %v", err)
@@ -274,4 +276,22 @@ func TestSubscriptionManager_WebSocketMode_StartsAndProcessesEvents(t *testing.T
 	if status["transport_mode"] != "websocket" {
 		t.Fatalf("transport_mode = %v, want websocket", status["transport_mode"])
 	}
+}
+
+func mustGetPort(t *testing.T) int {
+	t.Helper()
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for test port: %v", err)
+	}
+	defer l.Close()
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener addr type = %T, want *net.TCPAddr", l.Addr())
+	}
+	port := addr.Port
+	if port <= 0 {
+		t.Fatalf("invalid ephemeral port: %d", port)
+	}
+	return port
 }

@@ -68,18 +68,18 @@ Example direct forwarding targets:
 
 PM state directory (`~/.holon/agents/pm/state`):
 
-- `.holon/pm-state/events.ndjson`
-- `.holon/pm-state/decisions.ndjson`
-- `.holon/pm-state/actions.ndjson`
-- `.holon/pm-state/controller-state/event-channel.ndjson`
-- `.holon/pm-state/controller-state/goal-state.json`
+- `~/.holon/agents/pm/state/events.ndjson`
+- `~/.holon/agents/pm/state/decisions.ndjson`
+- `~/.holon/agents/pm/state/actions.ndjson`
+- `~/.holon/agents/pm/state/controller-state/event-channel.ndjson`
+- `~/.holon/agents/pm/state/controller-state/goal-state.json`
 
 Dev state directory (`~/.holon/agents/dev/state`):
 
-- `.holon/dev-state/events.ndjson`
-- `.holon/dev-state/decisions.ndjson`
-- `.holon/dev-state/actions.ndjson`
-- `.holon/dev-state/controller-state/event-channel.ndjson`
+- `~/.holon/agents/dev/state/events.ndjson`
+- `~/.holon/agents/dev/state/decisions.ndjson`
+- `~/.holon/agents/dev/state/actions.ndjson`
+- `~/.holon/agents/dev/state/controller-state/event-channel.ndjson`
 
 ## Demo Success Criteria
 

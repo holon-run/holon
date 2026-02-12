@@ -263,6 +263,9 @@ func TestInferControllerRole(t *testing.T) {
 	if got := inferControllerRole("unknown"); got != "pm" {
 		t.Fatalf("infer default = %q", got)
 	}
+	if got := inferControllerRole("---\nrole: dev\n---\nbody"); got != "dev" {
+		t.Fatalf("infer frontmatter dev = %q", got)
+	}
 }
 
 func TestBuildTickEvent(t *testing.T) {
