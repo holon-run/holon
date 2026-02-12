@@ -600,7 +600,7 @@ func (a *App) renderActivityPanel() string {
 }
 
 func (a *App) renderLogPanel() string {
-	title := "Diagnostics"
+	title := "Diagnostics (server logs)"
 	if a.focus == focusLogs {
 		title += " [Focus]"
 	}
@@ -616,7 +616,7 @@ func (a *App) renderHelp() string {
 		inputState = " [Send Failed]"
 	}
 
-	help := fmt.Sprintf("Commands: [Tab] Switch Focus | [Enter] Send%s | [Ctrl+J] Newline | [Ctrl+U] Clear Input | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Toggle Auto-Refresh | [↑/↓] Scroll Line | [PgUp/PgDn] Scroll Page | [q] Quit | Diagnostics=holon/logStream server logs",
+	help := fmt.Sprintf("Keys: [Tab] Focus | [Enter] Send%s | [Ctrl+J] Newline | [Ctrl+U] Clear | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit",
 		inputState)
 	return helpStyle.Render(help)
 }
@@ -853,13 +853,15 @@ func (a *App) resize() {
 func (a *App) updateConversationViewport(autoFollow bool) {
 	wasAtBottom := a.conversation.AtBottom()
 	a.conversation.SetContent(a.conversationContent())
-	if autoFollow && (wasAtBottom || a.focus == focusInput || a.focus == focusConversation) {
+	if autoFollow && (wasAtBottom || a.focus == focusInput) {
 		a.conversation.GotoBottom()
 	}
-	if autoFollow && a.focus != focusConversation {
+
+	if autoFollow && !a.conversation.AtBottom() {
 		a.hasUnreadChat = true
 	}
-	if a.focus == focusConversation && a.conversation.AtBottom() {
+
+	if a.conversation.AtBottom() {
 		a.hasUnreadChat = false
 	}
 }
@@ -867,13 +869,15 @@ func (a *App) updateConversationViewport(autoFollow bool) {
 func (a *App) updateActivityViewport(autoFollow bool) {
 	wasAtBottom := a.activity.AtBottom()
 	a.activity.SetContent(a.activityContent())
-	if autoFollow && (wasAtBottom || a.focus == focusActivity) {
+	if autoFollow && (wasAtBottom || a.focus == focusInput) {
 		a.activity.GotoBottom()
 	}
-	if autoFollow && a.focus != focusActivity {
+
+	if autoFollow && !a.activity.AtBottom() {
 		a.hasUnreadEvents = true
 	}
-	if a.focus == focusActivity && a.activity.AtBottom() {
+
+	if a.activity.AtBottom() {
 		a.hasUnreadEvents = false
 	}
 }

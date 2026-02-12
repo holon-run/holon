@@ -69,7 +69,7 @@ func TestAppInputRegularKeysDontTriggerRuntimeCommands(t *testing.T) {
 	}
 }
 
-func TestAppCtrlAWithoutInputTogglesAutoRefresh(t *testing.T) {
+func TestAppCtrlATogglesAutoRefreshWhileInputFocused(t *testing.T) {
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	if !app.autoRefresh {
 		t.Fatal("expected autoRefresh=true by default")
@@ -79,6 +79,30 @@ func TestAppCtrlAWithoutInputTogglesAutoRefresh(t *testing.T) {
 	app = model.(*App)
 	if app.autoRefresh {
 		t.Fatal("expected autoRefresh=false after Ctrl+A")
+	}
+}
+
+func TestConversationDoesNotAutoScrollWhenUserScrolledUp(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = model.(*App)
+
+	for i := 0; i < 24; i++ {
+		app.addAssistantMessage(strings.Repeat("line", 8))
+	}
+	app.focus = focusConversation
+	app.conversation.LineUp(5)
+	if app.conversation.AtBottom() {
+		t.Fatal("expected conversation to be scrolled up before new message")
+	}
+
+	app.addAssistantMessage("new message while reading history")
+
+	if app.conversation.AtBottom() {
+		t.Fatal("expected conversation to stay scrolled up after new message")
+	}
+	if !app.hasUnreadChat {
+		t.Fatal("expected unread chat indicator when new content arrives off-screen")
 	}
 }
 
