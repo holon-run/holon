@@ -2,7 +2,9 @@ package serve
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -595,6 +597,78 @@ func TestHandleTurnStart(t *testing.T) {
 
 	if resp.TurnID == "" {
 		t.Error("TurnID with params is empty")
+	}
+}
+
+func TestHandleTurnStart_Dispatcher(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	called := false
+	rt.SetTurnDispatcher(func(_ context.Context, req TurnStartRequest, turnID string) error {
+		called = true
+		if req.ThreadID != "thread_test123" {
+			t.Fatalf("thread_id = %q", req.ThreadID)
+		}
+		if turnID == "" {
+			t.Fatalf("turnID should not be empty")
+		}
+		return nil
+	})
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_test123",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	if _, rpcErr := rt.HandleTurnStart(params); rpcErr != nil {
+		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	}
+	if !called {
+		t.Fatalf("expected dispatcher to be called")
+	}
+}
+
+func TestHandleTurnStart_DispatcherError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	rt.SetTurnDispatcher(func(_ context.Context, _ TurnStartRequest, _ string) error {
+		return errors.New("dispatch failed")
+	})
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_test123",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	_, rpcErr := rt.HandleTurnStart(params)
+	if rpcErr == nil {
+		t.Fatalf("expected dispatcher error")
+	}
+	if rpcErr.Code != ErrCodeInternalError {
+		t.Fatalf("error code = %d, want %d", rpcErr.Code, ErrCodeInternalError)
 	}
 }
 

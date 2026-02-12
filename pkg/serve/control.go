@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -74,6 +75,7 @@ type Runtime struct {
 	broadcaster *NotificationBroadcaster
 	turns       map[string]*activeTurn
 	turnIdleTTL time.Duration
+	dispatcher  TurnDispatcher
 }
 
 type activeTurn struct {
@@ -83,6 +85,9 @@ type activeTurn struct {
 	CompletionTimer *time.Timer
 	Generation      uint64
 }
+
+// TurnDispatcher handles user turn input and forwards it to the real controller runtime.
+type TurnDispatcher func(ctx context.Context, req TurnStartRequest, turnID string) error
 
 // NewRuntime creates a new runtime manager
 func NewRuntime(stateDir string) (*Runtime, error) {
@@ -121,10 +126,23 @@ func (rt *Runtime) setTurnIdleTTLForTest(ttl time.Duration) {
 	rt.turnIdleTTL = ttl
 }
 
+// SetTurnDispatcher injects the runtime dispatcher for turn/start requests.
+func (rt *Runtime) SetTurnDispatcher(dispatcher TurnDispatcher) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.dispatcher = dispatcher
+}
+
 func (rt *Runtime) getBroadcaster() *NotificationBroadcaster {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.broadcaster
+}
+
+func (rt *Runtime) getTurnDispatcher() TurnDispatcher {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.dispatcher
 }
 
 func (rt *Runtime) emitThreadNotification(n ThreadNotification) {
@@ -735,41 +753,6 @@ func (rt *Runtime) emitUserInputItems(threadID, turnID string, input []TurnInput
 	}
 }
 
-func (rt *Runtime) emitAssistantOutput(threadID, turnID string, texts []string) {
-	if len(texts) == 0 {
-		return
-	}
-	if rt.getBroadcaster() == nil {
-		return
-	}
-	assistantText := fmt.Sprintf("Received: %s", strings.Join(texts, "\n"))
-	itemID := fmt.Sprintf("item_%d", rt.now().UnixNano())
-
-	created := NewItemNotification(itemID, ItemNotificationCreated, StateActive, map[string]interface{}{
-		"type": "message",
-		"role": "assistant",
-		"content": []map[string]string{{
-			"type": "output_text",
-			"text": assistantText,
-		}},
-	})
-	created.ThreadID = threadID
-	created.TurnID = turnID
-	rt.emitItemNotification(created)
-
-	updated := NewItemNotification(itemID, ItemNotificationUpdated, StateCompleted, map[string]interface{}{
-		"type": "message",
-		"role": "assistant",
-		"content": []map[string]string{{
-			"type": "output_text",
-			"text": assistantText,
-		}},
-	})
-	updated.ThreadID = threadID
-	updated.TurnID = turnID
-	rt.emitItemNotification(updated)
-}
-
 // HandleTurnStart is the JSON-RPC handler for turn/start
 // This maps to starting a new turn (event processing cycle) in Holon
 func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRPCError) {
@@ -782,7 +765,7 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 	if strings.TrimSpace(req.ThreadID) == "" {
 		return nil, newInvalidParamFieldError("thread_id", "thread_id is required")
 	}
-	normalizedInput, texts, rpcErr := validateTurnInput(req.Input)
+	normalizedInput, _, rpcErr := validateTurnInput(req.Input)
 	if rpcErr != nil {
 		return nil, rpcErr
 	}
@@ -797,14 +780,20 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 	rt.SetControllerSession(req.ThreadID)
 
 	turnID, startedAt := rt.beginTurn(req.ThreadID)
+	req.ThreadID = strings.TrimSpace(req.ThreadID)
+	req.Input = normalizedInput
 
 	turnStarted := NewTurnNotification(turnID, TurnNotificationStarted, StateActive)
 	turnStarted.ThreadID = req.ThreadID
 	turnStarted.StartedAt = startedAt.Format(time.RFC3339)
 	rt.emitTurnNotification(turnStarted)
 	rt.emitUserInputItems(req.ThreadID, turnID, normalizedInput)
-	rt.emitAssistantOutput(req.ThreadID, turnID, texts)
-
+	if dispatcher := rt.getTurnDispatcher(); dispatcher != nil {
+		if err := dispatcher(context.Background(), req, turnID); err != nil {
+			_, _ = rt.stopAndRemoveTurn(turnID)
+			return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to dispatch turn: %s", err))
+		}
+	}
 	return TurnStartResponse{
 		TurnID:    turnID,
 		State:     "active",
@@ -823,7 +812,7 @@ func (rt *Runtime) HandleTurnSteer(params json.RawMessage) (interface{}, *JSONRP
 	if strings.TrimSpace(req.TurnID) == "" {
 		return nil, newInvalidParamFieldError("turn_id", "turn_id is required")
 	}
-	normalizedInput, texts, rpcErr := validateTurnInput(req.Input)
+	normalizedInput, _, rpcErr := validateTurnInput(req.Input)
 	if rpcErr != nil {
 		return nil, rpcErr
 	}
@@ -834,7 +823,6 @@ func (rt *Runtime) HandleTurnSteer(params json.RawMessage) (interface{}, *JSONRP
 	}
 
 	rt.emitUserInputItems(turn.ThreadID, turn.ID, normalizedInput)
-	rt.emitAssistantOutput(turn.ThreadID, turn.ID, texts)
 	rt.scheduleTurnAutoComplete(turn.ID)
 
 	return TurnSteerResponse{

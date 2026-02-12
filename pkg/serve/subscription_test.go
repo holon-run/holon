@@ -117,6 +117,64 @@ func TestSubscriptionManager_WriteStatusFile(t *testing.T) {
 	if status["transport_mode"] != "gh_forward" {
 		t.Fatalf("transport_mode = %v, want gh_forward", status["transport_mode"])
 	}
+	if status["mode"] != "rpc_only" {
+		t.Fatalf("mode = %v, want rpc_only before start", status["mode"])
+	}
+}
+
+func TestSubscriptionManager_StartRPCOnlyWhenNoRepos(t *testing.T) {
+	agentHome := t.TempDir()
+	stateDir := filepath.Join(agentHome, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	cfg := agenthome.Config{
+		Version: "v1",
+		Agent: agenthome.AgentConfig{
+			ID:      "test",
+			Profile: "default",
+		},
+		Subscriptions: []agenthome.Subscription{
+			{
+				GitHub: &agenthome.GitHubSubscription{
+					Repos: []string{},
+					Transport: agenthome.GitHubSubscriptionTransport{
+						Mode: "gh_forward",
+					},
+				},
+			},
+		},
+	}
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	handler := &captureEventHandler{}
+	sm, err := NewSubscriptionManager(ManagerConfig{
+		AgentHome:   agentHome,
+		StateDir:    stateDir,
+		Handler:     handler,
+		WebhookPort: 18081,
+	})
+	if err != nil {
+		t.Fatalf("new subscription manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sm.Start(ctx); err != nil {
+		t.Fatalf("start subscription manager: %v", err)
+	}
+	defer sm.Stop()
+
+	status := sm.Status()
+	if status["mode"] != "rpc_only" {
+		t.Fatalf("mode = %v, want rpc_only", status["mode"])
+	}
+	if status["rpc_active"] != true {
+		t.Fatalf("rpc_active = %v, want true", status["rpc_active"])
+	}
 }
 
 func TestSubscriptionManager_WebSocketMode_StartsAndProcessesEvents(t *testing.T) {

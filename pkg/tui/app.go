@@ -25,17 +25,19 @@ type App struct {
 	refreshIndex int
 
 	// Chat/conversation state
-	threadID      string
-	messages      []ConversationMessage
-	inputText     string
-	inputWidth    int
-	sending       bool
-	sendingError  error
+	threadID     string
+	messages     []ConversationMessage
+	inputText    string
+	inputWidth   int
+	sending      bool
+	sendingError error
 
 	// Streaming
-	streamCtx      context.Context
+	streamCtx     context.Context
 	streamCancel  context.CancelFunc
 	streamActive  bool
+	notifications chan StreamNotification
+	streamErrors  chan error
 }
 
 // ConversationMessage represents a message in the conversation timeline
@@ -50,11 +52,13 @@ type ConversationMessage struct {
 // NewApp creates a new TUI application
 func NewApp(client *RPCClient) *App {
 	return &App{
-		client:      client,
-		logs:        make([]LogEntry, 0),
-		autoRefresh: true,
-		messages:    make([]ConversationMessage, 0),
-		inputText:   "",
+		client:        client,
+		logs:          make([]LogEntry, 0),
+		autoRefresh:   true,
+		messages:      make([]ConversationMessage, 0),
+		inputText:     "",
+		notifications: make(chan StreamNotification, 128),
+		streamErrors:  make(chan error, 8),
 	}
 }
 
@@ -90,8 +94,8 @@ var (
 			Padding(0, 1)
 
 	assistantMsgStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("green")).
-			Padding(0, 1)
+				Foreground(lipgloss.Color("green")).
+				Padding(0, 1)
 
 	systemMsgStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("magenta")).
@@ -132,6 +136,8 @@ type notificationMsg struct {
 type messageSentMsg struct {
 	response *TurnStartResponse
 	err      error
+	message  string
+	threadID string
 }
 
 // Init initializes the application
@@ -259,14 +265,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.streamCtx = msg.ctx
 		a.streamCancel = msg.cancel
 		a.streamActive = true
-		return a, nil
-
-	case threadStartedMsg:
-		if msg.resp != nil {
-			a.threadID = msg.resp.ThreadID
-			a.addSystemMessage(fmt.Sprintf("Thread started: %s", msg.resp.ThreadID))
-		}
-		return a, nil
+		return a, a.waitForStreamEventCmd()
 
 	case streamErrorMsg:
 		a.err = fmt.Errorf("stream error: %w", msg.err)
@@ -275,7 +274,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case notificationMsg:
 		a.handleNotification(msg.notification)
-		return a, nil
+		return a, a.waitForStreamEventCmd()
 
 	case messageSentMsg:
 		a.sending = false
@@ -285,6 +284,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if msg.response != nil {
 			a.inputText = "" // Clear input on success
 			a.sendingError = nil
+			if msg.threadID != "" && a.threadID == "" {
+				a.threadID = msg.threadID
+				a.addSystemMessage(fmt.Sprintf("Thread started: %s", msg.threadID))
+			}
+			if msg.message != "" {
+				a.addUserMessage(msg.message)
+			}
 		}
 		return a, nil
 	}
@@ -331,8 +337,8 @@ func (a *App) handleNotification(notif StreamNotification) {
 
 	case "turn/interrupted":
 		var params struct {
-			TurnID   string `json:"turn_id"`
-			Message  string `json:"message,omitempty"`
+			TurnID  string `json:"turn_id"`
+			Message string `json:"message,omitempty"`
 		}
 		if err := json.Unmarshal(notif.Params, &params); err == nil {
 			msg := fmt.Sprintf("Turn %s interrupted", params.TurnID)
@@ -472,6 +478,8 @@ func (a *App) View() string {
 	// Help
 	b.WriteString("\n\n")
 	b.WriteString(a.renderHelp())
+	b.WriteString("\n")
+	b.WriteString(a.renderInputBox())
 
 	return b.String()
 }
@@ -683,15 +691,33 @@ func (a *App) sendResumeCmd() tea.Cmd {
 func (a *App) startStreamCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
+		notifs := a.notifications
+		errs := a.streamErrors
 		go func() {
 			if err := a.client.StreamNotifications(ctx, func(notif StreamNotification) {
-				// Send notification to main goroutine via tea.Cmd
-				// Note: This is called from a goroutine, we need to be careful
+				select {
+				case notifs <- notif:
+				case <-ctx.Done():
+				}
 			}); err != nil {
-				// Handle stream error
+				select {
+				case errs <- err:
+				default:
+				}
 			}
 		}()
 		return streamStartedMsg{ctx: ctx, cancel: cancel}
+	}
+}
+
+func (a *App) waitForStreamEventCmd() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case notif := <-a.notifications:
+			return notificationMsg{notification: notif}
+		case err := <-a.streamErrors:
+			return streamErrorMsg{err: err}
+		}
 	}
 }
 
@@ -706,37 +732,32 @@ func (a *App) sendMessage() tea.Cmd {
 	// Start thread if needed
 	threadID := a.threadID
 	if threadID == "" {
-		return tea.Sequentially(
-			func() tea.Msg {
-				resp, err := a.client.StartThread()
-				if err != nil {
-					return messageSentMsg{err: err}
-				}
-				return threadStartedMsg{resp: resp}
-			},
-			a.doSendMessage(message),
-		)
+		return func() tea.Msg {
+			threadResp, err := a.client.StartThread()
+			if err != nil {
+				return messageSentMsg{err: err}
+			}
+			resp, err := a.client.StartTurn(threadResp.ThreadID, message)
+			if err != nil {
+				return messageSentMsg{err: err}
+			}
+			return messageSentMsg{response: resp, message: message, threadID: threadResp.ThreadID}
+		}
 	}
 
-	return a.doSendMessage(message)
+	return a.doSendMessage(message, threadID)
 }
 
-func (a *App) doSendMessage(message string) tea.Cmd {
+func (a *App) doSendMessage(message, threadID string) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := a.client.StartTurn(a.threadID, message)
+		resp, err := a.client.StartTurn(threadID, message)
 		if err != nil {
 			return messageSentMsg{err: err}
 		}
-		// Add user message to conversation
-		a.addUserMessage(message)
-		return messageSentMsg{response: resp}
+		return messageSentMsg{response: resp, message: message}
 	}
 }
 
 type pauseSuccessMsg struct {
 	err error
-}
-
-type threadStartedMsg struct {
-	resp *ThreadStartResponse
 }

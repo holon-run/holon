@@ -135,8 +135,8 @@ Add:
 Suggested new flags:
 
 1. `--tick-interval <duration>`: periodic planning tick.
-2. `--controller-role pm|dev` (required for demo role behavior).
-3. (optional) `--controller-role-file <path>` for custom role prompt.
+2. `--agent-id <id>`: select controller identity and load role from `<agent_home>/ROLE.md`.
+3. `--webhook-port <port>`: ingress/rpc port override.
 
 ## Demo Runbook
 

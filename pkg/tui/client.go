@@ -217,6 +217,7 @@ func (c *RPCClient) StreamNotifications(ctx context.Context, handler Notificatio
 	if err != nil {
 		return fmt.Errorf("failed to create stream request: %w", err)
 	}
+	req.Header.Set("Accept", "application/x-ndjson")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
