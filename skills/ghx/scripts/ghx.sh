@@ -55,18 +55,30 @@ case "$1" in
     shift
     sub="${1:-}"
     shift || true
+    global_opts=()
+    sub_args=()
+    for arg in "$@"; do
+      case "$arg" in
+        --pr=*|--repo=*|--dry-run|--from=*|--intent=*)
+          global_opts+=("$arg")
+          ;;
+        *)
+          sub_args+=("$arg")
+          ;;
+      esac
+    done
     case "$sub" in
       create)
-        exec "$SCRIPT_DIR/publish.sh" create-pr "$@"
+        exec "$SCRIPT_DIR/publish.sh" "${global_opts[@]}" create-pr "${sub_args[@]}"
         ;;
       update)
-        exec "$SCRIPT_DIR/publish.sh" update-pr "$@"
+        exec "$SCRIPT_DIR/publish.sh" "${global_opts[@]}" update-pr "${sub_args[@]}"
         ;;
       comment)
-        exec "$SCRIPT_DIR/publish.sh" comment "$@"
+        exec "$SCRIPT_DIR/publish.sh" "${global_opts[@]}" comment "${sub_args[@]}"
         ;;
       reply-reviews)
-        exec "$SCRIPT_DIR/publish.sh" reply-reviews "$@"
+        exec "$SCRIPT_DIR/publish.sh" "${global_opts[@]}" reply-reviews "${sub_args[@]}"
         ;;
       *)
         usage
