@@ -33,4 +33,4 @@ npm run verify-bundle
 ```
 
 The verification uses a dummy API endpoint to avoid real Claude requests and checks that
-`/holon/output/manifest.json` is written.
+`/output/manifest.json` is written.

@@ -12,17 +12,20 @@ export interface RuntimePaths {
   eventPayloadPath: string;
 }
 
-function envOrDefault(value: string | undefined, fallback: string): string {
+function requiredEnv(name: string, value: string | undefined): string {
   const trimmed = value?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : fallback;
+  if (!trimmed) {
+    throw new Error(`missing required environment variable: ${name}`);
+  }
+  return trimmed;
 }
 
 export function resolveRuntimePaths(env: NodeJS.ProcessEnv = process.env): RuntimePaths {
-  const workspaceDir = envOrDefault(env.HOLON_WORKSPACE_DIR, "/holon/workspace");
-  const inputDir = envOrDefault(env.HOLON_INPUT_DIR, "/holon/input");
-  const outputDir = envOrDefault(env.HOLON_OUTPUT_DIR, "/holon/output");
-  const stateDir = envOrDefault(env.HOLON_STATE_DIR, "/holon/state");
-  const agentHome = envOrDefault(env.HOLON_AGENT_HOME, "/root");
+  const workspaceDir = requiredEnv("HOLON_WORKSPACE_DIR", env.HOLON_WORKSPACE_DIR);
+  const inputDir = requiredEnv("HOLON_INPUT_DIR", env.HOLON_INPUT_DIR);
+  const outputDir = requiredEnv("HOLON_OUTPUT_DIR", env.HOLON_OUTPUT_DIR);
+  const stateDir = requiredEnv("HOLON_STATE_DIR", env.HOLON_STATE_DIR);
+  const agentHome = requiredEnv("HOLON_AGENT_HOME", env.HOLON_AGENT_HOME);
 
   return {
     workspaceDir,

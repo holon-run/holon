@@ -712,8 +712,8 @@ You are running as a persistent controller inside Holon.
 
 Rules of physics:
 1. Workspace root is HOLON_WORKSPACE_DIR.
-2. Artifacts and diagnostics must be written under /holon/output.
-3. Additional context files may be mounted under /holon/input/context.
+2. Artifacts and diagnostics must be written under HOLON_OUTPUT_DIR.
+3. Additional context files may be mounted under HOLON_INPUT_DIR/context.
 4. HOLON_AGENT_HOME points to your persistent agent home at /root.
 5. Load and maintain long-lived persona/state from HOLON_AGENT_HOME:
    - ROLE.md
@@ -811,19 +811,19 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 
 	env := map[string]string{
 		"HOLON_AGENT_SESSION_MODE":            "serve",
-		"HOLON_AGENT_HOME":                    "/root",
-		"HOLON_WORKSPACE_DIR":                 "/holon/workspace",
+		"HOLON_AGENT_HOME":                    docker.ContainerAgentHome,
+		"HOLON_WORKSPACE_DIR":                 docker.ContainerWorkspaceDir,
 		"HOLON_WORKSPACE_INDEX_PATH":          "/root/state/workspace-index.json",
-		"HOLON_INPUT_DIR":                     "/holon/input",
-		"HOLON_OUTPUT_DIR":                    "/holon/output",
-		"HOLON_STATE_DIR":                     "/holon/state",
-		"CLAUDE_CONFIG_DIR":                   "/holon/state/claude-config",
+		"HOLON_INPUT_DIR":                     docker.ContainerInputDir,
+		"HOLON_OUTPUT_DIR":                    docker.ContainerOutputDir,
+		"HOLON_STATE_DIR":                     docker.ContainerStateDir,
+		"CLAUDE_CONFIG_DIR":                   "/state/claude-config",
 		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,
-		"HOLON_CONTROLLER_EVENT_CHANNEL":      "/holon/state/event-channel.ndjson",
-		"HOLON_CONTROLLER_EVENT_CURSOR":       "/holon/state/event-channel.cursor",
-		"HOLON_CONTROLLER_ACK_CHANNEL":        "/holon/state/ack-channel.ndjson",
-		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/holon/state/controller-session.json",
-		"HOLON_CONTROLLER_GOAL_STATE_PATH":    "/holon/state/goal-state.json",
+		"HOLON_CONTROLLER_EVENT_CHANNEL":      "/state/event-channel.ndjson",
+		"HOLON_CONTROLLER_EVENT_CURSOR":       "/state/event-channel.cursor",
+		"HOLON_CONTROLLER_ACK_CHANNEL":        "/state/ack-channel.ndjson",
+		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/state/controller-session.json",
+		"HOLON_CONTROLLER_GOAL_STATE_PATH":    "/state/goal-state.json",
 	}
 	for k, v := range resolveServeRuntimeEnv(ctx) {
 		env[k] = v

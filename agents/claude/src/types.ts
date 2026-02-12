@@ -30,7 +30,7 @@ export interface MockOperation {
   type: "write_file" | "append_file" | "delete_file" | "write_output";
   /**
    * Path relative to workspace root for file operations,
-   * or relative to HOLON_OUTPUT_DIR (default /holon/output) for write_output operations.
+   * or relative to HOLON_OUTPUT_DIR (default /output) for write_output operations.
    */
   path: string;
   /** Content to write or append (not used for delete_file) */

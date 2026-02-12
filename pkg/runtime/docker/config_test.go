@@ -238,18 +238,18 @@ func TestBuildContainerMounts(t *testing.T) {
 				{
 					Type:   mount.TypeBind,
 					Source: snapshotDir,
-					Target: "/holon/workspace",
+					Target: "/workspace",
 				},
 				{
 					Type:     mount.TypeBind,
 					Source:   inputDir,
-					Target:   "/holon/input",
+					Target:   "/input",
 					ReadOnly: true,
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: outDir,
-					Target: "/holon/output",
+					Target: "/output",
 				},
 			},
 		},
@@ -265,23 +265,23 @@ func TestBuildContainerMounts(t *testing.T) {
 				{
 					Type:   mount.TypeBind,
 					Source: snapshotDir,
-					Target: "/holon/workspace",
+					Target: "/workspace",
 				},
 				{
 					Type:     mount.TypeBind,
 					Source:   inputDir,
-					Target:   "/holon/input",
+					Target:   "/input",
 					ReadOnly: true,
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: outDir,
-					Target: "/holon/output",
+					Target: "/output",
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: filepath.Join(tmpDir, "state"),
-					Target: "/holon/state",
+					Target: "/state",
 				},
 			},
 		},
@@ -297,18 +297,18 @@ func TestBuildContainerMounts(t *testing.T) {
 				{
 					Type:   mount.TypeBind,
 					Source: snapshotDir,
-					Target: "/holon/workspace",
+					Target: "/workspace",
 				},
 				{
 					Type:     mount.TypeBind,
 					Source:   inputDir,
-					Target:   "/holon/input",
+					Target:   "/input",
 					ReadOnly: true,
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: outDir,
-					Target: "/holon/output",
+					Target: "/output",
 				},
 				{
 					Type:     mount.TypeBind,
@@ -330,18 +330,18 @@ func TestBuildContainerMounts(t *testing.T) {
 				{
 					Type:   mount.TypeBind,
 					Source: snapshotDir,
-					Target: "/holon/workspace",
+					Target: "/workspace",
 				},
 				{
 					Type:     mount.TypeBind,
 					Source:   inputDir,
-					Target:   "/holon/input",
+					Target:   "/input",
 					ReadOnly: true,
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: outDir,
-					Target: "/holon/output",
+					Target: "/output",
 				},
 				{
 					Type:   mount.TypeBind,
@@ -726,14 +726,14 @@ func TestInputMountReadOnly(t *testing.T) {
 	// Find the input mount
 	var inputMount *mount.Mount
 	for i := range mounts {
-		if mounts[i].Target == "/holon/input" {
+		if mounts[i].Target == "/input" {
 			inputMount = &mounts[i]
 			break
 		}
 	}
 
 	if inputMount == nil {
-		t.Fatal("BuildContainerMounts() did not create /holon/input mount")
+		t.Fatal("BuildContainerMounts() did not create /input mount")
 	}
 
 	// Verify that the input mount is read-only
@@ -779,19 +779,19 @@ func TestWorkspaceAndOutputMountsReadWrite(t *testing.T) {
 	// Find workspace and output mounts
 	var workspaceMount, outputMount *mount.Mount
 	for i := range mounts {
-		if mounts[i].Target == "/holon/workspace" {
+		if mounts[i].Target == "/workspace" {
 			workspaceMount = &mounts[i]
 		}
-		if mounts[i].Target == "/holon/output" {
+		if mounts[i].Target == "/output" {
 			outputMount = &mounts[i]
 		}
 	}
 
 	if workspaceMount == nil {
-		t.Fatal("BuildContainerMounts() did not create /holon/workspace mount")
+		t.Fatal("BuildContainerMounts() did not create /workspace mount")
 	}
 	if outputMount == nil {
-		t.Fatal("BuildContainerMounts() did not create /holon/output mount")
+		t.Fatal("BuildContainerMounts() did not create /output mount")
 	}
 
 	// Verify workspace mount is read-write

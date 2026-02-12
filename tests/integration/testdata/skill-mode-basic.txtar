@@ -41,6 +41,6 @@ set -eu
 echo "Testing skill mode execution"
 
 # Create required outputs
-mkdir -p /holon/output
-echo '{"version":"v1"}' > /holon/output/manifest.json
-echo 'Skill mode test passed' > /holon/output/summary.md
+mkdir -p /output
+echo '{"version":"v1"}' > /output/manifest.json
+echo 'Skill mode test passed' > /output/summary.md

@@ -252,7 +252,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		Image:      finalImage,
 		Cmd:        cfg.Cmd,
 		Env:        env,
-		WorkingDir: "/holon/workspace",
+		WorkingDir: ContainerWorkspaceDir,
 		Tty:        false,
 	}, &container.HostConfig{
 		Mounts: mounts,
@@ -457,7 +457,7 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 		Image:      finalImage,
 		Cmd:        cfg.Cmd,
 		Env:        env,
-		WorkingDir: "/holon/workspace",
+		WorkingDir: ContainerWorkspaceDir,
 		Tty:        false,
 	}, &container.HostConfig{
 		Mounts: mounts,
@@ -672,9 +672,9 @@ RUN mkdir -p /holon/agent && tar -xzf /holon/agent-bundle.tar.gz -C /holon/agent
 
 ENV PATH="/holon/agent/node_modules/.bin:${PATH}"
 ENV IS_SANDBOX=1
-WORKDIR /holon/workspace
+WORKDIR %s
 ENTRYPOINT ["/holon/agent/bin/agent"]
-`, baseImage, nodeMajor, bundleName)
+`, baseImage, nodeMajor, bundleName, ContainerWorkspaceDir)
 
 	dfPath := filepath.Join(tmpDir, "Dockerfile")
 	if err := os.WriteFile(dfPath, []byte(dockerfile), 0644); err != nil {

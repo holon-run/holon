@@ -35,7 +35,7 @@ exists out/summary.md
 -- bundle-src/bin/agent --
 #!/bin/sh
 set -eu
-mkdir -p /holon/output
-echo '{"version":"v1"}' > /holon/output/manifest.json
-echo 'diff' > /holon/output/diff.patch
-echo '# summary' > /holon/output/summary.md
+mkdir -p /output
+echo '{"version":"v1"}' > /output/manifest.json
+echo 'diff' > /output/diff.patch
+echo '# summary' > /output/summary.md

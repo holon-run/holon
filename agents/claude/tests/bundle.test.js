@@ -134,9 +134,9 @@ describe('Agent Bundle', () => {
     const tmpDir = extractBundle(bundlePath);
 
     // Check if we're already running in a Holon container environment
-    const inHolonContainer = fs.existsSync('/holon/workspace') &&
-                             fs.existsSync('/holon/input') &&
-                             fs.existsSync('/holon/output');
+    const inHolonContainer = fs.existsSync('/workspace') &&
+                             fs.existsSync('/input') &&
+                             fs.existsSync('/output');
 
     try {
       if (inHolonContainer) {
@@ -172,7 +172,7 @@ kind: Holon
 metadata:
   name: "bundle-test-probe"
 context:
-  workspace: "/holon/workspace"
+  workspace: "/workspace"
 goal:
   description: "Bundle test probe validation"
 output:
@@ -207,9 +207,9 @@ output:
           // Run agent probe test in Docker container
           const output = execSync(
             `docker run --rm \
-             -v "${inputDir}:/holon/input:ro" \
-             -v "${workspaceDir}:/holon/workspace:ro" \
-             -v "${outputDir}:/holon/output" \
+             -v "${inputDir}:/input:ro" \
+             -v "${workspaceDir}:/workspace:ro" \
+             -v "${outputDir}:/output" \
              -v "${tmpDir}:/holon/agent:ro" \
              --entrypoint /bin/sh \
              "${image}" -c "cd /holon/agent && NODE_ENV=production node dist/agent.js --probe"`,

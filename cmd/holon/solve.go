@@ -579,7 +579,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 
 	// In skill mode: context will be provided by the skill during its execution
 	// The skill (agent) is responsible for invoking any collectors and writing context
-	// under /holon/input/context/, so we do not validate context here
+	// under /input/context/, so we do not validate context here
 	fmt.Println("Skill-first mode enabled: expecting skill-provided context")
 
 	// Run early preflight checks before workspace preparation

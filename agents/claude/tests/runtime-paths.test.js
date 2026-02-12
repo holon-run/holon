@@ -18,17 +18,8 @@ afterEach(() => {
 });
 
 describe("resolveRuntimePaths", () => {
-  test("uses defaults when env vars are absent", () => {
-    const paths = resolveRuntimePaths({});
-    assert.strictEqual(paths.workspaceDir, "/holon/workspace");
-    assert.strictEqual(paths.inputDir, "/holon/input");
-    assert.strictEqual(paths.outputDir, "/holon/output");
-    assert.strictEqual(paths.stateDir, "/holon/state");
-    assert.strictEqual(paths.agentHome, "/root");
-    assert.strictEqual(paths.specPath, "/holon/input/spec.yaml");
-    assert.strictEqual(paths.systemPromptPath, "/holon/input/prompts/system.md");
-    assert.strictEqual(paths.userPromptPath, "/holon/input/prompts/user.md");
-    assert.strictEqual(paths.eventPayloadPath, "/holon/input/context/event.json");
+  test("fails fast when required env vars are absent", () => {
+    assert.throws(() => resolveRuntimePaths({}), /missing required environment variable: HOLON_WORKSPACE_DIR/);
   });
 
   test("reads and trims HOLON_* path env vars", () => {

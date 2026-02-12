@@ -712,19 +712,19 @@ func TestRunner_Integration(t *testing.T) {
 			if cfg.AgentHome == "" {
 				t.Errorf("Expected AgentHome to be set")
 			}
-			if got := cfg.Env["HOLON_AGENT_HOME"]; got != "/root" {
-				t.Errorf("HOLON_AGENT_HOME = %q, want /root", got)
+			if got := cfg.Env["HOLON_AGENT_HOME"]; got != docker.ContainerAgentHome {
+				t.Errorf("HOLON_AGENT_HOME = %q, want %s", got, docker.ContainerAgentHome)
 			}
-			if got := cfg.Env["HOLON_WORKSPACE_DIR"]; got != "/holon/workspace" {
-				t.Errorf("HOLON_WORKSPACE_DIR = %q, want /holon/workspace", got)
+			if got := cfg.Env["HOLON_WORKSPACE_DIR"]; got != docker.ContainerWorkspaceDir {
+				t.Errorf("HOLON_WORKSPACE_DIR = %q, want %s", got, docker.ContainerWorkspaceDir)
 			}
-			if got := cfg.Env["HOLON_INPUT_DIR"]; got != "/holon/input" {
-				t.Errorf("HOLON_INPUT_DIR = %q, want /holon/input", got)
+			if got := cfg.Env["HOLON_INPUT_DIR"]; got != docker.ContainerInputDir {
+				t.Errorf("HOLON_INPUT_DIR = %q, want %s", got, docker.ContainerInputDir)
 			}
-			if got := cfg.Env["HOLON_OUTPUT_DIR"]; got != "/holon/output" {
-				t.Errorf("HOLON_OUTPUT_DIR = %q, want /holon/output", got)
+			if got := cfg.Env["HOLON_OUTPUT_DIR"]; got != docker.ContainerOutputDir {
+				t.Errorf("HOLON_OUTPUT_DIR = %q, want %s", got, docker.ContainerOutputDir)
 			}
-			// WorkingDir is hardcoded to "/holon/workspace" in the docker runtime
+			// WorkingDir is set by the docker runtime using ContainerWorkspaceDir.
 			return "", nil
 		},
 	}
