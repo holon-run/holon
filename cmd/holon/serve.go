@@ -84,11 +84,7 @@ for local development and testing.`,
 		}
 		controllerWorkspace, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("failed to resolve controller workspace: %w", err)
-		}
-		controllerWorkspace, err = filepath.Abs(controllerWorkspace)
-		if err != nil {
-			return fmt.Errorf("failed to resolve controller workspace: %w", err)
+			return fmt.Errorf("failed to get current working directory for controller workspace: %w", err)
 		}
 
 		handler, err := newCLIControllerHandler(

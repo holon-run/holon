@@ -76,8 +76,10 @@ func TestEnsureLayout(t *testing.T) {
 			t.Fatalf("expected %s to exist: %v", path, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(home, "workspace")); !os.IsNotExist(err) {
-		t.Fatalf("workspace dir should not be created by default, err=%v", err)
+	if _, err := os.Stat(filepath.Join(home, "workspace")); err == nil {
+		t.Fatalf("workspace dir should not be created by default")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected error stating workspace dir: %v", err)
 	}
 }
 
