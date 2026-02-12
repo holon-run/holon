@@ -715,6 +715,15 @@ func TestRunner_Integration(t *testing.T) {
 			if got := cfg.Env["HOLON_AGENT_HOME"]; got != "/root" {
 				t.Errorf("HOLON_AGENT_HOME = %q, want /root", got)
 			}
+			if got := cfg.Env["HOLON_WORKSPACE_DIR"]; got != "/holon/workspace" {
+				t.Errorf("HOLON_WORKSPACE_DIR = %q, want /holon/workspace", got)
+			}
+			if got := cfg.Env["HOLON_INPUT_DIR"]; got != "/holon/input" {
+				t.Errorf("HOLON_INPUT_DIR = %q, want /holon/input", got)
+			}
+			if got := cfg.Env["HOLON_OUTPUT_DIR"]; got != "/holon/output" {
+				t.Errorf("HOLON_OUTPUT_DIR = %q, want /holon/output", got)
+			}
 			// WorkingDir is hardcoded to "/holon/workspace" in the docker runtime
 			return "", nil
 		},

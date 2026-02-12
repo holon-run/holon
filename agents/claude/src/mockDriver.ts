@@ -12,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import { spawnSync } from "child_process";
 import type { MockFixture, MockOperation, MockMessage } from "./types.js";
+import { resolveRuntimePaths } from "./runtimePaths.js";
 
 /**
  * Mock implementation of Claude SDK's query() function.
@@ -63,8 +64,8 @@ export async function* query(
     },
   };
 
-  // Get workspace path from options
-  const workspacePath = params.options?.cwd || "/holon/workspace";
+  const runtimePaths = resolveRuntimePaths(process.env);
+  const workspacePath = params.options?.cwd || runtimePaths.workspaceDir;
 
   // Execute all file operations deterministically
   // Filter out write_output operations which are handled separately below
@@ -117,7 +118,7 @@ export async function* query(
   // Write output artifacts (summary.md, pr-fix.json, etc.)
   for (const op of fixture.operations) {
     if (op.type === "write_output") {
-      const outputPath = path.join("/holon/output", op.path);
+      const outputPath = path.join(runtimePaths.outputDir, op.path);
       const outputDir = path.dirname(outputPath);
 
       try {
@@ -132,7 +133,7 @@ export async function* query(
 
   // Write summary.md if provided in fixture
   if (fixture.outcome.summary) {
-    const summaryPath = path.join("/holon/output", "summary.md");
+    const summaryPath = path.join(runtimePaths.outputDir, "summary.md");
     try {
       fs.writeFileSync(summaryPath, fixture.outcome.summary);
     } catch (err: unknown) {

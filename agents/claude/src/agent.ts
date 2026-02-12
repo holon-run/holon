@@ -7,6 +7,7 @@ import { createSession, query, resumeSession } from "./claudeSdk.js";
 import type { Options } from "./claudeSdk.js";
 import type { SDKMessage, SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-sdk";
 import { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
+import { resolveRuntimePaths, type RuntimePaths } from "./runtimePaths.js";
 
 // Re-export for testing
 export { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
@@ -761,6 +762,7 @@ async function runServeClaudeSession(
   systemInstruction: string,
   userPrompt: string,
   evidenceDir: string,
+  runtimePaths: RuntimePaths,
 ): Promise<void> {
   const env = { ...process.env } as NodeJS.ProcessEnv;
   const authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
@@ -833,7 +835,7 @@ async function runServeClaudeSession(
 
     const channelPath = env.HOLON_CONTROLLER_EVENT_CHANNEL?.trim();
     if (channelPath) {
-      const cursorPath = env.HOLON_CONTROLLER_EVENT_CURSOR?.trim() || "/holon/state/event-channel.cursor";
+      const cursorPath = env.HOLON_CONTROLLER_EVENT_CURSOR?.trim() || path.join(runtimePaths.stateDir, "event-channel.cursor");
       logger.info(`Controller event channel connected: ${channelPath}`);
       let offset = readCursorOffset(cursorPath);
       let running = true;
@@ -871,9 +873,9 @@ async function runServeClaudeSession(
       return;
     }
 
-    const eventPath = "/holon/input/context/event.json";
+    const eventPath = runtimePaths.eventPayloadPath;
     if (!fs.existsSync(eventPath)) {
-      logger.info("No event payload found at /holon/input/context/event.json; session initialized only");
+      logger.info(`No event payload found at ${eventPath}; session initialized only`);
       return;
     }
     const eventPayload = fs.readFileSync(eventPath, "utf8");
@@ -901,11 +903,12 @@ async function runAgent(): Promise<void> {
   console.log("Holon Claude Agent process started...");
   logger.minimal("Holon Claude Agent Starting...");
 
-  const outputDir = "/holon/output";
+  const runtimePaths = resolveRuntimePaths(process.env);
+  const outputDir = runtimePaths.outputDir;
   const evidenceDir = path.join(outputDir, "evidence");
   fs.mkdirSync(evidenceDir, { recursive: true });
 
-  const specPath = "/holon/input/spec.yaml";
+  const specPath = runtimePaths.specPath;
   if (!fs.existsSync(specPath)) {
     logger.minimal(`Error: Spec not found at ${specPath}`);
     process.exit(1);
@@ -913,7 +916,7 @@ async function runAgent(): Promise<void> {
 
   if (isProbe) {
     logger.logPhase("Probe: Validating inputs");
-    const workspacePath = "/holon/workspace";
+    const workspacePath = runtimePaths.workspaceDir;
     if (!fs.existsSync(workspacePath)) {
       logger.minimal(`Error: Workspace not found at ${workspacePath}`);
       process.exit(1);
@@ -948,7 +951,7 @@ async function runAgent(): Promise<void> {
   const goal = typeof goalVal === "object" && goalVal !== null ? String(goalVal.description ?? "") : String(goalVal);
   logger.info(`Task Goal: ${goal}`);
 
-  const systemPromptPath = "/holon/input/prompts/system.md";
+  const systemPromptPath = runtimePaths.systemPromptPath;
   if (!fs.existsSync(systemPromptPath)) {
     logger.minimal(`Error: Compiled system prompt not found at ${systemPromptPath}`);
     process.exit(1);
@@ -956,7 +959,7 @@ async function runAgent(): Promise<void> {
   const systemInstruction = fs.readFileSync(systemPromptPath, "utf8");
   logger.info(`Loading compiled system prompt from ${systemPromptPath}`);
 
-  const userPromptPath = "/holon/input/prompts/user.md";
+  const userPromptPath = runtimePaths.userPromptPath;
   if (!fs.existsSync(userPromptPath)) {
     logger.minimal(`Error: Compiled user prompt not found at ${userPromptPath}`);
     process.exit(1);
@@ -966,7 +969,7 @@ async function runAgent(): Promise<void> {
 
   if (process.env.HOLON_AGENT_SESSION_MODE === "serve") {
     logger.logPhase("Running persistent controller session");
-    await runServeClaudeSession(logger, systemInstruction, userPrompt, evidenceDir);
+    await runServeClaudeSession(logger, systemInstruction, userPrompt, evidenceDir, runtimePaths);
 
     const bundleManifest = readBundleManifest();
     const agentMetadata = getAgentMetadata(bundleManifest);
@@ -989,7 +992,7 @@ async function runAgent(): Promise<void> {
   }
 
   logger.logPhase("Setting up git workspace");
-  const workspacePath = "/holon/workspace";
+  const workspacePath = runtimePaths.workspaceDir;
   process.chdir(workspacePath);
   process.env.IS_SANDBOX = "1";
 
@@ -1250,7 +1253,7 @@ async function runAgent(): Promise<void> {
     const summaryOut = path.join(outputDir, "summary.md");
     let summaryText = "";
     if (fs.existsSync(summaryOut)) {
-      logger.info("Found user-generated summary.md in /holon/output.");
+      logger.info(`Found user-generated summary.md in ${outputDir}.`);
       summaryText = fs.readFileSync(summaryOut, "utf8");
     } else {
       logger.info("No summary.md found. Falling back to execution log.");
@@ -1299,7 +1302,7 @@ async function runAgent(): Promise<void> {
 // Only run agent when executed as main module, not when imported as a dependency
 // This check prevents the agent from auto-running when tests import the module
 // The spec file path only exists in actual Holon execution environment
-const SPEC_PATH = "/holon/input/spec.yaml";
+const SPEC_PATH = resolveRuntimePaths(process.env).specPath;
 const shouldRunAutomatically = fs.existsSync(SPEC_PATH);
 
 if (shouldRunAutomatically) {
