@@ -24,11 +24,10 @@ This skill can use:
 ## Environment & Paths
 
 - **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
-  - Default: `/holon/output` if present; otherwise a temp dir `/tmp/holon-ghprfix-*`
+  - Default: system-recommended output directory if provided by caller; otherwise a temp dir `/tmp/holon-ghprfix-*`
 - **`GITHUB_CONTEXT_DIR`**: Where `ghx` writes collected data  
   - Default: `${GITHUB_OUTPUT_DIR}/github-context`
 - **`GITHUB_TOKEN` / `GH_TOKEN`**: Token for GitHub operations (scopes: `repo` or `public_repo`)
-- **`HOLON_GITHUB_BOT_LOGIN`**: Bot login for idempotency (default `holonbot[bot]`)
 
 ## Inputs & Outputs
 

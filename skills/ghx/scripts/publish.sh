@@ -8,11 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ -z "${GITHUB_OUTPUT_DIR:-}" ]]; then
-  if [[ -d /holon/output && -w /holon/output ]]; then
-    GITHUB_OUTPUT_DIR="/holon/output"
-  else
-    GITHUB_OUTPUT_DIR="$(mktemp -d /tmp/holon-ghpub-XXXXXX)"
-  fi
+  GITHUB_OUTPUT_DIR="$(mktemp -d /tmp/holon-ghpub-XXXXXX)"
 fi
 INTENT_FILE=""
 DRY_RUN=false
@@ -39,7 +35,7 @@ usage() {
 Usage: publish.sh [OPTIONS] [COMMAND [ARGS]]
 
 Batch mode:
-  publish.sh --intent=/holon/output/publish-intent.json [OPTIONS]
+  publish.sh --intent=/path/to/publish-intent.json [OPTIONS]
 
 Direct command mode:
   publish.sh --pr=OWNER/REPO#NUM comment --body-file summary.md

@@ -56,7 +56,7 @@ collect.sh <pr_ref> [repo_hint]
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GITHUB_OUTPUT_DIR` | `/holon/output` if present, else `/tmp/holon-ghreview-*` | Output directory for artifacts |
+| `GITHUB_OUTPUT_DIR` | Caller-provided output dir; else `/tmp/holon-ghreview-*` | Output directory for artifacts |
 | `GITHUB_CONTEXT_DIR` | `${GITHUB_OUTPUT_DIR}/github-context` | Context subdirectory |
 | `MAX_FILES` | `100` | Maximum files to fetch (prevents overwhelming context) |
 | `INCLUDE_THREADS` | `true` | Include existing review threads |
@@ -122,7 +122,7 @@ MAX_INLINE=10 POST_EMPTY=false skills/ghx/scripts/ghx.sh review publish --pr=own
 - `--post-empty` or `POST_EMPTY=true`: Post even when `review.json` is empty
 - `--pr=OWNER/REPO#NUMBER`: Target PR reference
 
-### Required artifacts (in `${GITHUB_OUTPUT_DIR}`; defaults to `/holon/output` or temp)
+### Required artifacts (in `${GITHUB_OUTPUT_DIR}`; defaults to temp when unset)
 - `review.md`: Review summary/body
 - `review.json`: Structured findings with `path`/`line`/`severity`/`message` (and optional `suggestion`)
 - `github-context/manifest.json`: Collection manifest (for PR ref and head SHA)
@@ -135,7 +135,7 @@ MAX_INLINE=10 POST_EMPTY=false skills/ghx/scripts/ghx.sh review publish --pr=own
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GITHUB_OUTPUT_DIR` | `/holon/output` | Directory containing review artifacts |
+| `GITHUB_OUTPUT_DIR` | Temp dir when unset | Directory containing review artifacts |
 | `DRY_RUN` | `false` | Preview without posting |
 | `MAX_INLINE` | `20` | Maximum inline comments to post |
 | `POST_EMPTY` | `false` | Post review even with no findings |

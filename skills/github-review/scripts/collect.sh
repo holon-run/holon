@@ -7,11 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARED_COLLECTOR="$SCRIPT_DIR/../../ghx/scripts/collect.sh"
 
 # Default output and context dirs (aligned with shared github-context layout)
-if [[ -d /holon/output ]]; then
-    GITHUB_OUTPUT_DIR="${GITHUB_OUTPUT_DIR:-/holon/output}"
-else
-    GITHUB_OUTPUT_DIR="${GITHUB_OUTPUT_DIR:-$(mktemp -d /tmp/holon-ghreview-XXXXXX)}"
-fi
+GITHUB_OUTPUT_DIR="${GITHUB_OUTPUT_DIR:-$(mktemp -d /tmp/holon-ghreview-XXXXXX)}"
 
 if [[ -z "${GITHUB_CONTEXT_DIR:-}" ]]; then
     GITHUB_CONTEXT_DIR="$GITHUB_OUTPUT_DIR/github-context"

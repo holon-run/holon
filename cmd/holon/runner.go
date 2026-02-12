@@ -293,6 +293,12 @@ output:
 	if _, exists := envVars["HOLON_OUTPUT_DIR"]; !exists {
 		envVars["HOLON_OUTPUT_DIR"] = docker.ContainerOutputDir
 	}
+	if _, exists := envVars["GITHUB_OUTPUT_DIR"]; !exists {
+		envVars["GITHUB_OUTPUT_DIR"] = docker.ContainerOutputDir
+	}
+	if _, exists := envVars["GITHUB_CONTEXT_DIR"]; !exists {
+		envVars["GITHUB_CONTEXT_DIR"] = filepath.Join(envVars["GITHUB_OUTPUT_DIR"], "github-context")
+	}
 	if _, exists := envVars["HOLON_STATE_DIR"]; !exists {
 		envVars["HOLON_STATE_DIR"] = docker.ContainerStateDir
 	}
