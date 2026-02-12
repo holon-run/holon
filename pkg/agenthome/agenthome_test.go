@@ -66,7 +66,6 @@ func TestEnsureLayout(t *testing.T) {
 		filepath.Join(home, "sessions"),
 		filepath.Join(home, "channels"),
 		filepath.Join(home, "jobs"),
-		filepath.Join(home, "workspace"),
 		filepath.Join(home, "AGENT.md"),
 		filepath.Join(home, "ROLE.md"),
 		filepath.Join(home, "IDENTITY.md"),
@@ -76,6 +75,11 @@ func TestEnsureLayout(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s to exist: %v", path, err)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "workspace")); err == nil {
+		t.Fatalf("workspace dir should not be created by default")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected error stating workspace dir: %v", err)
 	}
 }
 

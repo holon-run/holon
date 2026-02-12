@@ -28,10 +28,6 @@ func stateDirForAgentHome(agentHome string) string {
 	return filepath.Join(agentHome, "state")
 }
 
-func workspaceDirForAgentHome(agentHome string) string {
-	return filepath.Join(agentHome, "workspace")
-}
-
 func cleanupEphemeralAgentHome(res agenthome.Resolution, cleanupMode string) {
 	if !res.Ephemeral {
 		return

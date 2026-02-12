@@ -82,12 +82,9 @@ for local development and testing.`,
 		if err := os.MkdirAll(absStateDir, 0755); err != nil {
 			return fmt.Errorf("failed to create state dir: %w", err)
 		}
-		controllerWorkspace, err := filepath.Abs(workspaceDirForAgentHome(agentResolution.AgentHome))
+		controllerWorkspace, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("failed to resolve controller workspace: %w", err)
-		}
-		if err := os.MkdirAll(controllerWorkspace, 0755); err != nil {
-			return fmt.Errorf("failed to create controller workspace: %w", err)
+			return fmt.Errorf("failed to get current working directory for controller workspace: %w", err)
 		}
 
 		handler, err := newCLIControllerHandler(
