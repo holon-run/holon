@@ -10,7 +10,7 @@ Design direction: Holon is built around a sandboxed run + standardized artifacts
 - Headless by default: run AI coding agents end-to-end without TTY or human input; deterministic, repeatable runs.
 - Issue → PR, end to end: fetch context, run the agent, and create or update a PR in one command.
 - Patch-first, standardized artifacts: always produce `diff.patch`, `summary.md`, and `manifest.json` for review and CI.
-- Sandboxed execution: Docker + snapshot workspaces by default; nothing touches your repo unless you opt in.
+- Sandboxed execution: Docker container runtime with direct workspace mode by default for `run` and `solve --workspace`; solve without `--workspace` still uses isolated temp workspaces.
 - State persistence: optional `--state-dir` mount for cross-run skill caches (e.g., synced issues cache).
 - Pluggable agents & toolchains: swap agent engines or bundles without changing your workflow.
 - Local or CI, same run: `holon solve` locally or in GitHub Actions with identical inputs and outputs.

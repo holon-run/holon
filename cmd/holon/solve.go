@@ -65,7 +65,7 @@ Skill-First Mode:
 
 Workspace Preparation:
   The workspace is prepared automatically based on the context:
-  - If --workspace PATH is provided: uses the existing directory (no cloning)
+  - If --workspace PATH is provided: uses the existing directory directly (no cloning, no extra snapshot)
   - If current directory matches the ref repo: creates a clean temp workspace via git-clone (using --local)
   - Otherwise: clones from the remote repository into a temp directory (full history by default)
 
@@ -159,7 +159,7 @@ type workspacePreparation struct {
 	path          string
 	preparer      workspace.Preparer
 	cleanupNeeded bool
-	isTemp        bool // true if solve created a temporary workspace (vs user-provided)
+	useDirect     bool // true if runtime should use this workspace directly (no extra snapshot layer)
 }
 
 // prepareWorkspaceForSolve prepares a workspace based on the solve reference and flags
@@ -205,7 +205,7 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 			path:          workspacePath,
 			preparer:      preparer,
 			cleanupNeeded: false,
-			isTemp:        false,
+			useDirect:     true,
 		}, nil
 	}
 
@@ -326,7 +326,7 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 		path:          workspacePath,
 		preparer:      preparer,
 		cleanupNeeded: cleanupNeeded,
-		isTemp:        true, // Both local clone and remote clone create temporary workspaces
+		useDirect:     true, // Workspace is fully prepared already; runtime should not snapshot again
 	}, nil
 }
 
@@ -745,7 +745,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		Skills:               resolvedSkillPaths,
 		Cleanup:              cleanupMode,
 		AgentConfigMode:      solveAgentConfigMode,
-		WorkspaceIsTemporary: workspacePrep.isTemp,
+		WorkspaceIsTemporary: workspacePrep.useDirect,
 	})
 
 	if err != nil {
@@ -765,7 +765,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	}
 
 	// Cleanup snapshot directory after publish is complete
-	if snapshotDir != "" && cleanupMode != "none" {
+	if snapshotDir != "" && snapshotDir != workspacePrep.path && cleanupMode != "none" {
 		fmt.Printf("Cleaning up snapshot directory: %s\n", snapshotDir)
 		if err := os.RemoveAll(snapshotDir); err != nil {
 			fmt.Printf("Warning: failed to cleanup snapshot directory %s: %v\n", snapshotDir, err)
@@ -1025,7 +1025,7 @@ func init() {
 	solveCmd.Flags().BoolVar(&solveSkipPreflight, "skip-checks", false, "Skip preflight checks (alias for --no-preflight, not recommended)")
 
 	// Workspace preparation flags
-	solveCmd.Flags().StringVar(&solveWorkspace, "workspace", "", "Workspace path (uses existing directory, no cloning)")
+	solveCmd.Flags().StringVar(&solveWorkspace, "workspace", "", "Workspace path (uses existing directory directly: no cloning, no extra snapshot)")
 	solveCmd.Flags().StringVar(&solveWorkspaceRef, "workspace-ref", "", "Git ref to checkout (branch, tag, or SHA)")
 	solveCmd.Flags().StringVar(&solveWorkspaceHistory, "workspace-history", "", "Git history mode: full, shallow, or none (default: full for local and remote)")
 	solveCmd.Flags().BoolVar(&solveFetchRemote, "fetch-remote", false, "Fetch remote updates before solving (default: false)")

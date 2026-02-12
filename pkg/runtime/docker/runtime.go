@@ -53,7 +53,7 @@ type ContainerConfig struct {
 	WorkspaceStrategy    string                // Workspace preparation strategy (e.g., "git-clone", "snapshot")
 	WorkspaceHistory     workspace.HistoryMode // How much git history to include
 	WorkspaceRef         string                // Git ref to checkout (optional)
-	WorkspaceIsTemporary bool                  // true if workspace is a temporary directory (vs user-provided)
+	WorkspaceIsTemporary bool                  // true when workspace should be used directly (already prepared, no extra snapshot)
 
 	// Agent config mount mode
 	AgentConfigMode string // Agent config mount mode: "auto", "yes", "no"
@@ -770,13 +770,12 @@ func prepareSkillsDir() (string, error) {
 
 // prepareWorkspace prepares the workspace using the configured strategy
 func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string, workspace.Preparer, error) {
-	// If the workspace is already a temporary directory (created by solve),
+	// If workspace is already prepared for direct use,
 	// use it directly instead of creating another snapshot.
-	// This optimization avoids double cloning when solve creates a temp workspace.
 	if cfg.WorkspaceIsTemporary {
-		holonlog.Info("using temporary workspace directly (no snapshot needed)", "workspace", cfg.Workspace)
+		holonlog.Info("using workspace directly (no snapshot needed)", "workspace", cfg.Workspace)
 
-		// Use an ExistingPreparer to prepare the temporary workspace and
+		// Use an ExistingPreparer to prepare the workspace and
 		// still write the workspace manifest so downstream consumers see
 		// consistent metadata regardless of how the workspace was created.
 		preparer := workspace.NewExistingPreparer()
@@ -796,7 +795,7 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 			CleanDest:  false,
 		})
 		if err != nil {
-			return "", "", nil, fmt.Errorf("failed to prepare temporary workspace: %w", err)
+			return "", "", nil, fmt.Errorf("failed to prepare workspace for direct use: %w", err)
 		}
 
 		// Create skills staging directory
