@@ -950,8 +950,7 @@ async function runServeClaudeSession(
     ].join("\n");
     await session.send(turnPrompt);
     await streamSessionTurn(session, logger, logFile);
-    currentSessionID = tryGetSessionID(session) || currentSessionID;
-    writeSessionState();
+    refreshSessionId();
   } finally {
     logFile.end();
     session.close();
