@@ -284,7 +284,25 @@ output:
 	} else {
 		envVars["ASSISTANT_OUTPUT"] = "none" // Default to none
 	}
+	if _, exists := envVars["HOLON_WORKSPACE_DIR"]; !exists {
+		envVars["HOLON_WORKSPACE_DIR"] = "/holon/workspace"
+	}
+	if _, exists := envVars["HOLON_INPUT_DIR"]; !exists {
+		envVars["HOLON_INPUT_DIR"] = "/holon/input"
+	}
+	if _, exists := envVars["HOLON_OUTPUT_DIR"]; !exists {
+		envVars["HOLON_OUTPUT_DIR"] = "/holon/output"
+	}
+	if absStateDir != "" {
+		if _, exists := envVars["HOLON_STATE_DIR"]; !exists {
+			envVars["HOLON_STATE_DIR"] = "/holon/state"
+		}
+	}
 	if absAgentHome != "" {
+		if _, exists := envVars["HOLON_AGENT_HOME"]; !exists {
+			envVars["HOLON_AGENT_HOME"] = "/root"
+		}
+	} else if _, exists := envVars["HOLON_AGENT_HOME"]; !exists {
 		envVars["HOLON_AGENT_HOME"] = "/root"
 	}
 

@@ -808,6 +808,10 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	env := map[string]string{
 		"HOLON_AGENT_SESSION_MODE":            "serve",
 		"HOLON_AGENT_HOME":                    "/root",
+		"HOLON_WORKSPACE_DIR":                 "/holon/workspace",
+		"HOLON_INPUT_DIR":                     "/holon/input",
+		"HOLON_OUTPUT_DIR":                    "/holon/output",
+		"HOLON_STATE_DIR":                     "/holon/state",
 		"CLAUDE_CONFIG_DIR":                   "/holon/state/claude-config",
 		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,
 		"HOLON_CONTROLLER_EVENT_CHANNEL":      "/holon/state/event-channel.ndjson",
