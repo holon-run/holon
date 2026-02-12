@@ -261,6 +261,37 @@ func TestHandleResume(t *testing.T) {
 	}
 }
 
+func TestHandleResumeWhenRunningIsIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	result, rpcErr := rt.HandleResume(nil)
+	if rpcErr != nil {
+		t.Fatalf("HandleResume() error = %v", rpcErr)
+	}
+
+	resp, ok := result.(ResumeResponse)
+	if !ok {
+		t.Fatalf("HandleResume() result type = %T, want ResumeResponse", result)
+	}
+
+	if !resp.Success {
+		t.Errorf("Resume Success = false, want true")
+	}
+
+	if resp.Message != "Runtime already running" {
+		t.Errorf("Resume Message = %s, want 'Runtime already running'", resp.Message)
+	}
+
+	if rt.IsPaused() {
+		t.Error("Runtime paused unexpectedly")
+	}
+}
+
 func TestHandleLogStream(t *testing.T) {
 	tmpDir := t.TempDir()
 

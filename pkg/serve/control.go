@@ -323,6 +323,12 @@ func (rt *Runtime) HandlePause(params json.RawMessage) (interface{}, *JSONRPCErr
 
 // HandleResume is the JSON-RPC handler for holon/resume
 func (rt *Runtime) HandleResume(params json.RawMessage) (interface{}, *JSONRPCError) {
+	if !rt.IsPaused() {
+		return ResumeResponse{
+			Success: true,
+			Message: "Runtime already running",
+		}, nil
+	}
 	if err := rt.Resume(); err != nil {
 		return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to resume: %s", err))
 	}
