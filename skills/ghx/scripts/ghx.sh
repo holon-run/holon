@@ -14,7 +14,6 @@ Usage:
   ghx.sh pr create --repo=OWNER/REPO --title=... --body-file=... --head=... --base=...
   ghx.sh pr update --pr=OWNER/REPO#NUM [--title=...] [--body-file=...] [--state=open|closed]
   ghx.sh pr comment --pr=OWNER/REPO#NUM --body-file=<summary.md>
-  ghx.sh pr reply-reviews --pr=OWNER/REPO#NUM --pr-fix-json=<pr-fix.json>
 USAGE
 }
 
@@ -76,9 +75,6 @@ case "$1" in
         ;;
       comment)
         exec "$SCRIPT_DIR/publish.sh" "${global_opts[@]}" comment "${sub_args[@]}"
-        ;;
-      reply-reviews)
-        exec "$SCRIPT_DIR/publish.sh" "${global_opts[@]}" reply-reviews "${sub_args[@]}"
         ;;
       *)
         usage

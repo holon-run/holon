@@ -43,7 +43,6 @@ Batch mode:
 
 Direct command mode:
   publish.sh --pr=OWNER/REPO#NUM comment --body-file summary.md
-  publish.sh --pr=OWNER/REPO#NUM reply-reviews --pr-fix-json pr-fix.json
   publish.sh --pr=OWNER/REPO#NUM post-review --body-file review.md [--comments-file review.json]
   publish.sh --pr=OWNER/REPO#NUM update-pr --title "..." [--body-file summary.md]
   publish.sh --repo=OWNER/REPO create-pr --title "..." --body-file summary.md --head feature/x --base main
@@ -267,7 +266,7 @@ parse_direct_params() {
   shift
 
   local title="" body="" body_file="" head="" base="" draft="false"
-  local pr_number="" state="" marker="" replies_file="" comments_file="review.json"
+  local pr_number="" state="" marker="" comments_file="review.json"
   local max_inline="20" post_empty="false" commit_id=""
 
   while [[ $# -gt 0 ]]; do
@@ -289,10 +288,6 @@ parse_direct_params() {
       --state) shift; state="${1:-}" ;;
       --marker=*) marker="${1#*=}" ;;
       --marker) shift; marker="${1:-}" ;;
-      --pr-fix-json=*) replies_file="${1#*=}" ;;
-      --pr-fix-json) shift; replies_file="${1:-}" ;;
-      --replies-file=*) replies_file="${1#*=}" ;;
-      --replies-file) shift; replies_file="${1:-}" ;;
       --comments-file=*) comments_file="${1#*=}" ;;
       --comments-file) shift; comments_file="${1:-}" ;;
       --max-inline=*) max_inline="${1#*=}" ;;
@@ -326,9 +321,6 @@ parse_direct_params() {
     comment)
       jq -n --arg b "$body_value" --arg m "$marker" '{body:$b, marker:$m}'
       ;;
-    reply-reviews)
-      jq -n --arg rf "$replies_file" '{replies_file:$rf}'
-      ;;
     post-review)
       jq -n --arg b "$body_value" --arg cf "$comments_file" --arg mi "$max_inline" --arg pe "$post_empty" --arg ci "$commit_id" '{body:$b, comments_file:$cf, max_inline:($mi|tonumber), post_empty:$pe, commit_id:$ci}'
       ;;
@@ -352,7 +344,7 @@ execute_direct_command() {
         return 2
       fi
       ;;
-    update-pr|comment|reply-reviews|post-review)
+    update-pr|comment|post-review)
       if [[ -z "$PR_REF" ]] || ! parse_pr_ref_string "$PR_REF"; then
         log_error "$cmd requires --pr=OWNER/REPO#NUMBER"
         return 2
@@ -369,7 +361,6 @@ execute_direct_command() {
     create-pr) action_type="create_pr" ;;
     update-pr) action_type="update_pr" ;;
     comment) action_type="post_comment" ;;
-    reply-reviews) action_type="reply_review" ;;
     post-review) action_type="post_review" ;;
   esac
 
@@ -425,7 +416,7 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    create-pr|update-pr|comment|reply-reviews|post-review)
+    create-pr|update-pr|comment|post-review)
       DIRECT_CMD="$1"
       shift
       DIRECT_ARGS=("$@")
