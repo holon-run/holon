@@ -1255,3 +1255,53 @@ func TestTurnInterruptNotificationIncludesTurnContext(t *testing.T) {
 		t.Fatalf("expected interrupted notification to include thread_id, got: %s", output)
 	}
 }
+
+func TestHandleTurnAckCompletesAndEmitsAssistantItem(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	rt.setTurnIdleTTLForTest(5 * time.Second)
+
+	b := NewNotificationBroadcaster()
+	var buf bytes.Buffer
+	sw := NewStreamWriter(&buf)
+	b.Subscribe(sw)
+	rt.SetBroadcaster(b)
+
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_ack",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	startResult, rpcErr := rt.HandleTurnStart(startParams)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	}
+	startResp := startResult.(TurnStartResponse)
+
+	ok := rt.HandleTurnAck(startResp.TurnID, true, "assistant reply")
+	if !ok {
+		t.Fatalf("HandleTurnAck() returned false, expected true")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "\"method\":\"item/created\"") {
+		t.Fatalf("expected item/created notification in output: %s", output)
+	}
+	if !strings.Contains(output, "\"role\":\"assistant\"") {
+		t.Fatalf("expected assistant role in output: %s", output)
+	}
+	if !strings.Contains(output, "\"method\":\"turn/completed\"") {
+		t.Fatalf("expected turn/completed notification in output: %s", output)
+	}
+}

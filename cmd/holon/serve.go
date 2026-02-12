@@ -733,9 +733,10 @@ Controller runtime contract:
 4. Persist project checkout mapping in HOLON_WORKSPACE_INDEX_PATH (repo -> local path under workspace root).
 5. Reuse existing checkout when repo is already indexed; otherwise clone/fetch as needed.
 6. The event stream is at HOLON_CONTROLLER_EVENT_CHANNEL and cursor at HOLON_CONTROLLER_EVENT_CURSOR.
-7. Session metadata path is HOLON_CONTROLLER_SESSION_STATE_PATH.
-8. Goal state path is HOLON_CONTROLLER_GOAL_STATE_PATH.
-9. Process events continuously, keep role boundaries strict, and produce concise action-oriented outcomes.
+7. Write turn acknowledgements to HOLON_CONTROLLER_ACK_CHANNEL when available.
+8. Session metadata path is HOLON_CONTROLLER_SESSION_STATE_PATH.
+9. Goal state path is HOLON_CONTROLLER_GOAL_STATE_PATH.
+10. Process events continuously, keep role boundaries strict, and produce concise action-oriented outcomes.
 `
 
 func (h *cliControllerHandler) copyControllerMemoryToInput(contextDir string) error {
@@ -820,6 +821,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,
 		"HOLON_CONTROLLER_EVENT_CHANNEL":      "/holon/state/event-channel.ndjson",
 		"HOLON_CONTROLLER_EVENT_CURSOR":       "/holon/state/event-channel.cursor",
+		"HOLON_CONTROLLER_ACK_CHANNEL":        "/holon/state/ack-channel.ndjson",
 		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/holon/state/controller-session.json",
 		"HOLON_CONTROLLER_GOAL_STATE_PATH":    "/holon/state/goal-state.json",
 	}

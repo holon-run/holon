@@ -8,7 +8,7 @@
     "bundle": "./scripts/build-bundle.sh",
     "smoke-test": "./scripts/smoke-test.sh",
     "verify-bundle": "./scripts/verify-bundle.sh",
-    "test": "node --test tests/agent.test.js tests/ci-compatibility.test.js tests/runtime-paths.test.js tests/stream-limiter.test.js tests/stream-assistant-text.test.js",
+    "test": "node --test tests/agent.test.js tests/ci-compatibility.test.js tests/runtime-paths.test.js tests/stream-limiter.test.js tests/stream-assistant-text.test.js tests/session-id.test.js",
     "test:all": "node --test tests/*.test.js",
     "test:watch": "node --test --watch tests/*.test.js"
   },

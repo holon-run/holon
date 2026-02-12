@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -188,6 +190,7 @@ func (ws *WebhookServer) Start(ctx context.Context) error {
 
 	// Start event processor in background
 	go ws.processEvents(ctx)
+	go ws.processTurnAcks(ctx)
 
 	// Start HTTP server
 	errChan := make(chan error, 1)
@@ -212,6 +215,119 @@ func (ws *WebhookServer) Start(ctx context.Context) error {
 	case err := <-errChan:
 		return err
 	}
+}
+
+type turnAckRecord struct {
+	EventID  string `json:"event_id,omitempty"`
+	TurnID   string `json:"turn_id,omitempty"`
+	ThreadID string `json:"thread_id,omitempty"`
+	Status   string `json:"status"`
+	Message  string `json:"message,omitempty"`
+	At       string `json:"at,omitempty"`
+}
+
+func (ws *WebhookServer) processTurnAcks(ctx context.Context) {
+	ackPath := filepath.Join(filepath.Dir(ws.statePath), "controller-state", "ack-channel.ndjson")
+	cursorPath := filepath.Join(filepath.Dir(ws.statePath), "controller-state", "ack-channel.host.cursor")
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			nextOffset, records, err := readTurnAckBatch(ackPath, readOffsetFile(cursorPath))
+			if err != nil {
+				holonlog.Warn("failed to read turn ack batch", "error", err)
+				continue
+			}
+			if len(records) == 0 {
+				continue
+			}
+			for _, record := range records {
+				turnID := strings.TrimSpace(record.TurnID)
+				if turnID == "" {
+					continue
+				}
+				success := strings.EqualFold(strings.TrimSpace(record.Status), "completed")
+				if !success && !strings.EqualFold(strings.TrimSpace(record.Status), "failed") {
+					continue
+				}
+				if ws.runtime.HandleTurnAck(turnID, success, record.Message) {
+					holonlog.Debug("turn ack applied", "turn_id", turnID, "status", record.Status)
+				}
+			}
+			writeOffsetFile(cursorPath, nextOffset)
+		}
+	}
+}
+
+func readOffsetFile(path string) int64 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
+}
+
+func writeOffsetFile(path string, offset int64) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte(strconv.FormatInt(offset, 10)), 0644)
+}
+
+func readTurnAckBatch(path string, startOffset int64) (int64, []turnAckRecord, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil, nil
+		}
+		return startOffset, nil, err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return startOffset, nil, err
+	}
+
+	offset := startOffset
+	if info.Size() < offset {
+		offset = 0
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return offset, nil, err
+	}
+
+	var records []turnAckRecord
+	reader := bufio.NewReader(file)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return offset, records, err
+		}
+		offset += int64(len(line))
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var record turnAckRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			continue
+		}
+		records = append(records, record)
+	}
+
+	return offset, records, nil
 }
 
 // Close stops the webhook server and closes log files
