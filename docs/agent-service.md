@@ -26,6 +26,14 @@ One-shot mode is a lifecycle policy, not a different implementation:
 
 - `holon run` can start the same serve process, submit exactly one turn, then stop the container.
 
+### Controller mode (current serve integration)
+
+For `holon serve` controller runtime, the agent binds its Unix socket under agent home:
+
+- `${HOLON_AGENT_HOME}/run/agent.sock` (container path typically `/root/run/agent.sock`)
+
+This keeps runtime IPC colocated with persistent `agent_home` identity instead of legacy fixed paths.
+
 ## Filesystem layout (inside the container)
 
 The serve process uses these conventional paths:
@@ -50,6 +58,31 @@ The serve process exposes a minimal API over the Unix socket.
 ### `GET /health`
 
 Returns readiness + basic metadata (version, engine, enabled skills).
+
+### `POST /v1/controller/events` (current controller endpoint)
+
+Accepts one event envelope and returns terminal status for that event:
+
+```json
+{
+  "event": {
+    "id": "evt_...",
+    "type": "..."
+  }
+}
+```
+
+Response shape:
+
+```json
+{
+  "status": "completed",
+  "message": "optional summary",
+  "event_id": "evt_...",
+  "turn_id": "turn_...",
+  "thread_id": "thread_..."
+}
+```
 
 ### `POST /responses` (Open Responses compatible)
 
@@ -127,4 +160,3 @@ This design can be adopted incrementally:
 - Keep the existing `agent.ts` one-shot entrypoint.
 - Add `agent.ts serve` that uses the same internal “run one turn” function.
 - Runners can continue using one-shot mode; `serve` becomes an opt-in capability for session-based applications.
-

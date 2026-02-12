@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -486,16 +489,25 @@ type cliControllerHandler struct {
 	sessionRunner         SessionRunner
 	controllerSession     *docker.SessionHandle
 	controllerDone        <-chan error
-	controllerChannel     string
+	controllerSocketPath  string
+	controllerHTTPClient  *http.Client
 	controllerInputDir    string
 	controllerOutput      string
 	restartAttempts       int
+	eventQueue            chan controllerEvent
+	turnAckCh             chan serve.TurnAckRecord
+	stopCh                chan struct{}
+	workerDone            chan struct{}
+	pumpStarted           bool
+	closeOnce             sync.Once
 	mu                    sync.Mutex
 }
 
-var (
-	maxEventChannelSizeBytes int64 = 8 * 1024 * 1024
-)
+type controllerEvent struct {
+	env      serve.EventEnvelope
+	turnID   string
+	threadID string
+}
 
 func newCLIControllerHandler(
 	repoHint,
@@ -517,7 +529,7 @@ func newCLIControllerHandler(
 		sessionRunner = newDockerSessionRunner(rt)
 	}
 
-	return &cliControllerHandler{
+	handler := &cliControllerHandler{
 		repoHint:              repoHint,
 		stateDir:              stateDir,
 		agentHome:             agentHome,
@@ -528,7 +540,42 @@ func newCLIControllerHandler(
 		runtimeDevAgentSource: runtimeDevAgentSource,
 		dryRun:                dryRun,
 		sessionRunner:         sessionRunner,
-	}, nil
+		eventQueue:            make(chan controllerEvent, 128),
+		turnAckCh:             make(chan serve.TurnAckRecord, 128),
+		stopCh:                make(chan struct{}),
+		workerDone:            make(chan struct{}),
+	}
+	handler.pumpStarted = true
+	go handler.runEventPump()
+	return handler, nil
+}
+
+func (h *cliControllerHandler) TurnAcks() <-chan serve.TurnAckRecord {
+	h.mu.Lock()
+	h.ensurePumpStartedLocked()
+	ch := h.turnAckCh
+	h.mu.Unlock()
+	return ch
+}
+
+func (h *cliControllerHandler) ensurePumpStartedLocked() {
+	if h.eventQueue == nil {
+		h.eventQueue = make(chan controllerEvent, 128)
+	}
+	if h.turnAckCh == nil {
+		h.turnAckCh = make(chan serve.TurnAckRecord, 128)
+	}
+	if h.stopCh == nil {
+		h.stopCh = make(chan struct{})
+	}
+	if h.workerDone == nil {
+		h.workerDone = make(chan struct{})
+	}
+	if h.pumpStarted {
+		return
+	}
+	h.pumpStarted = true
+	go h.runEventPump()
 }
 
 func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventEnvelope) error {
@@ -536,23 +583,7 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 		holonlog.Info("serve dry-run forward", "event_id", env.ID, "type", env.Type)
 		return nil
 	}
-
-	ref, err := h.buildRef(env)
-	if err != nil {
-		return err
-	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if err := h.ensureControllerLocked(ctx, ref); err != nil {
-		return err
-	}
-	if err := appendJSONLine(h.controllerChannel, env); err != nil {
-		return fmt.Errorf("failed to write event to channel: %w", err)
-	}
-	h.compactChannelBestEffortLocked()
-	return nil
+	return h.enqueueEvent(ctx, controllerEvent{env: env})
 }
 
 func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.TurnStartRequest, turnID string) error {
@@ -582,7 +613,89 @@ func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.Tu
 		DedupeKey: fmt.Sprintf("rpc:turn:%s:%s", strings.TrimSpace(req.ThreadID), turnID),
 		Payload:   payloadRaw,
 	}
-	return h.HandleEvent(ctx, env)
+	return h.enqueueEvent(ctx, controllerEvent{
+		env:      env,
+		turnID:   turnID,
+		threadID: strings.TrimSpace(req.ThreadID),
+	})
+}
+
+func (h *cliControllerHandler) enqueueEvent(ctx context.Context, item controllerEvent) error {
+	h.mu.Lock()
+	h.ensurePumpStartedLocked()
+	stopCh := h.stopCh
+	eventQueue := h.eventQueue
+	h.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-stopCh:
+		return fmt.Errorf("controller handler is stopping")
+	case eventQueue <- item:
+		return nil
+	}
+}
+
+func (h *cliControllerHandler) runEventPump() {
+	defer close(h.workerDone)
+	for {
+		select {
+		case <-h.stopCh:
+			return
+		case item := <-h.eventQueue:
+			if err := h.dispatchQueuedEvent(item); err != nil {
+				holonlog.Error("failed to dispatch controller event", "error", err, "event_id", item.env.ID, "type", item.env.Type)
+				if item.turnID != "" {
+					h.publishTurnAck(serve.TurnAckRecord{
+						EventID:  item.env.ID,
+						TurnID:   item.turnID,
+						ThreadID: item.threadID,
+						Status:   "failed",
+						Message:  err.Error(),
+						At:       time.Now().UTC().Format(time.RFC3339Nano),
+					})
+				}
+			}
+		}
+	}
+}
+
+func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
+	ref, err := h.buildRef(item.env)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	result, err := h.postEventWithReconnect(ctx, ref, item.env)
+	if err != nil {
+		return err
+	}
+	if item.turnID != "" {
+		status := strings.TrimSpace(result.Status)
+		if status == "" {
+			status = "completed"
+		}
+		h.publishTurnAck(serve.TurnAckRecord{
+			EventID:  firstNonEmpty(strings.TrimSpace(result.EventID), item.env.ID),
+			TurnID:   item.turnID,
+			ThreadID: firstNonEmpty(strings.TrimSpace(result.ThreadID), item.threadID),
+			Status:   status,
+			Message:  strings.TrimSpace(result.Message),
+			At:       time.Now().UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return nil
+}
+
+func (h *cliControllerHandler) publishTurnAck(record serve.TurnAckRecord) {
+	select {
+	case h.turnAckCh <- record:
+	default:
+		holonlog.Warn("dropping turn ack due to full buffer", "turn_id", record.TurnID, "status", record.Status)
+	}
 }
 
 func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error) {
@@ -638,7 +751,7 @@ func (h *cliControllerHandler) buildInputDir(ref string) (string, error) {
 
 	workflow := map[string]any{
 		"trigger": map[string]any{
-			"goal_hint": "Persistent controller runtime. Read events from HOLON_CONTROLLER_EVENT_CHANNEL and decide actions autonomously using available skills.",
+			"goal_hint": "Persistent controller runtime. Receive events via HOLON_CONTROLLER_RPC_SOCKET and decide actions autonomously using available skills.",
 			"ref":       ref,
 		},
 	}
@@ -671,7 +784,7 @@ kind: Holon
 metadata:
   name: "github-controller-session"
 goal:
-  description: "Run as a persistent GitHub controller. Read events from HOLON_CONTROLLER_EVENT_CHANNEL and decide actions autonomously using available skills."
+  description: "Run as a persistent GitHub controller. Receive events via HOLON_CONTROLLER_RPC_SOCKET and decide actions autonomously using available skills."
 output:
   artifacts:
     - path: "manifest.json"
@@ -732,8 +845,8 @@ Controller runtime contract:
 3. Workspace root is HOLON_WORKSPACE_DIR.
 4. Persist project checkout mapping in HOLON_WORKSPACE_INDEX_PATH (repo -> local path under workspace root).
 5. Reuse existing checkout when repo is already indexed; otherwise clone/fetch as needed.
-6. The event stream is at HOLON_CONTROLLER_EVENT_CHANNEL and cursor at HOLON_CONTROLLER_EVENT_CURSOR.
-7. Write turn acknowledgements to HOLON_CONTROLLER_ACK_CHANNEL when available.
+6. Receive event RPC requests from HOLON_CONTROLLER_RPC_SOCKET.
+7. For each request, execute autonomously and return a terminal status with optional summary message.
 8. Session metadata path is HOLON_CONTROLLER_SESSION_STATE_PATH.
 9. Goal state path is HOLON_CONTROLLER_GOAL_STATE_PATH.
 10. Process events continuously, keep role boundaries strict, and produce concise action-oriented outcomes.
@@ -796,9 +909,9 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	if err := h.ensureGoalStateFile(); err != nil {
 		return err
 	}
-	channelPath := filepath.Join(h.stateDir, "controller-state", "event-channel.ndjson")
-	if err := touchFile(channelPath); err != nil {
-		return fmt.Errorf("failed to initialize event channel: %w", err)
+	socketPath := filepath.Join(h.agentHome, "run", "agent.sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
+		return fmt.Errorf("failed to create controller socket dir: %w", err)
 	}
 	inputDir, err := h.buildInputDir(ref)
 	if err != nil {
@@ -819,9 +932,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"HOLON_STATE_DIR":                     docker.ContainerStateDir,
 		"CLAUDE_CONFIG_DIR":                   "/state/claude-config",
 		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,
-		"HOLON_CONTROLLER_EVENT_CHANNEL":      "/state/event-channel.ndjson",
-		"HOLON_CONTROLLER_EVENT_CURSOR":       "/state/event-channel.cursor",
-		"HOLON_CONTROLLER_ACK_CHANNEL":        "/state/ack-channel.ndjson",
+		"HOLON_CONTROLLER_RPC_SOCKET":         "/root/run/agent.sock",
 		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/state/controller-session.json",
 		"HOLON_CONTROLLER_GOAL_STATE_PATH":    "/state/goal-state.json",
 	}
@@ -854,15 +965,19 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 
 	h.controllerSession = session
 	h.controllerDone = done
-	h.controllerChannel = channelPath
+	h.controllerSocketPath = socketPath
+	h.controllerHTTPClient = newControllerHTTPClient(socketPath)
 	h.controllerInputDir = inputDir
 	h.controllerOutput = outputDir
 	h.restartAttempts++
+	if err := waitForControllerRPCReady(ctx, h.controllerHTTPClient); err != nil {
+		return fmt.Errorf("controller rpc not ready: %w", err)
+	}
 
 	holonlog.Info(
 		"controller runtime connected",
 		"container_id", session.ContainerID,
-		"channel", channelPath,
+		"socket", socketPath,
 		"restart_attempt", h.restartAttempts,
 	)
 	return nil
@@ -912,40 +1027,172 @@ func resolveControllerWorkspace(agentHome string) (string, error) {
 	return workspace, nil
 }
 
-func (h *cliControllerHandler) compactChannelBestEffortLocked() {
-	info, err := os.Stat(h.controllerChannel)
-	if err != nil || info.Size() <= maxEventChannelSizeBytes {
-		return
+type controllerRPCEventRequest struct {
+	Event serve.EventEnvelope `json:"event"`
+}
+
+type controllerRPCEventResponse struct {
+	Status   string `json:"status"`
+	Message  string `json:"message,omitempty"`
+	EventID  string `json:"event_id,omitempty"`
+	TurnID   string `json:"turn_id,omitempty"`
+	ThreadID string `json:"thread_id,omitempty"`
+}
+
+func newControllerHTTPClient(socketPath string) *http.Client {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			dialer := &net.Dialer{}
+			return dialer.DialContext(ctx, "unix", socketPath)
+		},
 	}
-	cursorPath := filepath.Join(h.stateDir, "controller-state", "event-channel.cursor")
-	rawCursor, err := os.ReadFile(cursorPath)
+	return &http.Client{
+		Transport: transport,
+		Timeout:   3 * time.Minute,
+	}
+}
+
+func waitForControllerRPCReady(ctx context.Context, client *http.Client) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for controller rpc health endpoint")
+		}
+		reqCtx := ctx
+		if reqCtx == nil {
+			reqCtx = context.Background()
+		}
+		healthCtx, cancel := context.WithTimeout(reqCtx, 1500*time.Millisecond)
+		req, err := http.NewRequestWithContext(healthCtx, http.MethodGet, "http://unix/health", nil)
+		if err != nil {
+			cancel()
+			return fmt.Errorf("failed to build health request: %w", err)
+		}
+		resp, err := client.Do(req)
+		cancel()
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		select {
+		case <-time.After(300 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
+	resp, err := h.postEventRPC(ctx, ref, env)
+	if err == nil {
+		return resp, nil
+	}
+	if !isRetryableControllerRPCError(err) {
+		return controllerRPCEventResponse{}, err
+	}
+
+	holonlog.Warn("controller rpc dispatch failed, restarting session", "error", err)
+
+	h.mu.Lock()
+	if h.controllerSession != nil && h.sessionRunner != nil {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = h.sessionRunner.Stop(stopCtx, h.controllerSession)
+		stopCancel()
+	}
+	h.controllerSession = nil
+	h.controllerDone = nil
+	h.controllerHTTPClient = nil
+	h.controllerSocketPath = ""
+	restartErr := h.ensureControllerLocked(ctx, ref)
+	client := h.controllerHTTPClient
+	h.mu.Unlock()
+	if restartErr != nil {
+		return controllerRPCEventResponse{}, restartErr
+	}
+	return postEventRPC(ctx, client, env)
+}
+
+func (h *cliControllerHandler) postEventRPC(ctx context.Context, ref string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
+	h.mu.Lock()
+	if err := h.ensureControllerLocked(ctx, ref); err != nil {
+		h.mu.Unlock()
+		return controllerRPCEventResponse{}, err
+	}
+	client := h.controllerHTTPClient
+	h.mu.Unlock()
+	return postEventRPC(ctx, client, env)
+}
+
+func postEventRPC(ctx context.Context, client *http.Client, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
+	payload := controllerRPCEventRequest{Event: env}
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to marshal controller rpc request: %w", err)
 	}
-	cursor, err := strconv.ParseInt(strings.TrimSpace(string(rawCursor)), 10, 64)
-	if err != nil || cursor <= 0 || cursor >= info.Size() {
-		return
-	}
-	data, err := os.ReadFile(h.controllerChannel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/v1/controller/events", bytes.NewReader(body))
 	if err != nil {
-		return
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to create controller rpc request: %w", err)
 	}
-	if cursor >= int64(len(data)) {
-		return
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller rpc request failed: %w", err)
 	}
-	remaining := data[cursor:]
-	if err := os.WriteFile(h.controllerChannel, remaining, 0644); err != nil {
-		holonlog.Warn("failed to compact event channel", "error", err)
-		return
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to read controller rpc response: %w", err)
 	}
-	if err := os.WriteFile(cursorPath, []byte("0"), 0644); err != nil {
-		holonlog.Warn("failed to reset event channel cursor", "error", err)
-		return
+	if resp.StatusCode != http.StatusOK {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller rpc status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
-	holonlog.Info("compacted event channel", "old_bytes", info.Size(), "new_bytes", len(remaining))
+	var result controllerRPCEventResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to parse controller rpc response: %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(result.Status), "failed") {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller event execution failed: %s", strings.TrimSpace(result.Message))
+	}
+	return result, nil
+}
+
+func isRetryableControllerRPCError(err error) bool {
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "no such file") ||
+		strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "broken pipe") ||
+		strings.Contains(lower, "connection reset")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (h *cliControllerHandler) Close() error {
+	h.closeOnce.Do(func() {
+		h.mu.Lock()
+		h.ensurePumpStartedLocked()
+		stopCh := h.stopCh
+		workerDone := h.workerDone
+		turnAckCh := h.turnAckCh
+		h.mu.Unlock()
+
+		close(stopCh)
+		select {
+		case <-workerDone:
+		case <-time.After(2 * time.Second):
+		}
+		close(turnAckCh)
+	})
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.controllerSession == nil {
@@ -965,44 +1212,6 @@ func (h *cliControllerHandler) Close() error {
 	}
 	h.controllerSession = nil
 	h.controllerDone = nil
-	return nil
-}
-
-func touchFile(path string) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	return f.Close()
-}
-
-func appendJSONLine(path string, value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("failed to marshal line: %w", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	buf := append(data, '\n')
-	for len(buf) > 0 {
-		n, writeErr := f.Write(buf)
-		if writeErr != nil {
-			if closeErr := f.Close(); closeErr != nil {
-				return fmt.Errorf("write error: %w; close error: %v", writeErr, closeErr)
-			}
-			return writeErr
-		}
-		if n == 0 {
-			_ = f.Close()
-			return io.ErrShortWrite
-		}
-		buf = buf[n:]
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
 	return nil
 }
 
