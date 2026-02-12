@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,9 +77,11 @@ type jsonrpcRequest struct {
 // jsonrpcResponse represents a JSON-RPC 2.0 response
 type jsonrpcResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      int             `json:"id"`
+	ID      interface{}      `json:"id"` // Can be int, string, or null for notifications
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
+	Method  string          `json:"method,omitempty"` // For notifications
+	Params  json.RawMessage `json:"params,omitempty"`  // For notifications
 }
 
 // rpcError represents a JSON-RPC error
@@ -186,4 +190,119 @@ func (c *RPCClient) GetLogs(maxLines int) (*LogStreamResponse, error) {
 func (c *RPCClient) TestConnection() error {
 	_, err := c.GetStatus()
 	return err
+}
+
+// StreamNotification represents a server-sent notification
+type StreamNotification struct {
+	JSONRPC string          `json:"jsonrpc"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+}
+
+// NotificationHandler is called when a streaming notification is received
+type NotificationHandler func(StreamNotification)
+
+// StreamNotifications connects to the streaming endpoint and receives notifications
+func (c *RPCClient) StreamNotifications(ctx context.Context, handler NotificationHandler) error {
+	// Build stream URL
+	streamURL := c.rpcURL[:len(c.rpcURL)-len("/rpc")] + "/rpc/stream"
+
+	req, err := http.NewRequestWithContext(ctx, "GET", streamURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create stream request: %w", err)
+	}
+	req.Header.Set("Accept", "application/x-ndjson")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to connect to stream: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("stream returned status %d", resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue // Skip keep-alive newlines
+		}
+
+		var notif StreamNotification
+		if err := json.Unmarshal(line, &notif); err != nil {
+			continue // Skip unparseable lines
+		}
+
+		// Call handler in a goroutine to avoid blocking
+		go handler(notif)
+	}
+
+	return scanner.Err()
+}
+
+// TurnStartRequest represents a request to start a new turn
+type TurnStartRequest struct {
+	ThreadID string             `json:"thread_id,omitempty"`
+	Input    []TurnInputMessage `json:"input,omitempty"`
+}
+
+// TurnInputMessage represents a user message
+type TurnInputMessage struct {
+	Type    string                `json:"type,omitempty"`
+	Role    string                `json:"role,omitempty"`
+	Content []TurnInputContentPart `json:"content,omitempty"`
+}
+
+// TurnInputContentPart represents content in a message
+type TurnInputContentPart struct {
+	Type string `json:"type,omitempty"`
+	Text string `json:"text,omitempty"`
+}
+
+// TurnStartResponse is the response for turn/start
+type TurnStartResponse struct {
+	TurnID    string `json:"turn_id"`
+	State      string `json:"state"`
+	StartedAt  string `json:"started_at"`
+}
+
+// StartTurn starts a new turn with a user message
+func (c *RPCClient) StartTurn(threadID string, message string) (*TurnStartResponse, error) {
+	input := []TurnInputMessage{{
+		Type: "message",
+		Role: "user",
+		Content: []TurnInputContentPart{{
+			Type: "input_text",
+			Text: message,
+		}},
+	}}
+
+	params := TurnStartRequest{
+		ThreadID: threadID,
+		Input:    input,
+	}
+
+	var resp TurnStartResponse
+	if err := c.call("turn/start", params, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ThreadStartResponse is the response for thread/start
+type ThreadStartResponse struct {
+	ThreadID  string `json:"thread_id"`
+	SessionID string `json:"session_id"`
+	StartedAt string `json:"started_at"`
+}
+
+// StartThread starts a new thread
+func (c *RPCClient) StartThread() (*ThreadStartResponse, error) {
+	var resp ThreadStartResponse
+	if err := c.call("thread/start", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
