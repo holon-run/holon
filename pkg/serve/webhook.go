@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +35,7 @@ type WebhookServer struct {
 	maxBodySize    int64
 	channelTimeout time.Duration
 	rpcRegistry    *MethodRegistry
+	broadcaster    *NotificationBroadcaster
 }
 
 // WebhookConfig configures the webhook server
@@ -127,11 +130,13 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		maxBodySize:    maxBodySize,
 		channelTimeout: channelTimeout,
 		rpcRegistry:    NewMethodRegistry(),
+		broadcaster:    NewNotificationBroadcaster(),
 		state: persistentState{
 			ProcessedAt:  make(map[string]string),
 			ProcessedMax: 2000,
 		},
 	}
+	ws.runtime.SetBroadcaster(ws.broadcaster)
 
 	if err := ws.loadState(); err != nil {
 		eventsLog.Close()
@@ -149,11 +154,13 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	// Register Codex-compatible session/turn methods
 	ws.rpcRegistry.RegisterMethod("thread/start", ws.runtime.HandleThreadStart)
 	ws.rpcRegistry.RegisterMethod("turn/start", ws.runtime.HandleTurnStart)
+	ws.rpcRegistry.RegisterMethod("turn/steer", ws.runtime.HandleTurnSteer)
 	ws.rpcRegistry.RegisterMethod("turn/interrupt", ws.runtime.HandleTurnInterrupt)
 
 	mux := http.NewServeMux()
 	// JSON-RPC control plane
 	mux.HandleFunc("/rpc", ws.handleJSONRPC)
+	mux.HandleFunc("/rpc/stream", ws.handleRPCStream)
 	// Provider-specific ingress path (new)
 	mux.HandleFunc("/ingress/github/webhook", ws.handleWebhook)
 	// Legacy path (deprecated for backward compatibility)
@@ -327,6 +334,73 @@ func (ws *WebhookServer) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSONRPCResponse(w, req.ID, result, nil)
 	holonlog.Debug("jsonrpc success", "id", req.ID, "method", req.Method)
+}
+
+func (ws *WebhookServer) handleRPCStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !acceptsNDJSON(r.Header.Get("Accept")) {
+		http.Error(w, "accept header must be application/x-ndjson", http.StatusBadRequest)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	streamWriter := NewStreamWriter(w)
+	defer streamWriter.Close()
+	unsubscribe := ws.broadcaster.Subscribe(streamWriter)
+	defer unsubscribe()
+
+	threadID := ws.runtime.GetState().ControllerSession
+	if threadID != "" {
+		threadNotif := NewThreadNotification(threadID, ThreadNotificationStarted, StateRunning)
+		if err := streamWriter.WriteThreadNotification(threadNotif); err == nil {
+			flusher.Flush()
+		}
+	}
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			// Keep-alive: blank line is valid NDJSON separator and keeps intermediaries from timing out.
+			if _, err := w.Write([]byte("\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func acceptsNDJSON(acceptHeader string) bool {
+	if strings.TrimSpace(acceptHeader) == "" {
+		return false
+	}
+	for _, token := range strings.Split(acceptHeader, ",") {
+		mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(token))
+		if err != nil {
+			continue
+		}
+		if mediaType == "application/x-ndjson" || mediaType == "*/*" {
+			return true
+		}
+	}
+	return false
 }
 
 func (ws *WebhookServer) wrapWithHeaders(body []byte, headers map[string]string) []byte {

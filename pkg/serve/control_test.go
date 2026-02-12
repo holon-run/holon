@@ -1,9 +1,11 @@
 package serve
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -556,42 +558,37 @@ func TestHandleTurnStart(t *testing.T) {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
 
-	// Test with no params
-	result, rpcErr := rt.HandleTurnStart(nil)
-	if rpcErr != nil {
-		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	// Test without required params should fail
+	_, rpcErr := rt.HandleTurnStart(nil)
+	if rpcErr == nil {
+		t.Fatalf("HandleTurnStart() expected invalid params error, got nil")
 	}
-
-	resp, ok := result.(TurnStartResponse)
-	if !ok {
-		t.Fatalf("HandleTurnStart() result type = %T, want TurnStartResponse", result)
-	}
-
-	if resp.TurnID == "" {
-		t.Error("TurnID is empty")
-	}
-
-	if resp.State != "active" {
-		t.Errorf("State = %s, want 'active'", resp.State)
-	}
-
-	if resp.StartedAt == "" {
-		t.Error("StartedAt is empty")
+	if rpcErr.Code != ErrCodeInvalidParams {
+		t.Fatalf("HandleTurnStart() error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
 	}
 
 	// Test with params
 	params, _ := json.Marshal(map[string]interface{}{
 		"thread_id": "thread_test123",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
 		"extended_context": map[string]string{
 			"test_key": "test_value",
 		},
 	})
-	result, rpcErr = rt.HandleTurnStart(params)
+	result, rpcErr := rt.HandleTurnStart(params)
 	if rpcErr != nil {
 		t.Fatalf("HandleTurnStart() with params error = %v", rpcErr)
 	}
 
-	resp, ok = result.(TurnStartResponse)
+	resp, ok := result.(TurnStartResponse)
 	if !ok {
 		t.Fatalf("HandleTurnStart() with params result type = %T, want TurnStartResponse", result)
 	}
@@ -618,8 +615,21 @@ func TestHandleTurnStartResumesIfPaused(t *testing.T) {
 		t.Error("Runtime should be paused")
 	}
 
+	params, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_test123",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+
 	// Turn start should resume
-	result, rpcErr := rt.HandleTurnStart(nil)
+	result, rpcErr := rt.HandleTurnStart(params)
 	if rpcErr != nil {
 		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
 	}
@@ -635,6 +645,69 @@ func TestHandleTurnStartResumesIfPaused(t *testing.T) {
 	}
 }
 
+func TestHandleTurnStartInputValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		params map[string]interface{}
+	}{
+		{
+			name: "missing thread_id",
+			params: map[string]interface{}{
+				"input": []map[string]interface{}{
+					{
+						"type": "message",
+						"role": "user",
+						"content": []map[string]interface{}{
+							{"type": "input_text", "text": "hello"},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "missing input",
+			params: map[string]interface{}{
+				"thread_id": "thread_test123",
+			},
+		},
+		{
+			name: "empty text",
+			params: map[string]interface{}{
+				"thread_id": "thread_test123",
+				"input": []map[string]interface{}{
+					{
+						"type": "message",
+						"role": "user",
+						"content": []map[string]interface{}{
+							{"type": "input_text", "text": ""},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			params, _ := json.Marshal(tc.params)
+			_, rpcErr := rt.HandleTurnStart(params)
+			if rpcErr == nil {
+				t.Fatalf("expected invalid params error")
+			}
+			if rpcErr.Code != ErrCodeInvalidParams {
+				t.Fatalf("error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
+			}
+		})
+	}
+}
+
 func TestHandleTurnInterrupt(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -643,8 +716,33 @@ func TestHandleTurnInterrupt(t *testing.T) {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
 
-	// Test with no params
-	result, rpcErr := rt.HandleTurnInterrupt(nil)
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_test123",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	startResult, startErr := rt.HandleTurnStart(startParams)
+	if startErr != nil {
+		t.Fatalf("HandleTurnStart() setup error = %v", startErr)
+	}
+	startResp, ok := startResult.(TurnStartResponse)
+	if !ok {
+		t.Fatalf("HandleTurnStart() setup result type = %T, want TurnStartResponse", startResult)
+	}
+
+	// Test with params
+	params, _ := json.Marshal(map[string]interface{}{
+		"turn_id": startResp.TurnID,
+		"reason":  "User requested interruption",
+	})
+	result, rpcErr := rt.HandleTurnInterrupt(params)
 	if rpcErr != nil {
 		t.Fatalf("HandleTurnInterrupt() error = %v", rpcErr)
 	}
@@ -670,37 +768,27 @@ func TestHandleTurnInterrupt(t *testing.T) {
 		t.Error("Message is empty")
 	}
 
-	// Verify runtime is paused
-	if !rt.IsPaused() {
-		t.Error("Runtime should be paused after turn/interrupt")
+	// Verify runtime remains active for targeted turn interruption
+	if rt.IsPaused() {
+		t.Error("Runtime should remain running after targeted turn/interrupt")
 	}
 
-	// Test with params
-	// Resume first for the second test
-	if err := rt.Resume(); err != nil {
-		t.Fatalf("Resume() error = %v", err)
-	}
-
-	params, _ := json.Marshal(map[string]interface{}{
-		"turn_id": "turn_test123",
-		"reason":  "User requested interruption",
-	})
-	result, rpcErr = rt.HandleTurnInterrupt(params)
+	result, rpcErr = rt.HandleTurnInterrupt(nil)
 	if rpcErr != nil {
-		t.Fatalf("HandleTurnInterrupt() with params error = %v", rpcErr)
+		t.Fatalf("HandleTurnInterrupt() without params error = %v", rpcErr)
 	}
 
 	resp, ok = result.(TurnInterruptResponse)
 	if !ok {
-		t.Fatalf("HandleTurnInterrupt() with params result type = %T, want TurnInterruptResponse", result)
+		t.Fatalf("HandleTurnInterrupt() without params result type = %T, want TurnInterruptResponse", result)
 	}
 
-	if resp.TurnID != "turn_test123" {
-		t.Errorf("TurnID = %s, want 'turn_test123'", resp.TurnID)
+	if resp.TurnID == "" {
+		t.Error("TurnID should be auto-generated when omitted")
 	}
 
-	if resp.Message != "Turn interrupted: User requested interruption" {
-		t.Errorf("Message = %s, want 'Turn interrupted: User requested interruption'", resp.Message)
+	if !rt.IsPaused() {
+		t.Error("Runtime should be paused after turn/interrupt without turn_id")
 	}
 }
 
@@ -729,6 +817,110 @@ func TestHandleTurnInterruptWhenAlreadyPaused(t *testing.T) {
 
 	if rpcErr.Code != ErrCodeInternalError {
 		t.Errorf("Error code = %d, want %d", rpcErr.Code, ErrCodeInternalError)
+	}
+}
+
+func TestHandleTurnSteer(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_test123",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	startResult, startErr := rt.HandleTurnStart(startParams)
+	if startErr != nil {
+		t.Fatalf("HandleTurnStart() setup error = %v", startErr)
+	}
+	startResp, ok := startResult.(TurnStartResponse)
+	if !ok {
+		t.Fatalf("HandleTurnStart() setup result type = %T, want TurnStartResponse", startResult)
+	}
+
+	steerParams, _ := json.Marshal(map[string]interface{}{
+		"turn_id": startResp.TurnID,
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "continue"},
+				},
+			},
+		},
+	})
+	result, rpcErr := rt.HandleTurnSteer(steerParams)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnSteer() error = %v", rpcErr)
+	}
+	resp, ok := result.(TurnSteerResponse)
+	if !ok {
+		t.Fatalf("HandleTurnSteer() result type = %T, want TurnSteerResponse", result)
+	}
+	if resp.TurnID != startResp.TurnID {
+		t.Errorf("TurnID = %s, want %s", resp.TurnID, startResp.TurnID)
+	}
+	if resp.AcceptedItems != 1 {
+		t.Errorf("AcceptedItems = %d, want 1", resp.AcceptedItems)
+	}
+	if resp.State != StateActive {
+		t.Errorf("State = %s, want %s", resp.State, StateActive)
+	}
+}
+
+func TestHandleTurnSteerInvalidParams(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	// Missing turn_id
+	params, _ := json.Marshal(map[string]interface{}{
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hi"},
+				},
+			},
+		},
+	})
+	_, rpcErr := rt.HandleTurnSteer(params)
+	if rpcErr == nil || rpcErr.Code != ErrCodeInvalidParams {
+		t.Fatalf("expected invalid params for missing turn_id, got %v", rpcErr)
+	}
+
+	// Unknown turn_id
+	params, _ = json.Marshal(map[string]interface{}{
+		"turn_id": "turn_missing",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hi"},
+				},
+			},
+		},
+	})
+	_, rpcErr = rt.HandleTurnSteer(params)
+	if rpcErr == nil || rpcErr.Code != ErrCodeInvalidParams {
+		t.Fatalf("expected invalid params for missing active turn, got %v", rpcErr)
 	}
 }
 
@@ -765,5 +957,137 @@ func TestCodexMethodsInvalidParams(t *testing.T) {
 	}
 	if rpcErr.Code != ErrCodeInvalidParams {
 		t.Errorf("Error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
+	}
+
+	// Test turn/steer with invalid JSON
+	_, rpcErr = rt.HandleTurnSteer([]byte("{invalid json"))
+	if rpcErr == nil {
+		t.Error("Expected error for turn/steer with invalid JSON, got nil")
+	}
+	if rpcErr.Code != ErrCodeInvalidParams {
+		t.Errorf("Error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
+	}
+}
+
+func TestTurnStartInvalidParamsIncludeFieldData(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+
+	_, rpcErr := rt.HandleTurnStart(params)
+	if rpcErr == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if len(rpcErr.Data) == 0 {
+		t.Fatalf("expected error data for invalid params")
+	}
+	var data map[string]string
+	if err := json.Unmarshal(rpcErr.Data, &data); err != nil {
+		t.Fatalf("failed to decode error data: %v", err)
+	}
+	if data["field"] != "thread_id" {
+		t.Fatalf("expected field=thread_id, got %q", data["field"])
+	}
+}
+
+func TestTurnAutoCompleteEmitsOnceAfterReschedule(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	rt.setTurnIdleTTLForTest(40 * time.Millisecond)
+
+	b := NewNotificationBroadcaster()
+	var buf bytes.Buffer
+	sw := NewStreamWriter(&buf)
+	b.Subscribe(sw)
+	rt.SetBroadcaster(b)
+
+	turnID, _ := rt.beginTurn("thread_test")
+	rt.scheduleTurnAutoComplete(turnID)
+	rt.scheduleTurnAutoComplete(turnID)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if strings.Count(buf.String(), "\"method\":\"turn/completed\"") >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for turn/completed notification; got: %s", buf.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	time.Sleep(80 * time.Millisecond)
+	if got := strings.Count(buf.String(), "\"method\":\"turn/completed\""); got != 1 {
+		t.Fatalf("expected exactly one turn/completed notification, got %d (%s)", got, buf.String())
+	}
+}
+
+func TestTurnInterruptNotificationIncludesTurnContext(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	rt.setTurnIdleTTLForTest(5 * time.Second)
+
+	b := NewNotificationBroadcaster()
+	var buf bytes.Buffer
+	sw := NewStreamWriter(&buf)
+	b.Subscribe(sw)
+	rt.SetBroadcaster(b)
+
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_test_ctx",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	startResult, rpcErr := rt.HandleTurnStart(startParams)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	}
+	startResp := startResult.(TurnStartResponse)
+
+	interruptParams, _ := json.Marshal(map[string]interface{}{
+		"turn_id": startResp.TurnID,
+		"reason":  "stop",
+	})
+	_, rpcErr = rt.HandleTurnInterrupt(interruptParams)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnInterrupt() error = %v", rpcErr)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "\"method\":\"turn/interrupted\"") {
+		t.Fatalf("expected turn/interrupted notification in output: %s", output)
+	}
+	if !strings.Contains(output, "\"thread_id\":\"thread_test_ctx\"") {
+		t.Fatalf("expected interrupted notification to include thread_id, got: %s", output)
 	}
 }

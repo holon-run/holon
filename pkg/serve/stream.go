@@ -12,10 +12,11 @@ import (
 
 // StreamWriter handles writing notifications to a streaming connection
 type StreamWriter struct {
-	mu     sync.Mutex
-	writer io.Writer
-	enc    *json.Encoder
-	closed bool
+	mu      sync.Mutex
+	writer  io.Writer
+	enc     *json.Encoder
+	flusher interface{ Flush() }
+	closed  bool
 }
 
 // NewStreamWriter creates a new stream writer for NDJSON streaming
@@ -25,6 +26,12 @@ func NewStreamWriter(w io.Writer) *StreamWriter {
 	return &StreamWriter{
 		writer: w,
 		enc:    enc,
+		flusher: func() interface{ Flush() } {
+			if f, ok := w.(interface{ Flush() }); ok {
+				return f
+			}
+			return nil
+		}(),
 		closed: false,
 	}
 }
@@ -40,6 +47,9 @@ func (sw *StreamWriter) WriteNotification(n Notification) error {
 
 	if err := sw.enc.Encode(n); err != nil {
 		return fmt.Errorf("failed to encode notification: %w", err)
+	}
+	if sw.flusher != nil {
+		sw.flusher.Flush()
 	}
 
 	return nil
@@ -174,6 +184,7 @@ func (sh *StreamHandler) handleRequest(req *JSONRPCRequest, writer *StreamWriter
 	// Register session/turn methods
 	registry.RegisterMethod("thread/start", sh.runtime.HandleThreadStart)
 	registry.RegisterMethod("turn/start", sh.runtime.HandleTurnStart)
+	registry.RegisterMethod("turn/steer", sh.runtime.HandleTurnSteer)
 	registry.RegisterMethod("turn/interrupt", sh.runtime.HandleTurnInterrupt)
 
 	// Dispatch request
@@ -246,19 +257,32 @@ func (nb *NotificationBroadcaster) Unsubscribe(sw *StreamWriter) {
 	delete(nb.subscribers, sw)
 }
 
+func (nb *NotificationBroadcaster) snapshotSubscribers() []*StreamWriter {
+	nb.mu.RLock()
+	defer nb.mu.RUnlock()
+
+	out := make([]*StreamWriter, 0, len(nb.subscribers))
+	for sw := range nb.subscribers {
+		out = append(out, sw)
+	}
+	return out
+}
+
+func (nb *NotificationBroadcaster) broadcast(rpcNotif Notification) {
+	for _, sw := range nb.snapshotSubscribers() {
+		if err := sw.WriteNotification(rpcNotif); err != nil {
+			nb.Unsubscribe(sw)
+		}
+	}
+}
+
 // BroadcastItemNotification broadcasts an item notification to all subscribers
 func (nb *NotificationBroadcaster) BroadcastItemNotification(n ItemNotification) {
 	rpcNotif, err := n.ToJSONRPCNotification()
 	if err != nil {
 		return
 	}
-
-	nb.mu.RLock()
-	defer nb.mu.RUnlock()
-
-	for sw := range nb.subscribers {
-		_ = sw.WriteNotification(rpcNotif)
-	}
+	nb.broadcast(rpcNotif)
 }
 
 // BroadcastTurnNotification broadcasts a turn notification to all subscribers
@@ -267,13 +291,7 @@ func (nb *NotificationBroadcaster) BroadcastTurnNotification(n TurnNotification)
 	if err != nil {
 		return
 	}
-
-	nb.mu.RLock()
-	defer nb.mu.RUnlock()
-
-	for sw := range nb.subscribers {
-		_ = sw.WriteNotification(rpcNotif)
-	}
+	nb.broadcast(rpcNotif)
 }
 
 // BroadcastThreadNotification broadcasts a thread notification to all subscribers
@@ -282,11 +300,5 @@ func (nb *NotificationBroadcaster) BroadcastThreadNotification(n ThreadNotificat
 	if err != nil {
 		return
 	}
-
-	nb.mu.RLock()
-	defer nb.mu.RUnlock()
-
-	for sw := range nb.subscribers {
-		_ = sw.WriteNotification(rpcNotif)
-	}
+	nb.broadcast(rpcNotif)
 }

@@ -27,6 +27,8 @@ holon serve --repo holon-run/holon --webhook-port 8080
 
 This starts an HTTP server on port 8080 that:
 - Listens for webhook POST requests at `/ingress/github/webhook` (new path)
+- Exposes JSON-RPC control endpoint at `/rpc`
+- Exposes NDJSON notification stream at `/rpc/stream` (`Accept: application/x-ndjson`)
 - Provides a health check endpoint at `/health`
 - Normalizes incoming GitHub webhook events to EventEnvelope format
 - Forwards events to the controller agent
