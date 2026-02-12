@@ -8,6 +8,7 @@ import type { Options } from "./claudeSdk.js";
 import type { SDKMessage, SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-sdk";
 import { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtimePaths.js";
+import { tryGetSessionId } from "./sessionState.js";
 
 // Re-export for testing
 export { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
@@ -625,7 +626,7 @@ async function streamSessionTurn(
   session: SDKSession,
   logger: ProgressLogger,
   logFile: fs.WriteStream
-): Promise<{ success: boolean; result: string; sessionId: string }> {
+): Promise<{ success: boolean; result: string }> {
   let success = true;
   let resultReceived = false;
   let resultText = "";
@@ -670,7 +671,6 @@ async function streamSessionTurn(
   return {
     success,
     result: resultText || finalOutput,
-    sessionId: session.sessionId,
   };
 }
 
@@ -684,6 +684,15 @@ function buildSessionOptions(env: NodeJS.ProcessEnv): SDKSessionOptions {
 
 type ChannelBatch = {
   events: Array<{ line: string; nextOffset: number }>;
+};
+
+type TurnAckPayload = {
+  event_id?: string;
+  turn_id?: string;
+  thread_id?: string;
+  status: "completed" | "failed";
+  message?: string;
+  at: string;
 };
 
 const maxChannelReadBytes = 1024 * 1024;
@@ -757,6 +766,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function parseTurnAckFields(eventLine: string): { eventID?: string; turnID?: string; threadID?: string } {
+  try {
+    const parsed = JSON.parse(eventLine) as {
+      id?: unknown;
+      payload?: { turn_id?: unknown; thread_id?: unknown };
+      subject?: { id?: unknown };
+    };
+    const eventID = typeof parsed.id === "string" ? parsed.id : undefined;
+    const payloadTurnID =
+      parsed.payload && typeof parsed.payload.turn_id === "string" ? parsed.payload.turn_id : undefined;
+    const payloadThreadID =
+      parsed.payload && typeof parsed.payload.thread_id === "string" ? parsed.payload.thread_id : undefined;
+    const subjectThreadID = parsed.subject && typeof parsed.subject.id === "string" ? parsed.subject.id : undefined;
+    return { eventID, turnID: payloadTurnID, threadID: payloadThreadID || subjectThreadID };
+  } catch {
+    return {};
+  }
+}
+
+function appendTurnAck(ackPath: string, ack: TurnAckPayload): void {
+  fs.mkdirSync(path.dirname(ackPath), { recursive: true });
+  fs.appendFileSync(ackPath, `${JSON.stringify(ack)}\n`);
+}
+
 async function runServeClaudeSession(
   logger: ProgressLogger,
   systemInstruction: string,
@@ -792,26 +825,40 @@ async function runServeClaudeSession(
   const logFile = fs.createWriteStream(logFilePath, { flags: "a" });
 
   const sessionOptions = buildSessionOptions(env);
-  const resumeID = env.HOLON_CONTROLLER_SESSION_ID?.trim();
-  const session = resumeID ? await resumeSession(resumeID, sessionOptions) : await createSession(sessionOptions);
-  logger.info(`Controller session ready: ${session.sessionId}`);
+  const resumeId = env.HOLON_CONTROLLER_SESSION_ID?.trim();
+  const session = resumeId ? await resumeSession(resumeId, sessionOptions) : await createSession(sessionOptions);
+  let currentSessionId =
+    tryGetSessionId(session, (message) => logger.debug(message)) || resumeId;
+  if (currentSessionId) {
+    logger.info(`Controller session ready: ${currentSessionId}`);
+  } else {
+    logger.info("Controller session initialized; waiting for first response to obtain session ID");
+  }
 
   const sessionStatePath = env.HOLON_CONTROLLER_SESSION_STATE_PATH?.trim();
   const writeSessionState = (): void => {
-    const payload = JSON.stringify(
-      {
-        session_id: session.sessionId,
-        mode: "serve",
-        updated_at: new Date().toISOString(),
-      },
-      null,
-      2,
-    );
+    const state: { session_id?: string; mode: "serve"; updated_at: string } = {
+      mode: "serve",
+      updated_at: new Date().toISOString(),
+    };
+    if (currentSessionId) {
+      state.session_id = currentSessionId;
+    }
+    const payload = JSON.stringify(state, null, 2);
     fs.writeFileSync(path.join(evidenceDir, "session.json"), payload);
     if (sessionStatePath) {
       fs.mkdirSync(path.dirname(sessionStatePath), { recursive: true });
       fs.writeFileSync(sessionStatePath, payload);
     }
+  };
+
+  const refreshSessionId = (): void => {
+    const resolvedSessionId = tryGetSessionId(session, (message) => logger.debug(message));
+    if (resolvedSessionId && resolvedSessionId !== currentSessionId) {
+      currentSessionId = resolvedSessionId;
+      logger.info(`Controller session ID available: ${currentSessionId}`);
+    }
+    writeSessionState();
   };
 
   writeSessionState();
@@ -832,10 +879,12 @@ async function runServeClaudeSession(
 
     await session.send(bootstrapPrompt);
     await streamSessionTurn(session, logger, logFile);
+    refreshSessionId();
 
     const channelPath = env.HOLON_CONTROLLER_EVENT_CHANNEL?.trim();
     if (channelPath) {
       const cursorPath = env.HOLON_CONTROLLER_EVENT_CURSOR?.trim() || path.join(runtimePaths.stateDir, "event-channel.cursor");
+      const ackPath = env.HOLON_CONTROLLER_ACK_CHANNEL?.trim() || "";
       logger.info(`Controller event channel connected: ${channelPath}`);
       let offset = readCursorOffset(cursorPath);
       let running = true;
@@ -855,6 +904,7 @@ async function runServeClaudeSession(
         }
 
         for (const event of batch.events) {
+          const ackFields = parseTurnAckFields(event.line);
           const turnPrompt = [
             "New event payload (JSON):",
             event.line,
@@ -863,10 +913,22 @@ async function runServeClaudeSession(
             "After actions complete, summarize what you decided and what changed.",
           ].join("\n");
           await session.send(turnPrompt);
-          await streamSessionTurn(session, logger, logFile);
+          const turnResult = await streamSessionTurn(session, logger, logFile);
           offset = event.nextOffset;
           writeCursorOffset(cursorPath, offset);
-          writeSessionState();
+          refreshSessionId();
+          if (ackPath && ackFields.turnID) {
+            const rawMessage = (turnResult.result || "").trim();
+            const message = rawMessage.length > 4000 ? `${rawMessage.slice(0, 4000)}...` : rawMessage;
+            appendTurnAck(ackPath, {
+              event_id: ackFields.eventID,
+              turn_id: ackFields.turnID,
+              thread_id: ackFields.threadID,
+              status: turnResult.success ? "completed" : "failed",
+              message,
+              at: new Date().toISOString(),
+            });
+          }
         }
       }
       logger.info("Controller event channel disconnected");
@@ -888,7 +950,7 @@ async function runServeClaudeSession(
     ].join("\n");
     await session.send(turnPrompt);
     await streamSessionTurn(session, logger, logFile);
-    writeSessionState();
+    refreshSessionId();
   } finally {
     logFile.end();
     session.close();

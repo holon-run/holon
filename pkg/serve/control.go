@@ -25,7 +25,7 @@ type RuntimeState struct {
 const (
 	RuntimeStateRunning = "running"
 	RuntimeStatePaused  = "paused"
-	defaultTurnIdleTTL  = 2 * time.Second
+	defaultTurnIdleTTL  = 10 * time.Minute
 
 	// DefaultPort is the default port for holon serve control plane and webhook/server
 	DefaultPort = 8080
@@ -323,6 +323,12 @@ func (rt *Runtime) HandlePause(params json.RawMessage) (interface{}, *JSONRPCErr
 
 // HandleResume is the JSON-RPC handler for holon/resume
 func (rt *Runtime) HandleResume(params json.RawMessage) (interface{}, *JSONRPCError) {
+	if !rt.IsPaused() {
+		return ResumeResponse{
+			Success: true,
+			Message: "Runtime already running",
+		}, nil
+	}
 	if err := rt.Resume(); err != nil {
 		return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to resume: %s", err))
 	}
@@ -734,6 +740,48 @@ func (rt *Runtime) stopAndRemoveTurn(turnID string) (activeTurn, bool) {
 	}
 	delete(rt.turns, turnID)
 	return snapshot, true
+}
+
+// HandleTurnAck completes or interrupts an active turn from external runtime acknowledgements.
+// Returns true when the ack matched an active turn.
+func (rt *Runtime) HandleTurnAck(turnID string, success bool, message string) bool {
+	activeTurn, ok := rt.stopAndRemoveTurn(strings.TrimSpace(turnID))
+	if !ok {
+		return false
+	}
+
+	if success {
+		if strings.TrimSpace(message) != "" {
+			item := NewItemNotification(fmt.Sprintf("item_%d", rt.now().UnixNano()), ItemNotificationCreated, StateCompleted, map[string]interface{}{
+				"type": "message",
+				"role": "assistant",
+				"content": []TurnInputContentPart{
+					{Type: "text", Text: strings.TrimSpace(message)},
+				},
+			})
+			item.ThreadID = activeTurn.ThreadID
+			item.TurnID = activeTurn.ID
+			rt.emitItemNotification(item)
+		}
+		notif := NewTurnNotification(activeTurn.ID, TurnNotificationCompleted, StateCompleted)
+		notif.ThreadID = activeTurn.ThreadID
+		notif.StartedAt = activeTurn.StartedAt.Format(time.RFC3339)
+		notif.CompletedAt = rt.now().Format(time.RFC3339)
+		if strings.TrimSpace(message) != "" {
+			notif.Message = message
+		}
+		rt.emitTurnNotification(notif)
+	} else {
+		notif := NewTurnNotification(activeTurn.ID, TurnNotificationInterrupted, StateInterrupted)
+		notif.ThreadID = activeTurn.ThreadID
+		notif.StartedAt = activeTurn.StartedAt.Format(time.RFC3339)
+		if strings.TrimSpace(message) != "" {
+			notif.Message = message
+		}
+		rt.emitTurnNotification(notif)
+	}
+
+	return true
 }
 
 func (rt *Runtime) emitUserInputItems(threadID, turnID string, input []TurnInputMessage) {

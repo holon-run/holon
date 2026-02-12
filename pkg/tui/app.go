@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ type App struct {
 	notifications chan StreamNotification
 	streamErrors  chan error
 	streamClosed  chan struct{}
+	streamRetries int
 }
 
 type focusArea int
@@ -163,6 +165,8 @@ type streamStartedMsg struct {
 type streamErrorMsg struct {
 	err error
 }
+
+type streamReconnectMsg struct{}
 
 type notificationMsg struct {
 	notification StreamNotification
@@ -306,9 +310,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.err = fmt.Errorf("stream error: %w", msg.err)
 		a.streamActive = false
 		a.addSystemMessage("Notification stream disconnected")
-		return a, nil
+		if a.quitting || errors.Is(msg.err, context.Canceled) {
+			return a, nil
+		}
+		a.streamRetries++
+		delay := reconnectDelay(a.streamRetries)
+		return a, tea.Tick(delay, func(time.Time) tea.Msg {
+			return streamReconnectMsg{}
+		})
+
+	case streamReconnectMsg:
+		if a.quitting || a.streamActive {
+			return a, nil
+		}
+		return a, a.startStreamCmd()
 
 	case notificationMsg:
+		a.streamRetries = 0
 		a.handleNotification(msg.notification)
 		return a, a.waitForStreamEventCmd()
 
@@ -685,6 +703,17 @@ func (a *App) waitForStreamEventCmd() tea.Cmd {
 		case <-done:
 			return streamErrorMsg{err: context.Canceled}
 		}
+	}
+}
+
+func reconnectDelay(retries int) time.Duration {
+	switch {
+	case retries <= 1:
+		return 1 * time.Second
+	case retries == 2:
+		return 2 * time.Second
+	default:
+		return 5 * time.Second
 	}
 }
 

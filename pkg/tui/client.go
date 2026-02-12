@@ -20,6 +20,7 @@ import (
 type RPCClient struct {
 	rpcURL    string
 	client    *http.Client
+	streamCli *http.Client
 	requestID atomic.Int64
 }
 
@@ -29,6 +30,9 @@ func NewRPCClient(rpcURL string) *RPCClient {
 		rpcURL: rpcURL,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
+		},
+		streamCli: &http.Client{
+			Timeout: 0,
 		},
 	}
 	c.requestID.Store(0)
@@ -219,7 +223,7 @@ func (c *RPCClient) StreamNotifications(ctx context.Context, handler Notificatio
 	}
 	req.Header.Set("Accept", "application/x-ndjson")
 
-	resp, err := c.client.Do(req)
+	resp, err := c.streamCli.Do(req)
 	if err != nil {
 		return fmt.Errorf("stream request failed: %w", err)
 	}

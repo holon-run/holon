@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -92,5 +94,40 @@ func TestAppTabSwitchesFocus(t *testing.T) {
 	app = model.(*App)
 	if app.focus != focusLogs {
 		t.Fatalf("focus after shift+tab = %v, want %v", app.focus, focusLogs)
+	}
+}
+
+func TestStreamErrorSchedulesReconnect(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, cmd := app.Update(streamErrorMsg{err: context.DeadlineExceeded})
+	app = model.(*App)
+
+	if cmd == nil {
+		t.Fatalf("expected reconnect command after stream error")
+	}
+	if app.streamActive {
+		t.Fatalf("expected streamActive=false after stream error")
+	}
+}
+
+func TestStreamErrorCanceledDoesNotReconnect(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, cmd := app.Update(streamErrorMsg{err: context.Canceled})
+	app = model.(*App)
+
+	if cmd != nil {
+		t.Fatalf("expected no reconnect command for canceled stream")
+	}
+}
+
+func TestReconnectDelay(t *testing.T) {
+	if got := reconnectDelay(1); got != 1*time.Second {
+		t.Fatalf("reconnectDelay(1)=%v, want 1s", got)
+	}
+	if got := reconnectDelay(2); got != 2*time.Second {
+		t.Fatalf("reconnectDelay(2)=%v, want 2s", got)
+	}
+	if got := reconnectDelay(3); got != 5*time.Second {
+		t.Fatalf("reconnectDelay(3)=%v, want 5s", got)
 	}
 }

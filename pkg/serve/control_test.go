@@ -261,6 +261,37 @@ func TestHandleResume(t *testing.T) {
 	}
 }
 
+func TestHandleResumeWhenRunningIsIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	result, rpcErr := rt.HandleResume(nil)
+	if rpcErr != nil {
+		t.Fatalf("HandleResume() error = %v", rpcErr)
+	}
+
+	resp, ok := result.(ResumeResponse)
+	if !ok {
+		t.Fatalf("HandleResume() result type = %T, want ResumeResponse", result)
+	}
+
+	if !resp.Success {
+		t.Errorf("Resume Success = false, want true")
+	}
+
+	if resp.Message != "Runtime already running" {
+		t.Errorf("Resume Message = %s, want 'Runtime already running'", resp.Message)
+	}
+
+	if rt.IsPaused() {
+		t.Error("Runtime paused unexpectedly")
+	}
+}
+
 func TestHandleLogStream(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -1222,5 +1253,55 @@ func TestTurnInterruptNotificationIncludesTurnContext(t *testing.T) {
 	}
 	if !strings.Contains(output, "\"thread_id\":\"thread_test_ctx\"") {
 		t.Fatalf("expected interrupted notification to include thread_id, got: %s", output)
+	}
+}
+
+func TestHandleTurnAckCompletesAndEmitsAssistantItem(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	rt.setTurnIdleTTLForTest(5 * time.Second)
+
+	b := NewNotificationBroadcaster()
+	var buf bytes.Buffer
+	sw := NewStreamWriter(&buf)
+	b.Subscribe(sw)
+	rt.SetBroadcaster(b)
+
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_ack",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	startResult, rpcErr := rt.HandleTurnStart(startParams)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	}
+	startResp := startResult.(TurnStartResponse)
+
+	ok := rt.HandleTurnAck(startResp.TurnID, true, "assistant reply")
+	if !ok {
+		t.Fatalf("HandleTurnAck() returned false, expected true")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "\"method\":\"item/created\"") {
+		t.Fatalf("expected item/created notification in output: %s", output)
+	}
+	if !strings.Contains(output, "\"role\":\"assistant\"") {
+		t.Fatalf("expected assistant role in output: %s", output)
+	}
+	if !strings.Contains(output, "\"method\":\"turn/completed\"") {
+		t.Fatalf("expected turn/completed notification in output: %s", output)
 	}
 }
