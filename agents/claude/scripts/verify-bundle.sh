@@ -43,8 +43,9 @@ HOLON_DIR="${WORK_DIR}/holon"
 INPUT_DIR="${HOLON_DIR}/input"
 WORKSPACE_DIR="${HOLON_DIR}/workspace"
 OUTPUT_DIR="${HOLON_DIR}/output"
+STATE_DIR="${HOLON_DIR}/state"
 
-mkdir -p "${INPUT_DIR}" "${WORKSPACE_DIR}" "${OUTPUT_DIR}"
+mkdir -p "${INPUT_DIR}" "${WORKSPACE_DIR}" "${OUTPUT_DIR}" "${STATE_DIR}"
 cat > "${INPUT_DIR}/spec.yaml" <<'SPEC'
 version: "v1"
 kind: Holon
@@ -74,12 +75,18 @@ RUN_SCRIPT="${BUNDLE_VERIFY_RUN_SCRIPT:-/holon/agent/bin/agent --probe}"
 
 set +e
 DOCKER_OUTPUT=$(docker run --rm \
-  -v "${INPUT_DIR}:/input" \
-  -v "${WORKSPACE_DIR}:/workspace" \
+  -v "${INPUT_DIR}:/input:ro" \
+  -v "${WORKSPACE_DIR}:/workspace:ro" \
   -v "${OUTPUT_DIR}:/output" \
-  -v "${BUNDLE_EXTRACT}:/holon/agent" \
+  -v "${STATE_DIR}:/state" \
+  -v "${BUNDLE_EXTRACT}:/holon/agent:ro" \
+  -e HOLON_INPUT_DIR=/input \
+  -e HOLON_WORKSPACE_DIR=/workspace \
+  -e HOLON_OUTPUT_DIR=/output \
+  -e HOLON_STATE_DIR=/state \
+  -e HOLON_AGENT_HOME=/root \
   --entrypoint /bin/sh \
-  "${IMAGE}" -c "${RUN_SCRIPT}" 2>&1)
+  "${IMAGE}" -c "cd /holon/agent && NODE_ENV=production ${RUN_SCRIPT}" 2>&1)
 EXIT_CODE=$?
 set -e
 
