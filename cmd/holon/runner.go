@@ -217,6 +217,13 @@ output:
 			return fmt.Errorf("failed to resolve state directory path: %w", err)
 		}
 	}
+	absAgentHome := ""
+	if cfg.AgentHome != "" {
+		absAgentHome, err = filepath.Abs(cfg.AgentHome)
+		if err != nil {
+			return fmt.Errorf("failed to resolve agent home path: %w", err)
+		}
+	}
 
 	// Ensure out dir exists
 	if err := os.MkdirAll(absOut, 0755); err != nil {
@@ -277,6 +284,9 @@ output:
 	} else {
 		envVars["ASSISTANT_OUTPUT"] = "none" // Default to none
 	}
+	if absAgentHome != "" {
+		envVars["HOLON_AGENT_HOME"] = "/root"
+	}
 
 	// Compile prompts
 	sysPrompt, userPrompt, promptTempDir, err := r.compilePrompts(cfg, absContext, envVars)
@@ -316,6 +326,7 @@ output:
 		InputPath:            absInputDir,
 		OutDir:               absOut,
 		StateDir:             absStateDir,
+		AgentHome:            absAgentHome,
 		Env:                  envVars,
 		AgentConfigMode:      cfg.AgentConfigMode,
 		WorkspaceIsTemporary: cfg.WorkspaceIsTemporary,
@@ -582,15 +593,6 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to compile system prompt: %w", err)
 	}
-	if cfg.AgentHome != "" {
-		personaLayer, layerErr := loadAgentPersonaLayer(cfg.AgentHome)
-		if layerErr != nil {
-			return "", "", "", layerErr
-		}
-		if personaLayer != "" {
-			sysPrompt = sysPrompt + "\n\n" + personaLayer
-		}
-	}
 
 	// Create temp directory for prompts
 	promptTempDir, err = os.MkdirTemp("", "holon-prompt-*")
@@ -620,27 +622,6 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 	}
 
 	return sysPrompt, userPrompt, promptTempDir, nil
-}
-
-func loadAgentPersonaLayer(agentHome string) (string, error) {
-	paths := []string{"AGENT.md", "ROLE.md", "IDENTITY.md", "SOUL.md"}
-	parts := make([]string, 0, len(paths))
-	for _, name := range paths {
-		path := filepath.Join(agentHome, name)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return "", fmt.Errorf("failed to read agent persona file %s: %w", path, err)
-		}
-		content := strings.TrimSpace(string(data))
-		if content == "" {
-			continue
-		}
-		parts = append(parts, content)
-	}
-	return strings.Join(parts, "\n\n"), nil
 }
 
 func collectContextEntries(absContext string) ([]prompt.ContextEntry, []string) {

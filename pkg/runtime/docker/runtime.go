@@ -46,6 +46,7 @@ type ContainerConfig struct {
 	InputPath   string // Path to input directory (contains spec.yaml, context/, prompts/)
 	OutDir      string
 	StateDir    string // Path to state directory for cross-run skill caches (optional)
+	AgentHome   string // Path to agent home mounted to /root (optional, persistent agent identity/state)
 	Env         map[string]string
 	Cmd         []string // Optional command override
 
@@ -175,6 +176,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		InputPath:      cfg.InputPath,
 		OutDir:         cfg.OutDir,
 		StateDir:       cfg.StateDir,
+		AgentHome:      cfg.AgentHome,
 		LocalSkillsDir: skillsDir, // NEW: Pass skills directory
 	}
 	if runtimeMode == RuntimeModeDev {
@@ -391,6 +393,7 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 		InputPath:      cfg.InputPath,
 		OutDir:         cfg.OutDir,
 		StateDir:       cfg.StateDir,
+		AgentHome:      cfg.AgentHome,
 		LocalSkillsDir: skillsDir,
 	}
 	if runtimeMode == RuntimeModeDev {

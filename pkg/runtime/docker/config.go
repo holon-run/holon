@@ -17,6 +17,7 @@ type MountConfig struct {
 	InputPath            string // Path to input directory (contains spec.yaml, context/, prompts/)
 	OutDir               string
 	StateDir             string // Path to state directory for cross-run skill caches (optional, for mounting)
+	AgentHome            string // Path to agent home mounted to /root (optional, for persistent persona/state)
 	LocalClaudeConfigDir string // Path to host ~/.claude directory (optional, for mounting)
 	LocalSkillsDir       string // Path to skills staging directory (optional, for mounting)
 	LocalAgentDistDir    string // Path to local agent dist directory for dev runtime mode (optional, for mounting)
@@ -57,6 +58,16 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 			Type:   mount.TypeBind,
 			Source: cfg.StateDir,
 			Target: "/holon/state",
+		})
+	}
+
+	// Add agent home mount (if provided)
+	// This mounts host agent_home directly to container /root.
+	if cfg.AgentHome != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: cfg.AgentHome,
+			Target: "/root",
 		})
 	}
 
@@ -189,6 +200,21 @@ func ValidateMountTargets(cfg *MountConfig) error {
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("local agent dist path is not a directory: %s", cfg.LocalAgentDistDir)
+		}
+	}
+
+	// Check agent home if provided (create if missing)
+	if cfg.AgentHome != "" {
+		info, err := os.Stat(cfg.AgentHome)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("failed to stat agent home: %s: %w", cfg.AgentHome, err)
+			}
+			if err := os.MkdirAll(cfg.AgentHome, 0755); err != nil {
+				return fmt.Errorf("failed to create agent home: %s: %w", cfg.AgentHome, err)
+			}
+		} else if !info.IsDir() {
+			return fmt.Errorf("agent home path is not a directory: %s", cfg.AgentHome)
 		}
 	}
 

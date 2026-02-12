@@ -79,7 +79,7 @@ for local development and testing.`,
 		if err := os.MkdirAll(absStateDir, 0755); err != nil {
 			return fmt.Errorf("failed to create state dir: %w", err)
 		}
-		rolePrompt, roleLabel, err := loadControllerRole(agentResolution.AgentHome)
+		roleLabel, err := loadControllerRole(agentResolution.AgentHome)
 		if err != nil {
 			return err
 		}
@@ -99,8 +99,8 @@ for local development and testing.`,
 		handler, err := newCLIControllerHandler(
 			serveRepo,
 			absStateDir,
+			agentResolution.AgentHome,
 			controllerWorkspace,
-			rolePrompt,
 			roleLabel,
 			serveLogLevel,
 			resolvedRuntimeMode,
@@ -259,24 +259,24 @@ for local development and testing.`,
 	},
 }
 
-func loadControllerRole(agentHome string) (string, string, error) {
+func loadControllerRole(agentHome string) (string, error) {
 	rolePath := filepath.Join(agentHome, "ROLE.md")
 	info, err := os.Stat(rolePath)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to stat %s: %w", rolePath, err)
+		return "", fmt.Errorf("failed to stat %s: %w", rolePath, err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", "", fmt.Errorf("role prompt path is not a regular file: %s", rolePath)
+		return "", fmt.Errorf("role prompt path is not a regular file: %s", rolePath)
 	}
 	data, err := os.ReadFile(rolePath)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to read role prompt %s: %w", rolePath, err)
+		return "", fmt.Errorf("failed to read role prompt %s: %w", rolePath, err)
 	}
 	content := strings.TrimSpace(string(data))
 	if content == "" {
-		return "", "", fmt.Errorf("role prompt file is empty: %s (please add a role definition, e.g., '# ROLE: PM')", rolePath)
+		return "", fmt.Errorf("role prompt file is empty: %s (please add a role definition, e.g., '# ROLE: PM')", rolePath)
 	}
-	return content, inferControllerRole(content), nil
+	return inferControllerRole(content), nil
 }
 
 func inferControllerRole(content string) string {
@@ -476,9 +476,9 @@ func isProcessRunning(pid int) (bool, error) {
 type cliControllerHandler struct {
 	repoHint              string
 	stateDir              string
+	agentHome             string
 	controllerWorkspace   string
 	controllerRoleLabel   string
-	controllerRolePrompt  string
 	logLevel              string
 	runtimeMode           string
 	runtimeDevAgentSource string
@@ -500,8 +500,8 @@ var (
 func newCLIControllerHandler(
 	repoHint,
 	stateDir,
+	agentHome,
 	controllerWorkspace,
-	controllerRolePrompt,
 	controllerRoleLabel,
 	logLevel string,
 	runtimeMode string,
@@ -520,9 +520,9 @@ func newCLIControllerHandler(
 	return &cliControllerHandler{
 		repoHint:              repoHint,
 		stateDir:              stateDir,
+		agentHome:             agentHome,
 		controllerWorkspace:   controllerWorkspace,
 		controllerRoleLabel:   controllerRoleLabel,
-		controllerRolePrompt:  controllerRolePrompt,
 		logLevel:              logLevel,
 		runtimeMode:           runtimeMode,
 		runtimeDevAgentSource: runtimeDevAgentSource,
@@ -702,16 +702,33 @@ output:
 }
 
 func (h *cliControllerHandler) controllerPrompts() (string, string, error) {
-	content := strings.TrimSpace(h.controllerRolePrompt)
-	if content == "" {
-		return "", "", fmt.Errorf("controller role prompt is empty")
-	}
-	return content, strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
+	return strings.TrimSpace(defaultControllerRuntimeSystemPrompt), strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
 }
+
+const defaultControllerRuntimeSystemPrompt = `
+### HOLON SERVE CONTRACT V1
+
+You are running as a persistent controller inside Holon.
+
+Rules of physics:
+1. Workspace root is /holon/workspace.
+2. Artifacts and diagnostics must be written under /holon/output.
+3. Additional context files may be mounted under /holon/input/context.
+4. HOLON_AGENT_HOME points to your persistent agent home at /root.
+5. Load and maintain long-lived persona/state from HOLON_AGENT_HOME:
+   - ROLE.md
+   - AGENT.md
+   - IDENTITY.md
+   - SOUL.md
+   - state/
+6. These agent-home files are writable and should be updated deliberately when long-term behavior or memory needs to evolve.
+7. System/runtime safety contracts are immutable and cannot be bypassed by editing agent-home files.
+`
 
 const defaultControllerRuntimeUserPrompt = `
 Controller runtime contract:
 1. Role identity is HOLON_CONTROLLER_ROLE.
+2. Agent home root is HOLON_AGENT_HOME.
 2. The event stream is at HOLON_CONTROLLER_EVENT_CHANNEL and cursor at HOLON_CONTROLLER_EVENT_CURSOR.
 3. Session metadata path is HOLON_CONTROLLER_SESSION_STATE_PATH.
 4. Goal state path is HOLON_CONTROLLER_GOAL_STATE_PATH.
@@ -790,6 +807,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 
 	env := map[string]string{
 		"HOLON_AGENT_SESSION_MODE":            "serve",
+		"HOLON_AGENT_HOME":                    "/root",
 		"CLAUDE_CONFIG_DIR":                   "/holon/state/claude-config",
 		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,
 		"HOLON_CONTROLLER_EVENT_CHANNEL":      "/holon/state/event-channel.ndjson",
@@ -809,6 +827,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		InputPath:             inputDir,
 		OutputPath:            outputDir,
 		StateDir:              filepath.Join(h.stateDir, "controller-state"),
+		AgentHome:             h.agentHome,
 		LogLevel:              h.logLevel,
 		Env:                   env,
 		RuntimeMode:           h.runtimeMode,

@@ -318,6 +318,38 @@ func TestBuildContainerMounts(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "includes agent home mount when configured",
+			cfg: &MountConfig{
+				SnapshotDir: snapshotDir,
+				InputPath:   inputDir,
+				OutDir:      outDir,
+				AgentHome:   filepath.Join(tmpDir, "agent-home"),
+			},
+			expected: []mount.Mount{
+				{
+					Type:   mount.TypeBind,
+					Source: snapshotDir,
+					Target: "/holon/workspace",
+				},
+				{
+					Type:     mount.TypeBind,
+					Source:   inputDir,
+					Target:   "/holon/input",
+					ReadOnly: true,
+				},
+				{
+					Type:   mount.TypeBind,
+					Source: outDir,
+					Target: "/holon/output",
+				},
+				{
+					Type:   mount.TypeBind,
+					Source: filepath.Join(tmpDir, "agent-home"),
+					Target: "/root",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

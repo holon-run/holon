@@ -41,6 +41,7 @@ func TestDockerSessionRunnerStart_MapsConfig(t *testing.T) {
 	inputDir := t.TempDir()
 	outputDir := t.TempDir()
 	stateDir := t.TempDir()
+	agentHome := t.TempDir()
 
 	// Provide a fake agent path so resolveControllerAgentBundle does not attempt remote resolution.
 	agentPath := filepath.Join(workspace, "agent.tar.gz")
@@ -54,6 +55,7 @@ func TestDockerSessionRunnerStart_MapsConfig(t *testing.T) {
 		InputPath:             inputDir,
 		OutputPath:            outputDir,
 		StateDir:              stateDir,
+		AgentHome:             agentHome,
 		LogLevel:              "progress",
 		RuntimeMode:           "dev",
 		RuntimeDevAgentSource: workspace,
@@ -69,6 +71,9 @@ func TestDockerSessionRunnerStart_MapsConfig(t *testing.T) {
 	}
 	if rt.startCfg.Workspace != workspace {
 		t.Fatalf("Workspace = %q, want %q", rt.startCfg.Workspace, workspace)
+	}
+	if rt.startCfg.AgentHome != agentHome {
+		t.Fatalf("AgentHome = %q, want %q", rt.startCfg.AgentHome, agentHome)
 	}
 	if !rt.startCfg.WorkspaceIsTemporary {
 		t.Fatalf("WorkspaceIsTemporary = false, want true")

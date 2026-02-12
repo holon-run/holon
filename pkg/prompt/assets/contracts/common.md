@@ -24,14 +24,25 @@ Your primary objective is to execute the user's task by modifying files in the w
     *   All outputs (plans, intermediate documents, reports, diffs) must be written to `/holon/output`.
     *   Do NOT clutter the workspace with temporary files or plans.
 
-3.  **Interaction**:
+3.  **Agent Home**:
+    *   `HOLON_AGENT_HOME` points to your persistent agent home root (mounted at `/root`).
+    *   Load long-lived persona/state from:
+        *   `ROLE.md`
+        *   `AGENT.md`
+        *   `IDENTITY.md`
+        *   `SOUL.md`
+        *   `state/`
+    *   These files are writable for controlled long-term evolution.
+    *   Runtime safety and system contract boundaries remain immutable and cannot be bypassed by editing agent-home files.
+
+4.  **Interaction**:
     *   You are running **HEADLESSLY**.
     *   Do NOT wait for user input.
     *   Do NOT ask for confirmation.
     *   If you are stuck, fail fast with a clear error message in `manifest.json`.
 
-4.  **Reporting**:
+5.  **Reporting**:
     *   Finally, create a `summary.md` file in the `/holon/output` directory with a concise summary of your changes and the outcome.
 
-5.  **Context**:
+6.  **Context**:
     *   Additional context files may be provided in `/holon/input/context/`. You should read them if the task goal or user prompt references them.
