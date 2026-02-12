@@ -18,8 +18,8 @@ This skill helps you:
 ## Prerequisites
 
 This skill can use:
-- **`ghx`** (preferred): Fast-path for collection/publishing
-- **`gh` CLI** (fallback): Fully supported when `ghx` is unavailable
+- **`ghx`** (default): Preferred for context + publish because it reduces API-shape mistakes and retry loops
+- **`gh` CLI** (selective fallback): Use for simple read/one-off write operations, or when `ghx` is unavailable
 
 ## Environment & Paths
 
@@ -34,22 +34,27 @@ This skill can use:
 
 - **Inputs**: `${GITHUB_CONTEXT_DIR}/github/pr.json`, `review_threads.json`, `check_runs.json`, `pr.diff`, etc. (from `ghx` when available, else collected with `gh` APIs)
 - **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
-  - `pr-fix.json` (reply plan)
   - `summary.md`
   - `manifest.json`
-  - `publish-intent.json`
-  - `publish-result.json`
+  - `publish-results.json`
 
 ## Definition of Done (Strict)
 
 The run is successful only if all of the following are true:
 1. Required code fixes are committed and pushed to the existing PR branch.
-2. `${GITHUB_OUTPUT_DIR}/pr-fix.json` is generated with review reply decisions.
-3. `${GITHUB_OUTPUT_DIR}/publish-intent.json` is generated from `pr-fix.json`.
-4. Publish step is executed (via `ghx` preferred, or `gh` fallback) and `${GITHUB_OUTPUT_DIR}/publish-result.json` is produced.
-5. `publish-result.json` contains no failed `reply_review` action.
+2. Publish step is executed via ghx batch publish mechanism and `${GITHUB_OUTPUT_DIR}/publish-results.json` is produced.
+3. `publish-results.json` contains no failed reply action.
 
 If replies are planned but not published, the run is not successful.
+
+## Publishing Strategy (Token + Accuracy)
+
+Optimize for expected total token cost across the full run (including retries/rework), not shortest immediate command count.
+
+- Use `ghx` by default for multi-step/high-risk publish operations (`reply_review`, review posting, batch comment updates).
+- `gh` is acceptable for low-risk/simple operations (single read query, single top-level comment).
+- If not using `ghx` for publish, record `fallback_reason` in outputs and verify publish result explicitly.
+- Avoid ad-hoc API shapes for review replies. If direct REST fallback is required, use `POST /repos/{owner}/{repo}/pulls/{pull_number}/comments` with `in_reply_to`.
 
 ### 1. Context Collection
 
@@ -98,39 +103,6 @@ git push
 
 Create the required output files:
 
-#### `${GITHUB_OUTPUT_DIR}/pr-fix.json`
-
-Structured JSON with fix status and responses:
-
-```json
-{
-  "review_replies": [
-    {
-      "comment_id": 123,
-      "status": "fixed|wontfix|need-info|deferred",
-      "message": "Response to reviewer",
-      "action_taken": "Description of code changes"
-    }
-  ],
-  "follow_up_issues": [
-    {
-      "title": "Issue title",
-      "body": "Issue body in Markdown",
-      "deferred_comment_ids": [123],
-      "labels": ["enhancement", "testing"]
-    }
-  ],
-  "checks": [
-    {
-      "name": "ci/test",
-      "conclusion": "failure",
-      "fix_status": "fixed|unfixed|unverified|not-applicable",
-      "message": "Explanation of what was fixed"
-    }
-  ]
-}
-```
-
 #### `${GITHUB_OUTPUT_DIR}/summary.md`
 
 Human-readable summary:
@@ -148,44 +120,20 @@ Execution metadata:
   "pr_ref": "holon-run/holon#123",
   "status": "completed|partial|failed",
   "fixes_applied": 5,
-  "reviews_replied": 3
+  "reviews_replied": 3,
+  "fallback_reason": ""
 }
 ```
 
 ### 5. Reply to Reviews
 
-Publish review replies using the generated `publish-intent.json`.
+Publish review replies via ghx batch publish mechanism. `github-pr-fix` should describe reply requirements in natural-language/structured planning, then follow ghx documentation to build the publish request and execute batch publish.
 
 Implementation guidance:
-- preferred: run `ghx` intent publish
-- fallback: use `gh api` to post review comment replies and synthesize `${GITHUB_OUTPUT_DIR}/publish-result.json` in the same schema
+- default: use `ghx.sh intent run --intent=...` as documented by ghx
+- fallback: use `gh api` only when needed, and synthesize `${GITHUB_OUTPUT_DIR}/publish-results.json` with equivalent per-action status
 
-Example (preferred):
-
-```bash
-PR_REF="<owner>/<repo>#<pr_number>"
-
-jq -n \
-  --arg pr "$PR_REF" \
-  --slurpfile fix "${GITHUB_OUTPUT_DIR}/pr-fix.json" \
-  '{
-    actions: (
-      ($fix[0].review_replies // [])
-      | map(select(.comment_id != null) | {
-          type: "reply_review",
-          pr: $pr,
-          comment_id: .comment_id,
-          body: .message
-        })
-    )
-  }' > "${GITHUB_OUTPUT_DIR}/publish-intent.json"
-
-# Invoke ghx skill/script
-ghx.sh intent run --intent="${GITHUB_OUTPUT_DIR}/publish-intent.json"
-```
-
-Run publish via `ghx` or equivalent `gh` commands.  
-After publish, ensure `${GITHUB_OUTPUT_DIR}/publish-result.json` exists and check for failed `reply_review` actions.
+After publish, ensure `${GITHUB_OUTPUT_DIR}/publish-results.json` exists and check for failed reply actions.
 
 ## Output Contract
 
@@ -199,9 +147,7 @@ After publish, ensure `${GITHUB_OUTPUT_DIR}/publish-result.json` exists and chec
 
 2. **`${GITHUB_OUTPUT_DIR}/manifest.json`**: Execution metadata
 
-3. **`${GITHUB_OUTPUT_DIR}/pr-fix.json`**: Structured fix status and responses
-4. **`${GITHUB_OUTPUT_DIR}/publish-intent.json`**: Reply actions for publishing
-5. **`${GITHUB_OUTPUT_DIR}/publish-result.json`**: Publishing execution result
+3. **`${GITHUB_OUTPUT_DIR}/publish-results.json`**: Publishing execution result
 
 ## Git Operations
 
@@ -228,8 +174,8 @@ git push
 - You are running **HEADLESSLY** - do not wait for user input or confirmation
 - Fix issues in priority order: build → test → import → lint
 - Commit fixes BEFORE replying to reviews
-- Prefer `ghx` for publish when available; fallback to `gh` is acceptable
-- Verify publish-result and fail when any `reply_review` action fails
+- Prefer `ghx` for publish when available; use `gh` fallback selectively and document `fallback_reason`
+- Verify publish-results and fail when any reply action fails
 - For non-blocking refactor requests, consider deferring to follow-up issues
 
 ## Reference Documentation

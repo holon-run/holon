@@ -23,6 +23,12 @@ It combines two capabilities:
 
 Use `scripts/ghx.sh` as the primary entrypoint.
 
+## Contract Boundary
+
+- **Public capability contract (for other skills):** call `ghx.sh` commands and depend on stable output artifacts (for example `publish-results.json`).
+- **Internal implementation contract (within ghx):** files like `publish-intent.json` and action schema details are internal to ghx and may evolve.
+- Other skills should describe desired publish outcomes, not hardcode ghx internal action schemas.
+
 ### Context
 
 ```bash
@@ -30,7 +36,7 @@ scripts/ghx.sh context collect holon-run/holon#123
 scripts/ghx.sh context collect 123 holon-run/holon
 ```
 
-### Publish from intent
+### Publish from intent (ghx-internal / advanced)
 
 ```bash
 scripts/ghx.sh intent run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
@@ -43,7 +49,6 @@ scripts/ghx.sh review publish --pr=holon-run/holon#123 --body-file=review.md --c
 scripts/ghx.sh pr create --repo=holon-run/holon --title="Title" --body-file=summary.md --head=feature/x --base=main
 scripts/ghx.sh pr update --pr=holon-run/holon#123 --title="New title" --body-file=summary.md
 scripts/ghx.sh pr comment --pr=holon-run/holon#123 --body-file=summary.md
-scripts/ghx.sh pr reply-reviews --pr=holon-run/holon#123 --pr-fix-json=pr-fix.json
 ```
 
 ## Output Contract
@@ -65,3 +70,4 @@ Under `${GITHUB_OUTPUT_DIR}`:
 
 - `ghx` is capability-oriented: upper-level skills should focus on final outputs and outcomes.
 - Prefer `ghx` commands for multi-step or error-prone GitHub operations.
+- Prefer direct capability commands (`pr reply-reviews`, `pr comment`, `review publish`) from external skills.
