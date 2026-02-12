@@ -16,26 +16,23 @@ import (
 	"time"
 
 	holonlog "github.com/holon-run/holon/pkg/log"
-	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 	"github.com/holon-run/holon/pkg/serve"
 	"github.com/spf13/cobra"
 )
 
 var (
-	serveRepo               string
-	serveInput              string
-	serveAgentID            string
-	serveAgentHome          string
-	serveMaxEvents          int
-	serveDryRun             bool
-	serveLogLevel           string
-	serveWebhookPort        int
-	serveWebhookMode        bool
-	serveControllerRole     string
-	serveControllerRoleFile string
-	serveTickInterval       time.Duration
-	serveNoSubscriptions    bool
+	serveRepo            string
+	serveInput           string
+	serveAgentID         string
+	serveAgentHome       string
+	serveMaxEvents       int
+	serveDryRun          bool
+	serveLogLevel        string
+	serveWebhookPort     int
+	serveWebhookMode     bool
+	serveTickInterval    time.Duration
+	serveNoSubscriptions bool
 )
 
 var serveCmd = &cobra.Command{
@@ -66,11 +63,6 @@ for local development and testing.`,
 		if parentCtx == nil {
 			parentCtx = context.Background()
 		}
-		canonicalRole, err := canonicalControllerRole(serveControllerRole)
-		if err != nil {
-			return err
-		}
-		serveControllerRole = canonicalRole
 
 		agentResolution, err := resolveAgentHome("serve", serveAgentID, serveAgentHome, false)
 		if err != nil {
@@ -85,6 +77,10 @@ for local development and testing.`,
 		if err := os.MkdirAll(absStateDir, 0755); err != nil {
 			return fmt.Errorf("failed to create state dir: %w", err)
 		}
+		rolePrompt, roleLabel, err := loadControllerRole(agentResolution.AgentHome)
+		if err != nil {
+			return err
+		}
 		controllerWorkspace, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to get current working directory for controller workspace: %w", err)
@@ -94,8 +90,8 @@ for local development and testing.`,
 			serveRepo,
 			absStateDir,
 			controllerWorkspace,
-			serveControllerRole,
-			serveControllerRoleFile,
+			rolePrompt,
+			roleLabel,
 			serveLogLevel,
 			serveDryRun,
 			nil,
@@ -104,15 +100,19 @@ for local development and testing.`,
 			return err
 		}
 		defer handler.Close()
+		turnDispatcher := func(ctx context.Context, req serve.TurnStartRequest, turnID string) error {
+			return handler.HandleTurnStart(ctx, req, turnID)
+		}
 
 		// Use subscription manager if subscriptions are enabled.
 		// A non-zero --webhook-port acts as an override for subscription ingress port.
 		if !serveNoSubscriptions && (serveInput == "" || serveInput == "-") {
 			subMgr, err := serve.NewSubscriptionManager(serve.ManagerConfig{
-				AgentHome:   agentResolution.AgentHome,
-				StateDir:    absStateDir,
-				Handler:     handler,
-				WebhookPort: serveWebhookPort,
+				AgentHome:      agentResolution.AgentHome,
+				StateDir:       absStateDir,
+				Handler:        handler,
+				WebhookPort:    serveWebhookPort,
+				TurnDispatcher: turnDispatcher,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to create subscription manager: %w", err)
@@ -150,7 +150,8 @@ for local development and testing.`,
 				"agent_home", agentResolution.AgentHome,
 				"state_dir", absStateDir,
 				"workspace", controllerWorkspace,
-				"controller_role", serveControllerRole,
+				"controller_role", roleLabel,
+				"role_source", filepath.Join(agentResolution.AgentHome, "ROLE.md"),
 				"tick_interval", serveTickInterval,
 				"webhook_port", subMgr.GetWebhookPort(),
 			)
@@ -166,10 +167,11 @@ for local development and testing.`,
 				return fmt.Errorf("--repo is required when --tick-interval is set in webhook mode")
 			}
 			webhookSrv, err := serve.NewWebhookServer(serve.WebhookConfig{
-				Port:     serveWebhookPort,
-				RepoHint: serveRepo,
-				StateDir: absStateDir,
-				Handler:  handler,
+				Port:           serveWebhookPort,
+				RepoHint:       serveRepo,
+				StateDir:       absStateDir,
+				Handler:        handler,
+				TurnDispatcher: turnDispatcher,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to create webhook server: %w", err)
@@ -192,7 +194,8 @@ for local development and testing.`,
 				"agent_home", agentResolution.AgentHome,
 				"workspace", controllerWorkspace,
 				"port", serveWebhookPort,
-				"controller_role", serveControllerRole,
+				"controller_role", roleLabel,
+				"role_source", filepath.Join(agentResolution.AgentHome, "ROLE.md"),
 				"tick_interval", serveTickInterval,
 			)
 			return webhookSrv.Start(tickCtx)
@@ -236,27 +239,79 @@ for local development and testing.`,
 			"agent_home", agentResolution.AgentHome,
 			"workspace", controllerWorkspace,
 			"input", serveInput,
-			"controller_role", serveControllerRole,
+			"controller_role", roleLabel,
+			"role_source", filepath.Join(agentResolution.AgentHome, "ROLE.md"),
 			"tick_interval", serveTickInterval,
 		)
 		return svc.Run(tickCtx, reader, serveMaxEvents)
 	},
 }
 
-func canonicalControllerRole(role string) (string, error) {
-	trimmed := strings.TrimSpace(role)
-	if trimmed == "" {
-		return "", fmt.Errorf("--controller-role is required (pm|dev)")
+func loadControllerRole(agentHome string) (string, string, error) {
+	rolePath := filepath.Join(agentHome, "ROLE.md")
+	info, err := os.Stat(rolePath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to stat %s: %w", rolePath, err)
 	}
-	if trimmed != "pm" && trimmed != "dev" {
-		return "", fmt.Errorf("invalid --controller-role %q (expected pm or dev)", trimmed)
+	if !info.Mode().IsRegular() {
+		return "", "", fmt.Errorf("role prompt path is not a regular file: %s", rolePath)
 	}
-	return trimmed, nil
+	data, err := os.ReadFile(rolePath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read role prompt %s: %w", rolePath, err)
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return "", "", fmt.Errorf("role prompt file is empty: %s (please add a role definition, e.g., '# ROLE: PM')", rolePath)
+	}
+	return content, inferControllerRole(content), nil
 }
 
-func validateControllerRole(role string) error {
-	_, err := canonicalControllerRole(role)
-	return err
+func inferControllerRole(content string) string {
+	lower := strings.ToLower(content)
+	if role := inferRoleFromFrontMatter(lower); role != "" {
+		return role
+	}
+	switch {
+	case strings.Contains(lower, "role: dev"),
+		strings.Contains(lower, "role dev"),
+		strings.Contains(lower, "developer"),
+		strings.Contains(lower, "software engineer"):
+		return "dev"
+	case strings.Contains(lower, "role: pm"),
+		strings.Contains(lower, "role pm"),
+		strings.Contains(lower, "product manager"):
+		return "pm"
+	default:
+		return "pm"
+	}
+}
+
+func inferRoleFromFrontMatter(lower string) string {
+	trimmed := strings.TrimSpace(lower)
+	if !strings.HasPrefix(trimmed, "---\n") {
+		return ""
+	}
+	lines := strings.Split(trimmed, "\n")
+	for i := 1; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "---" {
+			return ""
+		}
+		if !strings.HasPrefix(line, "role:") {
+			continue
+		}
+		role := strings.TrimSpace(strings.TrimPrefix(line, "role:"))
+		switch role {
+		case "pm", "product-manager", "product_manager":
+			return "pm"
+		case "dev", "developer", "engineer":
+			return "dev"
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 func startServeTickEmitter(ctx context.Context, interval time.Duration, repo string, sink func(context.Context, serve.EventEnvelope) error) {
@@ -407,21 +462,21 @@ func isProcessRunning(pid int) (bool, error) {
 }
 
 type cliControllerHandler struct {
-	repoHint            string
-	stateDir            string
-	controllerWorkspace string
-	controllerRole      string
-	controllerRoleFile  string
-	logLevel            string
-	dryRun              bool
-	sessionRunner       SessionRunner
-	controllerSession   *docker.SessionHandle
-	controllerDone      <-chan error
-	controllerChannel   string
-	controllerInputDir  string
-	controllerOutput    string
-	restartAttempts     int
-	mu                  sync.Mutex
+	repoHint             string
+	stateDir             string
+	controllerWorkspace  string
+	controllerRoleLabel  string
+	controllerRolePrompt string
+	logLevel             string
+	dryRun               bool
+	sessionRunner        SessionRunner
+	controllerSession    *docker.SessionHandle
+	controllerDone       <-chan error
+	controllerChannel    string
+	controllerInputDir   string
+	controllerOutput     string
+	restartAttempts      int
+	mu                   sync.Mutex
 }
 
 var (
@@ -432,8 +487,8 @@ func newCLIControllerHandler(
 	repoHint,
 	stateDir,
 	controllerWorkspace,
-	controllerRole,
-	controllerRoleFile,
+	controllerRolePrompt,
+	controllerRoleLabel,
 	logLevel string,
 	dryRun bool,
 	sessionRunner SessionRunner,
@@ -447,14 +502,14 @@ func newCLIControllerHandler(
 	}
 
 	return &cliControllerHandler{
-		repoHint:            repoHint,
-		stateDir:            stateDir,
-		controllerWorkspace: controllerWorkspace,
-		controllerRole:      controllerRole,
-		controllerRoleFile:  controllerRoleFile,
-		logLevel:            logLevel,
-		dryRun:              dryRun,
-		sessionRunner:       sessionRunner,
+		repoHint:             repoHint,
+		stateDir:             stateDir,
+		controllerWorkspace:  controllerWorkspace,
+		controllerRoleLabel:  controllerRoleLabel,
+		controllerRolePrompt: controllerRolePrompt,
+		logLevel:             logLevel,
+		dryRun:               dryRun,
+		sessionRunner:        sessionRunner,
 	}, nil
 }
 
@@ -482,10 +537,46 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 	return nil
 }
 
+func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.TurnStartRequest, turnID string) error {
+	payload := map[string]any{
+		"turn_id":          turnID,
+		"thread_id":        req.ThreadID,
+		"input":            req.Input,
+		"extended_context": req.ExtendedContext,
+	}
+	payloadRaw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal rpc turn payload: %w", err)
+	}
+	repo := strings.TrimSpace(h.repoHint)
+	env := serve.EventEnvelope{
+		ID:     fmt.Sprintf("rpc_turn_%d", time.Now().UTC().UnixNano()),
+		Source: "rpc",
+		Type:   "rpc.turn.input",
+		At:     time.Now().UTC(),
+		Scope: serve.EventScope{
+			Repo: repo,
+		},
+		Subject: serve.EventSubject{
+			Kind: "thread",
+			ID:   strings.TrimSpace(req.ThreadID),
+		},
+		DedupeKey: fmt.Sprintf("rpc:turn:%s:%s", strings.TrimSpace(req.ThreadID), turnID),
+		Payload:   payloadRaw,
+	}
+	return h.HandleEvent(ctx, env)
+}
+
 func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error) {
 	repo := env.Scope.Repo
 	if repo == "" {
 		repo = h.repoHint
+	}
+	if env.Type == "rpc.turn.input" {
+		if repo == "" {
+			repo = "local/rpc"
+		}
+		return fmt.Sprintf("%s#0", repo), nil
 	}
 	if repo == "" {
 		return "", fmt.Errorf("missing repo for event %s", env.ID)
@@ -593,26 +684,9 @@ output:
 }
 
 func (h *cliControllerHandler) controllerPrompts() (string, string, error) {
-	if path := strings.TrimSpace(h.controllerRoleFile); path != "" {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", "", fmt.Errorf("failed to read --controller-role-file: %w", err)
-		}
-		content := strings.TrimSpace(string(data))
-		if content == "" {
-			return "", "", fmt.Errorf("--controller-role-file content is empty")
-		}
-		return content, strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
-	}
-
-	assetPath := fmt.Sprintf("roles/%s.md", h.controllerRole)
-	data, err := prompt.ReadAsset(assetPath)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to load role prompt asset %s: %w", assetPath, err)
-	}
-	content := strings.TrimSpace(string(data))
+	content := strings.TrimSpace(h.controllerRolePrompt)
 	if content == "" {
-		return "", "", fmt.Errorf("role prompt asset %s is empty", assetPath)
+		return "", "", fmt.Errorf("controller role prompt is empty")
 	}
 	return content, strings.TrimSpace(defaultControllerRuntimeUserPrompt), nil
 }
@@ -699,7 +773,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	env := map[string]string{
 		"HOLON_AGENT_SESSION_MODE":            "serve",
 		"CLAUDE_CONFIG_DIR":                   "/holon/state/claude-config",
-		"HOLON_CONTROLLER_ROLE":               h.controllerRole,
+		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,
 		"HOLON_CONTROLLER_EVENT_CHANNEL":      "/holon/state/event-channel.ndjson",
 		"HOLON_CONTROLLER_EVENT_CURSOR":       "/holon/state/event-channel.cursor",
 		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/holon/state/controller-session.json",
@@ -882,8 +956,6 @@ func init() {
 	serveCmd.Flags().StringVar(&serveAgentHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
 	serveCmd.Flags().IntVar(&serveMaxEvents, "max-events", 0, "Stop after processing N events (0 = unlimited, not supported in webhook mode)")
 	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without starting the controller runtime session")
-	serveCmd.Flags().StringVar(&serveControllerRole, "controller-role", "", "Controller role identity: pm or dev")
-	serveCmd.Flags().StringVar(&serveControllerRoleFile, "controller-role-file", "", "Override controller system prompt with a custom role prompt file")
 	serveCmd.Flags().DurationVar(&serveTickInterval, "tick-interval", 0, "Emit timer.tick events periodically (e.g. 5m)")
 	serveCmd.Flags().StringVar(&serveLogLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	serveCmd.Flags().IntVar(&serveWebhookPort, "webhook-port", 0, "Override ingress webhook port for subscription mode; with --no-subscriptions, enables legacy webhook mode")

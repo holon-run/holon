@@ -45,6 +45,7 @@ type WebhookConfig struct {
 	RepoHint       string
 	StateDir       string
 	Handler        EventHandler
+	TurnDispatcher TurnDispatcher
 	ReadTimeout    time.Duration
 	WriteTimeout   time.Duration
 	IdleTimeout    time.Duration
@@ -139,6 +140,7 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		},
 	}
 	ws.runtime.SetBroadcaster(ws.broadcaster)
+	ws.runtime.SetTurnDispatcher(cfg.TurnDispatcher)
 
 	if err := ws.loadState(); err != nil {
 		eventsLog.Close()

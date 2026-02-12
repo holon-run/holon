@@ -139,7 +139,7 @@ func EnsureLayout(agentHome string) error {
 
 	defaultFiles := map[string]string{
 		filepath.Join(agentHome, "AGENT.md"):    "# Agent\n\nDefault agent persona.\n",
-		filepath.Join(agentHome, "ROLE.md"):     "# Role\n\nDefault role definition.\n",
+		filepath.Join(agentHome, "ROLE.md"):     "# ROLE: PM\n\nYou are the persistent PM controller for this agent home.\nContinuously plan, prioritize, and drive execution via GitHub workflows.\n",
 		filepath.Join(agentHome, "IDENTITY.md"): "# Identity\n\nDefault identity definition.\n",
 		filepath.Join(agentHome, "SOUL.md"):     "# Soul\n\nDefault principles.\n",
 	}

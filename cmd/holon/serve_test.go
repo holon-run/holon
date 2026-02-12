@@ -180,12 +180,13 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	}
 
 	h := &cliControllerHandler{
-		repoHint:            "holon-run/holon",
-		stateDir:            td,
-		controllerWorkspace: t.TempDir(),
-		controllerRole:      "dev",
-		logLevel:            "progress",
-		sessionRunner:       mockRunner,
+		repoHint:             "holon-run/holon",
+		stateDir:             td,
+		controllerWorkspace:  t.TempDir(),
+		controllerRoleLabel:  "dev",
+		controllerRolePrompt: "ROLE: DEV",
+		logLevel:             "progress",
+		sessionRunner:        mockRunner,
 	}
 	defer h.Close()
 
@@ -250,32 +251,20 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	mockRunner.waitCh <- nil
 }
 
-func TestValidateControllerRole(t *testing.T) {
+func TestInferControllerRole(t *testing.T) {
 	t.Parallel()
 
-	if err := validateControllerRole("pm"); err != nil {
-		t.Fatalf("validate pm: %v", err)
+	if got := inferControllerRole("ROLE: PM\nProduct manager"); got != "pm" {
+		t.Fatalf("infer pm = %q", got)
 	}
-	if err := validateControllerRole("dev"); err != nil {
-		t.Fatalf("validate dev: %v", err)
+	if got := inferControllerRole("ROLE: DEV\nSoftware engineer"); got != "dev" {
+		t.Fatalf("infer dev = %q", got)
 	}
-	if err := validateControllerRole(""); err == nil {
-		t.Fatalf("expected error for empty role")
+	if got := inferControllerRole("unknown"); got != "pm" {
+		t.Fatalf("infer default = %q", got)
 	}
-	if err := validateControllerRole("reviewer"); err == nil {
-		t.Fatalf("expected error for invalid role")
-	}
-}
-
-func TestCanonicalControllerRole_Trimmed(t *testing.T) {
-	t.Parallel()
-
-	got, err := canonicalControllerRole("  pm  ")
-	if err != nil {
-		t.Fatalf("canonicalControllerRole() error: %v", err)
-	}
-	if got != "pm" {
-		t.Fatalf("canonical role = %q, want pm", got)
+	if got := inferControllerRole("---\nrole: dev\n---\nbody"); got != "dev" {
+		t.Fatalf("infer frontmatter dev = %q", got)
 	}
 }
 
@@ -304,40 +293,54 @@ func TestBuildTickEvent(t *testing.T) {
 	}
 }
 
-func TestControllerPrompts_RoleAssetAndRoleFileOverride(t *testing.T) {
+func TestLoadControllerRole(t *testing.T) {
 	t.Parallel()
 
-	h := &cliControllerHandler{controllerRole: "pm"}
+	agentHome := t.TempDir()
+	rolePath := filepath.Join(agentHome, "ROLE.md")
+	if err := os.WriteFile(rolePath, []byte("ROLE: DEV\n"), 0o644); err != nil {
+		t.Fatalf("write role: %v", err)
+	}
+	systemPrompt, roleLabel, err := loadControllerRole(agentHome)
+	if err != nil {
+		t.Fatalf("loadControllerRole() error: %v", err)
+	}
+	if !strings.Contains(systemPrompt, "ROLE: DEV") {
+		t.Fatalf("unexpected role prompt: %q", systemPrompt)
+	}
+	if roleLabel != "dev" {
+		t.Fatalf("role label = %q, want dev", roleLabel)
+	}
+}
+
+func TestLoadControllerRole_EmptyFile(t *testing.T) {
+	t.Parallel()
+
+	agentHome := t.TempDir()
+	rolePath := filepath.Join(agentHome, "ROLE.md")
+	if err := os.WriteFile(rolePath, []byte("   \n"), 0o644); err != nil {
+		t.Fatalf("write role: %v", err)
+	}
+	if _, _, err := loadControllerRole(agentHome); err == nil {
+		t.Fatalf("expected error for empty ROLE.md")
+	}
+}
+
+func TestControllerPrompts_FromRolePrompt(t *testing.T) {
+	t.Parallel()
+
+	h := &cliControllerHandler{
+		controllerRolePrompt: "ROLE: PM\nSystem prompt body",
+	}
 	systemPrompt, userPrompt, err := h.controllerPrompts()
 	if err != nil {
-		t.Fatalf("controllerPrompts() role asset error: %v", err)
+		t.Fatalf("controllerPrompts() error: %v", err)
 	}
 	if !strings.Contains(systemPrompt, "ROLE: PM") {
-		t.Fatalf("expected pm role prompt, got: %q", systemPrompt)
+		t.Fatalf("expected ROLE.md prompt, got: %q", systemPrompt)
 	}
 	if !strings.Contains(userPrompt, "HOLON_CONTROLLER_GOAL_STATE_PATH") {
 		t.Fatalf("unexpected runtime user prompt: %q", userPrompt)
-	}
-
-	td := t.TempDir()
-	roleFile := filepath.Join(td, "role.md")
-	if err := os.WriteFile(roleFile, []byte("CUSTOM ROLE"), 0o644); err != nil {
-		t.Fatalf("write role file: %v", err)
-	}
-	h.controllerRoleFile = roleFile
-	systemPrompt, _, err = h.controllerPrompts()
-	if err != nil {
-		t.Fatalf("controllerPrompts() role file error: %v", err)
-	}
-	if systemPrompt != "CUSTOM ROLE" {
-		t.Fatalf("role file override failed, got %q", systemPrompt)
-	}
-
-	if err := os.WriteFile(roleFile, []byte(" \n\t "), 0o644); err != nil {
-		t.Fatalf("write empty role file: %v", err)
-	}
-	if _, _, err := h.controllerPrompts(); err == nil {
-		t.Fatalf("expected error for empty role file content")
 	}
 }
 
@@ -346,7 +349,7 @@ func TestWriteControllerSpecAndPrompts_ExcludesSkillsMetadata(t *testing.T) {
 
 	inputDir := t.TempDir()
 	h := &cliControllerHandler{
-		controllerRole: "pm",
+		controllerRolePrompt: "ROLE: PM",
 	}
 
 	if err := h.writeControllerSpecAndPrompts(inputDir); err != nil {

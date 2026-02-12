@@ -15,10 +15,24 @@ This runbook demonstrates two autonomous `holon serve` instances using one share
 
 ## Directory Layout
 
-Use isolated state/workspace per role to keep memory and channel files separate:
+Use isolated agent homes per role:
 
 ```bash
-mkdir -p .holon/pm-state .holon/dev-state .holon/pm-workspace .holon/dev-workspace
+mkdir -p ~/.holon/agents/pm ~/.holon/agents/dev
+```
+
+Create role prompts:
+
+```bash
+cat > ~/.holon/agents/pm/ROLE.md <<'EOF'
+# ROLE: PM
+You are the PM controller.
+EOF
+
+cat > ~/.holon/agents/dev/ROLE.md <<'EOF'
+# ROLE: DEV
+You are the DEV controller.
+EOF
 ```
 
 ## Start PM Instance
@@ -26,11 +40,8 @@ mkdir -p .holon/pm-state .holon/dev-state .holon/pm-workspace .holon/dev-workspa
 ```bash
 HOLON_GITHUB_TOKEN="$PM_GITHUB_TOKEN" \
 holon serve \
-  --repo owner/repo \
+  --agent-id pm \
   --webhook-port 8787 \
-  --state-dir .holon/pm-state \
-  --controller-workspace .holon/pm-workspace \
-  --controller-role pm \
   --tick-interval 5m
 ```
 
@@ -39,11 +50,9 @@ holon serve \
 ```bash
 HOLON_GITHUB_TOKEN="$DEV_GITHUB_TOKEN" \
 holon serve \
-  --repo owner/repo \
+  --agent-id dev \
   --webhook-port 8788 \
-  --state-dir .holon/dev-state \
-  --controller-workspace .holon/dev-workspace \
-  --controller-role dev
+  --tick-interval 5m
 ```
 
 ## Forward GitHub Webhooks To Both Instances
@@ -57,20 +66,20 @@ Example direct forwarding targets:
 
 ## Expected Artifacts
 
-PM state directory:
+PM state directory (`~/.holon/agents/pm/state`):
 
-- `.holon/pm-state/events.ndjson`
-- `.holon/pm-state/decisions.ndjson`
-- `.holon/pm-state/actions.ndjson`
-- `.holon/pm-state/controller-state/event-channel.ndjson`
-- `.holon/pm-state/controller-state/goal-state.json`
+- `~/.holon/agents/pm/state/events.ndjson`
+- `~/.holon/agents/pm/state/decisions.ndjson`
+- `~/.holon/agents/pm/state/actions.ndjson`
+- `~/.holon/agents/pm/state/controller-state/event-channel.ndjson`
+- `~/.holon/agents/pm/state/controller-state/goal-state.json`
 
-Dev state directory:
+Dev state directory (`~/.holon/agents/dev/state`):
 
-- `.holon/dev-state/events.ndjson`
-- `.holon/dev-state/decisions.ndjson`
-- `.holon/dev-state/actions.ndjson`
-- `.holon/dev-state/controller-state/event-channel.ndjson`
+- `~/.holon/agents/dev/state/events.ndjson`
+- `~/.holon/agents/dev/state/decisions.ndjson`
+- `~/.holon/agents/dev/state/actions.ndjson`
+- `~/.holon/agents/dev/state/controller-state/event-channel.ndjson`
 
 ## Demo Success Criteria
 
