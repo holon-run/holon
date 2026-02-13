@@ -83,20 +83,19 @@ func TestPrepareWorkspaceForSolve_WithWorkspace_UsesDirectWorkspace(t *testing.T
 	}
 }
 
-func TestPublishResults_SkillFirstMode_RequiresManifest(t *testing.T) {
+func TestPublishResults_SkillFirstMode_MissingManifestWarning(t *testing.T) {
 	ref := &pkggithub.SolveRef{Owner: "holon-run", Repo: "holon", Number: 527}
 
 	// Create a temp output directory
 	outDir := t.TempDir()
 
-	// Test with missing manifest.json - should return error
+	// Test with missing manifest.json - should succeed with warning
+	// In skill-first mode, missing manifest.json is not a blocking error
 	err := publishResults(nil, ref, "issue", "", outDir, "auto", true)
-	if err == nil {
-		t.Fatal("expected error when manifest.json is missing, got nil")
+	if err != nil {
+		t.Fatalf("expected success when manifest.json is missing (skill-first mode), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "manifest.json") {
-		t.Fatalf("expected error to mention manifest.json, got: %v", err)
-	}
+	// The function should complete without error, logging a warning instead
 }
 
 func TestPublishResults_SkillFirstMode_ValidatesManifestStatus(t *testing.T) {
