@@ -234,3 +234,26 @@ func TestPublishResults_SkillFirstMode_PublishEvidenceInSummary(t *testing.T) {
 		t.Fatalf("expected success with publish evidence in summary, got error: %v", err)
 	}
 }
+
+func TestPublishResults_SkillFirstMode_MalformedManifestErrors(t *testing.T) {
+	ref := &pkggithub.SolveRef{Owner: "holon-run", Repo: "holon", Number: 527}
+
+	// Create a temp output directory
+	outDir := t.TempDir()
+
+	// Create a malformed manifest.json (invalid JSON)
+	manifestPath := filepath.Join(outDir, "manifest.json")
+	manifestContent := `{invalid json this is not valid`
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatalf("failed to create manifest.json: %v", err)
+	}
+
+	// Test with malformed manifest - should error (unlike missing manifest)
+	err := publishResults(nil, ref, "issue", "", outDir, "auto", true)
+	if err == nil {
+		t.Fatal("expected error when manifest.json is malformed, got nil")
+	}
+	if !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("expected error to mention malformed manifest, got: %v", err)
+	}
+}

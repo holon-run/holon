@@ -893,7 +893,10 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 			Metadata map[string]interface{} `json:"metadata,omitempty"`
 		}
 		if err := json.Unmarshal(manifestData, &manifest); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to parse manifest.json: %v\n", err)
+			// manifest.json exists but is malformed - this indicates a real problem
+			// Unlike missing manifest (which is OK in skill-first mode), a malformed
+			// manifest suggests the agent failed to write valid output
+			return fmt.Errorf("skill-first mode: manifest.json exists but is malformed: %w", err)
 		} else {
 			// Check that execution completed successfully
 			if manifest.Status != "completed" {
