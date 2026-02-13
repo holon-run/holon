@@ -816,6 +816,8 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"HOLON_WORKSPACE_INDEX_PATH":          "/root/state/workspace-index.json",
 		"HOLON_INPUT_DIR":                     docker.ContainerInputDir,
 		"HOLON_OUTPUT_DIR":                    docker.ContainerOutputDir,
+		"GITHUB_OUTPUT_DIR":                   docker.ContainerOutputDir,
+		"GITHUB_CONTEXT_DIR":                  filepath.Join(docker.ContainerOutputDir, "github-context"),
 		"HOLON_STATE_DIR":                     docker.ContainerStateDir,
 		"CLAUDE_CONFIG_DIR":                   "/state/claude-config",
 		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,

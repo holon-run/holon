@@ -9,7 +9,8 @@
 #   repo_hint: Optional owner/repo when ref is numeric
 #
 # Environment:
-#   GITHUB_CONTEXT_DIR   Output directory (default: /holon/output/github-context if present, else tmp)
+#   GITHUB_CONTEXT_DIR   Output directory (default: ${GITHUB_OUTPUT_DIR}/github-context if set, else tmp)
+#   GITHUB_OUTPUT_DIR    Optional base output directory used when GITHUB_CONTEXT_DIR is unset
 #   TRIGGER_COMMENT_ID   Comment ID to mark as trigger
 #   INCLUDE_DIFF         Include PR diff (default: true)
 #   INCLUDE_CHECKS       Include check runs + logs (default: true)
@@ -36,8 +37,8 @@ MANIFEST_PROVIDER="${MANIFEST_PROVIDER:-ghx}"
 
 # Default output directory
 if [[ -z "${GITHUB_CONTEXT_DIR:-}" ]]; then
-    if [[ -d /holon/output ]]; then
-        GITHUB_CONTEXT_DIR="/holon/output/github-context"
+    if [[ -n "${GITHUB_OUTPUT_DIR:-}" ]]; then
+        GITHUB_CONTEXT_DIR="${GITHUB_OUTPUT_DIR}/github-context"
     else
         GITHUB_CONTEXT_DIR="$(mktemp -d /tmp/holon-ghctx-XXXXXX)"
     fi
@@ -63,7 +64,8 @@ Arguments:
   repo_hint  Optional repository hint (e.g., "owner/repo") for numeric refs
 
 Environment:
-  GITHUB_CONTEXT_DIR   Output directory (default: /holon/output/github-context if present, else temp dir)
+  GITHUB_CONTEXT_DIR   Output directory (default: ${GITHUB_OUTPUT_DIR}/github-context if set, else temp dir)
+  GITHUB_OUTPUT_DIR    Optional base output directory used when GITHUB_CONTEXT_DIR is unset
   TRIGGER_COMMENT_ID   Comment ID to mark as trigger
   INCLUDE_DIFF         Include PR diff (default: true)
   INCLUDE_CHECKS       Include CI checks (default: true)

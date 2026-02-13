@@ -26,7 +26,7 @@ This skill can use:
 ## Environment & Paths
 
 - **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
-  - Default: `/holon/output` if present; otherwise a temp dir `/tmp/holon-ghissue-*`
+  - Default: system-recommended output directory if provided by caller; otherwise a temp dir `/tmp/holon-ghissue-*`
 - **`GITHUB_CONTEXT_DIR`**: Where `ghx` writes collected data  
   - Default: `${GITHUB_OUTPUT_DIR}/github-context`
 - **`GITHUB_TOKEN` / `GH_TOKEN`**: Token used for GitHub operations (scopes: `repo` or `public_repo`)

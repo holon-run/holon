@@ -1212,9 +1212,27 @@ jobs:
         id: result
         if: always()
         run: |
+          set -euo pipefail
+
           OUTPUT_DIR='${{ steps.ctx.outputs.output_dir }}'
           SHOULD_RUN="$GATE_SHOULD_RUN"
           REASON="$GATE_REASON"
+
+          HAS_MANIFEST='false'
+          HAS_SUMMARY='false'
+          if [ -f "$OUTPUT_DIR/manifest.json" ]; then
+            HAS_MANIFEST='true'
+          fi
+          if [ -f "$OUTPUT_DIR/summary.md" ]; then
+            HAS_SUMMARY='true'
+          fi
+
+          {
+            echo "### Holon Output"
+            echo "- output_dir: \`$OUTPUT_DIR\`"
+            echo "- manifest.json: $HAS_MANIFEST"
+            echo "- summary.md: $HAS_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$SHOULD_RUN" != 'true' ]; then
             {
@@ -1226,10 +1244,11 @@ jobs:
           fi
 
           # Check for summary
-          if [ -f "$OUTPUT_DIR/summary.md" ]; then
+          if [ "$HAS_SUMMARY" = 'true' ]; then
             cat "$OUTPUT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
             echo "summary=$OUTPUT_DIR/summary.md" >> "$GITHUB_OUTPUT"
           else
+            echo "- warning: summary.md not found under output_dir; inspect uploaded artifact for diagnostics." >> "$GITHUB_STEP_SUMMARY"
             echo "summary=" >> "$GITHUB_OUTPUT"
           fi
 
@@ -1292,6 +1311,22 @@ jobs:
           if [ -d "$OUTPUT_DIR" ]; then
             cp -a "$OUTPUT_DIR/." "$ARTIFACT_DIR/output/" || true
           fi
+
+          HAS_MANIFEST='false'
+          HAS_SUMMARY='false'
+          if [ -f "$OUTPUT_DIR/manifest.json" ]; then
+            HAS_MANIFEST='true'
+          fi
+          if [ -f "$OUTPUT_DIR/summary.md" ]; then
+            HAS_SUMMARY='true'
+          fi
+
+          cat > "$ARTIFACT_DIR/artifact-metadata.txt" <<EOF
+          input_dir=$INPUT_DIR
+          output_dir=$OUTPUT_DIR
+          manifest_present=$HAS_MANIFEST
+          summary_present=$HAS_SUMMARY
+          EOF
 
           echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
 

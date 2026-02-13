@@ -13,10 +13,9 @@ It combines two capabilities:
 
 ## Environment Variables
 
-- `GITHUB_OUTPUT_DIR`: artifact directory (default `/holon/output` if available)
+- `GITHUB_OUTPUT_DIR`: artifact directory (caller-provided; defaults to a temporary directory when unset)
 - `GITHUB_CONTEXT_DIR`: context directory (default `${GITHUB_OUTPUT_DIR}/github-context`)
 - `GITHUB_TOKEN` / `GH_TOKEN`: GitHub token for `gh`
-- `HOLON_GITHUB_BOT_LOGIN`: bot login for idempotency checks (default `holonbot[bot]`)
 - `DRY_RUN`: preview mode (`true|false`)
 
 ## Commands

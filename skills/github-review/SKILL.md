@@ -18,7 +18,7 @@ This skill uses environment variables to stay portable across Holon, local shell
 ### Key Environment Variables
 
 - **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
-  - Default: `/holon/output` if present; otherwise a temp dir `/tmp/holon-ghreview-*`
+  - Default: system-recommended output directory if provided by caller; otherwise a temp dir `/tmp/holon-ghreview-*`
 - **`GITHUB_CONTEXT_DIR`**: Directory for collected PR data  
   - Default: `${GITHUB_OUTPUT_DIR}/github-context`
 - **`GITHUB_TOKEN` / `GH_TOKEN`**: Token used for GitHub operations (scopes: `repo` or `public_repo`)
@@ -27,8 +27,8 @@ This skill uses environment variables to stay portable across Holon, local shell
 ### Path Examples
 
 ```bash
-# Holon container (default picked up automatically)
-export GITHUB_OUTPUT_DIR=/holon/output
+# Runtime-provided output directory (recommended)
+export GITHUB_OUTPUT_DIR=/path/to/output
 
 # Local development (keeps workspace clean by defaulting to /tmp if unset)
 export GITHUB_OUTPUT_DIR=./output
