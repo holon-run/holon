@@ -1,4 +1,5 @@
 import fs from "fs";
+import http from "http";
 import path from "path";
 import os from "os";
 import { spawnSync } from "child_process";
@@ -682,97 +683,42 @@ function buildSessionOptions(env: NodeJS.ProcessEnv): SDKSessionOptions {
   };
 }
 
-type ChannelBatch = {
-  events: Array<{ line: string; nextOffset: number }>;
+type ControllerEventEnvelope = {
+  id?: string;
+  subject?: { id?: string };
+  payload?: { turn_id?: string; thread_id?: string };
 };
 
-type TurnAckPayload = {
+type ControllerEventRequest = {
+  event?: ControllerEventEnvelope;
+};
+
+type ControllerEventResponse = {
+  status: "completed" | "failed";
+  message?: string;
   event_id?: string;
   turn_id?: string;
   thread_id?: string;
-  status: "completed" | "failed";
-  message?: string;
-  at: string;
 };
 
-const maxChannelReadBytes = 1024 * 1024;
+function toControllerErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const flattened = raw.replace(/\s+/g, " ").trim();
+  if (flattened.length <= 500) {
+    return flattened;
+  }
+  return `${flattened.slice(0, 500)}...`;
+}
 
-function readCursorOffset(pathname: string): number {
+function parseTurnAckFields(eventRaw: string | ControllerEventEnvelope): { eventID?: string; turnID?: string; threadID?: string } {
   try {
-    const raw = fs.readFileSync(pathname, "utf8").trim();
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function writeCursorOffset(pathname: string, offset: number): void {
-  fs.mkdirSync(path.dirname(pathname), { recursive: true });
-  fs.writeFileSync(pathname, `${offset}`);
-}
-
-function readChannelBatch(channelPath: string, startOffset: number): ChannelBatch {
-  if (!fs.existsSync(channelPath)) {
-    return { events: [] };
-  }
-
-  const stats = fs.statSync(channelPath);
-  let offset = startOffset;
-  if (stats.size < offset) {
-    offset = 0;
-  }
-  if (stats.size === offset) {
-    return { events: [] };
-  }
-
-  const fd = fs.openSync(channelPath, "r");
-  try {
-    const remaining = stats.size - offset;
-    const length = Math.min(remaining, maxChannelReadBytes);
-    const buffer = Buffer.alloc(length);
-    const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
-    if (bytesRead <= 0) {
-      return { events: [] };
-    }
-    const chunk = buffer.toString("utf8", 0, bytesRead);
-    const lastNewline = chunk.lastIndexOf("\n");
-    if (lastNewline < 0) {
-      return { events: [] };
-    }
-
-    const completeChunk = chunk.slice(0, lastNewline + 1);
-    const events: Array<{ line: string; nextOffset: number }> = [];
-    let runningOffset = offset;
-    for (const rawLine of completeChunk.split(/\r?\n/)) {
-      const lineBytes = Buffer.byteLength(rawLine, "utf8") + 1;
-      runningOffset += lineBytes;
-      const trimmed = rawLine.trim();
-      if (trimmed.length === 0) {
-        continue;
-      }
-      events.push({ line: trimmed, nextOffset: runningOffset });
-    }
-
-    return {
-      events,
-    };
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function parseTurnAckFields(eventLine: string): { eventID?: string; turnID?: string; threadID?: string } {
-  try {
-    const parsed = JSON.parse(eventLine) as {
-      id?: unknown;
-      payload?: { turn_id?: unknown; thread_id?: unknown };
-      subject?: { id?: unknown };
-    };
+    const parsed = typeof eventRaw === "string"
+      ? (JSON.parse(eventRaw) as {
+        id?: unknown;
+        payload?: { turn_id?: unknown; thread_id?: unknown };
+        subject?: { id?: unknown };
+      })
+      : eventRaw;
     const eventID = typeof parsed.id === "string" ? parsed.id : undefined;
     const payloadTurnID =
       parsed.payload && typeof parsed.payload.turn_id === "string" ? parsed.payload.turn_id : undefined;
@@ -783,11 +729,6 @@ function parseTurnAckFields(eventLine: string): { eventID?: string; turnID?: str
   } catch {
     return {};
   }
-}
-
-function appendTurnAck(ackPath: string, ack: TurnAckPayload): void {
-  fs.mkdirSync(path.dirname(ackPath), { recursive: true });
-  fs.appendFileSync(ackPath, `${JSON.stringify(ack)}\n`);
 }
 
 async function runServeClaudeSession(
@@ -881,57 +822,115 @@ async function runServeClaudeSession(
     await streamSessionTurn(session, logger, logFile);
     refreshSessionId();
 
-    const channelPath = env.HOLON_CONTROLLER_EVENT_CHANNEL?.trim();
-    if (channelPath) {
-      const cursorPath = env.HOLON_CONTROLLER_EVENT_CURSOR?.trim() || path.join(runtimePaths.stateDir, "event-channel.cursor");
-      const ackPath = env.HOLON_CONTROLLER_ACK_CHANNEL?.trim() || "";
-      logger.info(`Controller event channel connected: ${channelPath}`);
-      let offset = readCursorOffset(cursorPath);
-      let running = true;
-
-      process.on("SIGTERM", () => {
-        running = false;
-      });
-      process.on("SIGINT", () => {
-        running = false;
-      });
-
-      while (running) {
-        const batch = readChannelBatch(channelPath, offset);
-        if (batch.events.length === 0) {
-          await sleep(1000);
-          continue;
+    const socketPath = env.HOLON_CONTROLLER_RPC_SOCKET?.trim() || path.join(runtimePaths.agentHome, "run", "agent.sock");
+    if (socketPath) {
+      logger.info(`Controller RPC socket listening on ${socketPath}`);
+      fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+      try {
+        if (fs.existsSync(socketPath)) {
+          fs.unlinkSync(socketPath);
         }
-
-        for (const event of batch.events) {
-          const ackFields = parseTurnAckFields(event.line);
-          const turnPrompt = [
-            "New event payload (JSON):",
-            event.line,
-            "",
-            "Process this event. Decide actions autonomously and execute via available skills/tools.",
-            "After actions complete, summarize what you decided and what changed.",
-          ].join("\n");
-          await session.send(turnPrompt);
-          const turnResult = await streamSessionTurn(session, logger, logFile);
-          offset = event.nextOffset;
-          writeCursorOffset(cursorPath, offset);
-          refreshSessionId();
-          if (ackPath && ackFields.turnID) {
-            const rawMessage = (turnResult.result || "").trim();
-            const message = rawMessage.length > 4000 ? `${rawMessage.slice(0, 4000)}...` : rawMessage;
-            appendTurnAck(ackPath, {
-              event_id: ackFields.eventID,
-              turn_id: ackFields.turnID,
-              thread_id: ackFields.threadID,
-              status: turnResult.success ? "completed" : "failed",
-              message,
-              at: new Date().toISOString(),
-            });
-          }
-        }
+      } catch (error) {
+        throw new Error(`failed to reset controller socket at ${socketPath}: ${String(error)}`);
       }
-      logger.info("Controller event channel disconnected");
+
+      let inflight: Promise<void> = Promise.resolve();
+      const processControllerEvent = async (event: ControllerEventEnvelope): Promise<ControllerEventResponse> => {
+        const eventRaw = JSON.stringify(event);
+        const ackFields = parseTurnAckFields(event);
+        const turnPrompt = [
+          "New event payload (JSON):",
+          eventRaw,
+          "",
+          "Process this event. Decide actions autonomously and execute via available skills/tools.",
+          "After actions complete, summarize what you decided and what changed.",
+        ].join("\n");
+        await session.send(turnPrompt);
+        const turnResult = await streamSessionTurn(session, logger, logFile);
+        refreshSessionId();
+        const rawMessage = (turnResult.result || "").trim();
+        const message = rawMessage.length > 4000 ? `${rawMessage.slice(0, 4000)}...` : rawMessage;
+        return {
+          status: turnResult.success ? "completed" : "failed",
+          message,
+          event_id: ackFields.eventID,
+          turn_id: ackFields.turnID,
+          thread_id: ackFields.threadID,
+        };
+      };
+
+      const server = http.createServer((req, res) => {
+        if (req.method === "GET" && req.url === "/health") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ status: "ok", session_id: currentSessionId || "" }));
+          return;
+        }
+        if (req.method !== "POST" || req.url !== "/v1/controller/events") {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "not_found" }));
+          return;
+        }
+
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          let parsed: ControllerEventRequest;
+          try {
+            parsed = JSON.parse(raw) as ControllerEventRequest;
+          } catch (error) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: `invalid_json: ${String(error)}` }));
+            return;
+          }
+          const event = parsed.event;
+          if (!event || typeof event !== "object") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "missing event payload" }));
+            return;
+          }
+
+          const run = async (): Promise<void> => {
+            try {
+              const result = await processControllerEvent(event);
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify(result));
+            } catch (error) {
+              const turnAckFields = parseTurnAckFields(event);
+              const failure: ControllerEventResponse = {
+                status: "failed",
+                message: toControllerErrorMessage(error),
+                event_id: turnAckFields.eventID,
+                turn_id: turnAckFields.turnID,
+                thread_id: turnAckFields.threadID,
+              };
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify(failure));
+            }
+          };
+          inflight = inflight.then(run).catch(() => undefined);
+        });
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+
+      const shutdown = (): void => {
+        server.close();
+      };
+      process.on("SIGTERM", shutdown);
+      process.on("SIGINT", shutdown);
+
+      await new Promise<void>((resolve) => {
+        server.on("close", resolve);
+      });
       return;
     }
 

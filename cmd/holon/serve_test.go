@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,46 +18,11 @@ import (
 	"github.com/holon-run/holon/pkg/serve"
 )
 
-func TestAppendJSONLine(t *testing.T) {
+func TestFirstNonEmpty(t *testing.T) {
 	t.Parallel()
 
-	td := t.TempDir()
-	path := filepath.Join(td, "events.ndjson")
-
-	first := map[string]any{"id": "evt-1", "type": "issue_comment"}
-	second := map[string]any{"id": "evt-2", "type": "pull_request"}
-
-	if err := appendJSONLine(path, first); err != nil {
-		t.Fatalf("append first line: %v", err)
-	}
-	if err := appendJSONLine(path, second); err != nil {
-		t.Fatalf("append second line: %v", err)
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read channel file: %v", err)
-	}
-
-	lines := bytesToLines(raw)
-	if len(lines) != 2 {
-		t.Fatalf("line count = %d, want 2", len(lines))
-	}
-
-	var gotFirst map[string]any
-	if err := json.Unmarshal([]byte(lines[0]), &gotFirst); err != nil {
-		t.Fatalf("unmarshal first line: %v", err)
-	}
-	if gotFirst["id"] != "evt-1" {
-		t.Fatalf("first id = %v, want evt-1", gotFirst["id"])
-	}
-
-	var gotSecond map[string]any
-	if err := json.Unmarshal([]byte(lines[1]), &gotSecond); err != nil {
-		t.Fatalf("unmarshal second line: %v", err)
-	}
-	if gotSecond["id"] != "evt-2" {
-		t.Fatalf("second id = %v, want evt-2", gotSecond["id"])
+	if got := firstNonEmpty("", "  ", "x", "y"); got != "x" {
+		t.Fatalf("firstNonEmpty = %q, want x", got)
 	}
 }
 
@@ -79,56 +46,6 @@ func TestSessionStatePathAndReadSessionID(t *testing.T) {
 	}
 	if got := h.readSessionID(); got != "abc123" {
 		t.Fatalf("readSessionID() = %q, want abc123", got)
-	}
-}
-
-func TestCompactChannelBestEffortLocked(t *testing.T) {
-	t.Parallel()
-
-	td := t.TempDir()
-	channelDir := filepath.Join(td, "controller-state")
-	if err := os.MkdirAll(channelDir, 0o755); err != nil {
-		t.Fatalf("mkdir controller-state: %v", err)
-	}
-	channelPath := filepath.Join(channelDir, "event-channel.ndjson")
-	cursorPath := filepath.Join(channelDir, "event-channel.cursor")
-
-	line1 := `{"id":"evt-1"}`
-	line2 := `{"id":"evt-2"}`
-	content := line1 + "\n" + line2 + "\n"
-	if err := os.WriteFile(channelPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("write channel: %v", err)
-	}
-	cursor := len(line1) + 1
-	if err := os.WriteFile(cursorPath, []byte(strconv.Itoa(cursor)), 0o644); err != nil {
-		t.Fatalf("write cursor: %v", err)
-	}
-
-	h := &cliControllerHandler{
-		stateDir:          td,
-		controllerChannel: channelPath,
-	}
-	original := maxEventChannelSizeBytes
-	maxEventChannelSizeBytes = 1
-	defer func() {
-		maxEventChannelSizeBytes = original
-	}()
-
-	h.compactChannelBestEffortLocked()
-
-	gotChannel, err := os.ReadFile(channelPath)
-	if err != nil {
-		t.Fatalf("read channel after compact: %v", err)
-	}
-	if string(gotChannel) != line2+"\n" {
-		t.Fatalf("channel after compact = %q, want %q", string(gotChannel), line2+"\n")
-	}
-	gotCursor, err := os.ReadFile(cursorPath)
-	if err != nil {
-		t.Fatalf("read cursor after compact: %v", err)
-	}
-	if string(gotCursor) != "0" {
-		t.Fatalf("cursor after compact = %q, want 0", string(gotCursor))
 	}
 }
 
@@ -174,6 +91,11 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	t.Parallel()
 
 	td := t.TempDir()
+	agentHome := shortTempDir(t, "holon-661-home")
+	socketPath := filepath.Join(agentHome, "run", "agent.sock")
+	rpcServer := newMockControllerRPCServer(t, socketPath)
+	defer rpcServer.Close()
+
 	mockRunner := &mockSessionRunner{
 		waitCh:       make(chan error, 2),
 		waitObserved: make(chan struct{}, 2),
@@ -182,7 +104,7 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	h := &cliControllerHandler{
 		repoHint:            "holon-run/holon",
 		stateDir:            td,
-		agentHome:           t.TempDir(),
+		agentHome:           agentHome,
 		controllerWorkspace: t.TempDir(),
 		controllerRoleLabel: "dev",
 		logLevel:            "progress",
@@ -213,6 +135,8 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if err := h.HandleEvent(ctx, env2); err != nil {
 		t.Fatalf("handle event2: %v", err)
 	}
+	rpcServer.WaitForEvents(t, 2, 2*time.Second)
+
 	if h.restartAttempts != 1 {
 		t.Fatalf("restartAttempts after 2 events = %d, want 1", h.restartAttempts)
 	}
@@ -225,16 +149,9 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if mockRunner.lastConfig.Workspace != h.controllerWorkspace {
 		t.Fatalf("Workspace = %q, want %q", mockRunner.lastConfig.Workspace, h.controllerWorkspace)
 	}
-
-	data, err := os.ReadFile(filepath.Join(td, "controller-state", "event-channel.ndjson"))
-	if err != nil {
-		t.Fatalf("read channel file: %v", err)
+	if got := mockRunner.lastConfig.Env["HOLON_CONTROLLER_RPC_SOCKET"]; got != "/root/run/agent.sock" {
+		t.Fatalf("HOLON_CONTROLLER_RPC_SOCKET = %q, want /root/run/agent.sock", got)
 	}
-	lines := bytesToLines(data)
-	if len(lines) != 2 {
-		t.Fatalf("channel line count = %d, want 2", len(lines))
-	}
-
 	// Force controller session exit and trigger reconnect on next event.
 	mockRunner.waitCh <- errors.New("session exited")
 	select {
@@ -246,6 +163,7 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if err := h.HandleEvent(ctx, env3); err != nil {
 		t.Fatalf("handle event3 after stop: %v", err)
 	}
+	rpcServer.WaitForEvents(t, 3, 2*time.Second)
 	if h.restartAttempts != 2 {
 		t.Fatalf("restartAttempts after reconnect = %d, want 2", h.restartAttempts)
 	}
@@ -345,7 +263,7 @@ func TestControllerPrompts_IncludeAgentHomeContract(t *testing.T) {
 	if !strings.Contains(userPrompt, "HOLON_WORKSPACE_INDEX_PATH") {
 		t.Fatalf("expected HOLON_WORKSPACE_INDEX_PATH contract, got: %q", userPrompt)
 	}
-	if !strings.Contains(userPrompt, "HOLON_CONTROLLER_GOAL_STATE_PATH") {
+	if !strings.Contains(userPrompt, "HOLON_CONTROLLER_RPC_SOCKET") {
 		t.Fatalf("unexpected runtime user prompt: %q", userPrompt)
 	}
 }
@@ -528,25 +446,6 @@ func TestResolveServeRuntimeEnv_PrefersHolonGitHubToken(t *testing.T) {
 	}
 }
 
-func bytesToLines(raw []byte) []string {
-	text := string(raw)
-	if text == "" {
-		return nil
-	}
-	parts := make([]string, 0, 4)
-	start := 0
-	for i := 0; i < len(text); i++ {
-		if text[i] != '\n' {
-			continue
-		}
-		if i > start {
-			parts = append(parts, text[start:i])
-		}
-		start = i + 1
-	}
-	return parts
-}
-
 type mockSessionRunner struct {
 	mu           sync.Mutex
 	startCount   int
@@ -554,6 +453,89 @@ type mockSessionRunner struct {
 	waitCh       chan error
 	waitObserved chan struct{}
 	lastConfig   ControllerSessionConfig
+}
+
+type mockControllerRPCServer struct {
+	server *http.Server
+	mu     sync.Mutex
+	events []serve.EventEnvelope
+}
+
+func newMockControllerRPCServer(t *testing.T, socketPath string) *mockControllerRPCServer {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	_ = os.Remove(socketPath)
+
+	s := &mockControllerRPCServer{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("/v1/controller/events", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Event serve.EventEnvelope `json:"event"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		s.events = append(s.events, req.Event)
+		s.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":   "completed",
+			"event_id": req.Event.ID,
+		})
+	})
+	s.server = &http.Server{Handler: mux}
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+
+	go func() {
+		_ = s.server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		s.Close()
+	})
+	return s
+}
+
+func (s *mockControllerRPCServer) WaitForEvents(t *testing.T, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		got := len(s.events)
+		s.mu.Unlock()
+		if got >= want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.mu.Lock()
+	got := len(s.events)
+	s.mu.Unlock()
+	t.Fatalf("timed out waiting for %d events, got %d", want, got)
+}
+
+func (s *mockControllerRPCServer) Close() {
+	if s.server != nil {
+		_ = s.server.Close()
+	}
+}
+
+func shortTempDir(t *testing.T, prefix string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(os.TempDir(), prefix+"-")
+	if err != nil {
+		t.Fatalf("mkdir temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
 
 func (m *mockSessionRunner) Start(_ context.Context, cfg ControllerSessionConfig) (*docker.SessionHandle, error) {

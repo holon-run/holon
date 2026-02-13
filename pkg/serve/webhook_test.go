@@ -30,6 +30,15 @@ func (m *mockEventHandler) HandleEvent(_ context.Context, env EventEnvelope) err
 	return nil
 }
 
+type mockAckEventHandler struct {
+	mockEventHandler
+	acks chan TurnAckRecord
+}
+
+func (m *mockAckEventHandler) TurnAcks() <-chan TurnAckRecord {
+	return m.acks
+}
+
 func TestWebhookServer_InvalidJSON(t *testing.T) {
 	td := t.TempDir()
 	handler := &mockEventHandler{}
@@ -109,6 +118,46 @@ func TestWebhookServer_Deduplication(t *testing.T) {
 	if len(handler.events) != 1 {
 		t.Fatalf("expected 1 event after deduplication, got %d", len(handler.events))
 	}
+}
+
+func TestWebhookServer_ProcessTurnAcks_FromSource(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockAckEventHandler{
+		acks: make(chan TurnAckRecord, 1),
+	}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	turnID, _ := ws.runtime.beginTurn("thread-1")
+	if _, ok := ws.runtime.loadTurn(turnID); !ok {
+		t.Fatalf("expected turn to be active before ack")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ws.processTurnAcks(ctx)
+
+	handler.acks <- TurnAckRecord{
+		TurnID:  turnID,
+		Status:  "completed",
+		Message: "done",
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := ws.runtime.loadTurn(turnID); !ok {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("turn %s was not completed from ack source", turnID)
 }
 
 func TestWebhookServer_InjectEvent_UsesSameProcessingPipeline(t *testing.T) {
