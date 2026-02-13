@@ -15,21 +15,21 @@ env HOLON_NO_AUTO_INSTALL=
 
 # Test that latest channel fetches from GitHub when no agent specified
 # This should download the latest agent and fail at Docker composition
+# (NOT in skill-first mode, so manifest.json is still required)
 ! exec holon run --goal "test goal" --workspace /tmp --skip-checks
 stdout 'resolving agent via channel'
 stdout 'channel.*latest'
 stdout 'successfully resolved agent via channel'
 
 # Test builtin channel uses embedded agent without network
+# (NOT in skill-first mode, so manifest.json is still required)
 ! exec holon run --agent-channel builtin --goal "test goal" --workspace /tmp --skip-checks
 stdout 'resolving agent via channel'
 stdout 'channel.*builtin'
-# Builtin agent download will fail at Docker composition
 
 # Test with explicit default agent (deprecated alias, but resolves to builtin agent)
+# (NOT in skill-first mode, so manifest.json is still required)
 ! exec holon run --agent default --goal "test goal" --workspace /tmp --skip-checks
-# The "default" alias resolves to builtin agent, which downloads successfully
-# but will fail at Docker composition (same as other tests)
 
 # Test that channel system works independently of HOLON_NO_AUTO_INSTALL
 # The "latest" channel should still fetch from GitHub

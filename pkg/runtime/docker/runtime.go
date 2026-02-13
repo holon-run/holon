@@ -303,10 +303,30 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	}
 
 	// 7. Artifact Validation (RFC-0002)
-	// Read the spec to verify required artifacts, plus manifest.json
-	// For now, validate basic manifest.json requirement
+	// In skill-first mode (UseSkillMode=true), skills are responsible for all IO including publish.
+	// manifest.json is no longer a blocking requirement since skills may succeed without generating it.
+	// Log a warning for debugging but don't fail execution.
 	if err := ValidateRequiredArtifacts(cfg.OutDir, nil); err != nil {
-		return "", err
+		// In skill-first mode, log a warning but don't fail
+		if cfg.UseSkillMode {
+			// List output directory contents for debugging
+			var contents []string
+			if entries, readErr := os.ReadDir(cfg.OutDir); readErr == nil {
+				for _, entry := range entries {
+					contents = append(contents, entry.Name())
+				}
+			}
+
+			holonlog.Warn("artifact validation warning",
+				"error", err,
+				"output_dir", cfg.OutDir,
+				"contents", contents,
+				"note", "in skill-first mode, skills handle all IO; missing manifest.json may indicate skill completed without generating it",
+			)
+		} else {
+			// In non-skill-first mode, manifest.json is still required
+			return "", err
+		}
 	}
 
 	return snapshotDir, nil
