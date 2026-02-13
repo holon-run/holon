@@ -254,9 +254,10 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		Env:        env,
 		WorkingDir: ContainerWorkspaceDir,
 		Tty:        false,
-	}, &container.HostConfig{
-		Mounts: mounts,
-	}, nil, nil, "")
+	}, BuildContainerHostConfig(&HostConfigOptions{
+		Mounts:      mounts,
+		RuntimeMode: runtimeMode,
+	}), nil, nil, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to create container: %w", err)
 	}
@@ -479,9 +480,10 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 		Env:        env,
 		WorkingDir: ContainerWorkspaceDir,
 		Tty:        false,
-	}, &container.HostConfig{
-		Mounts: mounts,
-	}, nil, nil, "")
+	}, BuildContainerHostConfig(&HostConfigOptions{
+		Mounts:      mounts,
+		RuntimeMode: runtimeMode,
+	}), nil, nil, "")
 	if err != nil {
 		cleanupOnError()
 		return nil, fmt.Errorf("failed to create container: %w", err)

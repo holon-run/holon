@@ -71,6 +71,21 @@ jobs:
     - name: Test Unit
       run: make test-unit
 
+  test-run-safety:
+    name: Test Run Safety
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+        cache: true
+
+    - name: Test Run Safety
+      run: make test-run-safety
+
   test-integration:
     name: Test Integration
     runs-on: ubuntu-latest
@@ -123,7 +138,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [test-agent, build-agent-bundle, test-unit, test-integration]
+    needs: [test-agent, build-agent-bundle, test-unit, test-run-safety, test-integration]
     steps:
     - uses: actions/checkout@v4
 

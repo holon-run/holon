@@ -3,6 +3,7 @@ package docker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types/mount"
@@ -442,6 +443,62 @@ func TestBuildContainerEnv(t *testing.T) {
 	}
 }
 
+func TestBuildContainerHostConfig(t *testing.T) {
+	baseMounts := []mount.Mount{
+		{
+			Type:   mount.TypeBind,
+			Source: "/tmp/workspace",
+			Target: "/workspace",
+		},
+	}
+
+	tests := []struct {
+		name string
+		mode RuntimeMode
+	}{
+		{name: "prod runtime defaults", mode: RuntimeModeProd},
+		{name: "dev runtime defaults", mode: RuntimeModeDev},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hostCfg := BuildContainerHostConfig(&HostConfigOptions{
+				Mounts:      baseMounts,
+				RuntimeMode: tt.mode,
+			})
+
+			if hostCfg == nil {
+				t.Fatal("BuildContainerHostConfig() returned nil")
+			}
+			if hostCfg.Privileged {
+				t.Error("BuildContainerHostConfig() set Privileged=true, want false")
+			}
+			if hostCfg.ReadonlyRootfs {
+				t.Error("BuildContainerHostConfig() set ReadonlyRootfs=true, want false")
+			}
+			if string(hostCfg.NetworkMode) != "default" {
+				t.Errorf("BuildContainerHostConfig() NetworkMode = %q, want %q", hostCfg.NetworkMode, "default")
+			}
+			if string(hostCfg.PidMode) != "" {
+				t.Errorf("BuildContainerHostConfig() PidMode = %q, want empty", hostCfg.PidMode)
+			}
+			if len(hostCfg.Mounts) != len(baseMounts) {
+				t.Errorf("BuildContainerHostConfig() mounts = %d, want %d", len(hostCfg.Mounts), len(baseMounts))
+			}
+		})
+	}
+
+	t.Run("nil config returns safe defaults", func(t *testing.T) {
+		hostCfg := BuildContainerHostConfig(nil)
+		if hostCfg == nil {
+			t.Fatal("BuildContainerHostConfig(nil) returned nil")
+		}
+		if hostCfg.Privileged {
+			t.Error("BuildContainerHostConfig(nil) set Privileged=true, want false")
+		}
+	})
+}
+
 func TestValidateRequiredArtifacts(t *testing.T) {
 	t.Run("all required artifacts present", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -481,8 +538,13 @@ func TestValidateRequiredArtifacts(t *testing.T) {
 
 		requiredArtifacts := []v1.Artifact{}
 
-		if err := ValidateRequiredArtifacts(tmpDir, requiredArtifacts); err == nil {
+		err := ValidateRequiredArtifacts(tmpDir, requiredArtifacts)
+		if err == nil {
 			t.Error("ValidateRequiredArtifacts() expected error for missing manifest.json, got nil")
+			return
+		}
+		if !strings.Contains(err.Error(), "manifest.json") {
+			t.Errorf("ValidateRequiredArtifacts() error = %q, want mention of manifest.json", err.Error())
 		}
 	})
 
