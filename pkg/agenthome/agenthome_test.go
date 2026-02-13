@@ -54,6 +54,26 @@ func TestResolveEphemeral(t *testing.T) {
 	}
 }
 
+func TestResolveRunWithAgentID_IsPersistent(t *testing.T) {
+	res, err := Resolve(ResolveOptions{
+		Command:          "run",
+		AgentID:          "custom",
+		EphemeralAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("resolve run with agent id: %v", err)
+	}
+	if res.AgentID != "custom" {
+		t.Fatalf("expected custom agent id, got %s", res.AgentID)
+	}
+	if filepath.Base(res.AgentHome) != "custom" {
+		t.Fatalf("expected agent home suffix custom, got %s", res.AgentHome)
+	}
+	if res.Ephemeral {
+		t.Fatalf("run with explicit agent id should not be ephemeral")
+	}
+}
+
 func TestEnsureLayout(t *testing.T) {
 	td := t.TempDir()
 	home := filepath.Join(td, "agent-home")

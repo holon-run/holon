@@ -95,6 +95,9 @@ Holon automatically discovers skills from the `.claude/skills/` directory in you
 3. **Spec file** (`metadata.skills` field)
 4. **Auto-discovered** from `.claude/skills/` - lowest priority
 
+`--skill` / `--skills` are run-time activation inputs for the current execution. They are not persistent installation commands.
+When CLI skills are provided, Holon still merges lower-precedence sources (project config, spec, auto-discovery) and deduplicates by resolved skill path.
+
 **Skill Reference Formats:**
 Skills can be specified using any of these formats:
 - **Catalog references**: `skills:<package>` (skills.sh catalog), `gh:<owner>/<repo>` (GitHub)
@@ -133,6 +136,7 @@ Add a SHA256 checksum via URL fragment to verify download integrity:
 
 **Caching:**
 Downloaded skills are cached in `~/.holon/cache/skills/` based on URL and checksum (if provided). Subsequent runs use the cache automatically.
+This cache improves future runs but does not change the per-run activation semantics described above.
 
 ## Remote Skills Behavior Matrix
 

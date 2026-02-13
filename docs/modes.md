@@ -2,6 +2,8 @@
 
 Holon uses a **skill-first** execution model where context collection and publishing are delegated to skills, not the runtime. This provides flexibility and control over the IO workflow.
 
+For release-level compatibility guarantees of `holon run`, see `docs/run-ga-contract.md`.
+
 ## Architecture Overview
 
 ### Skill-First IO (Default)
@@ -26,7 +28,12 @@ Holon uses a **skill-first** execution model where context collection and publis
 ### `holon run`
 - Lower-level entrypoint for running with custom goals/specs
 - Always uses skill-first mode
-- Skills loaded from project config or `--skill` flag
+- Skills are resolved and merged with precedence:
+  - CLI (`--skill`, `--skills`)
+  - Project config
+  - Spec metadata
+  - Auto-discovered workspace skills
+- `--skill`/`--skills` are activation inputs for the current run, not install commands
 
 ## Publishing Semantics
 
@@ -62,7 +69,7 @@ base_image: auto-detect
 ```
 
 ### CLI Flags
-- `--skill <path>`: Override skill (repeatable)
-- `--skills <list>`: Comma-separated skill paths
+- `--skill <path>`: Add/override active skills for this run (repeatable, highest precedence)
+- `--skills <list>`: Comma-separated active skills for this run (highest precedence)
 - `--workspace <path>`: Use existing workspace
 - `--output <dir>`: Output directory
