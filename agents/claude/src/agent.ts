@@ -701,6 +701,15 @@ type ControllerEventResponse = {
   thread_id?: string;
 };
 
+function toControllerErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const flattened = raw.replace(/\s+/g, " ").trim();
+  if (flattened.length <= 500) {
+    return flattened;
+  }
+  return `${flattened.slice(0, 500)}...`;
+}
+
 function parseTurnAckFields(eventRaw: string | ControllerEventEnvelope): { eventID?: string; turnID?: string; threadID?: string } {
   try {
     const parsed = typeof eventRaw === "string"
@@ -889,10 +898,13 @@ async function runServeClaudeSession(
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify(result));
             } catch (error) {
+              const turnAckFields = parseTurnAckFields(event);
               const failure: ControllerEventResponse = {
                 status: "failed",
-                message: String(error),
-                ...parseTurnAckFields(event),
+                message: toControllerErrorMessage(error),
+                event_id: turnAckFields.eventID,
+                turn_id: turnAckFields.turnID,
+                thread_id: turnAckFields.threadID,
               };
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify(failure));

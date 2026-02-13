@@ -498,6 +498,8 @@ type cliControllerHandler struct {
 	turnAckCh             chan serve.TurnAckRecord
 	stopCh                chan struct{}
 	workerDone            chan struct{}
+	handlerCtx            context.Context
+	handlerCancel         context.CancelFunc
 	pumpStarted           bool
 	closeOnce             sync.Once
 	mu                    sync.Mutex
@@ -545,6 +547,7 @@ func newCLIControllerHandler(
 		stopCh:                make(chan struct{}),
 		workerDone:            make(chan struct{}),
 	}
+	handler.handlerCtx, handler.handlerCancel = context.WithCancel(context.Background())
 	handler.pumpStarted = true
 	go handler.runEventPump()
 	return handler, nil
@@ -570,6 +573,9 @@ func (h *cliControllerHandler) ensurePumpStartedLocked() {
 	}
 	if h.workerDone == nil {
 		h.workerDone = make(chan struct{})
+	}
+	if h.handlerCtx == nil || h.handlerCancel == nil {
+		h.handlerCtx, h.handlerCancel = context.WithCancel(context.Background())
 	}
 	if h.pumpStarted {
 		return
@@ -666,7 +672,10 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	h.mu.Lock()
+	baseCtx := h.handlerCtx
+	h.mu.Unlock()
+	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Minute)
 	defer cancel()
 
 	result, err := h.postEventWithReconnect(ctx, ref, item.env)
@@ -932,7 +941,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"HOLON_STATE_DIR":                     docker.ContainerStateDir,
 		"CLAUDE_CONFIG_DIR":                   "/state/claude-config",
 		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,
-		"HOLON_CONTROLLER_RPC_SOCKET":         "/root/run/agent.sock",
+		"HOLON_CONTROLLER_RPC_SOCKET":         filepath.Join(docker.ContainerAgentHome, "run", "agent.sock"),
 		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/state/controller-session.json",
 		"HOLON_CONTROLLER_GOAL_STATE_PATH":    "/state/goal-state.json",
 	}
@@ -963,16 +972,20 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		done <- h.sessionRunner.Wait(context.Background(), session)
 	}()
 
+	client := newControllerHTTPClient(socketPath)
+	if err := waitForControllerRPCReady(ctx, client); err != nil {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = h.sessionRunner.Stop(stopCtx, session)
+		stopCancel()
+		return fmt.Errorf("controller rpc not ready: %w", err)
+	}
 	h.controllerSession = session
 	h.controllerDone = done
 	h.controllerSocketPath = socketPath
-	h.controllerHTTPClient = newControllerHTTPClient(socketPath)
+	h.controllerHTTPClient = client
 	h.controllerInputDir = inputDir
 	h.controllerOutput = outputDir
 	h.restartAttempts++
-	if err := waitForControllerRPCReady(ctx, h.controllerHTTPClient); err != nil {
-		return fmt.Errorf("controller rpc not ready: %w", err)
-	}
 
 	holonlog.Info(
 		"controller runtime connected",
@@ -1183,14 +1196,17 @@ func (h *cliControllerHandler) Close() error {
 		stopCh := h.stopCh
 		workerDone := h.workerDone
 		turnAckCh := h.turnAckCh
+		cancel := h.handlerCancel
 		h.mu.Unlock()
 
+		cancel()
 		close(stopCh)
 		select {
 		case <-workerDone:
+			close(turnAckCh)
 		case <-time.After(2 * time.Second):
+			// Avoid closing turnAckCh while worker may still be in-flight.
 		}
-		close(turnAckCh)
 	})
 
 	h.mu.Lock()
