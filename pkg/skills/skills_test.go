@@ -348,6 +348,30 @@ func TestResolver_Resolve(t *testing.T) {
 		}
 	})
 
+	// Test 1.1: CLI skills do not imply "only" mode
+	t.Run("cli still merges lower precedence", func(t *testing.T) {
+		cliSkills := []string{cliSkillDir}
+		configSkills := []string{configSkillDir}
+		specSkills := []string{specSkillDir}
+
+		resolved, err := resolver.Resolve(cliSkills, configSkills, specSkills)
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+
+		// CLI skills are highest precedence, but config/spec/discovered are still active.
+		if len(resolved) != 5 {
+			t.Fatalf("expected 5 merged skills, got %d", len(resolved))
+		}
+
+		wantSources := []string{"cli", "config", "spec", "discovered", "discovered"}
+		for i, got := range resolved {
+			if got.Source != wantSources[i] {
+				t.Fatalf("skill[%d] source mismatch: want %q, got %q", i, wantSources[i], got.Source)
+			}
+		}
+	})
+
 	// Test 2: Deduplication - discovered skills don't duplicate explicit skills
 	t.Run("deduplication", func(t *testing.T) {
 		// Add discovered1 (which is also in .claude/skills/) to CLI
