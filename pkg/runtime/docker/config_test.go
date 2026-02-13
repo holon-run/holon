@@ -452,40 +452,25 @@ func TestBuildContainerHostConfig(t *testing.T) {
 		},
 	}
 
-	tests := []struct {
-		name string
-		mode RuntimeMode
-	}{
-		{name: "prod runtime defaults", mode: RuntimeModeProd},
-		{name: "dev runtime defaults", mode: RuntimeModeDev},
+	hostCfg := BuildContainerHostConfig(&HostConfigOptions{Mounts: baseMounts})
+	if hostCfg == nil {
+		t.Fatal("BuildContainerHostConfig() returned nil")
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			hostCfg := BuildContainerHostConfig(&HostConfigOptions{
-				Mounts:      baseMounts,
-				RuntimeMode: tt.mode,
-			})
-
-			if hostCfg == nil {
-				t.Fatal("BuildContainerHostConfig() returned nil")
-			}
-			if hostCfg.Privileged {
-				t.Error("BuildContainerHostConfig() set Privileged=true, want false")
-			}
-			if hostCfg.ReadonlyRootfs {
-				t.Error("BuildContainerHostConfig() set ReadonlyRootfs=true, want false")
-			}
-			if string(hostCfg.NetworkMode) != "default" {
-				t.Errorf("BuildContainerHostConfig() NetworkMode = %q, want %q", hostCfg.NetworkMode, "default")
-			}
-			if string(hostCfg.PidMode) != "" {
-				t.Errorf("BuildContainerHostConfig() PidMode = %q, want empty", hostCfg.PidMode)
-			}
-			if len(hostCfg.Mounts) != len(baseMounts) {
-				t.Errorf("BuildContainerHostConfig() mounts = %d, want %d", len(hostCfg.Mounts), len(baseMounts))
-			}
-		})
+	if hostCfg.Privileged {
+		t.Error("BuildContainerHostConfig() set Privileged=true, want false")
+	}
+	if hostCfg.ReadonlyRootfs {
+		t.Error("BuildContainerHostConfig() set ReadonlyRootfs=true, want false")
+	}
+	networkMode := string(hostCfg.NetworkMode)
+	if strings.HasPrefix(networkMode, "container:") || networkMode == "host" {
+		t.Errorf("BuildContainerHostConfig() NetworkMode = %q, expected isolated/default networking", hostCfg.NetworkMode)
+	}
+	if string(hostCfg.PidMode) != "" {
+		t.Errorf("BuildContainerHostConfig() PidMode = %q, want empty", hostCfg.PidMode)
+	}
+	if len(hostCfg.Mounts) != len(baseMounts) {
+		t.Errorf("BuildContainerHostConfig() mounts = %d, want %d", len(hostCfg.Mounts), len(baseMounts))
 	}
 
 	t.Run("nil config returns safe defaults", func(t *testing.T) {

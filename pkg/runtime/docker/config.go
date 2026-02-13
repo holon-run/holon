@@ -41,8 +41,7 @@ type EnvConfig struct {
 
 // HostConfigOptions represents docker host configuration inputs.
 type HostConfigOptions struct {
-	Mounts      []mount.Mount
-	RuntimeMode RuntimeMode
+	Mounts []mount.Mount
 }
 
 // BuildContainerMounts assembles the Docker mounts configuration.

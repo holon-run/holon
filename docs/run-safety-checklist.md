@@ -5,7 +5,8 @@ Use this checklist before cutting a release candidate that claims `holon run` st
 ## 1. Sandbox boundary checks
 
 - Input mount is read-only (`/input`).
-- Workspace and output mounts are read-write (`/workspace`, `/output`).
+- Workspace and output boundaries are writable for agent execution.
+  - Current implementation uses writable mounts for `/workspace` and the runtime-managed `HOLON_OUTPUT_DIR` target.
 - No privileged container settings are enabled.
 - Runtime host config keeps default isolated network mode and no PID namespace sharing.
 
