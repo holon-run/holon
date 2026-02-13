@@ -14,28 +14,26 @@ stdout 'Auto-install: DISABLED'
 env HOLON_NO_AUTO_INSTALL=
 
 # Test that latest channel fetches from GitHub when no agent specified
-# This should download the latest agent and complete (manifest.json validation is non-blocking in skill-first mode)
-exec holon run --goal "test goal" --workspace /tmp --skip-checks
+# This should download the latest agent and fail at Docker composition
+# (NOT in skill-first mode, so manifest.json is still required)
+! exec holon run --goal "test goal" --workspace /tmp --skip-checks
 stdout 'resolving agent via channel'
 stdout 'channel.*latest'
 stdout 'successfully resolved agent via channel'
-stdout 'artifact validation warning'
 
 # Test builtin channel uses embedded agent without network
-exec holon run --agent-channel builtin --goal "test goal" --workspace /tmp --skip-checks
+# (NOT in skill-first mode, so manifest.json is still required)
+! exec holon run --agent-channel builtin --goal "test goal" --workspace /tmp --skip-checks
 stdout 'resolving agent via channel'
 stdout 'channel.*builtin'
-stdout 'artifact validation warning'
 
 # Test with explicit default agent (deprecated alias, but resolves to builtin agent)
-exec holon run --agent default --goal "test goal" --workspace /tmp --skip-checks
-# The "default" alias resolves to builtin agent, which downloads successfully
-# and completes with a warning about missing manifest.json
+# (NOT in skill-first mode, so manifest.json is still required)
+! exec holon run --agent default --goal "test goal" --workspace /tmp --skip-checks
 
 # Test that channel system works independently of HOLON_NO_AUTO_INSTALL
 # The "latest" channel should still fetch from GitHub
 env HOLON_NO_AUTO_INSTALL=1
-exec holon run --agent-channel latest --goal "test goal" --workspace /tmp --skip-checks
+! exec holon run --agent-channel latest --goal "test goal" --workspace /tmp --skip-checks
 stdout 'channel.*latest'
 stdout 'successfully resolved agent via channel'
-stdout 'artifact validation warning'
