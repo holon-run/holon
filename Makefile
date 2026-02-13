@@ -1,4 +1,4 @@
-.PHONY: build build-host test test-all clean run-example test-agent help release-build validate-schema test-contract build-agent-bundle build-skills-package validate-skills-package
+.PHONY: build build-host test test-all clean run-example test-agent help release-build validate-schema test-contract build-agent-bundle build-skills-package validate-skills-package test-run-safety
 
 # Project variables
 BINARY_NAME=holon
@@ -113,6 +113,15 @@ validate-schema:
 test-contract:
 	@echo "Running manifest contract tests..."
 	@go test ./pkg/api/v1/... -v -run TestHolonManifest
+
+## test-run-safety: Run runtime sandbox safety regression tests
+test-run-safety:
+	@echo "Running runtime sandbox safety tests..."
+	@echo "Generating builtin skills..."
+	@go generate ./pkg/builtin
+	@echo "Checking embedded skills drift..."
+	@diff -qr --exclude=".git-commit" skills pkg/builtin/skills > /dev/null 2>&1 || (echo "ERROR: Embedded skills (pkg/builtin/skills) differ from source (skills/)"; echo "This means pkg/builtin/skills is not up to date."; echo "Please run 'go generate ./pkg/builtin' to regenerate."; exit 1)
+	@go test ./pkg/runtime/docker -v -run 'Test(BuildContainerHostConfig|InputMountReadOnly|WorkspaceAndOutputMountsReadWrite|ValidateMountTargets|ValidateRequiredArtifacts|RedactLogs_)'
 
 ## install-gotestfmt: Install gotestfmt tool for structured test output
 install-gotestfmt:

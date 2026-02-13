@@ -1,0 +1,40 @@
+[!docker] skip 'docker not available'
+
+mkdir work
+mkdir out
+mkdir bundle-src
+mkdir bundle-src/bin
+
+exec chmod +x bundle-src/bin/agent
+exec tar -czf agent-bundle.tar.gz -C bundle-src .
+exec holon run --goal 'verify output env contract' --name output-env --workspace work --output out --image debian:bookworm-slim --agent agent-bundle.tar.gz --log-level minimal
+
+exists out/manifest.json
+exists out/summary.md
+exists out/diff.patch
+exists out/output-dir.txt
+
+-- bundle-src/manifest.json --
+{
+  "bundleVersion": "1",
+  "name": "agent-stub",
+  "version": "0.0.0",
+  "entry": "bin/agent",
+  "platform": "linux",
+  "arch": "amd64",
+  "libc": "glibc",
+  "runtime": {
+    "type": "node",
+    "version": "20"
+  }
+}
+
+-- bundle-src/bin/agent --
+#!/bin/sh
+set -eu
+: "${HOLON_OUTPUT_DIR:?HOLON_OUTPUT_DIR must be set}"
+mkdir -p "$HOLON_OUTPUT_DIR"
+printf '%s\n' "$HOLON_OUTPUT_DIR" > "$HOLON_OUTPUT_DIR/output-dir.txt"
+echo '{"version":"v1"}' > "$HOLON_OUTPUT_DIR/manifest.json"
+echo '# summary' > "$HOLON_OUTPUT_DIR/summary.md"
+echo 'diff' > "$HOLON_OUTPUT_DIR/diff.patch"

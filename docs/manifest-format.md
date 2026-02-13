@@ -4,7 +4,9 @@
 
 The `manifest.json` file is the **minimal required execution record** for all Holon runs. It provides a stable, machine-readable summary of execution status, outcome, and generated artifacts across all skills and execution modes.
 
-**Location:** `/holon/output/manifest.json`
+**Location:** `${HOLON_OUTPUT_DIR}/manifest.json`
+
+By contract, runtimes MUST provide `HOLON_OUTPUT_DIR`. The concrete container path behind this variable is runtime-managed and not part of the stable public contract.
 
 **Required by:** RFC-0002 (v0.2+) - All Holon executions MUST produce this file.
 

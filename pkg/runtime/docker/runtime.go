@@ -254,9 +254,9 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		Env:        env,
 		WorkingDir: ContainerWorkspaceDir,
 		Tty:        false,
-	}, &container.HostConfig{
+	}, BuildContainerHostConfig(&HostConfigOptions{
 		Mounts: mounts,
-	}, nil, nil, "")
+	}), nil, nil, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to create container: %w", err)
 	}
@@ -479,9 +479,9 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 		Env:        env,
 		WorkingDir: ContainerWorkspaceDir,
 		Tty:        false,
-	}, &container.HostConfig{
+	}, BuildContainerHostConfig(&HostConfigOptions{
 		Mounts: mounts,
-	}, nil, nil, "")
+	}), nil, nil, "")
 	if err != nil {
 		cleanupOnError()
 		return nil, fmt.Errorf("failed to create container: %w", err)
@@ -704,6 +704,13 @@ ENTRYPOINT ["/holon/agent/bin/agent"]
 	tag := composeImageTag(baseImage, bundleDigest)
 	cmd := exec.Command("docker", "build", "-t", tag, tmpDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		// Concurrent runs may race on deterministic tags. If another process
+		// already produced the target image, reuse it instead of failing.
+		if isImageAlreadyExistsBuildError(string(out)) {
+			if _, inspectErr := r.cli.ImageInspect(ctx, tag); inspectErr == nil {
+				return tag, nil
+			}
+		}
 		return "", fmt.Errorf("composition build failed: %v, output: %s", err, string(out))
 	}
 
@@ -714,6 +721,12 @@ func composeImageTag(baseImage, bundleDigest string) string {
 	hashInput := baseImage + ":" + bundleDigest
 	hash := sha256.Sum256([]byte(hashInput))
 	return fmt.Sprintf("holon-composed-%x", hash[:12])
+}
+
+func isImageAlreadyExistsBuildError(output string) bool {
+	text := strings.ToLower(output)
+	return strings.Contains(text, "already exists") &&
+		strings.Contains(text, "holon-composed-")
 }
 
 type bundleManifest struct {

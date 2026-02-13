@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/holon-run/holon/pkg/api/v1"
 )
@@ -36,6 +37,11 @@ type EnvConfig struct {
 	UserEnv map[string]string
 	HostUID int
 	HostGID int
+}
+
+// HostConfigOptions represents docker host configuration inputs.
+type HostConfigOptions struct {
+	Mounts []mount.Mount
 }
 
 // BuildContainerMounts assembles the Docker mounts configuration.
@@ -138,6 +144,22 @@ func BuildContainerEnv(cfg *EnvConfig) []string {
 	env = append(env, "GIT_CONFIG_NOSYSTEM=1")
 
 	return env
+}
+
+// BuildContainerHostConfig assembles host-level sandbox settings for containers.
+// Runtime mode is included to make mode-specific policies explicit in one place.
+func BuildContainerHostConfig(cfg *HostConfigOptions) *container.HostConfig {
+	if cfg == nil {
+		cfg = &HostConfigOptions{}
+	}
+
+	return &container.HostConfig{
+		Mounts: cfg.Mounts,
+		// Keep explicit non-privileged defaults for regression visibility.
+		Privileged:     false,
+		ReadonlyRootfs: false,
+		NetworkMode:    container.NetworkMode("default"),
+	}
 }
 
 // ValidateRequiredArtifacts checks that all required artifacts are present

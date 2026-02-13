@@ -288,6 +288,39 @@ func TestComposedImageTagGeneration(t *testing.T) {
 	}
 }
 
+func TestIsImageAlreadyExistsBuildError(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "detects deterministic composed image tag race",
+			output: `ERROR: failed to build: failed to solve: image "docker.io/library/holon-composed-abc123:latest": already exists`,
+			want:   true,
+		},
+		{
+			name:   "ignores unrelated already exists errors",
+			output: `failed to solve: file already exists`,
+			want:   false,
+		},
+		{
+			name:   "ignores non-race errors",
+			output: `failed to solve: rpc error: code = Unknown desc = unexpected EOF`,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isImageAlreadyExistsBuildError(tt.output)
+			if got != tt.want {
+				t.Fatalf("isImageAlreadyExistsBuildError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMkdirTempOutsideWorkspace_DoesNotNest(t *testing.T) {
 	ws := t.TempDir()
 	tmpInside := filepath.Join(ws, "tmp")
