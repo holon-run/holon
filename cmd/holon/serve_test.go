@@ -268,6 +268,19 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if got := mockRunner.lastConfig.Env["HOLON_CONTROLLER_RPC_SOCKET"]; got != "/root/run/agent.sock" {
 		t.Fatalf("HOLON_CONTROLLER_RPC_SOCKET = %q, want /root/run/agent.sock", got)
 	}
+	if len(rpcServer.events) < 1 {
+		t.Fatalf("expected at least one forwarded event")
+	}
+	firstEvent := rpcServer.events[0]
+	if firstEvent.Scope.WorkspaceRef == "" {
+		t.Fatalf("expected workspace_ref to be populated")
+	}
+	if firstEvent.Scope.WorkspacePath == "" {
+		t.Fatalf("expected workspace_path to be populated")
+	}
+	if !strings.HasPrefix(firstEvent.Scope.WorkspacePath, "/workspace/repos/") {
+		t.Fatalf("workspace_path = %q, want /workspace/repos/*", firstEvent.Scope.WorkspacePath)
+	}
 	// Force controller session exit and trigger reconnect on next event.
 	mockRunner.waitCh <- errors.New("session exited")
 	select {
@@ -333,6 +346,57 @@ func TestBuildTickEvent(t *testing.T) {
 	}
 }
 
+func TestResolveWorkspaceForEvent_MultiRepoRouting(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	h := &cliControllerHandler{
+		repoHint:            "holon-run/holon",
+		controllerWorkspace: root,
+	}
+	eventA := serve.EventEnvelope{
+		ID:   "evt-a",
+		Type: "issues",
+		Scope: serve.EventScope{
+			Repo: "holon-run/holon",
+		},
+	}
+	eventB := serve.EventEnvelope{
+		ID:   "evt-b",
+		Type: "issues",
+		Scope: serve.EventScope{
+			Repo: "octocat/hello-world",
+		},
+	}
+
+	resA, err := h.resolveWorkspaceForEvent(eventA)
+	if err != nil {
+		t.Fatalf("resolve workspace eventA: %v", err)
+	}
+	resB, err := h.resolveWorkspaceForEvent(eventB)
+	if err != nil {
+		t.Fatalf("resolve workspace eventB: %v", err)
+	}
+	if resA.HostPath == resB.HostPath {
+		t.Fatalf("expected different workspace paths, got %q", resA.HostPath)
+	}
+	if !strings.Contains(resA.HostPath, filepath.Join("repos", "holon-run", "holon")) {
+		t.Fatalf("unexpected eventA host path: %q", resA.HostPath)
+	}
+	if !strings.Contains(resB.HostPath, filepath.Join("repos", "octocat", "hello-world")) {
+		t.Fatalf("unexpected eventB host path: %q", resB.HostPath)
+	}
+}
+
+func TestPullRequestHeadRefFromPayload(t *testing.T) {
+	t.Parallel()
+
+	payload := json.RawMessage(`{"pull_request":{"head":{"sha":"abc123","ref":"feature/abc"}}}`)
+	if got := pullRequestHeadRefFromPayload(payload); got != "abc123" {
+		t.Fatalf("pullRequestHeadRefFromPayload() = %q, want abc123", got)
+	}
+}
+
 func TestLoadControllerRole(t *testing.T) {
 	t.Parallel()
 
@@ -393,7 +457,7 @@ func TestResolveControllerWorkspace(t *testing.T) {
 		t.Fatalf("resolveControllerWorkspace() error: %v", err)
 	}
 
-	want := filepath.Join(agentHome, "workspace")
+	want := filepath.Join(agentHome, "workspaces")
 	if got != want {
 		t.Fatalf("resolveControllerWorkspace() = %q, want %q", got, want)
 	}
