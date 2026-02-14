@@ -17,6 +17,12 @@ type smokeEventHandler struct {
 	acks chan serve.TurnAckRecord
 }
 
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func newSmokeEventHandler() *smokeEventHandler {
 	return &smokeEventHandler{acks: make(chan serve.TurnAckRecord, 16)}
 }
@@ -83,6 +89,19 @@ func TestTUISmoke_RPCTurnInteractionFlow(t *testing.T) {
 		t.Fatalf("rpc test connection failed: %v", err)
 	}
 
+	streamConnected := make(chan struct{}, 1)
+	baseTransport := http.DefaultTransport
+	client.streamCli.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := baseTransport.RoundTrip(req)
+		if err == nil && req.URL.Path == "/rpc/stream" {
+			select {
+			case streamConnected <- struct{}{}:
+			default:
+			}
+		}
+		return resp, err
+	})
+
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	defer streamCancel()
 	streamEvents := make(chan StreamNotification, 32)
@@ -97,7 +116,11 @@ func TestTUISmoke_RPCTurnInteractionFlow(t *testing.T) {
 		close(streamErr)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-streamConnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rpc stream connection")
+	}
 
 	app := NewApp(client)
 	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -165,6 +188,7 @@ func TestTUISmoke_RPCTurnInteractionFlow(t *testing.T) {
 }
 
 func TestTUISmoke_InputDeletion(t *testing.T) {
+	// This test only verifies local input editing behavior and does not make RPC calls.
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = model.(*App)
@@ -202,17 +226,34 @@ func reserveLocalPort() (int, error) {
 
 func waitForHealthy(url string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 1 * time.Second}
+	var lastErr error
 	for {
-		resp, err := http.Get(url)
+		reqCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+		if err != nil {
+			cancel()
+			lastErr = err
+			if time.Now().After(deadline) {
+				return lastErr
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		resp, err := client.Do(req)
+		cancel()
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}
+			lastErr = fmt.Errorf("health endpoint returned status %d", resp.StatusCode)
+		} else {
+			lastErr = err
 		}
 		if time.Now().After(deadline) {
-			if err != nil {
-				return err
+			if lastErr != nil {
+				return lastErr
 			}
 			return fmt.Errorf("health endpoint did not return 200 within %s", timeout)
 		}
