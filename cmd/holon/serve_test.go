@@ -97,6 +97,22 @@ func TestBuildServeStartupDiagnostics_StdinModeWarnings(t *testing.T) {
 	}
 }
 
+func TestBuildServeStartupDiagnostics_SubscriptionAutoTransportUsesEffectiveMode(t *testing.T) {
+	t.Parallel()
+
+	diag := buildServeStartupDiagnostics(serveStartupDiagnosticsInput{
+		InputMode: "subscription",
+		SubscriptionStatus: map[string]interface{}{
+			"mode":           "gh_forward",
+			"transport_mode": "auto",
+		},
+		RuntimeMode: "prod",
+	})
+	if diag.TransportMode != "gh_forward" {
+		t.Fatalf("transport_mode = %q, want gh_forward", diag.TransportMode)
+	}
+}
+
 func TestWriteServeStartupDiagnostics(t *testing.T) {
 	t.Parallel()
 

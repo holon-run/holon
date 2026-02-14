@@ -464,12 +464,14 @@ func (sm *SubscriptionManager) statusLocked() map[string]interface{} {
 	status := map[string]interface{}{
 		"running":        sm.started,
 		"mode":           sm.mode,
-		"reason":         reason,
 		"rpc_active":     sm.webhookServer != nil,
 		"ingress_active": sm.forwarder != nil || sm.websocketSrc != nil,
 		"agent_home":     sm.agentHome,
 		"state_dir":      sm.stateDir,
 		"updated_at":     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if reason != "" {
+		status["reason"] = reason
 	}
 
 	if sm.webhookServer != nil {
@@ -501,8 +503,11 @@ func (sm *SubscriptionManager) statusLocked() map[string]interface{} {
 }
 
 func (sm *SubscriptionManager) statusReasonLocked() string {
+	if !sm.started {
+		return ""
+	}
 	if sm.mode != "rpc_only" {
-		return "transport_active"
+		return ""
 	}
 	if len(sm.config.Subscriptions) == 0 {
 		return "no_subscriptions"

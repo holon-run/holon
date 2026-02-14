@@ -1244,7 +1244,7 @@ type serveStartupDiagnostics struct {
 	WebhookPort               int      `json:"webhook_port,omitempty"`
 	RuntimeMode               string   `json:"runtime_mode"`
 	RuntimeDevAgentSource     string   `json:"runtime_dev_agent_source,omitempty"`
-	RuntimeDevAgentSourceFrom string   `json:"runtime_dev_agent_source_source,omitempty"`
+	RuntimeDevAgentSourceFrom string   `json:"runtime_dev_agent_source_origin,omitempty"`
 	Preview                   string   `json:"preview"`
 	Warnings                  []string `json:"warnings,omitempty"`
 }
@@ -1297,6 +1297,9 @@ func buildServeStartupDiagnostics(input serveStartupDiagnosticsInput) serveStart
 		mode := strings.TrimSpace(asString(input.SubscriptionStatus["mode"]))
 		reason := strings.TrimSpace(asString(input.SubscriptionStatus["reason"]))
 		transportMode := strings.TrimSpace(asString(input.SubscriptionStatus["transport_mode"]))
+		if transportMode == "auto" {
+			transportMode = ""
+		}
 		repos := asStringSlice(input.SubscriptionStatus["subscribed_repos"])
 		diag.SubscribedRepos = repos
 		diag.SubscriptionReason = reason
@@ -1352,8 +1355,23 @@ func writeServeStartupDiagnostics(stateDir string, diag serveStartupDiagnostics)
 	}
 	data = append(data, '\n')
 	path := filepath.Join(stateDir, "serve-startup-diagnostics.json")
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write serve startup diagnostics: %w", err)
+	tmp, err := os.CreateTemp(stateDir, ".serve-startup-diagnostics-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp diagnostics file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to write serve startup diagnostics to temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to close temp diagnostics file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to atomically replace serve startup diagnostics file: %w", err)
 	}
 	holonlog.Info("serve startup diagnostics written", "path", path)
 	return nil
@@ -1380,7 +1398,7 @@ func logServeStartupDiagnostics(diag serveStartupDiagnostics) {
 		"webhook_port", diag.WebhookPort,
 		"runtime_mode", diag.RuntimeMode,
 		"runtime_dev_agent_source", diag.RuntimeDevAgentSource,
-		"runtime_dev_agent_source_source", diag.RuntimeDevAgentSourceFrom,
+		"runtime_dev_agent_source_origin", diag.RuntimeDevAgentSourceFrom,
 		"preview", diag.Preview,
 	)
 	for _, warning := range diag.Warnings {

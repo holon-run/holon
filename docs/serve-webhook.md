@@ -93,6 +93,8 @@ Key fields:
 - `config_source`: `${agent_home}/agent.yaml`
 - `input_mode`: `subscription`, `webhook_legacy`, or `stdin_file`
 - `transport_mode`: `gh_forward`, `websocket`, `webhook`, `rpc_only`, or `none`
+- `runtime_dev_agent_source`: effective local agent source path when `runtime_mode=dev`
+- `runtime_dev_agent_source_origin`: where that dev source came from (`flag`, `env:*`, or `default:*`)
 - `subscription_reason`: why the current mode was selected (for example `empty_repos`)
 - `warnings`: explicit preview/passive guardrails with expected next actions
 

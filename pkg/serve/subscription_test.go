@@ -121,8 +121,8 @@ func TestSubscriptionManager_WriteStatusFile(t *testing.T) {
 	if status["mode"] != "rpc_only" {
 		t.Fatalf("mode = %v, want rpc_only before start", status["mode"])
 	}
-	if status["reason"] != "rpc_only" {
-		t.Fatalf("reason = %v, want rpc_only", status["reason"])
+	if _, ok := status["reason"]; ok {
+		t.Fatalf("reason should be omitted before start, got %v", status["reason"])
 	}
 }
 
