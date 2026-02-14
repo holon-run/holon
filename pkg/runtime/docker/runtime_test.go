@@ -1169,10 +1169,14 @@ func TestResolveSkills_RemoteBuiltinSourceUsesSourceURL(t *testing.T) {
 
 func TestResolveSkills_RemoteBuiltinSourceFailureDoesNotFallback(t *testing.T) {
 	workspaceDir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
 
 	cfg := &ContainerConfig{
 		Workspace:           workspaceDir,
-		BuiltinSkillsSource: "https://127.0.0.1:1/nonexistent.zip",
+		BuiltinSkillsSource: server.URL + "/skills.zip",
 		BuiltinSkillsRef:    "v9.9.9",
 	}
 

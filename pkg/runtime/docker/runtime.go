@@ -1107,7 +1107,8 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 
 		// Resolve the configured remote source directly.
 		// BuiltinSkillsRef is metadata for auditing/version pin visibility.
-		remoteSkills, err := resolver.Resolve([]string{cfg.BuiltinSkillsSource}, []string{}, []string{})
+		// Resolve as a config-origin skill so resolver errors indicate config source.
+		remoteSkills, err := resolver.Resolve([]string{}, []string{cfg.BuiltinSkillsSource}, []string{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to load remote builtin skills from %q: %w", cfg.BuiltinSkillsSource, err)
 		}
