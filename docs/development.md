@@ -17,6 +17,22 @@ See:
 ## Build and test
 Use the commands in `AGENTS.md` (kept up to date).
 
+### Serve TUI/RPC smoke tests
+For smoke-level validation of the serve control-plane interaction loop (RPC connect, send turn, stream lifecycle, and input deletion/editing):
+
+```bash
+make test-serve-tui-smoke
+```
+
+Equivalent direct command:
+
+```bash
+go test ./pkg/tui -run '^TestTUISmoke_' -v
+```
+
+CI note:
+- These tests are regular Go tests under `pkg/tui`, so they run in CI through the existing `go test ./...` jobs.
+
 ## Logging
 Holon uses structured, leveled logs.
 
