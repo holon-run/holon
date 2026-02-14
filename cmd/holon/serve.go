@@ -545,6 +545,12 @@ type controllerEvent struct {
 	threadID string
 }
 
+type resolvedWorkspace struct {
+	Ref           string
+	HostPath      string
+	ContainerPath string
+}
+
 func newCLIControllerHandler(
 	repoHint,
 	stateDir,
@@ -702,6 +708,13 @@ func (h *cliControllerHandler) runEventPump() {
 }
 
 func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
+	resolvedWorkspace, err := h.resolveWorkspaceForEvent(item.env)
+	if err != nil {
+		return err
+	}
+	enriched := item.env
+	enriched.Scope.WorkspaceRef = resolvedWorkspace.Ref
+	enriched.Scope.WorkspacePath = resolvedWorkspace.ContainerPath
 	ref, err := h.buildRef(item.env)
 	if err != nil {
 		return err
@@ -712,7 +725,15 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Minute)
 	defer cancel()
 
-	result, err := h.postEventWithReconnect(ctx, ref, item.env)
+	holonlog.Info(
+		"serve workspace resolved",
+		"event_id", item.env.ID,
+		"repo", firstNonEmpty(item.env.Scope.Repo, h.repoHint),
+		"workspace_ref", resolvedWorkspace.Ref,
+		"workspace_host_path", resolvedWorkspace.HostPath,
+		"workspace_container_path", resolvedWorkspace.ContainerPath,
+	)
+	result, err := h.postEventWithReconnect(ctx, ref, enriched)
 	if err != nil {
 		return err
 	}
@@ -722,15 +743,76 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 			status = "completed"
 		}
 		h.publishTurnAck(serve.TurnAckRecord{
-			EventID:  firstNonEmpty(strings.TrimSpace(result.EventID), item.env.ID),
-			TurnID:   item.turnID,
-			ThreadID: firstNonEmpty(strings.TrimSpace(result.ThreadID), item.threadID),
-			Status:   status,
-			Message:  strings.TrimSpace(result.Message),
-			At:       time.Now().UTC().Format(time.RFC3339Nano),
+			EventID:       firstNonEmpty(strings.TrimSpace(result.EventID), item.env.ID),
+			TurnID:        item.turnID,
+			ThreadID:      firstNonEmpty(strings.TrimSpace(result.ThreadID), item.threadID),
+			Status:        status,
+			Message:       strings.TrimSpace(result.Message),
+			At:            time.Now().UTC().Format(time.RFC3339Nano),
+			WorkspaceRef:  resolvedWorkspace.Ref,
+			WorkspacePath: resolvedWorkspace.ContainerPath,
 		})
 	}
 	return nil
+}
+
+func (h *cliControllerHandler) resolveWorkspaceForEvent(env serve.EventEnvelope) (resolvedWorkspace, error) {
+	repo := strings.TrimSpace(env.Scope.Repo)
+	if repo == "" {
+		repo = strings.TrimSpace(h.repoHint)
+	}
+	if repo == "" {
+		repo = "local/rpc"
+	}
+	ref := h.workspaceRefFromEvent(env)
+	hostPath, workspaceRef, err := workspacePathForRepoRef(h.controllerWorkspace, repo, ref)
+	if err != nil {
+		return resolvedWorkspace{}, err
+	}
+	if err := os.MkdirAll(hostPath, 0755); err != nil {
+		return resolvedWorkspace{}, fmt.Errorf("failed to create workspace for event %s: %w", env.ID, err)
+	}
+	owner, name, _ := strings.Cut(repo, "/")
+	containerPath := filepath.Join(docker.ContainerWorkspaceDir, "repos", sanitizeWorkspaceSegment(owner), sanitizeWorkspaceSegment(name), sanitizeWorkspaceSegment(ref))
+	return resolvedWorkspace{
+		Ref:           workspaceRef,
+		HostPath:      hostPath,
+		ContainerPath: containerPath,
+	}, nil
+}
+
+func (h *cliControllerHandler) workspaceRefFromEvent(env serve.EventEnvelope) string {
+	if ref := pullRequestHeadRefFromPayload(env.Payload); ref != "" {
+		return ref
+	}
+	if env.Type == "timer.tick" || env.Type == "rpc.turn.input" {
+		return defaultWorkspaceTrack
+	}
+	return defaultWorkspaceTrack
+}
+
+func pullRequestHeadRefFromPayload(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var envelope struct {
+		PullRequest struct {
+			Head struct {
+				SHA string `json:"sha"`
+				Ref string `json:"ref"`
+			} `json:"head"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return ""
+	}
+	if strings.TrimSpace(envelope.PullRequest.Head.SHA) != "" {
+		return strings.TrimSpace(envelope.PullRequest.Head.SHA)
+	}
+	if strings.TrimSpace(envelope.PullRequest.Head.Ref) != "" {
+		return strings.TrimSpace(envelope.PullRequest.Head.Ref)
+	}
+	return ""
 }
 
 func (h *cliControllerHandler) publishTurnAck(record serve.TurnAckRecord) {
@@ -1071,11 +1153,7 @@ func resolveServeRuntimeEnv(ctx context.Context) map[string]string {
 }
 
 func resolveControllerWorkspace(agentHome string) (string, error) {
-	workspace := filepath.Join(agentHome, "workspace")
-	if err := os.MkdirAll(workspace, 0755); err != nil {
-		return "", fmt.Errorf("failed to create controller workspace at %s: %w", workspace, err)
-	}
-	return workspace, nil
+	return resolveAgentWorkspaceRoot(agentHome)
 }
 
 type controllerRPCEventRequest struct {

@@ -139,7 +139,7 @@ func TestPrepareWorkspaceForSolve_WithWorkspace_UsesDirectWorkspace(t *testing.T
 	solveWorkspaceHistory = ""
 	solveFetchRemote = false
 
-	prep, err := prepareWorkspaceForSolve(context.Background(), ref, "")
+	prep, err := prepareWorkspaceForSolve(context.Background(), ref, "", t.TempDir())
 	if err != nil {
 		t.Fatalf("prepareWorkspaceForSolve() error = %v", err)
 	}

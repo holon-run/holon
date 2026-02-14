@@ -220,26 +220,23 @@ var runCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 
-		// Resolve workspace path early for auto-detection
-		absWorkspace, err := filepath.Abs(workspacePath)
-		if err != nil {
-			return fmt.Errorf("failed to resolve workspace path: %w", err)
-		}
-
 		// Load project config
 		projectCfg, err := config.LoadFromCurrentDir()
 		if err != nil {
 			return fmt.Errorf("failed to load project config: %w", err)
 		}
 
-		// Apply config with precedence: CLI flags > project config > defaults
-		resolved := resolveWithProjectConfig(cmd, projectCfg, absWorkspace)
-
 		agentResolution, err := resolveAgentHome("run", agentID, agentHome, true)
 		if err != nil {
 			return err
 		}
 		defer cleanupEphemeralAgentHome(agentResolution, cleanupMode)
+		absWorkspace, err := resolveRunWorkspacePath(agentResolution.AgentHome, workspacePath)
+		if err != nil {
+			return err
+		}
+		// Apply config with precedence: CLI flags > project config > defaults
+		resolved := resolveWithProjectConfig(cmd, projectCfg, absWorkspace)
 
 		// Validate assistant output value
 		if resolved.assistantOutput != "" && resolved.assistantOutput != "none" && resolved.assistantOutput != "stream" {
@@ -333,7 +330,7 @@ var runCmd = &cobra.Command{
 			AgentBundle:           resolved.agent,
 			AgentChannel:          resolved.agentChannel,
 			AgentChannelSource:    resolved.agentChannelSource,
-			WorkspacePath:         workspacePath,
+			WorkspacePath:         absWorkspace,
 			ContextPath:           contextPath,
 			InputPath:             inputPath,
 			OutDir:                resolvedOutDir,
@@ -371,7 +368,7 @@ func init() {
 	runCmd.Flags().BoolVar(&imageAutoDetect, "image-auto-detect", true, "Enable automatic base image detection (default: true)")
 	runCmd.Flags().StringVar(&agentPath, "agent", "", "Agent bundle reference (path to .tar.gz, URL, or alias)")
 	runCmd.Flags().StringVar(&agentChannel, "agent-channel", "", "Agent channel: latest (default), builtin, pinned:<version>")
-	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", ".", "Path to workspace (modified directly by default)")
+	runCmd.Flags().StringVarP(&workspacePath, "workspace", "w", "", "Path to workspace (default: <agent-home>/workspaces/run/default)")
 	runCmd.Flags().StringVarP(&contextPath, "context", "c", "", "Path to context directory")
 	runCmd.Flags().StringVar(&inputPath, "input", "", "Path to input directory (default: creates temp dir, auto-cleaned)")
 	runCmd.Flags().StringVarP(&outDir, "output", "O", "", "Path to output directory (default: creates temp dir to avoid polluting workspace)")
