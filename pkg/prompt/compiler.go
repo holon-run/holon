@@ -218,7 +218,7 @@ func (c *Compiler) CompileUserPrompt(goal string, contextFiles []string) (string
 	// 2. Context Files (Filenames only to keep prompt size manageable)
 	if len(contextFiles) > 0 {
 		sb.WriteString("\n\n### ADDITIONAL CONTEXT FILES\n")
-		sb.WriteString("The following files provide additional context and are available at /holon/input/context/:\n")
+		sb.WriteString("The following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/ (typically /root/input/context/):\n")
 		for _, name := range contextFiles {
 			sb.WriteString(fmt.Sprintf("- %s\n", name))
 		}

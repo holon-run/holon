@@ -41,7 +41,7 @@ metadata:
 
 # INPUT: The context provided to the Agent
 context:
-  workspace: "/holon/workspace"  # Optional. Default is /holon/workspace.
+  workspace: "${HOLON_WORKSPACE_DIR}"  # Optional. Typical container path: /root/workspace.
   files:                   # Priority files to focus on
     - "src/main.go"
     - "README.md"
@@ -71,27 +71,27 @@ constraints:
 
 ## 4. Container filesystem layout (Normative)
 
-Holon uses a standardized container layout rooted at `/holon`:
+Holon exposes standardized runtime directories via environment variables. Typical container defaults are under `/root`.
 
 ### 4.1 Workspace
-- `/holon/workspace`: workspace snapshot root (runner sets container `WorkingDir` to this path)
+- `HOLON_WORKSPACE_DIR` (typically `/root/workspace`): workspace snapshot root (runner sets container `WorkingDir` to this path)
 
 ### 4.2 Inputs
 Runners MUST mount:
-- `/holon/input/spec.yaml` (read-only): the Holon spec.
-- `/holon/input/context/` (read-only, optional): injected context files.
+- `${HOLON_INPUT_DIR}/spec.yaml` (read-only): the Holon spec.
+- `${HOLON_INPUT_DIR}/context/` (read-only, optional): injected context files.
 
 Runners MAY mount:
-- `/holon/input/prompts/system.md` (read-only): compiled system prompt.
-- `/holon/input/prompts/user.md` (read-only): compiled user prompt.
+- `${HOLON_INPUT_DIR}/prompts/system.md` (read-only): compiled system prompt.
+- `${HOLON_INPUT_DIR}/prompts/user.md` (read-only): compiled user prompt.
 
 Secrets MUST be injected via environment variables (not in spec).
 
 ### 4.3 Outputs
 Agents MUST write all outputs under:
-- `/holon/output/` (read-write): artifacts such as `manifest.json`, `diff.patch`, `summary.md`, and optional `evidence/`.
+- `HOLON_OUTPUT_DIR` (typically `/root/output`, read-write): artifacts such as `manifest.json`, `diff.patch`, `summary.md`, and optional `evidence/`.
 
-The Runner SHOULD treat `/holon/output/` as the integration boundary and SHOULD ensure it starts empty for each run to avoid cross-run contamination.
+The Runner SHOULD treat `HOLON_OUTPUT_DIR` as the integration boundary and SHOULD ensure it starts empty for each run to avoid cross-run contamination.
 
 ## 5. Execution lifecycle (Normative)
 

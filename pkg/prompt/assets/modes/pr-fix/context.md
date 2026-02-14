@@ -1,6 +1,6 @@
 {{- if .ContextEntries }}
 ### PR-FIX CONTEXT FILES
-The following context is mounted at `/holon/input/context/`:
+The following context is mounted at `${HOLON_INPUT_DIR}/context/` (typically `/root/input/context/`):
 {{- range .ContextEntries }}
 - {{ .Path }}{{ if .Description }} — {{ .Description }}{{ end }}
 {{- end }}

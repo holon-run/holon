@@ -81,12 +81,12 @@ else
 fi
 
 # Create required outputs
-mkdir -p /output
-echo '{"version":"v1"}' > /output/manifest.json
+mkdir -p /root/output
+echo '{"version":"v1"}' > /root/output/manifest.json
 {
     echo "Tool Check Results:"
     echo "Found: $tools_found"
     if [ -n "$tools_missing" ]; then
         echo "Missing: $tools_missing"
     fi
-} > /output/summary.md
+} > /root/output/summary.md

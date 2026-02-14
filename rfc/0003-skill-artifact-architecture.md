@@ -41,7 +41,7 @@ Key changes:
 ┌──────────────────────────────────────────────────────────────────┐
 │                           HOLON RUNTIME                          │
 │  - provides isolated container execution                          │
-│  - mounts /holon/input, /holon/workspace, /holon/output            │
+│  - mounts HOLON_INPUT_DIR, HOLON_WORKSPACE_DIR, HOLON_OUTPUT_DIR   │
 │  - stages skills (builtin/user/remote) for agent-native discovery  │
 └───────────────────────────────┬──────────────────────────────────┘
                                 │
@@ -59,24 +59,24 @@ Key changes:
 
 This RFC does not redefine the agent/runner contract from RFC-0002; it clarifies the intended direction for a **skill-first** world.
 
-### 4.1 `/holon/input` (request envelope; read-only)
+### 4.1 `HOLON_INPUT_DIR` (request envelope; read-only)
 
-- `/holon/input` contains the immutable “what to do” payload:
+- `HOLON_INPUT_DIR` contains the immutable “what to do” payload:
   - trigger payloads (issue/PR ref, webhook event, tick),
   - user message + attachments references (serve/session),
   - high-level constraints (timeouts, budgets, enabled skills).
-- When context preparation is owned by skills, `/holon/input` is **not** expected to contain a fully materialized context snapshot.
-- Skills MUST NOT rely on mutating `/holon/input` to pass data between steps; derived context SHOULD be written under `/holon/output` (or a skill-defined state directory).
+- When context preparation is owned by skills, `HOLON_INPUT_DIR` is **not** expected to contain a fully materialized context snapshot.
+- Skills MUST NOT rely on mutating `HOLON_INPUT_DIR` to pass data between steps; derived context SHOULD be written under `HOLON_OUTPUT_DIR` (or a skill-defined state directory).
 
-### 4.2 `/holon/workspace` (working directory; usually read-write)
+### 4.2 `HOLON_WORKSPACE_DIR` (working directory; usually read-write)
 
-- `/holon/workspace` is the working directory for code and data.
+- `HOLON_WORKSPACE_DIR` is the working directory for code and data.
 - It can be a snapshot, a clone, or an application workspace depending on the runner/app.
 - Long-lived service scenarios SHOULD isolate per-turn mutations (e.g., worktrees) to avoid cross-turn contamination.
 
-### 4.3 `/holon/output` (skill-defined outputs; read-write)
+### 4.3 `HOLON_OUTPUT_DIR` (skill-defined outputs; read-write)
 
-- `/holon/output` is the only required write sink.
+- `HOLON_OUTPUT_DIR` is the only required write sink.
 - Skills define their own artifact names, formats, and conventions.
 - “Code workflow” skills MAY emit patches/summaries for review, but Holon should not require any specific filenames for non-code skills.
 
@@ -150,7 +150,7 @@ The migration direction is:
 
 While artifacts are skill-owned, Holon provides a minimal **always-on execution record** that is stable across all skills and execution modes:
 
-**Required:** `manifest.json` at `/holon/output/manifest.json`
+**Required:** `manifest.json` at `${HOLON_OUTPUT_DIR}/manifest.json` (typically `/root/output/manifest.json`)
 
 The manifest contains:
 - `status`: Execution status (`"completed"`, `"failed"`, `"running"`)

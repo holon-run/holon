@@ -52,7 +52,7 @@ kind: Holon
 metadata:
   name: "bundle-verify"
 context:
-  workspace: "/workspace"
+  workspace: "/root/workspace"
 goal:
   description: "Verify that the agent bundle can start and write outputs."
 output:
@@ -75,15 +75,15 @@ RUN_SCRIPT="${BUNDLE_VERIFY_RUN_SCRIPT:-/holon/agent/bin/agent --probe}"
 
 set +e
 DOCKER_OUTPUT=$(docker run --rm \
-  -v "${INPUT_DIR}:/input:ro" \
-  -v "${WORKSPACE_DIR}:/workspace:ro" \
-  -v "${OUTPUT_DIR}:/output" \
-  -v "${STATE_DIR}:/state" \
+  -v "${INPUT_DIR}:/root/input:ro" \
+  -v "${WORKSPACE_DIR}:/root/workspace:ro" \
+  -v "${OUTPUT_DIR}:/root/output" \
+  -v "${STATE_DIR}:/root/state" \
   -v "${BUNDLE_EXTRACT}:/holon/agent:ro" \
-  -e HOLON_INPUT_DIR=/input \
-  -e HOLON_WORKSPACE_DIR=/workspace \
-  -e HOLON_OUTPUT_DIR=/output \
-  -e HOLON_STATE_DIR=/state \
+  -e HOLON_INPUT_DIR=/root/input \
+  -e HOLON_WORKSPACE_DIR=/root/workspace \
+  -e HOLON_OUTPUT_DIR=/root/output \
+  -e HOLON_STATE_DIR=/root/state \
   -e HOLON_AGENT_HOME=/root \
   --entrypoint /bin/sh \
   "${IMAGE}" -c "cd /holon/agent && NODE_ENV=production ${RUN_SCRIPT}" 2>&1)

@@ -22,7 +22,7 @@ This document defines the compatibility contract for `holon run` in v0.11.
 - Runtime provides input, workspace, and output boundaries to agent.
 - Runtime MUST expose output boundary via `HOLON_OUTPUT_DIR`.
 - Default output location is agent-home-scoped (for example, `${agent_home}/runs/<run_id>/output` on host), but the concrete container mount path is an implementation detail.
-- Agents/skills SHOULD write outputs by environment contract (`HOLON_OUTPUT_DIR`) and SHOULD NOT rely on hardcoded paths like `/output`.
+- Agents/skills SHOULD write outputs by environment contract (`HOLON_OUTPUT_DIR`) and SHOULD NOT rely on hardcoded absolute paths.
 - `manifest.json` is the required execution record output.
 - Optional artifacts are skill-defined and enumerated via manifest.
 

@@ -14,7 +14,7 @@ Runner → Agent → Engine → Outputs → Publisher
 A single, headless execution that:
 - reads inputs (spec + context + sandbox workspace)
 - invokes an agent
-- writes standardized outputs under `/holon/output`
+- writes standardized outputs under `HOLON_OUTPUT_DIR` (typically `/root/output`)
 
 ### Holon Runner
 The supervisor that starts a Holon Run (today: `holon` CLI and the GitHub Action). It:
@@ -32,9 +32,9 @@ The task definition file (e.g. `spec.yaml`). It contains:
 
 ### Holon Agent
 The **execution unit** that implements the Holon I/O contract inside the container. It:
-- reads `/holon/input/*` and `/holon/workspace`
+- reads `HOLON_INPUT_DIR/*` and `HOLON_WORKSPACE_DIR`
 - drives an underlying **engine** headlessly
-- writes outputs to `/holon/output`
+- writes outputs to `HOLON_OUTPUT_DIR`
 
 ### Agent Bundle (Distribution)
 How a Holon Agent is shipped/installed.
@@ -69,13 +69,13 @@ Role influences *how* the agent reasons and reports; `mode` defines *what is all
 ## Inputs & Outputs
 
 ### Sandbox Workspace (Snapshot)
-`/holon/workspace` is a sandbox copy of the repo prepared by the Runner. By default, the original checkout is not modified; changes leave the sandbox via outputs (e.g. `diff.patch`).
+`HOLON_WORKSPACE_DIR` (typically `/root/workspace`) is a sandbox copy of the repo prepared by the Runner. By default, the original checkout is not modified; changes leave the sandbox via outputs (e.g. `diff.patch`).
 
 ### Context Pack
-Optional files mounted at `/holon/input/context/` (issue text, PR diff, logs, docs excerpts). The caller/workflow decides what to include.
+Optional files mounted at `${HOLON_INPUT_DIR}/context/` (typically `/root/input/context/`; issue text, PR diff, logs, docs excerpts). The caller/workflow decides what to include.
 
 ### Outputs (Artifacts)
-Standard files under `/holon/output/` such as:
+Standard files under `HOLON_OUTPUT_DIR` (typically `/root/output`) such as:
 - `manifest.json`: machine-readable status/metadata
 - `diff.patch`: patch representing changes
 - `summary.md`: human-readable report

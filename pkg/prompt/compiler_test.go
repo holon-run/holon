@@ -191,19 +191,19 @@ func TestCompileUserPrompt(t *testing.T) {
 			name:         "Goal with single context file",
 			goal:         "Fix the bug in main.go",
 			contextFiles: []string{"main.go"},
-			expected:     "### TASK GOAL\nFix the bug in main.go\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at /holon/input/context/:\n- main.go\n",
+			expected:     "### TASK GOAL\nFix the bug in main.go\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/ (typically /root/input/context/):\n- main.go\n",
 		},
 		{
 			name:         "Goal with multiple context files",
 			goal:         "Refactor the module",
 			contextFiles: []string{"file1.go", "file2.go", "config.yaml"},
-			expected:     "### TASK GOAL\nRefactor the module\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at /holon/input/context/:\n- file1.go\n- file2.go\n- config.yaml\n",
+			expected:     "### TASK GOAL\nRefactor the module\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/ (typically /root/input/context/):\n- file1.go\n- file2.go\n- config.yaml\n",
 		},
 		{
 			name:         "Empty goal with context files",
 			goal:         "",
 			contextFiles: []string{"test.go"},
-			expected:     "### TASK GOAL\n\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at /holon/input/context/:\n- test.go\n",
+			expected:     "### TASK GOAL\n\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/ (typically /root/input/context/):\n- test.go\n",
 		},
 	}
 
@@ -243,8 +243,8 @@ func TestCompileUserPromptStructure(t *testing.T) {
 	}
 
 	// Check for the specific path wording
-	if !strings.Contains(result, "/holon/input/context/") {
-		t.Error("Missing '/holon/input/context/' path wording")
+	if !strings.Contains(result, "${HOLON_INPUT_DIR}/context/") {
+		t.Error("Missing '${HOLON_INPUT_DIR}/context/' path wording")
 	}
 
 	// Check that all context files are listed

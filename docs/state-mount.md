@@ -11,11 +11,11 @@ The state mount feature allows skills and runs to persist and reuse data across 
 
 ## How It Works
 
-When you provide a `--state-dir` flag, Holon bind-mounts the specified directory from the host into the container at `/holon/state`. This directory:
+When you provide a `--state-dir` flag, Holon bind-mounts the specified directory from the host into the container at `${HOLON_STATE_DIR}`. This directory:
 
-- **Persists across runs**: Data written to `/holon/state` remains on the host and is available in subsequent runs
+- **Persists across runs**: Data written to `${HOLON_STATE_DIR}` remains on the host and is available in subsequent runs
 - **Is opt-in**: No state persistence occurs if the flag is omitted
-- **Is separate from output**: Keeps deterministic artifacts (in `/holon/output`) separate from mutable caches (in `/holon/state`)
+- **Is separate from output**: Keeps deterministic artifacts (in `${HOLON_OUTPUT_DIR}`) separate from mutable caches (in `${HOLON_STATE_DIR}`)
 
 ## Usage
 
@@ -57,7 +57,7 @@ holon solve holon-run/holon#123 --state-dir .holon/state
 ### Inside the Container
 
 ```
-/holon/
+/root/
 ├── workspace/    # Repository snapshot (writable)
 ├── input/        # Context and prompts (read-only)
 ├── output/       # Deterministic artifacts (writable)
@@ -70,16 +70,16 @@ holon solve holon-run/holon#123 --state-dir .holon/state
 
 Skills should follow these conventions:
 
-1. **Namespace**: Use `/holon/state/<skill-name>/...` for cache files
-   - Example: `/holon/state/project-pulse/issues-cache.json`
+1. **Namespace**: Use `${HOLON_STATE_DIR}/<skill-name>/...` for cache files
+   - Example: `${HOLON_STATE_DIR}/project-pulse/issues-cache.json`
 
 2. **Handle first run**: Skills must tolerate missing/empty state directory
    - Check if state exists before reading
    - Create fresh cache if state is missing
 
 3. **Separate concerns**:
-   - Put **non-deterministic caches** in `/holon/state` (safe to delete)
-   - Put **deterministic outputs** in `/holon/output` (required artifacts)
+   - Put **non-deterministic caches** in `${HOLON_STATE_DIR}` (safe to delete)
+   - Put **deterministic outputs** in `${HOLON_OUTPUT_DIR}` (required artifacts)
 
 4. **Handle migrations**: Skills should handle cache format changes gracefully
    - Version cache files
@@ -89,7 +89,7 @@ Skills should follow these conventions:
 
 ```go
 // In a skill that caches GitHub issues
-cachePath := "/holon/state/my-skill/issues.json"
+cachePath := "${HOLON_STATE_DIR}/my-skill/issues.json"
 
 // Try to load from cache
 if data, err := os.ReadFile(cachePath); err == nil {
@@ -199,7 +199,7 @@ chmod 755 .holon/state
 
 ## Comparison with Alternatives
 
-| Feature | State Mount (`/holon/state`) | Output (`/holon/output`) | Input (`/holon/input`) |
+| Feature | State Mount (`${HOLON_STATE_DIR}`) | Output (`${HOLON_OUTPUT_DIR}`) | Input (`${HOLON_INPUT_DIR}`) |
 |---------|------------------------------|--------------------------|----------------------|
 | **Purpose** | Cross-run caches | Deterministic artifacts | Context/prompts |
 | **Persistence** | Persists across runs | Ephemeral (cleaned) | Read-only |

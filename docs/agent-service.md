@@ -17,7 +17,7 @@ Scope: this document only describes what happens **inside the agent container** 
 
 The agent container runs a long-lived server process:
 
-- PID 1: `agent.ts serve --socket /holon/ipc/agent.sock`
+- PID 1: `agent.ts serve --socket /root/run/agent.sock`
   - loads skills and config once
   - starts an HTTP server bound to a Unix domain socket
   - accepts turn requests in a loop
@@ -38,13 +38,13 @@ This keeps runtime IPC colocated with persistent `agent_home` identity instead o
 
 The serve process uses these conventional paths:
 
-- `/holon/ipc/agent.sock`
+- `/root/run/agent.sock`
   - Unix socket created by `agent.ts serve`.
-- `/holon/input/turns/<turn_id>/`
+- `/root/input/turns/<turn_id>/`
   - caller-provided inputs for a specific turn (files, references, context bundles).
-- `/holon/output/turns/<turn_id>/`
+- `/root/output/turns/<turn_id>/`
   - all outputs for that turn (events, artifacts, and any skill-defined files).
-- `/holon/state/`
+- `/root/state/`
   - optional persistent state across turns (e.g., saved Open Responses trajectories).
 
 Notes:
@@ -103,8 +103,8 @@ Holon-specific extensions (one possible shape):
   "holon": {
     "session_id": "sess_…",
     "turn_id": "turn_…",
-    "input_dir": "/holon/input/turns/turn_…",
-    "output_dir": "/holon/output/turns/turn_…"
+    "input_dir": "/root/input/turns/turn_…",
+    "output_dir": "/root/output/turns/turn_…"
   }
 }
 ```
@@ -123,13 +123,13 @@ On each `POST /responses` request:
 
 1. Determine `turn_id`, `input_dir`, `output_dir` (from request extensions or generated defaults).
 2. Load continuation context:
-   - If `previous_response_id` is set, load the corresponding stored trajectory from `/holon/state/` (or reconstruct the transcript if required by the underlying engine).
+   - If `previous_response_id` is set, load the corresponding stored trajectory from `/root/state/` (or reconstruct the transcript if required by the underlying engine).
 3. Execute the underlying engine/runtime headlessly:
    - allow skills/tools to be invoked as usual
    - stream Open Responses events back to the caller
 4. Persist turn bookkeeping:
    - write `output_dir/turn.json` (recommended) containing at least `{session_id, turn_id, response_id, previous_response_id, timestamps}`
-   - persist the response trajectory under `/holon/state/` so future turns can use `previous_response_id`
+   - persist the response trajectory under `/root/state/` so future turns can use `previous_response_id`
 5. Finish the stream with a terminal “done” event and HTTP 200.
 
 ## Concurrency (recommended default)

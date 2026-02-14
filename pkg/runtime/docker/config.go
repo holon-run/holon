@@ -11,11 +11,11 @@ import (
 )
 
 const (
-	ContainerWorkspaceDir = "/workspace"
-	ContainerInputDir     = "/input"
-	ContainerOutputDir    = "/output"
-	ContainerStateDir     = "/state"
 	ContainerAgentHome    = "/root"
+	ContainerWorkspaceDir = ContainerAgentHome + "/workspace"
+	ContainerInputDir     = ContainerAgentHome + "/input"
+	ContainerOutputDir    = ContainerAgentHome + "/output"
+	ContainerStateDir     = ContainerAgentHome + "/state"
 )
 
 // Pure helper functions for container configuration assembly
@@ -46,42 +46,44 @@ type HostConfigOptions struct {
 
 // BuildContainerMounts assembles the Docker mounts configuration.
 func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
-	mounts := []mount.Mount{
-		{
-			Type:   mount.TypeBind,
-			Source: cfg.SnapshotDir,
-			Target: ContainerWorkspaceDir,
-		},
-		{
-			Type:     mount.TypeBind,
-			Source:   cfg.InputPath,
-			Target:   ContainerInputDir,
-			ReadOnly: true,
-		},
-		{
-			Type:   mount.TypeBind,
-			Source: cfg.OutDir,
-			Target: ContainerOutputDir,
-		},
-	}
+	mounts := []mount.Mount{}
 
-	// Add state directory mount (if provided)
-	// This mounts to /state for cross-run skill caches
-	if cfg.StateDir != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: cfg.StateDir,
-			Target: ContainerStateDir,
-		})
-	}
-
-	// Add agent home mount (if provided)
-	// This mounts host agent_home directly to container /root.
+	// Add agent home mount first (if provided) so nested runtime mounts
+	// (/root/workspace, /root/input, /root/output, /root/state) can overlay it.
 	if cfg.AgentHome != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
 			Source: cfg.AgentHome,
 			Target: ContainerAgentHome,
+		})
+	}
+
+	mounts = append(mounts,
+		mount.Mount{
+			Type:   mount.TypeBind,
+			Source: cfg.SnapshotDir,
+			Target: ContainerWorkspaceDir,
+		},
+		mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   cfg.InputPath,
+			Target:   ContainerInputDir,
+			ReadOnly: true,
+		},
+		mount.Mount{
+			Type:   mount.TypeBind,
+			Source: cfg.OutDir,
+			Target: ContainerOutputDir,
+		},
+	)
+
+	// Add state directory mount (if provided)
+	// This mounts to /root/state for cross-run skill caches.
+	if cfg.StateDir != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: cfg.StateDir,
+			Target: ContainerStateDir,
 		})
 	}
 

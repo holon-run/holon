@@ -4,16 +4,16 @@ Use this checklist before cutting a release candidate that claims `holon run` st
 
 ## 1. Sandbox boundary checks
 
-- Input mount is read-only (`/input`).
+- Input mount is read-only (`HOLON_INPUT_DIR`, typically `/root/input`).
 - Workspace and output boundaries are writable for agent execution.
-  - Current implementation uses writable mounts for `/workspace` and the runtime-managed `HOLON_OUTPUT_DIR` target.
+  - Current implementation uses writable mounts for `HOLON_WORKSPACE_DIR` (typically `/root/workspace`) and the runtime-managed `HOLON_OUTPUT_DIR` target.
 - No privileged container settings are enabled.
 - Runtime host config keeps default isolated network mode and no PID namespace sharing.
 
 ## 2. Output contract checks
 
 - Runtime injects `HOLON_OUTPUT_DIR`.
-- Skills/tests write required artifacts via `HOLON_OUTPUT_DIR` (no hardcoded `/output` dependency).
+- Skills/tests write required artifacts via `HOLON_OUTPUT_DIR` (no hardcoded path dependency).
 - `${HOLON_OUTPUT_DIR}/manifest.json` is produced for non-skill-first flows.
 - Missing required artifacts fail with diagnosable errors.
 

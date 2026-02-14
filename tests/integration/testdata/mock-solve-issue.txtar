@@ -27,7 +27,7 @@ exec git -C work commit -m 'Initial commit'
 # This simulates what the issue collector would create
 
 # Set environment for mock driver
-env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/input/context/fixture.json
+env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/root/input/context/fixture.json
 
 # Run holon run with the pre-populated context.
 # Prefer repo-built test bundle when available.

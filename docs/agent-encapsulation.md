@@ -3,7 +3,7 @@
 This document is **non-normative**. The normative agent/runner contract is in `rfc/0002-agent-scheme.md`.
 
 ## The agent pattern
-An **agent** is a container entrypoint that bridges the Holon filesystem contract (`/holon/input`, `/holon/workspace`, `/holon/output`) to an underlying AI engine/runtime.
+An **agent** is a container entrypoint that bridges the Holon filesystem contract (`HOLON_INPUT_DIR`, `HOLON_WORKSPACE_DIR`, `HOLON_OUTPUT_DIR`) to an underlying AI engine/runtime.
 
 ```mermaid
 graph TD
@@ -27,14 +27,14 @@ graph TD
 
 ## Responsibilities
 - **Runner**:
-  - prepares `/holon/input/*` and a workspace snapshot at `/holon/workspace`
+  - prepares `${HOLON_INPUT_DIR}/*` and a workspace snapshot at `HOLON_WORKSPACE_DIR`
   - injects credentials via environment variables
   - runs the agent bundle in a composed image and validates required artifacts
   - publishes results (apply patch, create/update PR) outside the agent
 - **Agent**:
   - reads `spec.yaml` and context
   - drives the tool/runtime headlessly
-  - writes standard artifacts to `/holon/output`
+  - writes standard artifacts to `HOLON_OUTPUT_DIR`
 
 ## Image composition: base + agent bundle
 Real tasks need language/toolchain images (Go/Node/Java/etc.). To avoid maintaining a prebuilt agent×toolchain matrix, Holon can compose a final image at run time:

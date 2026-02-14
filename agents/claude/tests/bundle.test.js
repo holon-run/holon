@@ -134,25 +134,25 @@ describe('Agent Bundle', () => {
     const tmpDir = extractBundle(bundlePath);
 
     // Check if we're already running in a Holon container environment
-    const inHolonContainer = fs.existsSync('/workspace') &&
-                             fs.existsSync('/input') &&
-                             fs.existsSync('/output');
+    const inHolonContainer = fs.existsSync('/root/workspace') &&
+                             fs.existsSync('/root/input') &&
+                             fs.existsSync('/root/output');
 
     try {
       if (inHolonContainer) {
         // Use existing Holon environment
         console.log('  ℹ Running in Holon container environment');
         const agentPath = path.join(tmpDir, 'dist', 'agent.js');
-        const outputDir = process.env.HOLON_OUTPUT_DIR || '/output';
+        const outputDir = process.env.HOLON_OUTPUT_DIR || '/root/output';
         const output = execSync(`node "${agentPath}" --probe`, {
           cwd: tmpDir,
           env: {
             ...process.env,
             NODE_ENV: 'production',
-            HOLON_INPUT_DIR: process.env.HOLON_INPUT_DIR || '/input',
-            HOLON_WORKSPACE_DIR: process.env.HOLON_WORKSPACE_DIR || '/workspace',
+            HOLON_INPUT_DIR: process.env.HOLON_INPUT_DIR || '/root/input',
+            HOLON_WORKSPACE_DIR: process.env.HOLON_WORKSPACE_DIR || '/root/workspace',
             HOLON_OUTPUT_DIR: outputDir,
-            HOLON_STATE_DIR: process.env.HOLON_STATE_DIR || '/state',
+            HOLON_STATE_DIR: process.env.HOLON_STATE_DIR || '/root/state',
             HOLON_AGENT_HOME: process.env.HOLON_AGENT_HOME || '/root',
           },
           stdio: 'pipe',
@@ -188,7 +188,7 @@ kind: Holon
 metadata:
   name: "bundle-test-probe"
 context:
-  workspace: "/workspace"
+  workspace: "/root/workspace"
 goal:
   description: "Bundle test probe validation"
 output:
@@ -223,15 +223,15 @@ output:
           // Run agent probe test in Docker container
           const output = execSync(
             `docker run --rm \
-             -v "${inputDir}:/input:ro" \
-             -v "${workspaceDir}:/workspace:ro" \
-             -v "${outputDir}:/output" \
-             -v "${stateDir}:/state" \
+             -v "${inputDir}:/root/input:ro" \
+             -v "${workspaceDir}:/root/workspace:ro" \
+             -v "${outputDir}:/root/output" \
+             -v "${stateDir}:/root/state" \
              -v "${tmpDir}:/holon/agent:ro" \
-             -e HOLON_INPUT_DIR=/input \
-             -e HOLON_WORKSPACE_DIR=/workspace \
-             -e HOLON_OUTPUT_DIR=/output \
-             -e HOLON_STATE_DIR=/state \
+             -e HOLON_INPUT_DIR=/root/input \
+             -e HOLON_WORKSPACE_DIR=/root/workspace \
+             -e HOLON_OUTPUT_DIR=/root/output \
+             -e HOLON_STATE_DIR=/root/state \
              -e HOLON_AGENT_HOME=/root \
              --entrypoint /bin/sh \
              "${image}" -c "cd /holon/agent && NODE_ENV=production node dist/agent.js --probe"`,

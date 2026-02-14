@@ -24,13 +24,13 @@ This directory contains unit tests for the Holon TypeScript Claude agent.
 
 ### Artifact Generation
 - **Manifest generation**: Tests that `manifest.json` is written with correct structure and metadata
-- **Patch generation**: Verifies that `diff.patch` is written to the stable path `/output/diff.patch`
+- **Patch generation**: Verifies that `diff.patch` is written to `${HOLON_OUTPUT_DIR}/diff.patch` (typically `/root/output/diff.patch`)
 - **Summary generation**: Tests that `summary.md` is generated with fallback content when needed
 
 ### Error Handling
-- **Missing spec file**: Tests graceful handling of missing `/input/spec.yaml`
-- **Missing system prompt**: Tests handling of missing `/input/prompts/system.md`
-- **Missing user prompt**: Tests handling of missing `/input/prompts/user.md`
+- **Missing spec file**: Tests graceful handling of missing `${HOLON_INPUT_DIR}/spec.yaml`
+- **Missing system prompt**: Tests handling of missing `${HOLON_INPUT_DIR}/prompts/system.md`
+- **Missing user prompt**: Tests handling of missing `${HOLON_INPUT_DIR}/prompts/user.md`
 
 ### Git Diff Command Generation
 - **Command flags**: Verifies that `git diff` uses `--binary --full-index` flags for patch compatibility

@@ -23,7 +23,7 @@ exec chmod +x bundle-src/bin/agent
 exec tar -czf agent-bundle.tar.gz -C bundle-src .
 
 # Run holon with mock driver
-env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/input/context/fixtures/fix.json
+env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/root/input/context/fixtures/fix.json
 exec holon run --agent agent-bundle.tar.gz --goal 'Fix the division by zero error' --workspace work --output out --image golang:1.22
 
 # Verify outputs exist
@@ -57,9 +57,9 @@ exec git -C work apply --check --3way ../out/diff.patch
 #!/bin/sh
 set -e
 # Create output directory
-mkdir -p /output
+mkdir -p /root/output
 
-WORKSPACE=/workspace
+WORKSPACE=/root/workspace
 
 # Write the fixed version of buggy.go
 cat > "$WORKSPACE/examples/buggy.go" << 'EOF'
@@ -80,7 +80,7 @@ func divide(a, b int) int {
 EOF
 
 # Configure git to ignore ownership checks (needed in containers)
-git config --global --add safe.directory /workspace
+git config --global --add safe.directory /root/workspace
 
 # Stage changes with git
 cd "$WORKSPACE"
@@ -89,13 +89,13 @@ git reset holon 2>/dev/null || true
 git reset bin/holon 2>/dev/null || true
 
 # Generate outputs
-echo '{"version":"v1"}' > /output/manifest.json
+echo '{"version":"v1"}' > /root/output/manifest.json
 
 # Generate diff.patch - this is the critical test
-git diff --cached > /output/diff.patch
+git diff --cached > /root/output/diff.patch
 
 # Check if diff is empty - if so, something went wrong
-if [ ! -s /output/diff.patch ]; then
+if [ ! -s /root/output/diff.patch ]; then
   echo "Error: Generated diff.patch is empty!" >&2
   echo "Git snapshot may not have worked correctly." >&2
   echo "Git status:" >&2
@@ -105,10 +105,10 @@ if [ ! -s /output/diff.patch ]; then
   exit 1
 fi
 
-echo '# Task Summary' > /output/summary.md
-echo '## Fixed Division by Zero Error' >> /output/summary.md
-echo 'Added safety check to handle division by zero.' >> /output/summary.md
-echo 'Git snapshot verified - diff.patch generated successfully.' >> /output/summary.md
+echo '# Task Summary' > /root/output/summary.md
+echo '## Fixed Division by Zero Error' >> /root/output/summary.md
+echo 'Added safety check to handle division by zero.' >> /root/output/summary.md
+echo 'Git snapshot verified - diff.patch generated successfully.' >> /root/output/summary.md
 
 -- work/examples/buggy.go --
 package main

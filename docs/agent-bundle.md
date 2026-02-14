@@ -69,7 +69,7 @@ The runner treats the bundle as a black box:
 1. Copy the bundle archive into the build context.
 2. Extract into a fixed path (e.g. `/holon/agent`).
 3. Set entrypoint to `<extract_root>/<manifest.entry>`.
-4. Mount `/holon/input`, `/holon/workspace`, `/holon/output` per the agent contract.
+4. Mount `HOLON_INPUT_DIR`, `HOLON_WORKSPACE_DIR`, and `HOLON_OUTPUT_DIR` per the agent contract (typically under `/root`).
 
 The runner should not assume language, package manager, or build system.
 

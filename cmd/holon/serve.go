@@ -931,21 +931,23 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		return fmt.Errorf("failed to create controller output dir: %w", err)
 	}
 
+	// Keep controller state paths derived from ContainerStateDir so runtime
+	// paths remain consistent with the /root-scoped container layout.
 	env := map[string]string{
 		"HOLON_AGENT_SESSION_MODE":            "serve",
 		"HOLON_AGENT_HOME":                    docker.ContainerAgentHome,
 		"HOLON_WORKSPACE_DIR":                 docker.ContainerWorkspaceDir,
-		"HOLON_WORKSPACE_INDEX_PATH":          "/root/state/workspace-index.json",
+		"HOLON_WORKSPACE_INDEX_PATH":          filepath.Join(docker.ContainerStateDir, "workspace-index.json"),
 		"HOLON_INPUT_DIR":                     docker.ContainerInputDir,
 		"HOLON_OUTPUT_DIR":                    docker.ContainerOutputDir,
 		"GITHUB_OUTPUT_DIR":                   docker.ContainerOutputDir,
 		"GITHUB_CONTEXT_DIR":                  filepath.Join(docker.ContainerOutputDir, "github-context"),
 		"HOLON_STATE_DIR":                     docker.ContainerStateDir,
-		"CLAUDE_CONFIG_DIR":                   "/state/claude-config",
+		"CLAUDE_CONFIG_DIR":                   filepath.Join(docker.ContainerStateDir, "claude-config"),
 		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,
 		"HOLON_CONTROLLER_RPC_SOCKET":         filepath.Join(docker.ContainerAgentHome, "run", "agent.sock"),
-		"HOLON_CONTROLLER_SESSION_STATE_PATH": "/state/controller-session.json",
-		"HOLON_CONTROLLER_GOAL_STATE_PATH":    "/state/goal-state.json",
+		"HOLON_CONTROLLER_SESSION_STATE_PATH": filepath.Join(docker.ContainerStateDir, "controller-session.json"),
+		"HOLON_CONTROLLER_GOAL_STATE_PATH":    filepath.Join(docker.ContainerStateDir, "goal-state.json"),
 	}
 	for k, v := range resolveServeRuntimeEnv(ctx) {
 		env[k] = v

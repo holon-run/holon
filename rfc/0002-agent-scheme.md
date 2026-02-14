@@ -34,22 +34,22 @@ Every agent MUST implement the following minimum contract.
 
 ### 3.1 Inputs
 
-Agents MUST treat these paths as **read-only**:
-- `/holon/input/spec.yaml`: the Holon spec.
-- `/holon/input/context/` (optional): caller-provided context files (issue text, PR diff, logs, etc.).
-- `/holon/input/prompts/system.md` (optional): compiled system prompt (runner-provided).
-- `/holon/input/prompts/user.md` (optional): compiled user prompt (runner-provided).
+Agents MUST treat `HOLON_INPUT_DIR` as **read-only**:
+- `${HOLON_INPUT_DIR}/spec.yaml`: the Holon spec.
+- `${HOLON_INPUT_DIR}/context/` (optional): caller-provided context files (issue text, PR diff, logs, etc.).
+- `${HOLON_INPUT_DIR}/prompts/system.md` (optional): compiled system prompt (runner-provided).
+- `${HOLON_INPUT_DIR}/prompts/user.md` (optional): compiled user prompt (runner-provided).
 
 Agents MUST treat the workspace as the codebase root:
-- `/holon/workspace`: a workspace **snapshot** prepared by the Runner.
+- `HOLON_WORKSPACE_DIR` (typically `/root/workspace`): a workspace **snapshot** prepared by the Runner.
 
 Secrets are provided via environment variables (e.g., `ANTHROPIC_API_KEY`) and MUST NOT be embedded in the spec.
 
 ### 3.2 Outputs
 
-Agents MUST write all produced artifacts under `/holon/output/` (read-write).
+Agents MUST write all produced artifacts under `HOLON_OUTPUT_DIR` (typically `/root/output`, read-write).
 
-Agents MAY read files they created under `/holon/output/` during the same run (e.g., incremental notes), but MUST NOT write outputs outside `/holon/output/`.
+Agents MAY read files they created under `HOLON_OUTPUT_DIR` during the same run (e.g., incremental notes), but MUST NOT write outputs outside `HOLON_OUTPUT_DIR`.
 
 #### 3.2.1 Required artifacts
 
@@ -58,7 +58,7 @@ Agents MUST produce at minimum:
 
 #### 3.2.2 Skill-defined artifacts
 
-All other artifacts are **skill-defined**. Skills MAY produce any artifacts with any names and formats under `/holon/output/`.
+All other artifacts are **skill-defined**. Skills MAY produce any artifacts with any names and formats under `HOLON_OUTPUT_DIR`.
 
 For **code workflow skills** (e.g., issue-to-PR, PR-fix), the following artifacts are **RECOMMENDED** but not required:
 - `diff.patch` (recommended for code workflows): a patch representing workspace changes, compatible with `git apply` workflows.
@@ -96,7 +96,7 @@ For binary-file compatibility, skills SHOULD generate patches using `git diff --
 Agents MAY implement a probe mode to validate basic runtime readiness without invoking the underlying engine.
 
 If supported, invoking the agent with `--probe` MUST:
-- verify `/holon/input/spec.yaml` exists and `/holon/output/` is writable,
+- verify `${HOLON_INPUT_DIR}/spec.yaml` exists and `HOLON_OUTPUT_DIR` is writable,
 - exit with code `0` on success,
 - write a minimal `manifest.json` indicating probe success.
 
@@ -105,8 +105,8 @@ Runners MAY use `--probe` to validate bundles/images in CI or preflight checks.
 ## 4. Runner Responsibilities (Normative)
 
 To preserve atomicity and enable deterministic automation, the Runner MUST:
-- mount a **workspace snapshot** at `/holon/workspace` (not the original workspace, by default),
-- ensure `/holon/output/` starts empty (fresh dir or cleared) to avoid cross-run contamination,
+- mount a **workspace snapshot** at `HOLON_WORKSPACE_DIR` (typically `/root/workspace`, not the original workspace by default),
+- ensure `HOLON_OUTPUT_DIR` starts empty (fresh dir or cleared) to avoid cross-run contamination,
 - validate that `manifest.json` exists (and treat a missing manifest as a run failure).
 
 ### 4.1 Optional artifact validation
