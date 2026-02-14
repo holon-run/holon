@@ -458,13 +458,6 @@ func TestWebhookServer_RestartLoadsStateAndDedupes(t *testing.T) {
 	defer secondServer.Close()
 	secondServer.now = func() time.Time { return time.Date(2026, 2, 14, 10, 0, 0, 0, time.UTC) }
 
-	secondServer.mu.RLock()
-	_, loaded := secondServer.state.ProcessedAt[dedupeKey]
-	secondServer.mu.RUnlock()
-	if !loaded {
-		t.Fatalf("expected dedupe key %q to be loaded from persisted state", dedupeKey)
-	}
-
 	duplicateEvent := EventEnvelope{
 		ID:        "evt-second",
 		Source:    "github",
@@ -485,11 +478,21 @@ func TestWebhookServer_RestartLoadsStateAndDedupes(t *testing.T) {
 		t.Fatalf("expected duplicate event to be skipped after restart, got %d handled events", len(secondHandler.events))
 	}
 
-	secondServer.mu.RLock()
-	lastEventID := secondServer.state.LastEventID
-	secondServer.mu.RUnlock()
-	if lastEventID != "evt-second" {
-		t.Fatalf("expected LastEventID to advance on duplicate event, got %q", lastEventID)
+	statePath := filepath.Join(td, "serve-state.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("failed to read state file: %v", err)
+	}
+
+	var state persistentState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("failed to parse state: %v", err)
+	}
+	if _, ok := state.ProcessedAt[dedupeKey]; !ok {
+		t.Fatalf("expected dedupe key %q to be present in persisted state", dedupeKey)
+	}
+	if state.LastEventID != "evt-second" {
+		t.Fatalf("expected LastEventID to advance on duplicate event, got %q", state.LastEventID)
 	}
 }
 
