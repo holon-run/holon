@@ -158,6 +158,11 @@ test-integration-artifacts: build build-agent-bundle
 	@mkdir -p _testwork
 	@go test ./tests/integration/... -v -work
 
+## test-serve-tui-smoke: Run serve TUI/RPC smoke tests
+test-serve-tui-smoke:
+	@echo "Running serve TUI/RPC smoke tests..."
+	go test ./pkg/tui -run '^TestTUISmoke_' -v
+
 ## run-example: Run the fix-bug example (requires ANTHROPIC_API_KEY)
 run-example: build
 	@echo "Running fix-bug example..."
