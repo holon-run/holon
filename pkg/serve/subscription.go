@@ -460,9 +460,11 @@ func (sm *SubscriptionManager) Status() map[string]interface{} {
 }
 
 func (sm *SubscriptionManager) statusLocked() map[string]interface{} {
+	reason := sm.statusReasonLocked()
 	status := map[string]interface{}{
 		"running":        sm.started,
 		"mode":           sm.mode,
+		"reason":         reason,
 		"rpc_active":     sm.webhookServer != nil,
 		"ingress_active": sm.forwarder != nil || sm.websocketSrc != nil,
 		"agent_home":     sm.agentHome,
@@ -496,6 +498,29 @@ func (sm *SubscriptionManager) statusLocked() map[string]interface{} {
 	status["subscribed_repos"] = repos
 
 	return status
+}
+
+func (sm *SubscriptionManager) statusReasonLocked() string {
+	if sm.mode != "rpc_only" {
+		return "transport_active"
+	}
+	if len(sm.config.Subscriptions) == 0 {
+		return "no_subscriptions"
+	}
+	hasGitHub := false
+	for _, sub := range sm.config.Subscriptions {
+		if sub.GitHub == nil {
+			continue
+		}
+		hasGitHub = true
+		if len(sub.GitHub.Repos) > 0 {
+			return "rpc_only"
+		}
+	}
+	if !hasGitHub {
+		return "no_subscriptions"
+	}
+	return "empty_repos"
 }
 
 // WriteStatusFile writes the current status to a file in the state directory

@@ -121,6 +121,9 @@ func TestSubscriptionManager_WriteStatusFile(t *testing.T) {
 	if status["mode"] != "rpc_only" {
 		t.Fatalf("mode = %v, want rpc_only before start", status["mode"])
 	}
+	if status["reason"] != "rpc_only" {
+		t.Fatalf("reason = %v, want rpc_only", status["reason"])
+	}
 }
 
 func TestSubscriptionManager_StartRPCOnlyWhenNoRepos(t *testing.T) {
@@ -175,6 +178,9 @@ func TestSubscriptionManager_StartRPCOnlyWhenNoRepos(t *testing.T) {
 	}
 	if status["rpc_active"] != true {
 		t.Fatalf("rpc_active = %v, want true", status["rpc_active"])
+	}
+	if status["reason"] != "empty_repos" {
+		t.Fatalf("reason = %v, want empty_repos", status["reason"])
 	}
 }
 

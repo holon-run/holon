@@ -51,3 +51,17 @@ func TestResolveRuntimeDevAgentSource(t *testing.T) {
 		t.Fatalf("resolveRuntimeDevAgentSource(dev, missing) expected error")
 	}
 }
+
+func TestResolveRuntimeDevAgentSourceWithOrigin(t *testing.T) {
+	sourceDir := t.TempDir()
+	got, origin, err := resolveRuntimeDevAgentSourceWithOrigin("dev", sourceDir)
+	if err != nil {
+		t.Fatalf("resolveRuntimeDevAgentSourceWithOrigin(dev) error = %v", err)
+	}
+	if got != sourceDir {
+		t.Fatalf("resolveRuntimeDevAgentSourceWithOrigin(dev) source = %q, want %q", got, sourceDir)
+	}
+	if origin != "flag" {
+		t.Fatalf("resolveRuntimeDevAgentSourceWithOrigin(dev) origin = %q, want flag", origin)
+	}
+}
