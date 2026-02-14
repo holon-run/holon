@@ -1185,6 +1185,65 @@ jobs:
           fi
           docker info
 
+      - name: Setup Node (for local agent bundle)
+        if: steps.gate.outputs.should_run == 'true' && inputs.build_from_source == true && inputs.agent == ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build local agent bundle
+        id: local-agent
+        if: steps.gate.outputs.should_run == 'true' && inputs.build_from_source == true && inputs.agent == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "agents/claude" ]; then
+            echo "::error::agents/claude directory not found"
+            exit 1
+          fi
+
+          if [ ! -f "agents/claude/package.json" ]; then
+            echo "::error::agents/claude/package.json not found"
+            exit 1
+          fi
+
+          cd agents/claude
+          npm ci
+          npm run bundle
+
+          BUNDLE_REL="$(ls -t dist/agent-bundles/*.tar.gz | head -n 1)"
+          if [ -z "$BUNDLE_REL" ]; then
+            echo "::error::Failed to find built agent bundle under agents/claude/dist/agent-bundles"
+            exit 1
+          fi
+
+          BUNDLE_ABS="${{ github.workspace }}/agents/claude/$BUNDLE_REL"
+          echo "agent_ref=$BUNDLE_ABS" >> "$GITHUB_OUTPUT"
+          echo "✅ Built local agent bundle: $BUNDLE_ABS"
+
+      - name: Resolve agent input
+        id: agent
+        if: steps.gate.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AGENT_INPUT='${{ inputs.agent }}'
+          LOCAL_AGENT='${{ steps.local-agent.outputs.agent_ref }}'
+
+          if [ -n "$AGENT_INPUT" ]; then
+            echo "agent_ref=$AGENT_INPUT" >> "$GITHUB_OUTPUT"
+            echo "Using explicit agent input: $AGENT_INPUT"
+          elif [ -n "$LOCAL_AGENT" ]; then
+            echo "agent_ref=$LOCAL_AGENT" >> "$GITHUB_OUTPUT"
+            echo "Using local source-built agent bundle: $LOCAL_AGENT"
+          else
+            # Keep empty to trigger composite action fallback (no --agent flag).
+            echo "agent_ref=" >> "$GITHUB_OUTPUT"
+            echo "Using action default agent resolution (channel latest)"
+          fi
+
       - name: Run Holon
         id: run
         if: steps.gate.outputs.should_run == 'true'
@@ -1194,7 +1253,7 @@ jobs:
         with:
           ref: "${{ github.repository }}#${{ steps.ctx.outputs.issue_number }}"
           base: ${{ steps.base.outputs.base }}
-          agent: ${{ inputs.agent }}
+          agent: ${{ steps.agent.outputs.agent_ref }}
           anthropic_auth_token: ${{ secrets.anthropic_auth_token || secrets.anthropic_api_key }}
           anthropic_base_url: ${{ secrets.anthropic_base_url || 'https://api.anthropic.com' }}
           github_token: ${{ secrets.holon_github_token }}
