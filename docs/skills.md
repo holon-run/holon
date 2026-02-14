@@ -54,7 +54,7 @@ If you're migrating from the default embedded skills to remote skills:
 
 1. **Verify Remote Access:** Ensure the remote source is accessible from your environment
 2. **Check Cache:** Remote skills are cached in `~/.holon/cache/skills/` for offline use
-3. **Fallback Behavior:** If the remote source fails, Holon falls back to embedded skills
+3. **Failure Behavior:** If `builtin_skills_source` is configured and the remote source fails, Holon fails fast with an actionable error (no embedded fallback)
 4. **Audit Manifest:** Check `workspace.manifest.json` for `builtin_skills_source` to verify which version was used
 
 **Example Migration:**

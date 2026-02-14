@@ -1167,6 +1167,28 @@ func TestResolveSkills_RemoteBuiltinSourceUsesSourceURL(t *testing.T) {
 	}
 }
 
+func TestResolveSkills_RemoteBuiltinSourceFailureDoesNotFallback(t *testing.T) {
+	workspaceDir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	cfg := &ContainerConfig{
+		Workspace:           workspaceDir,
+		BuiltinSkillsSource: server.URL + "/skills.zip",
+		BuiltinSkillsRef:    "v9.9.9",
+	}
+
+	_, err := resolveSkills(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected resolveSkills to fail when remote builtin source is unreachable")
+	}
+	if !strings.Contains(err.Error(), "failed to load remote builtin skills") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestBuiltinSkillsManifestFields(t *testing.T) {
 	// Test 1: Config without BuiltinSkillsSource set (embedded mode)
 	cfgEmbedded := &ContainerConfig{
@@ -1185,7 +1207,6 @@ func TestBuiltinSkillsManifestFields(t *testing.T) {
 	}
 
 	// Test 2: Config with BuiltinSkillsSource set (remote mode)
-	// Even if skills fell back to embedded, the manifest should show source/ref
 	cfgRemote := &ContainerConfig{
 		BuiltinSkillsSource: "https://example.com/skills.zip",
 		BuiltinSkillsRef:    "v1.2.3",
