@@ -27,10 +27,12 @@ Holon’s default integration boundary is a patch file (`diff.patch`) because it
 - agent/engine neutrality (not every tool supports native “create PR”).
 
 ## Why “context injection”
-Holon does not fetch issue/PR context itself. The caller (workflow/local script) injects context files under `${HOLON_INPUT_DIR}/context/` so:
-- agents remain tool/platform-agnostic,
-- runs are auditable (context is part of the execution record),
-- workflows can decide what to include (issue body, linked issues, diffs, logs, etc.).
+Holon keeps context as explicit inputs under `${HOLON_INPUT_DIR}/context/`.
+
+- For `holon run`, the caller/workflow injects context directly.
+- For `holon solve`, skill workflows collect GitHub context and write it under the same input contract.
+
+This keeps runs auditable (context is part of execution record) and preserves agent/runtime neutrality.
 
 ## Image composition (Build-on-Run)
 Many tasks need a project toolchain (Go/Node/Java/etc.). Holon supports composing an execution image at run time:
@@ -40,6 +42,7 @@ Many tasks need a project toolchain (Go/Node/Java/etc.). Holon supports composin
 This avoids maintaining a large prebuilt agent×toolchain matrix.
 
 ## Related docs
-- `docs/modes.md`: design for `mode` as the single user-facing selector (solve/plan/review).
+- `docs/operator-guide-v0.11.md`: operator-facing boundary for stable (`run`/`solve`) vs preview (`serve`) surfaces.
+- `docs/modes.md`: skill-first architecture and CLI behavior.
 - `docs/agent-encapsulation.md`: non-normative description of the agent pattern and image composition approach.
 - `docs/agent-claude.md`: reference implementation notes for the Claude agent.

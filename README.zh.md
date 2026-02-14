@@ -87,6 +87,8 @@ holon solve https://github.com/owner/repo/issues/123
 
 ## 开发与文档
 - 构建 CLI：`make build`；测试：`make test`；Agent Bundle：`(cd agents/claude && npm run bundle)`。
+- Operator 指南（v0.11）：`docs/operator-guide-v0.11.md`
+- `run` GA 契约：`docs/run-ga-contract.md`
 - 架构设计：`docs/holon-architecture.md`
 - Agent 契约：`rfc/0002-agent-scheme.md`
 - 模式说明：`docs/modes.md`
