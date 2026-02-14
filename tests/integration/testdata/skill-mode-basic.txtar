@@ -41,6 +41,6 @@ set -eu
 echo "Testing skill mode execution"
 
 # Create required outputs
-mkdir -p /output
-echo '{"version":"v1"}' > /output/manifest.json
-echo 'Skill mode test passed' > /output/summary.md
+mkdir -p /root/output
+echo '{"version":"v1"}' > /root/output/manifest.json
+echo 'Skill mode test passed' > /root/output/summary.md

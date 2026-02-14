@@ -15,7 +15,7 @@ exec git -C work commit -m 'initial commit'
 
 # Run holon with mock driver using repo-built test bundle when available
 # The fixture file is provided as a txtar section below
-env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/input/context/fixture.json
+env HOLON_CLAUDE_DRIVER=mock HOLON_CLAUDE_MOCK_FIXTURE=/root/input/context/fixture.json
 exec sh -c 'AGENT="${HOLON_TEST_AGENT_BUNDLE:-default}"; holon run --agent "$AGENT" --goal "Fix the division by zero error" --workspace work --input input --output out --image golang:1.22'
 
 # Verify outputs

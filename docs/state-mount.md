@@ -146,7 +146,7 @@ state_dir: .holon/state
 
 **Self-hosted runners** (persistent):
 ```yaml
-state_dir: /var/lib${HOLON_STATE_DIR}/${{ github.repository }}
+state_dir: /var/lib/holon/state/${{ github.repository }}
 ```
 - No need for actions/cache
 - Better performance (no cache restoration)

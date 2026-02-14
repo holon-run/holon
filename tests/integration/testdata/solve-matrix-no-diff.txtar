@@ -15,7 +15,7 @@ exec git -C work commit -m 'initial commit'
 
 env GITHUB_TOKEN=dummy-token
 env HOLON_CLAUDE_DRIVER=mock
-env HOLON_CLAUDE_MOCK_FIXTURE=/input/context/fixture.json
+env HOLON_CLAUDE_MOCK_FIXTURE=/root/input/context/fixture.json
 exec sh -c 'AGENT="${HOLON_TEST_AGENT_BUNDLE:-default}"; holon solve https://github.com/test/repo/issues/124 --workspace work --input input --output out --image debian:bookworm-slim --agent "$AGENT" --cleanup none'
 
 exists out/manifest.json

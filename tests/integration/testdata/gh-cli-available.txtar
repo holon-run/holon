@@ -66,6 +66,6 @@ fi
 echo "gh CLI available: $gh_version"
 
 # Create required outputs
-mkdir -p /output
-echo '{"version":"v1"}' > /output/manifest.json
-echo 'gh CLI test passed' > /output/summary.md
+mkdir -p /root/output
+echo '{"version":"v1"}' > /root/output/manifest.json
+echo 'gh CLI test passed' > /root/output/summary.md

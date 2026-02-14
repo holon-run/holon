@@ -931,6 +931,8 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		return fmt.Errorf("failed to create controller output dir: %w", err)
 	}
 
+	// Keep controller state paths derived from ContainerStateDir so runtime
+	// paths remain consistent with the /root-scoped container layout.
 	env := map[string]string{
 		"HOLON_AGENT_SESSION_MODE":            "serve",
 		"HOLON_AGENT_HOME":                    docker.ContainerAgentHome,

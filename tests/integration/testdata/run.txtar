@@ -35,7 +35,7 @@ exists out/summary.md
 -- bundle-src/bin/agent --
 #!/bin/sh
 set -eu
-mkdir -p /output
-echo '{"version":"v1"}' > /output/manifest.json
-echo 'diff' > /output/diff.patch
-echo '# summary' > /output/summary.md
+mkdir -p /root/output
+echo '{"version":"v1"}' > /root/output/manifest.json
+echo 'diff' > /root/output/diff.patch
+echo '# summary' > /root/output/summary.md
