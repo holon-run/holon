@@ -1096,48 +1096,41 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 	// Keep explicit/workspace skills first; append builtin defaults only if not
 	// already present by skill name.
 	//
-	// If a remote builtin source is configured, use it instead of embedded skills.
-	// Otherwise, fall back to embedded builtin skills.
+	// If a remote builtin source is configured, require it to succeed.
+	// If not configured, use embedded builtin skills as default.
 	var builtinSkillsList []string
 	builtinSource := "builtin-default"
 
 	if cfg.BuiltinSkillsSource != "" {
-		// Use remote builtin skills
+		// Use remote builtin skills only; no fallback to embedded.
 		holonlog.Info("loading builtin skills from remote source", "url", cfg.BuiltinSkillsSource, "ref", cfg.BuiltinSkillsRef)
 
 		// Resolve the configured remote source directly.
 		// BuiltinSkillsRef is metadata for auditing/version pin visibility.
 		remoteSkills, err := resolver.Resolve([]string{cfg.BuiltinSkillsSource}, []string{}, []string{})
 		if err != nil {
-			holonlog.Warn("failed to load remote builtin skills, falling back to embedded", "error", err)
-			// Fall back to embedded skills
-			builtinSkillsList, err = builtin.List()
-			if err != nil {
-				return nil, fmt.Errorf("failed to list builtin skills: %w", err)
-			}
-			builtinSource = "builtin-fallback"
-		} else {
-			// Use the remote skills as builtin skills
-			for _, skill := range remoteSkills {
-				name := filepath.Base(skill.Path)
-				alreadyPresent := false
-				for _, existingSkill := range resolved {
-					if existingSkill.Name == name {
-						alreadyPresent = true
-						break
-					}
-				}
-				if !alreadyPresent {
-					resolved = append(resolved, skills.Skill{
-						Path:    skill.Path,
-						Name:    name,
-						Source:  "builtin-remote",
-						Builtin: false, // Remote skills are not embedded
-					})
-				}
-			}
-			builtinSource = "builtin-remote"
+			return nil, fmt.Errorf("failed to load remote builtin skills from %q: %w", cfg.BuiltinSkillsSource, err)
 		}
+		// Use the remote skills as builtin skills
+		for _, skill := range remoteSkills {
+			name := filepath.Base(skill.Path)
+			alreadyPresent := false
+			for _, existingSkill := range resolved {
+				if existingSkill.Name == name {
+					alreadyPresent = true
+					break
+				}
+			}
+			if !alreadyPresent {
+				resolved = append(resolved, skills.Skill{
+					Path:    skill.Path,
+					Name:    name,
+					Source:  "builtin-remote",
+					Builtin: false, // Remote skills are not embedded
+				})
+			}
+		}
+		builtinSource = "builtin-remote"
 	} else {
 		// Use embedded builtin skills
 		builtinSkillsList, err = builtin.List()
@@ -1171,12 +1164,10 @@ func resolveSkills(ctx context.Context, cfg *ContainerConfig) ([]skills.Skill, e
 }
 
 // builtinSkillsManifestFields returns the manifest fields for builtin skill provenance.
-// - remote builtin configured (even if fell back to embedded): source/ref set, commit empty
+// - remote builtin configured and successfully loaded: source/ref set, commit empty
 // - embedded/default: commit set, source/ref empty
 func builtinSkillsManifestFields(cfg *ContainerConfig, resolved []skills.Skill) (commit, source, ref string) {
-	// If remote builtin skills were configured, record the source/ref in the manifest
-	// regardless of whether they loaded successfully or fell back to embedded skills.
-	// This provides an audit trail of what was intended vs what actually happened.
+	// If remote builtin skills were configured, record the source/ref in the manifest.
 	if cfg.BuiltinSkillsSource != "" {
 		return "", cfg.BuiltinSkillsSource, cfg.BuiltinSkillsRef
 	}
