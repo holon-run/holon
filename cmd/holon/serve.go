@@ -94,10 +94,11 @@ for local development and testing.`,
 		if err != nil {
 			return err
 		}
-		resolvedRuntimeDevAgentSource, err := resolveRuntimeDevAgentSource(resolvedRuntimeMode, serveRuntimeDevAgentSource)
+		resolvedRuntimeDevAgentSource, runtimeDevAgentSourceOrigin, err := resolveRuntimeDevAgentSourceWithOrigin(resolvedRuntimeMode, serveRuntimeDevAgentSource)
 		if err != nil {
 			return err
 		}
+		roleSource := filepath.Join(agentResolution.AgentHome, "ROLE.md")
 
 		handler, err := newCLIControllerHandler(
 			serveRepo,
@@ -158,18 +159,31 @@ for local development and testing.`,
 			if err := subMgr.Start(tickCtx); err != nil {
 				return fmt.Errorf("failed to start subscription manager: %w", err)
 			}
-
-			holonlog.Info(
-				"serve started (subscription mode)",
-				"agent_id", agentResolution.AgentID,
-				"agent_home", agentResolution.AgentHome,
-				"state_dir", absStateDir,
-				"workspace", controllerWorkspace,
-				"controller_role", roleLabel,
-				"role_source", filepath.Join(agentResolution.AgentHome, "ROLE.md"),
-				"tick_interval", serveTickInterval,
-				"webhook_port", subMgr.GetWebhookPort(),
-			)
+			status := subMgr.Status()
+			startup := buildServeStartupDiagnostics(serveStartupDiagnosticsInput{
+				AgentID:                   agentResolution.AgentID,
+				AgentHome:                 agentResolution.AgentHome,
+				StateDir:                  absStateDir,
+				Workspace:                 controllerWorkspace,
+				RoleSource:                roleSource,
+				RoleInferred:              roleLabel,
+				ConfigSource:              filepath.Join(agentResolution.AgentHome, "agent.yaml"),
+				InputMode:                 "subscription",
+				SubscriptionEnabled:       true,
+				SubscriptionStatus:        status,
+				RepoHint:                  serveRepo,
+				TickInterval:              serveTickInterval,
+				WebhookPort:               subMgr.GetWebhookPort(),
+				RuntimeMode:               resolvedRuntimeMode,
+				RuntimeDevAgentSource:     resolvedRuntimeDevAgentSource,
+				RuntimeDevAgentSourceFrom: runtimeDevAgentSourceOrigin,
+				ServeInput:                serveInput,
+				NoSubscriptionsFlag:       serveNoSubscriptions,
+			})
+			if err := writeServeStartupDiagnostics(absStateDir, startup); err != nil {
+				return err
+			}
+			logServeStartupDiagnostics(startup)
 
 			// Wait for context cancellation
 			<-tickCtx.Done()
@@ -200,19 +214,29 @@ for local development and testing.`,
 					return webhookSrv.InjectEvent(ctx, env)
 				})
 			}
-
-			holonlog.Info(
-				"serve started (webhook mode)",
-				"repo", serveRepo,
-				"state_dir", absStateDir,
-				"agent_id", agentResolution.AgentID,
-				"agent_home", agentResolution.AgentHome,
-				"workspace", controllerWorkspace,
-				"port", serveWebhookPort,
-				"controller_role", roleLabel,
-				"role_source", filepath.Join(agentResolution.AgentHome, "ROLE.md"),
-				"tick_interval", serveTickInterval,
-			)
+			startup := buildServeStartupDiagnostics(serveStartupDiagnosticsInput{
+				AgentID:                   agentResolution.AgentID,
+				AgentHome:                 agentResolution.AgentHome,
+				StateDir:                  absStateDir,
+				Workspace:                 controllerWorkspace,
+				RoleSource:                roleSource,
+				RoleInferred:              roleLabel,
+				ConfigSource:              filepath.Join(agentResolution.AgentHome, "agent.yaml"),
+				InputMode:                 "webhook_legacy",
+				SubscriptionEnabled:       false,
+				RepoHint:                  serveRepo,
+				TickInterval:              serveTickInterval,
+				WebhookPort:               serveWebhookPort,
+				RuntimeMode:               resolvedRuntimeMode,
+				RuntimeDevAgentSource:     resolvedRuntimeDevAgentSource,
+				RuntimeDevAgentSourceFrom: runtimeDevAgentSourceOrigin,
+				ServeInput:                serveInput,
+				NoSubscriptionsFlag:       serveNoSubscriptions,
+			})
+			if err := writeServeStartupDiagnostics(absStateDir, startup); err != nil {
+				return err
+			}
+			logServeStartupDiagnostics(startup)
 			return webhookSrv.Start(tickCtx)
 		}
 
@@ -246,18 +270,28 @@ for local development and testing.`,
 			})
 		}
 
-		holonlog.Info(
-			"serve started",
-			"repo", serveRepo,
-			"state_dir", absStateDir,
-			"agent_id", agentResolution.AgentID,
-			"agent_home", agentResolution.AgentHome,
-			"workspace", controllerWorkspace,
-			"input", serveInput,
-			"controller_role", roleLabel,
-			"role_source", filepath.Join(agentResolution.AgentHome, "ROLE.md"),
-			"tick_interval", serveTickInterval,
-		)
+		startup := buildServeStartupDiagnostics(serveStartupDiagnosticsInput{
+			AgentID:                   agentResolution.AgentID,
+			AgentHome:                 agentResolution.AgentHome,
+			StateDir:                  absStateDir,
+			Workspace:                 controllerWorkspace,
+			RoleSource:                roleSource,
+			RoleInferred:              roleLabel,
+			ConfigSource:              filepath.Join(agentResolution.AgentHome, "agent.yaml"),
+			InputMode:                 "stdin_file",
+			SubscriptionEnabled:       false,
+			RepoHint:                  serveRepo,
+			TickInterval:              serveTickInterval,
+			RuntimeMode:               resolvedRuntimeMode,
+			RuntimeDevAgentSource:     resolvedRuntimeDevAgentSource,
+			RuntimeDevAgentSourceFrom: runtimeDevAgentSourceOrigin,
+			ServeInput:                serveInput,
+			NoSubscriptionsFlag:       serveNoSubscriptions,
+		})
+		if err := writeServeStartupDiagnostics(absStateDir, startup); err != nil {
+			return err
+		}
+		logServeStartupDiagnostics(startup)
 		return svc.Run(tickCtx, reader, serveMaxEvents)
 	},
 }
@@ -1191,6 +1225,211 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+type serveStartupDiagnostics struct {
+	AgentID                   string   `json:"agent_id"`
+	AgentHome                 string   `json:"agent_home"`
+	StateDir                  string   `json:"state_dir"`
+	Workspace                 string   `json:"workspace"`
+	ConfigSource              string   `json:"config_source"`
+	RoleSource                string   `json:"role_source"`
+	RoleInferred              string   `json:"role_inferred"`
+	ServeInput                string   `json:"serve_input"`
+	InputMode                 string   `json:"input_mode"`
+	SubscriptionEnabled       bool     `json:"subscription_enabled"`
+	TransportMode             string   `json:"transport_mode"`
+	SubscriptionReason        string   `json:"subscription_reason,omitempty"`
+	SubscribedRepos           []string `json:"subscribed_repos,omitempty"`
+	RepoHint                  string   `json:"repo_hint,omitempty"`
+	TickInterval              string   `json:"tick_interval"`
+	WebhookPort               int      `json:"webhook_port,omitempty"`
+	RuntimeMode               string   `json:"runtime_mode"`
+	RuntimeDevAgentSource     string   `json:"runtime_dev_agent_source,omitempty"`
+	RuntimeDevAgentSourceFrom string   `json:"runtime_dev_agent_source_origin,omitempty"`
+	Preview                   string   `json:"preview"`
+	Warnings                  []string `json:"warnings,omitempty"`
+}
+
+type serveStartupDiagnosticsInput struct {
+	AgentID                   string
+	AgentHome                 string
+	StateDir                  string
+	Workspace                 string
+	ConfigSource              string
+	RoleSource                string
+	RoleInferred              string
+	ServeInput                string
+	InputMode                 string
+	SubscriptionEnabled       bool
+	SubscriptionStatus        map[string]interface{}
+	RepoHint                  string
+	TickInterval              time.Duration
+	WebhookPort               int
+	RuntimeMode               string
+	RuntimeDevAgentSource     string
+	RuntimeDevAgentSourceFrom string
+	NoSubscriptionsFlag       bool
+}
+
+func buildServeStartupDiagnostics(input serveStartupDiagnosticsInput) serveStartupDiagnostics {
+	diag := serveStartupDiagnostics{
+		AgentID:                   input.AgentID,
+		AgentHome:                 input.AgentHome,
+		StateDir:                  input.StateDir,
+		Workspace:                 input.Workspace,
+		ConfigSource:              input.ConfigSource,
+		RoleSource:                input.RoleSource,
+		RoleInferred:              input.RoleInferred,
+		ServeInput:                firstNonEmpty(input.ServeInput, "-"),
+		InputMode:                 input.InputMode,
+		SubscriptionEnabled:       input.SubscriptionEnabled,
+		TransportMode:             "none",
+		RepoHint:                  strings.TrimSpace(input.RepoHint),
+		TickInterval:              input.TickInterval.String(),
+		WebhookPort:               input.WebhookPort,
+		RuntimeMode:               input.RuntimeMode,
+		RuntimeDevAgentSource:     input.RuntimeDevAgentSource,
+		RuntimeDevAgentSourceFrom: input.RuntimeDevAgentSourceFrom,
+		Preview:                   "experimental",
+		Warnings:                  []string{"holon serve is experimental/preview in this release; use holon run for GA workloads."},
+	}
+
+	if input.InputMode == "subscription" {
+		mode := strings.TrimSpace(asString(input.SubscriptionStatus["mode"]))
+		reason := strings.TrimSpace(asString(input.SubscriptionStatus["reason"]))
+		transportMode := strings.TrimSpace(asString(input.SubscriptionStatus["transport_mode"]))
+		if transportMode == "auto" {
+			transportMode = ""
+		}
+		repos := asStringSlice(input.SubscriptionStatus["subscribed_repos"])
+		diag.SubscribedRepos = repos
+		diag.SubscriptionReason = reason
+		if mode == "rpc_only" {
+			diag.TransportMode = "rpc_only"
+		} else {
+			diag.TransportMode = firstNonEmpty(transportMode, mode, "unknown")
+		}
+		switch reason {
+		case "empty_repos":
+			diag.Warnings = append(diag.Warnings,
+				"subscriptions.github.repos is empty; serve is running in rpc-only passive mode.",
+				"next action: add subscriptions.github.repos in agent.yaml (or pass --repo with --tick-interval for timer-driven polling).",
+			)
+		case "no_subscriptions":
+			diag.Warnings = append(diag.Warnings,
+				"no GitHub subscriptions configured; serve is running in rpc-only passive mode.",
+				"next action: add a github subscription block to agent.yaml or run with --no-subscriptions and feed events via --input.",
+			)
+		case "rpc_only":
+			diag.Warnings = append(diag.Warnings, "serve is running in rpc-only passive mode.")
+		}
+		if mode == "rpc_only" && input.TickInterval <= 0 {
+			diag.Warnings = append(diag.Warnings, "idle behavior: waiting for turn/start RPC or externally injected events.")
+		}
+	}
+
+	if input.InputMode == "stdin_file" {
+		diag.Warnings = append(diag.Warnings, "serve subscriptions are disabled; events come from --input only.")
+		if diag.ServeInput == "-" {
+			diag.Warnings = append(diag.Warnings, "idle behavior: waiting for newline-delimited JSON events on stdin.")
+		}
+	}
+
+	if input.InputMode == "webhook_legacy" {
+		diag.TransportMode = "webhook"
+		diag.Warnings = append(diag.Warnings,
+			"legacy webhook mode is for backward compatibility; prefer subscription mode with agent.yaml.",
+		)
+	}
+
+	if input.NoSubscriptionsFlag {
+		diag.Warnings = append(diag.Warnings, "--no-subscriptions is enabled; serve will not read agent.yaml subscriptions.")
+	}
+
+	return diag
+}
+
+func writeServeStartupDiagnostics(stateDir string, diag serveStartupDiagnostics) error {
+	data, err := json.MarshalIndent(diag, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal serve startup diagnostics: %w", err)
+	}
+	data = append(data, '\n')
+	path := filepath.Join(stateDir, "serve-startup-diagnostics.json")
+	tmp, err := os.CreateTemp(stateDir, ".serve-startup-diagnostics-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp diagnostics file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to write serve startup diagnostics to temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to close temp diagnostics file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to atomically replace serve startup diagnostics file: %w", err)
+	}
+	holonlog.Info("serve startup diagnostics written", "path", path)
+	return nil
+}
+
+func logServeStartupDiagnostics(diag serveStartupDiagnostics) {
+	holonlog.Info(
+		"serve startup diagnostics",
+		"agent_id", diag.AgentID,
+		"agent_home", diag.AgentHome,
+		"state_dir", diag.StateDir,
+		"workspace", diag.Workspace,
+		"config_source", diag.ConfigSource,
+		"role_source", diag.RoleSource,
+		"role_inferred", diag.RoleInferred,
+		"input_mode", diag.InputMode,
+		"subscription_enabled", diag.SubscriptionEnabled,
+		"transport_mode", diag.TransportMode,
+		"subscription_reason", diag.SubscriptionReason,
+		"subscribed_repos", diag.SubscribedRepos,
+		"repo_hint", diag.RepoHint,
+		"serve_input", diag.ServeInput,
+		"tick_interval", diag.TickInterval,
+		"webhook_port", diag.WebhookPort,
+		"runtime_mode", diag.RuntimeMode,
+		"runtime_dev_agent_source", diag.RuntimeDevAgentSource,
+		"runtime_dev_agent_source_origin", diag.RuntimeDevAgentSourceFrom,
+		"preview", diag.Preview,
+	)
+	for _, warning := range diag.Warnings {
+		holonlog.Warn("serve startup warning", "message", warning)
+	}
+}
+
+func asString(value interface{}) string {
+	s, _ := value.(string)
+	return s
+}
+
+func asStringSlice(value interface{}) []string {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			out = append(out, s)
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func (h *cliControllerHandler) Close() error {

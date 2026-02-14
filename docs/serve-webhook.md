@@ -83,6 +83,21 @@ holon serve \
   --runtime-dev-agent-source ./agents/claude
 ```
 
+## Startup Diagnostics
+
+On startup, `holon serve` writes `${state_dir}/serve-startup-diagnostics.json` and logs the same diagnostic snapshot.
+
+Key fields:
+- `role_source`: Always `${agent_home}/ROLE.md` (single source of truth)
+- `role_inferred`: Role inferred from `ROLE.md` content (`pm`/`dev`)
+- `config_source`: `${agent_home}/agent.yaml`
+- `input_mode`: `subscription`, `webhook_legacy`, or `stdin_file`
+- `transport_mode`: `gh_forward`, `websocket`, `webhook`, `rpc_only`, or `none`
+- `runtime_dev_agent_source`: effective local agent source path when `runtime_mode=dev`
+- `runtime_dev_agent_source_origin`: where that dev source came from (`flag`, `env:*`, or `default:*`)
+- `subscription_reason`: why the current mode was selected (for example `empty_repos`)
+- `warnings`: explicit preview/passive guardrails with expected next actions
+
 ## Event Types
 
 The following GitHub webhook events are supported:
@@ -161,6 +176,12 @@ Webhook mode maintains persistent state in the state directory:
 - Verify controller skill path is correct
 - Check Docker is running: `docker info`
 - Review `actions.ndjson` for execution errors
+
+### Serve starts but looks idle (passive mode)
+- Check `serve-startup-diagnostics.json` and startup logs for `transport_mode=rpc_only`
+- If `subscription_reason=empty_repos`, add `subscriptions.github.repos` in `agent.yaml`
+- If running with `--no-subscriptions`, provide input via `--input` (or stdin with `--input -`)
+- If no tick is configured, idle behavior is expected until RPC `turn/start` or injected events arrive
 
 ### Port already in use
 - Choose a different port: `--webhook-port 8081`

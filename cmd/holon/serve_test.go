@@ -26,6 +26,122 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
+func TestBuildServeStartupDiagnostics_SubscriptionRPCOnly(t *testing.T) {
+	t.Parallel()
+
+	diag := buildServeStartupDiagnostics(serveStartupDiagnosticsInput{
+		AgentID:             "main",
+		AgentHome:           "/tmp/agent",
+		StateDir:            "/tmp/agent/state",
+		Workspace:           "/tmp/agent/workspace",
+		ConfigSource:        "/tmp/agent/agent.yaml",
+		RoleSource:          "/tmp/agent/ROLE.md",
+		RoleInferred:        "pm",
+		ServeInput:          "-",
+		InputMode:           "subscription",
+		SubscriptionEnabled: true,
+		SubscriptionStatus: map[string]interface{}{
+			"mode":             "rpc_only",
+			"reason":           "empty_repos",
+			"subscribed_repos": []string{},
+		},
+		TickInterval: 0,
+		RuntimeMode:  "prod",
+	})
+
+	if diag.TransportMode != "rpc_only" {
+		t.Fatalf("transport_mode = %q, want rpc_only", diag.TransportMode)
+	}
+	if diag.SubscriptionReason != "empty_repos" {
+		t.Fatalf("subscription_reason = %q, want empty_repos", diag.SubscriptionReason)
+	}
+	if diag.RoleSource != "/tmp/agent/ROLE.md" {
+		t.Fatalf("role_source = %q", diag.RoleSource)
+	}
+	if diag.RoleInferred != "pm" {
+		t.Fatalf("role_inferred = %q", diag.RoleInferred)
+	}
+	joinedWarnings := strings.Join(diag.Warnings, " | ")
+	if !strings.Contains(joinedWarnings, "subscriptions.github.repos is empty") {
+		t.Fatalf("warnings missing empty repos guidance: %s", joinedWarnings)
+	}
+	if !strings.Contains(joinedWarnings, "idle behavior") {
+		t.Fatalf("warnings missing idle behavior guidance: %s", joinedWarnings)
+	}
+
+	data, err := json.Marshal(diag)
+	if err != nil {
+		t.Fatalf("marshal diagnostics: %v", err)
+	}
+	if strings.Contains(string(data), "controller_role") {
+		t.Fatalf("diagnostics should not contain controller_role field: %s", string(data))
+	}
+}
+
+func TestBuildServeStartupDiagnostics_StdinModeWarnings(t *testing.T) {
+	t.Parallel()
+
+	diag := buildServeStartupDiagnostics(serveStartupDiagnosticsInput{
+		InputMode:           "stdin_file",
+		SubscriptionEnabled: false,
+		ServeInput:          "-",
+		NoSubscriptionsFlag: true,
+		RuntimeMode:         "prod",
+	})
+	joinedWarnings := strings.Join(diag.Warnings, " | ")
+	if !strings.Contains(joinedWarnings, "waiting for newline-delimited JSON events on stdin") {
+		t.Fatalf("warnings missing stdin idle guidance: %s", joinedWarnings)
+	}
+	if !strings.Contains(joinedWarnings, "--no-subscriptions is enabled") {
+		t.Fatalf("warnings missing no-subscriptions guidance: %s", joinedWarnings)
+	}
+}
+
+func TestBuildServeStartupDiagnostics_SubscriptionAutoTransportUsesEffectiveMode(t *testing.T) {
+	t.Parallel()
+
+	diag := buildServeStartupDiagnostics(serveStartupDiagnosticsInput{
+		InputMode: "subscription",
+		SubscriptionStatus: map[string]interface{}{
+			"mode":           "gh_forward",
+			"transport_mode": "auto",
+		},
+		RuntimeMode: "prod",
+	})
+	if diag.TransportMode != "gh_forward" {
+		t.Fatalf("transport_mode = %q, want gh_forward", diag.TransportMode)
+	}
+}
+
+func TestWriteServeStartupDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	diag := serveStartupDiagnostics{
+		AgentID:      "main",
+		RoleSource:   filepath.Join(td, "ROLE.md"),
+		RoleInferred: "pm",
+		Preview:      "experimental",
+	}
+	if err := writeServeStartupDiagnostics(td, diag); err != nil {
+		t.Fatalf("writeServeStartupDiagnostics() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(td, "serve-startup-diagnostics.json"))
+	if err != nil {
+		t.Fatalf("read diagnostics file: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal diagnostics file: %v", err)
+	}
+	if got["role_source"] != diag.RoleSource {
+		t.Fatalf("role_source = %v, want %s", got["role_source"], diag.RoleSource)
+	}
+	if got["role_inferred"] != "pm" {
+		t.Fatalf("role_inferred = %v, want pm", got["role_inferred"])
+	}
+}
+
 func TestSessionStatePathAndReadSessionID(t *testing.T) {
 	t.Parallel()
 
