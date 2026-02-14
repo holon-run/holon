@@ -1198,6 +1198,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ ! -d "agents/claude" ]; then
+            echo "::error::agents/claude directory not found"
+            exit 1
+          fi
+
+          if [ ! -f "agents/claude/package.json" ]; then
+            echo "::error::agents/claude/package.json not found"
+            exit 1
+          fi
+
           cd agents/claude
           npm ci
           npm run bundle
@@ -1229,6 +1239,7 @@ jobs:
             echo "agent_ref=$LOCAL_AGENT" >> "$GITHUB_OUTPUT"
             echo "Using local source-built agent bundle: $LOCAL_AGENT"
           else
+            # Keep empty to trigger composite action fallback (no --agent flag).
             echo "agent_ref=" >> "$GITHUB_OUTPUT"
             echo "Using action default agent resolution (channel latest)"
           fi
