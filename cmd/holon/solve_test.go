@@ -22,6 +22,65 @@ func TestBuildGoal_SkillModePRReviewUsesGithubReviewSkill(t *testing.T) {
 	}
 }
 
+func TestInferRefTypeFromURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		refStr   string
+		solveRef *pkggithub.SolveRef
+		wantType string
+		wantOK   bool
+	}{
+		{
+			name:   "issue url",
+			refStr: "https://github.com/holon-run/holon/issues/123",
+			solveRef: &pkggithub.SolveRef{
+				Owner:  "holon-run",
+				Repo:   "holon",
+				Number: 123,
+				Type:   pkggithub.SolveRefTypeIssue,
+			},
+			wantType: "issue",
+			wantOK:   true,
+		},
+		{
+			name:   "pr url",
+			refStr: "https://github.com/holon-run/holon/pull/456",
+			solveRef: &pkggithub.SolveRef{
+				Owner:  "holon-run",
+				Repo:   "holon",
+				Number: 456,
+				Type:   pkggithub.SolveRefTypePR,
+			},
+			wantType: "pr",
+			wantOK:   true,
+		},
+		{
+			name:   "short ref is ambiguous",
+			refStr: "holon-run/holon#456",
+			solveRef: &pkggithub.SolveRef{
+				Owner:  "holon-run",
+				Repo:   "holon",
+				Number: 456,
+				Type:   pkggithub.SolveRefTypePR,
+			},
+			wantType: "",
+			wantOK:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotType, gotOK := inferRefTypeFromURL(tt.refStr, tt.solveRef)
+			if gotOK != tt.wantOK {
+				t.Fatalf("inferRefTypeFromURL() ok = %v, want %v", gotOK, tt.wantOK)
+			}
+			if gotType != tt.wantType {
+				t.Fatalf("inferRefTypeFromURL() type = %q, want %q", gotType, tt.wantType)
+			}
+		})
+	}
+}
+
 func TestBuildGoal_SkillModePRFixUsesGithubPrFixSkill(t *testing.T) {
 	ref := &pkggithub.SolveRef{Owner: "holon-run", Repo: "holon", Number: 564}
 	goal := buildGoal("", ref, "pr", "", "github-pr-fix")

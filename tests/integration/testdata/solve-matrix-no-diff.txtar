@@ -1,0 +1,44 @@
+[!docker] skip 'docker not available'
+
+# S3: no-change/no-diff reliability (successful run without source modifications)
+
+mkdir work
+mkdir out
+mkdir input
+mkdir input/context
+
+exec git -C work init
+exec git -C work config user.email "test@example.com"
+exec git -C work config user.name "Test User"
+exec git -C work add README.md
+exec git -C work commit -m 'initial commit'
+
+env GITHUB_TOKEN=dummy-token
+env HOLON_CLAUDE_DRIVER=mock
+env HOLON_CLAUDE_MOCK_FIXTURE=/input/context/fixture.json
+exec sh -c 'AGENT="${HOLON_TEST_AGENT_BUNDLE:-default}"; holon solve https://github.com/test/repo/issues/124 --workspace work --input input --output out --image debian:bookworm-slim --agent "$AGENT" --cleanup none'
+
+exists out/manifest.json
+exists out/diff.patch
+exists out/summary.md
+
+exec grep -q '"status": "completed"' out/manifest.json
+exec grep -q '"outcome": "success"' out/manifest.json
+exec sh -c 'test ! -s out/diff.patch || grep -q "^diff --git" out/diff.patch'
+
+-- work/README.md --
+# Demo
+
+No code change required.
+
+-- input/context/fixture.json --
+{
+  "version": "v1",
+  "description": "No change required",
+  "operations": [],
+  "outcome": {
+    "success": true,
+    "result_text": "No code changes required",
+    "summary": "# Summary\n\nNo code changes were required for this task."
+  }
+}

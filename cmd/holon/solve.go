@@ -434,10 +434,16 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	// If explicit type is provided, use it; otherwise determine via API
 	refType := explicitType
 	if refType == "" {
-		// Determine type by checking if it's a PR via API
-		refType, err = determineRefType(ctx, solveRef, token)
-		if err != nil {
-			return fmt.Errorf("failed to determine reference type: %w", err)
+		// For full GitHub URLs, ParseSolveRef already encodes an explicit type.
+		// Only ambiguous refs (owner/repo#n, #n) require API detection.
+		if inferredType, ok := inferRefTypeFromURL(refStr, solveRef); ok {
+			refType = inferredType
+		} else {
+			// Determine type by checking if it's a PR via API
+			refType, err = determineRefType(ctx, solveRef, token)
+			if err != nil {
+				return fmt.Errorf("failed to determine reference type: %w", err)
+			}
 		}
 	} else {
 		// Use the explicitly specified type
@@ -791,6 +797,19 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	fmt.Println(strings.Repeat("=", 60))
 
 	return nil
+}
+
+func inferRefTypeFromURL(refStr string, solveRef *pkggithub.SolveRef) (string, bool) {
+	if !strings.HasPrefix(refStr, "https://github.com/") {
+		return "", false
+	}
+	if strings.Contains(refStr, "/issues/") && solveRef.Type == pkggithub.SolveRefTypeIssue {
+		return "issue", true
+	}
+	if strings.Contains(refStr, "/pull/") && solveRef.Type == pkggithub.SolveRefTypePR {
+		return "pr", true
+	}
+	return "", false
 }
 
 // determineRefType determines if a reference is an issue or PR via GitHub API

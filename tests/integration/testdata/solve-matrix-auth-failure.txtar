@@ -1,0 +1,10 @@
+# S5: auth failure behavior should fail fast with actionable diagnostic
+
+mkdir work
+mkdir out
+mkdir input
+
+env GITHUB_TOKEN=
+env HOLON_GITHUB_TOKEN=
+! exec holon solve https://github.com/test/repo/issues/125 --workspace work --input input --output out --image golang:1.22
+stderr 'GITHUB_TOKEN or HOLON_GITHUB_TOKEN environment variable is required'

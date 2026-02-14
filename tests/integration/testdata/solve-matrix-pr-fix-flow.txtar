@@ -1,0 +1,64 @@
+[!docker] skip 'docker not available'
+
+# S2: PR fix reliability (solve pr -> deterministic remediation artifacts)
+
+mkdir work
+mkdir work/pkg
+mkdir work/pkg/handler
+mkdir out
+mkdir input
+mkdir input/context
+
+exec git -C work init
+exec git -C work config user.email "test@example.com"
+exec git -C work config user.name "Test User"
+exec git -C work add pkg/handler/process.go
+exec git -C work commit -m 'initial commit'
+
+env GITHUB_TOKEN=dummy-token
+env HOLON_CLAUDE_DRIVER=mock
+env HOLON_CLAUDE_MOCK_FIXTURE=/input/context/fixture.json
+exec sh -c 'AGENT="${HOLON_TEST_AGENT_BUNDLE:-default}"; holon solve https://github.com/test/repo/pull/456 --workspace work --input input --output out --image ubuntu:22.04 --agent "$AGENT" --cleanup none'
+
+exists out/manifest.json
+exists out/diff.patch
+exists out/summary.md
+
+exec grep -q '"status": "completed"' out/manifest.json
+exec grep -q '"outcome": "success"' out/manifest.json
+exec grep -q 'ProcessData(data string) error' out/diff.patch
+exec grep -q 'review comments' out/summary.md
+
+-- work/pkg/handler/process.go --
+package handler
+
+func ProcessData(data string) {
+    result := transform(data)
+    send(result)
+}
+
+func transform(s string) string {
+    return s + " processed"
+}
+
+func send(result string) {
+    // Send result somewhere
+}
+
+-- input/context/fixture.json --
+{
+  "version": "v1",
+  "description": "Fix PR review comments about error handling",
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "pkg/handler/process.go",
+      "content": "package handler\n\nimport (\n    \"errors\"\n)\n\nfunc ProcessData(data string) error {\n    result, err := transform(data)\n    if err != nil {\n        return err\n    }\n    return send(result)\n}\n\nfunc transform(s string) (string, error) {\n    if s == \"\" {\n        return \"\", errors.New(\"empty input\")\n    }\n    return s + \" processed\", nil\n}\n\nfunc send(result string) error {\n    if result == \"\" {\n        return errors.New(\"nothing to send\")\n    }\n    return nil\n}\n"
+    }
+  ],
+  "outcome": {
+    "success": true,
+    "result_text": "Fixed review comments by adding error handling",
+    "summary": "# Summary\n\nFixed review comments by adding comprehensive error handling."
+  }
+}
