@@ -408,6 +408,91 @@ func TestWebhookServer_StatePersistence(t *testing.T) {
 	}
 }
 
+func TestWebhookServer_RestartLoadsStateAndDedupes(t *testing.T) {
+	td := t.TempDir()
+	dedupeKey := "issue_comment:test/repo:123"
+
+	firstHandler := &mockEventHandler{}
+	firstServer, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  firstHandler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer(first) failed: %v", err)
+	}
+	firstServer.now = func() time.Time { return time.Date(2026, 2, 14, 9, 0, 0, 0, time.UTC) }
+
+	firstEvent := EventEnvelope{
+		ID:        "evt-first",
+		Source:    "github",
+		Type:      "github.issue_comment.created",
+		DedupeKey: dedupeKey,
+		Scope: EventScope{
+			Repo: "test/repo",
+		},
+		Subject: EventSubject{
+			Kind: "issue",
+			ID:   "123",
+		},
+	}
+	if err := firstServer.InjectEvent(context.Background(), firstEvent); err != nil {
+		t.Fatalf("InjectEvent(first) failed: %v", err)
+	}
+	if len(firstHandler.events) != 1 {
+		t.Fatalf("expected first server to process one event, got %d", len(firstHandler.events))
+	}
+	if err := firstServer.Close(); err != nil {
+		t.Fatalf("Close(first) failed: %v", err)
+	}
+
+	secondHandler := &mockEventHandler{}
+	secondServer, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  secondHandler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer(second) failed: %v", err)
+	}
+	defer secondServer.Close()
+	secondServer.now = func() time.Time { return time.Date(2026, 2, 14, 10, 0, 0, 0, time.UTC) }
+
+	secondServer.mu.RLock()
+	_, loaded := secondServer.state.ProcessedAt[dedupeKey]
+	secondServer.mu.RUnlock()
+	if !loaded {
+		t.Fatalf("expected dedupe key %q to be loaded from persisted state", dedupeKey)
+	}
+
+	duplicateEvent := EventEnvelope{
+		ID:        "evt-second",
+		Source:    "github",
+		Type:      "github.issue_comment.created",
+		DedupeKey: dedupeKey,
+		Scope: EventScope{
+			Repo: "test/repo",
+		},
+		Subject: EventSubject{
+			Kind: "issue",
+			ID:   "123",
+		},
+	}
+	if err := secondServer.InjectEvent(context.Background(), duplicateEvent); err != nil {
+		t.Fatalf("InjectEvent(second) failed: %v", err)
+	}
+	if len(secondHandler.events) != 0 {
+		t.Fatalf("expected duplicate event to be skipped after restart, got %d handled events", len(secondHandler.events))
+	}
+
+	secondServer.mu.RLock()
+	lastEventID := secondServer.state.LastEventID
+	secondServer.mu.RUnlock()
+	if lastEventID != "evt-second" {
+		t.Fatalf("expected LastEventID to advance on duplicate event, got %q", lastEventID)
+	}
+}
+
 func TestWebhookServer_Timeouts(t *testing.T) {
 	td := t.TempDir()
 	handler := &mockEventHandler{}

@@ -130,6 +130,20 @@ Webhook mode maintains persistent state in the state directory:
 - Enables safe restart without reprocessing old events
 - Supports long-running controller mode
 
+## Backpressure Behavior
+
+Webhook ingress uses a bounded in-memory queue to protect runtime stability under burst traffic.
+
+- Queue capacity: 100 events
+- Enqueue strategy: block with timeout (default `5s`)
+- Timeout result: request returns `503 Service Unavailable` with `server busy`
+- Observability: timeout drops are logged with event type and timeout value
+
+Operational guidance:
+- If `503 server busy` appears under normal load, reduce ingress rate or run multiple serve instances.
+- Keep `state-dir` on fast local storage so cursor persistence does not amplify queue pressure.
+- For local replay/testing bursts, send in batches instead of one large flood.
+
 ## Architecture
 
 ```
