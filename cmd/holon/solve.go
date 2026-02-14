@@ -800,6 +800,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 }
 
 func inferRefTypeFromURL(refStr string, solveRef *pkggithub.SolveRef) (string, bool) {
+	refStr = strings.TrimSpace(refStr)
 	if !strings.HasPrefix(refStr, "https://github.com/") {
 		return "", false
 	}

@@ -55,6 +55,18 @@ func TestInferRefTypeFromURL(t *testing.T) {
 			wantOK:   true,
 		},
 		{
+			name:   "url with leading and trailing spaces",
+			refStr: "  https://github.com/holon-run/holon/issues/789  ",
+			solveRef: &pkggithub.SolveRef{
+				Owner:  "holon-run",
+				Repo:   "holon",
+				Number: 789,
+				Type:   pkggithub.SolveRefTypeIssue,
+			},
+			wantType: "issue",
+			wantOK:   true,
+		},
+		{
 			name:   "short ref is ambiguous",
 			refStr: "holon-run/holon#456",
 			solveRef: &pkggithub.SolveRef{
