@@ -1,0 +1,20 @@
+[!docker] skip 'docker not available'
+
+# S4: invalid workspace ref should fail during workspace preparation
+
+mkdir repo
+mkdir out
+mkdir input
+cd repo
+
+exec git init
+exec git config user.email "test@example.com"
+exec git config user.name "Test User"
+exec git remote add origin https://github.com/test/repo.git
+exec sh -c 'echo "package main\nfunc main(){}" > main.go'
+exec git add main.go
+exec git commit -m 'initial commit'
+
+env GITHUB_TOKEN=dummy-token
+! exec holon solve https://github.com/test/repo/issues/126 --workspace-ref does-not-exist --input ../input --output ../out --image golang:1.22
+stderr 'failed to prepare workspace'
