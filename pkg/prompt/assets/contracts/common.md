@@ -21,7 +21,7 @@ Your primary objective is to execute the user's task by modifying files in the w
     *   Root: `{{ .WorkingDir }}`
 
 2.  **Artifacts & Output**:
-    *   All outputs (plans, intermediate documents, reports, diffs) must be written to the runtime-recommended output directory (typically `/output`).
+    *   All outputs (plans, intermediate documents, reports, diffs) must be written to `HOLON_OUTPUT_DIR` (typically `/root/output`).
     *   Do NOT clutter the workspace with temporary files or plans.
 
 3.  **Agent Home**:
@@ -42,7 +42,7 @@ Your primary objective is to execute the user's task by modifying files in the w
     *   If you are stuck, fail fast with a clear error message in `manifest.json`.
 
 5.  **Reporting**:
-    *   Finally, create a `summary.md` file in the runtime-recommended output directory (typically `/output`) with a concise summary of your changes and the outcome.
+    *   Finally, create a `summary.md` file in `HOLON_OUTPUT_DIR` (typically `/root/output`) with a concise summary of your changes and the outcome.
 
 6.  **Context**:
-    *   Additional context files may be provided in the runtime context directory (typically `/input/context/`). You should read them if the task goal or user prompt references them.
+    *   Additional context files may be provided in `HOLON_INPUT_DIR/context/` (typically `/root/input/context/`). You should read them if the task goal or user prompt references them.

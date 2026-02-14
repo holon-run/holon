@@ -3,7 +3,7 @@
 PR-Fix mode is designed for GitHub PR fix operations. The agent analyzes PR feedback (review threads, CI/check failures) and generates structured responses to make the PR mergeable.
 
 **GitHub Context:**
-- PR context is provided under `/input/context/github/`:
+- PR context is provided under `${HOLON_INPUT_DIR}/context/github/`:
   - `pr.json`: Pull request metadata
   - `review_threads.json`: Review threads with comment metadata (optional, includes `comment_id`)
   - `pr.diff`: The code changes being reviewed (optional but recommended)
@@ -13,9 +13,9 @@ PR-Fix mode is designed for GitHub PR fix operations. The agent analyzes PR feed
 **Important:** When responding to review comments, use your GitHub identity (from common contract) to avoid replying to your own comments.
 
 **Required Outputs:**
-1. **`/output/summary.md`**: Human-readable summary of your analysis and actions taken (runtime-recommended output path)
-2. **`/output/pr-fix.json`**: Structured JSON containing fix status and responses (runtime-recommended output path)
-   - Must conform to `/input/context/pr-fix.schema.json` (read it if needed)
+1. **`${HOLON_OUTPUT_DIR}/summary.md`**: Human-readable summary of your analysis and actions taken (runtime-recommended output path)
+2. **`${HOLON_OUTPUT_DIR}/pr-fix.json`**: Structured JSON containing fix status and responses (runtime-recommended output path)
+   - Must conform to `${HOLON_INPUT_DIR}/context/pr-fix.schema.json` (read it if needed)
 
 **Execution Behavior:**
 - You are running **HEADLESSLY** - do not wait for user input or confirmation
@@ -176,7 +176,7 @@ When review comments request substantial refactoring, testing, or enhancements t
 
 **Analyzing Test Failures:**
 
-When CI/check runs fail, test failure logs are downloaded to `/input/context/github/test-failure-logs.txt`. Use these logs to diagnose failures:
+When CI/check runs fail, test failure logs are downloaded to `${HOLON_INPUT_DIR}/context/github/test-failure-logs.txt`. Use these logs to diagnose failures:
 
 **How logs are obtained:**
 - Logs are downloaded from the GitHub Actions API using the check run's DetailsURL
@@ -191,13 +191,13 @@ When CI/check runs fail, test failure logs are downloaded to `/input/context/git
 2. **Read the logs**: Use grep to find specific test failures:
    ```bash
    # Find all failing tests
-   grep -E "(FAIL|FAIL:|FAILED)" /input/context/github/test-failure-logs.txt
+   grep -E "(FAIL|FAIL:|FAILED)" ${HOLON_INPUT_DIR}/context/github/test-failure-logs.txt
 
    # Search for a specific test name
-   grep "TestRunner_Run_EnvVariablePrecedence" /input/context/github/test-failure-logs.txt
+   grep "TestRunner_Run_EnvVariablePrecedence" ${HOLON_INPUT_DIR}/context/github/test-failure-logs.txt
 
    # Show context around a failure
-   grep -A 20 "FAIL:" /input/context/github/test-failure-logs.txt
+   grep -A 20 "FAIL:" ${HOLON_INPUT_DIR}/context/github/test-failure-logs.txt
    ```
 3. **Analyze the failure**:
    - What error message or assertion failed?
@@ -208,7 +208,7 @@ When CI/check runs fail, test failure logs are downloaded to `/input/context/git
 **Important**: The `check_runs.json` only contains metadata (name, status, conclusion). The actual test failure details are in `test-failure-logs.txt`. Always read the logs when diagnosing test failures.
 
 **Context Files:**
-Additional context files may be provided in `/input/context/`. Read them if they contain relevant information for addressing the review comments or CI failures.
+Additional context files may be provided in `${HOLON_INPUT_DIR}/context/`. Read them if they contain relevant information for addressing the review comments or CI failures.
 
 **Test Failure Diagnosis and Reproduction:**
 
@@ -243,12 +243,12 @@ relevance → Fix or not-applicable   ↓ Can run test?
 ### Step 1: Check Available Information
 
 1. **Read CI logs** (if available):
-   - Check `/input/context/github/test-failure-logs.txt` for failure details
+   - Check `${HOLON_INPUT_DIR}/context/github/test-failure-logs.txt` for failure details
    - Search for specific failures (FAIL, error, exception patterns)
    - Identify failing test names and stack traces
 
 2. **Read check_runs.json** for test names and failure details:
-   - Check `/input/context/github/check_runs.json` for structured test failure information
+   - Check `${HOLON_INPUT_DIR}/context/github/check_runs.json` for structured test failure information
    - Extract test names, job IDs, and failure summaries
 
 3. **If logs are complete and clear**:
@@ -519,21 +519,21 @@ Before finalizing a diagnosis, ask yourself:
     "reasoning": "Local tests pass (32/32) but CI fails with EACCES permission denied. This suggests an environment difference, but could also indicate code that executes differently during module import vs explicit test invocation.",
     "evidence_supporting": [
       "Local test run: 32/32 passed",
-      "CI error: EACCES permission denied creating /output/evidence",
-      "Error path /output/evidence is a protected system path"
+      "CI error: EACCES permission denied creating ${HOLON_OUTPUT_DIR}/evidence",
+      "Error path ${HOLON_OUTPUT_DIR}/evidence is a protected system path"
     ],
     "evidence_conflicting": [
-      "If it were a simple environment issue, why would the code need to create /output/evidence?",
+      "If it were a simple environment issue, why would the code need to create ${HOLON_OUTPUT_DIR}/evidence?",
       "Tests don't fail locally even though they import the same agent.ts file"
     ],
     "alternative_explanations": [
-      "Explanation A: CI environment lacks write permissions to /output (environment issue)",
+      "Explanation A: CI environment lacks write permissions to ${HOLON_OUTPUT_DIR} (environment issue)",
       "Explanation B: agent.ts has module-level code that auto-executes and tries to create paths during import (code issue)",
       "Explanation C: Test setup mocks paths differently in CI vs local"
     ],
     "investigation_needed": [
       "Check agent.ts for module-level code that auto-executes",
-      "Verify when /output/evidence creation is triggered",
+      "Verify when ${HOLON_OUTPUT_DIR}/evidence creation is triggered",
       "Compare test environment setup between local and CI"
     ]
   }

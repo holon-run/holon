@@ -106,9 +106,9 @@ func TestRunHolon_ConfigAssembly(t *testing.T) {
 		}
 
 		expectedTargets := map[string]string{
-			"/workspace": "/tmp/workspace-snapshot",
-			"/input":     inputDir,
-			"/output":    outDir,
+			ContainerWorkspaceDir: "/tmp/workspace-snapshot",
+			ContainerInputDir:     inputDir,
+			ContainerOutputDir:    outDir,
 		}
 
 		for target, expectedSource := range expectedTargets {

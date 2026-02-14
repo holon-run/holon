@@ -239,18 +239,18 @@ func TestBuildContainerMounts(t *testing.T) {
 				{
 					Type:   mount.TypeBind,
 					Source: snapshotDir,
-					Target: "/workspace",
+					Target: ContainerWorkspaceDir,
 				},
 				{
 					Type:     mount.TypeBind,
 					Source:   inputDir,
-					Target:   "/input",
+					Target:   ContainerInputDir,
 					ReadOnly: true,
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: outDir,
-					Target: "/output",
+					Target: ContainerOutputDir,
 				},
 			},
 		},
@@ -266,23 +266,23 @@ func TestBuildContainerMounts(t *testing.T) {
 				{
 					Type:   mount.TypeBind,
 					Source: snapshotDir,
-					Target: "/workspace",
+					Target: ContainerWorkspaceDir,
 				},
 				{
 					Type:     mount.TypeBind,
 					Source:   inputDir,
-					Target:   "/input",
+					Target:   ContainerInputDir,
 					ReadOnly: true,
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: outDir,
-					Target: "/output",
+					Target: ContainerOutputDir,
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: filepath.Join(tmpDir, "state"),
-					Target: "/state",
+					Target: ContainerStateDir,
 				},
 			},
 		},
@@ -298,18 +298,18 @@ func TestBuildContainerMounts(t *testing.T) {
 				{
 					Type:   mount.TypeBind,
 					Source: snapshotDir,
-					Target: "/workspace",
+					Target: ContainerWorkspaceDir,
 				},
 				{
 					Type:     mount.TypeBind,
 					Source:   inputDir,
-					Target:   "/input",
+					Target:   ContainerInputDir,
 					ReadOnly: true,
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: outDir,
-					Target: "/output",
+					Target: ContainerOutputDir,
 				},
 				{
 					Type:     mount.TypeBind,
@@ -330,24 +330,24 @@ func TestBuildContainerMounts(t *testing.T) {
 			expected: []mount.Mount{
 				{
 					Type:   mount.TypeBind,
+					Source: filepath.Join(tmpDir, "agent-home"),
+					Target: ContainerAgentHome,
+				},
+				{
+					Type:   mount.TypeBind,
 					Source: snapshotDir,
-					Target: "/workspace",
+					Target: ContainerWorkspaceDir,
 				},
 				{
 					Type:     mount.TypeBind,
 					Source:   inputDir,
-					Target:   "/input",
+					Target:   ContainerInputDir,
 					ReadOnly: true,
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: outDir,
-					Target: "/output",
-				},
-				{
-					Type:   mount.TypeBind,
-					Source: filepath.Join(tmpDir, "agent-home"),
-					Target: "/root",
+					Target: ContainerOutputDir,
 				},
 			},
 		},
@@ -448,7 +448,7 @@ func TestBuildContainerHostConfig(t *testing.T) {
 		{
 			Type:   mount.TypeBind,
 			Source: "/tmp/workspace",
-			Target: "/workspace",
+			Target: ContainerWorkspaceDir,
 		},
 	}
 
@@ -773,14 +773,14 @@ func TestInputMountReadOnly(t *testing.T) {
 	// Find the input mount
 	var inputMount *mount.Mount
 	for i := range mounts {
-		if mounts[i].Target == "/input" {
+		if mounts[i].Target == ContainerInputDir {
 			inputMount = &mounts[i]
 			break
 		}
 	}
 
 	if inputMount == nil {
-		t.Fatal("BuildContainerMounts() did not create /input mount")
+		t.Fatalf("BuildContainerMounts() did not create %s mount", ContainerInputDir)
 	}
 
 	// Verify that the input mount is read-only
@@ -826,19 +826,19 @@ func TestWorkspaceAndOutputMountsReadWrite(t *testing.T) {
 	// Find workspace and output mounts
 	var workspaceMount, outputMount *mount.Mount
 	for i := range mounts {
-		if mounts[i].Target == "/workspace" {
+		if mounts[i].Target == ContainerWorkspaceDir {
 			workspaceMount = &mounts[i]
 		}
-		if mounts[i].Target == "/output" {
+		if mounts[i].Target == ContainerOutputDir {
 			outputMount = &mounts[i]
 		}
 	}
 
 	if workspaceMount == nil {
-		t.Fatal("BuildContainerMounts() did not create /workspace mount")
+		t.Fatalf("BuildContainerMounts() did not create %s mount", ContainerWorkspaceDir)
 	}
 	if outputMount == nil {
-		t.Fatal("BuildContainerMounts() did not create /output mount")
+		t.Fatalf("BuildContainerMounts() did not create %s mount", ContainerOutputDir)
 	}
 
 	// Verify workspace mount is read-write

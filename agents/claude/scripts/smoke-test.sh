@@ -108,7 +108,7 @@ echo "Running agent probe test..."
 
 # Check if we're already running in a Holon container environment
 IN_HOLON_CONTAINER=0
-if [ -d "/workspace" ] && [ -d "/input" ] && [ -d "/output" ]; then
+if [ -d "/root/workspace" ] && [ -d "/root/input" ] && [ -d "/root/output" ]; then
   IN_HOLON_CONTAINER=1
 fi
 
@@ -140,12 +140,12 @@ if [ ${IN_HOLON_CONTAINER} -eq 1 ]; then
 elif ! command -v docker >/dev/null 2>&1; then
   echo "  ⚠ WARNING: Docker not available and not in Holon container, skipping agent probe test"
   echo "    The agent probe test requires either:"
-  echo "    - A Holon container environment (/workspace, /input, /output)"
+  echo "    - A Holon container environment (/root/workspace, /root/input, /root/output)"
   echo "    - Docker to simulate the Holon container environment"
   echo "    Run 'npm run verify-bundle' for a full Docker-based verification"
 else
   # Create minimal Holon environment structure required for probe mode
-  # The agent's --probe mode expects /workspace, /input/spec.yaml, and /output
+  # The agent's --probe mode expects /root/workspace, /root/input/spec.yaml, and /root/output
   PROBE_HOLON_DIR=$(mktemp -d)
   trap 'rm -rf "${TEST_DIR}" "${PROBE_HOLON_DIR}"' EXIT
 
@@ -162,7 +162,7 @@ kind: Holon
 metadata:
   name: "smoke-test-probe"
 context:
-  workspace: "/workspace"
+  workspace: "/root/workspace"
 goal:
   description: "Smoke test probe validation"
 output:
@@ -182,15 +182,15 @@ SPEC
   # This simulates the actual Holon container environment
   set +e
   PROBE_OUTPUT=$(docker run --rm \
-    -v "${PROBE_INPUT_DIR}:/input:ro" \
-    -v "${PROBE_WORKSPACE_DIR}:/workspace:ro" \
-    -v "${PROBE_OUTPUT_DIR}:/output" \
-    -v "${PROBE_STATE_DIR}:/state" \
+    -v "${PROBE_INPUT_DIR}:/root/input:ro" \
+    -v "${PROBE_WORKSPACE_DIR}:/root/workspace:ro" \
+    -v "${PROBE_OUTPUT_DIR}:/root/output" \
+    -v "${PROBE_STATE_DIR}:/root/state" \
     -v "${TEST_DIR}:/holon/agent:ro" \
-    -e HOLON_INPUT_DIR=/input \
-    -e HOLON_WORKSPACE_DIR=/workspace \
-    -e HOLON_OUTPUT_DIR=/output \
-    -e HOLON_STATE_DIR=/state \
+    -e HOLON_INPUT_DIR=/root/input \
+    -e HOLON_WORKSPACE_DIR=/root/workspace \
+    -e HOLON_OUTPUT_DIR=/root/output \
+    -e HOLON_STATE_DIR=/root/state \
     -e HOLON_AGENT_HOME=/root \
     --entrypoint /bin/sh \
     "${IMAGE}" -c "cd /holon/agent && NODE_ENV=production node dist/agent.js --probe" 2>&1)

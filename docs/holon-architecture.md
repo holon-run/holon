@@ -15,9 +15,9 @@ Holon is split into:
 - **Agent (in container)**: bridges Holon contract to a specific engine/runtime (Claude Code, Codex, …).
 
 Typical flow:
-1) Runner prepares `/holon/input` and a workspace snapshot mounted at `/holon/workspace`.
+1) Runner prepares `HOLON_INPUT_DIR` and a workspace snapshot mounted at `HOLON_WORKSPACE_DIR` (typically `/root/input` and `/root/workspace`).
 2) Runner runs a composed image that includes the agent bundle.
-3) Agent reads inputs, drives the underlying engine, and writes artifacts to `/holon/output`.
+3) Agent reads inputs, drives the underlying engine, and writes artifacts to `HOLON_OUTPUT_DIR` (typically `/root/output`).
 4) Runner (or external publisher) uploads/publishes artifacts (e.g. apply patch, open PR) via workflows.
 
 ## Why “patch-first”
@@ -27,7 +27,7 @@ Holon’s default integration boundary is a patch file (`diff.patch`) because it
 - agent/engine neutrality (not every tool supports native “create PR”).
 
 ## Why “context injection”
-Holon does not fetch issue/PR context itself. The caller (workflow/local script) injects context files under `/holon/input/context/` so:
+Holon does not fetch issue/PR context itself. The caller (workflow/local script) injects context files under `${HOLON_INPUT_DIR}/context/` so:
 - agents remain tool/platform-agnostic,
 - runs are auditable (context is part of the execution record),
 - workflows can decide what to include (issue body, linked issues, diffs, logs, etc.).

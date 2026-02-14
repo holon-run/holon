@@ -21,16 +21,16 @@ The composed image installs required tooling (Node, git, `gh`) and the Claude Co
 
 ## Container filesystem layout
 The agent expects the standard Holon layout:
-- Workspace (snapshot): `/holon/workspace` (runner sets this as `WorkingDir`)
+- Workspace (snapshot): `HOLON_WORKSPACE_DIR` (typically `/root/workspace`, runner sets this as `WorkingDir`)
 - Inputs:
-  - `/holon/input/spec.yaml`
-  - `/holon/input/context/` (optional)
-  - `/holon/input/prompts/system.md` and `/holon/input/prompts/user.md` (optional)
+  - `${HOLON_INPUT_DIR}/spec.yaml`
+  - `${HOLON_INPUT_DIR}/context/` (optional)
+  - `${HOLON_INPUT_DIR}/prompts/system.md` and `${HOLON_INPUT_DIR}/prompts/user.md` (optional)
 - Outputs:
-  - `/holon/output/manifest.json`
-  - `/holon/output/diff.patch` (when requested)
-  - `/holon/output/summary.md` (when requested)
-  - `/holon/output/evidence/` (optional)
+  - `${HOLON_OUTPUT_DIR}/manifest.json`
+  - `${HOLON_OUTPUT_DIR}/diff.patch` (when requested)
+  - `${HOLON_OUTPUT_DIR}/summary.md` (when requested)
+  - `${HOLON_OUTPUT_DIR}/evidence/` (optional)
 
 ## Headless / non-interactive behavior
 The agent must run without a TTY and must not block on prompts:

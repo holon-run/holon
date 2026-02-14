@@ -4,7 +4,7 @@
 
 The `workspace.manifest.json` file is written by the Holon runtime after workspace preparation. It contains metadata about how the workspace was created, including the preparation strategy used, source origin, git reference information, and repository state.
 
-**Location:** `/holon/output/workspace.manifest.json`
+**Location:** `${HOLON_OUTPUT_DIR}/workspace.manifest.json` (typically `/root/output/workspace.manifest.json`)
 
 **Note:** Prior to v0.8.0, this file was written to the workspace root. It is now written to the output directory for better isolation.
 
@@ -241,5 +241,5 @@ Location: [`pkg/workspace/types.go`](../pkg/workspace/types.go)
 - Added `builtin_skills_source`, `builtin_skills_ref`, and `builtin_skills_commit` fields for tracking builtin skills provenance
 
 ### v0.8.0
-- Output location changed from workspace root to `/holon/output/` directory
+- Output location changed from workspace root to `${HOLON_OUTPUT_DIR}` (typically `/root/output`)
 - Schema-first design introduced with JSON Schema definition
