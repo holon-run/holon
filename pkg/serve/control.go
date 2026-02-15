@@ -68,14 +68,18 @@ type LogStreamResponse struct {
 
 // Runtime manages the serve runtime state
 type Runtime struct {
-	statePath   string
-	state       RuntimeState
-	now         func() time.Time
-	mu          sync.Mutex
-	broadcaster *NotificationBroadcaster
-	turns       map[string]*activeTurn
-	turnIdleTTL time.Duration
-	dispatcher  TurnDispatcher
+	statePath string
+	state     RuntimeState
+	// defaultSessionID is used when the persisted ControllerSession is empty.
+	// This provides an immediately usable interaction surface for serve.
+	defaultSessionID string
+	noDefaultSession bool
+	now              func() time.Time
+	mu               sync.Mutex
+	broadcaster      *NotificationBroadcaster
+	turns            map[string]*activeTurn
+	turnIdleTTL      time.Duration
+	dispatcher       TurnDispatcher
 }
 
 type activeTurn struct {
@@ -91,15 +95,37 @@ type TurnDispatcher func(ctx context.Context, req TurnStartRequest, turnID strin
 
 // NewRuntime creates a new runtime manager
 func NewRuntime(stateDir string) (*Runtime, error) {
+	return NewRuntimeWithOptions(stateDir, RuntimeOptions{
+		DefaultSessionID: "main",
+	})
+}
+
+type RuntimeOptions struct {
+	// DefaultSessionID is the thread/session id that will be created on startup
+	// when no persisted ControllerSession exists.
+	// If empty, "main" is used.
+	DefaultSessionID string
+	// NoDefaultSession disables creating/loading a default session id.
+	NoDefaultSession bool
+}
+
+func NewRuntimeWithOptions(stateDir string, opts RuntimeOptions) (*Runtime, error) {
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create runtime state dir: %w", err)
 	}
 
+	defaultID := strings.TrimSpace(opts.DefaultSessionID)
+	if defaultID == "" {
+		defaultID = "main"
+	}
+
 	rt := &Runtime{
-		statePath:   filepath.Join(stateDir, "runtime-state.json"),
-		now:         time.Now,
-		turns:       make(map[string]*activeTurn),
-		turnIdleTTL: defaultTurnIdleTTL,
+		statePath:        filepath.Join(stateDir, "runtime-state.json"),
+		now:              time.Now,
+		turns:            make(map[string]*activeTurn),
+		turnIdleTTL:      defaultTurnIdleTTL,
+		defaultSessionID: defaultID,
+		noDefaultSession: opts.NoDefaultSession,
 		state: RuntimeState{
 			State:           RuntimeStateRunning,
 			EventsProcessed: 0,
@@ -110,7 +136,40 @@ func NewRuntime(stateDir string) (*Runtime, error) {
 		return nil, err
 	}
 
+	if err := rt.ensureDefaultSession(); err != nil {
+		return nil, err
+	}
+
 	return rt, nil
+}
+
+func (rt *Runtime) ensureDefaultSession() error {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.noDefaultSession {
+		return nil
+	}
+	if strings.TrimSpace(rt.state.ControllerSession) != "" {
+		return nil
+	}
+	// Persist only when we actually transition from an empty controller session
+	// to the default session id.
+	rt.state.ControllerSession = rt.defaultSessionID
+	if err := rt.save(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (rt *Runtime) effectiveSessionID() string {
+	state := rt.GetState()
+	if strings.TrimSpace(state.ControllerSession) != "" {
+		return strings.TrimSpace(state.ControllerSession)
+	}
+	if rt.noDefaultSession {
+		return ""
+	}
+	return strings.TrimSpace(rt.defaultSessionID)
 }
 
 // SetBroadcaster injects a notification broadcaster for turn/thread/item events.
@@ -809,6 +868,9 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 		if err := json.Unmarshal(params, &req); err != nil {
 			return nil, NewJSONRPCError(ErrCodeInvalidParams, fmt.Sprintf("invalid params: %s", err))
 		}
+	}
+	if strings.TrimSpace(req.ThreadID) == "" {
+		req.ThreadID = rt.effectiveSessionID()
 	}
 	if strings.TrimSpace(req.ThreadID) == "" {
 		return nil, newInvalidParamFieldError("thread_id", "thread_id is required")

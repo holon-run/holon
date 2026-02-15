@@ -120,7 +120,7 @@ func (sh *StreamHandler) HandleStream(ctx context.Context, w http.ResponseWriter
 	defer streamWriter.Close()
 
 	// Send initial thread started notification
-	sessionID := sh.runtime.GetState().ControllerSession
+	sessionID := sh.runtime.effectiveSessionID()
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("thread_%d", sh.runtime.GetState().LastEventAt.Unix())
 	}

@@ -42,16 +42,18 @@ type WebhookServer struct {
 
 // WebhookConfig configures the webhook server
 type WebhookConfig struct {
-	Port           int
-	RepoHint       string
-	StateDir       string
-	Handler        EventHandler
-	TurnDispatcher TurnDispatcher
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	IdleTimeout    time.Duration
-	MaxBodySize    int64
-	ChannelTimeout time.Duration
+	Port             int
+	RepoHint         string
+	StateDir         string
+	Handler          EventHandler
+	TurnDispatcher   TurnDispatcher
+	DefaultSessionID string
+	NoDefaultSession bool
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	IdleTimeout      time.Duration
+	MaxBodySize      int64
+	ChannelTimeout   time.Duration
 }
 
 // NewWebhookServer creates a new webhook server for GitHub events
@@ -112,7 +114,10 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	}
 
 	// Initialize runtime state manager
-	runtime, err := NewRuntime(cfg.StateDir)
+	runtime, err := NewRuntimeWithOptions(cfg.StateDir, RuntimeOptions{
+		DefaultSessionID: cfg.DefaultSessionID,
+		NoDefaultSession: cfg.NoDefaultSession,
+	})
 	if err != nil {
 		eventsLog.Close()
 		decLog.Close()
