@@ -208,3 +208,130 @@ func TestResolveAgentHome_WithInvalidDerivedID(t *testing.T) {
 		t.Fatalf("expected error for invalid derived agent id")
 	}
 }
+
+func TestLoadConfig_RuntimeMountsValid(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+	if err := EnsureLayout(home); err != nil {
+		t.Fatalf("ensure layout: %v", err)
+	}
+
+	desktop := filepath.Join(td, "Desktop")
+	sshDir := filepath.Join(td, ".ssh")
+	if err := os.MkdirAll(desktop, 0o755); err != nil {
+		t.Fatalf("mkdir desktop: %v", err)
+	}
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("mkdir .ssh: %v", err)
+	}
+
+	cfgData := "version: v1\nagent:\n  id: main\n  profile: default\nruntime:\n  mounts:\n    - path: " + desktop + "\n      mode: rw\n    - path: " + sshDir + "\n"
+	if err := os.WriteFile(filepath.Join(home, "agent.yaml"), []byte(cfgData), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(home)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(cfg.Runtime.Mounts) != 2 {
+		t.Fatalf("runtime mounts = %d, want 2", len(cfg.Runtime.Mounts))
+	}
+	if cfg.Runtime.Mounts[0].Mode != "rw" && cfg.Runtime.Mounts[1].Mode != "rw" {
+		t.Fatalf("expected one rw mount, got %+v", cfg.Runtime.Mounts)
+	}
+}
+
+func TestLoadConfig_RuntimeMountsRejectInvalid(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+	if err := EnsureLayout(home); err != nil {
+		t.Fatalf("ensure layout: %v", err)
+	}
+	existsDir := filepath.Join(td, "exists")
+	if err := os.MkdirAll(existsDir, 0o755); err != nil {
+		t.Fatalf("mkdir exists: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		mounts  string
+		wantErr string
+	}{
+		{
+			name:    "relative path",
+			mounts:  "  mounts:\n    - path: ./relative\n",
+			wantErr: "absolute path",
+		},
+		{
+			name:    "filesystem root",
+			mounts:  "  mounts:\n    - path: /\n",
+			wantErr: "cannot be filesystem root",
+		},
+		{
+			name:    "missing path",
+			mounts:  "  mounts:\n    - path: " + filepath.Join(td, "missing") + "\n",
+			wantErr: "does not exist",
+		},
+		{
+			name:    "invalid mode",
+			mounts:  "  mounts:\n    - path: " + existsDir + "\n      mode: write\n",
+			wantErr: "must be ro or rw",
+		},
+		{
+			name:    "overlap",
+			mounts:  "  mounts:\n    - path: " + existsDir + "\n    - path: " + filepath.Join(existsDir, "child") + "\n",
+			wantErr: "overlapping paths",
+		},
+	}
+
+	if err := os.MkdirAll(filepath.Join(existsDir, "child"), 0o755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfgData := "version: v1\nagent:\n  id: main\n  profile: default\nruntime:\n" + tt.mounts
+			if err := os.WriteFile(filepath.Join(home, "agent.yaml"), []byte(cfgData), 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			_, err := LoadConfig(home)
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_RuntimeMountsRejectSymlinkOverlap(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+	if err := EnsureLayout(home); err != nil {
+		t.Fatalf("ensure layout: %v", err)
+	}
+
+	realDir := filepath.Join(td, "real")
+	linkDir := filepath.Join(td, "link")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	cfgData := "version: v1\nagent:\n  id: main\n  profile: default\nruntime:\n  mounts:\n    - path: " + realDir + "\n    - path: " + linkDir + "\n"
+	if err := os.WriteFile(filepath.Join(home, "agent.yaml"), []byte(cfgData), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadConfig(home)
+	if err == nil {
+		t.Fatalf("expected overlap error for symlink/real path")
+	}
+	if !strings.Contains(err.Error(), "duplicates") && !strings.Contains(err.Error(), "overlapping paths") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

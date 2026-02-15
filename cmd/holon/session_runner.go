@@ -36,6 +36,7 @@ type ControllerSessionConfig struct {
 	Env                   map[string]string
 	RuntimeMode           string
 	RuntimeDevAgentSource string
+	ExtraMounts           []docker.ExtraMount
 }
 
 type dockerSessionRunner struct {
@@ -67,6 +68,7 @@ func (r *dockerSessionRunner) Start(ctx context.Context, cfg ControllerSessionCo
 		UseSkillMode:         true,
 		RuntimeMode:          cfg.RuntimeMode,
 		DevAgentSourceDir:    cfg.RuntimeDevAgentSource,
+		ExtraMounts:          append([]docker.ExtraMount(nil), cfg.ExtraMounts...),
 	}
 	for k, v := range cfg.Env {
 		containerCfg.Env[k] = v

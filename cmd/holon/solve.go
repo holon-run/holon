@@ -489,6 +489,10 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		return err
 	}
 	defer cleanupEphemeralAgentHome(agentResolution, cleanupMode)
+	runtimeExtraMounts, _, err := resolveRuntimeMounts(agentResolution.AgentHome)
+	if err != nil {
+		return fmt.Errorf("failed to resolve runtime mounts: %w", err)
+	}
 
 	// Cleanup input directory based on mode and whether it's temp
 	// For temp input: clean on "auto" or "all"
@@ -769,6 +773,7 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		WorkspaceIsTemporary:  workspacePrep.useDirect,
 		RuntimeMode:           resolvedRuntimeMode,
 		RuntimeDevAgentSource: resolvedRuntimeDevAgentSource,
+		RuntimeExtraMounts:    runtimeExtraMounts,
 	})
 
 	if err != nil {

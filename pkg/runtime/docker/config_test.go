@@ -222,6 +222,12 @@ func TestBuildContainerMounts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tmpDir, "agent-dist"), 0755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "extra-ro"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "extra-rw"), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name     string
@@ -348,6 +354,53 @@ func TestBuildContainerMounts(t *testing.T) {
 					Type:   mount.TypeBind,
 					Source: outDir,
 					Target: ContainerOutputDir,
+				},
+			},
+		},
+		{
+			name: "includes extra same-path mounts when configured",
+			cfg: &MountConfig{
+				SnapshotDir: snapshotDir,
+				InputPath:   inputDir,
+				OutDir:      outDir,
+				ExtraMounts: []ExtraMount{
+					{Path: filepath.Join(tmpDir, "extra-ro"), ReadOnly: true},
+					{Path: filepath.Join(tmpDir, "extra-rw"), ReadOnly: false},
+				},
+			},
+			expected: []mount.Mount{
+				{
+					Type:   mount.TypeBind,
+					Source: snapshotDir,
+					Target: ContainerWorkspaceDir,
+				},
+				{
+					Type:     mount.TypeBind,
+					Source:   inputDir,
+					Target:   ContainerInputDir,
+					ReadOnly: true,
+				},
+				{
+					Type:   mount.TypeBind,
+					Source: outDir,
+					Target: ContainerOutputDir,
+				},
+				{
+					Type:     mount.TypeBind,
+					Source:   filepath.Join(tmpDir, "extra-ro"),
+					Target:   filepath.Join(tmpDir, "extra-ro"),
+					ReadOnly: true,
+					BindOptions: &mount.BindOptions{
+						Propagation: mount.PropagationRPrivate,
+					},
+				},
+				{
+					Type:   mount.TypeBind,
+					Source: filepath.Join(tmpDir, "extra-rw"),
+					Target: filepath.Join(tmpDir, "extra-rw"),
+					BindOptions: &mount.BindOptions{
+						Propagation: mount.PropagationRPrivate,
+					},
 				},
 			},
 		},
@@ -744,6 +797,118 @@ func TestValidateMountTargets(t *testing.T) {
 			t.Fatalf("ValidateMountTargets() expected error for missing local agent dist directory, got nil")
 		}
 	})
+
+	t.Run("extra mounts valid", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		inputDir := filepath.Join(tmpDir, "input")
+		outDir := filepath.Join(tmpDir, "output")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
+		extraDir := filepath.Join(tmpDir, "extra")
+
+		if err := os.MkdirAll(inputDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(extraDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: snapshotDir,
+			InputPath:   inputDir,
+			OutDir:      outDir,
+			ExtraMounts: []ExtraMount{{Path: extraDir, ReadOnly: true}},
+		}
+		if err := ValidateMountTargets(cfg); err != nil {
+			t.Fatalf("ValidateMountTargets() error = %v", err)
+		}
+	})
+
+	t.Run("extra mounts reject missing path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		inputDir := filepath.Join(tmpDir, "input")
+		outDir := filepath.Join(tmpDir, "output")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
+
+		if err := os.MkdirAll(inputDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: snapshotDir,
+			InputPath:   inputDir,
+			OutDir:      outDir,
+			ExtraMounts: []ExtraMount{{Path: filepath.Join(tmpDir, "missing"), ReadOnly: true}},
+		}
+		if err := ValidateMountTargets(cfg); err == nil {
+			t.Fatal("expected error for missing extra mount path")
+		}
+	})
+
+	t.Run("extra mounts reject overlap", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		inputDir := filepath.Join(tmpDir, "input")
+		outDir := filepath.Join(tmpDir, "output")
+		snapshotDir := filepath.Join(tmpDir, "snapshot")
+		parent := filepath.Join(tmpDir, "parent")
+		child := filepath.Join(parent, "child")
+
+		if err := os.MkdirAll(inputDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(child, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &MountConfig{
+			SnapshotDir: snapshotDir,
+			InputPath:   inputDir,
+			OutDir:      outDir,
+			ExtraMounts: []ExtraMount{
+				{Path: parent, ReadOnly: true},
+				{Path: child, ReadOnly: true},
+			},
+		}
+		if err := ValidateMountTargets(cfg); err == nil {
+			t.Fatal("expected overlap validation error")
+		}
+	})
+
+}
+
+func TestConflictsWithReservedTargets(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: "/root", want: true},
+		{path: "/root/workspace", want: true},
+		{path: "/root/workspace/repos/foo/bar", want: true},
+		{path: "/root/input/context", want: true},
+		{path: "/root/output", want: true},
+		{path: "/root/state/cache", want: true},
+		{path: "/root/.claude", want: true},
+		{path: "/root/.claude/skills/x", want: true},
+		{path: "/holon/agent/dist", want: true},
+		{path: "/Users/test/Desktop", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := conflictsWithReservedTargets(tt.path)
+			if got != tt.want {
+				t.Fatalf("conflictsWithReservedTargets(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestInputMountReadOnly(t *testing.T) {
