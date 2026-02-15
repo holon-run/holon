@@ -124,7 +124,7 @@ PR_NUMBER="$(jq -r '.metadata.pr_number // empty' "$MANIFEST")"
 PR_URL="$(jq -r '.metadata.pr_url // empty' "$MANIFEST")"
 
 if [[ -z "$PR_URL" && -f "$OUTPUT_DIR/summary.md" ]]; then
-  PR_URL="$(grep -Eo 'https://github.com/[^ ]+/pull/[0-9]+' "$OUTPUT_DIR/summary.md" | head -n1 || true)"
+  PR_URL="$(grep -Eo 'https://github.com/[a-zA-Z0-9/_-]+/pull/[0-9]+' "$OUTPUT_DIR/summary.md" | head -n1 || true)"
   if [[ -n "$PR_URL" ]]; then
     PR_NUMBER="${PR_URL##*/}"
   fi
