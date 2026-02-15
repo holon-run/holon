@@ -278,8 +278,9 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if firstEvent.Scope.WorkspacePath == "" {
 		t.Fatalf("expected workspace_path to be populated")
 	}
-	if !strings.HasPrefix(firstEvent.Scope.WorkspacePath, "/workspace/repos/") {
-		t.Fatalf("workspace_path = %q, want /workspace/repos/*", firstEvent.Scope.WorkspacePath)
+	expectedPrefix := filepath.Join(docker.ContainerWorkspaceDir, "repos") + string(os.PathSeparator)
+	if !strings.HasPrefix(firstEvent.Scope.WorkspacePath, expectedPrefix) {
+		t.Fatalf("workspace_path = %q, want prefix %q", firstEvent.Scope.WorkspacePath, expectedPrefix)
 	}
 	// Force controller session exit and trigger reconnect on next event.
 	mockRunner.waitCh <- errors.New("session exited")
