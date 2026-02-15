@@ -86,6 +86,10 @@ for local development and testing.`,
 		if err != nil {
 			return err
 		}
+		runtimeExtraMounts, runtimeMountDiagnostics, err := resolveRuntimeMounts(agentResolution.AgentHome)
+		if err != nil {
+			return fmt.Errorf("failed to resolve runtime mounts: %w", err)
+		}
 		controllerWorkspace, err := resolveControllerWorkspace(agentResolution.AgentHome)
 		if err != nil {
 			return err
@@ -109,6 +113,7 @@ for local development and testing.`,
 			serveLogLevel,
 			resolvedRuntimeMode,
 			resolvedRuntimeDevAgentSource,
+			runtimeExtraMounts,
 			serveDryRun,
 			nil,
 		)
@@ -177,6 +182,7 @@ for local development and testing.`,
 				RuntimeMode:               resolvedRuntimeMode,
 				RuntimeDevAgentSource:     resolvedRuntimeDevAgentSource,
 				RuntimeDevAgentSourceFrom: runtimeDevAgentSourceOrigin,
+				RuntimeMounts:             runtimeMountDiagnostics,
 				ServeInput:                serveInput,
 				NoSubscriptionsFlag:       serveNoSubscriptions,
 			})
@@ -230,6 +236,7 @@ for local development and testing.`,
 				RuntimeMode:               resolvedRuntimeMode,
 				RuntimeDevAgentSource:     resolvedRuntimeDevAgentSource,
 				RuntimeDevAgentSourceFrom: runtimeDevAgentSourceOrigin,
+				RuntimeMounts:             runtimeMountDiagnostics,
 				ServeInput:                serveInput,
 				NoSubscriptionsFlag:       serveNoSubscriptions,
 			})
@@ -285,6 +292,7 @@ for local development and testing.`,
 			RuntimeMode:               resolvedRuntimeMode,
 			RuntimeDevAgentSource:     resolvedRuntimeDevAgentSource,
 			RuntimeDevAgentSourceFrom: runtimeDevAgentSourceOrigin,
+			RuntimeMounts:             runtimeMountDiagnostics,
 			ServeInput:                serveInput,
 			NoSubscriptionsFlag:       serveNoSubscriptions,
 		})
@@ -519,6 +527,7 @@ type cliControllerHandler struct {
 	logLevel              string
 	runtimeMode           string
 	runtimeDevAgentSource string
+	extraMounts           []docker.ExtraMount
 	dryRun                bool
 	sessionRunner         SessionRunner
 	controllerSession     *docker.SessionHandle
@@ -560,6 +569,7 @@ func newCLIControllerHandler(
 	logLevel string,
 	runtimeMode string,
 	runtimeDevAgentSource string,
+	extraMounts []docker.ExtraMount,
 	dryRun bool,
 	sessionRunner SessionRunner,
 ) (*cliControllerHandler, error) {
@@ -580,6 +590,7 @@ func newCLIControllerHandler(
 		logLevel:              logLevel,
 		runtimeMode:           runtimeMode,
 		runtimeDevAgentSource: runtimeDevAgentSource,
+		extraMounts:           append([]docker.ExtraMount(nil), extraMounts...),
 		dryRun:                dryRun,
 		sessionRunner:         sessionRunner,
 		eventQueue:            make(chan controllerEvent, 128),
@@ -1082,6 +1093,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		Env:                   env,
 		RuntimeMode:           h.runtimeMode,
 		RuntimeDevAgentSource: h.runtimeDevAgentSource,
+		ExtraMounts:           append([]docker.ExtraMount(nil), h.extraMounts...),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start controller runtime: %w", err)
@@ -1306,27 +1318,28 @@ func firstNonEmpty(values ...string) string {
 }
 
 type serveStartupDiagnostics struct {
-	AgentID                   string   `json:"agent_id"`
-	AgentHome                 string   `json:"agent_home"`
-	StateDir                  string   `json:"state_dir"`
-	Workspace                 string   `json:"workspace"`
-	ConfigSource              string   `json:"config_source"`
-	RoleSource                string   `json:"role_source"`
-	RoleInferred              string   `json:"role_inferred"`
-	ServeInput                string   `json:"serve_input"`
-	InputMode                 string   `json:"input_mode"`
-	SubscriptionEnabled       bool     `json:"subscription_enabled"`
-	TransportMode             string   `json:"transport_mode"`
-	SubscriptionReason        string   `json:"subscription_reason,omitempty"`
-	SubscribedRepos           []string `json:"subscribed_repos,omitempty"`
-	RepoHint                  string   `json:"repo_hint,omitempty"`
-	TickInterval              string   `json:"tick_interval"`
-	WebhookPort               int      `json:"webhook_port,omitempty"`
-	RuntimeMode               string   `json:"runtime_mode"`
-	RuntimeDevAgentSource     string   `json:"runtime_dev_agent_source,omitempty"`
-	RuntimeDevAgentSourceFrom string   `json:"runtime_dev_agent_source_origin,omitempty"`
-	Preview                   string   `json:"preview"`
-	Warnings                  []string `json:"warnings,omitempty"`
+	AgentID                   string                   `json:"agent_id"`
+	AgentHome                 string                   `json:"agent_home"`
+	StateDir                  string                   `json:"state_dir"`
+	Workspace                 string                   `json:"workspace"`
+	ConfigSource              string                   `json:"config_source"`
+	RoleSource                string                   `json:"role_source"`
+	RoleInferred              string                   `json:"role_inferred"`
+	ServeInput                string                   `json:"serve_input"`
+	InputMode                 string                   `json:"input_mode"`
+	SubscriptionEnabled       bool                     `json:"subscription_enabled"`
+	TransportMode             string                   `json:"transport_mode"`
+	SubscriptionReason        string                   `json:"subscription_reason,omitempty"`
+	SubscribedRepos           []string                 `json:"subscribed_repos,omitempty"`
+	RepoHint                  string                   `json:"repo_hint,omitempty"`
+	TickInterval              string                   `json:"tick_interval"`
+	WebhookPort               int                      `json:"webhook_port,omitempty"`
+	RuntimeMode               string                   `json:"runtime_mode"`
+	RuntimeDevAgentSource     string                   `json:"runtime_dev_agent_source,omitempty"`
+	RuntimeDevAgentSourceFrom string                   `json:"runtime_dev_agent_source_origin,omitempty"`
+	RuntimeMounts             []runtimeMountDiagnostic `json:"runtime_mounts,omitempty"`
+	Preview                   string                   `json:"preview"`
+	Warnings                  []string                 `json:"warnings,omitempty"`
 }
 
 type serveStartupDiagnosticsInput struct {
@@ -1347,6 +1360,7 @@ type serveStartupDiagnosticsInput struct {
 	RuntimeMode               string
 	RuntimeDevAgentSource     string
 	RuntimeDevAgentSourceFrom string
+	RuntimeMounts             []runtimeMountDiagnostic
 	NoSubscriptionsFlag       bool
 }
 
@@ -1369,6 +1383,7 @@ func buildServeStartupDiagnostics(input serveStartupDiagnosticsInput) serveStart
 		RuntimeMode:               input.RuntimeMode,
 		RuntimeDevAgentSource:     input.RuntimeDevAgentSource,
 		RuntimeDevAgentSourceFrom: input.RuntimeDevAgentSourceFrom,
+		RuntimeMounts:             append([]runtimeMountDiagnostic(nil), input.RuntimeMounts...),
 		Preview:                   "experimental",
 		Warnings:                  []string{"holon serve is experimental/preview in this release; use holon run for GA workloads."},
 	}
@@ -1479,6 +1494,7 @@ func logServeStartupDiagnostics(diag serveStartupDiagnostics) {
 		"runtime_mode", diag.RuntimeMode,
 		"runtime_dev_agent_source", diag.RuntimeDevAgentSource,
 		"runtime_dev_agent_source_origin", diag.RuntimeDevAgentSourceFrom,
+		"runtime_mounts", diag.RuntimeMounts,
 		"preview", diag.Preview,
 	)
 	for _, warning := range diag.Warnings {

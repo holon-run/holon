@@ -231,6 +231,10 @@ var runCmd = &cobra.Command{
 			return err
 		}
 		defer cleanupEphemeralAgentHome(agentResolution, cleanupMode)
+		runtimeExtraMounts, _, err := resolveRuntimeMounts(agentResolution.AgentHome)
+		if err != nil {
+			return fmt.Errorf("failed to resolve runtime mounts: %w", err)
+		}
 		absWorkspace, err := resolveRunWorkspacePath(agentResolution.AgentHome, workspacePath)
 		if err != nil {
 			return err
@@ -351,6 +355,7 @@ var runCmd = &cobra.Command{
 			BuiltinSkillsRef:      projectCfg.GetBuiltinSkillsRef(),
 			RuntimeMode:           resolvedRuntimeMode,
 			RuntimeDevAgentSource: resolvedRuntimeDevAgentSource,
+			RuntimeExtraMounts:    runtimeExtraMounts,
 		})
 	},
 }

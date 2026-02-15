@@ -16,6 +16,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -78,6 +79,9 @@ type ContainerConfig struct {
 	// Runtime mode configuration
 	RuntimeMode       string // Runtime mode: "prod" (default) or "dev"
 	DevAgentSourceDir string // Local agent source directory for runtime-mode=dev (expects dist/)
+
+	// Extra same-path host mounts configured by agent-home runtime policy.
+	ExtraMounts []ExtraMount
 }
 
 // SessionHandle tracks a long-running runtime session container.
@@ -178,6 +182,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 		StateDir:       cfg.StateDir,
 		AgentHome:      cfg.AgentHome,
 		LocalSkillsDir: skillsDir, // NEW: Pass skills directory
+		ExtraMounts:    cfg.ExtraMounts,
 	}
 	if runtimeMode == RuntimeModeDev {
 		distDir, err := resolveDevAgentDistDir(cfg.DevAgentSourceDir)
@@ -246,6 +251,7 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	}
 
 	mounts := BuildContainerMounts(mountConfig)
+	logEffectiveMounts(mounts)
 
 	holonlog.Progress("creating container", "image", finalImage)
 	resp, err := r.cli.ContainerCreate(ctx, &container.Config{
@@ -415,6 +421,7 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 		StateDir:       cfg.StateDir,
 		AgentHome:      cfg.AgentHome,
 		LocalSkillsDir: skillsDir,
+		ExtraMounts:    cfg.ExtraMounts,
 	}
 	if runtimeMode == RuntimeModeDev {
 		distDir, err := resolveDevAgentDistDir(cfg.DevAgentSourceDir)
@@ -472,6 +479,7 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 	}
 
 	mounts := BuildContainerMounts(mountConfig)
+	logEffectiveMounts(mounts)
 	holonlog.Progress("creating session container", "image", finalImage)
 	resp, err := r.cli.ContainerCreate(ctx, &container.Config{
 		Image:      finalImage,
@@ -525,6 +533,21 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 	}
 
 	return handle, nil
+}
+
+func logEffectiveMounts(mounts []mount.Mount) {
+	if len(mounts) == 0 {
+		return
+	}
+	summaries := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		mode := "rw"
+		if m.ReadOnly {
+			mode = "ro"
+		}
+		summaries = append(summaries, fmt.Sprintf("%s -> %s (%s)", m.Source, m.Target, mode))
+	}
+	holonlog.Info("effective runtime mounts", "mounts", summaries)
 }
 
 // WaitSession waits for a session container to exit.

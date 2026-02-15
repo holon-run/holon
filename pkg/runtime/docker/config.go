@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
@@ -30,6 +31,14 @@ type MountConfig struct {
 	LocalClaudeConfigDir string // Path to host ~/.claude directory (optional, for mounting)
 	LocalSkillsDir       string // Path to skills staging directory (optional, for mounting)
 	LocalAgentDistDir    string // Path to local agent dist directory for dev runtime mode (optional, for mounting)
+	ExtraMounts          []ExtraMount
+}
+
+// ExtraMount defines a validated host path bind-mounted into the same path in container.
+// Same-path mapping avoids host/container path ambiguity in user-agent conversations.
+type ExtraMount struct {
+	Path     string
+	ReadOnly bool
 }
 
 // EnvConfig represents the environment configuration for a container
@@ -119,6 +128,17 @@ func BuildContainerMounts(cfg *MountConfig) []mount.Mount {
 			Source:      cfg.LocalAgentDistDir,
 			Target:      "/holon/agent/dist",
 			ReadOnly:    true,
+			BindOptions: &mount.BindOptions{Propagation: mount.PropagationRPrivate},
+		})
+	}
+
+	// Add extra same-path mounts configured from agent-home runtime policy.
+	for _, extra := range cfg.ExtraMounts {
+		mounts = append(mounts, mount.Mount{
+			Type:        mount.TypeBind,
+			Source:      extra.Path,
+			Target:      extra.Path,
+			ReadOnly:    extra.ReadOnly,
 			BindOptions: &mount.BindOptions{Propagation: mount.PropagationRPrivate},
 		})
 	}
@@ -250,5 +270,96 @@ func ValidateMountTargets(cfg *MountConfig) error {
 		}
 	}
 
+	if err := validateExtraMounts(cfg.ExtraMounts); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func validateExtraMounts(extra []ExtraMount) error {
+	if len(extra) == 0 {
+		return nil
+	}
+	seen := make([]string, 0, len(extra))
+	for i, mount := range extra {
+		path := strings.TrimSpace(mount.Path)
+		if path == "" {
+			return fmt.Errorf("extra mount %d path cannot be empty", i)
+		}
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("extra mount %d path must be absolute: %s", i, path)
+		}
+		cleaned := filepath.Clean(path)
+		if isFilesystemRoot(cleaned) {
+			return fmt.Errorf("extra mount %d path cannot be filesystem root: %s", i, cleaned)
+		}
+		if conflictsWithReservedTargets(cleaned) {
+			return fmt.Errorf("extra mount %d path conflicts with reserved runtime paths: %s", i, cleaned)
+		}
+		if _, err := os.Stat(cleaned); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("extra mount %d path does not exist: %s", i, cleaned)
+			}
+			return fmt.Errorf("failed to stat extra mount %d path %s: %w", i, cleaned, err)
+		}
+		resolved, err := filepath.EvalSymlinks(cleaned)
+		if err != nil {
+			return fmt.Errorf("failed to resolve symlinks for extra mount %d path %s: %w", i, cleaned, err)
+		}
+		resolvedAbs, err := filepath.Abs(resolved)
+		if err != nil {
+			return fmt.Errorf("failed to resolve absolute path for extra mount %d path %s: %w", i, resolved, err)
+		}
+		for idx, existing := range seen {
+			if pathOverlaps(resolvedAbs, existing) {
+				return fmt.Errorf("extra mount %d path %s conflicts with extra mount %d path %s", i, resolvedAbs, idx, existing)
+			}
+		}
+		seen = append(seen, resolvedAbs)
+	}
+	return nil
+}
+
+func conflictsWithReservedTargets(path string) bool {
+	reserved := []string{
+		ContainerAgentHome,
+		ContainerWorkspaceDir,
+		ContainerInputDir,
+		ContainerOutputDir,
+		ContainerStateDir,
+		"/root/.claude",
+		"/root/.claude/skills",
+		"/holon/agent/dist",
+	}
+	for _, target := range reserved {
+		if pathOverlaps(path, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathOverlaps(a, b string) bool {
+	if a == b {
+		return true
+	}
+	relAB, err := filepath.Rel(a, b)
+	if err == nil && relAB != "." && relAB != ".." && !strings.HasPrefix(relAB, ".."+string(filepath.Separator)) {
+		return true
+	}
+	relBA, err := filepath.Rel(b, a)
+	if err == nil && relBA != "." && relBA != ".." && !strings.HasPrefix(relBA, ".."+string(filepath.Separator)) {
+		return true
+	}
+	return false
+}
+
+func isFilesystemRoot(path string) bool {
+	clean := filepath.Clean(path)
+	if clean == string(filepath.Separator) {
+		return true
+	}
+	volume := filepath.VolumeName(clean)
+	return volume != "" && clean == volume+string(filepath.Separator)
 }

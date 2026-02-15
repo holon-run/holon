@@ -60,6 +60,7 @@ type RunnerConfig struct {
 	AssistantOutput       string   // Assistant output mode: "none" or "stream"
 	RuntimeMode           string   // Runtime mode: "prod" (default) or "dev"
 	RuntimeDevAgentSource string   // Local agent source directory for runtime-mode=dev
+	RuntimeExtraMounts    []docker.ExtraMount
 }
 
 // Runner encapsulates the dependencies and state needed to run a holon
@@ -360,6 +361,7 @@ output:
 		UseSkillMode:         cfg.UseSkillMode,
 		RuntimeMode:          cfg.RuntimeMode,
 		DevAgentSourceDir:    cfg.RuntimeDevAgentSource,
+		ExtraMounts:          cfg.RuntimeExtraMounts,
 	}
 
 	holonlog.Progress("running holon", "spec", cfg.SpecPath, "base_image", cfg.BaseImage, "agent", containerCfg.AgentBundle)

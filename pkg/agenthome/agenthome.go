@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -29,12 +30,22 @@ type Resolution struct {
 type Config struct {
 	Version       string         `yaml:"version"`
 	Agent         AgentConfig    `yaml:"agent"`
+	Runtime       RuntimeConfig  `yaml:"runtime,omitempty"`
 	Subscriptions []Subscription `yaml:"subscriptions,omitempty"`
 }
 
 type AgentConfig struct {
 	ID      string `yaml:"id"`
 	Profile string `yaml:"profile"`
+}
+
+type RuntimeConfig struct {
+	Mounts []RuntimeMount `yaml:"mounts,omitempty"`
+}
+
+type RuntimeMount struct {
+	Path string `yaml:"path"`
+	Mode string `yaml:"mode,omitempty"` // ro (default) | rw
 }
 
 type Subscription struct {
@@ -230,7 +241,108 @@ func LoadConfig(agentHome string) (Config, error) {
 	if err := validateSubscriptions(cfg); err != nil {
 		return Config{}, fmt.Errorf("invalid subscriptions in %s: %w", cfgPath, err)
 	}
+	normalizedMounts, err := normalizeRuntimeMounts(cfg.Runtime.Mounts)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid runtime.mounts in %s: %w", cfgPath, err)
+	}
+	cfg.Runtime.Mounts = normalizedMounts
 	return cfg, nil
+}
+
+func normalizeRuntimeMounts(mounts []RuntimeMount) ([]RuntimeMount, error) {
+	if len(mounts) == 0 {
+		return nil, nil
+	}
+
+	normalized := make([]RuntimeMount, 0, len(mounts))
+	seen := make(map[string]int, len(mounts))
+
+	for i, mount := range mounts {
+		rawPath := strings.TrimSpace(mount.Path)
+		if rawPath == "" {
+			return nil, fmt.Errorf("mounts[%d].path is required", i)
+		}
+		if !filepath.IsAbs(rawPath) {
+			return nil, fmt.Errorf("mounts[%d].path must be an absolute path: %q", i, rawPath)
+		}
+
+		cleaned := filepath.Clean(rawPath)
+		if isFilesystemRoot(cleaned) {
+			return nil, fmt.Errorf("mounts[%d].path cannot be filesystem root: %q", i, cleaned)
+		}
+
+		info, err := os.Stat(cleaned)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("mounts[%d].path does not exist: %q", i, cleaned)
+			}
+			return nil, fmt.Errorf("failed to stat mounts[%d].path %q: %w", i, cleaned, err)
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("mounts[%d].path must be a file or directory: %q", i, cleaned)
+		}
+
+		resolved, err := filepath.EvalSymlinks(cleaned)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve symlinks for mounts[%d].path %q: %w", i, cleaned, err)
+		}
+		resolvedAbs, err := filepath.Abs(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve absolute path for mounts[%d].path %q: %w", i, resolved, err)
+		}
+
+		mode := strings.ToLower(strings.TrimSpace(mount.Mode))
+		if mode == "" {
+			mode = "ro"
+		}
+		if mode != "ro" && mode != "rw" {
+			return nil, fmt.Errorf("mounts[%d].mode must be ro or rw: %q", i, mount.Mode)
+		}
+
+		if seenIdx, exists := seen[resolvedAbs]; exists {
+			return nil, fmt.Errorf("mounts[%d].path duplicates mounts[%d].path after normalization: %q", i, seenIdx, resolvedAbs)
+		}
+		for prevPath, prevIdx := range seen {
+			if pathOverlaps(resolvedAbs, prevPath) {
+				return nil, fmt.Errorf("mounts[%d].path conflicts with mounts[%d].path (overlapping paths): %q vs %q", i, prevIdx, resolvedAbs, prevPath)
+			}
+		}
+		seen[resolvedAbs] = i
+		normalized = append(normalized, RuntimeMount{
+			Path: resolvedAbs,
+			Mode: mode,
+		})
+	}
+
+	// Keep order deterministic for diagnostics/logging.
+	sort.SliceStable(normalized, func(i, j int) bool {
+		return normalized[i].Path < normalized[j].Path
+	})
+	return normalized, nil
+}
+
+func pathOverlaps(a, b string) bool {
+	if a == b {
+		return true
+	}
+	relAB, err := filepath.Rel(a, b)
+	if err == nil && relAB != "." && relAB != ".." && !strings.HasPrefix(relAB, ".."+string(filepath.Separator)) {
+		return true
+	}
+	relBA, err := filepath.Rel(b, a)
+	if err == nil && relBA != "." && relBA != ".." && !strings.HasPrefix(relBA, ".."+string(filepath.Separator)) {
+		return true
+	}
+	return false
+}
+
+func isFilesystemRoot(path string) bool {
+	clean := filepath.Clean(path)
+	if clean == string(filepath.Separator) {
+		return true
+	}
+	volume := filepath.VolumeName(clean)
+	return volume != "" && clean == volume+string(filepath.Separator)
 }
 
 func validateSubscriptions(cfg Config) error {
