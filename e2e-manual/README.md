@@ -14,6 +14,7 @@ Each subdirectory under `e2e-manual/` is one test case.
 ## Case List
 
 - `serve-github-issue-solve`: Validate `holon serve` issue-comment trigger flow end-to-end.
+- `run-pptx-remote-skill`: Validate `holon run` auto-init + remote `pptx` skill + local agent bundle.
 
 ## Add a New Case
 
