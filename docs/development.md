@@ -125,6 +125,9 @@ Use `holon agent …` to inspect and manage agent bundles/aliases:
 - `holon agent list`
 - `holon agent remove <alias>`
 - `holon agent info default`
+- `holon agent init --template <run-default|solve-github|serve-controller> [--force]`
+
+`holon agent init` templates are init-time only. Runtime prompts do not inline persona file bodies from `ROLE.md/AGENT.md/IDENTITY.md/SOUL.md`; the agent reads them from `HOLON_AGENT_HOME`.
 
 Builtin agent resolution notes:
 - If no explicit agent is provided, Holon can resolve an agent via `--agent-channel` / `HOLON_AGENT_CHANNEL` (default: `latest`).
@@ -146,8 +149,8 @@ Agent-specific runtime variables (model, timeouts, etc.) are documented in:
 ## Artifacts and contracts
 Holon treats an agent run like a batch job with explicit, reviewable outputs. The common artifacts are:
 - `diff.patch`
-- `summary.md`
-- `manifest.json`
+- `summary.md` (optional human-readable output)
+- `manifest.json` (required machine-readable execution record)
 
 See:
 - `docs/manifest-format.md`

@@ -1307,7 +1307,7 @@ jobs:
             cat "$OUTPUT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
             echo "summary=$OUTPUT_DIR/summary.md" >> "$GITHUB_OUTPUT"
           else
-            echo "- warning: summary.md not found under output_dir; inspect uploaded artifact for diagnostics." >> "$GITHUB_STEP_SUMMARY"
+            echo "- note: summary.md is optional and was not produced for this run." >> "$GITHUB_STEP_SUMMARY"
             echo "summary=" >> "$GITHUB_OUTPUT"
           fi
 

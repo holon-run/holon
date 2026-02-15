@@ -874,7 +874,7 @@ func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, trigger
 	} else {
 		switch selectedSkill {
 		case "github-issue-solve", "":
-			baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/summary.md and ${GITHUB_OUTPUT_DIR}/manifest.json contain pr_number and pr_url for the created PR. The runtime will validate success based on the generic manifest contract (status/outcome), not skill-specific artifacts.", ref.URL())
+			baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/manifest.json contains pr_number and pr_url for the created PR. The runtime validates success based on the manifest contract (status/outcome), with summary.md treated as optional human-readable output.", ref.URL())
 		default:
 			baseGoal = fmt.Sprintf("Use the %s skill to solve the GitHub issue %s end-to-end following the skill instructions and publish the expected results to GitHub. Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success' for successful execution.", selectedSkill, ref.URL())
 		}
@@ -894,60 +894,48 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 	// Always use skill-first mode now
 	fmt.Println("Skill-first mode enabled: validating skill-driven publishing")
 
-	// Try to read manifest.json for validation, but don't fail if it's missing
-	// In skill-first mode, skills handle all IO including publish, so we trust the execution
+	// Manifest-first validation: manifest.json is the required machine-readable execution record.
 	manifestPath := filepath.Join(outDir, "manifest.json")
 	manifestData, err := os.ReadFile(manifestPath)
-	manifestExists := err == nil
-
-	if !manifestExists {
-		// manifest.json is missing - log a warning but don't fail
-		// This is acceptable in skill-first mode where skills may complete without generating a manifest
-		fmt.Fprintf(os.Stderr, "Warning: manifest.json not found in output directory %s\n", outDir)
-		fmt.Fprintf(os.Stderr, "Note: In skill-first mode, skills handle all IO. Missing manifest.json may indicate the skill completed without generating it.\n")
-		fmt.Fprintf(os.Stderr, "Proceeding to check for other evidence of success...\n")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("skill-first mode: manifest.json is required but missing in output directory %s", outDir)
+		}
+		return fmt.Errorf("skill-first mode: failed to read manifest.json: %w", err)
 	}
 
 	var hasPublishEvidence bool
 
-	// If manifest exists, validate it
-	if manifestExists {
-		var manifest struct {
-			Status   string                 `json:"status"`
-			Outcome  string                 `json:"outcome"`
-			Metadata map[string]interface{} `json:"metadata,omitempty"`
-		}
-		if err := json.Unmarshal(manifestData, &manifest); err != nil {
-			// manifest.json exists but is malformed - this indicates a real problem
-			// Unlike missing manifest (which is OK in skill-first mode), a malformed
-			// manifest suggests the agent failed to write valid output
-			return fmt.Errorf("skill-first mode: manifest.json exists but is malformed: %w", err)
-		} else {
-			// Check that execution completed successfully
-			if manifest.Status != "completed" {
-				return fmt.Errorf("skill-first mode: execution did not complete (status=%s); check summary.md for details", manifest.Status)
-			}
-			if manifest.Outcome != "success" {
-				return fmt.Errorf("skill-first mode: execution did not succeed (outcome=%s); check summary.md for details", manifest.Outcome)
-			}
+	var manifest struct {
+		Status   string                 `json:"status"`
+		Outcome  string                 `json:"outcome"`
+		Metadata map[string]interface{} `json:"metadata,omitempty"`
+	}
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return fmt.Errorf("skill-first mode: manifest.json exists but is malformed: %w", err)
+	}
+	// Check that execution completed successfully
+	if manifest.Status != "completed" {
+		return fmt.Errorf("skill-first mode: execution did not complete (status=%s); check summary.md for details", manifest.Status)
+	}
+	if manifest.Outcome != "success" {
+		return fmt.Errorf("skill-first mode: execution did not succeed (outcome=%s); check summary.md for details", manifest.Outcome)
+	}
 
-			// Check manifest metadata for publish result
-			if manifest.Metadata != nil {
-				if _, hasPRNumber := manifest.Metadata["pr_number"]; hasPRNumber {
-					if _, hasPRURL := manifest.Metadata["pr_url"]; hasPRURL {
-						hasPublishEvidence = true
-					}
-				}
-			}
-
-			if hasPublishEvidence {
-				fmt.Println("Skill-driven publishing validated successfully (manifest indicates success with PR)")
-				return nil
+	// Check manifest metadata for publish result
+	if manifest.Metadata != nil {
+		if _, hasPRNumber := manifest.Metadata["pr_number"]; hasPRNumber {
+			if _, hasPRURL := manifest.Metadata["pr_url"]; hasPRURL {
+				hasPublishEvidence = true
 			}
 		}
 	}
+	if hasPublishEvidence {
+		fmt.Println("Skill-driven publishing validated successfully (manifest indicates success with PR)")
+		return nil
+	}
 
-	// Check summary.md as a fallback (for backward compatibility and when manifest is missing)
+	// Check summary.md as optional fallback for legacy publish-evidence formats.
 	summaryPath := filepath.Join(outDir, "summary.md")
 	if summaryData, err := os.ReadFile(summaryPath); err == nil {
 		summary := string(summaryData)
@@ -967,12 +955,10 @@ func publishResults(ctx context.Context, ref *pkggithub.SolveRef, refType string
 	}
 
 	// For issue-type refs, warn about missing publish evidence
-	// But don't fail - the skill may have succeeded in ways we can't detect
+	// But don't fail - some skills may publish via provider-specific channels.
 	if refType == "issue" {
-		// Check if this might be a non-publishing skill by looking at skill indicators
-		// For now, we warn rather than fail since some skills may have different publish flows
 		fmt.Fprintf(os.Stderr, "Warning: No clear PR publish evidence found (pr_number/pr_url) in manifest.json or summary.md\n")
-		fmt.Fprintf(os.Stderr, "Note: In skill-first mode, the skill may have succeeded using a different publish mechanism\n")
+		fmt.Fprintf(os.Stderr, "Note: manifest.json remains the source of truth for execution success; publish evidence may be provider-specific\n")
 	}
 
 	fmt.Println("Skill-driven publishing validation complete")
