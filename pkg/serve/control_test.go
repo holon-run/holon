@@ -28,6 +28,10 @@ func TestNewRuntime(t *testing.T) {
 	if state.EventsProcessed != 0 {
 		t.Errorf("Initial events_processed = %d, want 0", state.EventsProcessed)
 	}
+
+	if state.ControllerSession != "main" {
+		t.Errorf("Initial ControllerSession = %q, want %q", state.ControllerSession, "main")
+	}
 }
 
 func TestRuntimePauseResume(t *testing.T) {
@@ -599,6 +603,9 @@ func TestHandleTurnStart(t *testing.T) {
 	if rpcErr.Code != ErrCodeInvalidParams {
 		t.Fatalf("HandleTurnStart() error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
 	}
+	if !strings.Contains(rpcErr.Message, "input") {
+		t.Fatalf("HandleTurnStart() error message = %q, want to mention input", rpcErr.Message)
+	}
 
 	// Test with params
 	params, _ := json.Marshal(map[string]interface{}{
@@ -628,6 +635,33 @@ func TestHandleTurnStart(t *testing.T) {
 
 	if resp.TurnID == "" {
 		t.Error("TurnID with params is empty")
+	}
+}
+
+func TestHandleTurnStart_DefaultSessionWhenThreadIDMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	if _, rpcErr := rt.HandleTurnStart(params); rpcErr != nil {
+		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	}
+	if got := rt.GetState().ControllerSession; got != "main" {
+		t.Fatalf("ControllerSession after turn/start = %q, want %q", got, "main")
 	}
 }
 
@@ -820,9 +854,11 @@ func TestHandleTurnStartInputValidation(t *testing.T) {
 	tests := []struct {
 		name   string
 		params map[string]interface{}
+		wantOK bool
 	}{
 		{
-			name: "missing thread_id",
+			name:   "missing thread_id",
+			wantOK: true,
 			params: map[string]interface{}{
 				"input": []map[string]interface{}{
 					{
@@ -836,13 +872,15 @@ func TestHandleTurnStartInputValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "missing input",
+			name:   "missing input",
+			wantOK: false,
 			params: map[string]interface{}{
 				"thread_id": "thread_test123",
 			},
 		},
 		{
-			name: "empty text",
+			name:   "empty text",
+			wantOK: false,
 			params: map[string]interface{}{
 				"thread_id": "thread_test123",
 				"input": []map[string]interface{}{
@@ -862,6 +900,12 @@ func TestHandleTurnStartInputValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			params, _ := json.Marshal(tc.params)
 			_, rpcErr := rt.HandleTurnStart(params)
+			if tc.wantOK {
+				if rpcErr != nil {
+					t.Fatalf("expected success, got error: %v", rpcErr)
+				}
+				return
+			}
 			if rpcErr == nil {
 				t.Fatalf("expected invalid params error")
 			}
@@ -1142,15 +1186,7 @@ func TestTurnStartInvalidParamsIncludeFieldData(t *testing.T) {
 	}
 
 	params, _ := json.Marshal(map[string]interface{}{
-		"input": []map[string]interface{}{
-			{
-				"type": "message",
-				"role": "user",
-				"content": []map[string]interface{}{
-					{"type": "input_text", "text": "hello"},
-				},
-			},
-		},
+		"input": []map[string]interface{}{},
 	})
 
 	_, rpcErr := rt.HandleTurnStart(params)
@@ -1164,8 +1200,8 @@ func TestTurnStartInvalidParamsIncludeFieldData(t *testing.T) {
 	if err := json.Unmarshal(rpcErr.Data, &data); err != nil {
 		t.Fatalf("failed to decode error data: %v", err)
 	}
-	if data["field"] != "thread_id" {
-		t.Fatalf("expected field=thread_id, got %q", data["field"])
+	if data["field"] != "input" {
+		t.Fatalf("expected field=input, got %q", data["field"])
 	}
 }
 

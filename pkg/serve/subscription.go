@@ -18,29 +18,33 @@ import (
 
 // SubscriptionManager manages active subscriptions and their transport
 type SubscriptionManager struct {
-	agentHome     string
-	config        agenthome.Config
-	webhookServer *WebhookServer
-	forwarder     *Forwarder
-	websocketSrc  *WebSocketSource
-	eventService  *Service
-	mu            sync.Mutex
-	started       bool
-	webhookPort   int
-	stateDir      string
-	handler       EventHandler
-	dispatcher    TurnDispatcher
-	mode          string
-	cancel        context.CancelFunc
+	agentHome        string
+	config           agenthome.Config
+	webhookServer    *WebhookServer
+	forwarder        *Forwarder
+	websocketSrc     *WebSocketSource
+	eventService     *Service
+	mu               sync.Mutex
+	started          bool
+	webhookPort      int
+	stateDir         string
+	handler          EventHandler
+	dispatcher       TurnDispatcher
+	defaultSessionID string
+	noDefaultSession bool
+	mode             string
+	cancel           context.CancelFunc
 }
 
 // ManagerConfig holds configuration for SubscriptionManager
 type ManagerConfig struct {
-	AgentHome      string
-	StateDir       string
-	Handler        EventHandler
-	WebhookPort    int // 0 means use the default port (8080)
-	TurnDispatcher TurnDispatcher
+	AgentHome        string
+	StateDir         string
+	Handler          EventHandler
+	WebhookPort      int // 0 means use the default port (8080)
+	TurnDispatcher   TurnDispatcher
+	DefaultSessionID string
+	NoDefaultSession bool
 }
 
 // NewSubscriptionManager creates a new subscription manager
@@ -52,13 +56,15 @@ func NewSubscriptionManager(cfg ManagerConfig) (*SubscriptionManager, error) {
 	}
 
 	return &SubscriptionManager{
-		agentHome:   cfg.AgentHome,
-		config:      agentCfg,
-		stateDir:    cfg.StateDir,
-		handler:     cfg.Handler,
-		webhookPort: cfg.WebhookPort,
-		dispatcher:  cfg.TurnDispatcher,
-		mode:        "rpc_only",
+		agentHome:        cfg.AgentHome,
+		config:           agentCfg,
+		stateDir:         cfg.StateDir,
+		handler:          cfg.Handler,
+		webhookPort:      cfg.WebhookPort,
+		dispatcher:       cfg.TurnDispatcher,
+		defaultSessionID: cfg.DefaultSessionID,
+		noDefaultSession: cfg.NoDefaultSession,
+		mode:             "rpc_only",
 	}, nil
 }
 
@@ -158,11 +164,13 @@ func (sm *SubscriptionManager) startGHForwardMode(ctx context.Context, sub *agen
 	// Create webhook server
 	webhookURL := BuildWebhookURL(port, "/ingress/github/webhook")
 	webhookSrv, err := NewWebhookServer(WebhookConfig{
-		Port:           port,
-		RepoHint:       sub.Repos[0], // Use first repo as hint
-		StateDir:       sm.stateDir,
-		Handler:        sm.handler,
-		TurnDispatcher: sm.dispatcher,
+		Port:             port,
+		RepoHint:         sub.Repos[0], // Use first repo as hint
+		StateDir:         sm.stateDir,
+		Handler:          sm.handler,
+		TurnDispatcher:   sm.dispatcher,
+		DefaultSessionID: sm.defaultSessionID,
+		NoDefaultSession: sm.noDefaultSession,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create webhook server: %w", err)
@@ -207,11 +215,13 @@ func (sm *SubscriptionManager) startWebSocketMode(ctx context.Context, sub *agen
 	repoHint := sub.Repos[0]
 	port := sm.resolvePort()
 	webhookSrv, err := NewWebhookServer(WebhookConfig{
-		Port:           port,
-		RepoHint:       repoHint,
-		StateDir:       sm.stateDir,
-		Handler:        sm.handler,
-		TurnDispatcher: sm.dispatcher,
+		Port:             port,
+		RepoHint:         repoHint,
+		StateDir:         sm.stateDir,
+		Handler:          sm.handler,
+		TurnDispatcher:   sm.dispatcher,
+		DefaultSessionID: sm.defaultSessionID,
+		NoDefaultSession: sm.noDefaultSession,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create webhook server: %w", err)
@@ -256,11 +266,13 @@ func (sm *SubscriptionManager) startWebSocketMode(ctx context.Context, sub *agen
 func (sm *SubscriptionManager) startRPCOnlyMode(ctx context.Context) error {
 	port := sm.resolvePort()
 	webhookSrv, err := NewWebhookServer(WebhookConfig{
-		Port:           port,
-		RepoHint:       "",
-		StateDir:       sm.stateDir,
-		Handler:        sm.handler,
-		TurnDispatcher: sm.dispatcher,
+		Port:             port,
+		RepoHint:         "",
+		StateDir:         sm.stateDir,
+		Handler:          sm.handler,
+		TurnDispatcher:   sm.dispatcher,
+		DefaultSessionID: sm.defaultSessionID,
+		NoDefaultSession: sm.noDefaultSession,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create rpc server: %w", err)
