@@ -12,10 +12,23 @@ OUT_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --run-dir) RUN_DIR="$2"; shift 2 ;;
-    --out) OUT_DIR="$2"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "unknown arg: $1" >&2; usage; exit 1 ;;
+    --run-dir)
+      RUN_DIR="$2"
+      shift 2
+      ;;
+    --out)
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown arg: $1" >&2
+      usage
+      exit 1
+      ;;
   esac
 done
 
@@ -61,7 +74,7 @@ if [[ -n "$LOCAL_REPO" && -d "$LOCAL_REPO/.git" ]]; then
   (
     cd "$LOCAL_REPO"
     git status --short --branch >"$OUT_DIR/local-repo-status.txt"
-    git log --oneline -n 15 >"$OUT_DIR/local-repo-log.txt"
+    git log --oneline -n 10 >"$OUT_DIR/local-repo-log.txt"
     git diff --stat >"$OUT_DIR/local-repo-diffstat.txt" || true
   )
 fi
