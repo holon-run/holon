@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/holon-run/holon/pkg/pathutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -267,7 +268,7 @@ func normalizeRuntimeMounts(mounts []RuntimeMount) ([]RuntimeMount, error) {
 		}
 
 		cleaned := filepath.Clean(rawPath)
-		if isFilesystemRoot(cleaned) {
+		if pathutil.IsFilesystemRoot(cleaned) {
 			return nil, fmt.Errorf("mounts[%d].path cannot be filesystem root: %q", i, cleaned)
 		}
 
@@ -303,7 +304,7 @@ func normalizeRuntimeMounts(mounts []RuntimeMount) ([]RuntimeMount, error) {
 			return nil, fmt.Errorf("mounts[%d].path duplicates mounts[%d].path after normalization: %q", i, seenIdx, resolvedAbs)
 		}
 		for prevPath, prevIdx := range seen {
-			if pathOverlaps(resolvedAbs, prevPath) {
+			if pathutil.PathOverlaps(resolvedAbs, prevPath) {
 				return nil, fmt.Errorf("mounts[%d].path conflicts with mounts[%d].path (overlapping paths): %q vs %q", i, prevIdx, resolvedAbs, prevPath)
 			}
 		}
@@ -319,30 +320,6 @@ func normalizeRuntimeMounts(mounts []RuntimeMount) ([]RuntimeMount, error) {
 		return normalized[i].Path < normalized[j].Path
 	})
 	return normalized, nil
-}
-
-func pathOverlaps(a, b string) bool {
-	if a == b {
-		return true
-	}
-	relAB, err := filepath.Rel(a, b)
-	if err == nil && relAB != "." && relAB != ".." && !strings.HasPrefix(relAB, ".."+string(filepath.Separator)) {
-		return true
-	}
-	relBA, err := filepath.Rel(b, a)
-	if err == nil && relBA != "." && relBA != ".." && !strings.HasPrefix(relBA, ".."+string(filepath.Separator)) {
-		return true
-	}
-	return false
-}
-
-func isFilesystemRoot(path string) bool {
-	clean := filepath.Clean(path)
-	if clean == string(filepath.Separator) {
-		return true
-	}
-	volume := filepath.VolumeName(clean)
-	return volume != "" && clean == volume+string(filepath.Separator)
 }
 
 func validateSubscriptions(cfg Config) error {

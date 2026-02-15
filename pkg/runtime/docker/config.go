@@ -9,6 +9,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/holon-run/holon/pkg/api/v1"
+	"github.com/holon-run/holon/pkg/pathutil"
 )
 
 const (
@@ -291,17 +292,18 @@ func validateExtraMounts(extra []ExtraMount) error {
 			return fmt.Errorf("extra mount %d path must be absolute: %s", i, path)
 		}
 		cleaned := filepath.Clean(path)
-		if isFilesystemRoot(cleaned) {
+		if pathutil.IsFilesystemRoot(cleaned) {
 			return fmt.Errorf("extra mount %d path cannot be filesystem root: %s", i, cleaned)
 		}
-		if conflictsWithReservedTargets(cleaned) {
-			return fmt.Errorf("extra mount %d path conflicts with reserved runtime paths: %s", i, cleaned)
-		}
-		if _, err := os.Stat(cleaned); err != nil {
+		fi, err := os.Stat(cleaned)
+		if err != nil {
 			if os.IsNotExist(err) {
 				return fmt.Errorf("extra mount %d path does not exist: %s", i, cleaned)
 			}
 			return fmt.Errorf("failed to stat extra mount %d path %s: %w", i, cleaned, err)
+		}
+		if !fi.Mode().IsRegular() && !fi.IsDir() {
+			return fmt.Errorf("extra mount %d path must be a regular file or directory: %s", i, cleaned)
 		}
 		resolved, err := filepath.EvalSymlinks(cleaned)
 		if err != nil {
@@ -311,8 +313,11 @@ func validateExtraMounts(extra []ExtraMount) error {
 		if err != nil {
 			return fmt.Errorf("failed to resolve absolute path for extra mount %d path %s: %w", i, resolved, err)
 		}
+		if conflictsWithReservedTargets(resolvedAbs) {
+			return fmt.Errorf("extra mount %d path conflicts with reserved runtime paths: %s", i, resolvedAbs)
+		}
 		for idx, existing := range seen {
-			if pathOverlaps(resolvedAbs, existing) {
+			if pathutil.PathOverlaps(resolvedAbs, existing) {
 				return fmt.Errorf("extra mount %d path %s conflicts with extra mount %d path %s", i, resolvedAbs, idx, existing)
 			}
 		}
@@ -333,33 +338,9 @@ func conflictsWithReservedTargets(path string) bool {
 		"/holon/agent/dist",
 	}
 	for _, target := range reserved {
-		if pathOverlaps(path, target) {
+		if pathutil.PathOverlaps(path, target) {
 			return true
 		}
 	}
 	return false
-}
-
-func pathOverlaps(a, b string) bool {
-	if a == b {
-		return true
-	}
-	relAB, err := filepath.Rel(a, b)
-	if err == nil && relAB != "." && relAB != ".." && !strings.HasPrefix(relAB, ".."+string(filepath.Separator)) {
-		return true
-	}
-	relBA, err := filepath.Rel(b, a)
-	if err == nil && relBA != "." && relBA != ".." && !strings.HasPrefix(relBA, ".."+string(filepath.Separator)) {
-		return true
-	}
-	return false
-}
-
-func isFilesystemRoot(path string) bool {
-	clean := filepath.Clean(path)
-	if clean == string(filepath.Separator) {
-		return true
-	}
-	volume := filepath.VolumeName(clean)
-	return volume != "" && clean == volume+string(filepath.Separator)
 }

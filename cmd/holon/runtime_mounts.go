@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/holon-run/holon/pkg/agenthome"
@@ -27,13 +25,9 @@ func resolveRuntimeMounts(agentHome string) ([]docker.ExtraMount, []runtimeMount
 		if mode == "" {
 			mode = "ro"
 		}
-		mountPath, err := filepath.Abs(spec.Path)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to resolve runtime mount path %q: %w", spec.Path, err)
-		}
 		readOnly := mode != "rw"
-		mounts = append(mounts, docker.ExtraMount{Path: mountPath, ReadOnly: readOnly})
-		diagnostics = append(diagnostics, runtimeMountDiagnostic{Path: mountPath, Mode: mode})
+		mounts = append(mounts, docker.ExtraMount{Path: spec.Path, ReadOnly: readOnly})
+		diagnostics = append(diagnostics, runtimeMountDiagnostic{Path: spec.Path, Mode: mode})
 	}
 
 	return mounts, diagnostics, nil

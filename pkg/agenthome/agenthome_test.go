@@ -235,3 +235,33 @@ func TestLoadConfig_RuntimeMountsRejectInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfig_RuntimeMountsRejectSymlinkOverlap(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+	if err := EnsureLayout(home); err != nil {
+		t.Fatalf("ensure layout: %v", err)
+	}
+
+	realDir := filepath.Join(td, "real")
+	linkDir := filepath.Join(td, "link")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	cfgData := "version: v1\nagent:\n  id: main\n  profile: default\nruntime:\n  mounts:\n    - path: " + realDir + "\n    - path: " + linkDir + "\n"
+	if err := os.WriteFile(filepath.Join(home, "agent.yaml"), []byte(cfgData), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadConfig(home)
+	if err == nil {
+		t.Fatalf("expected overlap error for symlink/real path")
+	}
+	if !strings.Contains(err.Error(), "duplicates") && !strings.Contains(err.Error(), "overlapping paths") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

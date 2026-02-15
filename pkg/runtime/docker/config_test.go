@@ -390,11 +390,17 @@ func TestBuildContainerMounts(t *testing.T) {
 					Source:   filepath.Join(tmpDir, "extra-ro"),
 					Target:   filepath.Join(tmpDir, "extra-ro"),
 					ReadOnly: true,
+					BindOptions: &mount.BindOptions{
+						Propagation: mount.PropagationRPrivate,
+					},
 				},
 				{
 					Type:   mount.TypeBind,
 					Source: filepath.Join(tmpDir, "extra-rw"),
 					Target: filepath.Join(tmpDir, "extra-rw"),
+					BindOptions: &mount.BindOptions{
+						Propagation: mount.PropagationRPrivate,
+					},
 				},
 			},
 		},
@@ -875,6 +881,34 @@ func TestValidateMountTargets(t *testing.T) {
 			t.Fatal("expected overlap validation error")
 		}
 	})
+
+}
+
+func TestConflictsWithReservedTargets(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: "/root", want: true},
+		{path: "/root/workspace", want: true},
+		{path: "/root/workspace/repos/foo/bar", want: true},
+		{path: "/root/input/context", want: true},
+		{path: "/root/output", want: true},
+		{path: "/root/state/cache", want: true},
+		{path: "/root/.claude", want: true},
+		{path: "/root/.claude/skills/x", want: true},
+		{path: "/holon/agent/dist", want: true},
+		{path: "/Users/test/Desktop", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := conflictsWithReservedTargets(tt.path)
+			if got != tt.want {
+				t.Fatalf("conflictsWithReservedTargets(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestInputMountReadOnly(t *testing.T) {
