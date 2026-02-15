@@ -26,6 +26,18 @@ type Resolution struct {
 	Ephemeral bool
 }
 
+const (
+	TemplateRunDefault      = "run-default"
+	TemplateSolveGitHub     = "solve-github"
+	TemplateServeController = "serve-controller"
+	DefaultTemplate         = TemplateServeController
+)
+
+type InitOptions struct {
+	Template string
+	Force    bool
+}
+
 type Config struct {
 	Version       string         `yaml:"version"`
 	Agent         AgentConfig    `yaml:"agent"`
@@ -124,6 +136,21 @@ func Resolve(opts ResolveOptions) (Resolution, error) {
 }
 
 func EnsureLayout(agentHome string) error {
+	return EnsureLayoutWithOptions(agentHome, InitOptions{
+		Template: DefaultTemplate,
+		Force:    false,
+	})
+}
+
+func AvailableTemplates() []string {
+	return []string{
+		TemplateRunDefault,
+		TemplateSolveGitHub,
+		TemplateServeController,
+	}
+}
+
+func EnsureLayoutWithOptions(agentHome string, opts InitOptions) error {
 	dirs := []string{
 		agentHome,
 		filepath.Join(agentHome, "state"),
@@ -137,13 +164,23 @@ func EnsureLayout(agentHome string) error {
 		}
 	}
 
-	defaultFiles := map[string]string{
-		filepath.Join(agentHome, "AGENT.md"):    "# Agent\n\nDefault agent persona.\n",
-		filepath.Join(agentHome, "ROLE.md"):     "# ROLE: PM\n\nYou are the persistent PM controller for this agent home.\nContinuously plan, prioritize, and drive execution via GitHub workflows.\n",
-		filepath.Join(agentHome, "IDENTITY.md"): "# Identity\n\nDefault identity definition.\n",
-		filepath.Join(agentHome, "SOUL.md"):     "# Soul\n\nDefault principles.\n",
+	template := strings.TrimSpace(opts.Template)
+	if template == "" {
+		template = DefaultTemplate
 	}
-	for path, content := range defaultFiles {
+	personaTemplate, ok := personaTemplates[template]
+	if !ok {
+		return fmt.Errorf("unsupported template %q (supported: %s)", template, strings.Join(AvailableTemplates(), ", "))
+	}
+
+	for name, content := range personaTemplate {
+		path := filepath.Join(agentHome, name)
+		if opts.Force {
+			if err := writeFile(path, content); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := ensureFile(path, content); err != nil {
 			return err
 		}
@@ -196,6 +233,41 @@ func ensureFile(path, content string) error {
 		return fmt.Errorf("failed to write %s: %w", path, err)
 	}
 	return nil
+}
+
+func writeFile(path, content string) error {
+	if info, err := os.Stat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("path exists but is not a regular file: %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	return nil
+}
+
+var personaTemplates = map[string]map[string]string{
+	TemplateRunDefault: {
+		"AGENT.md":    "# Agent\n\nYou are a focused execution agent for one-off tasks.\nPrioritize correctness, concise communication, and deterministic outputs.\n",
+		"ROLE.md":     "# ROLE: EXECUTOR\n\nExecute assigned tasks end-to-end in this run.\nDo not assume long-lived controller responsibilities.\n",
+		"IDENTITY.md": "# Identity\n\nDefault runtime identity for ad-hoc run workflows.\n",
+		"SOUL.md":     "# Soul\n\nPragmatic, rigorous, and action-oriented.\n",
+	},
+	TemplateSolveGitHub: {
+		"AGENT.md":    "# Agent\n\nYou solve GitHub issues and PR feedback with clear validation and publish-ready outputs.\n",
+		"ROLE.md":     "# ROLE: GITHUB_SOLVER\n\nAnalyze issue/PR context, implement fixes, run relevant tests, and produce a mergeable result.\n",
+		"IDENTITY.md": "# Identity\n\nIssue-solving specialist for repository automation workflows.\n",
+		"SOUL.md":     "# Soul\n\nBe explicit about tradeoffs, verification, and residual risks.\n",
+	},
+	TemplateServeController: {
+		"AGENT.md":    "# Agent\n\nPersistent controller persona for long-running event-driven automation.\n",
+		"ROLE.md":     "# ROLE: PM\n\nYou are the persistent PM controller for this agent home.\nContinuously plan, prioritize, and drive execution via GitHub workflows.\n",
+		"IDENTITY.md": "# Identity\n\nController identity for continuous repository operations.\n",
+		"SOUL.md":     "# Soul\n\nMaintain continuity, ownership, and disciplined follow-through.\n",
+	},
 }
 
 func SaveConfig(agentHome string, cfg Config) error {

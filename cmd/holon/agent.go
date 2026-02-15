@@ -27,16 +27,28 @@ This command provides functionality for:
 }
 
 var (
-	agentInitID   string
-	agentInitHome string
+	agentInitID       string
+	agentInitHome     string
+	agentInitTemplate string
+	agentInitForce    bool
 )
 
 var agentInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize an agent home layout",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		resolution, err := resolveAgentHome("agent-init", agentInitID, agentInitHome, false)
+		resolution, err := agenthome.Resolve(agenthome.ResolveOptions{
+			Command:   "agent-init",
+			AgentID:   agentInitID,
+			AgentHome: agentInitHome,
+		})
 		if err != nil {
+			return err
+		}
+		if err := agenthome.EnsureLayoutWithOptions(resolution.AgentHome, agenthome.InitOptions{
+			Template: agentInitTemplate,
+			Force:    agentInitForce,
+		}); err != nil {
 			return err
 		}
 		cfg, err := agenthome.LoadConfig(resolution.AgentHome)
@@ -66,8 +78,17 @@ var agentInitCmd = &cobra.Command{
 		fmt.Println("Initialized agent home")
 		fmt.Printf("  agent_id: %s\n", resolution.AgentID)
 		fmt.Printf("  path:     %s\n", abs)
+		fmt.Printf("  template: %s\n", selectedTemplate(agentInitTemplate))
+		fmt.Printf("  force:    %t\n", agentInitForce)
 		return nil
 	},
+}
+
+func selectedTemplate(template string) string {
+	if strings.TrimSpace(template) == "" {
+		return agenthome.DefaultTemplate
+	}
+	return template
 }
 
 var agentInstallCmd = &cobra.Command{
@@ -383,6 +404,8 @@ unless needed.`,
 func init() {
 	agentInitCmd.Flags().StringVar(&agentInitID, "agent-id", "main", "Agent ID (default: main)")
 	agentInitCmd.Flags().StringVar(&agentInitHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
+	agentInitCmd.Flags().StringVar(&agentInitTemplate, "template", agenthome.DefaultTemplate, "Persona template: run-default, solve-github, serve-controller")
+	agentInitCmd.Flags().BoolVar(&agentInitForce, "force", false, "Overwrite existing persona files (ROLE.md/AGENT.md/IDENTITY.md/SOUL.md)")
 
 	agentInstallCmd.Flags().String("name", "", "Alias name for the agent bundle (required)")
 	_ = agentInstallCmd.MarkFlagRequired("name")
