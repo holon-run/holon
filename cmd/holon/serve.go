@@ -25,22 +25,24 @@ import (
 )
 
 var (
-	serveRepo                  string
-	serveInput                 string
-	serveAgentID               string
-	serveAgentHome             string
-	serveSessionID             string
-	serveNoDefaultSession      bool
-	serveLazyController        bool
-	serveMaxEvents             int
-	serveDryRun                bool
-	serveLogLevel              string
-	serveWebhookPort           int
-	serveWebhookMode           bool
-	serveTickInterval          time.Duration
-	serveNoSubscriptions       bool
-	serveRuntimeMode           string
-	serveRuntimeDevAgentSource string
+	serveRepo                    string
+	serveInput                   string
+	serveAgentID                 string
+	serveAgentHome               string
+	serveSessionID               string
+	serveNoDefaultSession        bool
+	serveLazyController          bool
+	serveControllerWarmupTimeout time.Duration
+	serveWarmupBestEffort        bool
+	serveMaxEvents               int
+	serveDryRun                  bool
+	serveLogLevel                string
+	serveWebhookPort             int
+	serveWebhookMode             bool
+	serveTickInterval            time.Duration
+	serveNoSubscriptions         bool
+	serveRuntimeMode             string
+	serveRuntimeDevAgentSource   string
 )
 
 var serveCmd = &cobra.Command{
@@ -128,24 +130,34 @@ for local development and testing.`,
 			return handler.HandleTurnStart(ctx, req, turnID)
 		}
 
-		if !serveNoDefaultSession {
+		logDefaultSessionStatus := func() {
+			if serveNoDefaultSession {
+				holonlog.Info("default session disabled (--no-default-session)")
+				return
+			}
 			holonlog.Info("default session ensured", "session_id", firstNonEmpty(strings.TrimSpace(serveSessionID), "main"))
-		} else {
-			holonlog.Info("default session disabled (--no-default-session)")
 		}
 
-		if !serveDryRun && !serveLazyController {
+		warmController := func() error {
+			if serveDryRun || serveLazyController || serveControllerWarmupTimeout <= 0 {
+				return nil
+			}
 			warmRef := "local/rpc#0"
 			if strings.TrimSpace(serveRepo) != "" {
 				warmRef = fmt.Sprintf("%s#0", strings.TrimSpace(serveRepo))
 			}
-			warmCtx, cancel := context.WithTimeout(parentCtx, 2*time.Minute)
+			warmCtx, cancel := context.WithTimeout(parentCtx, serveControllerWarmupTimeout)
 			defer cancel()
-			holonlog.Info("warming controller runtime", "ref", warmRef)
+			holonlog.Info("warming controller runtime", "ref", warmRef, "timeout", serveControllerWarmupTimeout.String())
 			if err := handler.ensureControllerLocked(warmCtx, warmRef); err != nil {
+				if serveWarmupBestEffort {
+					holonlog.Warn("failed to warm controller runtime; continuing without pre-warmed controller", "ref", warmRef, "error", err)
+					return nil
+				}
 				return fmt.Errorf("failed to warm controller runtime: %w", err)
 			}
 			holonlog.Info("controller runtime ready; idle waiting for triggers")
+			return nil
 		}
 
 		// Use subscription manager if subscriptions are enabled.
@@ -188,6 +200,10 @@ for local development and testing.`,
 			// Start subscription manager
 			if err := subMgr.Start(tickCtx); err != nil {
 				return fmt.Errorf("failed to start subscription manager: %w", err)
+			}
+			logDefaultSessionStatus()
+			if err := warmController(); err != nil {
+				return err
 			}
 			status := subMgr.Status()
 			startup := buildServeStartupDiagnostics(serveStartupDiagnosticsInput{
@@ -272,6 +288,10 @@ for local development and testing.`,
 				return err
 			}
 			logServeStartupDiagnostics(startup)
+			logDefaultSessionStatus()
+			if err := warmController(); err != nil {
+				return err
+			}
 			holonlog.Info("idle: waiting for rpc/events")
 			return webhookSrv.Start(tickCtx)
 		}
@@ -329,6 +349,10 @@ for local development and testing.`,
 			return err
 		}
 		logServeStartupDiagnostics(startup)
+		logDefaultSessionStatus()
+		if err := warmController(); err != nil {
+			return err
+		}
 		holonlog.Info("idle: waiting for input events")
 		return svc.Run(tickCtx, reader, serveMaxEvents)
 	},
@@ -1607,6 +1631,8 @@ func init() {
 	serveCmd.Flags().StringVar(&serveSessionID, "session", "main", "Default serve session/thread id to load/create on startup")
 	serveCmd.Flags().BoolVar(&serveNoDefaultSession, "no-default-session", false, "Disable default session/thread creation on startup (debugging)")
 	serveCmd.Flags().BoolVar(&serveLazyController, "lazy-controller", false, "Do not eagerly start controller runtime on startup (debugging)")
+	serveCmd.Flags().DurationVar(&serveControllerWarmupTimeout, "controller-warmup-timeout", 2*time.Minute, "Timeout for eagerly warming the controller runtime on startup (0 disables warmup)")
+	serveCmd.Flags().BoolVar(&serveWarmupBestEffort, "controller-warmup-best-effort", false, "Continue serving even if controller warmup fails (debugging)")
 	serveCmd.Flags().IntVar(&serveMaxEvents, "max-events", 0, "Stop after processing N events (0 = unlimited, not supported in webhook mode)")
 	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without starting the controller runtime session")
 	serveCmd.Flags().DurationVar(&serveTickInterval, "tick-interval", 0, "Emit timer.tick events periodically (e.g. 5m)")

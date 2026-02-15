@@ -34,6 +34,84 @@ func TestNewRuntime(t *testing.T) {
 	}
 }
 
+func TestNewRuntimeWithOptions_NoDefaultSession(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntimeWithOptions(tmpDir, RuntimeOptions{
+		DefaultSessionID: "main",
+		NoDefaultSession: true,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithOptions() error = %v", err)
+	}
+	if got := rt.GetState().ControllerSession; got != "" {
+		t.Fatalf("ControllerSession = %q, want empty", got)
+	}
+	if got := rt.effectiveSessionID(); got != "" {
+		t.Fatalf("effectiveSessionID() = %q, want empty", got)
+	}
+}
+
+func TestEffectiveSessionID(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntimeWithOptions(tmpDir, RuntimeOptions{
+		DefaultSessionID: "main",
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithOptions() error = %v", err)
+	}
+	if got := rt.effectiveSessionID(); got != "main" {
+		t.Fatalf("effectiveSessionID() (empty persisted) = %q, want %q", got, "main")
+	}
+
+	rt.SetControllerSession("thread_123")
+	if got := rt.effectiveSessionID(); got != "thread_123" {
+		t.Fatalf("effectiveSessionID() (persisted) = %q, want %q", got, "thread_123")
+	}
+}
+
+func TestTurnStartRequiresThreadIDWhenNoDefaultSession(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntimeWithOptions(tmpDir, RuntimeOptions{
+		DefaultSessionID: "main",
+		NoDefaultSession: true,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithOptions() error = %v", err)
+	}
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	_, rpcErr := rt.HandleTurnStart(params)
+	if rpcErr == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if rpcErr.Code != ErrCodeInvalidParams {
+		t.Fatalf("error code = %d, want %d", rpcErr.Code, ErrCodeInvalidParams)
+	}
+	if len(rpcErr.Data) == 0 {
+		t.Fatalf("expected error data for invalid params")
+	}
+	var data map[string]string
+	if err := json.Unmarshal(rpcErr.Data, &data); err != nil {
+		t.Fatalf("failed to decode error data: %v", err)
+	}
+	if data["field"] != "thread_id" {
+		t.Fatalf("expected field=thread_id, got %q", data["field"])
+	}
+}
+
 func TestRuntimePauseResume(t *testing.T) {
 	tmpDir := t.TempDir()
 

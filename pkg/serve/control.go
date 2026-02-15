@@ -152,6 +152,8 @@ func (rt *Runtime) ensureDefaultSession() error {
 	if strings.TrimSpace(rt.state.ControllerSession) != "" {
 		return nil
 	}
+	// Persist only when we actually transition from an empty controller session
+	// to the default session id.
 	rt.state.ControllerSession = rt.defaultSessionID
 	if err := rt.save(); err != nil {
 		return err
