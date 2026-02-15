@@ -74,6 +74,10 @@ Workspace Preparation:
   Default prepared path example:
   - <agent_home>/workspaces/repos/<owner>/<repo>/<ref-or-default>
 
+  Workspace persistence:
+  - Prepared workspaces under agent_home/workspaces are reused across runs.
+  - They are not auto-deleted by solve cleanup flags (cleanup controls input/output/ephemeral agent-home only).
+
 Supported Reference Formats:
   - Full URLs:
     - Issue: https://github.com/<owner>/<repo>/issues/<n>

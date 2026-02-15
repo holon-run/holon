@@ -4,10 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
 const defaultWorkspaceTrack = "default"
+const maxWorkspaceSegmentLength = 120
+
+var nonWorkspaceSegmentChars = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 
 func resolveAgentWorkspaceRoot(agentHome string) (string, error) {
 	root := filepath.Join(agentHome, "workspaces")
@@ -46,11 +50,32 @@ func workspacePathForRepoRef(root, repo, ref string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid repo format %q (expected owner/repo)", repo)
 	}
 
+	safeOwner := sanitizeWorkspaceSegment(owner)
+	safeName := sanitizeWorkspaceSegment(name)
+	if safeOwner == "" || safeName == "" {
+		return "", "", fmt.Errorf("invalid repo format %q after sanitization", repo)
+	}
+
 	track := sanitizeWorkspaceSegment(ref)
 	if track == "" {
 		track = defaultWorkspaceTrack
 	}
-	path := filepath.Join(root, "repos", sanitizeWorkspaceSegment(owner), sanitizeWorkspaceSegment(name), track)
+	path := filepath.Join(root, "repos", safeOwner, safeName, track)
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to resolve workspace root: %w", err)
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to resolve workspace path: %w", err)
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to validate workspace path under root: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", "", fmt.Errorf("resolved workspace path %s escapes root %s", absPath, absRoot)
+	}
 	workspaceRef := fmt.Sprintf("%s@%s", repo, track)
 	return path, workspaceRef, nil
 }
@@ -64,6 +89,13 @@ func sanitizeWorkspaceSegment(value string) string {
 	if trimmed == "" {
 		return ""
 	}
-	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_")
-	return replacer.Replace(trimmed)
+	normalized := nonWorkspaceSegmentChars.ReplaceAllString(trimmed, "_")
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" || normalized == "." || normalized == ".." {
+		return ""
+	}
+	if len(normalized) > maxWorkspaceSegmentLength {
+		normalized = normalized[:maxWorkspaceSegmentLength]
+	}
+	return normalized
 }
