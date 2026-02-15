@@ -6,7 +6,7 @@
 
 # Check that the bundle exists at the expected location
 exec bash -c 'ls "$HOLON_REPO_ROOT/agents/claude/dist/agent-bundles/agent-bundle-"*.tar.gz'
-stdout 'holon/agents/claude/dist/agent-bundles/agent-bundle-'
+stdout 'agents/claude/dist/agent-bundles/agent-bundle-'
 
 mkdir work
 mkdir work/examples

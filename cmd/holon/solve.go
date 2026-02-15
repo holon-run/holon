@@ -66,12 +66,17 @@ Skill-First Mode:
   Skills are loaded from project config or specified via --skill/--skills flags.
 
 Workspace Preparation:
-  The workspace is prepared automatically based on the context:
+  The workspace is prepared automatically under agent_home/workspaces:
   - If --workspace PATH is provided: uses the existing directory directly (no cloning, no extra snapshot)
-  - If current directory matches the ref repo: creates a clean temp workspace via git-clone (using --local)
-  - Otherwise: clones from the remote repository into a temp directory (full history by default)
+  - If current directory matches the ref repo: prepares repo workspace via local git-clone
+  - Otherwise: clones from the remote repository into the resolved repo workspace
 
-  Temporary workspaces are automatically cleaned up after execution.
+  Default prepared path example:
+  - <agent_home>/workspaces/repos/<owner>/<repo>/<ref-or-default>
+
+  Workspace persistence:
+  - Prepared workspaces under agent_home/workspaces are reused across runs.
+  - They are not auto-deleted by solve cleanup flags (cleanup controls input/output/ephemeral agent-home only).
 
 Supported Reference Formats:
   - Full URLs:
@@ -168,14 +173,14 @@ type workspacePreparation struct {
 // Decision logic:
 //  1. If --workspace PATH is provided: use preparer "existing" on PATH (no clone/copy)
 //  2. If not provided and current dir is a git repo matching the ref owner/repo:
-//     prepare a clean temp workspace via git-clone with Source=current repo (using --local internally)
-//  3. Otherwise: prepare via git-clone from the ref's repo URL into a temp dir (full history by default)
+//     prepare a clean workspace under agent_home/workspaces via git-clone with Source=current repo (using --local internally)
+//  3. Otherwise: prepare via git-clone from the ref's repo URL into agent_home/workspaces (full history by default)
 //
 // Note: The token parameter is currently unused for authentication during git clone operations.
 // This means that private repositories may fail to clone if they require authentication.
 // This is intentional for the initial implementation to avoid embedding credentials in git URLs.
 // Future enhancement could add git credential helper integration or SSH-based authentication.
-func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef, token string) (*workspacePreparation, error) {
+func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef, token, workspaceRoot string) (*workspacePreparation, error) {
 	var workspacePath string
 	var preparer workspace.Preparer
 	var cleanupNeeded bool
@@ -211,6 +216,19 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 		}, nil
 	}
 
+	if strings.TrimSpace(workspaceRoot) == "" {
+		return nil, fmt.Errorf("workspace root is required")
+	}
+	refTrack := solveWorkspaceRef
+	if strings.TrimSpace(refTrack) == "" {
+		refTrack = defaultWorkspaceTrack
+	}
+	determinedPath, _, err := workspacePathForRepoRef(workspaceRoot, fmt.Sprintf("%s/%s", solveRef.Owner, solveRef.Repo), refTrack)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve solve workspace path: %w", err)
+	}
+	workspacePath = determinedPath
+
 	// Decision 2: Check if current directory matches the ref owner/repo
 	currentDir, err := os.Getwd()
 	if err != nil {
@@ -221,15 +239,8 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 	if err == nil && currentDirRepo == fmt.Sprintf("%s/%s", solveRef.Owner, solveRef.Repo) {
 		// Current dir matches the ref repo - use git-clone with --local from current repo
 		source = currentDir
-
-		// Create a temp directory for the workspace
-		tempDir, err := os.MkdirTemp("", "holon-solve-workspace-*")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create temp workspace directory: %w", err)
-		}
-		workspacePath = tempDir
 		preparer = workspace.NewGitClonePreparer()
-		cleanupNeeded = true
+		cleanupNeeded = false
 
 		fmt.Printf("Workspace mode: git-clone (from local repo matching ref)\n")
 		fmt.Printf("  Source: %s\n", source)
@@ -250,7 +261,6 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 			CleanDest: true,
 		})
 		if err != nil {
-			os.RemoveAll(workspacePath)
 			return nil, fmt.Errorf("failed to prepare workspace using git-clone from local repo: %w", err)
 		}
 
@@ -260,22 +270,14 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 		githubURL := fmt.Sprintf("https://github.com/%s/%s.git", solveRef.Owner, solveRef.Repo)
 		client := git.NewClient(workspacePath)
 		if err := client.SetRemote(ctx, "origin", githubURL); err != nil {
-			os.RemoveAll(workspacePath)
 			return nil, fmt.Errorf("failed to set origin URL after local clone: %w", err)
 		}
 		fmt.Printf("  Fixed origin to: %s\n", githubURL)
 	} else {
 		// Decision 3: Clone from remote repository
 		source = fmt.Sprintf("https://github.com/%s/%s.git", solveRef.Owner, solveRef.Repo)
-
-		// Create a temp directory for the workspace
-		tempDir, err := os.MkdirTemp("", "holon-solve-workspace-*")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create temp workspace directory: %w", err)
-		}
-		workspacePath = tempDir
 		preparer = workspace.NewGitClonePreparer()
-		cleanupNeeded = true
+		cleanupNeeded = false
 
 		fmt.Printf("Workspace mode: git-clone (from remote)\n")
 		fmt.Printf("  Source: %s\n", source)
@@ -296,7 +298,6 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 			CleanDest: true,
 		})
 		if err != nil {
-			os.RemoveAll(workspacePath)
 			return nil, fmt.Errorf("failed to prepare workspace using git-clone from remote: %w", err)
 		}
 
@@ -609,8 +610,12 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("Preparing workspace...")
 	fmt.Println(strings.Repeat("=", 60))
+	workspaceRoot, err := resolveAgentWorkspaceRoot(agentResolution.AgentHome)
+	if err != nil {
+		return err
+	}
 
-	workspacePrep, err := prepareWorkspaceForSolve(ctx, solveRef, token)
+	workspacePrep, err := prepareWorkspaceForSolve(ctx, solveRef, token, workspaceRoot)
 	if err != nil {
 		return fmt.Errorf("failed to prepare workspace: %w", err)
 	}
