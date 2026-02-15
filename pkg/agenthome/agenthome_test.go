@@ -3,6 +3,7 @@ package agenthome
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -100,6 +101,76 @@ func TestEnsureLayout(t *testing.T) {
 		t.Fatalf("workspace dir should not be created by default")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("unexpected error stating workspace dir: %v", err)
+	}
+}
+
+func TestEnsureLayoutWithOptions_TemplateRunDefault(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+
+	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateRunDefault}); err != nil {
+		t.Fatalf("ensure layout with run template: %v", err)
+	}
+
+	roleData, err := os.ReadFile(filepath.Join(home, "ROLE.md"))
+	if err != nil {
+		t.Fatalf("read ROLE.md: %v", err)
+	}
+	if !strings.Contains(string(roleData), "ROLE: EXECUTOR") {
+		t.Fatalf("expected run-default ROLE.md content, got: %s", string(roleData))
+	}
+}
+
+func TestEnsureLayoutWithOptions_TemplateSolveGitHub(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+
+	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateSolveGitHub}); err != nil {
+		t.Fatalf("ensure layout with solve template: %v", err)
+	}
+
+	roleData, err := os.ReadFile(filepath.Join(home, "ROLE.md"))
+	if err != nil {
+		t.Fatalf("read ROLE.md: %v", err)
+	}
+	if !strings.Contains(string(roleData), "ROLE: GITHUB_SOLVER") {
+		t.Fatalf("expected solve-github ROLE.md content, got: %s", string(roleData))
+	}
+}
+
+func TestEnsureLayoutWithOptions_ForceOverwritesPersonaFiles(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+
+	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateRunDefault}); err != nil {
+		t.Fatalf("initial ensure layout: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "ROLE.md"), []byte("custom role"), 0o644); err != nil {
+		t.Fatalf("write ROLE.md: %v", err)
+	}
+	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateServeController, Force: true}); err != nil {
+		t.Fatalf("ensure layout with force: %v", err)
+	}
+
+	roleData, err := os.ReadFile(filepath.Join(home, "ROLE.md"))
+	if err != nil {
+		t.Fatalf("read ROLE.md: %v", err)
+	}
+	if !strings.Contains(string(roleData), "persistent PM controller") {
+		t.Fatalf("expected force overwrite with serve-controller content, got: %s", string(roleData))
+	}
+}
+
+func TestEnsureLayoutWithOptions_InvalidTemplate(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+
+	err := EnsureLayoutWithOptions(home, InitOptions{Template: "unknown"})
+	if err == nil {
+		t.Fatal("expected error for unsupported template")
+	}
+	if !strings.Contains(err.Error(), "unsupported template") {
+		t.Fatalf("expected unsupported template error, got: %v", err)
 	}
 }
 

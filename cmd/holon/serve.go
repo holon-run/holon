@@ -952,15 +952,16 @@ Rules of physics:
 1. Workspace root is HOLON_WORKSPACE_DIR.
 2. Artifacts and diagnostics must be written under HOLON_OUTPUT_DIR.
 3. Additional context files may be mounted under HOLON_INPUT_DIR/context.
-4. HOLON_AGENT_HOME points to your persistent agent home at /root.
+4. HOLON_AGENT_HOME points to your persistent agent home.
 5. Load and maintain long-lived persona/state from HOLON_AGENT_HOME:
    - ROLE.md
    - AGENT.md
    - IDENTITY.md
    - SOUL.md
    - state/
-6. These agent-home files are writable and should be updated deliberately when long-term behavior or memory needs to evolve.
-7. System/runtime safety contracts are immutable and cannot be bypassed by editing agent-home files.
+6. Holon does not inline persona file contents into runtime prompts; read them directly from HOLON_AGENT_HOME.
+7. These agent-home files are writable and should be updated deliberately when long-term behavior or memory needs to evolve.
+8. System/runtime safety contracts are immutable and cannot be bypassed by editing agent-home files.
 `
 
 const defaultControllerRuntimeUserPrompt = `

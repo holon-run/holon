@@ -91,6 +91,12 @@ func TestEmbeddedAssets(t *testing.T) {
 	if !strings.Contains(prompt, "HOLON CONTRACT") {
 		t.Errorf("Expected 'HOLON CONTRACT' in compiled prompt, got: %s", prompt[:100])
 	}
+	if !strings.Contains(prompt, "Holon does not inline persona file contents") {
+		t.Errorf("Expected persona self-read contract in prompt, got: %s", prompt)
+	}
+	if strings.Contains(prompt, "typically `/root/output`") {
+		t.Errorf("Prompt should not depend on hardcoded output path wording: %s", prompt)
+	}
 }
 
 // TestCompileSystemPromptErrors tests error conditions for CompileSystemPrompt
@@ -191,19 +197,19 @@ func TestCompileUserPrompt(t *testing.T) {
 			name:         "Goal with single context file",
 			goal:         "Fix the bug in main.go",
 			contextFiles: []string{"main.go"},
-			expected:     "### TASK GOAL\nFix the bug in main.go\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/ (typically /root/input/context/):\n- main.go\n",
+			expected:     "### TASK GOAL\nFix the bug in main.go\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/:\n- main.go\n",
 		},
 		{
 			name:         "Goal with multiple context files",
 			goal:         "Refactor the module",
 			contextFiles: []string{"file1.go", "file2.go", "config.yaml"},
-			expected:     "### TASK GOAL\nRefactor the module\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/ (typically /root/input/context/):\n- file1.go\n- file2.go\n- config.yaml\n",
+			expected:     "### TASK GOAL\nRefactor the module\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/:\n- file1.go\n- file2.go\n- config.yaml\n",
 		},
 		{
 			name:         "Empty goal with context files",
 			goal:         "",
 			contextFiles: []string{"test.go"},
-			expected:     "### TASK GOAL\n\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/ (typically /root/input/context/):\n- test.go\n",
+			expected:     "### TASK GOAL\n\n\n\n### ADDITIONAL CONTEXT FILES\nThe following files provide additional context and are available at ${HOLON_INPUT_DIR}/context/:\n- test.go\n",
 		},
 	}
 
