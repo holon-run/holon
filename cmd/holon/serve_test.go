@@ -26,6 +26,62 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
+func TestIsSafeDockerContainerID(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{name: "short valid", id: "0123456789ab", want: true},
+		{name: "long valid", id: strings.Repeat("a", 64), want: true},
+		{name: "too short", id: "0123456789a", want: false},
+		{name: "too long", id: strings.Repeat("a", 65), want: false},
+		{name: "invalid char", id: "0123456789ag", want: false},
+		{name: "uppercase invalid", id: "0123456789AB", want: false},
+		{name: "spaces trimmed", id: " 0123456789ab ", want: true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isSafeDockerContainerID(tc.id); got != tc.want {
+				t.Fatalf("isSafeDockerContainerID(%q) = %v, want %v", tc.id, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveControllerRPCReadyTimeout(t *testing.T) {
+	t.Parallel()
+
+	key := "HOLON_SERVE_RPC_READY_TIMEOUT"
+	original := os.Getenv(key)
+	t.Cleanup(func() {
+		_ = os.Setenv(key, original)
+	})
+
+	_ = os.Unsetenv(key)
+	if got := resolveControllerRPCReadyTimeout(); got != 2*time.Minute {
+		t.Fatalf("resolveControllerRPCReadyTimeout() default = %s, want 2m", got)
+	}
+
+	if err := os.Setenv(key, "45s"); err != nil {
+		t.Fatalf("setenv: %v", err)
+	}
+	if got := resolveControllerRPCReadyTimeout(); got != 45*time.Second {
+		t.Fatalf("resolveControllerRPCReadyTimeout() = %s, want 45s", got)
+	}
+
+	if err := os.Setenv(key, "bad"); err != nil {
+		t.Fatalf("setenv bad: %v", err)
+	}
+	if got := resolveControllerRPCReadyTimeout(); got != 2*time.Minute {
+		t.Fatalf("resolveControllerRPCReadyTimeout() invalid fallback = %s, want 2m", got)
+	}
+}
+
 func TestRouteEventToSessionKey(t *testing.T) {
 	t.Parallel()
 

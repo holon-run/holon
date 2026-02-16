@@ -14,6 +14,7 @@ Each subdirectory under `e2e-manual/` is one test case.
 ## Case List
 
 - `serve-github-issue-solve`: Validate `holon serve` issue-comment trigger flow end-to-end.
+- `serve-autonomous-project-drive`: Validate `holon serve` + `message send` for autonomous milestone decomposition and `@holonbot` execution trigger.
 - `run-pptx-remote-skill`: Validate `holon run` auto-init + remote `pptx` skill + local agent bundle.
 - `solve-holon-test-issue`: Validate `holon solve issue` against `holon-run/holon-test` (default workspace prepare path).
 - `solve-holon-test-review-pr`: Validate `holon solve pr --skills github-review` from within a local `holon-test` clone.

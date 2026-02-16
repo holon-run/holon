@@ -5,7 +5,8 @@ REPO="${REPO:-holon-run/holon-test}"
 PORT="${PORT:-18080}"
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/artifacts/run-$(date +%Y%m%d-%H%M%S)}"
-STATE_DIR="${STATE_DIR:-/tmp/holon-serve-e2e-$(date +%s)}"
+AGENT_HOME="${AGENT_HOME:-/tmp/holon-serve-e2e-agent-home-$(date +%s)}"
+STATE_DIR="$AGENT_HOME/state"
 
 mkdir -p "$OUT_DIR"
 
@@ -32,13 +33,17 @@ WEBHOOK_LOG="$OUT_DIR/webhook-forward.log"
 RUN_META="$OUT_DIR/run-meta.env"
 
 echo "STATE_DIR=$STATE_DIR" | tee -a "$RUN_META"
+echo "AGENT_HOME=$AGENT_HOME" | tee -a "$RUN_META"
 echo "REPO=$REPO" | tee -a "$RUN_META"
 echo "PORT=$PORT" | tee -a "$RUN_META"
 
-echo "[1/4] starting holon serve"
+echo "[0/5] initializing agent home"
+./bin/holon agent init --agent-home "$AGENT_HOME" >/dev/null
+
+echo "[1/5] starting holon serve"
 ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN" \
 ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL" \
-./bin/holon serve --repo "$REPO" --webhook-port "$PORT" --state-dir "$STATE_DIR" --log-level debug \
+./bin/holon serve --repo "$REPO" --agent-home "$AGENT_HOME" --webhook-port "$PORT" --log-level debug \
   >"$SERVE_LOG" 2>&1 &
 SERVE_PID=$!
 echo "SERVE_PID=$SERVE_PID" | tee -a "$RUN_META"
@@ -50,7 +55,7 @@ if ! kill -0 "$SERVE_PID" 2>/dev/null; then
   exit 1
 fi
 
-echo "[2/4] starting webhook forward"
+echo "[2/5] starting webhook forward"
 gh webhook forward \
   --repo="$REPO" \
   --events=issues,issue_comment,pull_request,pull_request_review,pull_request_review_comment \
@@ -61,7 +66,7 @@ echo "WEBHOOK_PID=$WEBHOOK_PID" | tee -a "$RUN_META"
 
 sleep 3
 
-echo "[3/4] creating test issue"
+echo "[3/5] creating test issue"
 ISSUE_TITLE="E2E serve issue solve $(date +%H%M%S)"
 ISSUE_BODY_FILE="$OUT_DIR/issue-body.md"
 cat > "$ISSUE_BODY_FILE" <<'EOT'
@@ -74,7 +79,7 @@ ISSUE_NUMBER="${ISSUE_URL##*/}"
 echo "ISSUE_URL=$ISSUE_URL" | tee -a "$RUN_META"
 echo "ISSUE_NUMBER=$ISSUE_NUMBER" | tee -a "$RUN_META"
 
-echo "[4/4] posting plain comment (no @holonbot to avoid workflow interference)"
+echo "[4/5] posting plain comment (no @holonbot to avoid workflow interference)"
 COMMENT_BODY_FILE="$OUT_DIR/comment-body.md"
 cat > "$COMMENT_BODY_FILE" <<'EOT'
 Please solve this issue and open a PR.

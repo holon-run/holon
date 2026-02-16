@@ -39,6 +39,14 @@ func NewRPCClient(rpcURL string) *RPCClient {
 	return c
 }
 
+// SetRPCTimeout updates JSON-RPC request timeout for non-stream calls.
+func (c *RPCClient) SetRPCTimeout(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	c.client.Timeout = timeout
+}
+
 // StatusResponse is the response for holon/status
 type StatusResponse struct {
 	State             string    `json:"state"`
