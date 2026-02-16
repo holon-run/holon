@@ -116,8 +116,9 @@ Required actions:
 Execution constraints (mandatory):
 - Do NOT clone/fetch repository locally.
 - Use GitHub CLI (gh) directly against "$REPO" for issue/comment/PR operations.
-- Each Bash command MUST be a single operation:
+- Each Bash command YOU execute inside the task MUST be a single operation:
   no &&, no ||, no pipes |, no redirects > <, no subshells.
+- This constraint applies to your commands, not to this orchestration script.
 - If a command fails, issue a new single command for the next step.
 
 Output discipline:
@@ -204,6 +205,8 @@ while true; do
     cat "$TURN_OUT" >&2
     exit 1
   fi
+  NEXT_ELAPSED=$((MESSAGE_ELAPSED + MESSAGE_SEND_RETRY_SECONDS))
+  echo "message send retry: elapsed=${NEXT_ELAPSED}s timeout=${MESSAGE_SEND_TIMEOUT_SECONDS}s retry_interval=${MESSAGE_SEND_RETRY_SECONDS}s"
   sleep "$MESSAGE_SEND_RETRY_SECONDS"
 done
 

@@ -1544,18 +1544,21 @@ func newControllerHTTPClient(socketPath string) *http.Client {
 }
 
 func waitForControllerRPCReady(ctx context.Context, client *http.Client, containerID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := resolveControllerRPCReadyTimeout()
 	// Controller bootstrap can take longer than 30s with real model latency.
 	// Keep readiness polling tolerant to avoid tearing down a just-started
 	// controller session before the RPC server is actually ready.
-	deadline := time.Now().Add(2 * time.Minute)
+	started := time.Now()
+	deadline := started.Add(timeout)
+	nextProgressLog := started.Add(10 * time.Second)
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for controller rpc health endpoint")
+			return fmt.Errorf("timed out waiting for controller rpc health endpoint after %s", timeout)
 		}
 		reqCtx := ctx
-		if reqCtx == nil {
-			reqCtx = context.Background()
-		}
 		healthCtx, cancel := context.WithTimeout(reqCtx, 1500*time.Millisecond)
 		req, err := http.NewRequestWithContext(healthCtx, http.MethodGet, "http://unix/health", nil)
 		if err != nil {
@@ -1573,6 +1576,10 @@ func waitForControllerRPCReady(ctx context.Context, client *http.Client, contain
 			if dockerErr := controllerHealthViaDockerExec(ctx, containerID); dockerErr == nil {
 				return nil
 			}
+		}
+		if time.Now().After(nextProgressLog) {
+			holonlog.Info("waiting for controller rpc health endpoint", "elapsed", time.Since(started).Round(time.Second).String(), "timeout", timeout.String())
+			nextProgressLog = time.Now().Add(10 * time.Second)
 		}
 		select {
 		case <-time.After(300 * time.Millisecond):
@@ -1682,6 +1689,9 @@ func postEventRPC(ctx context.Context, client *http.Client, sessionKey string, e
 }
 
 func controllerHealthViaDockerExec(ctx context.Context, containerID string) error {
+	if !isSafeDockerContainerID(containerID) {
+		return fmt.Errorf("docker exec health failed: invalid container id")
+	}
 	script := `const http=require("http");
 const req=http.request({socketPath:"/root/run/agent.sock",path:"/health",method:"GET"},(res)=>{res.resume(); if(res.statusCode===200){process.exit(0);} process.exit(2);});
 req.on("error",(err)=>{console.error(String(err)); process.exit(1);});
@@ -1690,12 +1700,25 @@ req.end();`
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker exec health failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+		stderrStr := strings.TrimSpace(stderr.String())
+		if errors.Is(err, exec.ErrNotFound) {
+			if stderrStr != "" {
+				return fmt.Errorf("docker exec health failed: docker CLI not found in PATH; ensure Docker is installed and 'docker' is available: %w: %s", err, stderrStr)
+			}
+			return fmt.Errorf("docker exec health failed: docker CLI not found in PATH; ensure Docker is installed and 'docker' is available: %w", err)
+		}
+		if stderrStr != "" {
+			return fmt.Errorf("docker exec health failed: %w: %s", err, stderrStr)
+		}
+		return fmt.Errorf("docker exec health failed: %w", err)
 	}
 	return nil
 }
 
 func postEventRPCViaDockerExec(ctx context.Context, containerID, sessionKey string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
+	if !isSafeDockerContainerID(containerID) {
+		return controllerRPCEventResponse{}, fmt.Errorf("docker exec rpc failed: invalid container id")
+	}
 	payload := controllerRPCEventRequest{
 		Event:      env,
 		SessionKey: normalizeSessionKey(sessionKey),
@@ -1724,7 +1747,17 @@ process.stdin.on("end",()=>{
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return controllerRPCEventResponse{}, fmt.Errorf("docker exec rpc failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+		stderrStr := strings.TrimSpace(stderr.String())
+		if errors.Is(err, exec.ErrNotFound) {
+			if stderrStr != "" {
+				return controllerRPCEventResponse{}, fmt.Errorf("docker exec rpc failed: docker CLI not found in PATH; ensure Docker is installed and 'docker' is available: %w: %s", err, stderrStr)
+			}
+			return controllerRPCEventResponse{}, fmt.Errorf("docker exec rpc failed: docker CLI not found in PATH; ensure Docker is installed and 'docker' is available: %w", err)
+		}
+		if stderrStr != "" {
+			return controllerRPCEventResponse{}, fmt.Errorf("docker exec rpc failed: %w: %s", err, stderrStr)
+		}
+		return controllerRPCEventResponse{}, fmt.Errorf("docker exec rpc failed: %w", err)
 	}
 	respBody := bytes.TrimSpace(stdout.Bytes())
 	var result controllerRPCEventResponse
@@ -1735,6 +1768,33 @@ process.stdin.on("end",()=>{
 		return controllerRPCEventResponse{}, fmt.Errorf("controller event execution failed: %s", strings.TrimSpace(result.Message))
 	}
 	return result, nil
+}
+
+func isSafeDockerContainerID(containerID string) bool {
+	id := strings.TrimSpace(containerID)
+	if len(id) < 12 || len(id) > 64 {
+		return false
+	}
+	for _, ch := range id {
+		if (ch < 'a' || ch > 'f') && (ch < '0' || ch > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func resolveControllerRPCReadyTimeout() time.Duration {
+	const defaultTimeout = 2 * time.Minute
+	raw := strings.TrimSpace(os.Getenv("HOLON_SERVE_RPC_READY_TIMEOUT"))
+	if raw == "" {
+		return defaultTimeout
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		holonlog.Warn("invalid HOLON_SERVE_RPC_READY_TIMEOUT; using default", "value", raw, "default", defaultTimeout.String())
+		return defaultTimeout
+	}
+	return timeout
 }
 
 func isRetryableControllerRPCError(requestCtx context.Context, err error) bool {

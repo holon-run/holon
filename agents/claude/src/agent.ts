@@ -347,8 +347,18 @@ function hydrateClaudeConfigFromEnv(logger: ProgressLogger): void {
       return;
     }
     try {
-      fs.copyFileSync(src, dst);
-      logger.debug(`Hydrated Claude config: ${src} -> ${dst}`);
+      const content = fs.readFileSync(src, "utf8");
+      // Validate JSON-shaped config files before copying them into runtime config paths.
+      if (src.endsWith(".json")) {
+        try {
+          JSON.parse(content);
+        } catch (error) {
+          logger.info(`Skipping malformed Claude config JSON ${src}: ${String(error)}`);
+          return;
+        }
+      }
+      fs.writeFileSync(dst, content);
+      logger.debug(`Hydrated Claude config: ${src} -> ${dst} (bytes=${Buffer.byteLength(content, "utf8")})`);
     } catch (error) {
       logger.info(`Failed to hydrate Claude config from ${src} to ${dst}: ${String(error)}`);
     }
@@ -740,7 +750,7 @@ async function runServeQueryTurn(
   if (!resultReceived) {
     throw new Error("Claude session turn finished without a result message");
   }
-  if (!observedSessionID) {
+  if (!observedSessionID && !resumeSessionID) {
     throw new Error("Claude session turn finished without a session ID");
   }
 
