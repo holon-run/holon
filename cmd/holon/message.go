@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/holon-run/holon/pkg/serve"
 	"github.com/holon-run/holon/pkg/tui"
@@ -13,6 +14,7 @@ var (
 	messageRPCURL   string
 	messageThreadID string
 	messageBody     string
+	messageTimeout  time.Duration
 )
 
 var messageCmd = &cobra.Command{
@@ -48,6 +50,7 @@ This command is useful for automation and non-interactive testing when TUI is un
 		}
 
 		client := tui.NewRPCClient(rpcURL)
+		client.SetRPCTimeout(messageTimeout)
 		if err := client.TestConnection(); err != nil {
 			return fmt.Errorf("failed to connect to RPC endpoint %s: %w", rpcURL, err)
 		}
@@ -66,6 +69,7 @@ func init() {
 	messageSendCmd.Flags().StringVar(&messageRPCURL, "rpc", "", fmt.Sprintf("RPC endpoint URL (default: http://127.0.0.1:%d/rpc)", serve.DefaultPort))
 	messageSendCmd.Flags().StringVar(&messageThreadID, "thread", "main", "Thread/session key")
 	messageSendCmd.Flags().StringVarP(&messageBody, "message", "m", "", "User message text")
+	messageSendCmd.Flags().DurationVar(&messageTimeout, "timeout", 2*time.Minute, "RPC timeout for status and turn/start requests")
 	_ = messageSendCmd.MarkFlagRequired("message")
 
 	messageCmd.AddCommand(messageSendCmd)

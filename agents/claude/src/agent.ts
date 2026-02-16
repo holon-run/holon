@@ -955,6 +955,17 @@ async function runServeClaudeSession(
     const initPromise = (async (): Promise<SessionEntry> => {
       const resumeID = normalizeSessionKey(persistedSessionMap.get(normalizedKey) || (normalizedKey === "main" ? fallbackResumeID : ""));
       const session = resumeID ? await resumeSession(resumeID, sessionOptions) : await createSession(sessionOptions);
+      // Serve mode must run autonomously in sandbox without interactive approvals.
+      // The unstable session API doesn't expose permission mode in SDKSessionOptions,
+      // so we set it after session creation when available.
+      const setPermissionMode = (session as unknown as { setPermissionMode?: (mode: string) => Promise<void> }).setPermissionMode;
+      if (typeof setPermissionMode === "function") {
+        try {
+          await setPermissionMode("bypassPermissions");
+        } catch (error) {
+          logger.info(`Failed to set session permission mode to bypassPermissions: ${String(error)}`);
+        }
+      }
       const currentSessionID = normalizeSessionKey(tryGetSessionId(session, (message) => logger.debug(message)) || resumeID);
       if (currentSessionID) {
         logger.info(`Controller session ready for ${normalizedKey}: ${currentSessionID}`);
