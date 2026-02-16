@@ -26,6 +26,52 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
+func TestRouteEventToSessionKey(t *testing.T) {
+	t.Parallel()
+
+	withPayload := serve.EventEnvelope{
+		Scope:   serve.EventScope{Repo: "holon-run/holon"},
+		Payload: []byte(`{"session_key":"thread_x"}`),
+	}
+	if got := routeEventToSessionKey(withPayload); got != "thread_x" {
+		t.Fatalf("routeEventToSessionKey(payload session_key) = %q, want thread_x", got)
+	}
+
+	withPartition := serve.EventEnvelope{
+		Scope: serve.EventScope{Partition: "repo:holon-run/holon"},
+	}
+	if got := routeEventToSessionKey(withPartition); got != "event:repo:holon-run/holon" {
+		t.Fatalf("routeEventToSessionKey(partition) = %q", got)
+	}
+
+	withRepo := serve.EventEnvelope{
+		Scope: serve.EventScope{Repo: "holon-run/holon"},
+	}
+	if got := routeEventToSessionKey(withRepo); got != "event:holon-run/holon" {
+		t.Fatalf("routeEventToSessionKey(repo) = %q", got)
+	}
+
+	withSubject := serve.EventEnvelope{
+		Source: "github",
+		Type:   "github.issue.opened",
+		Subject: serve.EventSubject{
+			Kind: "issue",
+			ID:   "698",
+		},
+	}
+	if got := routeEventToSessionKey(withSubject); got != "event:github:issue:698" {
+		t.Fatalf("routeEventToSessionKey(subject) = %q", got)
+	}
+
+	withType := serve.EventEnvelope{
+		Source: "timer",
+		Type:   "timer.tick",
+	}
+	if got := routeEventToSessionKey(withType); got != "event:timer:timer.tick" {
+		t.Fatalf("routeEventToSessionKey(type) = %q", got)
+	}
+}
+
 func TestBuildServeStartupDiagnostics_SubscriptionRPCOnly(t *testing.T) {
 	t.Parallel()
 
@@ -293,7 +339,25 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if err := h.HandleEvent(ctx, env3); err != nil {
 		t.Fatalf("handle event3 after stop: %v", err)
 	}
-	rpcServer.WaitForEvents(t, 3, 2*time.Second)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rpcServer.mu.Lock()
+		seenEvent3 := false
+		for _, env := range rpcServer.events {
+			if env.ID == "evt-3" {
+				seenEvent3 = true
+				break
+			}
+		}
+		rpcServer.mu.Unlock()
+		if seenEvent3 && h.restartAttempts == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for evt-3 and reconnect; seen restartAttempts=%d", h.restartAttempts)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if h.restartAttempts != 2 {
 		t.Fatalf("restartAttempts after reconnect = %d, want 2", h.restartAttempts)
 	}

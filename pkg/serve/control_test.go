@@ -591,6 +591,9 @@ func TestHandleThreadStart(t *testing.T) {
 	if resp.ThreadID == "" {
 		t.Error("ThreadID is empty")
 	}
+	if resp.ThreadID != "main" {
+		t.Errorf("ThreadID = %q, want %q", resp.ThreadID, "main")
+	}
 
 	if resp.SessionID == "" {
 		t.Error("SessionID is empty")
@@ -612,6 +615,7 @@ func TestHandleThreadStart(t *testing.T) {
 
 	// Test with params
 	params, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_custom",
 		"extended_context": map[string]string{
 			"test_key": "test_value",
 		},
@@ -626,8 +630,8 @@ func TestHandleThreadStart(t *testing.T) {
 		t.Fatalf("HandleThreadStart() with params result type = %T, want ThreadStartResponse", result)
 	}
 
-	if resp.ThreadID == "" {
-		t.Error("ThreadID with params is empty")
+	if resp.ThreadID != "thread_custom" {
+		t.Errorf("ThreadID with params = %q, want %q", resp.ThreadID, "thread_custom")
 	}
 }
 

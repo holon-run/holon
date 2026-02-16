@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/runtime/docker"
@@ -598,20 +599,34 @@ type cliControllerHandler struct {
 	handlerCtx            context.Context
 	handlerCancel         context.CancelFunc
 	pumpStarted           bool
+	maxConcurrent         int
+	sessionLocks          map[string]*sessionLockEntry
 	closeOnce             sync.Once
 	mu                    sync.Mutex
 }
 
 type controllerEvent struct {
-	env      serve.EventEnvelope
-	turnID   string
-	threadID string
+	env              serve.EventEnvelope
+	sessionKey       string
+	turnID           string
+	threadID         string
+	skipMainAnnounce bool
 }
 
 type resolvedWorkspace struct {
 	Ref           string
 	HostPath      string
 	ContainerPath string
+}
+
+const defaultServeSessionConcurrency = 4
+const maxSessionLockEntries = 1024
+const sessionLockRetention = 10 * time.Minute
+
+type sessionLockEntry struct {
+	mu       sync.Mutex
+	active   int
+	lastUsed time.Time
 }
 
 func newCLIControllerHandler(
@@ -651,6 +666,8 @@ func newCLIControllerHandler(
 		turnAckCh:             make(chan serve.TurnAckRecord, 128),
 		stopCh:                make(chan struct{}),
 		workerDone:            make(chan struct{}),
+		maxConcurrent:         resolveServeSessionConcurrency(),
+		sessionLocks:          make(map[string]*sessionLockEntry),
 	}
 	handler.handlerCtx, handler.handlerCancel = context.WithCancel(context.Background())
 	handler.pumpStarted = true
@@ -679,6 +696,12 @@ func (h *cliControllerHandler) ensurePumpStartedLocked() {
 	if h.workerDone == nil {
 		h.workerDone = make(chan struct{})
 	}
+	if h.maxConcurrent <= 0 {
+		h.maxConcurrent = resolveServeSessionConcurrency()
+	}
+	if h.sessionLocks == nil {
+		h.sessionLocks = make(map[string]*sessionLockEntry)
+	}
 	if h.handlerCtx == nil || h.handlerCancel == nil {
 		h.handlerCtx, h.handlerCancel = context.WithCancel(context.Background())
 	}
@@ -694,13 +717,21 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 		holonlog.Info("serve dry-run forward", "event_id", env.ID, "type", env.Type)
 		return nil
 	}
-	return h.enqueueEvent(ctx, controllerEvent{env: env})
+	return h.enqueueEvent(ctx, controllerEvent{
+		env:        env,
+		sessionKey: routeEventToSessionKey(env),
+	})
 }
 
 func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.TurnStartRequest, turnID string) error {
+	threadID := normalizeSessionKey(req.ThreadID)
+	if threadID == "" {
+		threadID = "main"
+	}
 	payload := map[string]any{
 		"turn_id":          turnID,
-		"thread_id":        req.ThreadID,
+		"thread_id":        threadID,
+		"session_key":      threadID,
 		"input":            req.Input,
 		"extended_context": req.ExtendedContext,
 	}
@@ -715,19 +746,21 @@ func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.Tu
 		Type:   "rpc.turn.input",
 		At:     time.Now().UTC(),
 		Scope: serve.EventScope{
-			Repo: repo,
+			Repo:      repo,
+			Partition: threadID,
 		},
 		Subject: serve.EventSubject{
 			Kind: "thread",
-			ID:   strings.TrimSpace(req.ThreadID),
+			ID:   threadID,
 		},
-		DedupeKey: fmt.Sprintf("rpc:turn:%s:%s", strings.TrimSpace(req.ThreadID), turnID),
+		DedupeKey: fmt.Sprintf("rpc:turn:%s:%s", threadID, turnID),
 		Payload:   payloadRaw,
 	}
 	return h.enqueueEvent(ctx, controllerEvent{
-		env:      env,
-		turnID:   turnID,
-		threadID: strings.TrimSpace(req.ThreadID),
+		env:        env,
+		sessionKey: threadID,
+		turnID:     turnID,
+		threadID:   threadID,
 	})
 }
 
@@ -750,29 +783,95 @@ func (h *cliControllerHandler) enqueueEvent(ctx context.Context, item controller
 
 func (h *cliControllerHandler) runEventPump() {
 	defer close(h.workerDone)
+	sem := make(chan struct{}, h.maxConcurrent)
+	var wg sync.WaitGroup
 	for {
 		select {
 		case <-h.stopCh:
+			wg.Wait()
 			return
 		case item := <-h.eventQueue:
-			if err := h.dispatchQueuedEvent(item); err != nil {
-				holonlog.Error("failed to dispatch controller event", "error", err, "event_id", item.env.ID, "type", item.env.Type)
-				if item.turnID != "" {
-					h.publishTurnAck(serve.TurnAckRecord{
-						EventID:  item.env.ID,
-						TurnID:   item.turnID,
-						ThreadID: item.threadID,
-						Status:   "failed",
-						Message:  err.Error(),
-						At:       time.Now().UTC().Format(time.RFC3339Nano),
-					})
+			wg.Add(1)
+			go func(item controllerEvent) {
+				defer wg.Done()
+				sessionKey := normalizeSessionKey(item.sessionKey)
+				if sessionKey == "" {
+					sessionKey = "main"
 				}
-			}
+				lockEntry := h.getSessionLock(sessionKey)
+				defer h.releaseSessionLock(sessionKey, lockEntry)
+
+				select {
+				case <-h.stopCh:
+					return
+				case sem <- struct{}{}:
+				}
+				defer func() {
+					<-sem
+				}()
+				lockEntry.mu.Lock()
+				defer lockEntry.mu.Unlock()
+
+				if err := h.dispatchQueuedEvent(item); err != nil {
+					holonlog.Error("failed to dispatch controller event", "error", err, "event_id", item.env.ID, "type", item.env.Type, "session_key", sessionKey)
+					if item.turnID != "" {
+						h.publishTurnAck(serve.TurnAckRecord{
+							EventID:  item.env.ID,
+							TurnID:   item.turnID,
+							ThreadID: item.threadID,
+							Status:   "failed",
+							Message:  err.Error(),
+							At:       time.Now().UTC().Format(time.RFC3339Nano),
+						})
+					}
+				}
+			}(item)
+		}
+	}
+}
+
+func (h *cliControllerHandler) getSessionLock(sessionKey string) *sessionLockEntry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sessionLocks == nil {
+		h.sessionLocks = make(map[string]*sessionLockEntry)
+	}
+	lock, ok := h.sessionLocks[sessionKey]
+	if !ok {
+		lock = &sessionLockEntry{}
+		h.sessionLocks[sessionKey] = lock
+	}
+	lock.active++
+	return lock
+}
+
+func (h *cliControllerHandler) releaseSessionLock(sessionKey string, entry *sessionLockEntry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	current, ok := h.sessionLocks[sessionKey]
+	if !ok || current != entry {
+		return
+	}
+	if current.active > 0 {
+		current.active--
+	}
+	current.lastUsed = time.Now().UTC()
+	if len(h.sessionLocks) <= maxSessionLockEntries {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-sessionLockRetention)
+	for key, candidate := range h.sessionLocks {
+		if candidate.active == 0 && !candidate.lastUsed.IsZero() && candidate.lastUsed.Before(cutoff) {
+			delete(h.sessionLocks, key)
 		}
 	}
 }
 
 func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
+	sessionKey := normalizeSessionKey(item.sessionKey)
+	if sessionKey == "" {
+		sessionKey = "main"
+	}
 	resolvedWorkspace, err := h.resolveWorkspaceForEvent(item.env)
 	if err != nil {
 		return err
@@ -793,12 +892,13 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 	holonlog.Info(
 		"serve workspace resolved",
 		"event_id", item.env.ID,
+		"session_key", sessionKey,
 		"repo", firstNonEmpty(item.env.Scope.Repo, h.repoHint),
 		"workspace_ref", resolvedWorkspace.Ref,
 		"workspace_host_path", resolvedWorkspace.HostPath,
 		"workspace_container_path", resolvedWorkspace.ContainerPath,
 	)
-	result, err := h.postEventWithReconnect(ctx, ref, enriched)
+	result, err := h.postEventWithReconnect(ctx, ref, sessionKey, enriched)
 	if err != nil {
 		return err
 	}
@@ -818,7 +918,52 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 			WorkspacePath: resolvedWorkspace.ContainerPath,
 		})
 	}
+	if sessionKey != "main" && !item.skipMainAnnounce {
+		if err := h.enqueueMainAnnounce(item, sessionKey, strings.TrimSpace(result.Message)); err != nil {
+			holonlog.Warn("failed to enqueue main announce", "event_id", item.env.ID, "session_key", sessionKey, "error", err)
+		}
+	}
 	return nil
+}
+
+func (h *cliControllerHandler) enqueueMainAnnounce(item controllerEvent, sourceSessionKey, summary string) error {
+	if strings.TrimSpace(summary) == "" {
+		summary = "event processed"
+	}
+	announce := map[string]any{
+		"level":              "info",
+		"title":              "Event processed",
+		"text":               summary,
+		"source_session_key": sourceSessionKey,
+		"event_id":           item.env.ID,
+		"source":             item.env.Source,
+		"type":               item.env.Type,
+		"created_at":         time.Now().UTC().Format(time.RFC3339),
+	}
+	payloadRaw, err := json.Marshal(announce)
+	if err != nil {
+		return fmt.Errorf("failed to marshal announce payload: %w", err)
+	}
+	mainEvent := controllerEvent{
+		env: serve.EventEnvelope{
+			ID:     fmt.Sprintf("announce_%d", time.Now().UTC().UnixNano()),
+			Source: "serve",
+			Type:   "session.announce",
+			At:     time.Now().UTC(),
+			Scope: serve.EventScope{
+				Repo:      item.env.Scope.Repo,
+				Partition: "main",
+			},
+			Subject: serve.EventSubject{
+				Kind: "session",
+				ID:   "main",
+			},
+			Payload: payloadRaw,
+		},
+		sessionKey:       "main",
+		skipMainAnnounce: true,
+	}
+	return h.enqueueEvent(context.Background(), mainEvent)
 }
 
 func (h *cliControllerHandler) resolveWorkspaceForEvent(env serve.EventEnvelope) (resolvedWorkspace, error) {
@@ -894,6 +1039,12 @@ func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error)
 		repo = h.repoHint
 	}
 	if env.Type == "rpc.turn.input" {
+		if repo == "" {
+			repo = "local/rpc"
+		}
+		return fmt.Sprintf("%s#0", repo), nil
+	}
+	if env.Source == "serve" && env.Type == "session.announce" {
 		if repo == "" {
 			repo = "local/rpc"
 		}
@@ -1223,16 +1374,81 @@ func resolveControllerWorkspace(agentHome string) (string, error) {
 	return resolveAgentWorkspaceRoot(agentHome)
 }
 
+func normalizeSessionKey(raw string) string {
+	return strings.TrimSpace(raw)
+}
+
+func routeEventToSessionKey(env serve.EventEnvelope) string {
+	if explicit := payloadSessionKey(env.Payload); explicit != "" {
+		return normalizeSessionKey(explicit)
+	}
+	if partition := normalizeSessionKey(env.Scope.Partition); partition != "" {
+		return "event:" + sanitizeSessionPartition(partition)
+	}
+	if repo := normalizeSessionKey(env.Scope.Repo); repo != "" {
+		return "event:" + sanitizeSessionPartition(repo)
+	}
+	source := normalizeSessionKey(env.Source)
+	subjectKind := normalizeSessionKey(env.Subject.Kind)
+	subjectID := normalizeSessionKey(env.Subject.ID)
+	if source != "" && subjectKind != "" && subjectID != "" {
+		return "event:" + sanitizeSessionPartition(source+":"+subjectKind+":"+subjectID)
+	}
+	eventType := normalizeSessionKey(env.Type)
+	if source != "" && eventType != "" {
+		return "event:" + sanitizeSessionPartition(source+":"+eventType)
+	}
+	return "main"
+}
+
+func payloadSessionKey(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var parsed struct {
+		SessionKey string `json:"session_key"`
+		ThreadID   string `json:"thread_id"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return ""
+	}
+	if key := normalizeSessionKey(parsed.SessionKey); key != "" {
+		return key
+	}
+	return normalizeSessionKey(parsed.ThreadID)
+}
+
+func sanitizeSessionPartition(raw string) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+	for _, r := range raw {
+		switch {
+		case unicode.IsLetter(r), unicode.IsNumber(r), r == '-', r == '_', r == '.', r == ':', r == '/':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	sanitized := strings.TrimSpace(b.String())
+	sanitized = strings.Trim(sanitized, "_")
+	if sanitized == "" {
+		return "unknown"
+	}
+	return sanitized
+}
+
 type controllerRPCEventRequest struct {
-	Event serve.EventEnvelope `json:"event"`
+	Event      serve.EventEnvelope `json:"event"`
+	SessionKey string              `json:"session_key,omitempty"`
 }
 
 type controllerRPCEventResponse struct {
-	Status   string `json:"status"`
-	Message  string `json:"message,omitempty"`
-	EventID  string `json:"event_id,omitempty"`
-	TurnID   string `json:"turn_id,omitempty"`
-	ThreadID string `json:"thread_id,omitempty"`
+	Status     string `json:"status"`
+	Message    string `json:"message,omitempty"`
+	EventID    string `json:"event_id,omitempty"`
+	TurnID     string `json:"turn_id,omitempty"`
+	ThreadID   string `json:"thread_id,omitempty"`
+	SessionKey string `json:"session_key,omitempty"`
 }
 
 func newControllerHTTPClient(socketPath string) *http.Client {
@@ -1280,12 +1496,12 @@ func waitForControllerRPCReady(ctx context.Context, client *http.Client) error {
 	}
 }
 
-func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
-	resp, err := h.postEventRPC(ctx, ref, env)
+func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref string, sessionKey string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
+	resp, err := h.postEventRPC(ctx, ref, sessionKey, env)
 	if err == nil {
 		return resp, nil
 	}
-	if !isRetryableControllerRPCError(err) {
+	if !isRetryableControllerRPCError(ctx, err) {
 		return controllerRPCEventResponse{}, err
 	}
 
@@ -1301,16 +1517,20 @@ func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref s
 	h.controllerDone = nil
 	h.controllerHTTPClient = nil
 	h.controllerSocketPath = ""
-	restartErr := h.ensureControllerLocked(ctx, ref)
+	restartCtx := ctx
+	if restartCtx == nil {
+		restartCtx = context.Background()
+	}
+	restartErr := h.ensureControllerLocked(restartCtx, ref)
 	client := h.controllerHTTPClient
 	h.mu.Unlock()
 	if restartErr != nil {
 		return controllerRPCEventResponse{}, restartErr
 	}
-	return postEventRPC(ctx, client, env)
+	return postEventRPC(restartCtx, client, sessionKey, env)
 }
 
-func (h *cliControllerHandler) postEventRPC(ctx context.Context, ref string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
+func (h *cliControllerHandler) postEventRPC(ctx context.Context, ref string, sessionKey string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
 	h.mu.Lock()
 	if err := h.ensureControllerLocked(ctx, ref); err != nil {
 		h.mu.Unlock()
@@ -1318,11 +1538,14 @@ func (h *cliControllerHandler) postEventRPC(ctx context.Context, ref string, env
 	}
 	client := h.controllerHTTPClient
 	h.mu.Unlock()
-	return postEventRPC(ctx, client, env)
+	return postEventRPC(ctx, client, sessionKey, env)
 }
 
-func postEventRPC(ctx context.Context, client *http.Client, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
-	payload := controllerRPCEventRequest{Event: env}
+func postEventRPC(ctx context.Context, client *http.Client, sessionKey string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
+	payload := controllerRPCEventRequest{
+		Event:      env,
+		SessionKey: normalizeSessionKey(sessionKey),
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return controllerRPCEventResponse{}, fmt.Errorf("failed to marshal controller rpc request: %w", err)
@@ -1355,12 +1578,32 @@ func postEventRPC(ctx context.Context, client *http.Client, env serve.EventEnvel
 	return result, nil
 }
 
-func isRetryableControllerRPCError(err error) bool {
+func isRetryableControllerRPCError(requestCtx context.Context, err error) bool {
 	lower := strings.ToLower(err.Error())
-	return strings.Contains(lower, "no such file") ||
+	if strings.Contains(lower, "no such file") ||
 		strings.Contains(lower, "connection refused") ||
 		strings.Contains(lower, "broken pipe") ||
-		strings.Contains(lower, "connection reset")
+		strings.Contains(lower, "connection reset") {
+		return true
+	}
+	if requestCtx != nil && requestCtx.Err() != nil {
+		return false
+	}
+	return strings.Contains(lower, "context canceled") ||
+		strings.Contains(lower, "deadline exceeded")
+}
+
+func resolveServeSessionConcurrency() int {
+	raw := strings.TrimSpace(os.Getenv("HOLON_SERVE_CONCURRENCY"))
+	if raw == "" {
+		return defaultServeSessionConcurrency
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		holonlog.Warn("invalid HOLON_SERVE_CONCURRENCY; using default", "value", raw, "default", defaultServeSessionConcurrency)
+		return defaultServeSessionConcurrency
+	}
+	return value
 }
 
 func firstNonEmpty(values ...string) string {

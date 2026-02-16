@@ -519,6 +519,7 @@ func splitLines(data []byte) [][]byte {
 
 // ThreadStartRequest represents parameters for thread/start
 type ThreadStartRequest struct {
+	ThreadID string `json:"thread_id,omitempty"`
 	// ExtendedContext is optional context for the thread
 	ExtendedContext map[string]interface{} `json:"extended_context,omitempty"`
 }
@@ -600,9 +601,13 @@ func (rt *Runtime) HandleThreadStart(params json.RawMessage) (interface{}, *JSON
 		}
 	}
 
-	// In Holon, thread maps to controller session
-	// Generate a new session ID for this thread
-	sessionID := fmt.Sprintf("thread_%d", rt.now().UnixNano())
+	sessionID := strings.TrimSpace(req.ThreadID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(rt.effectiveSessionID())
+	}
+	if sessionID == "" {
+		return nil, newInvalidParamFieldError("thread_id", "thread_id is required when no default session is configured")
+	}
 	rt.SetControllerSession(sessionID)
 	threadNotif := NewThreadNotification(sessionID, ThreadNotificationStarted, StateRunning)
 	rt.emitThreadNotification(threadNotif)
