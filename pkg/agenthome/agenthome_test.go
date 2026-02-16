@@ -87,7 +87,8 @@ func TestEnsureLayout(t *testing.T) {
 		filepath.Join(home, "sessions"),
 		filepath.Join(home, "channels"),
 		filepath.Join(home, "jobs"),
-		filepath.Join(home, "AGENT.md"),
+		filepath.Join(home, "AGENTS.md"),
+		filepath.Join(home, "CLAUDE.md"),
 		filepath.Join(home, "ROLE.md"),
 		filepath.Join(home, "IDENTITY.md"),
 		filepath.Join(home, "SOUL.md"),
@@ -192,11 +193,11 @@ func TestEnsureLayout_InvalidExistingConfig(t *testing.T) {
 func TestEnsureLayout_FailsWhenPersonaPathIsDirectory(t *testing.T) {
 	td := t.TempDir()
 	home := filepath.Join(td, "agent-home")
-	if err := os.MkdirAll(filepath.Join(home, "AGENT.md"), 0o755); err != nil {
-		t.Fatalf("mkdir AGENT.md dir: %v", err)
+	if err := os.MkdirAll(filepath.Join(home, "AGENTS.md"), 0o755); err != nil {
+		t.Fatalf("mkdir AGENTS.md dir: %v", err)
 	}
 	if err := EnsureLayout(home); err == nil {
-		t.Fatalf("expected EnsureLayout to fail when AGENT.md is a directory")
+		t.Fatalf("expected EnsureLayout to fail when AGENTS.md is a directory")
 	}
 }
 
