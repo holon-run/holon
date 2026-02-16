@@ -4,12 +4,11 @@ import path from "path";
 import os from "os";
 import { spawnSync } from "child_process";
 import { parse as parseYaml } from "yaml";
-import { createSession, query, resumeSession } from "./claudeSdk.js";
+import { query } from "./claudeSdk.js";
 import type { Options } from "./claudeSdk.js";
-import type { SDKMessage, SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtimePaths.js";
-import { tryGetSessionId } from "./sessionState.js";
 
 // Re-export for testing
 export { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
@@ -319,6 +318,46 @@ async function syncClaudeSettings(logger: ProgressLogger, authToken: string | un
   }
 }
 
+function hydrateClaudeConfigFromEnv(logger: ProgressLogger): void {
+  const configDir = (process.env.CLAUDE_CONFIG_DIR || "").trim();
+  if (!configDir) {
+    return;
+  }
+  if (!fs.existsSync(configDir)) {
+    logger.debug(`CLAUDE_CONFIG_DIR does not exist: ${configDir}`);
+    return;
+  }
+
+  const homeDir = os.homedir();
+  const claudeDir = path.join(homeDir, ".claude");
+  const settingsSrc = path.join(configDir, "settings.json");
+  const settingsDst = path.join(claudeDir, "settings.json");
+  const rootConfigSrc = path.join(configDir, ".claude.json");
+  const rootConfigDst = path.join(homeDir, ".claude.json");
+
+  try {
+    fs.mkdirSync(claudeDir, { recursive: true });
+  } catch (error) {
+    logger.info(`Failed to create Claude config directory ${claudeDir}: ${String(error)}`);
+    return;
+  }
+
+  const copyIfExists = (src: string, dst: string): void => {
+    if (!fs.existsSync(src)) {
+      return;
+    }
+    try {
+      fs.copyFileSync(src, dst);
+      logger.debug(`Hydrated Claude config: ${src} -> ${dst}`);
+    } catch (error) {
+      logger.info(`Failed to hydrate Claude config from ${src} to ${dst}: ${String(error)}`);
+    }
+  };
+
+  copyIfExists(settingsSrc, settingsDst);
+  copyIfExists(rootConfigSrc, rootConfigDst);
+}
+
 async function connectivityCheck(logger: ProgressLogger, baseUrl: string): Promise<void> {
   logger.minimal(`Checking environment: ANTHROPIC_AUTH_TOKEN present: ${Boolean(process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY)}`);
   logger.minimal(`Testing connectivity to ${baseUrl}...`);
@@ -623,19 +662,52 @@ async function runClaude(
   };
 }
 
-async function streamSessionTurn(
-  session: SDKSession,
+async function runServeQueryTurn(
   logger: ProgressLogger,
-  logFile: fs.WriteStream
-): Promise<{ success: boolean; result: string }> {
+  logFile: fs.WriteStream,
+  env: NodeJS.ProcessEnv,
+  workspacePath: string,
+  systemInstruction: string,
+  prompt: string,
+  resumeSessionID?: string,
+): Promise<{ success: boolean; result: string; sessionID: string }> {
+  const options: Options = {
+    cwd: workspacePath,
+    env,
+    model: env.HOLON_MODEL || "sonnet",
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+    settingSources: ["user", "project"],
+    tools: { type: "preset", preset: "claude_code" },
+    allowedTools: ["Skill"],
+    stderr: (data: string) => {
+      const trimmed = data.trim();
+      if (trimmed && !trimmed.match(/^log_[a-f0-9]+$/i)) {
+        logFile.write(`[stderr] ${data}`);
+        logger.debug(trimmed);
+      }
+    },
+  };
+  if (resumeSessionID) {
+    options.resume = resumeSessionID;
+  } else {
+    options.systemPrompt = { type: "preset", preset: "claude_code", append: systemInstruction };
+  }
+
   let success = true;
   let resultReceived = false;
   let resultText = "";
   let finalOutput = "";
+  let observedSessionID = resumeSessionID || "";
 
-  for await (const message of session.stream()) {
+  const stream = query({ prompt, options });
+  for await (const message of stream) {
     const safeMessage = message as SDKMessage & { [key: string]: unknown };
     logFile.write(`${JSON.stringify(safeMessage)}\n`);
+
+    if (typeof safeMessage.session_id === "string" && safeMessage.session_id.trim() !== "") {
+      observedSessionID = safeMessage.session_id.trim();
+    }
 
     if (safeMessage.type === "assistant" && safeMessage.message && Array.isArray(safeMessage.message.content)) {
       for (const block of safeMessage.message.content) {
@@ -668,18 +740,14 @@ async function streamSessionTurn(
   if (!resultReceived) {
     throw new Error("Claude session turn finished without a result message");
   }
+  if (!observedSessionID) {
+    throw new Error("Claude session turn finished without a session ID");
+  }
 
   return {
     success,
     result: resultText || finalOutput,
-  };
-}
-
-function buildSessionOptions(env: NodeJS.ProcessEnv): SDKSessionOptions {
-  const model = env.HOLON_MODEL || "sonnet";
-  return {
-    model,
-    env,
+    sessionID: observedSessionID,
   };
 }
 
@@ -828,12 +896,11 @@ async function runServeClaudeSession(
   const logFilePath = path.join(evidenceDir, "execution.log");
   const logFile = fs.createWriteStream(logFilePath, { flags: "a" });
 
-  const sessionOptions = buildSessionOptions(env);
   const sessionStatePath = env.HOLON_CONTROLLER_SESSION_STATE_PATH?.trim();
   const fallbackResumeID = env.HOLON_CONTROLLER_SESSION_ID?.trim();
+  const workspacePath = runtimePaths.workspaceDir;
 
   type SessionEntry = {
-    session: SDKSession;
     sessionID: string;
     inflight: Promise<void>;
   };
@@ -909,37 +976,24 @@ async function runServeClaudeSession(
     }
   };
 
-  const refreshSessionId = (sessionKey: string, session: SDKSession): void => {
-    const resolvedSessionID = normalizeSessionKey(tryGetSessionId(session, (message) => logger.debug(message)));
-    if (!resolvedSessionID) {
-      writeSessionState();
-      return;
-    }
+  const refreshSessionId = (sessionKey: string, resolvedSessionID: string): void => {
+    const normalizedSessionID = normalizeSessionKey(resolvedSessionID);
     const entry = sessions.get(sessionKey);
     if (!entry) {
       writeSessionState();
       return;
     }
-    if (entry.sessionID !== resolvedSessionID) {
-      entry.sessionID = resolvedSessionID;
+    if (!normalizedSessionID) {
+      writeSessionState();
+      return;
+    }
+    if (entry.sessionID !== normalizedSessionID) {
+      entry.sessionID = normalizedSessionID;
       sessions.set(sessionKey, entry);
-      logger.info(`Controller session ID available for ${sessionKey}: ${resolvedSessionID}`);
+      logger.info(`Controller session ID available for ${sessionKey}: ${normalizedSessionID}`);
     }
     writeSessionState();
   };
-
-  const bootstrapPrompt = [
-    "You are running in persistent controller session mode.",
-    "Follow the system instructions and user contract below for all future events.",
-    "",
-    "### System Instructions",
-    systemInstruction,
-    "",
-    "### User Contract",
-    userPrompt,
-    "",
-    "Acknowledge readiness briefly, then wait for events.",
-  ].join("\n");
 
   const ensureSessionReady = async (sessionKey: string): Promise<SessionEntry> => {
     const normalizedKey = normalizeSessionKey(sessionKey) || "main";
@@ -954,36 +1008,29 @@ async function runServeClaudeSession(
 
     const initPromise = (async (): Promise<SessionEntry> => {
       const resumeID = normalizeSessionKey(persistedSessionMap.get(normalizedKey) || (normalizedKey === "main" ? fallbackResumeID : ""));
-      const session = resumeID ? await resumeSession(resumeID, sessionOptions) : await createSession(sessionOptions);
-      // Serve mode must run autonomously in sandbox without interactive approvals.
-      // The unstable session API doesn't expose permission mode in SDKSessionOptions,
-      // so we set it after session creation when available.
-      const setPermissionMode = (session as unknown as { setPermissionMode?: (mode: string) => Promise<void> }).setPermissionMode;
-      if (typeof setPermissionMode === "function") {
-        try {
-          await setPermissionMode("bypassPermissions");
-        } catch (error) {
-          logger.info(`Failed to set session permission mode to bypassPermissions: ${String(error)}`);
-        }
-      }
-      const currentSessionID = normalizeSessionKey(tryGetSessionId(session, (message) => logger.debug(message)) || resumeID);
-      if (currentSessionID) {
-        logger.info(`Controller session ready for ${normalizedKey}: ${currentSessionID}`);
-      } else {
-        logger.info(`Controller session initialized for ${normalizedKey}; waiting for first response to obtain session ID`);
-      }
-
       const entry: SessionEntry = {
-        session,
-        sessionID: currentSessionID,
+        sessionID: resumeID,
         inflight: Promise.resolve(),
       };
       sessions.set(normalizedKey, entry);
       writeSessionState();
 
-      await session.send(bootstrapPrompt);
-      await streamSessionTurn(session, logger, logFile);
-      refreshSessionId(normalizedKey, session);
+      logger.info(
+        entry.sessionID
+          ? `Controller session ready for ${normalizedKey}: ${entry.sessionID}`
+          : `Controller session initialized for ${normalizedKey}; waiting for first response to obtain session ID`,
+      );
+
+      const turnResult = await runServeQueryTurn(
+        logger,
+        logFile,
+        env,
+        workspacePath,
+        systemInstruction,
+        bootstrapPrompt,
+        entry.sessionID || undefined,
+      );
+      refreshSessionId(normalizedKey, turnResult.sessionID);
       return sessions.get(normalizedKey) || entry;
     })();
     sessionInitializers.set(normalizedKey, initPromise);
@@ -993,6 +1040,19 @@ async function runServeClaudeSession(
       sessionInitializers.delete(normalizedKey);
     }
   };
+
+  const bootstrapPrompt = [
+    "You are running in persistent controller session mode.",
+    "Follow the system instructions and user contract below for all future events.",
+    "",
+    "### System Instructions",
+    systemInstruction,
+    "",
+    "### User Contract",
+    userPrompt,
+    "",
+    "Acknowledge readiness briefly, then wait for events.",
+  ].join("\n");
 
   loadPersistedSessions();
 
@@ -1068,9 +1128,16 @@ async function runServeClaudeSession(
                   "Process this event. Decide actions autonomously and execute via available skills/tools.",
                   "After actions complete, summarize what you decided and what changed.",
                 ].join("\n");
-                await entry.session.send(turnPrompt);
-                const turnResult = await streamSessionTurn(entry.session, logger, logFile);
-                refreshSessionId(sessionKey, entry.session);
+                const turnResult = await runServeQueryTurn(
+                  logger,
+                  logFile,
+                  env,
+                  workspacePath,
+                  systemInstruction,
+                  turnPrompt,
+                  entry.sessionID || undefined,
+                );
+                refreshSessionId(sessionKey, turnResult.sessionID);
                 const rawMessage = (turnResult.result || "").trim();
                 const message = rawMessage.length > 4000 ? `${rawMessage.slice(0, 4000)}...` : rawMessage;
                 result = {
@@ -1137,14 +1204,18 @@ async function runServeClaudeSession(
       "After actions complete, summarize what you decided and what changed.",
     ].join("\n");
     const mainSession = await ensureSessionReady("main");
-    await mainSession.session.send(turnPrompt);
-    await streamSessionTurn(mainSession.session, logger, logFile);
-    refreshSessionId("main", mainSession.session);
+    const turnResult = await runServeQueryTurn(
+      logger,
+      logFile,
+      env,
+      workspacePath,
+      systemInstruction,
+      turnPrompt,
+      mainSession.sessionID || undefined,
+    );
+    refreshSessionId("main", turnResult.sessionID);
   } finally {
     logFile.end();
-    for (const [, entry] of sessions) {
-      entry.session.close();
-    }
   }
 }
 
@@ -1221,6 +1292,7 @@ async function runAgent(): Promise<void> {
   logger.info(`Loading compiled user prompt from ${userPromptPath}`);
 
   if (process.env.HOLON_AGENT_SESSION_MODE === "serve") {
+    hydrateClaudeConfigFromEnv(logger);
     logger.logPhase("Running persistent controller session");
     await runServeClaudeSession(logger, systemInstruction, userPrompt, evidenceDir, runtimePaths);
 

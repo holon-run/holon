@@ -1370,6 +1370,7 @@ func (h *cliControllerHandler) ensureControllerClaudeConfig() error {
 		return fmt.Errorf("failed to create controller claude-config dir: %w", err)
 	}
 	settings := map[string]any{
+		"permissionMode": "bypassPermissions",
 		"permissions": map[string]any{
 			"allow": []string{
 				"Bash(gh:*)",
