@@ -606,7 +606,7 @@ func (rt *Runtime) HandleThreadStart(params json.RawMessage) (interface{}, *JSON
 		sessionID = strings.TrimSpace(rt.effectiveSessionID())
 	}
 	if sessionID == "" {
-		return nil, newInvalidParamFieldError("thread_id", "thread_id is required")
+		return nil, newInvalidParamFieldError("thread_id", "thread_id is required when no default session is configured")
 	}
 	rt.SetControllerSession(sessionID)
 	threadNotif := NewThreadNotification(sessionID, ThreadNotificationStarted, StateRunning)

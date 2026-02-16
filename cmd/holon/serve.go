@@ -600,7 +600,7 @@ type cliControllerHandler struct {
 	handlerCancel         context.CancelFunc
 	pumpStarted           bool
 	maxConcurrent         int
-	sessionLocks          map[string]*sync.Mutex
+	sessionLocks          map[string]*sessionLockEntry
 	closeOnce             sync.Once
 	mu                    sync.Mutex
 }
@@ -620,6 +620,14 @@ type resolvedWorkspace struct {
 }
 
 const defaultServeSessionConcurrency = 4
+const maxSessionLockEntries = 1024
+const sessionLockRetention = 10 * time.Minute
+
+type sessionLockEntry struct {
+	mu       sync.Mutex
+	active   int
+	lastUsed time.Time
+}
 
 func newCLIControllerHandler(
 	repoHint,
@@ -658,8 +666,8 @@ func newCLIControllerHandler(
 		turnAckCh:             make(chan serve.TurnAckRecord, 128),
 		stopCh:                make(chan struct{}),
 		workerDone:            make(chan struct{}),
-		maxConcurrent:         defaultServeSessionConcurrency,
-		sessionLocks:          make(map[string]*sync.Mutex),
+		maxConcurrent:         resolveServeSessionConcurrency(),
+		sessionLocks:          make(map[string]*sessionLockEntry),
 	}
 	handler.handlerCtx, handler.handlerCancel = context.WithCancel(context.Background())
 	handler.pumpStarted = true
@@ -689,10 +697,10 @@ func (h *cliControllerHandler) ensurePumpStartedLocked() {
 		h.workerDone = make(chan struct{})
 	}
 	if h.maxConcurrent <= 0 {
-		h.maxConcurrent = defaultServeSessionConcurrency
+		h.maxConcurrent = resolveServeSessionConcurrency()
 	}
 	if h.sessionLocks == nil {
-		h.sessionLocks = make(map[string]*sync.Mutex)
+		h.sessionLocks = make(map[string]*sessionLockEntry)
 	}
 	if h.handlerCtx == nil || h.handlerCancel == nil {
 		h.handlerCtx, h.handlerCancel = context.WithCancel(context.Background())
@@ -790,9 +798,8 @@ func (h *cliControllerHandler) runEventPump() {
 				if sessionKey == "" {
 					sessionKey = "main"
 				}
-				sessionMu := h.getSessionLock(sessionKey)
-				sessionMu.Lock()
-				defer sessionMu.Unlock()
+				lockEntry := h.getSessionLock(sessionKey)
+				defer h.releaseSessionLock(sessionKey, lockEntry)
 
 				select {
 				case <-h.stopCh:
@@ -802,6 +809,8 @@ func (h *cliControllerHandler) runEventPump() {
 				defer func() {
 					<-sem
 				}()
+				lockEntry.mu.Lock()
+				defer lockEntry.mu.Unlock()
 
 				if err := h.dispatchQueuedEvent(item); err != nil {
 					holonlog.Error("failed to dispatch controller event", "error", err, "event_id", item.env.ID, "type", item.env.Type, "session_key", sessionKey)
@@ -821,18 +830,41 @@ func (h *cliControllerHandler) runEventPump() {
 	}
 }
 
-func (h *cliControllerHandler) getSessionLock(sessionKey string) *sync.Mutex {
+func (h *cliControllerHandler) getSessionLock(sessionKey string) *sessionLockEntry {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.sessionLocks == nil {
-		h.sessionLocks = make(map[string]*sync.Mutex)
+		h.sessionLocks = make(map[string]*sessionLockEntry)
 	}
 	lock, ok := h.sessionLocks[sessionKey]
 	if !ok {
-		lock = &sync.Mutex{}
+		lock = &sessionLockEntry{}
 		h.sessionLocks[sessionKey] = lock
 	}
+	lock.active++
 	return lock
+}
+
+func (h *cliControllerHandler) releaseSessionLock(sessionKey string, entry *sessionLockEntry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	current, ok := h.sessionLocks[sessionKey]
+	if !ok || current != entry {
+		return
+	}
+	if current.active > 0 {
+		current.active--
+	}
+	current.lastUsed = time.Now().UTC()
+	if len(h.sessionLocks) <= maxSessionLockEntries {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-sessionLockRetention)
+	for key, candidate := range h.sessionLocks {
+		if candidate.active == 0 && !candidate.lastUsed.IsZero() && candidate.lastUsed.Before(cutoff) {
+			delete(h.sessionLocks, key)
+		}
+	}
 }
 
 func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
@@ -1469,7 +1501,7 @@ func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref s
 	if err == nil {
 		return resp, nil
 	}
-	if !isRetryableControllerRPCError(err) {
+	if !isRetryableControllerRPCError(ctx, err) {
 		return controllerRPCEventResponse{}, err
 	}
 
@@ -1486,7 +1518,7 @@ func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref s
 	h.controllerHTTPClient = nil
 	h.controllerSocketPath = ""
 	restartCtx := ctx
-	if restartCtx == nil || restartCtx.Err() != nil {
+	if restartCtx == nil {
 		restartCtx = context.Background()
 	}
 	restartErr := h.ensureControllerLocked(restartCtx, ref)
@@ -1546,14 +1578,32 @@ func postEventRPC(ctx context.Context, client *http.Client, sessionKey string, e
 	return result, nil
 }
 
-func isRetryableControllerRPCError(err error) bool {
+func isRetryableControllerRPCError(requestCtx context.Context, err error) bool {
 	lower := strings.ToLower(err.Error())
-	return strings.Contains(lower, "no such file") ||
+	if strings.Contains(lower, "no such file") ||
 		strings.Contains(lower, "connection refused") ||
 		strings.Contains(lower, "broken pipe") ||
-		strings.Contains(lower, "connection reset") ||
-		strings.Contains(lower, "context canceled") ||
+		strings.Contains(lower, "connection reset") {
+		return true
+	}
+	if requestCtx != nil && requestCtx.Err() != nil {
+		return false
+	}
+	return strings.Contains(lower, "context canceled") ||
 		strings.Contains(lower, "deadline exceeded")
+}
+
+func resolveServeSessionConcurrency() int {
+	raw := strings.TrimSpace(os.Getenv("HOLON_SERVE_CONCURRENCY"))
+	if raw == "" {
+		return defaultServeSessionConcurrency
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		holonlog.Warn("invalid HOLON_SERVE_CONCURRENCY; using default", "value", raw, "default", defaultServeSessionConcurrency)
+		return defaultServeSessionConcurrency
+	}
+	return value
 }
 
 func firstNonEmpty(values ...string) string {

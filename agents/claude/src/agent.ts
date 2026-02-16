@@ -688,7 +688,7 @@ type ControllerEventEnvelope = {
   source?: string;
   type?: string;
   scope?: { partition?: string; repo?: string };
-  subject?: { id?: string };
+  subject?: { kind?: string; id?: string };
   payload?: { turn_id?: string; thread_id?: string; session_key?: string };
 };
 
@@ -719,6 +719,56 @@ function normalizeSessionKey(input: string | undefined): string {
   return (input || "").trim();
 }
 
+function sanitizeSessionPartition(raw: string): string {
+  if (!raw) {
+    return "unknown";
+  }
+  const replaced = raw
+    .split("")
+    .map((char) => (/^[A-Za-z0-9\-_.:/]$/.test(char) ? char : "_"))
+    .join("");
+  const trimmed = replaced.replace(/^_+|_+$/g, "").trim();
+  return trimmed || "unknown";
+}
+
+function deriveSessionKeyFromEvent(parsed: {
+  payload?: { session_key?: unknown; thread_id?: unknown };
+  scope?: { partition?: unknown; repo?: unknown };
+  source?: unknown;
+  type?: unknown;
+  subject?: { kind?: unknown; id?: unknown };
+}): string {
+  const payloadSessionKey =
+    parsed.payload && typeof parsed.payload.session_key === "string" ? normalizeSessionKey(parsed.payload.session_key) : "";
+  if (payloadSessionKey) {
+    return payloadSessionKey;
+  }
+  const payloadThreadID =
+    parsed.payload && typeof parsed.payload.thread_id === "string" ? normalizeSessionKey(parsed.payload.thread_id) : "";
+  if (payloadThreadID) {
+    return payloadThreadID;
+  }
+  const partition = parsed.scope && typeof parsed.scope.partition === "string" ? normalizeSessionKey(parsed.scope.partition) : "";
+  if (partition) {
+    return `event:${sanitizeSessionPartition(partition)}`;
+  }
+  const repo = parsed.scope && typeof parsed.scope.repo === "string" ? normalizeSessionKey(parsed.scope.repo) : "";
+  if (repo) {
+    return `event:${sanitizeSessionPartition(repo)}`;
+  }
+  const source = typeof parsed.source === "string" ? normalizeSessionKey(parsed.source) : "";
+  const subjectKind = parsed.subject && typeof parsed.subject.kind === "string" ? normalizeSessionKey(parsed.subject.kind) : "";
+  const subjectID = parsed.subject && typeof parsed.subject.id === "string" ? normalizeSessionKey(parsed.subject.id) : "";
+  if (source && subjectKind && subjectID) {
+    return `event:${sanitizeSessionPartition(`${source}:${subjectKind}:${subjectID}`)}`;
+  }
+  const eventType = typeof parsed.type === "string" ? normalizeSessionKey(parsed.type) : "";
+  if (source && eventType) {
+    return `event:${sanitizeSessionPartition(`${source}:${eventType}`)}`;
+  }
+  return "";
+}
+
 function parseTurnAckFields(eventRaw: string | ControllerEventEnvelope): { eventID?: string; turnID?: string; threadID?: string; sessionKey?: string } {
   try {
     const parsed = typeof eventRaw === "string"
@@ -728,7 +778,7 @@ function parseTurnAckFields(eventRaw: string | ControllerEventEnvelope): { event
         scope?: { partition?: unknown; repo?: unknown };
         source?: unknown;
         type?: unknown;
-        subject?: { id?: unknown };
+        subject?: { kind?: unknown; id?: unknown };
       })
       : eventRaw;
     const eventID = typeof parsed.id === "string" ? parsed.id : undefined;
@@ -736,20 +786,8 @@ function parseTurnAckFields(eventRaw: string | ControllerEventEnvelope): { event
       parsed.payload && typeof parsed.payload.turn_id === "string" ? parsed.payload.turn_id : undefined;
     const payloadThreadID =
       parsed.payload && typeof parsed.payload.thread_id === "string" ? parsed.payload.thread_id : undefined;
-    const payloadSessionKey =
-      parsed.payload && typeof parsed.payload.session_key === "string" ? parsed.payload.session_key : undefined;
     const subjectThreadID = parsed.subject && typeof parsed.subject.id === "string" ? parsed.subject.id : undefined;
-    const scopePartition = parsed.scope && typeof parsed.scope.partition === "string" ? parsed.scope.partition : undefined;
-    const scopeRepo = parsed.scope && typeof parsed.scope.repo === "string" ? parsed.scope.repo : undefined;
-    const source = typeof parsed.source === "string" ? parsed.source : undefined;
-    const eventType = typeof parsed.type === "string" ? parsed.type : undefined;
-    const sessionKey =
-      normalizeSessionKey(payloadSessionKey) ||
-      normalizeSessionKey(payloadThreadID) ||
-      normalizeSessionKey(subjectThreadID) ||
-      normalizeSessionKey(scopePartition) ||
-      normalizeSessionKey(scopeRepo) ||
-      (normalizeSessionKey(source) && normalizeSessionKey(eventType) ? `event:${source}:${eventType}` : "");
+    const sessionKey = deriveSessionKeyFromEvent(parsed);
     return { eventID, turnID: payloadTurnID, threadID: payloadThreadID || subjectThreadID, sessionKey: sessionKey || undefined };
   } catch {
     return {};
@@ -800,6 +838,7 @@ async function runServeClaudeSession(
     inflight: Promise<void>;
   };
   const sessions = new Map<string, SessionEntry>();
+  const sessionInitializers = new Map<string, Promise<SessionEntry>>();
   const persistedSessionMap = new Map<string, string>();
 
   const loadPersistedSessions = (): void => {
@@ -859,10 +898,14 @@ async function runServeClaudeSession(
       state.session_id = sessionsState.main;
     }
     const payload = JSON.stringify(state, null, 2);
-    fs.writeFileSync(path.join(evidenceDir, "session.json"), payload);
-    if (sessionStatePath) {
-      fs.mkdirSync(path.dirname(sessionStatePath), { recursive: true });
-      fs.writeFileSync(sessionStatePath, payload);
+    try {
+      fs.writeFileSync(path.join(evidenceDir, "session.json"), payload);
+      if (sessionStatePath) {
+        fs.mkdirSync(path.dirname(sessionStatePath), { recursive: true });
+        fs.writeFileSync(sessionStatePath, payload);
+      }
+    } catch (error) {
+      logger.info(`Failed to write controller session state: ${String(error)}`);
     }
   };
 
@@ -904,28 +947,40 @@ async function runServeClaudeSession(
     if (existing) {
       return existing;
     }
-
-    const resumeID = normalizeSessionKey(persistedSessionMap.get(normalizedKey) || (normalizedKey === "main" ? fallbackResumeID : ""));
-    const session = resumeID ? await resumeSession(resumeID, sessionOptions) : await createSession(sessionOptions);
-    let currentSessionID = normalizeSessionKey(tryGetSessionId(session, (message) => logger.debug(message)) || resumeID);
-    if (currentSessionID) {
-      logger.info(`Controller session ready for ${normalizedKey}: ${currentSessionID}`);
-    } else {
-      logger.info(`Controller session initialized for ${normalizedKey}; waiting for first response to obtain session ID`);
+    const initializing = sessionInitializers.get(normalizedKey);
+    if (initializing) {
+      return initializing;
     }
 
-    const entry: SessionEntry = {
-      session,
-      sessionID: currentSessionID,
-      inflight: Promise.resolve(),
-    };
-    sessions.set(normalizedKey, entry);
-    writeSessionState();
+    const initPromise = (async (): Promise<SessionEntry> => {
+      const resumeID = normalizeSessionKey(persistedSessionMap.get(normalizedKey) || (normalizedKey === "main" ? fallbackResumeID : ""));
+      const session = resumeID ? await resumeSession(resumeID, sessionOptions) : await createSession(sessionOptions);
+      const currentSessionID = normalizeSessionKey(tryGetSessionId(session, (message) => logger.debug(message)) || resumeID);
+      if (currentSessionID) {
+        logger.info(`Controller session ready for ${normalizedKey}: ${currentSessionID}`);
+      } else {
+        logger.info(`Controller session initialized for ${normalizedKey}; waiting for first response to obtain session ID`);
+      }
 
-    await session.send(bootstrapPrompt);
-    await streamSessionTurn(session, logger, logFile);
-    refreshSessionId(normalizedKey, session);
-    return sessions.get(normalizedKey) || entry;
+      const entry: SessionEntry = {
+        session,
+        sessionID: currentSessionID,
+        inflight: Promise.resolve(),
+      };
+      sessions.set(normalizedKey, entry);
+      writeSessionState();
+
+      await session.send(bootstrapPrompt);
+      await streamSessionTurn(session, logger, logFile);
+      refreshSessionId(normalizedKey, session);
+      return sessions.get(normalizedKey) || entry;
+    })();
+    sessionInitializers.set(normalizedKey, initPromise);
+    try {
+      return await initPromise;
+    } finally {
+      sessionInitializers.delete(normalizedKey);
+    }
   };
 
   loadPersistedSessions();
@@ -964,51 +1019,63 @@ async function runServeClaudeSession(
           raw += chunk;
         });
         req.on("end", () => {
+          let responded = false;
+          const sendJSONOnce = (status: number, payload: unknown): void => {
+            if (responded || res.headersSent) {
+              return;
+            }
+            responded = true;
+            res.writeHead(status, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(payload));
+          };
           let parsed: ControllerEventRequest;
           try {
             parsed = JSON.parse(raw) as ControllerEventRequest;
           } catch (error) {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: `invalid_json: ${String(error)}` }));
+            sendJSONOnce(400, { error: `invalid_json: ${String(error)}` });
             return;
           }
           const event = parsed.event;
           if (!event || typeof event !== "object") {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "missing event payload" }));
+            sendJSONOnce(400, { error: "missing event payload" });
             return;
           }
           const ackFields = parseTurnAckFields(event);
           const requestSessionKey = normalizeSessionKey(parsed.session_key);
           const sessionKey = requestSessionKey || normalizeSessionKey(ackFields.sessionKey) || "main";
-
-          const run = async (): Promise<void> => {
+          const processRequest = async (): Promise<void> => {
             try {
-              const sessionEntry = await ensureSessionReady(sessionKey);
-              const eventRaw = JSON.stringify(event);
-              const turnPrompt = [
-                "New event payload (JSON):",
-                eventRaw,
-                "",
-                `Target session key: ${sessionKey}`,
-                "Process this event. Decide actions autonomously and execute via available skills/tools.",
-                "After actions complete, summarize what you decided and what changed.",
-              ].join("\n");
-              await sessionEntry.session.send(turnPrompt);
-              const turnResult = await streamSessionTurn(sessionEntry.session, logger, logFile);
-              refreshSessionId(sessionKey, sessionEntry.session);
-              const rawMessage = (turnResult.result || "").trim();
-              const message = rawMessage.length > 4000 ? `${rawMessage.slice(0, 4000)}...` : rawMessage;
-              const result: ControllerEventResponse = {
-                status: turnResult.success ? "completed" : "failed",
-                message,
-                event_id: ackFields.eventID,
-                turn_id: ackFields.turnID,
-                thread_id: ackFields.threadID,
-                session_key: sessionKey,
-              };
-              res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(JSON.stringify(result));
+              const entry = await ensureSessionReady(sessionKey);
+              let result: ControllerEventResponse | undefined;
+              entry.inflight = entry.inflight.then(async () => {
+                const eventRaw = JSON.stringify(event);
+                const turnPrompt = [
+                  "New event payload (JSON):",
+                  eventRaw,
+                  "",
+                  `Target session key: ${sessionKey}`,
+                  "Process this event. Decide actions autonomously and execute via available skills/tools.",
+                  "After actions complete, summarize what you decided and what changed.",
+                ].join("\n");
+                await entry.session.send(turnPrompt);
+                const turnResult = await streamSessionTurn(entry.session, logger, logFile);
+                refreshSessionId(sessionKey, entry.session);
+                const rawMessage = (turnResult.result || "").trim();
+                const message = rawMessage.length > 4000 ? `${rawMessage.slice(0, 4000)}...` : rawMessage;
+                result = {
+                  status: turnResult.success ? "completed" : "failed",
+                  message,
+                  event_id: ackFields.eventID,
+                  turn_id: ackFields.turnID,
+                  thread_id: ackFields.threadID,
+                  session_key: sessionKey,
+                };
+              });
+              await entry.inflight;
+              if (!result) {
+                throw new Error("controller event finished without result");
+              }
+              sendJSONOnce(200, result);
             } catch (error) {
               const failure: ControllerEventResponse = {
                 status: "failed",
@@ -1018,25 +1085,10 @@ async function runServeClaudeSession(
                 thread_id: ackFields.threadID,
                 session_key: sessionKey,
               };
-              res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(JSON.stringify(failure));
+              sendJSONOnce(200, failure);
             }
           };
-          const ready = ensureSessionReady(sessionKey);
-          ready.then((entry) => {
-            entry.inflight = entry.inflight.then(run).catch(() => undefined);
-          }).catch((error) => {
-            const failure: ControllerEventResponse = {
-              status: "failed",
-              message: toControllerErrorMessage(error),
-              event_id: ackFields.eventID,
-              turn_id: ackFields.turnID,
-              thread_id: ackFields.threadID,
-              session_key: sessionKey,
-            };
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(failure));
-          });
+          void processRequest();
         });
       });
 
