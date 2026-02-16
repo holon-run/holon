@@ -301,3 +301,418 @@ func mustGetPort(t *testing.T) int {
 	}
 	return port
 }
+
+func TestSubscriptionManager_HotReload_EnablesWebSocketIngress(t *testing.T) {
+	received := make(chan EventEnvelope, 1)
+	handler := &captureEventHandler{ch: received}
+	upgrader := websocket.Upgrader{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		msg := `{
+			"headers": {
+				"X-GitHub-Event": "issue_comment",
+				"X-GitHub-Delivery": "delivery-hr-1"
+			},
+			"payload": {
+				"action": "created",
+				"issue": {"number": 777},
+				"repository": {"full_name": "holon-run/holon"},
+				"comment": {"id": 2002}
+			}
+		}`
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(msg))
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	agentHome := t.TempDir()
+	stateDir := filepath.Join(agentHome, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	// Start with empty repos -> rpc-only.
+	cfg := agenthome.Config{
+		Version: "v1",
+		Agent: agenthome.AgentConfig{
+			ID:      "main",
+			Profile: "default",
+		},
+		Subscriptions: []agenthome.Subscription{
+			{
+				GitHub: &agenthome.GitHubSubscription{
+					Repos: []string{},
+					Transport: agenthome.GitHubSubscriptionTransport{
+						Mode:         "websocket",
+						WebsocketURL: wsURL,
+					},
+				},
+			},
+		},
+	}
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	sm, err := NewSubscriptionManager(ManagerConfig{
+		AgentHome:          agentHome,
+		StateDir:           stateDir,
+		Handler:            handler,
+		WebhookPort:        mustGetPort(t),
+		ReloadPollInterval: 20 * time.Millisecond,
+		ReloadDebounce:     10 * time.Millisecond,
+		DisableHotReload:   false,
+		DefaultSessionID:   "",
+		NoDefaultSession:   false,
+		TurnDispatcher:     nil,
+	})
+	if err != nil {
+		t.Fatalf("new subscription manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sm.Start(ctx); err != nil {
+		t.Fatalf("start subscription manager: %v", err)
+	}
+	defer sm.Stop()
+
+	status := sm.Status()
+	if status["mode"] != "rpc_only" {
+		t.Fatalf("mode = %v, want rpc_only before reload", status["mode"])
+	}
+
+	// Enable websocket ingress by writing updated config.
+	cfg.Subscriptions[0].GitHub.Repos = []string{"holon-run/holon"}
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save config (reload): %v", err)
+	}
+
+	select {
+	case env := <-received:
+		if env.Type != "github.issue.comment.created" {
+			t.Fatalf("event type = %s, want github.issue.comment.created", env.Type)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for websocket event after reload")
+	}
+
+	status = sm.Status()
+	if status["mode"] != "websocket" {
+		t.Fatalf("mode = %v, want websocket after reload", status["mode"])
+	}
+	if status["ingress_active"] != true {
+		t.Fatalf("ingress_active = %v, want true after reload", status["ingress_active"])
+	}
+}
+
+func TestSubscriptionManager_HotReload_InvalidConfigKeepsExistingIngress(t *testing.T) {
+	agentHome := t.TempDir()
+	stateDir := filepath.Join(agentHome, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	received := make(chan EventEnvelope, 10)
+	handler := &captureEventHandler{ch: received}
+	upgrader := websocket.Upgrader{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		msg := `{
+			"headers": {
+				"X-GitHub-Event": "issue_comment",
+				"X-GitHub-Delivery": "delivery-hr-2"
+			},
+			"payload": {
+				"action": "created",
+				"issue": {"number": 888},
+				"repository": {"full_name": "holon-run/holon"},
+				"comment": {"id": 2003}
+			}
+		}`
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-tick.C:
+				_ = conn.WriteMessage(websocket.TextMessage, []byte(msg))
+			}
+		}
+	}))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	cfg := agenthome.Config{
+		Version: "v1",
+		Agent: agenthome.AgentConfig{
+			ID:      "main",
+			Profile: "default",
+		},
+		Subscriptions: []agenthome.Subscription{
+			{
+				GitHub: &agenthome.GitHubSubscription{
+					Repos: []string{"holon-run/holon"},
+					Transport: agenthome.GitHubSubscriptionTransport{
+						Mode:         "websocket",
+						WebsocketURL: wsURL,
+					},
+				},
+			},
+		},
+	}
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	sm, err := NewSubscriptionManager(ManagerConfig{
+		AgentHome:          agentHome,
+		StateDir:           stateDir,
+		Handler:            handler,
+		WebhookPort:        mustGetPort(t),
+		ReloadPollInterval: 20 * time.Millisecond,
+		ReloadDebounce:     10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new subscription manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sm.Start(ctx); err != nil {
+		t.Fatalf("start subscription manager: %v", err)
+	}
+	defer sm.Stop()
+
+	// Ensure we're receiving events.
+	select {
+	case <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for websocket event before invalid reload")
+	}
+
+	// Write invalid YAML to trigger reload error.
+	if err := os.WriteFile(filepath.Join(agentHome, "agent.yaml"), []byte("version: v1\nagent:\n  id: [\n"), 0644); err != nil {
+		t.Fatalf("write invalid config: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status := sm.Status()
+		if status["mode"] == "websocket" && status["ingress_active"] == true && status["last_reload_error"] != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	status := sm.Status()
+	if status["mode"] != "websocket" {
+		t.Fatalf("mode = %v, want websocket after invalid reload", status["mode"])
+	}
+	if status["ingress_active"] != true {
+		t.Fatalf("ingress_active = %v, want true after invalid reload", status["ingress_active"])
+	}
+	if status["last_reload_error"] == nil {
+		t.Fatalf("last_reload_error should be set after invalid reload")
+	}
+
+	// Fix config and verify the error clears.
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save fixed config: %v", err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status = sm.Status()
+		if status["last_reload_error"] == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	status = sm.Status()
+	if status["last_reload_error"] != nil {
+		t.Fatalf("last_reload_error should clear after fixing config, got %v", status["last_reload_error"])
+	}
+}
+
+type fakeForwarder struct {
+	mu        sync.Mutex
+	started   bool
+	starts    int
+	stops     int
+	lastRepos []string
+}
+
+func (f *fakeForwarder) Start(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started = true
+	f.starts++
+	return nil
+}
+
+func (f *fakeForwarder) Stop() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.started {
+		return nil
+	}
+	f.started = false
+	f.stops++
+	return nil
+}
+
+func (f *fakeForwarder) Status() map[string]interface{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return map[string]interface{}{
+		"running": f.started,
+		"starts":  f.starts,
+		"stops":   f.stops,
+		"repos":   append([]string(nil), f.lastRepos...),
+	}
+}
+
+func TestSubscriptionManager_HotReload_SwitchesTransportMode_WebsocketToGHForward(t *testing.T) {
+	handler := &captureEventHandler{}
+	upgrader := websocket.Upgrader{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	agentHome := t.TempDir()
+	stateDir := filepath.Join(agentHome, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	cfg := agenthome.Config{
+		Version: "v1",
+		Agent: agenthome.AgentConfig{
+			ID:      "main",
+			Profile: "default",
+		},
+		Subscriptions: []agenthome.Subscription{
+			{
+				GitHub: &agenthome.GitHubSubscription{
+					Repos: []string{"holon-run/holon"},
+					Transport: agenthome.GitHubSubscriptionTransport{
+						Mode:         "websocket",
+						WebsocketURL: wsURL,
+					},
+				},
+			},
+		},
+	}
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var created []*fakeForwarder
+	factory := func(fc ForwarderConfig) (forwarderRunner, error) {
+		ff := &fakeForwarder{lastRepos: append([]string(nil), fc.Repos...)}
+		created = append(created, ff)
+		return ff, nil
+	}
+
+	sm, err := NewSubscriptionManager(ManagerConfig{
+		AgentHome:          agentHome,
+		StateDir:           stateDir,
+		Handler:            handler,
+		WebhookPort:        mustGetPort(t),
+		ReloadPollInterval: 20 * time.Millisecond,
+		ReloadDebounce:     10 * time.Millisecond,
+		ForwarderFactory:   factory,
+	})
+	if err != nil {
+		t.Fatalf("new subscription manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sm.Start(ctx); err != nil {
+		t.Fatalf("start subscription manager: %v", err)
+	}
+	defer sm.Stop()
+
+	// Wait for websocket to connect so we can verify it gets stopped.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status := sm.Status()
+		ws, ok := status["websocket"].(map[string]interface{})
+		if ok && ws["connected"] == true {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	sm.mu.Lock()
+	oldSrc := sm.websocketSrc
+	sm.mu.Unlock()
+	if oldSrc == nil {
+		t.Fatalf("expected websocket source to be initialized")
+	}
+
+	// Switch to gh_forward.
+	cfg.Subscriptions[0].GitHub.Transport.Mode = "gh_forward"
+	cfg.Subscriptions[0].GitHub.Transport.WebsocketURL = ""
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save config (switch): %v", err)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status := sm.Status()
+		if status["mode"] == "gh_forward" && status["ingress_active"] == true {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	status := sm.Status()
+	if status["mode"] != "gh_forward" {
+		t.Fatalf("mode = %v, want gh_forward after switch", status["mode"])
+	}
+	if status["ingress_active"] != true {
+		t.Fatalf("ingress_active = %v, want true after switch", status["ingress_active"])
+	}
+	if len(created) != 1 {
+		t.Fatalf("expected forwarder to be created once, got %d", len(created))
+	}
+	if created[0].Status()["running"] != true {
+		t.Fatalf("expected forwarder to be running after switch")
+	}
+
+	// Old websocket source should be stopped.
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if oldSrc.Status()["running"] == false {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if oldSrc.Status()["running"] != false {
+		t.Fatalf("expected old websocket source to be stopped after switch")
+	}
+}

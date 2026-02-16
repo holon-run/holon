@@ -9,6 +9,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/docker/docker v28.5.2+incompatible
+	github.com/fsnotify/fsnotify v1.7.0
 	github.com/google/go-github/v68 v68.0.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/rogpeppe/go-internal v1.14.1
