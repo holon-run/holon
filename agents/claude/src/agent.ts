@@ -685,12 +685,16 @@ function buildSessionOptions(env: NodeJS.ProcessEnv): SDKSessionOptions {
 
 type ControllerEventEnvelope = {
   id?: string;
+  source?: string;
+  type?: string;
+  scope?: { partition?: string; repo?: string };
   subject?: { id?: string };
-  payload?: { turn_id?: string; thread_id?: string };
+  payload?: { turn_id?: string; thread_id?: string; session_key?: string };
 };
 
 type ControllerEventRequest = {
   event?: ControllerEventEnvelope;
+  session_key?: string;
 };
 
 type ControllerEventResponse = {
@@ -699,6 +703,7 @@ type ControllerEventResponse = {
   event_id?: string;
   turn_id?: string;
   thread_id?: string;
+  session_key?: string;
 };
 
 function toControllerErrorMessage(error: unknown): string {
@@ -710,12 +715,19 @@ function toControllerErrorMessage(error: unknown): string {
   return `${flattened.slice(0, 500)}...`;
 }
 
-function parseTurnAckFields(eventRaw: string | ControllerEventEnvelope): { eventID?: string; turnID?: string; threadID?: string } {
+function normalizeSessionKey(input: string | undefined): string {
+  return (input || "").trim();
+}
+
+function parseTurnAckFields(eventRaw: string | ControllerEventEnvelope): { eventID?: string; turnID?: string; threadID?: string; sessionKey?: string } {
   try {
     const parsed = typeof eventRaw === "string"
       ? (JSON.parse(eventRaw) as {
         id?: unknown;
-        payload?: { turn_id?: unknown; thread_id?: unknown };
+        payload?: { turn_id?: unknown; thread_id?: unknown; session_key?: unknown };
+        scope?: { partition?: unknown; repo?: unknown };
+        source?: unknown;
+        type?: unknown;
         subject?: { id?: unknown };
       })
       : eventRaw;
@@ -724,8 +736,21 @@ function parseTurnAckFields(eventRaw: string | ControllerEventEnvelope): { event
       parsed.payload && typeof parsed.payload.turn_id === "string" ? parsed.payload.turn_id : undefined;
     const payloadThreadID =
       parsed.payload && typeof parsed.payload.thread_id === "string" ? parsed.payload.thread_id : undefined;
+    const payloadSessionKey =
+      parsed.payload && typeof parsed.payload.session_key === "string" ? parsed.payload.session_key : undefined;
     const subjectThreadID = parsed.subject && typeof parsed.subject.id === "string" ? parsed.subject.id : undefined;
-    return { eventID, turnID: payloadTurnID, threadID: payloadThreadID || subjectThreadID };
+    const scopePartition = parsed.scope && typeof parsed.scope.partition === "string" ? parsed.scope.partition : undefined;
+    const scopeRepo = parsed.scope && typeof parsed.scope.repo === "string" ? parsed.scope.repo : undefined;
+    const source = typeof parsed.source === "string" ? parsed.source : undefined;
+    const eventType = typeof parsed.type === "string" ? parsed.type : undefined;
+    const sessionKey =
+      normalizeSessionKey(payloadSessionKey) ||
+      normalizeSessionKey(payloadThreadID) ||
+      normalizeSessionKey(subjectThreadID) ||
+      normalizeSessionKey(scopePartition) ||
+      normalizeSessionKey(scopeRepo) ||
+      (normalizeSessionKey(source) && normalizeSessionKey(eventType) ? `event:${source}:${eventType}` : "");
+    return { eventID, turnID: payloadTurnID, threadID: payloadThreadID || subjectThreadID, sessionKey: sessionKey || undefined };
   } catch {
     return {};
   }
@@ -766,24 +791,72 @@ async function runServeClaudeSession(
   const logFile = fs.createWriteStream(logFilePath, { flags: "a" });
 
   const sessionOptions = buildSessionOptions(env);
-  const resumeId = env.HOLON_CONTROLLER_SESSION_ID?.trim();
-  const session = resumeId ? await resumeSession(resumeId, sessionOptions) : await createSession(sessionOptions);
-  let currentSessionId =
-    tryGetSessionId(session, (message) => logger.debug(message)) || resumeId;
-  if (currentSessionId) {
-    logger.info(`Controller session ready: ${currentSessionId}`);
-  } else {
-    logger.info("Controller session initialized; waiting for first response to obtain session ID");
-  }
-
   const sessionStatePath = env.HOLON_CONTROLLER_SESSION_STATE_PATH?.trim();
+  const fallbackResumeID = env.HOLON_CONTROLLER_SESSION_ID?.trim();
+
+  type SessionEntry = {
+    session: SDKSession;
+    sessionID: string;
+    inflight: Promise<void>;
+  };
+  const sessions = new Map<string, SessionEntry>();
+  const persistedSessionMap = new Map<string, string>();
+
+  const loadPersistedSessions = (): void => {
+    if (!sessionStatePath || !fs.existsSync(sessionStatePath)) {
+      if (fallbackResumeID) {
+        persistedSessionMap.set("main", fallbackResumeID);
+      }
+      return;
+    }
+    try {
+      const raw = fs.readFileSync(sessionStatePath, "utf8");
+      const parsed = JSON.parse(raw) as {
+        session_id?: string;
+        sessions?: Record<string, string>;
+      };
+      if (parsed && parsed.sessions && typeof parsed.sessions === "object") {
+        for (const [key, value] of Object.entries(parsed.sessions)) {
+          const sessionKey = normalizeSessionKey(key);
+          const sessionID = normalizeSessionKey(typeof value === "string" ? value : "");
+          if (sessionKey && sessionID) {
+            persistedSessionMap.set(sessionKey, sessionID);
+          }
+        }
+      }
+      const legacySessionID = normalizeSessionKey(parsed?.session_id);
+      if (legacySessionID && !persistedSessionMap.has("main")) {
+        persistedSessionMap.set("main", legacySessionID);
+      }
+    } catch (error) {
+      logger.info(`Failed to parse session state at ${sessionStatePath}: ${String(error)}`);
+      if (fallbackResumeID) {
+        persistedSessionMap.set("main", fallbackResumeID);
+      }
+    }
+  };
+
   const writeSessionState = (): void => {
-    const state: { session_id?: string; mode: "serve"; updated_at: string } = {
+    const sessionsState: Record<string, string> = {};
+    for (const [key, entry] of sessions) {
+      const sessionID = normalizeSessionKey(entry.sessionID);
+      if (!sessionID) {
+        continue;
+      }
+      sessionsState[key] = sessionID;
+    }
+    const state: {
+      mode: "serve";
+      updated_at: string;
+      session_id?: string;
+      sessions: Record<string, string>;
+    } = {
       mode: "serve",
       updated_at: new Date().toISOString(),
+      sessions: sessionsState,
     };
-    if (currentSessionId) {
-      state.session_id = currentSessionId;
+    if (sessionsState.main) {
+      state.session_id = sessionsState.main;
     }
     const payload = JSON.stringify(state, null, 2);
     fs.writeFileSync(path.join(evidenceDir, "session.json"), payload);
@@ -793,34 +866,72 @@ async function runServeClaudeSession(
     }
   };
 
-  const refreshSessionId = (): void => {
-    const resolvedSessionId = tryGetSessionId(session, (message) => logger.debug(message));
-    if (resolvedSessionId && resolvedSessionId !== currentSessionId) {
-      currentSessionId = resolvedSessionId;
-      logger.info(`Controller session ID available: ${currentSessionId}`);
+  const refreshSessionId = (sessionKey: string, session: SDKSession): void => {
+    const resolvedSessionID = normalizeSessionKey(tryGetSessionId(session, (message) => logger.debug(message)));
+    if (!resolvedSessionID) {
+      writeSessionState();
+      return;
+    }
+    const entry = sessions.get(sessionKey);
+    if (!entry) {
+      writeSessionState();
+      return;
+    }
+    if (entry.sessionID !== resolvedSessionID) {
+      entry.sessionID = resolvedSessionID;
+      sessions.set(sessionKey, entry);
+      logger.info(`Controller session ID available for ${sessionKey}: ${resolvedSessionID}`);
     }
     writeSessionState();
   };
 
-  writeSessionState();
+  const bootstrapPrompt = [
+    "You are running in persistent controller session mode.",
+    "Follow the system instructions and user contract below for all future events.",
+    "",
+    "### System Instructions",
+    systemInstruction,
+    "",
+    "### User Contract",
+    userPrompt,
+    "",
+    "Acknowledge readiness briefly, then wait for events.",
+  ].join("\n");
 
-  try {
-    const bootstrapPrompt = [
-      "You are running in persistent controller session mode.",
-      "Follow the system instructions and user contract below for all future events.",
-      "",
-      "### System Instructions",
-      systemInstruction,
-      "",
-      "### User Contract",
-      userPrompt,
-      "",
-      "Acknowledge readiness briefly, then wait for events.",
-    ].join("\n");
+  const ensureSessionReady = async (sessionKey: string): Promise<SessionEntry> => {
+    const normalizedKey = normalizeSessionKey(sessionKey) || "main";
+    const existing = sessions.get(normalizedKey);
+    if (existing) {
+      return existing;
+    }
+
+    const resumeID = normalizeSessionKey(persistedSessionMap.get(normalizedKey) || (normalizedKey === "main" ? fallbackResumeID : ""));
+    const session = resumeID ? await resumeSession(resumeID, sessionOptions) : await createSession(sessionOptions);
+    let currentSessionID = normalizeSessionKey(tryGetSessionId(session, (message) => logger.debug(message)) || resumeID);
+    if (currentSessionID) {
+      logger.info(`Controller session ready for ${normalizedKey}: ${currentSessionID}`);
+    } else {
+      logger.info(`Controller session initialized for ${normalizedKey}; waiting for first response to obtain session ID`);
+    }
+
+    const entry: SessionEntry = {
+      session,
+      sessionID: currentSessionID,
+      inflight: Promise.resolve(),
+    };
+    sessions.set(normalizedKey, entry);
+    writeSessionState();
 
     await session.send(bootstrapPrompt);
     await streamSessionTurn(session, logger, logFile);
-    refreshSessionId();
+    refreshSessionId(normalizedKey, session);
+    return sessions.get(normalizedKey) || entry;
+  };
+
+  loadPersistedSessions();
+
+  try {
+    await ensureSessionReady("main");
 
     const socketPath = env.HOLON_CONTROLLER_RPC_SOCKET?.trim() || path.join(runtimePaths.agentHome, "run", "agent.sock");
     if (socketPath) {
@@ -834,35 +945,11 @@ async function runServeClaudeSession(
         throw new Error(`failed to reset controller socket at ${socketPath}: ${String(error)}`);
       }
 
-      let inflight: Promise<void> = Promise.resolve();
-      const processControllerEvent = async (event: ControllerEventEnvelope): Promise<ControllerEventResponse> => {
-        const eventRaw = JSON.stringify(event);
-        const ackFields = parseTurnAckFields(event);
-        const turnPrompt = [
-          "New event payload (JSON):",
-          eventRaw,
-          "",
-          "Process this event. Decide actions autonomously and execute via available skills/tools.",
-          "After actions complete, summarize what you decided and what changed.",
-        ].join("\n");
-        await session.send(turnPrompt);
-        const turnResult = await streamSessionTurn(session, logger, logFile);
-        refreshSessionId();
-        const rawMessage = (turnResult.result || "").trim();
-        const message = rawMessage.length > 4000 ? `${rawMessage.slice(0, 4000)}...` : rawMessage;
-        return {
-          status: turnResult.success ? "completed" : "failed",
-          message,
-          event_id: ackFields.eventID,
-          turn_id: ackFields.turnID,
-          thread_id: ackFields.threadID,
-        };
-      };
-
       const server = http.createServer((req, res) => {
         if (req.method === "GET" && req.url === "/health") {
+          const mainSessionID = normalizeSessionKey(sessions.get("main")?.sessionID);
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ status: "ok", session_id: currentSessionId || "" }));
+          res.end(JSON.stringify({ status: "ok", session_id: mainSessionID || "" }));
           return;
         }
         if (req.method !== "POST" || req.url !== "/v1/controller/events") {
@@ -891,26 +978,65 @@ async function runServeClaudeSession(
             res.end(JSON.stringify({ error: "missing event payload" }));
             return;
           }
+          const ackFields = parseTurnAckFields(event);
+          const requestSessionKey = normalizeSessionKey(parsed.session_key);
+          const sessionKey = requestSessionKey || normalizeSessionKey(ackFields.sessionKey) || "main";
 
           const run = async (): Promise<void> => {
             try {
-              const result = await processControllerEvent(event);
+              const sessionEntry = await ensureSessionReady(sessionKey);
+              const eventRaw = JSON.stringify(event);
+              const turnPrompt = [
+                "New event payload (JSON):",
+                eventRaw,
+                "",
+                `Target session key: ${sessionKey}`,
+                "Process this event. Decide actions autonomously and execute via available skills/tools.",
+                "After actions complete, summarize what you decided and what changed.",
+              ].join("\n");
+              await sessionEntry.session.send(turnPrompt);
+              const turnResult = await streamSessionTurn(sessionEntry.session, logger, logFile);
+              refreshSessionId(sessionKey, sessionEntry.session);
+              const rawMessage = (turnResult.result || "").trim();
+              const message = rawMessage.length > 4000 ? `${rawMessage.slice(0, 4000)}...` : rawMessage;
+              const result: ControllerEventResponse = {
+                status: turnResult.success ? "completed" : "failed",
+                message,
+                event_id: ackFields.eventID,
+                turn_id: ackFields.turnID,
+                thread_id: ackFields.threadID,
+                session_key: sessionKey,
+              };
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify(result));
             } catch (error) {
-              const turnAckFields = parseTurnAckFields(event);
               const failure: ControllerEventResponse = {
                 status: "failed",
                 message: toControllerErrorMessage(error),
-                event_id: turnAckFields.eventID,
-                turn_id: turnAckFields.turnID,
-                thread_id: turnAckFields.threadID,
+                event_id: ackFields.eventID,
+                turn_id: ackFields.turnID,
+                thread_id: ackFields.threadID,
+                session_key: sessionKey,
               };
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify(failure));
             }
           };
-          inflight = inflight.then(run).catch(() => undefined);
+          const ready = ensureSessionReady(sessionKey);
+          ready.then((entry) => {
+            entry.inflight = entry.inflight.then(run).catch(() => undefined);
+          }).catch((error) => {
+            const failure: ControllerEventResponse = {
+              status: "failed",
+              message: toControllerErrorMessage(error),
+              event_id: ackFields.eventID,
+              turn_id: ackFields.turnID,
+              thread_id: ackFields.threadID,
+              session_key: sessionKey,
+            };
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(failure));
+          });
         });
       });
 
@@ -947,12 +1073,15 @@ async function runServeClaudeSession(
       "Process this event. Decide actions autonomously and execute via available skills/tools.",
       "After actions complete, summarize what you decided and what changed.",
     ].join("\n");
-    await session.send(turnPrompt);
-    await streamSessionTurn(session, logger, logFile);
-    refreshSessionId();
+    const mainSession = await ensureSessionReady("main");
+    await mainSession.session.send(turnPrompt);
+    await streamSessionTurn(mainSession.session, logger, logFile);
+    refreshSessionId("main", mainSession.session);
   } finally {
     logFile.end();
-    session.close();
+    for (const [, entry] of sessions) {
+      entry.session.close();
+    }
   }
 }
 

@@ -19,6 +19,7 @@ type EventEnvelope struct {
 
 type EventScope struct {
 	Tenant        string `json:"tenant,omitempty"`
+	Partition     string `json:"partition,omitempty"`
 	Repo          string `json:"repo,omitempty"`
 	WorkspaceRef  string `json:"workspace_ref,omitempty"`
 	WorkspacePath string `json:"workspace_path,omitempty"`
