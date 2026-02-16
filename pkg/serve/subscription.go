@@ -24,10 +24,11 @@ type SubscriptionManager struct {
 	configPath       string
 	config           agenthome.Config
 	webhookServer    *WebhookServer
-	forwarder        *Forwarder
+	forwarder        forwarderRunner
 	websocketSrc     *WebSocketSource
 	eventService     *Service
 	mu               sync.Mutex
+	reconcileMu      sync.Mutex
 	started          bool
 	webhookPort      int
 	stateDir         string
@@ -53,6 +54,8 @@ type SubscriptionManager struct {
 	lastReloadError string
 
 	watchReady chan struct{}
+
+	forwarderFactory func(ForwarderConfig) (forwarderRunner, error)
 }
 
 // ManagerConfig holds configuration for SubscriptionManager
@@ -69,6 +72,14 @@ type ManagerConfig struct {
 	ReloadDebounce     time.Duration // default: 600ms
 	ReloadPollInterval time.Duration // default: 3s
 	DisableHotReload   bool
+
+	ForwarderFactory func(ForwarderConfig) (forwarderRunner, error)
+}
+
+type forwarderRunner interface {
+	Start(ctx context.Context) error
+	Stop() error
+	Status() map[string]interface{}
 }
 
 // NewSubscriptionManager creates a new subscription manager
@@ -88,6 +99,13 @@ func NewSubscriptionManager(cfg ManagerConfig) (*SubscriptionManager, error) {
 		poll = 3 * time.Second
 	}
 
+	forwarderFactory := cfg.ForwarderFactory
+	if forwarderFactory == nil {
+		forwarderFactory = func(fc ForwarderConfig) (forwarderRunner, error) {
+			return NewForwarder(fc)
+		}
+	}
+
 	return &SubscriptionManager{
 		agentHome:        cfg.AgentHome,
 		configPath:       filepath.Join(cfg.AgentHome, "agent.yaml"),
@@ -103,6 +121,8 @@ func NewSubscriptionManager(cfg ManagerConfig) (*SubscriptionManager, error) {
 		reloadDebounce:     debounce,
 		reloadPollInterval: poll,
 		disableHotReload:   cfg.DisableHotReload,
+
+		forwarderFactory: forwarderFactory,
 	}, nil
 }
 
@@ -204,7 +224,7 @@ func (sm *SubscriptionManager) startGHForwardMode(ctx context.Context, sub *agen
 	}
 
 	// Create gh webhook forward manager
-	forwarder, err := NewForwarder(ForwarderConfig{
+	forwarder, err := sm.forwarderFactory(ForwarderConfig{
 		Port:  port,
 		Repos: sub.Repos,
 		URL:   webhookURL,
@@ -402,10 +422,12 @@ func normalizeHeaderKey(k string) string {
 
 // Stop stops the subscription manager and all active subscriptions
 func (sm *SubscriptionManager) Stop() error {
+	sm.reconcileMu.Lock()
 	sm.mu.Lock()
 
 	if !sm.started {
 		sm.mu.Unlock()
+		sm.reconcileMu.Unlock()
 		return nil
 	}
 
@@ -416,39 +438,43 @@ func (sm *SubscriptionManager) Stop() error {
 		sm.cancel = nil
 	}
 
-	// Stop forwarder first
-	if sm.forwarder != nil {
-		if err := sm.forwarder.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop forwarder: %w", err))
-		}
-		sm.forwarder = nil
-	}
+	toStopForwarder := sm.forwarder
+	toStopWS := sm.websocketSrc
+	toCloseSvc := sm.eventService
+	toCloseWebhook := sm.webhookServer
 
-	// Stop websocket source
-	if sm.websocketSrc != nil {
-		if err := sm.websocketSrc.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop websocket source: %w", err))
-		}
-		sm.websocketSrc = nil
-	}
-	if sm.eventService != nil {
-		if err := sm.eventService.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to close websocket event service: %w", err))
-		}
-		sm.eventService = nil
-	}
-
-	// Stop webhook server
-	if sm.webhookServer != nil {
-		if err := sm.webhookServer.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop webhook server: %w", err))
-		}
-		sm.webhookServer = nil
-	}
+	sm.forwarder = nil
+	sm.websocketSrc = nil
+	sm.eventService = nil
+	sm.webhookServer = nil
 
 	sm.started = false
 	status := sm.statusLocked()
 	sm.mu.Unlock()
+
+	// Stop components outside sm.mu, but still under reconcileMu to avoid races with reload reconcile.
+	if toStopForwarder != nil {
+		if err := toStopForwarder.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop forwarder: %w", err))
+		}
+	}
+	if toStopWS != nil {
+		if err := toStopWS.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop websocket source: %w", err))
+		}
+	}
+	if toCloseSvc != nil {
+		if err := toCloseSvc.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close websocket event service: %w", err))
+		}
+	}
+	if toCloseWebhook != nil {
+		if err := toCloseWebhook.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop webhook server: %w", err))
+		}
+	}
+
+	sm.reconcileMu.Unlock()
 	if err := sm.writeStatusFile(status); err != nil {
 		errs = append(errs, fmt.Errorf("failed to write status file: %w", err))
 	}
@@ -768,7 +794,7 @@ func (sm *SubscriptionManager) reloadConfig(ctx context.Context) error {
 		status := sm.statusLocked()
 		sm.mu.Unlock()
 		_ = sm.writeStatusFile(status)
-		return fmt.Errorf("load agent config: %w", err)
+		return fmt.Errorf("load agent config from %s: %w", sm.configPath, err)
 	}
 
 	desired, desiredErr := desiredGitHubTransport(cfg)
@@ -831,6 +857,7 @@ func desiredGitHubTransport(cfg agenthome.Config) (desiredTransport, error) {
 			break
 		}
 	}
+	// No repos means "no ingress" regardless of transport mode (serve remains in rpc-only mode).
 	if gitHubSub == nil || len(gitHubSub.Repos) == 0 {
 		return desiredTransport{Mode: ""}, nil
 	}
@@ -859,10 +886,18 @@ func desiredGitHubTransport(cfg agenthome.Config) (desiredTransport, error) {
 }
 
 func (sm *SubscriptionManager) reconcileGitHubTransport(ctx context.Context, webhookSrv *WebhookServer, desired desiredTransport) error {
+	// Concurrency note:
+	// - Reconcile is only triggered by the single watch loop goroutine.
+	// - Stop() may run concurrently during shutdown.
+	// We use reconcileMu to prevent overlap between reconcile and Stop while still allowing us to
+	// start new transports without holding sm.mu for the entire operation.
+	sm.reconcileMu.Lock()
+	defer sm.reconcileMu.Unlock()
+
 	switch desired.Mode {
 	case "":
 		// Stop ingress, keep RPC server alive.
-		var toStopForwarder *Forwarder
+		var toStopForwarder forwarderRunner
 		var toStopWS *WebSocketSource
 		var toCloseSvc *Service
 
@@ -898,7 +933,7 @@ func (sm *SubscriptionManager) reconcileGitHubTransport(ctx context.Context, web
 	case "gh_forward":
 		port := webhookSrv.Port()
 		webhookURL := BuildWebhookURL(port, "/ingress/github/webhook")
-		newForwarder, err := NewForwarder(ForwarderConfig{
+		newForwarder, err := sm.forwarderFactory(ForwarderConfig{
 			Port:  port,
 			Repos: desired.Repos,
 			URL:   webhookURL,
@@ -910,7 +945,7 @@ func (sm *SubscriptionManager) reconcileGitHubTransport(ctx context.Context, web
 			return fmt.Errorf("start forwarder: %w", err)
 		}
 
-		var toStopForwarder *Forwarder
+		var toStopForwarder forwarderRunner
 		var toStopWS *WebSocketSource
 		var toCloseSvc *Service
 		sm.mu.Lock()
@@ -963,7 +998,7 @@ func (sm *SubscriptionManager) reconcileGitHubTransport(ctx context.Context, web
 			return fmt.Errorf("start websocket source: %w", err)
 		}
 
-		var toStopForwarder *Forwarder
+		var toStopForwarder forwarderRunner
 		var toStopWS *WebSocketSource
 		var toCloseSvc *Service
 		sm.mu.Lock()

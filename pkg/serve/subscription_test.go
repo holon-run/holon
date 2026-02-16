@@ -546,3 +546,173 @@ func TestSubscriptionManager_HotReload_InvalidConfigKeepsExistingIngress(t *test
 		t.Fatalf("last_reload_error should clear after fixing config, got %v", status["last_reload_error"])
 	}
 }
+
+type fakeForwarder struct {
+	mu        sync.Mutex
+	started   bool
+	starts    int
+	stops     int
+	lastRepos []string
+}
+
+func (f *fakeForwarder) Start(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started = true
+	f.starts++
+	return nil
+}
+
+func (f *fakeForwarder) Stop() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.started {
+		return nil
+	}
+	f.started = false
+	f.stops++
+	return nil
+}
+
+func (f *fakeForwarder) Status() map[string]interface{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return map[string]interface{}{
+		"running": f.started,
+		"starts":  f.starts,
+		"stops":   f.stops,
+		"repos":   append([]string(nil), f.lastRepos...),
+	}
+}
+
+func TestSubscriptionManager_HotReload_SwitchesTransportMode_WebsocketToGHForward(t *testing.T) {
+	handler := &captureEventHandler{}
+	upgrader := websocket.Upgrader{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	agentHome := t.TempDir()
+	stateDir := filepath.Join(agentHome, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	cfg := agenthome.Config{
+		Version: "v1",
+		Agent: agenthome.AgentConfig{
+			ID:      "main",
+			Profile: "default",
+		},
+		Subscriptions: []agenthome.Subscription{
+			{
+				GitHub: &agenthome.GitHubSubscription{
+					Repos: []string{"holon-run/holon"},
+					Transport: agenthome.GitHubSubscriptionTransport{
+						Mode:         "websocket",
+						WebsocketURL: wsURL,
+					},
+				},
+			},
+		},
+	}
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var created []*fakeForwarder
+	factory := func(fc ForwarderConfig) (forwarderRunner, error) {
+		ff := &fakeForwarder{lastRepos: append([]string(nil), fc.Repos...)}
+		created = append(created, ff)
+		return ff, nil
+	}
+
+	sm, err := NewSubscriptionManager(ManagerConfig{
+		AgentHome:          agentHome,
+		StateDir:           stateDir,
+		Handler:            handler,
+		WebhookPort:        mustGetPort(t),
+		ReloadPollInterval: 20 * time.Millisecond,
+		ReloadDebounce:     10 * time.Millisecond,
+		ForwarderFactory:   factory,
+	})
+	if err != nil {
+		t.Fatalf("new subscription manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sm.Start(ctx); err != nil {
+		t.Fatalf("start subscription manager: %v", err)
+	}
+	defer sm.Stop()
+
+	// Wait for websocket to connect so we can verify it gets stopped.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status := sm.Status()
+		ws, ok := status["websocket"].(map[string]interface{})
+		if ok && ws["connected"] == true {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	sm.mu.Lock()
+	oldSrc := sm.websocketSrc
+	sm.mu.Unlock()
+	if oldSrc == nil {
+		t.Fatalf("expected websocket source to be initialized")
+	}
+
+	// Switch to gh_forward.
+	cfg.Subscriptions[0].GitHub.Transport.Mode = "gh_forward"
+	cfg.Subscriptions[0].GitHub.Transport.WebsocketURL = ""
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save config (switch): %v", err)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status := sm.Status()
+		if status["mode"] == "gh_forward" && status["ingress_active"] == true {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	status := sm.Status()
+	if status["mode"] != "gh_forward" {
+		t.Fatalf("mode = %v, want gh_forward after switch", status["mode"])
+	}
+	if status["ingress_active"] != true {
+		t.Fatalf("ingress_active = %v, want true after switch", status["ingress_active"])
+	}
+	if len(created) != 1 {
+		t.Fatalf("expected forwarder to be created once, got %d", len(created))
+	}
+	if created[0].Status()["running"] != true {
+		t.Fatalf("expected forwarder to be running after switch")
+	}
+
+	// Old websocket source should be stopped.
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if oldSrc.Status()["running"] == false {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if oldSrc.Status()["running"] != false {
+		t.Fatalf("expected old websocket source to be stopped after switch")
+	}
+}
