@@ -10,6 +10,7 @@ OUT_DIR="${OUT_DIR:-$ROOT_DIR/artifacts/run-$RUN_ID}"
 AGENT_HOME="${AGENT_HOME:-/tmp/holon-serve-autonomy-agent-$RUN_ID}"
 HOLON_BIN="${HOLON_BIN:-$(cd "$ROOT_DIR/../.." && pwd)/bin/holon}"
 WAIT_PLAN_SECONDS="${WAIT_PLAN_SECONDS:-900}"
+WAIT_TRIGGER_SECONDS="${WAIT_TRIGGER_SECONDS:-600}"
 WAIT_PR_SECONDS="${WAIT_PR_SECONDS:-1800}"
 WAIT_MERGE_SECONDS="${WAIT_MERGE_SECONDS:-2400}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-15}"
@@ -252,20 +253,32 @@ echo "PARENT_NUMBER=$PARENT_NUMBER" >>"$RUN_META"
 echo "[7/8] checking @holonbot trigger comment"
 TRIGGER_FOUND=0
 TRIGGER_CHILD=""
-for n in $(jq -r '.[] | select(.title | startswith("'"$PREFIX"' Child")) | .number' "$ISSUE_JSON"); do
-  COMMENT_JSON="$OUT_DIR/comments-$n.json"
-  gh issue view --repo "$REPO" "$n" --comments --json comments >"$COMMENT_JSON"
-  if jq -e '.comments[]? | select(.author.login == "'"$ACTOR_LOGIN"'" and (.body | contains("@holonbot")))' "$COMMENT_JSON" >/dev/null; then
-    TRIGGER_FOUND=1
-    TRIGGER_CHILD="$n"
+ELAPSED=0
+while (( ELAPSED <= WAIT_TRIGGER_SECONDS )); do
+  if ! kill -0 "$SERVE_PID" 2>/dev/null; then
+    echo "error: serve exited while waiting for @holonbot trigger; see $SERVE_LOG" >&2
+    exit 1
+  fi
+  for n in $(jq -r '.[] | select(.title | startswith("'"$PREFIX"' Child")) | .number' "$ISSUE_JSON"); do
+    COMMENT_JSON="$OUT_DIR/comments-$n.json"
+    gh issue view --repo "$REPO" "$n" --comments --json comments >"$COMMENT_JSON"
+    if jq -e '.comments[]? | select(.author.login == "'"$ACTOR_LOGIN"'" and (.body | contains("@holonbot")))' "$COMMENT_JSON" >/dev/null; then
+      TRIGGER_FOUND=1
+      TRIGGER_CHILD="$n"
+      break
+    fi
+  done
+  if (( TRIGGER_FOUND == 1 )); then
     break
   fi
+  sleep "$POLL_INTERVAL_SECONDS"
+  ELAPSED=$((ELAPSED + POLL_INTERVAL_SECONDS))
 done
 
 echo "TRIGGER_FOUND=$TRIGGER_FOUND" >>"$RUN_META"
 echo "TRIGGER_CHILD=$TRIGGER_CHILD" >>"$RUN_META"
 if (( TRIGGER_FOUND != 1 )); then
-  echo "error: no @holonbot trigger comment from $ACTOR_LOGIN found on child issues" >&2
+  echo "error: no @holonbot trigger comment from $ACTOR_LOGIN found on child issues within ${WAIT_TRIGGER_SECONDS}s" >&2
   exit 1
 fi
 
