@@ -2,21 +2,40 @@
 
 English|[中文](README.zh.md)
 
-Holon runs AI coding agents headlessly (Claude Code by default) to turn issues into PR-ready patches and summaries — locally or in CI, without babysitting the agent.
+Holon runs AI agents in a sandboxed runtime with a persistent `agent_home` model.
 
-Design direction: Holon is built around a sandboxed run + standardized artifacts contract, so higher-level automation (planning, ask-for-info, review/merge controllers) can be layered on over time—staged goals.
+Current product split:
+- `holon run`: stable execution kernel (sandbox + skills + agent contract).
+- `holon solve`: higher-level GitHub workflow wrapper on top of `run`.
+- `holon serve`: long-running proactive agent runtime (experimental).
 
-## Why Holon
-- Headless by default: run AI coding agents end-to-end without TTY or human input; deterministic, repeatable runs.
-- Issue → PR, end to end: fetch context, run the agent, and create or update a PR in one command.
-- Patch-first, standardized artifacts: always produce `diff.patch`, `summary.md`, and `manifest.json` for review and CI.
-- Sandboxed execution: Docker container runtime with direct workspace mode by default for `run` and `solve --workspace`; solve without `--workspace` still uses isolated temp workspaces.
-- State persistence: optional `--state-dir` mount for cross-run skill caches (e.g., synced issues cache).
-- Pluggable agents & toolchains: swap agent engines or bundles without changing your workflow.
-- Local or CI, same run: `holon solve` locally or in GitHub Actions with identical inputs and outputs.
+## Agent Home Model
+
+`agent_home` is the long-lived identity and state root for an agent instance:
+- persona files (`AGENTS.md`, `ROLE.md`, `IDENTITY.md`, `SOUL.md`, `CLAUDE.md`)
+- runtime state and caches
+- job outputs and other runtime-managed artifacts (which may be associated with per-job workspaces)
+- optional runtime configuration
+
+Holon runtime and skills should use contract variables and system-recommended directories, not hardcoded Holon-internal paths.
 
 ## Agents
 Holon currently ships with a Claude Code agent bundle by default. You can also run other agent bundles (including custom ones) via `--agent` / `HOLON_AGENT` and select update behavior via `--agent-channel` / `HOLON_AGENT_CHANNEL`.
+
+## Modes
+
+### `holon run` (Stable)
+- One-shot execution in a sandbox.
+- Best for local tasks and CI-safe skill execution.
+- Skills are enabled via CLI/config and run against a managed runtime contract.
+
+### `holon solve` (Stable wrapper)
+- GitHub-oriented flow built on top of `holon run`.
+- Automates context collection and publish steps for issue/PR workflows.
+
+### `holon serve` (Experimental)
+- Long-running event-driven runtime for proactive agents.
+- API/session model and controller behavior are still evolving.
 
 ## GitHub Actions quickstart (with holonbot)
 1) Install the GitHub App: [holonbot](https://github.com/apps/holonbot) in your repo/org.  
@@ -121,17 +140,21 @@ holon run --goal "Analyze project trends" --state-dir .holon/state
 # Combine with actions/cache in CI for persistent caches
 ```
 
-The state directory is mounted at `/holon/state` inside the container and persists across runs. Skills should use `/holon/state/<skill-name>/` for cache files.
+The state directory persists across runs. Skills should write caches using runtime-provided paths/variables rather than hardcoded container locations.
 
 **See** `docs/state-mount.md` for complete documentation.
 
-## Development & docs
+## Architecture & docs
+- Current architecture baseline: `docs/architecture-current.md`
+- RFC status index: `rfc/README.md`
+- Agent contract: `rfc/0002-agent-scheme.md`
+
+## Development
 - Build CLI: `make build`; test: `make test`; agent bundle: `(cd agents/claude && npm run bundle)`.
 - Operator guide (v0.11): `docs/operator-guide-v0.11.md`
 - `run` GA contract: `docs/run-ga-contract.md`
 - Skills guide: `docs/skills.md`
 - Serve GitHub MVP: `docs/serve-github-mvp.md`
 - Design/architecture: `docs/holon-architecture.md`
-- Agent contract: `rfc/0002-agent-scheme.md`
 - Modes: `docs/modes.md`
 - Contributing: see `CONTRIBUTING.md`

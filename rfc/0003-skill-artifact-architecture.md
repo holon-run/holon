@@ -5,13 +5,18 @@
 | **Status** | **Active** |
 | **Author** | Holon Contributors |
 | **Created** | 2026-01-06 |
-| **Updated** | 2026-01-26 |
+| **Updated** | 2026-02-17 |
 | **Parent** | RFC-0001, RFC-0002 |
 | **Issue** | [#433](https://github.com/holon-run/holon/issues/433) |
 
 ## 1. Summary
 
 This RFC proposes a **skill-first** architecture where the agent (via skills) owns end-to-end task semantics — including **context preparation** and **publishing side effects** — while Holon focuses on providing a **standard, isolated runtime** (one-shot or long-lived).
+
+## Implementation Reality (2026-02-17)
+
+- This RFC is active for skill-first ownership direction.
+- Skills should avoid hardcoding Holon-private paths and instead follow runtime contract variables and recommended system paths.
 
 Key changes:
 

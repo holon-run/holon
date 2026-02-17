@@ -2,16 +2,24 @@
 
 | Metadata | Value |
 | :--- | :--- |
-| **Status** | **Draft** |
+| **Status** | **Superseded** |
 | **Author** | Holon Contributors |
 | **Created** | 2025-12-16 |
+| **Updated** | 2026-02-17 |
 | **Target Version** | v0.1 |
+| **Superseded By** | RFC-0002, RFC-0003 |
 
 ## 1. Summary
 
 This RFC defines the **Holon Protocol** for v0.1: a stable, tool-agnostic way to describe a task (**Spec**) and collect results (**Artifacts**) from a headless agent execution inside a sandbox.
 
 This document is intended to be **normative** (what runners/agents MUST do). Design notes and reference implementations live under `docs/` (non-normative), e.g. `docs/holon-architecture.md`.
+
+## Implementation Reality (2026-02-17)
+
+- This RFC is kept as historical context for the v0.1 model.
+- Current contract direction is defined by RFC-0002 and RFC-0003.
+- Runtime/home/workspace semantics have evolved beyond the fixed v0.1 assumptions in this document.
 
 ## 2. Core concepts (terms)
 
