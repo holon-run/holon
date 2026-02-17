@@ -1171,8 +1171,9 @@ Rules of physics:
 3. Additional context files may be mounted under HOLON_INPUT_DIR/context.
 4. HOLON_AGENT_HOME points to your persistent agent home.
 5. Load and maintain long-lived persona/state from HOLON_AGENT_HOME:
+   - AGENTS.md
+   - CLAUDE.md (compatibility pointer to AGENTS.md)
    - ROLE.md
-   - AGENT.md
    - IDENTITY.md
    - SOUL.md
    - state/

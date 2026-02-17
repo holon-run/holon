@@ -127,7 +127,7 @@ Use `holon agent …` to inspect and manage agent bundles/aliases:
 - `holon agent info default`
 - `holon agent init --template <run-default|solve-github|serve-controller> [--force]`
 
-`holon agent init` templates are init-time only. Runtime prompts do not inline persona file bodies from `ROLE.md/AGENT.md/IDENTITY.md/SOUL.md`; the agent reads them from `HOLON_AGENT_HOME`.
+`holon agent init` templates are init-time only. Runtime prompts do not inline persona file bodies from `AGENTS.md/ROLE.md/IDENTITY.md/SOUL.md`; the agent reads them from `HOLON_AGENT_HOME`.
 
 Builtin agent resolution notes:
 - If no explicit agent is provided, Holon can resolve an agent via `--agent-channel` / `HOLON_AGENT_CHANNEL` (default: `latest`).

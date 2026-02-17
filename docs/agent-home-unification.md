@@ -53,7 +53,8 @@
 - tool policy/runtime contract
 
 2. 可演进层（位于 `agent_home`，agent 可改）
-- `AGENT.md`
+- `AGENTS.md`
+- `CLAUDE.md`（兼容入口，指向 `AGENTS.md`）
 - `ROLE.md`
 - `IDENTITY.md`
 - `SOUL.md`
@@ -107,7 +108,8 @@
 ```text
 ~/.holon/agents/<agent_id>/
   agent.yaml
-  AGENT.md
+  AGENTS.md
+  CLAUDE.md
   ROLE.md
   IDENTITY.md
   SOUL.md
@@ -183,7 +185,7 @@ runtime:
   cleanup: auto
 prompt:
   persona_files:
-    - AGENT.md
+    - AGENTS.md
     - ROLE.md
     - IDENTITY.md
     - SOUL.md
