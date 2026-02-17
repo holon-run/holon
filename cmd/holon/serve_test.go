@@ -367,8 +367,8 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if mockRunner.lastConfig.Workspace != h.controllerWorkspace {
 		t.Fatalf("Workspace = %q, want %q", mockRunner.lastConfig.Workspace, h.controllerWorkspace)
 	}
-	if got := mockRunner.lastConfig.Env["HOLON_CONTROLLER_RPC_SOCKET"]; got != "/root/run/agent.sock" {
-		t.Fatalf("HOLON_CONTROLLER_RPC_SOCKET = %q, want /root/run/agent.sock", got)
+	if got := mockRunner.lastConfig.Env["HOLON_RUNTIME_RPC_SOCKET"]; got != "/root/run/agent.sock" {
+		t.Fatalf("HOLON_RUNTIME_RPC_SOCKET = %q, want /root/run/agent.sock", got)
 	}
 	if len(rpcServer.events) < 1 {
 		t.Fatalf("expected at least one forwarded event")
@@ -564,7 +564,7 @@ func TestControllerPrompts_IncludeAgentHomeContract(t *testing.T) {
 	if !strings.Contains(userPrompt, "HOLON_WORKSPACE_INDEX_PATH") {
 		t.Fatalf("expected HOLON_WORKSPACE_INDEX_PATH contract, got: %q", userPrompt)
 	}
-	if !strings.Contains(userPrompt, "HOLON_CONTROLLER_RPC_SOCKET") {
+	if !strings.Contains(userPrompt, "HOLON_RUNTIME_RPC_SOCKET") {
 		t.Fatalf("unexpected runtime user prompt: %q", userPrompt)
 	}
 }
@@ -612,7 +612,7 @@ func TestWriteControllerSpecAndPrompts_ExcludesSkillsMetadata(t *testing.T) {
 	if strings.Contains(spec, "skills:") {
 		t.Fatalf("spec.yaml should not contain metadata.skills, got:\n%s", spec)
 	}
-	if !strings.Contains(spec, "name: \"github-controller-session\"") {
+	if !strings.Contains(spec, "name: \"github-agent-session\"") {
 		t.Fatalf("spec.yaml missing expected metadata.name, got:\n%s", spec)
 	}
 }
@@ -753,7 +753,7 @@ type mockSessionRunner struct {
 	stopCount    int
 	waitCh       chan error
 	waitObserved chan struct{}
-	lastConfig   ControllerSessionConfig
+	lastConfig   RuntimeSessionConfig
 }
 
 type mockControllerRPCServer struct {
@@ -774,7 +774,7 @@ func newMockControllerRPCServer(t *testing.T, socketPath string) *mockController
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
-	mux.HandleFunc("/v1/controller/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/runtime/events", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Event serve.EventEnvelope `json:"event"`
 		}
@@ -839,7 +839,7 @@ func shortTempDir(t *testing.T, prefix string) string {
 	return dir
 }
 
-func (m *mockSessionRunner) Start(_ context.Context, cfg ControllerSessionConfig) (*docker.SessionHandle, error) {
+func (m *mockSessionRunner) Start(_ context.Context, cfg RuntimeSessionConfig) (*docker.SessionHandle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startCount++

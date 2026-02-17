@@ -509,7 +509,7 @@ async function runClaude(
   if (fallbackModel) {
     options.fallbackModel = fallbackModel;
   }
-  const resumeSessionId = env.HOLON_CONTROLLER_SESSION_ID?.trim();
+  const resumeSessionId = env.HOLON_RUNTIME_SESSION_ID?.trim();
   if (resumeSessionId) {
     options.resume = resumeSessionId;
     logger.info(`Resuming Claude session: ${resumeSessionId}`);
@@ -906,8 +906,8 @@ async function runServeClaudeSession(
   const logFilePath = path.join(evidenceDir, "execution.log");
   const logFile = fs.createWriteStream(logFilePath, { flags: "a" });
 
-  const sessionStatePath = env.HOLON_CONTROLLER_SESSION_STATE_PATH?.trim();
-  const fallbackResumeID = env.HOLON_CONTROLLER_SESSION_ID?.trim();
+  const sessionStatePath = env.HOLON_RUNTIME_SESSION_STATE_PATH?.trim();
+  const fallbackResumeID = env.HOLON_RUNTIME_SESSION_ID?.trim();
   const workspacePath = runtimePaths.workspaceDir;
 
   type SessionEntry = {
@@ -1069,7 +1069,7 @@ async function runServeClaudeSession(
   try {
     await ensureSessionReady("main");
 
-    const socketPath = env.HOLON_CONTROLLER_RPC_SOCKET?.trim() || path.join(runtimePaths.agentHome, "run", "agent.sock");
+    const socketPath = env.HOLON_RUNTIME_RPC_SOCKET?.trim() || path.join(runtimePaths.agentHome, "run", "agent.sock");
     if (socketPath) {
       logger.info(`Controller RPC socket listening on ${socketPath}`);
       fs.mkdirSync(path.dirname(socketPath), { recursive: true });
@@ -1088,7 +1088,7 @@ async function runServeClaudeSession(
           res.end(JSON.stringify({ status: "ok", session_id: mainSessionID || "" }));
           return;
         }
-        if (req.method !== "POST" || req.url !== "/v1/controller/events") {
+        if (req.method !== "POST" || req.url !== "/v1/runtime/events") {
           res.writeHead(404, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "not_found" }));
           return;

@@ -13,13 +13,13 @@ import (
 
 // RuntimeState tracks the current state of the serve runtime
 type RuntimeState struct {
-	mu                sync.RWMutex
-	State             string    `json:"state"` // running, paused
-	EventsProcessed   int64     `json:"events_processed"`
-	LastEventAt       time.Time `json:"last_event_at"`
-	ControllerSession string    `json:"controller_session_id"`
-	PausedAt          time.Time `json:"paused_at,omitempty"`
-	ResumedAt         time.Time `json:"resumed_at,omitempty"`
+	mu              sync.RWMutex
+	State           string    `json:"state"` // running, paused
+	EventsProcessed int64     `json:"events_processed"`
+	LastEventAt     time.Time `json:"last_event_at"`
+	SessionID       string    `json:"session_id"`
+	PausedAt        time.Time `json:"paused_at,omitempty"`
+	ResumedAt       time.Time `json:"resumed_at,omitempty"`
 }
 
 const (
@@ -33,12 +33,12 @@ const (
 
 // StatusResponse is the response for holon/status
 type StatusResponse struct {
-	State             string    `json:"state"`
-	EventsProcessed   int64     `json:"events_processed"`
-	LastEventAt       time.Time `json:"last_event_at"`
-	ControllerSession string    `json:"controller_session_id"`
-	PausedAt          time.Time `json:"paused_at,omitempty"`
-	ResumedAt         time.Time `json:"resumed_at,omitempty"`
+	State           string    `json:"state"`
+	EventsProcessed int64     `json:"events_processed"`
+	LastEventAt     time.Time `json:"last_event_at"`
+	SessionID       string    `json:"session_id"`
+	PausedAt        time.Time `json:"paused_at,omitempty"`
+	ResumedAt       time.Time `json:"resumed_at,omitempty"`
 }
 
 // PauseResponse is the response for holon/pause
@@ -70,7 +70,7 @@ type LogStreamResponse struct {
 type Runtime struct {
 	statePath string
 	state     RuntimeState
-	// defaultSessionID is used when the persisted ControllerSession is empty.
+	// defaultSessionID is used when the persisted SessionID is empty.
 	// This provides an immediately usable interaction surface for serve.
 	defaultSessionID string
 	noDefaultSession bool
@@ -102,7 +102,7 @@ func NewRuntime(stateDir string) (*Runtime, error) {
 
 type RuntimeOptions struct {
 	// DefaultSessionID is the thread/session id that will be created on startup
-	// when no persisted ControllerSession exists.
+	// when no persisted SessionID exists.
 	// If empty, "main" is used.
 	DefaultSessionID string
 	// NoDefaultSession disables creating/loading a default session id.
@@ -149,12 +149,12 @@ func (rt *Runtime) ensureDefaultSession() error {
 	if rt.noDefaultSession {
 		return nil
 	}
-	if strings.TrimSpace(rt.state.ControllerSession) != "" {
+	if strings.TrimSpace(rt.state.SessionID) != "" {
 		return nil
 	}
 	// Persist only when we actually transition from an empty controller session
 	// to the default session id.
-	rt.state.ControllerSession = rt.defaultSessionID
+	rt.state.SessionID = rt.defaultSessionID
 	if err := rt.save(); err != nil {
 		return err
 	}
@@ -163,8 +163,8 @@ func (rt *Runtime) ensureDefaultSession() error {
 
 func (rt *Runtime) effectiveSessionID() string {
 	state := rt.GetState()
-	if strings.TrimSpace(state.ControllerSession) != "" {
-		return strings.TrimSpace(state.ControllerSession)
+	if strings.TrimSpace(state.SessionID) != "" {
+		return strings.TrimSpace(state.SessionID)
 	}
 	if rt.noDefaultSession {
 		return ""
@@ -272,12 +272,12 @@ func (rt *Runtime) GetState() RuntimeState {
 	defer rt.mu.Unlock()
 
 	return RuntimeState{
-		State:             rt.state.State,
-		EventsProcessed:   rt.state.EventsProcessed,
-		LastEventAt:       rt.state.LastEventAt,
-		ControllerSession: rt.state.ControllerSession,
-		PausedAt:          rt.state.PausedAt,
-		ResumedAt:         rt.state.ResumedAt,
+		State:           rt.state.State,
+		EventsProcessed: rt.state.EventsProcessed,
+		LastEventAt:     rt.state.LastEventAt,
+		SessionID:       rt.state.SessionID,
+		PausedAt:        rt.state.PausedAt,
+		ResumedAt:       rt.state.ResumedAt,
 	}
 }
 
@@ -298,12 +298,12 @@ func (rt *Runtime) RecordEvent(eventID string) {
 	_ = rt.save()
 }
 
-// SetControllerSession sets the current controller session ID
-func (rt *Runtime) SetControllerSession(sessionID string) {
+// SetSessionID sets the current controller session ID
+func (rt *Runtime) SetSessionID(sessionID string) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
-	rt.state.ControllerSession = sessionID
+	rt.state.SessionID = sessionID
 	_ = rt.save()
 }
 
@@ -354,12 +354,12 @@ func (rt *Runtime) HandleStatus(params json.RawMessage) (interface{}, *JSONRPCEr
 	state := rt.GetState()
 
 	return StatusResponse{
-		State:             state.State,
-		EventsProcessed:   state.EventsProcessed,
-		LastEventAt:       state.LastEventAt,
-		ControllerSession: state.ControllerSession,
-		PausedAt:          state.PausedAt,
-		ResumedAt:         state.ResumedAt,
+		State:           state.State,
+		EventsProcessed: state.EventsProcessed,
+		LastEventAt:     state.LastEventAt,
+		SessionID:       state.SessionID,
+		PausedAt:        state.PausedAt,
+		ResumedAt:       state.ResumedAt,
 	}, nil
 }
 
@@ -368,7 +368,7 @@ func (rt *Runtime) HandlePause(params json.RawMessage) (interface{}, *JSONRPCErr
 	if err := rt.Pause(); err != nil {
 		return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to pause: %s", err))
 	}
-	threadID := rt.GetState().ControllerSession
+	threadID := rt.GetState().SessionID
 	if threadID != "" {
 		notif := NewThreadNotification(threadID, ThreadNotificationPaused, StatePaused)
 		rt.emitThreadNotification(notif)
@@ -391,7 +391,7 @@ func (rt *Runtime) HandleResume(params json.RawMessage) (interface{}, *JSONRPCEr
 	if err := rt.Resume(); err != nil {
 		return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to resume: %s", err))
 	}
-	threadID := rt.GetState().ControllerSession
+	threadID := rt.GetState().SessionID
 	if threadID != "" {
 		notif := NewThreadNotification(threadID, ThreadNotificationResumed, StateRunning)
 		rt.emitThreadNotification(notif)
@@ -608,7 +608,7 @@ func (rt *Runtime) HandleThreadStart(params json.RawMessage) (interface{}, *JSON
 	if sessionID == "" {
 		return nil, newInvalidParamFieldError("thread_id", "thread_id is required when no default session is configured")
 	}
-	rt.SetControllerSession(sessionID)
+	rt.SetSessionID(sessionID)
 	threadNotif := NewThreadNotification(sessionID, ThreadNotificationStarted, StateRunning)
 	rt.emitThreadNotification(threadNotif)
 
@@ -893,7 +893,7 @@ func (rt *Runtime) HandleTurnStart(params json.RawMessage) (interface{}, *JSONRP
 			return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to resume: %s", err))
 		}
 	}
-	rt.SetControllerSession(req.ThreadID)
+	rt.SetSessionID(req.ThreadID)
 
 	turnID, startedAt := rt.beginTurn(req.ThreadID)
 	req.Input = normalizedInput

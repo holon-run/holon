@@ -43,14 +43,14 @@ func TestDockerSessionRunnerStart_MapsConfig(t *testing.T) {
 	stateDir := t.TempDir()
 	agentHome := t.TempDir()
 
-	// Provide a fake agent path so resolveControllerAgentBundle does not attempt remote resolution.
+	// Provide a fake agent path so resolveServeAgentBundle does not attempt remote resolution.
 	agentPath := filepath.Join(workspace, "agent.tar.gz")
 	if err := os.WriteFile(agentPath, []byte("fake"), 0644); err != nil {
 		t.Fatalf("write fake agent bundle: %v", err)
 	}
 	t.Setenv("HOLON_AGENT", agentPath)
 
-	_, err := runner.Start(context.Background(), ControllerSessionConfig{
+	_, err := runner.Start(context.Background(), RuntimeSessionConfig{
 		Workspace:             workspace,
 		InputPath:             inputDir,
 		OutputPath:            outputDir,
@@ -92,12 +92,12 @@ func TestDockerSessionRunnerStart_MapsConfig(t *testing.T) {
 	}
 }
 
-func TestDefaultControllerWorkspace(t *testing.T) {
-	path, err := defaultControllerWorkspace()
+func TestDefaultServeWorkspace(t *testing.T) {
+	path, err := defaultServeWorkspace()
 	if err != nil {
-		t.Fatalf("defaultControllerWorkspace() error = %v", err)
+		t.Fatalf("defaultServeWorkspace() error = %v", err)
 	}
 	if !filepath.IsAbs(path) {
-		t.Fatalf("defaultControllerWorkspace() = %q, want absolute path", path)
+		t.Fatalf("defaultServeWorkspace() = %q, want absolute path", path)
 	}
 }

@@ -281,8 +281,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.err = nil
 			a.connected = true
 			a.lastUpdate = time.Now()
-			if msg.status.ControllerSession != "" && a.threadID == "" {
-				a.threadID = msg.status.ControllerSession
+			if msg.status.SessionID != "" && a.threadID == "" {
+				a.threadID = msg.status.SessionID
 			}
 		}
 		return a, nil
@@ -568,8 +568,8 @@ func (a *App) renderStatusPanel() string {
 		b.WriteString("\n")
 	}
 
-	if a.status.ControllerSession != "" {
-		b.WriteString(statusStyle.Render(fmt.Sprintf("Thread: %s", a.status.ControllerSession)))
+	if a.status.SessionID != "" {
+		b.WriteString(statusStyle.Render(fmt.Sprintf("Thread: %s", a.status.SessionID)))
 		b.WriteString("\n")
 	}
 	return borderStyle.Width(a.panelWidth()).Render(b.String())
