@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/holon-run/holon/pkg/image"
 	"github.com/holon-run/holon/pkg/runtime/docker"
 )
 
@@ -703,8 +704,8 @@ func TestRunner_Integration(t *testing.T) {
 	mockRuntime := &MockRuntime{
 		RunHolonFunc: func(ctx context.Context, cfg *docker.ContainerConfig) (string, error) {
 			// Verify all expected values are in the config
-			if cfg.BaseImage != "golang:1.22" {
-				t.Errorf("Expected BaseImage to be 'golang:1.22', got %q", cfg.BaseImage)
+			if cfg.BaseImage != image.DefaultImage {
+				t.Errorf("Expected BaseImage to be %q, got %q", image.DefaultImage, cfg.BaseImage)
 			}
 			if cfg.AgentBundle == "" {
 				t.Errorf("Expected AgentBundle to be set")
@@ -756,7 +757,7 @@ func TestRunner_Integration(t *testing.T) {
 		WorkspacePath: workspaceDir,
 		ContextPath:   contextDir,
 		OutDir:        outDir,
-		BaseImage:     "golang:1.22",
+		BaseImage:     image.DefaultImage,
 		AgentBundle:   bundlePath,
 		AgentHome:     t.TempDir(),
 		RoleName:      "coder",

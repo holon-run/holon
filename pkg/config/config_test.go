@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/holon-run/holon/pkg/image"
 )
 
 func TestLoad_NoConfigFile(t *testing.T) {
@@ -200,7 +202,7 @@ func TestResolveBaseImage(t *testing.T) {
 			name:         "CLI overrides config",
 			baseImage:    "python:3.11",
 			cliValue:     "node:20",
-			defaultValue: "golang:1.22",
+			defaultValue: image.DefaultImage,
 			wantValue:    "node:20",
 			wantSource:   "cli",
 		},
@@ -208,7 +210,7 @@ func TestResolveBaseImage(t *testing.T) {
 			name:         "Config overrides default",
 			baseImage:    "python:3.11",
 			cliValue:     "",
-			defaultValue: "golang:1.22",
+			defaultValue: image.DefaultImage,
 			wantValue:    "python:3.11",
 			wantSource:   "config",
 		},
@@ -216,8 +218,8 @@ func TestResolveBaseImage(t *testing.T) {
 			name:         "Default when no CLI or config",
 			baseImage:    "",
 			cliValue:     "",
-			defaultValue: "golang:1.22",
-			wantValue:    "golang:1.22",
+			defaultValue: image.DefaultImage,
+			wantValue:    image.DefaultImage,
 			wantSource:   "default",
 		},
 	}

@@ -151,8 +151,8 @@ func TestDetect_NoSignal(t *testing.T) {
 	createFile(t, dir, "README.md", "# Test\n")
 
 	result := Detect(dir)
-	if result.Image != "golang:1.22" {
-		t.Errorf("Expected default golang:1.22, got %s", result.Image)
+	if result.Image != DefaultImage {
+		t.Errorf("Expected default %s, got %s", DefaultImage, result.Image)
 	}
 	if len(result.Signals) != 0 {
 		t.Errorf("Expected no signals, got %v", result.Signals)
@@ -170,8 +170,8 @@ func TestDetect_SkipsNodeModules(t *testing.T) {
 
 	result := Detect(dir)
 	// Should return default, not node:22
-	if result.Image != "golang:1.22" {
-		t.Errorf("Expected default golang:1.22 (node_modules should be skipped), got %s", result.Image)
+	if result.Image != DefaultImage {
+		t.Errorf("Expected default %s (node_modules should be skipped), got %s", DefaultImage, result.Image)
 	}
 }
 
@@ -186,8 +186,8 @@ func TestDetect_SkipsVendor(t *testing.T) {
 
 	result := Detect(dir)
 	// Should return default, not golang:1.23
-	if result.Image != "golang:1.22" {
-		t.Errorf("Expected default golang:1.22 (vendor should be skipped), got %s", result.Image)
+	if result.Image != DefaultImage {
+		t.Errorf("Expected default %s (vendor should be skipped), got %s", DefaultImage, result.Image)
 	}
 }
 
@@ -203,8 +203,8 @@ func TestDetect_SkipsHiddenFiles(t *testing.T) {
 
 	result := Detect(dir)
 	// Should return default, not node:22
-	if result.Image != "golang:1.22" {
-		t.Errorf("Expected default golang:1.22 (hidden files should be skipped), got %s", result.Image)
+	if result.Image != DefaultImage {
+		t.Errorf("Expected default %s (hidden files should be skipped), got %s", DefaultImage, result.Image)
 	}
 }
 
@@ -250,11 +250,11 @@ func TestFormatResult(t *testing.T) {
 		{
 			name: "no signals",
 			result: &DetectResult{
-				Image:     "golang:1.22",
+				Image:     DefaultImage,
 				Signals:   []string{},
-				Rationale: "No language signals detected, using default Go image",
+				Rationale: "No language signals detected, using default base image",
 			},
-			expected: "Detected image: golang:1.22 (signals: none) - No language signals detected, using default Go image",
+			expected: "Detected image: " + DefaultImage + " (signals: none) - No language signals detected, using default base image",
 		},
 		{
 			name: "disabled",
@@ -684,8 +684,8 @@ func TestDetect_ScanMode_EmptyDirectory(t *testing.T) {
 	// Empty directory with no signals
 
 	result := Detect(dir)
-	if result.Image != "golang:1.22" {
-		t.Errorf("Expected default golang:1.22, got %s", result.Image)
+	if result.Image != DefaultImage {
+		t.Errorf("Expected default %s, got %s", DefaultImage, result.Image)
 	}
 
 	// Check scan mode - should be full-recursive (no root signals found)
