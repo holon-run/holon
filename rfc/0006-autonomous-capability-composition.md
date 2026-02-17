@@ -5,13 +5,18 @@
 | **Status** | **Draft** |
 | **Author** | Holon Contributors |
 | **Created** | 2026-02-10 |
-| **Updated** | 2026-02-10 |
+| **Updated** | 2026-02-17 |
 | **Parent** | RFC-0001, RFC-0002, RFC-0003, RFC-0004, RFC-0005 |
 | **Issue** | TBD |
 
 ## 1. Summary
 
 This RFC repositions Holon from a "project delivery automation tool" to an **autonomous capability platform**.
+
+## Implementation Reality (2026-02-17)
+
+- This RFC captures target composition direction.
+- Current implementation is still converging on these concepts; use it as roadmap guidance rather than an exact runtime contract.
 
 Core model:
 

@@ -5,7 +5,7 @@
 | **Status** | **Active** |
 | **Author** | Holon Contributors |
 | **Created** | 2025-12-18 |
-| **Updated** | 2026-01-26 |
+| **Updated** | 2026-02-17 |
 | **Parent** | RFC-0001 |
 
 ## 1. Summary
@@ -13,6 +13,11 @@
 This RFC defines the **Holon Agent Contract** for v0.2: a stable, tool-agnostic interface that allows different engines to be plugged into Holon while supporting skill-owned artifacts and a minimal runtime boundary.
 
 This document is intended to be **normative** (what agents/runners MUST do). Reference implementations and composition details live under `docs/` (non-normative).
+
+## Implementation Reality (2026-02-17)
+
+- This RFC remains the active contract baseline.
+- Some runtime details (especially around persistent `agent_home` and serve/session behavior) continue to evolve and are refined in docs plus later RFC drafts.
 
 ### v0.2 Changes (2026-01-26)
 

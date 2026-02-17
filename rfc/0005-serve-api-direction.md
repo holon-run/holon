@@ -2,10 +2,10 @@
 
 | Metadata | Value |
 | :--- | :--- |
-| **Status** | **Proposed** |
+| **Status** | **Draft** |
 | **Author** | Holon Contributors |
 | **Created** | 2026-02-08 |
-| **Updated** | 2026-02-08 |
+| **Updated** | 2026-02-17 |
 | **Parent** | RFC-0004 |
 | **Issue** | [#600](https://github.com/holon-run/holon/issues/600) |
 
@@ -16,6 +16,11 @@ This RFC defines the API evolution direction for `holon serve` after the GitHub 
 1. **Control-plane protocol**: Codex/OpenAI-style JSON-RPC for serve control and observability APIs
 2. **Ingress path design**: Provider-specific webhook endpoints (e.g., `/ingress/github/webhook`)
 3. **Deferred generic events API**: No `/v1/events` until multi-connector stabilization
+
+## Implementation Reality (2026-02-17)
+
+- This document is a direction RFC, not a fully implemented API contract.
+- Control-plane and ingress interfaces should be treated as evolving until promoted to Active status.
 
 ## 2. Motivation
 

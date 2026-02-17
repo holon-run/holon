@@ -5,13 +5,18 @@
 | **Status** | **Draft** |
 | **Author** | Holon Contributors |
 | **Created** | 2026-02-08 |
-| **Updated** | 2026-02-08 |
+| **Updated** | 2026-02-17 |
 | **Parent** | RFC-0001, RFC-0002, RFC-0003 |
 | **Issue** | [#568](https://github.com/holon-run/holon/issues/568) |
 
 ## 1. Summary
 
 This RFC proposes evolving Holon from a one-shot execution tool into a **proactive agent runtime** with a long-running control loop that continuously reacts to events and drives project progress.
+
+## Implementation Reality (2026-02-17)
+
+- This RFC is still draft and partially implemented.
+- `holon serve` is available but remains experimental; session routing, event-loop behavior, and long-running controller semantics are still evolving.
 
 The runtime has two first-class modules inside one service:
 

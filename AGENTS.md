@@ -67,4 +67,12 @@ _ = os.Remove(tempFile)
 
 ## Agent-Specific Notes
 
-Holon runs agents in containers with a standardized layout: workspace at `/holon/workspace`, inputs under `/holon/input/`, and artifacts under `/holon/output/`. Design changes that affect these paths should update relevant RFCs and keep backward compatibility where feasible.
+Holon runtime is now centered on `agent_home`:
+- persona and role files live under agent home (for example `AGENTS.md`, `ROLE.md`)
+- runtime/skill behavior should rely on runtime contract variables and system-recommended directories
+- skills should avoid hardcoded Holon-specific filesystem paths/env names unless the contract explicitly guarantees them
+
+When changing runtime path semantics, update:
+- `README.md`
+- `rfc/README.md` + affected RFC status/notes
+- relevant docs under `docs/` (especially architecture and operator guides)
