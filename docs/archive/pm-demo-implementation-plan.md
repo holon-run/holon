@@ -127,7 +127,7 @@ Persist normalized working goal in `controller-state/goal-state.json`.
 
 Add:
 
-1. `docs/pm-dev-demo.md` (how to run end-to-end).
+1. `docs/archive/pm-dev-demo.md` (how to run end-to-end).
 2. Optional script: `scripts/demo/pm-loop.sh`.
 
 ## CLI/Runtime Inputs (Demo)

@@ -70,7 +70,7 @@ _ = os.Remove(tempFile)
 Holon runtime is now centered on `agent_home`:
 - persona and role files live under agent home (for example `AGENTS.md`, `ROLE.md`)
 - runtime/skill behavior should rely on runtime contract variables and system-recommended directories
-- skills should avoid hardcoded Holon-specific filesystem paths/env names unless the contract explicitly guarantees them
+- skills should avoid hardcoded Holon-specific filesystem paths and prefer runtime contract environment variables (for example `HOLON_OUTPUT_DIR`, `HOLON_STATE_DIR`, `HOLON_WORKSPACE_DIR`) instead of literal paths
 
 When changing runtime path semantics, update:
 - `README.md`

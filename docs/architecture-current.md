@@ -12,15 +12,15 @@ Holon executes agents in a sandboxed container runtime and centers persistence o
 
 `agent_home` holds:
 - agent identity/persona files (`AGENTS.md`, `ROLE.md`, `IDENTITY.md`, `SOUL.md`, `CLAUDE.md`)
-- runtime state
+- persistent runtime state
 - caches
-- workspace/output data managed by runtime
+- long-lived agent/session metadata and optional job input/output history (for example logs, manifests, indexes)
 
 ## Contract Boundaries
 
 - Inputs: runtime-provided request/context envelope.
 - Workspace: runtime-provided working directory (mode-dependent).
-- Outputs: runtime-recommended output directory with `manifest.json` as minimal execution record.
+- Outputs: runtime-provided output directory (`HOLON_OUTPUT_DIR`) with `manifest.json` as minimal execution record.
 
 Contract consumers should rely on documented runtime variables and behavior, not hardcoded `/holon/*` paths.
 

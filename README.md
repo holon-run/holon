@@ -14,7 +14,7 @@ Current product split:
 `agent_home` is the long-lived identity and state root for an agent instance:
 - persona files (`AGENTS.md`, `ROLE.md`, `IDENTITY.md`, `SOUL.md`, `CLAUDE.md`)
 - runtime state and caches
-- workspaces and generated outputs (runtime-managed paths)
+- job outputs and other runtime-managed artifacts (which may be associated with per-job workspaces)
 - optional runtime configuration
 
 Holon runtime and skills should use contract variables and system-recommended directories, not hardcoded Holon-internal paths.
@@ -146,7 +146,6 @@ The state directory persists across runs. Skills should write caches using runti
 
 ## Architecture & docs
 - Current architecture baseline: `docs/architecture-current.md`
-- Agent home docs refactor plan and checklist: `docs/agent-home-doc-refactor-plan.md`
 - RFC status index: `rfc/README.md`
 - Agent contract: `rfc/0002-agent-scheme.md`
 
