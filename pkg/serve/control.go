@@ -152,7 +152,7 @@ func (rt *Runtime) ensureDefaultSession() error {
 	if strings.TrimSpace(rt.state.SessionID) != "" {
 		return nil
 	}
-	// Persist only when we actually transition from an empty controller session
+	// Persist only when we actually transition from an empty runtime session
 	// to the default session id.
 	rt.state.SessionID = rt.defaultSessionID
 	if err := rt.save(); err != nil {
@@ -298,7 +298,7 @@ func (rt *Runtime) RecordEvent(eventID string) {
 	_ = rt.save()
 }
 
-// SetSessionID sets the current controller session ID
+// SetSessionID sets the current runtime session ID
 func (rt *Runtime) SetSessionID(sessionID string) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
