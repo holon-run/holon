@@ -49,12 +49,12 @@ func (c *RPCClient) SetRPCTimeout(timeout time.Duration) {
 
 // StatusResponse is the response for holon/status
 type StatusResponse struct {
-	State             string    `json:"state"`
-	EventsProcessed   int64     `json:"events_processed"`
-	LastEventAt       time.Time `json:"last_event_at"`
-	ControllerSession string    `json:"controller_session_id"`
-	PausedAt          time.Time `json:"paused_at,omitempty"`
-	ResumedAt         time.Time `json:"resumed_at,omitempty"`
+	State           string    `json:"state"`
+	EventsProcessed int64     `json:"events_processed"`
+	LastEventAt     time.Time `json:"last_event_at"`
+	SessionID       string    `json:"session_id"`
+	PausedAt        time.Time `json:"paused_at,omitempty"`
+	ResumedAt       time.Time `json:"resumed_at,omitempty"`
 }
 
 // PauseResponse is the response for holon/pause

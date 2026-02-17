@@ -31,10 +31,15 @@ type Resolution struct {
 }
 
 const (
-	TemplateRunDefault      = "run-default"
-	TemplateSolveGitHub     = "solve-github"
-	TemplateServeController = "serve-controller"
-	DefaultTemplate         = TemplateServeController
+	TemplateDefault      = "default"
+	TemplateGitHubSolver = "github-solver"
+	TemplateAutonomous   = "autonomous"
+	DefaultTemplate      = TemplateAutonomous
+
+	// Deprecated template aliases kept for transition.
+	TemplateRunDefaultAlias      = "run-default"
+	TemplateSolveGitHubAlias     = "solve-github"
+	TemplateServeControllerAlias = "serve-controller"
 )
 
 type InitOptions struct {
@@ -158,9 +163,9 @@ func EnsureLayout(agentHome string) error {
 
 func AvailableTemplates() []string {
 	return []string{
-		TemplateRunDefault,
-		TemplateSolveGitHub,
-		TemplateServeController,
+		TemplateDefault,
+		TemplateGitHubSolver,
+		TemplateAutonomous,
 	}
 }
 
@@ -178,7 +183,7 @@ func EnsureLayoutWithOptions(agentHome string, opts InitOptions) error {
 		}
 	}
 
-	template := strings.TrimSpace(opts.Template)
+	template := normalizeTemplateName(opts.Template)
 	if template == "" {
 		template = DefaultTemplate
 	}
@@ -267,11 +272,25 @@ func writeFile(path, content string) error {
 }
 
 func loadPersonaTemplate(templateName string) (map[string]string, error) {
+	templateName = normalizeTemplateName(templateName)
 	assets, err := AssetsFS()
 	if err != nil {
 		return nil, err
 	}
 	return loadPersonaTemplateFromFS(assets, templateName)
+}
+
+func normalizeTemplateName(templateName string) string {
+	switch strings.TrimSpace(templateName) {
+	case TemplateRunDefaultAlias:
+		return TemplateDefault
+	case TemplateSolveGitHubAlias:
+		return TemplateGitHubSolver
+	case TemplateServeControllerAlias:
+		return TemplateAutonomous
+	default:
+		return strings.TrimSpace(templateName)
+	}
 }
 
 func loadPersonaTemplateFromFS(assets fs.FS, templateName string) (map[string]string, error) {

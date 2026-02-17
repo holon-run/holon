@@ -419,7 +419,7 @@ func (ws *WebhookServer) handleRPCStream(w http.ResponseWriter, r *http.Request)
 	unsubscribe := ws.broadcaster.Subscribe(streamWriter)
 	defer unsubscribe()
 
-	threadID := ws.runtime.GetState().ControllerSession
+	threadID := ws.runtime.GetState().SessionID
 	if threadID != "" {
 		threadNotif := NewThreadNotification(threadID, ThreadNotificationStarted, StateRunning)
 		if err := streamWriter.WriteThreadNotification(threadNotif); err == nil {

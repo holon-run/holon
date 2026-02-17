@@ -29,8 +29,8 @@ func TestNewRuntime(t *testing.T) {
 		t.Errorf("Initial events_processed = %d, want 0", state.EventsProcessed)
 	}
 
-	if state.ControllerSession != "main" {
-		t.Errorf("Initial ControllerSession = %q, want %q", state.ControllerSession, "main")
+	if state.SessionID != "main" {
+		t.Errorf("Initial SessionID = %q, want %q", state.SessionID, "main")
 	}
 }
 
@@ -44,8 +44,8 @@ func TestNewRuntimeWithOptions_NoDefaultSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRuntimeWithOptions() error = %v", err)
 	}
-	if got := rt.GetState().ControllerSession; got != "" {
-		t.Fatalf("ControllerSession = %q, want empty", got)
+	if got := rt.GetState().SessionID; got != "" {
+		t.Fatalf("SessionID = %q, want empty", got)
 	}
 	if got := rt.effectiveSessionID(); got != "" {
 		t.Fatalf("effectiveSessionID() = %q, want empty", got)
@@ -65,7 +65,7 @@ func TestEffectiveSessionID(t *testing.T) {
 		t.Fatalf("effectiveSessionID() (empty persisted) = %q, want %q", got, "main")
 	}
 
-	rt.SetControllerSession("thread_123")
+	rt.SetSessionID("thread_123")
 	if got := rt.effectiveSessionID(); got != "thread_123" {
 		t.Fatalf("effectiveSessionID() (persisted) = %q, want %q", got, "thread_123")
 	}
@@ -182,7 +182,7 @@ func TestRuntimeRecordEvent(t *testing.T) {
 	}
 }
 
-func TestRuntimeSetControllerSession(t *testing.T) {
+func TestRuntimeSetSessionID(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	rt, err := NewRuntime(tmpDir)
@@ -191,11 +191,11 @@ func TestRuntimeSetControllerSession(t *testing.T) {
 	}
 
 	sessionID := "sess_test123"
-	rt.SetControllerSession(sessionID)
+	rt.SetSessionID(sessionID)
 
 	state := rt.GetState()
-	if state.ControllerSession != sessionID {
-		t.Errorf("ControllerSession = %s, want %s", state.ControllerSession, sessionID)
+	if state.SessionID != sessionID {
+		t.Errorf("SessionID = %s, want %s", state.SessionID, sessionID)
 	}
 }
 
@@ -209,7 +209,7 @@ func TestRuntimePersistence(t *testing.T) {
 	}
 
 	rt1.RecordEvent("evt1")
-	rt1.SetControllerSession("sess_test")
+	rt1.SetSessionID("sess_test")
 	if err := rt1.Pause(); err != nil {
 		t.Fatalf("Pause() error = %v", err)
 	}
@@ -225,8 +225,8 @@ func TestRuntimePersistence(t *testing.T) {
 		t.Errorf("Loaded EventsProcessed = %d, want 1", state.EventsProcessed)
 	}
 
-	if state.ControllerSession != "sess_test" {
-		t.Errorf("Loaded ControllerSession = %s, want 'sess_test'", state.ControllerSession)
+	if state.SessionID != "sess_test" {
+		t.Errorf("Loaded SessionID = %s, want 'sess_test'", state.SessionID)
 	}
 
 	if state.State != RuntimeStatePaused {
@@ -247,7 +247,7 @@ func TestHandleStatus(t *testing.T) {
 	}
 
 	rt.RecordEvent("evt1")
-	rt.SetControllerSession("sess_test")
+	rt.SetSessionID("sess_test")
 
 	result, rpcErr := rt.HandleStatus(nil)
 	if rpcErr != nil {
@@ -267,8 +267,8 @@ func TestHandleStatus(t *testing.T) {
 		t.Errorf("Status EventsProcessed = %d, want 1", resp.EventsProcessed)
 	}
 
-	if resp.ControllerSession != "sess_test" {
-		t.Errorf("Status ControllerSession = %s, want 'sess_test'", resp.ControllerSession)
+	if resp.SessionID != "sess_test" {
+		t.Errorf("Status SessionID = %s, want 'sess_test'", resp.SessionID)
 	}
 
 	if resp.LastEventAt.IsZero() {
@@ -609,8 +609,8 @@ func TestHandleThreadStart(t *testing.T) {
 
 	// Verify session was set
 	state := rt.GetState()
-	if state.ControllerSession != resp.SessionID {
-		t.Errorf("ControllerSession = %s, want %s", state.ControllerSession, resp.SessionID)
+	if state.SessionID != resp.SessionID {
+		t.Errorf("SessionID = %s, want %s", state.SessionID, resp.SessionID)
 	}
 
 	// Test with params
@@ -742,8 +742,8 @@ func TestHandleTurnStart_DefaultSessionWhenThreadIDMissing(t *testing.T) {
 	if _, rpcErr := rt.HandleTurnStart(params); rpcErr != nil {
 		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
 	}
-	if got := rt.GetState().ControllerSession; got != "main" {
-		t.Fatalf("ControllerSession after turn/start = %q, want %q", got, "main")
+	if got := rt.GetState().SessionID; got != "main" {
+		t.Fatalf("SessionID after turn/start = %q, want %q", got, "main")
 	}
 }
 

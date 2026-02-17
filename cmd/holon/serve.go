@@ -49,12 +49,12 @@ var (
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Run proactive event-driven controller",
-	Long: `Run an event-driven proactive controller loop.
+	Short: "Run proactive event-driven agent loop",
+	Long: `Run an event-driven proactive agent loop.
 
 The command reads event JSON (one object per line) from stdin by default,
-normalizes events into an internal envelope, writes controller logs, and
-forwards each event to a persistent controller skill session.
+normalizes events into an internal envelope, writes runtime logs, and
+forwards each event to a persistent agent session.
 
 Webhook Mode:
 When --webhook-port is specified, serve runs an HTTP server on that port
@@ -150,15 +150,15 @@ for local development and testing.`,
 			}
 			warmCtx, cancel := context.WithTimeout(parentCtx, serveControllerWarmupTimeout)
 			defer cancel()
-			holonlog.Info("warming controller runtime", "ref", warmRef, "timeout", serveControllerWarmupTimeout.String())
+			holonlog.Info("warming serve runtime", "ref", warmRef, "timeout", serveControllerWarmupTimeout.String())
 			if err := handler.ensureControllerLocked(warmCtx, warmRef); err != nil {
 				if serveWarmupBestEffort {
-					holonlog.Warn("failed to warm controller runtime; continuing without pre-warmed controller", "ref", warmRef, "error", err)
+					holonlog.Warn("failed to warm serve runtime; continuing without pre-warm", "ref", warmRef, "error", err)
 					return nil
 				}
-				return fmt.Errorf("failed to warm controller runtime: %w", err)
+				return fmt.Errorf("failed to warm serve runtime: %w", err)
 			}
-			holonlog.Info("controller runtime ready; idle waiting for triggers")
+			holonlog.Info("serve runtime ready; idle waiting for triggers")
 			return nil
 		}
 
@@ -1093,7 +1093,7 @@ func (h *cliControllerHandler) buildInputDir(ref string) (string, error) {
 
 	workflow := map[string]any{
 		"trigger": map[string]any{
-			"goal_hint": "Persistent controller runtime. Receive events via HOLON_CONTROLLER_RPC_SOCKET and decide actions autonomously using available skills.",
+			"goal_hint": "Persistent serve runtime. Receive events via HOLON_RUNTIME_RPC_SOCKET and decide actions autonomously using available skills.",
 			"ref":       ref,
 		},
 	}
@@ -1124,9 +1124,9 @@ func (h *cliControllerHandler) writeControllerSpecAndPrompts(inputDir string) er
 	specContent := `version: "v1"
 kind: Holon
 metadata:
-  name: "github-controller-session"
+  name: "github-agent-session"
 goal:
-  description: "Run as a persistent GitHub controller. Receive events via HOLON_CONTROLLER_RPC_SOCKET and decide actions autonomously using available skills."
+  description: "Run as a persistent GitHub agent session. Receive events via HOLON_RUNTIME_RPC_SOCKET and decide actions autonomously using available skills."
 output:
   artifacts:
     - path: "manifest.json"
@@ -1163,7 +1163,7 @@ func (h *cliControllerHandler) controllerPrompts() (string, string, error) {
 const defaultControllerRuntimeSystemPrompt = `
 ### HOLON SERVE CONTRACT V1
 
-You are running as a persistent controller inside Holon.
+You are running as a persistent autonomous agent inside Holon.
 
 Rules of physics:
 1. Workspace root is HOLON_WORKSPACE_DIR.
@@ -1183,16 +1183,16 @@ Rules of physics:
 `
 
 const defaultControllerRuntimeUserPrompt = `
-Controller runtime contract:
-1. Role identity is HOLON_CONTROLLER_ROLE.
+Serve runtime contract:
+1. Role identity is HOLON_RUNTIME_ROLE.
 2. Agent home root is HOLON_AGENT_HOME.
 3. Workspace root is HOLON_WORKSPACE_DIR.
 4. Persist project checkout mapping in HOLON_WORKSPACE_INDEX_PATH (repo -> local path under workspace root).
 5. Reuse existing checkout when repo is already indexed; otherwise clone/fetch as needed.
-6. Receive event RPC requests from HOLON_CONTROLLER_RPC_SOCKET.
+6. Receive event RPC requests from HOLON_RUNTIME_RPC_SOCKET.
 7. For each request, execute autonomously and return a terminal status with optional summary message.
-8. Session metadata path is HOLON_CONTROLLER_SESSION_STATE_PATH.
-9. Goal state path is HOLON_CONTROLLER_GOAL_STATE_PATH.
+8. Session metadata path is HOLON_RUNTIME_SESSION_STATE_PATH.
+9. Goal state path is HOLON_RUNTIME_GOAL_STATE_PATH.
 10. Process events continuously, keep role boundaries strict, and produce concise action-oriented outcomes.
 `
 
@@ -1272,29 +1272,29 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	// Keep controller state paths derived from ContainerStateDir so runtime
 	// paths remain consistent with the /root-scoped container layout.
 	env := map[string]string{
-		"HOLON_AGENT_SESSION_MODE":            "serve",
-		"HOLON_AGENT_HOME":                    docker.ContainerAgentHome,
-		"HOLON_WORKSPACE_DIR":                 docker.ContainerWorkspaceDir,
-		"HOLON_WORKSPACE_INDEX_PATH":          filepath.Join(docker.ContainerStateDir, "workspace-index.json"),
-		"HOLON_INPUT_DIR":                     docker.ContainerInputDir,
-		"HOLON_OUTPUT_DIR":                    docker.ContainerOutputDir,
-		"GITHUB_OUTPUT_DIR":                   docker.ContainerOutputDir,
-		"GITHUB_CONTEXT_DIR":                  filepath.Join(docker.ContainerOutputDir, "github-context"),
-		"HOLON_STATE_DIR":                     docker.ContainerStateDir,
-		"CLAUDE_CONFIG_DIR":                   filepath.Join(docker.ContainerStateDir, "claude-config"),
-		"HOLON_CONTROLLER_ROLE":               h.controllerRoleLabel,
-		"HOLON_CONTROLLER_RPC_SOCKET":         filepath.Join(docker.ContainerAgentHome, "run", "agent.sock"),
-		"HOLON_CONTROLLER_SESSION_STATE_PATH": filepath.Join(docker.ContainerStateDir, "controller-session.json"),
-		"HOLON_CONTROLLER_GOAL_STATE_PATH":    filepath.Join(docker.ContainerStateDir, "goal-state.json"),
+		"HOLON_AGENT_SESSION_MODE":         "serve",
+		"HOLON_AGENT_HOME":                 docker.ContainerAgentHome,
+		"HOLON_WORKSPACE_DIR":              docker.ContainerWorkspaceDir,
+		"HOLON_WORKSPACE_INDEX_PATH":       filepath.Join(docker.ContainerStateDir, "workspace-index.json"),
+		"HOLON_INPUT_DIR":                  docker.ContainerInputDir,
+		"HOLON_OUTPUT_DIR":                 docker.ContainerOutputDir,
+		"GITHUB_OUTPUT_DIR":                docker.ContainerOutputDir,
+		"GITHUB_CONTEXT_DIR":               filepath.Join(docker.ContainerOutputDir, "github-context"),
+		"HOLON_STATE_DIR":                  docker.ContainerStateDir,
+		"CLAUDE_CONFIG_DIR":                filepath.Join(docker.ContainerStateDir, "claude-config"),
+		"HOLON_RUNTIME_ROLE":               h.controllerRoleLabel,
+		"HOLON_RUNTIME_RPC_SOCKET":         filepath.Join(docker.ContainerAgentHome, "run", "agent.sock"),
+		"HOLON_RUNTIME_SESSION_STATE_PATH": filepath.Join(docker.ContainerStateDir, "controller-session.json"),
+		"HOLON_RUNTIME_GOAL_STATE_PATH":    filepath.Join(docker.ContainerStateDir, "goal-state.json"),
 	}
 	for k, v := range resolveServeRuntimeEnv(ctx) {
 		env[k] = v
 	}
 	if sessionID := h.readSessionID(); sessionID != "" {
-		env["HOLON_CONTROLLER_SESSION_ID"] = sessionID
+		env["HOLON_RUNTIME_SESSION_ID"] = sessionID
 	}
 
-	session, err := h.sessionRunner.Start(ctx, ControllerSessionConfig{
+	session, err := h.sessionRunner.Start(ctx, RuntimeSessionConfig{
 		Workspace:             h.controllerWorkspace,
 		InputPath:             inputDir,
 		OutputPath:            outputDir,
@@ -1661,7 +1661,7 @@ func postEventRPC(ctx context.Context, client *http.Client, sessionKey string, e
 	if err != nil {
 		return controllerRPCEventResponse{}, fmt.Errorf("failed to marshal controller rpc request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/v1/controller/events", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/v1/runtime/events", bytes.NewReader(body))
 	if err != nil {
 		return controllerRPCEventResponse{}, fmt.Errorf("failed to create controller rpc request: %w", err)
 	}
@@ -1733,7 +1733,7 @@ let raw="";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data",(c)=>raw+=c);
 process.stdin.on("end",()=>{
-  const req=http.request({socketPath:"/root/run/agent.sock",path:"/v1/controller/events",method:"POST",headers:{"Content-Type":"application/json"}},(res)=>{
+  const req=http.request({socketPath:"/root/run/agent.sock",path:"/v1/runtime/events",method:"POST",headers:{"Content-Type":"application/json"}},(res)=>{
     let out=""; res.setEncoding("utf8");
     res.on("data",(c)=>out+=c);
     res.on("end",()=>{ process.stdout.write(out); process.exit(res.statusCode===200?0:3); });
@@ -2093,11 +2093,11 @@ func init() {
 	serveCmd.Flags().StringVar(&serveAgentHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
 	serveCmd.Flags().StringVar(&serveSessionID, "session", "main", "Default serve session/thread id to load/create on startup")
 	serveCmd.Flags().BoolVar(&serveNoDefaultSession, "no-default-session", false, "Disable default session/thread creation on startup (debugging)")
-	serveCmd.Flags().BoolVar(&serveLazyController, "lazy-controller", false, "Do not eagerly start controller runtime on startup (debugging)")
-	serveCmd.Flags().DurationVar(&serveControllerWarmupTimeout, "controller-warmup-timeout", 2*time.Minute, "Timeout for eagerly warming the controller runtime on startup (0 disables warmup)")
-	serveCmd.Flags().BoolVar(&serveWarmupBestEffort, "controller-warmup-best-effort", false, "Continue serving even if controller warmup fails (debugging)")
+	serveCmd.Flags().BoolVar(&serveLazyController, "lazy-runtime", false, "Do not eagerly start serve runtime on startup (debugging)")
+	serveCmd.Flags().DurationVar(&serveControllerWarmupTimeout, "runtime-warmup-timeout", 2*time.Minute, "Timeout for eagerly warming the serve runtime on startup (0 disables warmup)")
+	serveCmd.Flags().BoolVar(&serveWarmupBestEffort, "runtime-warmup-best-effort", false, "Continue serving even if runtime warmup fails (debugging)")
 	serveCmd.Flags().IntVar(&serveMaxEvents, "max-events", 0, "Stop after processing N events (0 = unlimited, not supported in webhook mode)")
-	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without starting the controller runtime session")
+	serveCmd.Flags().BoolVar(&serveDryRun, "dry-run", false, "Log forwarded events without starting the serve runtime session")
 	serveCmd.Flags().DurationVar(&serveTickInterval, "tick-interval", 0, "Emit timer.tick events periodically (e.g. 5m)")
 	serveCmd.Flags().StringVar(&serveLogLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	serveCmd.Flags().StringVar(&serveRuntimeMode, "runtime-mode", "prod", "Runtime mode: prod (default), dev (mount local agent dist)")

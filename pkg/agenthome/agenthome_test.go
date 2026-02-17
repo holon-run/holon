@@ -105,11 +105,11 @@ func TestEnsureLayout(t *testing.T) {
 	}
 }
 
-func TestEnsureLayoutWithOptions_TemplateRunDefault(t *testing.T) {
+func TestEnsureLayoutWithOptions_TemplateDefault(t *testing.T) {
 	td := t.TempDir()
 	home := filepath.Join(td, "agent-home")
 
-	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateRunDefault}); err != nil {
+	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateDefault}); err != nil {
 		t.Fatalf("ensure layout with run template: %v", err)
 	}
 
@@ -118,15 +118,15 @@ func TestEnsureLayoutWithOptions_TemplateRunDefault(t *testing.T) {
 		t.Fatalf("read ROLE.md: %v", err)
 	}
 	if !strings.Contains(string(roleData), "ROLE: EXECUTOR") {
-		t.Fatalf("expected run-default ROLE.md content, got: %s", string(roleData))
+		t.Fatalf("expected default ROLE.md content, got: %s", string(roleData))
 	}
 }
 
-func TestEnsureLayoutWithOptions_TemplateSolveGitHub(t *testing.T) {
+func TestEnsureLayoutWithOptions_TemplateGitHubSolver(t *testing.T) {
 	td := t.TempDir()
 	home := filepath.Join(td, "agent-home")
 
-	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateSolveGitHub}); err != nil {
+	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateGitHubSolver}); err != nil {
 		t.Fatalf("ensure layout with solve template: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestEnsureLayoutWithOptions_TemplateSolveGitHub(t *testing.T) {
 		t.Fatalf("read ROLE.md: %v", err)
 	}
 	if !strings.Contains(string(roleData), "ROLE: GITHUB_SOLVER") {
-		t.Fatalf("expected solve-github ROLE.md content, got: %s", string(roleData))
+		t.Fatalf("expected github-solver ROLE.md content, got: %s", string(roleData))
 	}
 }
 
@@ -143,13 +143,13 @@ func TestEnsureLayoutWithOptions_ForceOverwritesPersonaFiles(t *testing.T) {
 	td := t.TempDir()
 	home := filepath.Join(td, "agent-home")
 
-	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateRunDefault}); err != nil {
+	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateDefault}); err != nil {
 		t.Fatalf("initial ensure layout: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "ROLE.md"), []byte("custom role"), 0o644); err != nil {
 		t.Fatalf("write ROLE.md: %v", err)
 	}
-	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateServeController, Force: true}); err != nil {
+	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateAutonomous, Force: true}); err != nil {
 		t.Fatalf("ensure layout with force: %v", err)
 	}
 
@@ -157,8 +157,8 @@ func TestEnsureLayoutWithOptions_ForceOverwritesPersonaFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read ROLE.md: %v", err)
 	}
-	if !strings.Contains(string(roleData), "persistent PM controller") {
-		t.Fatalf("expected force overwrite with serve-controller content, got: %s", string(roleData))
+	if !strings.Contains(string(roleData), "persistent autonomous PM agent") {
+		t.Fatalf("expected force overwrite with autonomous content, got: %s", string(roleData))
 	}
 }
 

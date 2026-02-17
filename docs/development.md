@@ -125,7 +125,7 @@ Use `holon agent …` to inspect and manage agent bundles/aliases:
 - `holon agent list`
 - `holon agent remove <alias>`
 - `holon agent info default`
-- `holon agent init --template <run-default|solve-github|serve-controller> [--force]`
+- `holon agent init --template <default|github-solver|autonomous> [--force]`
 
 `holon agent init` templates are init-time only. Runtime prompts do not inline persona file bodies from `AGENTS.md/ROLE.md/IDENTITY.md/SOUL.md`; the agent reads them from `HOLON_AGENT_HOME`.
 

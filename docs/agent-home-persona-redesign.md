@@ -13,9 +13,9 @@ Current `holon agent init` persona files are too thin and inconsistent:
 1. Unify persona file naming to `AGENTS.md`
 2. Keep `AGENTS.md` as canonical and add `CLAUDE.md` as a compatibility redirect
 3. Upgrade built-in templates into actionable role playbooks for:
-   - `run-default`
-   - `solve-github`
-   - `serve-controller`
+   - `default`
+   - `github-solver`
+   - `autonomous`
 4. Keep runtime behavior aligned with agent-home model:
    - Holon contract explains file responsibilities
    - Persona files are read/written by agent directly from `HOLON_AGENT_HOME`
@@ -50,15 +50,15 @@ Each built-in template should include:
 - Quality bar and failure handling
 - Role-specific workflow details
 
-#### run-default
+#### default
 
 Focuses on one-off execution with deterministic outputs and strict verification.
 
-#### solve-github
+#### github-solver
 
 Focuses on issue/PR solving workflow: context collection, patching discipline, review feedback handling.
 
-#### serve-controller
+#### autonomous
 
 Focuses on long-lived event-driven operation, continuity, and anti-drift behavior.
 
@@ -101,4 +101,3 @@ The contract should reference `AGENTS.md` (not `AGENT.md`) and reinforce that pe
 3. Built-in templates contain operationally useful instructions
 4. `go test ./pkg/agenthome ./cmd/holon` passes
 5. Repo docs consistently describe `AGENTS.md` as canonical
-

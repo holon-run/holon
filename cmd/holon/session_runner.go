@@ -12,9 +12,9 @@ import (
 	"github.com/holon-run/holon/pkg/runtime/docker"
 )
 
-// SessionRunner launches and manages a long-running controller session.
+// SessionRunner launches and manages a long-running serve runtime session.
 type SessionRunner interface {
-	Start(ctx context.Context, cfg ControllerSessionConfig) (*docker.SessionHandle, error)
+	Start(ctx context.Context, cfg RuntimeSessionConfig) (*docker.SessionHandle, error)
 	Wait(ctx context.Context, handle *docker.SessionHandle) error
 	Stop(ctx context.Context, handle *docker.SessionHandle) error
 }
@@ -25,8 +25,8 @@ type sessionRuntime interface {
 	StopSession(ctx context.Context, handle *docker.SessionHandle) error
 }
 
-// ControllerSessionConfig defines runtime config for serve controller sessions.
-type ControllerSessionConfig struct {
+// RuntimeSessionConfig defines runtime config for serve runtime sessions.
+type RuntimeSessionConfig struct {
 	Workspace             string
 	InputPath             string
 	OutputPath            string
@@ -47,9 +47,9 @@ func newDockerSessionRunner(runtime sessionRuntime) SessionRunner {
 	return &dockerSessionRunner{runtime: runtime}
 }
 
-func (r *dockerSessionRunner) Start(ctx context.Context, cfg ControllerSessionConfig) (*docker.SessionHandle, error) {
-	baseImage := resolveControllerBaseImage(cfg.Workspace)
-	agentBundle, err := resolveControllerAgentBundle(ctx, cfg.Workspace)
+func (r *dockerSessionRunner) Start(ctx context.Context, cfg RuntimeSessionConfig) (*docker.SessionHandle, error) {
+	baseImage := resolveServeBaseImage(cfg.Workspace)
+	agentBundle, err := resolveServeAgentBundle(ctx, cfg.Workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -85,16 +85,16 @@ func (r *dockerSessionRunner) Stop(ctx context.Context, handle *docker.SessionHa
 	return r.runtime.StopSession(ctx, handle)
 }
 
-func resolveControllerBaseImage(workspace string) string {
+func resolveServeBaseImage(workspace string) string {
 	result := image.Detect(workspace)
 	if result.Image == "" {
 		return image.DefaultImage
 	}
-	holonlog.Info("controller base image", "image", result.Image, "rationale", result.Rationale)
+	holonlog.Info("serve base image", "image", result.Image, "rationale", result.Rationale)
 	return result.Image
 }
 
-func resolveControllerAgentBundle(ctx context.Context, workspace string) (string, error) {
+func resolveServeAgentBundle(ctx context.Context, workspace string) (string, error) {
 	channel := strings.TrimSpace(os.Getenv("HOLON_AGENT_CHANNEL"))
 	if channel == "" {
 		channel = "latest"
@@ -112,7 +112,7 @@ func resolveControllerAgentBundle(ctx context.Context, workspace string) (string
 	}, workspace)
 }
 
-func defaultControllerWorkspace() (string, error) {
+func defaultServeWorkspace() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve user home directory: %w", err)
