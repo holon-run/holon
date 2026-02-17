@@ -88,8 +88,8 @@ export GITHUB_TOKEN=...   # or use gh auth login
 holon solve https://github.com/owner/repo/issues/123
 # or: holon solve owner/repo#456
 
-# With state persistence for skill caches
-holon solve owner/repo#123 --state-dir .holon/state
+# With persistent state under a specific agent home
+holon solve owner/repo#123 --agent-home ~/.holon/agents/solver
 ```
 
 Behavior:
@@ -131,16 +131,16 @@ holon run --goal "Add unit tests for user service"
 
 ## State Persistence
 
-Skills can cache data across runs using the optional `--state-dir` flag:
+Skills can cache data across runs via the agent home state directory (`<agent-home>/state`):
 
 ```bash
-# Enable state persistence
-holon run --goal "Analyze project trends" --state-dir .holon/state
+# Enable state persistence by reusing a stable agent home
+holon run --goal "Analyze project trends" --agent-home ~/.holon/agents/analysis
 
 # Combine with actions/cache in CI for persistent caches
 ```
 
-The state directory persists across runs. Skills should write caches using runtime-provided paths/variables rather than hardcoded container locations.
+The state directory persists across runs as `<agent-home>/state`. Skills should write caches using runtime-provided paths/variables rather than hardcoded container locations.
 
 **See** `docs/state-mount.md` for complete documentation.
 
