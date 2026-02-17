@@ -3,7 +3,7 @@ name: Publish Holon Base Image
 on:
   push:
     tags:
-      - 'base-v*.*.*'
+      - 'holon-base-v*.*.*'
   workflow_dispatch:
     inputs:
       version:
@@ -28,14 +28,14 @@ jobs:
           set -euo pipefail
 
           VERSION=""
-          if [[ "${GITHUB_REF:-}" =~ ^refs/tags/base-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          if [[ "${GITHUB_REF:-}" =~ ^refs/tags/holon-base-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             VERSION="${BASH_REMATCH[1]}"
           elif [[ -n "${{ github.event.inputs.version }}" ]]; then
             VERSION="${{ github.event.inputs.version }}"
           fi
 
           if [[ -z "${VERSION}" ]]; then
-            echo "Failed to resolve version. Use tag base-vX.Y.Z or workflow_dispatch input." >&2
+            echo "Failed to resolve version. Use tag holon-base-vX.Y.Z or workflow_dispatch input." >&2
             exit 1
           fi
 
