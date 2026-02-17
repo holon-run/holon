@@ -175,6 +175,26 @@ func TestEnsureLayoutWithOptions_InvalidTemplate(t *testing.T) {
 	}
 }
 
+func TestLoadPersonaTemplate_FromAssets(t *testing.T) {
+	for _, template := range AvailableTemplates() {
+		template := template
+		t.Run(template, func(t *testing.T) {
+			files, err := loadPersonaTemplate(template)
+			if err != nil {
+				t.Fatalf("loadPersonaTemplate(%q): %v", template, err)
+			}
+			for _, name := range []string{"AGENTS.md", "CLAUDE.md", "ROLE.md", "IDENTITY.md", "SOUL.md"} {
+				if _, ok := files[name]; !ok {
+					t.Fatalf("template %q missing %s", template, name)
+				}
+			}
+			if !strings.Contains(files["CLAUDE.md"], "AGENTS.md") {
+				t.Fatalf("template %q CLAUDE.md should point to AGENTS.md", template)
+			}
+		})
+	}
+}
+
 func TestEnsureLayout_InvalidExistingConfig(t *testing.T) {
 	td := t.TempDir()
 	home := filepath.Join(td, "agent-home")

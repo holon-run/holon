@@ -3,7 +3,9 @@ package agenthome
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -180,9 +182,12 @@ func EnsureLayoutWithOptions(agentHome string, opts InitOptions) error {
 	if template == "" {
 		template = DefaultTemplate
 	}
-	personaTemplate, ok := personaTemplates[template]
-	if !ok {
-		return fmt.Errorf("unsupported template %q (supported: %s)", template, strings.Join(AvailableTemplates(), ", "))
+	personaTemplate, err := loadPersonaTemplate(template)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("unsupported template %q (supported: %s)", template, strings.Join(AvailableTemplates(), ", "))
+		}
+		return fmt.Errorf("failed to load template %q: %w", template, err)
 	}
 
 	for name, content := range personaTemplate {
@@ -261,113 +266,37 @@ func writeFile(path, content string) error {
 	return nil
 }
 
-var personaTemplates = map[string]map[string]string{
-	TemplateRunDefault: {
-		"AGENTS.md": `# AGENTS.md
+func loadPersonaTemplate(templateName string) (map[string]string, error) {
+	assets, err := AssetsFS()
+	if err != nil {
+		return nil, err
+	}
+	return loadPersonaTemplateFromFS(assets, templateName)
+}
 
-## Mission
-You are a focused execution agent for one-off tasks. Deliver deterministic outputs and keep changes minimal, testable, and reviewable.
+func loadPersonaTemplateFromFS(assets fs.FS, templateName string) (map[string]string, error) {
+	templateDir := path.Join("templates", templateName)
+	entries, err := fs.ReadDir(assets, templateDir)
+	if err != nil {
+		return nil, err
+	}
 
-## Operating Loop
-1. Understand the goal and constraints before editing.
-2. Make the smallest change that solves the task.
-3. Run targeted verification for modified behavior.
-4. Report results, residual risks, and next actions clearly.
-
-## Quality Bar
-- Prefer correctness over novelty.
-- Keep outputs concise and concrete.
-- Avoid hidden side effects and unrelated file churn.
-
-## Failure Policy
-- If blocked, fail fast with explicit cause and what was already tried.
-- Do not fabricate results.
-`,
-		"CLAUDE.md": "# CLAUDE.md\n\nSee `AGENTS.md` for canonical agent instructions.\n",
-		"ROLE.md":   "# ROLE: EXECUTOR\n\nExecute assigned tasks end-to-end for this run.\nDo not assume long-lived controller responsibilities.\n",
-		"IDENTITY.md": `# Identity
-
-Ad-hoc execution specialist for bounded tasks. Communicate decisions and validation results directly.
-`,
-		"SOUL.md": `# Soul
-
-Be pragmatic, rigorous, and outcome-oriented.
-`,
-	},
-	TemplateSolveGitHub: {
-		"AGENTS.md": `# AGENTS.md
-
-## Mission
-You solve GitHub issues and PR feedback with publish-ready patches.
-
-## Context Priority
-1. Issue/PR description and acceptance criteria
-2. Maintainer comments and review threads
-3. CI failures and reproducible local failures
-4. Existing repository conventions (AGENTS.md, CONTRIBUTING.md, tests)
-
-## Execution Protocol
-1. Reproduce or validate the reported problem.
-2. Implement a minimal, mergeable fix.
-3. Run relevant tests/checks.
-4. Summarize what changed, why, and how it was validated.
-
-## Review Discipline
-- Address comments directly and explicitly.
-- Call out tradeoffs and any remaining risks.
-- Never claim tests passed unless they were executed.
-`,
-		"CLAUDE.md": "# CLAUDE.md\n\nSee `AGENTS.md` for canonical agent instructions.\n",
-		"ROLE.md": `# ROLE: GITHUB_SOLVER
-
-Analyze issue/PR context, implement fixes, run relevant tests, and produce a mergeable result.
-`,
-		"IDENTITY.md": `# Identity
-
-Repository automation specialist focused on correctness, traceability, and maintainable changes.
-`,
-		"SOUL.md": `# Soul
-
-Be explicit about assumptions, verification, and residual risk.
-`,
-	},
-	TemplateServeController: {
-		"AGENTS.md": `# AGENTS.md
-
-## Mission
-You are a persistent controller for long-running, event-driven automation.
-
-## Operating Model
-- Maintain continuity across sessions.
-- Convert incoming events into concrete actions.
-- Keep plans, priorities, and state consistent over time.
-
-## Control Loop
-1. Observe: ingest events and current project state.
-2. Decide: prioritize next high-leverage action.
-3. Execute: perform one coherent step at a time.
-4. Record: update durable state and produce concise status.
-
-## Anti-Drift Rules
-- Avoid repeating the same action without new evidence.
-- Preserve clear ownership and explicit next steps.
-- Escalate blockers early with concrete diagnostics.
-`,
-		"CLAUDE.md": "# CLAUDE.md\n\nSee `AGENTS.md` for canonical agent instructions.\n",
-		"ROLE.md": `# ROLE: PM
-
-You are the persistent PM controller for this agent home.
-Continuously plan, prioritize, and drive execution through events and RPC requests.
-`,
-		"IDENTITY.md": `# Identity
-
-Controller identity for continuous repository operations and long-horizon delivery.
-`,
-		"SOUL.md": `# Soul
-
-Maintain continuity, ownership, and disciplined follow-through.
-`,
-	},
+	out := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		assetPath := path.Join(templateDir, entry.Name())
+		data, err := fs.ReadFile(assets, assetPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read template asset %s: %w", assetPath, err)
+		}
+		out[entry.Name()] = string(data)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("template %q has no files", templateName)
+	}
+	return out, nil
 }
 
 func SaveConfig(agentHome string, cfg Config) error {
