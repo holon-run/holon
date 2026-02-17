@@ -652,13 +652,16 @@ func (r *Runtime) buildComposedImageFromBundle(ctx context.Context, baseImage, b
 	}
 
 	installScript := tools.BuildInstallScript()
+	installScriptName := "holon-install-tools.sh"
+	installScriptPath := filepath.Join(tmpDir, installScriptName)
+	if err := os.WriteFile(installScriptPath, []byte(installScript), 0o755); err != nil {
+		return "", fmt.Errorf("failed to stage install script: %w", err)
+	}
 	dockerfile := fmt.Sprintf(`
 FROM %s
 SHELL ["/bin/sh", "-c"]
 
-RUN cat <<'HOLON_INSTALL' >/tmp/holon-install-tools.sh
-%s
-HOLON_INSTALL
+COPY %s /tmp/holon-install-tools.sh
 RUN /bin/sh /tmp/holon-install-tools.sh && rm -f /tmp/holon-install-tools.sh
 
 COPY %s /holon/agent-bundle.tar.gz
@@ -668,7 +671,7 @@ ENV PATH="/holon/agent/node_modules/.bin:${PATH}"
 ENV IS_SANDBOX=1
 WORKDIR %s
 ENTRYPOINT ["/holon/agent/bin/agent"]
-`, baseImage, installScript, bundleName, ContainerWorkspaceDir)
+`, baseImage, installScriptName, bundleName, ContainerWorkspaceDir)
 
 	dfPath := filepath.Join(tmpDir, "Dockerfile")
 	if err := os.WriteFile(dfPath, []byte(dockerfile), 0644); err != nil {

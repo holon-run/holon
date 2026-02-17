@@ -1,8 +1,8 @@
 package tools
 
-// RequiredCommands defines the built-in runtime tools contract.
+// requiredCommands defines the built-in runtime tools contract.
 // The list is internal to Holon and intentionally has no user override.
-var RequiredCommands = []string{
+var requiredCommands = []string{
 	"bash",
 	"git",
 	"curl",
@@ -27,7 +27,7 @@ var RequiredCommands = []string{
 
 // RequiredCommandsList returns a copy so callers cannot mutate the contract.
 func RequiredCommandsList() []string {
-	out := make([]string, len(RequiredCommands))
-	copy(out, RequiredCommands)
+	out := make([]string, len(requiredCommands))
+	copy(out, requiredCommands)
 	return out
 }

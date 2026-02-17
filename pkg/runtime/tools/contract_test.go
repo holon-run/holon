@@ -25,7 +25,7 @@ func TestBuildInstallScriptContainsVerification(t *testing.T) {
 	if !strings.Contains(script, "Missing required runtime tools:") {
 		t.Fatal("script should fail-fast with missing tools message")
 	}
-	for _, cmd := range RequiredCommands {
+	for _, cmd := range RequiredCommandsList() {
 		needle := "command -v " + cmd
 		if !strings.Contains(script, needle) {
 			t.Fatalf("script missing command check for %s", cmd)

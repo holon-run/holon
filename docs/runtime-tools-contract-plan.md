@@ -27,15 +27,15 @@
 
 新增文档：`docs/runtime-tools-contract.md`（后续实现时补齐）
 
-契约只维护一个 `required` 列表（v1）：
+契约只维护一个 `required` 列表（v1，按命令名定义）：
 
-- `bash`, `git`, `curl`, `jq`, `ripgrep`, `findutils`, `sed`, `awk`, `xargs`
+- `bash`, `git`, `curl`, `jq`, `rg`, `find`, `sed`, `awk`, `xargs`
 - `tar`, `gzip`, `unzip`
 - `python3`
 - `node`, `npm`
 - `gh`
 - `yq`
-- `fd`（Ubuntu 实际包为 `fdfind`，需要别名）
+- `fd`（Ubuntu 实际包通常为 `fdfind`，需做命令别名）
 - `make`, `patch`
 
 ## 5. 配置模型
