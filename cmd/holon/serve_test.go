@@ -53,6 +53,49 @@ func TestIsSafeDockerContainerID(t *testing.T) {
 	}
 }
 
+func TestRemoveStaleControllerSocket(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	socketPath := filepath.Join(td, "agent.sock")
+	if err := os.WriteFile(socketPath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+	if err := removeStaleControllerSocket(socketPath); err != nil {
+		t.Fatalf("removeStaleControllerSocket() error: %v", err)
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket path should be removed, stat err=%v", err)
+	}
+}
+
+func TestRemoveStaleControllerSocket_MissingFile(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "agent.sock")
+	if err := removeStaleControllerSocket(socketPath); err != nil {
+		t.Fatalf("removeStaleControllerSocket() missing file error: %v", err)
+	}
+}
+
+func TestRemoveStaleControllerSocket_ActiveSocket(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(shortTempDir(t, "sock-active"), "agent.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	if err := removeStaleControllerSocket(socketPath); err != nil {
+		t.Fatalf("removeStaleControllerSocket() active socket error: %v", err)
+	}
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("active socket should remain: %v", err)
+	}
+}
+
 func TestResolveControllerRPCReadyTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -367,8 +410,8 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if mockRunner.lastConfig.Workspace != h.controllerWorkspace {
 		t.Fatalf("Workspace = %q, want %q", mockRunner.lastConfig.Workspace, h.controllerWorkspace)
 	}
-	if got := mockRunner.lastConfig.Env["HOLON_RUNTIME_RPC_SOCKET"]; got != "/root/run/agent.sock" {
-		t.Fatalf("HOLON_RUNTIME_RPC_SOCKET = %q, want /root/run/agent.sock", got)
+	if got := mockRunner.lastConfig.Env["HOLON_RUNTIME_RPC_SOCKET"]; got != controllerRPCSocketPathInContainer {
+		t.Fatalf("HOLON_RUNTIME_RPC_SOCKET = %q, want %q", got, controllerRPCSocketPathInContainer)
 	}
 	if len(rpcServer.events) < 1 {
 		t.Fatalf("expected at least one forwarded event")
