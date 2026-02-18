@@ -151,7 +151,7 @@ for local development and testing.`,
 			warmCtx, cancel := context.WithTimeout(parentCtx, serveControllerWarmupTimeout)
 			defer cancel()
 			holonlog.Info("warming serve runtime", "ref", warmRef, "timeout", serveControllerWarmupTimeout.String())
-			if err := handler.ensureControllerLocked(warmCtx, warmRef); err != nil {
+			if err := handler.ensureController(warmCtx, warmRef); err != nil {
 				if serveWarmupBestEffort {
 					holonlog.Warn("failed to warm serve runtime; continuing without pre-warm", "ref", warmRef, "error", err)
 					return nil
@@ -191,21 +191,24 @@ for local development and testing.`,
 				return fmt.Errorf("at least one repo is required when --tick-interval is enabled (set subscriptions.github.repos in agent.yaml or pass --repo)")
 			}
 
-			if serveTickInterval > 0 && len(repos) > 0 {
-				for _, repo := range repos {
-					startServeTickEmitter(tickCtx, serveTickInterval, repo, func(ctx context.Context, env serve.EventEnvelope) error {
-						return subMgr.InjectEvent(ctx, env)
-					})
-				}
+			logDefaultSessionStatus()
+			// Warm controller before exposing subscription RPC endpoints to avoid
+			// accepting interactive turns while startup may still fail hard.
+			if err := warmController(); err != nil {
+				return err
 			}
 
 			// Start subscription manager
 			if err := subMgr.Start(tickCtx); err != nil {
 				return fmt.Errorf("failed to start subscription manager: %w", err)
 			}
-			logDefaultSessionStatus()
-			if err := warmController(); err != nil {
-				return err
+
+			if serveTickInterval > 0 && len(repos) > 0 {
+				for _, repo := range repos {
+					startServeTickEmitter(tickCtx, serveTickInterval, repo, func(ctx context.Context, env serve.EventEnvelope) error {
+						return subMgr.InjectEvent(ctx, env)
+					})
+				}
 			}
 			status := subMgr.Status()
 			startup := buildServeStartupDiagnostics(serveStartupDiagnosticsInput{
@@ -1229,6 +1232,12 @@ func (h *cliControllerHandler) readSessionID() string {
 
 func (h *cliControllerHandler) sessionStatePath() string {
 	return filepath.Join(h.stateDir, "controller-state", "controller-session.json")
+}
+
+func (h *cliControllerHandler) ensureController(ctx context.Context, ref string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.ensureControllerLocked(ctx, ref)
 }
 
 func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref string) error {
