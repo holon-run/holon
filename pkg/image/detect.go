@@ -14,7 +14,7 @@ import (
 )
 
 // DefaultImage is the fallback Docker image used when no language signal is detected.
-const DefaultImage = "ghcr.io/holon-run/holon-base:0.2.0"
+const DefaultImage = "ghcr.io/holon-run/holon-base:0.3.0"
 
 // Detector detects the appropriate Docker base image for a workspace.
 type Detector struct {

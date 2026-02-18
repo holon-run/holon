@@ -25,7 +25,7 @@ The following commands are required in runtime containers:
 - `gzip`
 - `unzip`
 - `python3`
-- `node` (20+)
+- `node` (24+)
 - `npm`
 - `gh`
 - `yq`
