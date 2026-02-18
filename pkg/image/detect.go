@@ -14,7 +14,7 @@ import (
 )
 
 // DefaultImage is the fallback Docker image used when no language signal is detected.
-const DefaultImage = "golang:1.22"
+const DefaultImage = "ghcr.io/holon-run/holon-base:0.1.0"
 
 // Detector detects the appropriate Docker base image for a workspace.
 type Detector struct {
@@ -82,7 +82,7 @@ func (d *Detector) Detect() *DetectResult {
 		return &DetectResult{
 			Image:     DefaultImage,
 			Signals:   []string{},
-			Rationale: "No language signals detected, using default Go image",
+			Rationale: "No language signals detected, using default base image",
 		}
 	}
 
@@ -146,7 +146,7 @@ func (d *Detector) DetectDebug() *DebugDetectResult {
 		result = &DetectResult{
 			Image:     DefaultImage,
 			Signals:   []string{},
-			Rationale: "No language signals detected, using default Go image",
+			Rationale: "No language signals detected, using default base image",
 		}
 	} else {
 		bestSignal := d.scoreSignals(signals)

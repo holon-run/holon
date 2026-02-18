@@ -1,8 +1,6 @@
 package docker
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -11,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -24,6 +21,7 @@ import (
 	"github.com/holon-run/holon/pkg/git"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/logs/redact"
+	"github.com/holon-run/holon/pkg/runtime/tools"
 	"github.com/holon-run/holon/pkg/skills"
 	"github.com/holon-run/holon/pkg/workspace"
 )
@@ -647,68 +645,24 @@ func (r *Runtime) buildComposedImageFromBundle(ctx context.Context, baseImage, b
 		return "", fmt.Errorf("failed to hash agent bundle: %w", err)
 	}
 
-	runtimeVersion, err := readBundleRuntimeVersion(bundlePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read bundle manifest: %w", err)
-	}
-	nodeMajor := nodeMajorVersion(runtimeVersion)
-
 	bundleName := "agent-bundle.tar.gz"
 	bundleDest := filepath.Join(tmpDir, bundleName)
 	if err := copyFile(bundlePath, bundleDest); err != nil {
 		return "", fmt.Errorf("failed to stage agent bundle: %w", err)
 	}
 
+	installScript := tools.BuildInstallScript()
+	installScriptName := "holon-install-tools.sh"
+	installScriptPath := filepath.Join(tmpDir, installScriptName)
+	if err := os.WriteFile(installScriptPath, []byte(installScript), 0o755); err != nil {
+		return "", fmt.Errorf("failed to stage install script: %w", err)
+	}
 	dockerfile := fmt.Sprintf(`
 FROM %s
-ARG NODE_MAJOR=%s
 SHELL ["/bin/sh", "-c"]
 
-RUN set -e; \
-    if command -v apt-get >/dev/null 2>&1; then \
-        apt-get update; \
-        apt-get install -y --no-install-recommends curl ca-certificates git gnupg; \
-        curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
-        apt-get install -y --no-install-recommends nodejs; \
-        rm -rf /var/lib/apt/lists/*; \
-        if ! command -v gh >/dev/null 2>&1; then \
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg; \
-            chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg; \
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list >/dev/null; \
-            apt-get update; \
-            apt-get install -y --no-install-recommends gh || true; \
-            rm -rf /var/lib/apt/lists/*; \
-        fi; \
-        if command -v gh >/dev/null 2>&1; then \
-            gh extension install cli/gh-webhook 2>/dev/null || true; \
-        fi; \
-    elif command -v dnf >/dev/null 2>&1; then \
-        dnf install -y curl ca-certificates git; \
-        curl -fsSL https://rpm.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
-        dnf install -y nodejs; \
-        if ! command -v gh >/dev/null 2>&1; then \
-            curl -o /etc/yum.repos.d/gh-cli.repo https://cli.github.com/packages/rpm/gh-cli.repo; \
-            dnf install -y gh || true; \
-        fi; \
-        if command -v gh >/dev/null 2>&1; then \
-            gh extension install cli/gh-webhook 2>/dev/null || true; \
-        fi; \
-    elif command -v yum >/dev/null 2>&1; then \
-        yum install -y curl ca-certificates git; \
-        curl -fsSL https://rpm.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
-        yum install -y nodejs; \
-        if ! command -v gh >/dev/null 2>&1; then \
-            yum install -y yum-utils; \
-            yum-config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo; \
-            yum install -y gh || true; \
-        fi; \
-        if command -v gh >/dev/null 2>&1; then \
-            gh extension install cli/gh-webhook 2>/dev/null || true; \
-        fi; \
-    else \
-        echo "Unsupported base image: no apt-get, dnf, or yum detected." >&2; \
-        exit 1; \
-    fi
+COPY %s /tmp/holon-install-tools.sh
+RUN /bin/sh /tmp/holon-install-tools.sh && rm -f /tmp/holon-install-tools.sh
 
 COPY %s /holon/agent-bundle.tar.gz
 RUN mkdir -p /holon/agent && tar -xzf /holon/agent-bundle.tar.gz -C /holon/agent
@@ -717,7 +671,7 @@ ENV PATH="/holon/agent/node_modules/.bin:${PATH}"
 ENV IS_SANDBOX=1
 WORKDIR %s
 ENTRYPOINT ["/holon/agent/bin/agent"]
-`, baseImage, nodeMajor, bundleName, ContainerWorkspaceDir)
+`, baseImage, installScriptName, bundleName, ContainerWorkspaceDir)
 
 	dfPath := filepath.Join(tmpDir, "Dockerfile")
 	if err := os.WriteFile(dfPath, []byte(dockerfile), 0644); err != nil {
@@ -750,68 +704,6 @@ func isImageAlreadyExistsBuildError(output string) bool {
 	text := strings.ToLower(output)
 	return strings.Contains(text, "already exists") &&
 		strings.Contains(text, "holon-composed-")
-}
-
-type bundleManifest struct {
-	Runtime struct {
-		Type    string `json:"type"`
-		Version string `json:"version"`
-	} `json:"runtime"`
-}
-
-func readBundleRuntimeVersion(bundlePath string) (string, error) {
-	file, err := os.Open(bundlePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	gz, err := gzip.NewReader(file)
-	if err != nil {
-		return "", err
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
-		name := strings.TrimPrefix(header.Name, "./")
-		if name != "manifest.json" {
-			continue
-		}
-		payload, err := io.ReadAll(tr)
-		if err != nil {
-			return "", err
-		}
-		var manifest bundleManifest
-		if err := json.Unmarshal(payload, &manifest); err != nil {
-			return "", err
-		}
-		return manifest.Runtime.Version, nil
-	}
-
-	return "", fmt.Errorf("manifest.json not found in bundle")
-}
-
-func nodeMajorVersion(version string) string {
-	if version == "" || version == "unknown" {
-		return "20"
-	}
-	trimmed := strings.TrimPrefix(version, "v")
-	parts := strings.Split(trimmed, ".")
-	if len(parts) == 0 {
-		return "20"
-	}
-	if _, err := strconv.Atoi(parts[0]); err != nil {
-		return "20"
-	}
-	return parts[0]
 }
 
 func hashFile(path string) (string, error) {
