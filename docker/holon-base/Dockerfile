@@ -27,8 +27,6 @@ RUN apt-get update && \
       python3 \
       python3-pip \
       python3-venv \
-      nodejs \
-      npm \
       jq \
       ripgrep \
       fd-find \
@@ -40,6 +38,12 @@ RUN apt-get update && \
       unzip \
       xz-utils \
       gh && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    chmod a+r /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends nodejs && \
     locale-gen en_US.UTF-8 && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
