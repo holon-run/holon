@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -170,14 +171,18 @@ func TestTUISmoke_RPCTurnInteractionFlow(t *testing.T) {
 	}
 
 	foundAssistant := false
-	for _, msg := range app.chatMessages {
-		if msg.Type == "assistant" {
+	for _, turnID := range app.turnOrder {
+		turn := app.turns[turnID]
+		if turn == nil {
+			continue
+		}
+		if strings.Contains(turn.AssistantText, "ack: hello smoke") {
 			foundAssistant = true
 			break
 		}
 	}
 	if !foundAssistant {
-		t.Fatalf("assistant message not found in conversation: %+v", app.chatMessages)
+		t.Fatalf("assistant message not found in turns: %+v", app.turnOrder)
 	}
 
 	streamCancel()

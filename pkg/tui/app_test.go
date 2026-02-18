@@ -82,21 +82,47 @@ func TestAppCtrlATogglesAutoRefreshWhileInputFocused(t *testing.T) {
 	}
 }
 
+func TestDrawerHotkeysWhileInputFocused(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = model.(*App)
+
+	if app.activeDrawer != drawerNone {
+		t.Fatalf("expected no active drawer before typing, got %v", app.activeDrawer)
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	app = model.(*App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	app = model.(*App)
+
+	if got := app.input.Value(); got != "al" {
+		t.Fatalf("expected input to contain typed hotkeys when focused, got %q", got)
+	}
+	if app.activeDrawer != drawerNone {
+		t.Fatalf("expected no drawer to open when typing hotkeys into focused input, got %v", app.activeDrawer)
+	}
+}
+
 func TestConversationDoesNotAutoScrollWhenUserScrolledUp(t *testing.T) {
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = model.(*App)
 
 	for i := 0; i < 24; i++ {
-		app.addAssistantMessage(strings.Repeat("line", 8))
+		turnID := "turn_" + string(rune(i+'a'))
+		app.appendTurnMessage(turnID, "main", "user", strings.Repeat("line", 8))
+		app.appendTurnMessage(turnID, "main", "assistant", strings.Repeat("reply", 8))
+		app.setTurnState(turnID, "completed")
 	}
+
 	app.focus = focusConversation
 	app.conversation.LineUp(5)
 	if app.conversation.AtBottom() {
 		t.Fatal("expected conversation to be scrolled up before new message")
 	}
 
-	app.addAssistantMessage("new message while reading history")
+	app.appendTurnMessage("turn_new", "main", "assistant", "new message while reading history")
 
 	if app.conversation.AtBottom() {
 		t.Fatal("expected conversation to stay scrolled up after new message")
@@ -139,7 +165,7 @@ func TestAppEnterStartsSend(t *testing.T) {
 	}
 }
 
-func TestAppTabSwitchesFocus(t *testing.T) {
+func TestAppTabSwitchesFocusBetweenInputAndConversation(t *testing.T) {
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = model.(*App)
@@ -156,26 +182,83 @@ func TestAppTabSwitchesFocus(t *testing.T) {
 
 	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
 	app = model.(*App)
-	if app.focus != focusActivity {
-		t.Fatalf("focus after second tab = %v, want %v", app.focus, focusActivity)
-	}
-
-	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
-	app = model.(*App)
-	if app.focus != focusLogs {
-		t.Fatalf("focus after third tab = %v, want %v", app.focus, focusLogs)
-	}
-
-	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
-	app = model.(*App)
 	if app.focus != focusInput {
-		t.Fatalf("focus after fourth tab = %v, want %v", app.focus, focusInput)
+		t.Fatalf("focus after second tab = %v, want %v", app.focus, focusInput)
 	}
 
 	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	app = model.(*App)
-	if app.focus != focusLogs {
-		t.Fatalf("focus after shift+tab = %v, want %v", app.focus, focusLogs)
+	if app.focus != focusConversation {
+		t.Fatalf("focus after shift+tab = %v, want %v", app.focus, focusConversation)
+	}
+}
+
+func TestDrawerToggleAndClose(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = model.(*App)
+
+	if app.activeDrawer != drawerNone {
+		t.Fatalf("expected no drawer initially")
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = model.(*App)
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	app = model.(*App)
+	if app.activeDrawer != drawerActivity {
+		t.Fatalf("expected activity drawer, got %v", app.activeDrawer)
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	app = model.(*App)
+	if app.activeDrawer != drawerLogs {
+		t.Fatalf("expected logs drawer, got %v", app.activeDrawer)
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(*App)
+	if app.activeDrawer != drawerNone {
+		t.Fatalf("expected drawer to close on esc")
+	}
+	if app.focus != focusInput {
+		t.Fatalf("expected focus to return to input after closing drawer, got %v", app.focus)
+	}
+}
+
+func TestDrawerBlocksInputEditing(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = model.(*App)
+
+	app.input.SetValue("seed")
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = model.(*App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	app = model.(*App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	app = model.(*App)
+
+	if got := app.input.Value(); got != "seed" {
+		t.Fatalf("expected input to remain unchanged while drawer open, got %q", got)
+	}
+}
+
+func TestDefaultViewHidesActivityAndLogsPanels(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = model.(*App)
+
+	view := app.View()
+	if strings.Contains(view, "Activity Drawer [Esc Close]") {
+		t.Fatalf("default view should not show activity drawer")
+	}
+	if strings.Contains(view, "Logs Drawer [Esc Close]") {
+		t.Fatalf("default view should not show logs drawer")
+	}
+	if !strings.Contains(view, "Conversation") {
+		t.Fatalf("default view should show conversation panel")
 	}
 }
 
@@ -186,15 +269,17 @@ func TestSystemNotificationGoesToActivity(t *testing.T) {
 	if len(app.activityEvents) != 1 {
 		t.Fatalf("activityEvents len = %d, want 1", len(app.activityEvents))
 	}
-	if len(app.chatMessages) != 0 {
-		t.Fatalf("chatMessages len = %d, want 0", len(app.chatMessages))
+	if len(app.turnOrder) != 0 {
+		t.Fatalf("turnOrder len = %d, want 0", len(app.turnOrder))
 	}
 }
 
-func TestAssistantItemCreatedGoesToConversation(t *testing.T) {
+func TestAssistantItemCreatedGoesToTurnConversation(t *testing.T) {
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	params := map[string]interface{}{
-		"item_id": "item_1",
+		"item_id":   "item_1",
+		"thread_id": "main",
+		"turn_id":   "turn_1",
 		"content": map[string]interface{}{
 			"role": "assistant",
 			"content": []interface{}{
@@ -209,14 +294,30 @@ func TestAssistantItemCreatedGoesToConversation(t *testing.T) {
 
 	app.handleNotification(StreamNotification{Method: "item/created", Params: raw})
 
-	if len(app.chatMessages) != 1 {
-		t.Fatalf("chatMessages len = %d, want 1", len(app.chatMessages))
+	turn := app.turns["turn_1"]
+	if turn == nil {
+		t.Fatalf("expected turn_1 to be created")
 	}
-	if got := app.chatMessages[0].Content; got != "hello from assistant" {
-		t.Fatalf("chat message = %q, want %q", got, "hello from assistant")
+	if got := turn.AssistantText; got != "hello from assistant" {
+		t.Fatalf("assistant message = %q, want %q", got, "hello from assistant")
 	}
 	if len(app.activityEvents) != 0 {
 		t.Fatalf("activityEvents len = %d, want 0", len(app.activityEvents))
+	}
+}
+
+func TestTurnAggregationCombinesAssistantMessages(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	app.appendTurnMessage("turn_1", "main", "user", "question")
+	app.appendTurnMessage("turn_1", "main", "assistant", "part 1")
+	app.appendTurnMessage("turn_1", "main", "assistant", "part 2")
+
+	turn := app.turns["turn_1"]
+	if turn == nil {
+		t.Fatalf("turn not found")
+	}
+	if got := turn.AssistantText; got != "part 1\npart 2" {
+		t.Fatalf("assistant aggregation = %q", got)
 	}
 }
 

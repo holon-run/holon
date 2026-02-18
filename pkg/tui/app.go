@@ -15,38 +15,39 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// App is the TUI application state
+// App is the TUI application state.
 type App struct {
-	client       *RPCClient
-	status       *StatusResponse
-	logs         []LogEntry
-	logPosition  int
-	err          error
-	connected    bool
-	lastUpdate   time.Time
-	quitting     bool
-	autoRefresh  bool
-	refreshIndex int
+	client      *RPCClient
+	status      *StatusResponse
+	logs        []LogEntry
+	logPosition int
+	err         error
+	connected   bool
+	lastUpdate  time.Time
+	quitting    bool
+	autoRefresh bool
 
-	// Chat/conversation state
-	threadID        string
-	chatMessages    []ConversationMessage
-	activityEvents  []ConversationMessage
-	sending         bool
-	sendingError    error
-	terminalW       int
-	terminalH       int
-	focus           focusArea
-	hasUnreadChat   bool
-	hasUnreadEvents bool
+	// Conversation state.
+	threadID       string
+	turns          map[string]*TurnConversation
+	turnOrder      []string
+	activityEvents []ConversationMessage
+	sending        bool
+	sendingError   error
+	terminalW      int
+	terminalH      int
+	focus          focusArea
+	activeDrawer   drawerKind
+	hasUnreadChat  bool
+	hasUnreadAct   bool
 
-	// TUI components
+	// TUI components.
 	input        textarea.Model
 	conversation viewport.Model
 	activity     viewport.Model
 	logViewport  viewport.Model
 
-	// Streaming
+	// Streaming.
 	streamCtx     context.Context
 	streamCancel  context.CancelFunc
 	streamActive  bool
@@ -61,57 +62,38 @@ type focusArea int
 const (
 	focusInput focusArea = iota
 	focusConversation
-	focusActivity
-	focusLogs
-	focusCount
+	focusDrawer
 )
 
-// ConversationMessage represents a message in the conversation timeline
+type drawerKind int
+
+const (
+	drawerNone drawerKind = iota
+	drawerActivity
+	drawerLogs
+)
+
+// ConversationMessage represents a timeline/event message.
 type ConversationMessage struct {
 	ID        string    `json:"id"`
 	Type      string    `json:"type"` // user, assistant, system, turn_lifecycle
 	Timestamp time.Time `json:"timestamp"`
 	Content   string    `json:"content"`
-	State     string    `json:"state,omitempty"` // For turn lifecycle: active, completed, interrupted
+	State     string    `json:"state,omitempty"`
 }
 
-// NewApp creates a new TUI application
-func NewApp(client *RPCClient) *App {
-	input := textarea.New()
-	input.Placeholder = "Type a message..."
-	input.Prompt = "> "
-	input.ShowLineNumbers = false
-	input.CharLimit = 0
-	input.SetHeight(3)
-	input.SetWidth(80)
-	input.Focus()
-	input.KeyMap.InsertNewline = key.NewBinding(
-		key.WithKeys("ctrl+j"),
-		key.WithHelp("ctrl+j", "newline"),
-	)
-
-	conversation := viewport.New(80, 12)
-	activity := viewport.New(80, 6)
-	logViewport := viewport.New(80, 6)
-
-	return &App{
-		client:         client,
-		logs:           make([]LogEntry, 0),
-		autoRefresh:    true,
-		chatMessages:   make([]ConversationMessage, 0),
-		activityEvents: make([]ConversationMessage, 0),
-		focus:          focusInput,
-		input:          input,
-		conversation:   conversation,
-		activity:       activity,
-		logViewport:    logViewport,
-		notifications:  make(chan StreamNotification, 128),
-		streamErrors:   make(chan error, 8),
-		streamClosed:   make(chan struct{}, 1),
-	}
+// TurnConversation groups one user turn and the assistant response.
+type TurnConversation struct {
+	TurnID        string
+	ThreadID      string
+	StartedAt     time.Time
+	UpdatedAt     time.Time
+	State         string
+	UserText      string
+	AssistantText string
 }
 
-// Styles
+// Styles.
 var (
 	titleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("cyan")).
@@ -151,7 +133,7 @@ var (
 			Bold(true)
 )
 
-// Messages
+// Messages.
 type statusRefreshMsg struct {
 	status *StatusResponse
 	err    error
@@ -186,7 +168,49 @@ type messageSentMsg struct {
 	threadID string
 }
 
-// Init initializes the application
+type pauseSuccessMsg struct {
+	err error
+}
+
+// NewApp creates a new TUI application.
+func NewApp(client *RPCClient) *App {
+	input := textarea.New()
+	input.Placeholder = "Type a message..."
+	input.Prompt = "> "
+	input.ShowLineNumbers = false
+	input.CharLimit = 0
+	input.SetHeight(3)
+	input.SetWidth(80)
+	input.Focus()
+	input.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("ctrl+j"),
+		key.WithHelp("ctrl+j", "newline"),
+	)
+
+	conversation := viewport.New(80, 16)
+	activity := viewport.New(80, 16)
+	logViewport := viewport.New(80, 16)
+
+	return &App{
+		client:         client,
+		logs:           make([]LogEntry, 0),
+		autoRefresh:    true,
+		turns:          make(map[string]*TurnConversation),
+		turnOrder:      make([]string, 0),
+		activityEvents: make([]ConversationMessage, 0),
+		focus:          focusInput,
+		activeDrawer:   drawerNone,
+		input:          input,
+		conversation:   conversation,
+		activity:       activity,
+		logViewport:    logViewport,
+		notifications:  make(chan StreamNotification, 128),
+		streamErrors:   make(chan error, 8),
+		streamClosed:   make(chan struct{}, 1),
+	}
+}
+
+// Init initializes the application.
 func (a *App) Init() tea.Cmd {
 	return tea.Batch(
 		a.refreshStatusCmd(),
@@ -196,7 +220,7 @@ func (a *App) Init() tea.Cmd {
 	)
 }
 
-// Update handles messages and updates state
+// Update handles messages and updates state.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -206,71 +230,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		keyName := msg.String()
-		switch keyName {
-		case "q", "ctrl+c":
-			a.quitting = true
-			if a.streamCancel != nil {
-				a.streamCancel()
-			}
-			return a, tea.Quit
-		case "tab":
-			return a, a.nextFocus()
-		case "shift+tab":
-			return a, a.prevFocus()
-		case "ctrl+p":
-			return a, a.sendPauseCmd()
-		case "ctrl+r":
-			return a, a.sendResumeCmd()
-		case "ctrl+l":
-			return a, tea.Batch(a.refreshStatusCmd(), a.refreshLogsCmd())
-		case "ctrl+a":
-			a.autoRefresh = !a.autoRefresh
-			if a.autoRefresh {
-				return a, a.tick()
-			}
-			return a, nil
-		case "enter":
-			if a.focus == focusInput && strings.TrimSpace(a.input.Value()) != "" && !a.sending {
-				return a, a.sendMessage()
-			}
-		case "ctrl+u":
-			if a.focus == focusInput {
-				a.input.SetValue("")
-				return a, nil
-			}
-		}
-
-		if a.focus == focusInput && !a.sending {
-			var cmd tea.Cmd
-			a.input, cmd = a.input.Update(msg)
-			return a, cmd
-		}
-
-		if a.focus == focusConversation {
-			var cmd tea.Cmd
-			a.conversation, cmd = a.conversation.Update(msg)
-			if a.conversation.AtBottom() {
-				a.hasUnreadChat = false
-			}
-			return a, cmd
-		}
-
-		if a.focus == focusActivity {
-			var cmd tea.Cmd
-			a.activity, cmd = a.activity.Update(msg)
-			if a.activity.AtBottom() {
-				a.hasUnreadEvents = false
-			}
-			return a, cmd
-		}
-
-		if a.focus == focusLogs {
-			var cmd tea.Cmd
-			a.logViewport, cmd = a.logViewport.Update(msg)
-			return a, cmd
-		}
-		return a, nil
+		return a.handleKey(msg)
 
 	case statusRefreshMsg:
 		if msg.err != nil {
@@ -299,7 +259,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		if !a.quitting && a.autoRefresh {
-			return a, tea.Batch(a.refreshStatusCmd(), a.refreshLogsCmd())
+			return a, tea.Batch(a.refreshStatusCmd(), a.refreshLogsCmd(), a.tick())
 		}
 		return a, nil
 
@@ -338,15 +298,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			a.sendingError = msg.err
 			a.addSystemMessage(fmt.Sprintf("Failed to send message: %s", msg.err))
-		} else if msg.response != nil {
+			return a, nil
+		}
+		if msg.response != nil {
 			a.input.SetValue("")
 			a.sendingError = nil
 			if msg.threadID != "" && a.threadID == "" {
 				a.threadID = msg.threadID
-				a.addSystemMessage(fmt.Sprintf("Thread started: %s", msg.threadID))
 			}
 			if msg.message != "" {
-				a.addUserMessage(msg.message)
+				threadID := firstNonEmpty(msg.threadID, a.threadID)
+				a.appendTurnMessage(msg.response.TurnID, threadID, "user", msg.message)
+				a.setTurnState(msg.response.TurnID, "active")
 			}
 		}
 		return a, nil
@@ -363,12 +326,118 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		a.quitting = true
+		if a.streamCancel != nil {
+			a.streamCancel()
+		}
+		return a, tea.Quit
+	case "ctrl+p":
+		return a, a.sendPauseCmd()
+	case "ctrl+r":
+		return a, a.sendResumeCmd()
+	case "ctrl+l":
+		return a, tea.Batch(a.refreshStatusCmd(), a.refreshLogsCmd())
+	case "ctrl+a":
+		a.autoRefresh = !a.autoRefresh
+		if a.autoRefresh {
+			return a, a.tick()
+		}
+		return a, nil
+	case "a":
+		if a.activeDrawer != drawerNone || a.focus != focusInput {
+			a.openDrawer(drawerActivity)
+			return a, nil
+		}
+	case "l":
+		if a.activeDrawer != drawerNone || a.focus != focusInput {
+			a.openDrawer(drawerLogs)
+			return a, nil
+		}
+	case "esc":
+		if a.activeDrawer != drawerNone {
+			a.closeDrawer()
+		}
+		return a, nil
+	case "tab":
+		if a.activeDrawer == drawerNone {
+			return a, a.nextFocus()
+		}
+		return a, nil
+	case "shift+tab":
+		if a.activeDrawer == drawerNone {
+			return a, a.prevFocus()
+		}
+		return a, nil
+	case "enter":
+		if a.activeDrawer == drawerNone && a.focus == focusInput && strings.TrimSpace(a.input.Value()) != "" && !a.sending {
+			return a, a.sendMessage()
+		}
+	case "ctrl+u":
+		if a.activeDrawer == drawerNone && a.focus == focusInput {
+			a.input.SetValue("")
+			return a, nil
+		}
+	}
+
+	if a.activeDrawer != drawerNone {
+		if a.activeDrawer == drawerActivity {
+			var cmd tea.Cmd
+			a.activity, cmd = a.activity.Update(msg)
+			if a.activity.AtBottom() {
+				a.hasUnreadAct = false
+			}
+			return a, cmd
+		}
+		var cmd tea.Cmd
+		a.logViewport, cmd = a.logViewport.Update(msg)
+		return a, cmd
+	}
+
+	if a.focus == focusInput && !a.sending {
+		var cmd tea.Cmd
+		a.input, cmd = a.input.Update(msg)
+		return a, cmd
+	}
+
+	if a.focus == focusConversation {
+		var cmd tea.Cmd
+		a.conversation, cmd = a.conversation.Update(msg)
+		if a.conversation.AtBottom() {
+			a.hasUnreadChat = false
+		}
+		return a, cmd
+	}
+
+	return a, nil
+}
+
+func (a *App) openDrawer(kind drawerKind) {
+	a.activeDrawer = kind
+	a.focus = focusDrawer
+	a.input.Blur()
+	if kind == drawerActivity && a.activity.AtBottom() {
+		a.hasUnreadAct = false
+	}
+}
+
+func (a *App) closeDrawer() {
+	a.activeDrawer = drawerNone
+	// Chat-first default: closing a drawer should let users type immediately.
+	a.focus = focusInput
+	_ = a.input.Focus()
+	if a.conversation.AtBottom() {
+		a.hasUnreadChat = false
+	}
+}
+
 func (a *App) handleNotification(notif StreamNotification) {
 	switch notif.Method {
 	case "thread/started":
 		var params struct {
 			ThreadID string `json:"thread_id"`
-			Type     string `json:"type"`
 			State    string `json:"state"`
 		}
 		if err := json.Unmarshal(notif.Params, &params); err == nil {
@@ -384,10 +453,18 @@ func (a *App) handleNotification(notif StreamNotification) {
 
 	case "turn/started":
 		var params struct {
-			TurnID   string `json:"turn_id"`
-			ThreadID string `json:"thread_id,omitempty"`
+			TurnID    string `json:"turn_id"`
+			ThreadID  string `json:"thread_id,omitempty"`
+			StartedAt string `json:"started_at,omitempty"`
 		}
 		if err := json.Unmarshal(notif.Params, &params); err == nil {
+			if params.TurnID != "" {
+				a.ensureTurn(params.TurnID, params.ThreadID)
+				a.setTurnState(params.TurnID, "active")
+				if ts, ok := parseTimestamp(params.StartedAt); ok {
+					a.setTurnStartedAt(params.TurnID, ts)
+				}
+			}
 			a.addTurnLifecycleMessage(fmt.Sprintf("Turn %s started", params.TurnID), "active")
 		}
 
@@ -395,95 +472,174 @@ func (a *App) handleNotification(notif StreamNotification) {
 		var params struct {
 			TurnID   string `json:"turn_id"`
 			ThreadID string `json:"thread_id,omitempty"`
+			Message  string `json:"message,omitempty"`
 		}
 		if err := json.Unmarshal(notif.Params, &params); err == nil {
+			if params.TurnID != "" {
+				a.ensureTurn(params.TurnID, params.ThreadID)
+				a.setTurnState(params.TurnID, "completed")
+				if strings.TrimSpace(params.Message) != "" {
+					a.appendAssistantIfEmpty(params.TurnID, params.Message)
+				}
+			}
 			a.addTurnLifecycleMessage(fmt.Sprintf("Turn %s completed", params.TurnID), "completed")
 		}
 
 	case "turn/interrupted":
 		var params struct {
-			TurnID  string `json:"turn_id"`
-			Message string `json:"message,omitempty"`
+			TurnID   string `json:"turn_id"`
+			ThreadID string `json:"thread_id,omitempty"`
+			Message  string `json:"message,omitempty"`
 		}
 		if err := json.Unmarshal(notif.Params, &params); err == nil {
-			msg := fmt.Sprintf("Turn %s interrupted", params.TurnID)
-			if params.Message != "" {
-				msg += fmt.Sprintf(": %s", params.Message)
+			if params.TurnID != "" {
+				a.ensureTurn(params.TurnID, params.ThreadID)
+				a.setTurnState(params.TurnID, "interrupted")
 			}
-			a.addSystemMessage(msg)
+			msg := fmt.Sprintf("Turn %s interrupted", params.TurnID)
+			if strings.TrimSpace(params.Message) != "" {
+				msg += ": " + strings.TrimSpace(params.Message)
+			}
+			a.addTurnLifecycleMessage(msg, "interrupted")
 		}
 
 	case "item/created":
 		var params struct {
-			ItemID   string                 `json:"item_id"`
-			ThreadID string                 `json:"thread_id,omitempty"`
-			TurnID   string                 `json:"turn_id,omitempty"`
-			Content  map[string]interface{} `json:"content,omitempty"`
+			ItemID   string `json:"item_id"`
+			ThreadID string `json:"thread_id,omitempty"`
+			TurnID   string `json:"turn_id,omitempty"`
+			Content  struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"content"`
 		}
 		if err := json.Unmarshal(notif.Params, &params); err == nil {
-			a.handleItemCreated(params)
+			if params.Content.Role == "" {
+				return
+			}
+			var chunks []string
+			for _, part := range params.Content.Content {
+				text := strings.TrimSpace(part.Text)
+				if text != "" {
+					chunks = append(chunks, text)
+				}
+			}
+			if len(chunks) == 0 {
+				return
+			}
+			a.appendTurnMessage(params.TurnID, params.ThreadID, params.Content.Role, strings.Join(chunks, "\n"))
 		}
 	}
 }
 
-func (a *App) handleItemCreated(params struct {
-	ItemID   string                 `json:"item_id"`
-	ThreadID string                 `json:"thread_id,omitempty"`
-	TurnID   string                 `json:"turn_id,omitempty"`
-	Content  map[string]interface{} `json:"content,omitempty"`
-}) {
-	role, _ := params.Content["role"].(string)
-	if role == "" {
-		return
+func (a *App) ensureTurn(turnID, threadID string) *TurnConversation {
+	// Bubble Tea runs model Update() serially. Turn state is mutated only from
+	// this model thread, so explicit locking is unnecessary under current design.
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		turnID = fmt.Sprintf("turn_unknown_%d", time.Now().UnixNano())
 	}
-
-	contentParts, ok := params.Content["content"].([]interface{})
-	if !ok || len(contentParts) == 0 {
-		return
-	}
-
-	var textParts []string
-	for _, part := range contentParts {
-		partMap, ok := part.(map[string]interface{})
-		if !ok {
-			continue
+	if turn, ok := a.turns[turnID]; ok {
+		if strings.TrimSpace(threadID) != "" {
+			turn.ThreadID = strings.TrimSpace(threadID)
 		}
-		partText, _ := partMap["text"].(string)
-		if partText != "" {
-			textParts = append(textParts, partText)
-		}
+		turn.UpdatedAt = time.Now()
+		return turn
 	}
+	turn := &TurnConversation{
+		TurnID:    turnID,
+		ThreadID:  strings.TrimSpace(threadID),
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		State:     "active",
+	}
+	a.turns[turnID] = turn
+	a.turnOrder = append(a.turnOrder, turnID)
+	return turn
+}
 
-	content := strings.Join(textParts, "\n")
-	if content == "" {
+func (a *App) setTurnStartedAt(turnID string, startedAt time.Time) {
+	turn := a.ensureTurn(turnID, "")
+	turn.StartedAt = startedAt
+	turn.UpdatedAt = time.Now()
+	a.updateConversationViewport(false)
+}
+
+func (a *App) setTurnState(turnID, state string) {
+	if strings.TrimSpace(turnID) == "" {
 		return
 	}
+	turn := a.ensureTurn(turnID, "")
+	turn.State = strings.TrimSpace(state)
+	turn.UpdatedAt = time.Now()
+	a.updateConversationViewport(true)
+}
 
+func (a *App) appendAssistantIfEmpty(turnID, content string) {
+	turn := a.ensureTurn(turnID, "")
+	if strings.TrimSpace(turn.AssistantText) != "" {
+		return
+	}
+	turn.AssistantText = strings.TrimSpace(content)
+	turn.UpdatedAt = time.Now()
+	a.updateConversationViewport(true)
+}
+
+func (a *App) appendTurnMessage(turnID, threadID, role, content string) {
+	role = strings.TrimSpace(role)
+	content = strings.TrimSpace(content)
+	// Precondition: role and content are required for message items.
+	if role == "" || content == "" {
+		return
+	}
+	turn := a.ensureTurn(turnID, threadID)
 	if role == "user" {
-		a.addUserMessage(content)
+		turn.UserText = appendText(turn.UserText, content)
 	} else if role == "assistant" {
-		a.addAssistantMessage(content)
+		turn.AssistantText = appendText(turn.AssistantText, content)
 	}
-}
-
-func (a *App) addUserMessage(content string) {
-	a.chatMessages = append(a.chatMessages, ConversationMessage{
-		ID:        fmt.Sprintf("msg_%d", time.Now().UnixNano()),
-		Type:      "user",
-		Timestamp: time.Now(),
-		Content:   content,
-	})
+	turn.UpdatedAt = time.Now()
 	a.updateConversationViewport(true)
 }
 
-func (a *App) addAssistantMessage(content string) {
-	a.chatMessages = append(a.chatMessages, ConversationMessage{
-		ID:        fmt.Sprintf("msg_%d", time.Now().UnixNano()),
-		Type:      "assistant",
-		Timestamp: time.Now(),
-		Content:   content,
-	})
-	a.updateConversationViewport(true)
+func appendText(existing, incoming string) string {
+	existingTrimmed := strings.TrimSpace(existing)
+	incomingTrimmed := strings.TrimSpace(incoming)
+	if incomingTrimmed == "" {
+		return existingTrimmed
+	}
+	if existingTrimmed == "" {
+		return incomingTrimmed
+	}
+	if existingTrimmed == incomingTrimmed {
+		return existingTrimmed
+	}
+	return existingTrimmed + "\n" + incomingTrimmed
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func parseTimestamp(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 func (a *App) addSystemMessage(content string) {
@@ -507,7 +663,7 @@ func (a *App) addTurnLifecycleMessage(content, state string) {
 	a.updateActivityViewport(true)
 }
 
-// View renders the UI
+// View renders the UI.
 func (a *App) View() string {
 	if a.quitting {
 		return "Goodbye!\n"
@@ -516,63 +672,61 @@ func (a *App) View() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Holon Serve TUI"))
 	b.WriteString("\n")
+	b.WriteString(a.renderStatusBar())
+	b.WriteString("\n")
 
-	if a.connected {
-		connStatus := fmt.Sprintf("Connected: %s | Last Update: %s",
-			a.client.rpcURL,
-			a.lastUpdate.Format("15:04:05"))
-		b.WriteString(statusStyle.Render(connStatus))
-	} else if a.err != nil {
-		b.WriteString(errorStyle.Render(fmt.Sprintf("Connection Error: %s", a.err.Error())))
-	} else {
-		b.WriteString(statusStyle.Render("Connecting..."))
-	}
-	b.WriteString("\n")
-	if a.status != nil {
-		b.WriteString(a.renderStatusPanel())
+	if a.activeDrawer == drawerNone {
+		b.WriteString(a.renderConversationPanel())
 		b.WriteString("\n")
+		b.WriteString(a.renderHelp())
+		b.WriteString("\n")
+		b.WriteString(a.renderInputBox())
+		return b.String()
 	}
-	b.WriteString(a.renderConversationPanel())
-	b.WriteString("\n")
-	b.WriteString(a.renderActivityPanel())
-	b.WriteString("\n")
-	b.WriteString(a.renderLogPanel())
+
+	b.WriteString(a.renderDrawerPanel())
 	b.WriteString("\n")
 	b.WriteString(a.renderHelp())
-	b.WriteString("\n")
-	b.WriteString(a.renderInputBox())
-
 	return b.String()
 }
 
-func (a *App) renderStatusPanel() string {
-	var b strings.Builder
+func (a *App) renderStatusBar() string {
+	if !a.connected {
+		if a.err != nil {
+			return errorStyle.Render(fmt.Sprintf("Connection Error: %s", a.err.Error()))
+		}
+		return statusStyle.Render("Connecting...")
+	}
 
-	b.WriteString(titleStyle.Render("Runtime Status"))
-	b.WriteString("\n")
-
-	stateLabel := a.status.State
+	state := "unknown"
+	if a.status != nil {
+		state = a.status.State
+	}
 	stateStyle := statusStyle
-	if a.status.State == "paused" {
+	if state == "paused" {
 		stateStyle = pausedStyle
 	}
-	b.WriteString(stateStyle.Render(fmt.Sprintf("State: %s", stateLabel)))
-	b.WriteString("\n")
 
-	b.WriteString(statusStyle.Render(fmt.Sprintf("Events Processed: %d", a.status.EventsProcessed)))
-	b.WriteString("\n")
-
-	if !a.status.LastEventAt.IsZero() {
-		b.WriteString(statusStyle.Render(fmt.Sprintf("Last Event: %s",
-			a.status.LastEventAt.Format("2006-01-02 15:04:05"))))
-		b.WriteString("\n")
+	threadLabel := firstNonEmpty(a.threadID, "-")
+	activityLabel := "A"
+	if a.hasUnreadAct {
+		activityLabel = "A*"
+	}
+	chatLabel := "C"
+	if a.hasUnreadChat {
+		chatLabel = "C*"
 	}
 
-	if a.status.SessionID != "" {
-		b.WriteString(statusStyle.Render(fmt.Sprintf("Thread: %s", a.status.SessionID)))
-		b.WriteString("\n")
-	}
-	return borderStyle.Width(a.panelWidth()).Render(b.String())
+	statusLine := fmt.Sprintf("%s | Runtime: %s | Thread: %s | Last: %s | Panels: [%s] [L] [%s]",
+		a.client.rpcURL,
+		state,
+		threadLabel,
+		a.lastUpdate.Format("15:04:05"),
+		activityLabel,
+		chatLabel,
+	)
+
+	return stateStyle.Render(statusLine)
 }
 
 func (a *App) renderConversationPanel() string {
@@ -587,25 +741,19 @@ func (a *App) renderConversationPanel() string {
 	return borderStyle.Width(a.panelWidth()).Height(a.conversation.Height + 3).Render(panel)
 }
 
-func (a *App) renderActivityPanel() string {
-	title := "Activity"
-	if a.focus == focusActivity {
-		title += " [Focus]"
+func (a *App) renderDrawerPanel() string {
+	if a.activeDrawer == drawerLogs {
+		title := "Logs Drawer [Esc Close]"
+		panel := titleStyle.Render(title) + "\n" + a.logViewport.View()
+		return borderStyle.Width(a.panelWidth()).Height(a.logViewport.Height + 3).Render(panel)
 	}
-	if a.hasUnreadEvents && a.focus != focusActivity {
+
+	title := "Activity Drawer [Esc Close]"
+	if a.hasUnreadAct {
 		title += " [New]"
 	}
 	panel := titleStyle.Render(title) + "\n" + a.activity.View()
 	return borderStyle.Width(a.panelWidth()).Height(a.activity.Height + 3).Render(panel)
-}
-
-func (a *App) renderLogPanel() string {
-	title := "Diagnostics (server logs)"
-	if a.focus == focusLogs {
-		title += " [Focus]"
-	}
-	panel := titleStyle.Render(title) + "\n" + a.logViewport.View()
-	return borderStyle.Width(a.panelWidth()).Height(a.logViewport.Height + 3).Render(panel)
 }
 
 func (a *App) renderHelp() string {
@@ -616,8 +764,12 @@ func (a *App) renderHelp() string {
 		inputState = " [Send Failed]"
 	}
 
-	help := fmt.Sprintf("Keys: [Tab] Focus | [Enter] Send%s | [Ctrl+J] Newline | [Ctrl+U] Clear | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit",
-		inputState)
+	if a.activeDrawer != drawerNone {
+		help := "Keys: [Esc] Close Drawer | [A] Activity | [L] Logs | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh | [q] Quit\nScroll: [↑/↓] Line | [PgUp/PgDn] Page"
+		return helpStyle.Render(help)
+	}
+
+	help := fmt.Sprintf("Keys: [Tab] Focus | [Enter] Send%s | [Ctrl+J] Newline | [Ctrl+U] Clear | [A/L] Drawer (conversation focus) | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit", inputState)
 	return helpStyle.Render(help)
 }
 
@@ -636,7 +788,7 @@ func (a *App) renderInputBox() string {
 	return borderStyle.Width(a.panelWidth()).Height(a.input.Height() + 3).Render(content)
 }
 
-// Commands
+// Commands.
 func (a *App) refreshStatusCmd() tea.Cmd {
 	status, err := a.client.GetStatus()
 	return func() tea.Msg {
@@ -655,7 +807,7 @@ func (a *App) refreshLogsCmd() tea.Cmd {
 }
 
 func (a *App) tick() tea.Cmd {
-	return tea.Tick(time.Second*2, func(t time.Time) tea.Msg {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -739,7 +891,6 @@ func (a *App) sendMessage() tea.Cmd {
 	}
 
 	a.sending = true
-
 	threadID := a.threadID
 	if threadID == "" {
 		return func() tea.Msg {
@@ -768,32 +919,18 @@ func (a *App) doSendMessage(message, threadID string) tea.Cmd {
 	}
 }
 
-type pauseSuccessMsg struct {
-	err error
-}
-
 func (a *App) nextFocus() tea.Cmd {
-	a.focus = (a.focus + 1) % focusCount
-	return a.applyFocus()
+	if a.focus == focusInput {
+		a.focus = focusConversation
+		a.input.Blur()
+		return nil
+	}
+	a.focus = focusInput
+	return a.input.Focus()
 }
 
 func (a *App) prevFocus() tea.Cmd {
-	a.focus = (a.focus + focusCount - 1) % focusCount
-	return a.applyFocus()
-}
-
-func (a *App) applyFocus() tea.Cmd {
-	if a.focus == focusInput {
-		return a.input.Focus()
-	}
-	a.input.Blur()
-	if a.focus == focusConversation && a.conversation.AtBottom() {
-		a.hasUnreadChat = false
-	}
-	if a.focus == focusActivity && a.activity.AtBottom() {
-		a.hasUnreadEvents = false
-	}
-	return nil
+	return a.nextFocus()
 }
 
 func (a *App) panelWidth() int {
@@ -811,40 +948,26 @@ func (a *App) resize() {
 	if width < 1 {
 		width = 1
 	}
-	conversationHeight := 12
-	activityHeight := 6
-	logHeight := 6
+
 	inputHeight := 3
+	panelHeight := 16
 	if a.terminalH > 0 {
-		usable := a.terminalH - 18
-		if usable > 26 {
-			conversationHeight = usable - 12
-			activityHeight = 6
-			logHeight = 6
-		} else if usable > 16 {
-			conversationHeight = usable - 10
-			activityHeight = 5
-			logHeight = 5
+		usable := a.terminalH - 14
+		if usable < 8 {
+			usable = 8
 		}
-	}
-	if conversationHeight < 8 {
-		conversationHeight = 8
-	}
-	if activityHeight < 4 {
-		activityHeight = 4
-	}
-	if logHeight < 4 {
-		logHeight = 4
+		panelHeight = usable
 	}
 
 	a.input.SetWidth(width)
 	a.input.SetHeight(inputHeight)
 	a.conversation.Width = width
-	a.conversation.Height = conversationHeight
+	a.conversation.Height = panelHeight
 	a.activity.Width = width
-	a.activity.Height = activityHeight
+	a.activity.Height = panelHeight
 	a.logViewport.Width = width
-	a.logViewport.Height = logHeight
+	a.logViewport.Height = panelHeight
+
 	a.updateConversationViewport(false)
 	a.updateActivityViewport(false)
 	a.updateLogViewport()
@@ -853,14 +976,12 @@ func (a *App) resize() {
 func (a *App) updateConversationViewport(autoFollow bool) {
 	wasAtBottom := a.conversation.AtBottom()
 	a.conversation.SetContent(a.conversationContent())
-	if autoFollow && (wasAtBottom || a.focus == focusInput) {
+	if autoFollow && (wasAtBottom || a.focus == focusInput || a.activeDrawer != drawerNone) {
 		a.conversation.GotoBottom()
 	}
-
 	if autoFollow && !a.conversation.AtBottom() {
 		a.hasUnreadChat = true
 	}
-
 	if a.conversation.AtBottom() {
 		a.hasUnreadChat = false
 	}
@@ -869,16 +990,16 @@ func (a *App) updateConversationViewport(autoFollow bool) {
 func (a *App) updateActivityViewport(autoFollow bool) {
 	wasAtBottom := a.activity.AtBottom()
 	a.activity.SetContent(a.activityContent())
-	if autoFollow && (wasAtBottom || a.focus == focusInput) {
+	if autoFollow && wasAtBottom {
 		a.activity.GotoBottom()
 	}
 
-	if autoFollow && !a.activity.AtBottom() {
-		a.hasUnreadEvents = true
+	if a.activeDrawer == drawerActivity && a.activity.AtBottom() {
+		a.hasUnreadAct = false
+		return
 	}
-
-	if a.activity.AtBottom() {
-		a.hasUnreadEvents = false
+	if autoFollow {
+		a.hasUnreadAct = true
 	}
 }
 
@@ -891,22 +1012,62 @@ func (a *App) updateLogViewport() {
 }
 
 func (a *App) conversationContent() string {
-	if len(a.chatMessages) == 0 {
+	if len(a.turnOrder) == 0 {
 		return statusStyle.Render("No messages yet.")
 	}
 
-	var lines []string
-	for _, msg := range a.chatMessages {
-		timestamp := msg.Timestamp.Format("15:04:05")
-		roleLabel, roleStyle := a.messageLabel(msg)
-		header := fmt.Sprintf("%s %s", timestamp, roleStyle.Render(roleLabel))
-		lines = append(lines, header)
-		for _, contentLine := range strings.Split(msg.Content, "\n") {
-			lines = append(lines, "  "+contentLine)
+	lines := make([]string, 0, len(a.turnOrder)*8)
+	for _, turnID := range a.turnOrder {
+		turn := a.turns[turnID]
+		// Defensive guard: turnOrder and turns map are maintained together by
+		// ensureTurn(); nil indicates corrupted state from future refactors.
+		if turn == nil {
+			continue
+		}
+		timestamp := turn.StartedAt
+		if timestamp.IsZero() {
+			timestamp = turn.UpdatedAt
+		}
+		if timestamp.IsZero() {
+			timestamp = time.Now()
+		}
+
+		lines = append(lines, fmt.Sprintf("%s %s", timestamp.Format("15:04:05"), systemMsgStyle.Render(turnStateLabel(turn.State))))
+		if strings.TrimSpace(turn.UserText) != "" {
+			lines = append(lines, userMsgStyle.Render("You"))
+			lines = append(lines, renderIndentedContent(turn.UserText)...)
+		}
+		if strings.TrimSpace(turn.AssistantText) != "" {
+			lines = append(lines, assistantMsgStyle.Render("Agent"))
+			lines = append(lines, renderIndentedContent(turn.AssistantText)...)
+		} else if turn.State == "active" {
+			lines = append(lines, assistantMsgStyle.Render("Agent"))
+			lines = append(lines, "  ...")
 		}
 		lines = append(lines, "")
 	}
+
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func turnStateLabel(state string) string {
+	switch strings.TrimSpace(state) {
+	case "completed":
+		return "[Turn Completed]"
+	case "interrupted":
+		return "[Turn Interrupted]"
+	default:
+		return "[Turn Running]"
+	}
+}
+
+func renderIndentedContent(content string) []string {
+	parts := strings.Split(content, "\n")
+	lines := make([]string, 0, len(parts))
+	for _, part := range parts {
+		lines = append(lines, "  "+part)
+	}
+	return lines
 }
 
 func (a *App) activityContent() string {
@@ -914,7 +1075,7 @@ func (a *App) activityContent() string {
 		return statusStyle.Render("No activity yet.")
 	}
 
-	var lines []string
+	lines := make([]string, 0, len(a.activityEvents)*3)
 	for _, msg := range a.activityEvents {
 		timestamp := msg.Timestamp.Format("15:04:05")
 		roleLabel, roleStyle := a.messageLabel(msg)
@@ -930,16 +1091,15 @@ func (a *App) activityContent() string {
 
 func (a *App) messageLabel(msg ConversationMessage) (string, lipgloss.Style) {
 	switch msg.Type {
-	case "user":
-		return "[You]", userMsgStyle
-	case "assistant":
-		return "[Assistant]", assistantMsgStyle
 	case "turn_lifecycle":
 		if msg.State == "completed" {
 			return "[Turn Done]", systemMsgStyle
 		}
 		if msg.State == "active" {
 			return "[Turn Running]", systemMsgStyle
+		}
+		if msg.State == "interrupted" {
+			return "[Turn Interrupted]", systemMsgStyle
 		}
 		return "[Turn]", systemMsgStyle
 	default:
@@ -957,7 +1117,7 @@ func (a *App) logContent() string {
 		timestamp := entry.Time.Format("15:04:05")
 		level := strings.ToUpper(entry.Level)
 		levelLabel := "[" + level + "]"
-		if len(level) == 0 {
+		if level == "" {
 			levelLabel = "[INFO]"
 		}
 		lines = append(lines, timestamp+" "+padRight(levelLabel, 8)+" "+entry.Message)
