@@ -468,6 +468,63 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	mockRunner.waitCh <- nil
 }
 
+func TestClose_RemovesControllerSocketWithoutSession(t *testing.T) {
+	t.Parallel()
+
+	agentHome := shortTempDir(t, "holon-close-no-session")
+	socketPath := filepath.Join(agentHome, "run", "agent.sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale socket marker: %v", err)
+	}
+
+	h := &cliControllerHandler{
+		controllerSocketPath: socketPath,
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket path should be removed on close, stat err=%v", err)
+	}
+}
+
+func TestClose_StopsControllerAndRemovesSocket(t *testing.T) {
+	t.Parallel()
+
+	agentHome := shortTempDir(t, "holon-close-session")
+	socketPath := filepath.Join(agentHome, "run", "agent.sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale socket marker: %v", err)
+	}
+
+	mockRunner := &mockSessionRunner{
+		waitCh:       make(chan error, 1),
+		waitObserved: make(chan struct{}, 1),
+	}
+	h := &cliControllerHandler{
+		sessionRunner:        mockRunner,
+		controllerSession:    &docker.SessionHandle{ContainerID: "session-1"},
+		controllerDone:       make(chan error, 1),
+		controllerSocketPath: socketPath,
+	}
+
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if mockRunner.stopCount != 1 {
+		t.Fatalf("stopCount = %d, want 1", mockRunner.stopCount)
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket path should be removed on close, stat err=%v", err)
+	}
+}
+
 func TestInferControllerRole(t *testing.T) {
 	t.Parallel()
 

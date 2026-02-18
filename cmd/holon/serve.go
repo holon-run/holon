@@ -2102,23 +2102,24 @@ func (h *cliControllerHandler) Close() error {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.controllerSession == nil {
-		return nil
-	}
-	if h.sessionRunner == nil {
-		h.controllerSession = nil
-		h.controllerDone = nil
-		return nil
-	}
-
-	holonlog.Info("stopping controller runtime")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := h.sessionRunner.Stop(ctx, h.controllerSession); err != nil {
-		return err
+	socketPath := strings.TrimSpace(h.controllerSocketPath)
+	if h.controllerSession != nil && h.sessionRunner != nil {
+		holonlog.Info("stopping controller runtime")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := h.sessionRunner.Stop(ctx, h.controllerSession); err != nil {
+			return err
+		}
 	}
 	h.controllerSession = nil
 	h.controllerDone = nil
+	h.controllerHTTPClient = nil
+	h.controllerSocketPath = ""
+	if socketPath != "" {
+		if err := removeStaleControllerSocket(socketPath); err != nil {
+			holonlog.Warn("failed to clean controller socket path on close", "path", socketPath, "error", err)
+		}
+	}
 	return nil
 }
 
