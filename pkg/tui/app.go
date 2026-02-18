@@ -425,7 +425,9 @@ func (a *App) openDrawer(kind drawerKind) {
 
 func (a *App) closeDrawer() {
 	a.activeDrawer = drawerNone
-	a.focus = focusConversation
+	// Chat-first default: closing a drawer should let users type immediately.
+	a.focus = focusInput
+	_ = a.input.Focus()
 	if a.conversation.AtBottom() {
 		a.hasUnreadChat = false
 	}
@@ -534,6 +536,8 @@ func (a *App) handleNotification(notif StreamNotification) {
 }
 
 func (a *App) ensureTurn(turnID, threadID string) *TurnConversation {
+	// Bubble Tea runs model Update() serially. Turn state is mutated only from
+	// this model thread, so explicit locking is unnecessary under current design.
 	turnID = strings.TrimSpace(turnID)
 	if turnID == "" {
 		turnID = fmt.Sprintf("turn_unknown_%d", time.Now().UnixNano())
@@ -587,6 +591,7 @@ func (a *App) appendAssistantIfEmpty(turnID, content string) {
 func (a *App) appendTurnMessage(turnID, threadID, role, content string) {
 	role = strings.TrimSpace(role)
 	content = strings.TrimSpace(content)
+	// Precondition: role and content are required for message items.
 	if role == "" || content == "" {
 		return
 	}
@@ -764,7 +769,7 @@ func (a *App) renderHelp() string {
 		return helpStyle.Render(help)
 	}
 
-	help := fmt.Sprintf("Keys: [Tab] Focus | [Enter] Send%s | [Ctrl+J] Newline | [Ctrl+U] Clear | [A] Activity Drawer | [L] Logs Drawer | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit", inputState)
+	help := fmt.Sprintf("Keys: [Tab] Focus | [Enter] Send%s | [Ctrl+J] Newline | [Ctrl+U] Clear | [A/L] Drawer (conversation focus) | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit", inputState)
 	return helpStyle.Render(help)
 }
 
@@ -1014,6 +1019,8 @@ func (a *App) conversationContent() string {
 	lines := make([]string, 0, len(a.turnOrder)*8)
 	for _, turnID := range a.turnOrder {
 		turn := a.turns[turnID]
+		// Defensive guard: turnOrder and turns map are maintained together by
+		// ensureTurn(); nil indicates corrupted state from future refactors.
 		if turn == nil {
 			continue
 		}

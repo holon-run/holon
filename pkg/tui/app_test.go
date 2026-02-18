@@ -82,6 +82,28 @@ func TestAppCtrlATogglesAutoRefreshWhileInputFocused(t *testing.T) {
 	}
 }
 
+func TestDrawerHotkeysWhileInputFocused(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = model.(*App)
+
+	if app.activeDrawer != drawerNone {
+		t.Fatalf("expected no active drawer before typing, got %v", app.activeDrawer)
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	app = model.(*App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	app = model.(*App)
+
+	if got := app.input.Value(); got != "al" {
+		t.Fatalf("expected input to contain typed hotkeys when focused, got %q", got)
+	}
+	if app.activeDrawer != drawerNone {
+		t.Fatalf("expected no drawer to open when typing hotkeys into focused input, got %v", app.activeDrawer)
+	}
+}
+
 func TestConversationDoesNotAutoScrollWhenUserScrolledUp(t *testing.T) {
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -199,6 +221,9 @@ func TestDrawerToggleAndClose(t *testing.T) {
 	app = model.(*App)
 	if app.activeDrawer != drawerNone {
 		t.Fatalf("expected drawer to close on esc")
+	}
+	if app.focus != focusInput {
+		t.Fatalf("expected focus to return to input after closing drawer, got %v", app.focus)
 	}
 }
 
