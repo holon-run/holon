@@ -53,6 +53,49 @@ func TestIsSafeDockerContainerID(t *testing.T) {
 	}
 }
 
+func TestRemoveStaleControllerSocket(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	socketPath := filepath.Join(td, "agent.sock")
+	if err := os.WriteFile(socketPath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+	if err := removeStaleControllerSocket(socketPath); err != nil {
+		t.Fatalf("removeStaleControllerSocket() error: %v", err)
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket path should be removed, stat err=%v", err)
+	}
+}
+
+func TestRemoveStaleControllerSocket_MissingFile(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "agent.sock")
+	if err := removeStaleControllerSocket(socketPath); err != nil {
+		t.Fatalf("removeStaleControllerSocket() missing file error: %v", err)
+	}
+}
+
+func TestRemoveStaleControllerSocket_ActiveSocket(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(shortTempDir(t, "sock-active"), "agent.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	if err := removeStaleControllerSocket(socketPath); err != nil {
+		t.Fatalf("removeStaleControllerSocket() active socket error: %v", err)
+	}
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("active socket should remain: %v", err)
+	}
+}
+
 func TestResolveControllerRPCReadyTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -367,8 +410,8 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	if mockRunner.lastConfig.Workspace != h.controllerWorkspace {
 		t.Fatalf("Workspace = %q, want %q", mockRunner.lastConfig.Workspace, h.controllerWorkspace)
 	}
-	if got := mockRunner.lastConfig.Env["HOLON_RUNTIME_RPC_SOCKET"]; got != "/root/run/agent.sock" {
-		t.Fatalf("HOLON_RUNTIME_RPC_SOCKET = %q, want /root/run/agent.sock", got)
+	if got := mockRunner.lastConfig.Env["HOLON_RUNTIME_RPC_SOCKET"]; got != controllerRPCSocketPathInContainer {
+		t.Fatalf("HOLON_RUNTIME_RPC_SOCKET = %q, want %q", got, controllerRPCSocketPathInContainer)
 	}
 	if len(rpcServer.events) < 1 {
 		t.Fatalf("expected at least one forwarded event")
@@ -423,6 +466,63 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 
 	// Let close finish gracefully.
 	mockRunner.waitCh <- nil
+}
+
+func TestClose_RemovesControllerSocketWithoutSession(t *testing.T) {
+	t.Parallel()
+
+	agentHome := shortTempDir(t, "holon-close-no-session")
+	socketPath := filepath.Join(agentHome, "run", "agent.sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale socket marker: %v", err)
+	}
+
+	h := &cliControllerHandler{
+		controllerSocketPath: socketPath,
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket path should be removed on close, stat err=%v", err)
+	}
+}
+
+func TestClose_StopsControllerAndRemovesSocket(t *testing.T) {
+	t.Parallel()
+
+	agentHome := shortTempDir(t, "holon-close-session")
+	socketPath := filepath.Join(agentHome, "run", "agent.sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale socket marker: %v", err)
+	}
+
+	mockRunner := &mockSessionRunner{
+		waitCh:       make(chan error, 1),
+		waitObserved: make(chan struct{}, 1),
+	}
+	h := &cliControllerHandler{
+		sessionRunner:        mockRunner,
+		controllerSession:    &docker.SessionHandle{ContainerID: "session-1"},
+		controllerDone:       make(chan error, 1),
+		controllerSocketPath: socketPath,
+	}
+
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if mockRunner.stopCount != 1 {
+		t.Fatalf("stopCount = %d, want 1", mockRunner.stopCount)
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket path should be removed on close, stat err=%v", err)
+	}
 }
 
 func TestInferControllerRole(t *testing.T) {

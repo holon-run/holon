@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	v1 "github.com/holon-run/holon/pkg/api/v1"
 	"github.com/holon-run/holon/pkg/config"
@@ -398,7 +400,10 @@ func init() {
 }
 
 func main() {
-	if err := rootCmd.Execute(); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

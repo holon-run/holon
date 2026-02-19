@@ -47,6 +47,8 @@ var (
 	serveRuntimeDevAgentSource   string
 )
 
+const controllerRPCSocketPathInContainer = docker.ContainerAgentHome + "/run/agent.sock"
+
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Run proactive event-driven agent loop",
@@ -1269,6 +1271,9 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
 		return fmt.Errorf("failed to create controller socket dir: %w", err)
 	}
+	if err := removeStaleControllerSocket(socketPath); err != nil {
+		return err
+	}
 	inputDir, err := h.buildInputDir(ref)
 	if err != nil {
 		return err
@@ -1292,7 +1297,7 @@ func (h *cliControllerHandler) ensureControllerLocked(ctx context.Context, ref s
 		"HOLON_STATE_DIR":                  docker.ContainerStateDir,
 		"CLAUDE_CONFIG_DIR":                filepath.Join(docker.ContainerStateDir, "claude-config"),
 		"HOLON_RUNTIME_ROLE":               h.controllerRoleLabel,
-		"HOLON_RUNTIME_RPC_SOCKET":         filepath.Join(docker.ContainerAgentHome, "run", "agent.sock"),
+		"HOLON_RUNTIME_RPC_SOCKET":         controllerRPCSocketPathInContainer,
 		"HOLON_RUNTIME_SESSION_STATE_PATH": filepath.Join(docker.ContainerStateDir, "controller-session.json"),
 		"HOLON_RUNTIME_GOAL_STATE_PATH":    filepath.Join(docker.ContainerStateDir, "goal-state.json"),
 	}
@@ -1702,10 +1707,10 @@ func controllerHealthViaDockerExec(ctx context.Context, containerID string) erro
 	if !isSafeDockerContainerID(containerID) {
 		return fmt.Errorf("docker exec health failed: invalid container id")
 	}
-	script := `const http=require("http");
-const req=http.request({socketPath:"/root/run/agent.sock",path:"/health",method:"GET"},(res)=>{res.resume(); if(res.statusCode===200){process.exit(0);} process.exit(2);});
+	script := fmt.Sprintf(`const http=require("http");
+const req=http.request({socketPath:%q,path:"/health",method:"GET"},(res)=>{res.resume(); if(res.statusCode===200){process.exit(0);} process.exit(2);});
 req.on("error",(err)=>{console.error(String(err)); process.exit(1);});
-req.end();`
+req.end();`, controllerRPCSocketPathInContainer)
 	cmd := exec.CommandContext(ctx, "docker", "exec", containerID, "node", "-e", script)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -1737,19 +1742,19 @@ func postEventRPCViaDockerExec(ctx context.Context, containerID, sessionKey stri
 	if err != nil {
 		return controllerRPCEventResponse{}, fmt.Errorf("failed to marshal controller rpc request: %w", err)
 	}
-	script := `const http=require("http");
+	script := fmt.Sprintf(`const http=require("http");
 let raw="";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data",(c)=>raw+=c);
 process.stdin.on("end",()=>{
-  const req=http.request({socketPath:"/root/run/agent.sock",path:"/v1/runtime/events",method:"POST",headers:{"Content-Type":"application/json"}},(res)=>{
+  const req=http.request({socketPath:%q,path:"/v1/runtime/events",method:"POST",headers:{"Content-Type":"application/json"}},(res)=>{
     let out=""; res.setEncoding("utf8");
     res.on("data",(c)=>out+=c);
     res.on("end",()=>{ process.stdout.write(out); process.exit(res.statusCode===200?0:3); });
   });
   req.on("error",(err)=>{console.error(String(err)); process.exit(2);});
   req.write(raw); req.end();
-});`
+});`, controllerRPCSocketPathInContainer)
 	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerID, "node", "-e", script)
 	cmd.Stdin = bytes.NewReader(body)
 	var stdout bytes.Buffer
@@ -1778,6 +1783,28 @@ process.stdin.on("end",()=>{
 		return controllerRPCEventResponse{}, fmt.Errorf("controller event execution failed: %s", strings.TrimSpace(result.Message))
 	}
 	return result, nil
+}
+
+func removeStaleControllerSocket(socketPath string) error {
+	if strings.TrimSpace(socketPath) == "" {
+		return nil
+	}
+	if info, err := os.Stat(socketPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat controller socket %s: %w", socketPath, err)
+	} else if info.Mode()&os.ModeSocket != 0 {
+		conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+	}
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove stale controller socket %s: %w", socketPath, err)
+	}
+	return nil
 }
 
 func isSafeDockerContainerID(containerID string) bool {
@@ -2075,23 +2102,24 @@ func (h *cliControllerHandler) Close() error {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.controllerSession == nil {
-		return nil
-	}
-	if h.sessionRunner == nil {
-		h.controllerSession = nil
-		h.controllerDone = nil
-		return nil
-	}
-
-	holonlog.Info("stopping controller runtime")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := h.sessionRunner.Stop(ctx, h.controllerSession); err != nil {
-		return err
+	socketPath := strings.TrimSpace(h.controllerSocketPath)
+	if h.controllerSession != nil && h.sessionRunner != nil {
+		holonlog.Info("stopping controller runtime")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := h.sessionRunner.Stop(ctx, h.controllerSession); err != nil {
+			return err
+		}
 	}
 	h.controllerSession = nil
 	h.controllerDone = nil
+	h.controllerHTTPClient = nil
+	h.controllerSocketPath = ""
+	if socketPath != "" {
+		if err := removeStaleControllerSocket(socketPath); err != nil {
+			holonlog.Warn("failed to clean controller socket path on close", "path", socketPath, "error", err)
+		}
+	}
 	return nil
 }
 
