@@ -149,19 +149,35 @@ func TestAppInputCtrlJInsertsNewline(t *testing.T) {
 	}
 }
 
-func TestAppEnterStartsSend(t *testing.T) {
+func TestAppCtrlSStartsSend(t *testing.T) {
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = model.(*App)
 
 	app.input.SetValue("hello")
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	app = model.(*App)
 	if cmd == nil {
 		t.Fatalf("expected send command to be returned")
 	}
 	if !app.sending {
-		t.Fatalf("expected sending=true after enter")
+		t.Fatalf("expected sending=true after ctrl+s")
+	}
+}
+
+func TestAppEnterInsertsNewline(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = model.(*App)
+
+	app.input.SetValue("hello")
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(*App)
+	if got := app.input.Value(); !strings.Contains(got, "\n") {
+		t.Fatalf("input value = %q, want newline inserted", got)
+	}
+	if app.sending {
+		t.Fatalf("expected sending=false after enter")
 	}
 }
 
