@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -532,23 +533,31 @@ func (r *Runtime) WaitSession(ctx context.Context, handle *SessionHandle) error 
 	if handle == nil || handle.ContainerID == "" {
 		return fmt.Errorf("session handle is required")
 	}
+	containerID := handle.ContainerID
+	var waitErr error
 	statusCh, errCh := r.cli.ContainerWait(ctx, handle.ContainerID, container.WaitConditionNotRunning)
 	select {
 	case err := <-errCh:
 		if err != nil {
-			return fmt.Errorf("container wait error: %w", err)
+			waitErr = fmt.Errorf("container wait error: %w", err)
 		}
 	case status := <-statusCh:
 		if status.StatusCode != 0 {
-			return fmt.Errorf("container failed with exit code %d", status.StatusCode)
+			waitErr = r.buildContainerExitError(ctx, containerID, status.StatusCode)
 		}
 	}
-	if err := r.cli.ContainerRemove(ctx, handle.ContainerID, container.RemoveOptions{Force: true}); err != nil {
-		holonlog.Debug("container remove returned error", "id", handle.ContainerID, "error", err)
+	if err := r.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+		holonlog.Debug("container remove returned error", "id", containerID, "error", err)
+		removeErr := fmt.Errorf("failed to remove session container %s: %w", containerID, err)
+		if waitErr != nil {
+			waitErr = errors.Join(waitErr, removeErr)
+		} else {
+			waitErr = removeErr
+		}
 	}
 	r.closeSessionLogStream(handle)
 	r.cleanupSessionHandle(handle)
-	return nil
+	return waitErr
 }
 
 // StopSession stops and removes a session container.
@@ -610,6 +619,31 @@ func (r *Runtime) closeSessionLogStream(handle *SessionHandle) {
 	default:
 	}
 	handle.logsPumpInitialized = false
+}
+
+func (r *Runtime) buildContainerExitError(ctx context.Context, containerID string, statusCode int64) error {
+	suffix := ""
+	inspect, err := r.cli.ContainerInspect(ctx, containerID)
+	if err == nil {
+		if inspect.State != nil {
+			stateParts := make([]string, 0, 4)
+			if inspect.State.OOMKilled {
+				stateParts = append(stateParts, "oom_killed=true")
+			}
+			if msg := strings.TrimSpace(inspect.State.Error); msg != "" {
+				stateParts = append(stateParts, fmt.Sprintf("state_error=%q", msg))
+			}
+			if finished := strings.TrimSpace(inspect.State.FinishedAt); finished != "" && finished != "0001-01-01T00:00:00Z" {
+				stateParts = append(stateParts, "finished_at="+finished)
+			}
+			if len(stateParts) > 0 {
+				suffix = " (" + strings.Join(stateParts, ", ") + ")"
+			}
+		}
+	} else if !errdefs.IsNotFound(err) {
+		holonlog.Debug("failed to inspect exited container", "id", containerID, "error", err)
+	}
+	return fmt.Errorf("container failed with exit code %d%s", statusCode, suffix)
 }
 
 func (r *Runtime) buildComposedImageFromBundle(ctx context.Context, baseImage, bundlePath string) (string, error) {

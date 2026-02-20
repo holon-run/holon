@@ -1616,6 +1616,7 @@ func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref s
 	holonlog.Warn("controller rpc dispatch failed, restarting session", "error", err)
 
 	h.mu.Lock()
+	h.logControllerDoneIfAvailableLocked("before reconnect")
 	if h.controllerSession != nil && h.sessionRunner != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = h.sessionRunner.Stop(stopCtx, h.controllerSession)
@@ -1636,6 +1637,29 @@ func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref s
 		return controllerRPCEventResponse{}, restartErr
 	}
 	return postEventRPC(restartCtx, client, sessionKey, env)
+}
+
+func (h *cliControllerHandler) logControllerDoneIfAvailableLocked(reason string) {
+	if h.controllerDone == nil {
+		return
+	}
+	select {
+	case waitErr := <-h.controllerDone:
+		if waitErr == nil {
+			return
+		}
+		containerID := ""
+		if h.controllerSession != nil {
+			containerID = h.controllerSession.ContainerID
+		}
+		holonlog.Warn(
+			"controller runtime wait completed",
+			"reason", reason,
+			"container_id", containerID,
+			"error", waitErr,
+		)
+	default:
+	}
 }
 
 func (h *cliControllerHandler) postEventRPC(ctx context.Context, ref string, sessionKey string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {

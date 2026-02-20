@@ -1025,23 +1025,12 @@ async function runServeClaudeSession(
       sessions.set(normalizedKey, entry);
       writeSessionState();
 
-      logger.info(
-        entry.sessionID
-          ? `Controller session ready for ${normalizedKey}: ${entry.sessionID}`
-          : `Controller session initialized for ${normalizedKey}; waiting for first response to obtain session ID`,
-      );
-
-      const turnResult = await runServeQueryTurn(
-        logger,
-        logFile,
-        env,
-        workspacePath,
-        systemInstruction,
-        bootstrapPrompt,
-        entry.sessionID || undefined,
-      );
-      refreshSessionId(normalizedKey, turnResult.sessionID);
-      return sessions.get(normalizedKey) || entry;
+      if (entry.sessionID) {
+        logger.info(`Controller session ready for ${normalizedKey}: ${entry.sessionID}`);
+      } else {
+        logger.info(`Controller session initialized for ${normalizedKey}; first event turn will establish session ID`);
+      }
+      return entry;
     })();
     sessionInitializers.set(normalizedKey, initPromise);
     try {
@@ -1051,9 +1040,11 @@ async function runServeClaudeSession(
     }
   };
 
+  loadPersistedSessions();
   const bootstrapPrompt = [
     "You are running in persistent controller session mode.",
-    "Follow the system instructions and user contract below for all future events.",
+    "On startup, proactively check for unfinished work and continue autonomously when appropriate.",
+    "Complete this autonomous work efficiently while remaining responsive to new instructions.",
     "",
     "### System Instructions",
     systemInstruction,
@@ -1061,10 +1052,10 @@ async function runServeClaudeSession(
     "### User Contract",
     userPrompt,
     "",
-    "Acknowledge readiness briefly, then wait for events.",
+    "Acknowledge briefly, then proceed with autonomous work if needed.",
   ].join("\n");
-
-  loadPersistedSessions();
+  let startupBootstrapState: "idle" | "running" | "completed" | "failed" = "running";
+  let startupBootstrapError = "";
 
   try {
     await ensureSessionReady("main");
@@ -1085,7 +1076,14 @@ async function runServeClaudeSession(
         if (req.method === "GET" && req.url === "/health") {
           const mainSessionID = normalizeSessionKey(sessions.get("main")?.sessionID);
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ status: "ok", session_id: mainSessionID || "" }));
+          res.end(
+            JSON.stringify({
+              status: "ok",
+              session_id: mainSessionID || "",
+              bootstrap_state: startupBootstrapState,
+              bootstrap_error: startupBootstrapError,
+            }),
+          );
           return;
         }
         if (req.method !== "POST" || req.url !== "/v1/runtime/events") {
@@ -1191,6 +1189,39 @@ async function runServeClaudeSession(
       };
       process.on("SIGTERM", shutdown);
       process.on("SIGINT", shutdown);
+
+      const startStartupBootstrap = (): void => {
+        void (async () => {
+          startupBootstrapState = "running";
+          startupBootstrapError = "";
+          try {
+            const mainEntry = await ensureSessionReady("main");
+            let turnResult: { success: boolean; result: string; sessionID: string } | undefined;
+            mainEntry.inflight = mainEntry.inflight.then(async () => {
+              turnResult = await runServeQueryTurn(
+                logger,
+                logFile,
+                env,
+                workspacePath,
+                systemInstruction,
+                bootstrapPrompt,
+                mainEntry.sessionID || undefined,
+              );
+              refreshSessionId("main", turnResult.sessionID);
+            });
+            await mainEntry.inflight;
+            startupBootstrapState = "completed";
+            if (turnResult && !turnResult.success) {
+              logger.info("startup bootstrap completed with model-reported failure result");
+            }
+          } catch (error) {
+            startupBootstrapState = "failed";
+            startupBootstrapError = toControllerErrorMessage(error);
+            logger.info(`startup bootstrap failed: ${startupBootstrapError}`);
+          }
+        })();
+      };
+      startStartupBootstrap();
 
       await new Promise<void>((resolve) => {
         server.on("close", resolve);
