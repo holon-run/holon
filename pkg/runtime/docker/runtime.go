@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -547,8 +548,11 @@ func (r *Runtime) WaitSession(ctx context.Context, handle *SessionHandle) error 
 	}
 	if err := r.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
 		holonlog.Debug("container remove returned error", "id", containerID, "error", err)
+		removeErr := fmt.Errorf("failed to remove session container %s: %w", containerID, err)
 		if waitErr != nil {
-			waitErr = fmt.Errorf("%v; failed to remove session container %s: %w", waitErr, containerID, err)
+			waitErr = errors.Join(waitErr, removeErr)
+		} else {
+			waitErr = removeErr
 		}
 	}
 	r.closeSessionLogStream(handle)

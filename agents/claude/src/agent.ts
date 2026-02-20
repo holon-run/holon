@@ -1044,7 +1044,7 @@ async function runServeClaudeSession(
   const bootstrapPrompt = [
     "You are running in persistent controller session mode.",
     "On startup, proactively check for unfinished work and continue autonomously when appropriate.",
-    "Do not block RPC handling while doing this work.",
+    "Complete this autonomous work efficiently while remaining responsive to new instructions.",
     "",
     "### System Instructions",
     systemInstruction,
@@ -1054,7 +1054,7 @@ async function runServeClaudeSession(
     "",
     "Acknowledge briefly, then proceed with autonomous work if needed.",
   ].join("\n");
-  let startupBootstrapState: "idle" | "running" | "completed" | "failed" = "idle";
+  let startupBootstrapState: "idle" | "running" | "completed" | "failed" = "running";
   let startupBootstrapError = "";
 
   try {

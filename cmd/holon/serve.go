@@ -1645,6 +1645,9 @@ func (h *cliControllerHandler) logControllerDoneIfAvailableLocked(reason string)
 	}
 	select {
 	case waitErr := <-h.controllerDone:
+		if waitErr == nil {
+			return
+		}
 		containerID := ""
 		if h.controllerSession != nil {
 			containerID = h.controllerSession.ContainerID
