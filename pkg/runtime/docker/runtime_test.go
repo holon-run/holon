@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docker/docker/errdefs"
 	holonGit "github.com/holon-run/holon/pkg/git"
 	"github.com/holon-run/holon/pkg/skills"
 	"github.com/holon-run/holon/pkg/workspace"
@@ -1551,6 +1554,41 @@ func TestBuiltinSkillsManifestConsistency(t *testing.T) {
 		}
 		if manifest.BuiltinSkillsCommit != "" {
 			t.Errorf("expected BuiltinSkillsCommit to be empty for remote skills, got %s", manifest.BuiltinSkillsCommit)
+		}
+	})
+}
+
+func TestIsTransientImageInspectError(t *testing.T) {
+	t.Run("not found is not transient", func(t *testing.T) {
+		err := errdefs.NotFound(errors.New("missing"))
+		if isTransientImageInspectError(err) {
+			t.Fatal("expected not-found error to be non-transient")
+		}
+	})
+
+	t.Run("context deadline exceeded is transient", func(t *testing.T) {
+		if !isTransientImageInspectError(context.DeadlineExceeded) {
+			t.Fatal("expected deadline exceeded to be transient")
+		}
+	})
+
+	t.Run("context canceled is not transient", func(t *testing.T) {
+		if isTransientImageInspectError(context.Canceled) {
+			t.Fatal("expected context canceled to be non-transient")
+		}
+	})
+
+	t.Run("net timeout is transient", func(t *testing.T) {
+		err := &net.DNSError{IsTimeout: true}
+		if !isTransientImageInspectError(err) {
+			t.Fatal("expected net timeout to be transient")
+		}
+	})
+
+	t.Run("docker timeout text is transient", func(t *testing.T) {
+		err := errors.New("Get \"http://docker.sock\": context deadline exceeded")
+		if !isTransientImageInspectError(err) {
+			t.Fatal("expected timeout text error to be transient")
 		}
 	})
 }

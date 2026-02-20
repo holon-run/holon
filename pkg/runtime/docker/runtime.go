@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -95,6 +97,8 @@ type SessionHandle struct {
 }
 
 const sessionStopTimeoutSeconds = 10
+const imageInspectRetryWindow = 20 * time.Second
+const imageInspectRetryDelay = 500 * time.Millisecond
 
 func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, error) {
 	// 1. Prepare Workspace using WorkspacePreparer
@@ -708,7 +712,7 @@ ENTRYPOINT ["/holon/agent/bin/agent"]
 }
 
 func (r *Runtime) ensureImagePresent(ctx context.Context, imageRef string) error {
-	_, err := r.cli.ImageInspect(ctx, imageRef)
+	err := r.inspectImage(ctx, imageRef)
 	if err == nil {
 		holonlog.Debug("image found locally", "image", imageRef)
 		return nil
@@ -731,6 +735,61 @@ func (r *Runtime) ensureImagePresent(ctx context.Context, imageRef string) error
 		return fmt.Errorf("failed to read pull stream for %q: %w", imageRef, copyErr)
 	}
 	return nil
+}
+
+func (r *Runtime) inspectImage(ctx context.Context, imageRef string) error {
+	deadline := time.Now().Add(imageInspectRetryWindow)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+
+	var lastErr error
+	for {
+		_, err := r.cli.ImageInspect(ctx, imageRef)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		if !isTransientImageInspectError(err) || time.Now().After(deadline) {
+			return lastErr
+		}
+
+		holonlog.Warn("transient docker image inspect failure; retrying", "image", imageRef, "error", err)
+		timer := time.NewTimer(imageInspectRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func isTransientImageInspectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errdefs.IsNotFound(err) {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "cannot connect to the docker daemon")
 }
 
 func composeImageTag(baseImage, bundleDigest string) string {

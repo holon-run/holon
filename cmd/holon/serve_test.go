@@ -469,6 +469,53 @@ func TestHandleEvent_PersistentControllerAndReconnect(t *testing.T) {
 	mockRunner.waitCh <- nil
 }
 
+func TestHandleTurnStart_WaitsForAsyncControllerCompletion(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	agentHome := shortTempDir(t, "holon-serve-async-home")
+	socketPath := filepath.Join(agentHome, "run", "agent.sock")
+	rpcServer := newMockAsyncControllerRPCServer(t, socketPath)
+	defer rpcServer.Close()
+
+	mockRunner := &mockSessionRunner{
+		waitCh:       make(chan error, 1),
+		waitObserved: make(chan struct{}, 1),
+	}
+
+	h := &cliControllerHandler{
+		repoHint:            "holon-run/holon",
+		stateDir:            td,
+		agentHome:           agentHome,
+		controllerWorkspace: t.TempDir(),
+		controllerRoleLabel: "dev",
+		logLevel:            "progress",
+		sessionRunner:       mockRunner,
+	}
+	defer h.Close()
+
+	if err := h.HandleTurnStart(context.Background(), serve.TurnStartRequest{
+		ThreadID: "main",
+	}, "turn-1"); err != nil {
+		t.Fatalf("HandleTurnStart() error = %v", err)
+	}
+
+	select {
+	case ack := <-h.TurnAcks():
+		if ack.TurnID != "turn-1" {
+			t.Fatalf("turn ack turn_id = %q, want turn-1", ack.TurnID)
+		}
+		if ack.Status != "completed" {
+			t.Fatalf("turn ack status = %q, want completed", ack.Status)
+		}
+		if strings.TrimSpace(ack.Message) != "done" {
+			t.Fatalf("turn ack message = %q, want done", ack.Message)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for turn ack")
+	}
+}
+
 func TestClose_RemovesControllerSocketWithoutSession(t *testing.T) {
 	t.Parallel()
 
@@ -889,6 +936,13 @@ type mockControllerRPCServer struct {
 	events []serve.EventEnvelope
 }
 
+type mockAsyncControllerRPCServer struct {
+	server  *http.Server
+	mu      sync.Mutex
+	events  []serve.EventEnvelope
+	results map[string]controllerRPCEventResponse
+}
+
 func newMockControllerRPCServer(t *testing.T, socketPath string) *mockControllerRPCServer {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
@@ -932,6 +986,80 @@ func newMockControllerRPCServer(t *testing.T, socketPath string) *mockController
 	return s
 }
 
+func newMockAsyncControllerRPCServer(t *testing.T, socketPath string) *mockAsyncControllerRPCServer {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	_ = os.Remove(socketPath)
+
+	s := &mockAsyncControllerRPCServer{
+		results: make(map[string]controllerRPCEventResponse),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("/v1/runtime/events", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Event serve.EventEnvelope `json:"event"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		eventID := strings.TrimSpace(req.Event.ID)
+		if eventID == "" {
+			eventID = "generated-event-id"
+		}
+		s.mu.Lock()
+		s.events = append(s.events, req.Event)
+		s.results[eventID] = controllerRPCEventResponse{
+			Status:  "running",
+			EventID: eventID,
+		}
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":   "accepted",
+			"event_id": eventID,
+		})
+		go func(id string) {
+			time.Sleep(60 * time.Millisecond)
+			s.mu.Lock()
+			s.results[id] = controllerRPCEventResponse{
+				Status:  "completed",
+				EventID: id,
+				Message: "done",
+			}
+			s.mu.Unlock()
+		}(eventID)
+	})
+	mux.HandleFunc("/v1/runtime/events/", func(w http.ResponseWriter, r *http.Request) {
+		eventID := strings.TrimPrefix(r.URL.Path, "/v1/runtime/events/")
+		s.mu.Lock()
+		result, ok := s.results[eventID]
+		s.mu.Unlock()
+		if !ok {
+			http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(result)
+	})
+	s.server = &http.Server{Handler: mux}
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	go func() {
+		_ = s.server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		s.Close()
+	})
+	return s
+}
+
 func (s *mockControllerRPCServer) WaitForEvents(t *testing.T, want int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -951,6 +1079,12 @@ func (s *mockControllerRPCServer) WaitForEvents(t *testing.T, want int, timeout 
 }
 
 func (s *mockControllerRPCServer) Close() {
+	if s.server != nil {
+		_ = s.server.Close()
+	}
+}
+
+func (s *mockAsyncControllerRPCServer) Close() {
 	if s.server != nil {
 		_ = s.server.Close()
 	}

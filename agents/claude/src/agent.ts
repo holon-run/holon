@@ -776,12 +776,23 @@ type ControllerEventRequest = {
 };
 
 type ControllerEventResponse = {
-  status: "completed" | "failed";
+  status: "accepted" | "queued" | "running" | "completed" | "failed";
   message?: string;
   event_id?: string;
   turn_id?: string;
   thread_id?: string;
   session_key?: string;
+};
+
+type ControllerEventRecord = {
+  eventID: string;
+  status: ControllerEventResponse["status"];
+  message: string;
+  turnID?: string;
+  threadID?: string;
+  sessionKey: string;
+  createdAt: number;
+  updatedAt: number;
 };
 
 function toControllerErrorMessage(error: unknown): string {
@@ -913,6 +924,7 @@ async function runServeClaudeSession(
   type SessionEntry = {
     sessionID: string;
     inflight: Promise<void>;
+    pendingTurns: number;
   };
   const sessions = new Map<string, SessionEntry>();
   const sessionInitializers = new Map<string, Promise<SessionEntry>>();
@@ -1021,6 +1033,7 @@ async function runServeClaudeSession(
       const entry: SessionEntry = {
         sessionID: resumeID,
         inflight: Promise.resolve(),
+        pendingTurns: 0,
       };
       sessions.set(normalizedKey, entry);
       writeSessionState();
@@ -1072,67 +1085,90 @@ async function runServeClaudeSession(
         throw new Error(`failed to reset controller socket at ${socketPath}: ${String(error)}`);
       }
 
-      const server = http.createServer((req, res) => {
-        if (req.method === "GET" && req.url === "/health") {
-          const mainSessionID = normalizeSessionKey(sessions.get("main")?.sessionID);
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({
-              status: "ok",
-              session_id: mainSessionID || "",
-              bootstrap_state: startupBootstrapState,
-              bootstrap_error: startupBootstrapError,
-            }),
-          );
-          return;
-        }
-        if (req.method !== "POST" || req.url !== "/v1/runtime/events") {
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "not_found" }));
-          return;
-        }
+      const eventRecords = new Map<string, ControllerEventRecord>();
+      const eventOrder: string[] = [];
+      const maxEventRecords = 1000;
+      let generatedEventSeq = 0;
 
-        let raw = "";
-        req.setEncoding("utf8");
-        req.on("data", (chunk) => {
-          raw += chunk;
-        });
-        req.on("end", () => {
-          let responded = false;
-          const sendJSONOnce = (status: number, payload: unknown): void => {
-            if (responded || res.headersSent) {
-              return;
+      const truncateMessage = (input: string): string => {
+        const trimmed = (input || "").trim();
+        if (trimmed.length <= 4000) {
+          return trimmed;
+        }
+        return `${trimmed.slice(0, 4000)}...`;
+      };
+
+      const generateEventID = (): string => {
+        generatedEventSeq += 1;
+        return `evt_${Date.now()}_${generatedEventSeq}`;
+      };
+
+      const toResponse = (record: ControllerEventRecord): ControllerEventResponse => ({
+        status: record.status,
+        message: record.message,
+        event_id: record.eventID,
+        turn_id: record.turnID,
+        thread_id: record.threadID,
+        session_key: record.sessionKey,
+      });
+
+      const trimEventRecords = (): void => {
+        const isInflight = (status: ControllerEventResponse["status"]): boolean =>
+          status === "accepted" || status === "queued" || status === "running";
+
+        while (eventOrder.length > maxEventRecords) {
+          const maxScan = eventOrder.length;
+          let scanned = 0;
+          let removedTerminal = false;
+
+          while (scanned < maxScan && eventOrder.length > maxEventRecords) {
+            const oldestID = eventOrder.shift();
+            if (!oldestID) {
+              break;
             }
-            responded = true;
-            res.writeHead(status, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(payload));
-          };
-          let parsed: ControllerEventRequest;
+            scanned += 1;
+            const record = eventRecords.get(oldestID);
+            if (!record) {
+              continue;
+            }
+            if (isInflight(record.status)) {
+              eventOrder.push(oldestID);
+              continue;
+            }
+            eventRecords.delete(oldestID);
+            removedTerminal = true;
+            break;
+          }
+
+          if (!removedTerminal) {
+            break;
+          }
+        }
+      };
+
+      const scheduleEventExecution = (record: ControllerEventRecord, event: ControllerEventEnvelope): void => {
+        void (async () => {
           try {
-            parsed = JSON.parse(raw) as ControllerEventRequest;
-          } catch (error) {
-            sendJSONOnce(400, { error: `invalid_json: ${String(error)}` });
-            return;
-          }
-          const event = parsed.event;
-          if (!event || typeof event !== "object") {
-            sendJSONOnce(400, { error: "missing event payload" });
-            return;
-          }
-          const ackFields = parseTurnAckFields(event);
-          const requestSessionKey = normalizeSessionKey(parsed.session_key);
-          const sessionKey = requestSessionKey || normalizeSessionKey(ackFields.sessionKey) || "main";
-          const processRequest = async (): Promise<void> => {
-            try {
-              const entry = await ensureSessionReady(sessionKey);
-              let result: ControllerEventResponse | undefined;
-              entry.inflight = entry.inflight.then(async () => {
+            const entry = await ensureSessionReady(record.sessionKey);
+            const wasBusy = entry.pendingTurns > 0;
+            entry.pendingTurns += 1;
+            record.status = wasBusy ? "queued" : "running";
+            record.updatedAt = Date.now();
+
+            entry.inflight = entry.inflight
+              .catch((chainError) => {
+                logger.info(`controller inflight chain recovered after error: ${toControllerErrorMessage(chainError)}`);
+              })
+              .then(async () => {
+                record.status = "running";
+                record.updatedAt = Date.now();
+
                 const eventRaw = JSON.stringify(event);
                 const turnPrompt = [
                   "New event payload (JSON):",
                   eventRaw,
                   "",
-                  `Target session key: ${sessionKey}`,
+                  `Target session key: ${record.sessionKey}`,
                 ].join("\n");
                 const turnResult = await runServeQueryTurn(
                   logger,
@@ -1143,36 +1179,119 @@ async function runServeClaudeSession(
                   turnPrompt,
                   entry.sessionID || undefined,
                 );
-                refreshSessionId(sessionKey, turnResult.sessionID);
-                const rawMessage = (turnResult.result || "").trim();
-                const message = rawMessage.length > 4000 ? `${rawMessage.slice(0, 4000)}...` : rawMessage;
-                result = {
-                  status: turnResult.success ? "completed" : "failed",
-                  message,
-                  event_id: ackFields.eventID,
-                  turn_id: ackFields.turnID,
-                  thread_id: ackFields.threadID,
-                  session_key: sessionKey,
-                };
+                refreshSessionId(record.sessionKey, turnResult.sessionID);
+                record.status = turnResult.success ? "completed" : "failed";
+                record.message = truncateMessage(turnResult.result || "");
+                record.updatedAt = Date.now();
+              })
+              .catch((turnError) => {
+                record.status = "failed";
+                record.message = truncateMessage(toControllerErrorMessage(turnError));
+                record.updatedAt = Date.now();
+              })
+              .finally(() => {
+                entry.pendingTurns = Math.max(0, entry.pendingTurns - 1);
               });
-              await entry.inflight;
-              if (!result) {
-                throw new Error("controller event finished without result");
-              }
-              sendJSONOnce(200, result);
-            } catch (error) {
-              const failure: ControllerEventResponse = {
-                status: "failed",
-                message: toControllerErrorMessage(error),
-                event_id: ackFields.eventID,
-                turn_id: ackFields.turnID,
-                thread_id: ackFields.threadID,
-                session_key: sessionKey,
-              };
-              sendJSONOnce(200, failure);
-            }
+
+            await entry.inflight;
+          } catch (error) {
+            record.status = "failed";
+            record.message = truncateMessage(toControllerErrorMessage(error));
+            record.updatedAt = Date.now();
+          }
+        })();
+      };
+
+      const server = http.createServer((req, res) => {
+        const sendJSON = (status: number, payload: unknown): void => {
+          if (res.headersSent) {
+            return;
+          }
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(payload));
+        };
+
+        if (req.method === "GET" && req.url === "/health") {
+          const mainSessionID = normalizeSessionKey(sessions.get("main")?.sessionID);
+          sendJSON(200, {
+            status: "ok",
+            session_id: mainSessionID || "",
+            bootstrap_state: startupBootstrapState,
+            bootstrap_error: startupBootstrapError,
+          });
+          return;
+        }
+
+        if (req.method === "GET" && typeof req.url === "string" && req.url.startsWith("/v1/runtime/events/")) {
+          let eventID = "";
+          try {
+            eventID = decodeURIComponent(req.url.slice("/v1/runtime/events/".length)).trim();
+          } catch (error) {
+            sendJSON(400, { error: `invalid_event_id: ${String(error)}` });
+            return;
+          }
+          if (!eventID) {
+            sendJSON(400, { error: "event_id is required" });
+            return;
+          }
+          const record = eventRecords.get(eventID);
+          if (!record) {
+            sendJSON(404, { error: "event_not_found", event_id: eventID });
+            return;
+          }
+          sendJSON(200, toResponse(record));
+          return;
+        }
+
+        if (req.method !== "POST" || req.url !== "/v1/runtime/events") {
+          sendJSON(404, { error: "not_found" });
+          return;
+        }
+
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          let parsed: ControllerEventRequest;
+          try {
+            parsed = JSON.parse(raw) as ControllerEventRequest;
+          } catch (error) {
+            sendJSON(400, { error: `invalid_json: ${String(error)}` });
+            return;
+          }
+          const event = parsed.event;
+          if (!event || typeof event !== "object") {
+            sendJSON(400, { error: "missing event payload" });
+            return;
+          }
+          const ackFields = parseTurnAckFields(event);
+          const requestSessionKey = normalizeSessionKey(parsed.session_key);
+          const sessionKey = requestSessionKey || normalizeSessionKey(ackFields.sessionKey) || "main";
+          const eventID = normalizeSessionKey(ackFields.eventID) || generateEventID();
+          const existing = eventRecords.get(eventID);
+          if (existing) {
+            sendJSON(existing.status === "completed" || existing.status === "failed" ? 200 : 202, toResponse(existing));
+            return;
+          }
+
+          const now = Date.now();
+          const record: ControllerEventRecord = {
+            eventID,
+            status: "accepted",
+            message: "",
+            turnID: ackFields.turnID,
+            threadID: ackFields.threadID,
+            sessionKey,
+            createdAt: now,
+            updatedAt: now,
           };
-          void processRequest();
+          eventRecords.set(eventID, record);
+          eventOrder.push(eventID);
+          trimEventRecords();
+          scheduleEventExecution(record, event);
+          sendJSON(202, toResponse(record));
         });
       });
 

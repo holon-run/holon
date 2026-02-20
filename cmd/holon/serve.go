@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +49,7 @@ var (
 )
 
 const controllerRPCSocketPathInContainer = docker.ContainerAgentHome + "/run/agent.sock"
+const defaultControllerEventTimeout = 60 * time.Minute
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -892,7 +894,7 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 	h.mu.Lock()
 	baseCtx := h.handlerCtx
 	h.mu.Unlock()
-	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(baseCtx, resolveControllerEventTimeout())
 	defer cancel()
 
 	holonlog.Info(
@@ -907,6 +909,16 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 	result, err := h.postEventWithReconnect(ctx, ref, sessionKey, enriched)
 	if err != nil {
 		return err
+	}
+	if isControllerEventPendingStatus(result.Status) {
+		eventID := firstNonEmpty(strings.TrimSpace(result.EventID), item.env.ID)
+		if strings.TrimSpace(eventID) == "" {
+			return fmt.Errorf("controller accepted event but did not provide event_id")
+		}
+		result, err = h.waitForControllerEventResult(ctx, ref, sessionKey, eventID)
+		if err != nil {
+			return err
+		}
 	}
 	if item.turnID != "" {
 		status := strings.TrimSpace(result.Status)
@@ -1639,6 +1651,86 @@ func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref s
 	return postEventRPC(restartCtx, client, sessionKey, env)
 }
 
+func (h *cliControllerHandler) waitForControllerEventResult(ctx context.Context, ref, sessionKey, eventID string) (controllerRPCEventResponse, error) {
+	if strings.TrimSpace(eventID) == "" {
+		return controllerRPCEventResponse{}, fmt.Errorf("event_id is required to wait for controller event result")
+	}
+	delay := 300 * time.Millisecond
+	const maxDelay = 5 * time.Second
+	lastStatus := ""
+
+	for {
+		resp, err := h.getEventStatusRPC(ctx, ref, sessionKey, eventID)
+		if err != nil {
+			return controllerRPCEventResponse{}, err
+		}
+		currentStatus := strings.ToLower(strings.TrimSpace(resp.Status))
+		if currentStatus == "" {
+			currentStatus = "unknown"
+		}
+		if currentStatus != lastStatus {
+			holonlog.Info(
+				"controller event status",
+				"event_id", eventID,
+				"session_key", sessionKey,
+				"status", currentStatus,
+			)
+			lastStatus = currentStatus
+		}
+		if isControllerEventTerminalStatus(resp.Status) {
+			if strings.EqualFold(strings.TrimSpace(resp.Status), "failed") {
+				return controllerRPCEventResponse{}, fmt.Errorf("controller event execution failed: %s", strings.TrimSpace(resp.Message))
+			}
+			return resp, nil
+		}
+		if currentStatus != "running" {
+			if delay < maxDelay {
+				delay = delay + delay/2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+			}
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return controllerRPCEventResponse{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (h *cliControllerHandler) getEventStatusRPC(ctx context.Context, ref, sessionKey, eventID string) (controllerRPCEventResponse, error) {
+	h.mu.Lock()
+	if err := h.ensureControllerLocked(ctx, ref); err != nil {
+		h.mu.Unlock()
+		return controllerRPCEventResponse{}, err
+	}
+	client := h.controllerHTTPClient
+	containerID := ""
+	if h.controllerSession != nil {
+		containerID = strings.TrimSpace(h.controllerSession.ContainerID)
+	}
+	h.mu.Unlock()
+
+	resp, err := getEventRPC(ctx, client, eventID)
+	if err == nil || containerID == "" {
+		return resp, err
+	}
+
+	dockerResp, dockerErr := getEventRPCViaDockerExec(ctx, containerID, eventID)
+	if dockerErr == nil {
+		id := containerID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		holonlog.Debug("controller status fallback succeeded via docker exec", "container_id", id, "event_id", eventID)
+		return dockerResp, nil
+	}
+	return controllerRPCEventResponse{}, fmt.Errorf("controller status request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", err, dockerErr)
+}
+
 func (h *cliControllerHandler) logControllerDoneIfAvailableLocked(reason string) {
 	if h.controllerDone == nil {
 		return
@@ -1687,7 +1779,7 @@ func (h *cliControllerHandler) postEventRPC(ctx context.Context, ref string, ses
 		holonlog.Debug("controller rpc fallback succeeded via docker exec", "container_id", id)
 		return dockerResp, nil
 	}
-	return controllerRPCEventResponse{}, err
+	return controllerRPCEventResponse{}, fmt.Errorf("controller rpc request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", err, dockerErr)
 }
 
 func postEventRPC(ctx context.Context, client *http.Client, sessionKey string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
@@ -1709,20 +1801,71 @@ func postEventRPC(ctx context.Context, client *http.Client, sessionKey string, e
 		return controllerRPCEventResponse{}, fmt.Errorf("controller rpc request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
+	result, err := parseControllerRPCResponse(resp.Body)
 	if err != nil {
-		return controllerRPCEventResponse{}, fmt.Errorf("failed to read controller rpc response: %w", err)
+		return controllerRPCEventResponse{}, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return controllerRPCEventResponse{}, fmt.Errorf("controller rpc status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-	var result controllerRPCEventResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return controllerRPCEventResponse{}, fmt.Errorf("failed to parse controller rpc response: %w", err)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller rpc status %d: %s", resp.StatusCode, strings.TrimSpace(result.Message))
 	}
 	if strings.EqualFold(strings.TrimSpace(result.Status), "failed") {
 		return controllerRPCEventResponse{}, fmt.Errorf("controller event execution failed: %s", strings.TrimSpace(result.Message))
+	}
+	return result, nil
+}
+
+func getEventRPC(ctx context.Context, client *http.Client, eventID string) (controllerRPCEventResponse, error) {
+	path := "http://unix/v1/runtime/events/" + url.PathEscape(strings.TrimSpace(eventID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to create controller status request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller status request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	result, err := parseControllerRPCResponse(resp.Body)
+	if err != nil {
+		return controllerRPCEventResponse{}, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller event %q not found", eventID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller status %d: %s", resp.StatusCode, strings.TrimSpace(result.Message))
+	}
+	return result, nil
+}
+
+func parseControllerRPCResponse(body io.Reader) (controllerRPCEventResponse, error) {
+	var raw struct {
+		Status     string `json:"status"`
+		Message    string `json:"message,omitempty"`
+		Error      string `json:"error,omitempty"`
+		EventID    string `json:"event_id,omitempty"`
+		TurnID     string `json:"turn_id,omitempty"`
+		ThreadID   string `json:"thread_id,omitempty"`
+		SessionKey string `json:"session_key,omitempty"`
+	}
+	respBody, err := io.ReadAll(body)
+	if err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to read controller rpc response: %w", err)
+	}
+	if err := json.Unmarshal(respBody, &raw); err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to parse controller rpc response: %w", err)
+	}
+	message := strings.TrimSpace(raw.Message)
+	if message == "" {
+		message = strings.TrimSpace(raw.Error)
+	}
+	result := controllerRPCEventResponse{
+		Status:     strings.TrimSpace(raw.Status),
+		Message:    message,
+		EventID:    strings.TrimSpace(raw.EventID),
+		TurnID:     strings.TrimSpace(raw.TurnID),
+		ThreadID:   strings.TrimSpace(raw.ThreadID),
+		SessionKey: strings.TrimSpace(raw.SessionKey),
 	}
 	return result, nil
 }
@@ -1774,7 +1917,7 @@ process.stdin.on("end",()=>{
   const req=http.request({socketPath:%q,path:"/v1/runtime/events",method:"POST",headers:{"Content-Type":"application/json"}},(res)=>{
     let out=""; res.setEncoding("utf8");
     res.on("data",(c)=>out+=c);
-    res.on("end",()=>{ process.stdout.write(out); process.exit(res.statusCode===200?0:3); });
+    res.on("end",()=>{ process.stdout.write(out); process.exit((res.statusCode===200||res.statusCode===202)?0:3); });
   });
   req.on("error",(err)=>{console.error(String(err)); process.exit(2);});
   req.write(raw); req.end();
@@ -1799,12 +1942,51 @@ process.stdin.on("end",()=>{
 		return controllerRPCEventResponse{}, fmt.Errorf("docker exec rpc failed: %w", err)
 	}
 	respBody := bytes.TrimSpace(stdout.Bytes())
-	var result controllerRPCEventResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
+	result, err := parseControllerRPCResponse(bytes.NewReader(respBody))
+	if err != nil {
 		return controllerRPCEventResponse{}, fmt.Errorf("failed to parse docker exec rpc response: %w (body=%q)", err, string(respBody))
 	}
 	if strings.EqualFold(strings.TrimSpace(result.Status), "failed") {
 		return controllerRPCEventResponse{}, fmt.Errorf("controller event execution failed: %s", strings.TrimSpace(result.Message))
+	}
+	return result, nil
+}
+
+func getEventRPCViaDockerExec(ctx context.Context, containerID, eventID string) (controllerRPCEventResponse, error) {
+	if !isSafeDockerContainerID(containerID) {
+		return controllerRPCEventResponse{}, fmt.Errorf("docker exec status failed: invalid container id")
+	}
+	escapedEventID := url.PathEscape(strings.TrimSpace(eventID))
+	script := fmt.Sprintf(`const http=require("http");
+const req=http.request({socketPath:%q,path:"/v1/runtime/events/%s",method:"GET"},(res)=>{
+  let out=""; res.setEncoding("utf8");
+  res.on("data",(c)=>out+=c);
+  res.on("end",()=>{ process.stdout.write(out); process.exit(res.statusCode===200?0:3); });
+});
+req.on("error",(err)=>{console.error(String(err)); process.exit(2);});
+req.end();`, controllerRPCSocketPathInContainer, escapedEventID)
+	cmd := exec.CommandContext(ctx, "docker", "exec", containerID, "node", "-e", script)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		stderrStr := strings.TrimSpace(stderr.String())
+		if errors.Is(err, exec.ErrNotFound) {
+			if stderrStr != "" {
+				return controllerRPCEventResponse{}, fmt.Errorf("docker exec status failed: docker CLI not found in PATH; ensure Docker is installed and 'docker' is available: %w: %s", err, stderrStr)
+			}
+			return controllerRPCEventResponse{}, fmt.Errorf("docker exec status failed: docker CLI not found in PATH; ensure Docker is installed and 'docker' is available: %w", err)
+		}
+		if stderrStr != "" {
+			return controllerRPCEventResponse{}, fmt.Errorf("docker exec status failed: %w: %s", err, stderrStr)
+		}
+		return controllerRPCEventResponse{}, fmt.Errorf("docker exec status failed: %w", err)
+	}
+	respBody := bytes.TrimSpace(stdout.Bytes())
+	result, err := parseControllerRPCResponse(bytes.NewReader(respBody))
+	if err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to parse docker exec status response: %w (body=%q)", err, string(respBody))
 	}
 	return result, nil
 }
@@ -1856,6 +2038,29 @@ func resolveControllerRPCReadyTimeout() time.Duration {
 		return defaultTimeout
 	}
 	return timeout
+}
+
+func resolveControllerEventTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("HOLON_SERVE_EVENT_TIMEOUT"))
+	if raw == "" {
+		return defaultControllerEventTimeout
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		holonlog.Warn("invalid HOLON_SERVE_EVENT_TIMEOUT; using default", "value", raw, "default", defaultControllerEventTimeout.String())
+		return defaultControllerEventTimeout
+	}
+	return timeout
+}
+
+func isControllerEventPendingStatus(status string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	return normalized == "" || normalized == "accepted" || normalized == "queued" || normalized == "running"
+}
+
+func isControllerEventTerminalStatus(status string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	return normalized == "completed" || normalized == "failed"
 }
 
 func isRetryableControllerRPCError(requestCtx context.Context, err error) bool {
