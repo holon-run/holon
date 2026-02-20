@@ -1655,8 +1655,8 @@ func (h *cliControllerHandler) waitForControllerEventResult(ctx context.Context,
 	if strings.TrimSpace(eventID) == "" {
 		return controllerRPCEventResponse{}, fmt.Errorf("event_id is required to wait for controller event result")
 	}
-	ticker := time.NewTicker(300 * time.Millisecond)
-	defer ticker.Stop()
+	delay := 300 * time.Millisecond
+	const maxDelay = 5 * time.Second
 	lastStatus := ""
 
 	for {
@@ -1683,10 +1683,20 @@ func (h *cliControllerHandler) waitForControllerEventResult(ctx context.Context,
 			}
 			return resp, nil
 		}
+		if currentStatus != "running" {
+			if delay < maxDelay {
+				delay = delay + delay/2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+			}
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return controllerRPCEventResponse{}, ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
@@ -1718,7 +1728,7 @@ func (h *cliControllerHandler) getEventStatusRPC(ctx context.Context, ref, sessi
 		holonlog.Debug("controller status fallback succeeded via docker exec", "container_id", id, "event_id", eventID)
 		return dockerResp, nil
 	}
-	return controllerRPCEventResponse{}, err
+	return controllerRPCEventResponse{}, fmt.Errorf("controller status request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", err, dockerErr)
 }
 
 func (h *cliControllerHandler) logControllerDoneIfAvailableLocked(reason string) {
@@ -1769,7 +1779,7 @@ func (h *cliControllerHandler) postEventRPC(ctx context.Context, ref string, ses
 		holonlog.Debug("controller rpc fallback succeeded via docker exec", "container_id", id)
 		return dockerResp, nil
 	}
-	return controllerRPCEventResponse{}, err
+	return controllerRPCEventResponse{}, fmt.Errorf("controller rpc request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", err, dockerErr)
 }
 
 func postEventRPC(ctx context.Context, client *http.Client, sessionKey string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {

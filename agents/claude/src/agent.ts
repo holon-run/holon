@@ -924,6 +924,7 @@ async function runServeClaudeSession(
   type SessionEntry = {
     sessionID: string;
     inflight: Promise<void>;
+    pendingTurns: number;
   };
   const sessions = new Map<string, SessionEntry>();
   const sessionInitializers = new Map<string, Promise<SessionEntry>>();
@@ -1032,6 +1033,7 @@ async function runServeClaudeSession(
       const entry: SessionEntry = {
         sessionID: resumeID,
         inflight: Promise.resolve(),
+        pendingTurns: 0,
       };
       sessions.set(normalizedKey, entry);
       writeSessionState();
@@ -1111,20 +1113,36 @@ async function runServeClaudeSession(
       });
 
       const trimEventRecords = (): void => {
+        const isInflight = (status: ControllerEventResponse["status"]): boolean =>
+          status === "accepted" || status === "queued" || status === "running";
+
         while (eventOrder.length > maxEventRecords) {
-          const oldestID = eventOrder.shift();
-          if (!oldestID) {
+          const maxScan = eventOrder.length;
+          let scanned = 0;
+          let removedTerminal = false;
+
+          while (scanned < maxScan && eventOrder.length > maxEventRecords) {
+            const oldestID = eventOrder.shift();
+            if (!oldestID) {
+              break;
+            }
+            scanned += 1;
+            const record = eventRecords.get(oldestID);
+            if (!record) {
+              continue;
+            }
+            if (isInflight(record.status)) {
+              eventOrder.push(oldestID);
+              continue;
+            }
+            eventRecords.delete(oldestID);
+            removedTerminal = true;
             break;
           }
-          const record = eventRecords.get(oldestID);
-          if (!record) {
-            continue;
-          }
-          if (record.status === "accepted" || record.status === "queued" || record.status === "running") {
-            eventOrder.push(oldestID);
+
+          if (!removedTerminal) {
             break;
           }
-          eventRecords.delete(oldestID);
         }
       };
 
@@ -1132,31 +1150,49 @@ async function runServeClaudeSession(
         void (async () => {
           try {
             const entry = await ensureSessionReady(record.sessionKey);
-            record.status = "running";
+            const wasBusy = entry.pendingTurns > 0;
+            entry.pendingTurns += 1;
+            record.status = wasBusy ? "queued" : "running";
             record.updatedAt = Date.now();
 
-            entry.inflight = entry.inflight.then(async () => {
-              const eventRaw = JSON.stringify(event);
-              const turnPrompt = [
-                "New event payload (JSON):",
-                eventRaw,
-                "",
-                `Target session key: ${record.sessionKey}`,
-              ].join("\n");
-              const turnResult = await runServeQueryTurn(
-                logger,
-                logFile,
-                env,
-                workspacePath,
-                systemInstruction,
-                turnPrompt,
-                entry.sessionID || undefined,
-              );
-              refreshSessionId(record.sessionKey, turnResult.sessionID);
-              record.status = turnResult.success ? "completed" : "failed";
-              record.message = truncateMessage(turnResult.result || "");
-              record.updatedAt = Date.now();
-            });
+            entry.inflight = entry.inflight
+              .catch((chainError) => {
+                logger.info(`controller inflight chain recovered after error: ${toControllerErrorMessage(chainError)}`);
+              })
+              .then(async () => {
+                record.status = "running";
+                record.updatedAt = Date.now();
+
+                const eventRaw = JSON.stringify(event);
+                const turnPrompt = [
+                  "New event payload (JSON):",
+                  eventRaw,
+                  "",
+                  `Target session key: ${record.sessionKey}`,
+                ].join("\n");
+                const turnResult = await runServeQueryTurn(
+                  logger,
+                  logFile,
+                  env,
+                  workspacePath,
+                  systemInstruction,
+                  turnPrompt,
+                  entry.sessionID || undefined,
+                );
+                refreshSessionId(record.sessionKey, turnResult.sessionID);
+                record.status = turnResult.success ? "completed" : "failed";
+                record.message = truncateMessage(turnResult.result || "");
+                record.updatedAt = Date.now();
+              })
+              .catch((turnError) => {
+                record.status = "failed";
+                record.message = truncateMessage(toControllerErrorMessage(turnError));
+                record.updatedAt = Date.now();
+              })
+              .finally(() => {
+                entry.pendingTurns = Math.max(0, entry.pendingTurns - 1);
+              });
+
             await entry.inflight;
           } catch (error) {
             record.status = "failed";
