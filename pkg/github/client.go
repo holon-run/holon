@@ -30,6 +30,9 @@ const (
 	// with a token that has higher permissions (e.g., holonbot app token).
 	HolonTokenEnv = "HOLON_GITHUB_TOKEN"
 
+	// GhTokenEnv is the GitHub CLI-compatible token env var.
+	GhTokenEnv = "GH_TOKEN"
+
 	// DefaultTimeout is the default HTTP timeout
 	DefaultTimeout = 30 * time.Second
 )
@@ -61,19 +64,26 @@ func ghAuthToken() string {
 // Priority order (highest to lowest):
 // 1. HOLON_GITHUB_TOKEN - Holon-specific token (allows overriding CI's GITHUB_TOKEN)
 // 2. GITHUB_TOKEN - standard GitHub token (automatically set in CI environments)
-// 3. gh auth token - fallback to gh CLI token
+// 3. GH_TOKEN - GitHub CLI-compatible token variable
+// 4. gh auth token - fallback to gh CLI token
 //
 // Returns the token and a boolean indicating whether the token came from gh CLI.
 func GetTokenFromEnv() (string, bool) {
 	// Check HOLON_GITHUB_TOKEN first (highest priority)
 	// This allows overriding the CI's GITHUB_TOKEN with a higher-permission token
-	token := os.Getenv(HolonTokenEnv)
+	token := strings.TrimSpace(os.Getenv(HolonTokenEnv))
 	if token != "" {
 		return token, false
 	}
 
 	// Check standard GITHUB_TOKEN (automatically set in GitHub Actions CI)
-	token = os.Getenv(TokenEnv)
+	token = strings.TrimSpace(os.Getenv(TokenEnv))
+	if token != "" {
+		return token, false
+	}
+
+	// Check GH_TOKEN for GitHub CLI compatibility.
+	token = strings.TrimSpace(os.Getenv(GhTokenEnv))
 	if token != "" {
 		return token, false
 	}
@@ -173,12 +183,12 @@ func NewClient(token string, opts ...ClientOption) *Client {
 }
 
 // NewClientFromEnv creates a new client using token from environment variables or gh CLI.
-// It checks HOLON_GITHUB_TOKEN and GITHUB_TOKEN environment variables first.
+// It checks HOLON_GITHUB_TOKEN, GITHUB_TOKEN, and GH_TOKEN environment variables first.
 // If those are empty, it attempts to use `gh auth token` as a fallback.
 func NewClientFromEnv(opts ...ClientOption) (*Client, error) {
 	token, fromGh := GetTokenFromEnv()
 	if token == "" {
-		return nil, fmt.Errorf("%s or %s environment variable is required (or use 'gh auth login')", TokenEnv, HolonTokenEnv)
+		return nil, fmt.Errorf("%s, %s, or %s environment variable is required (or use 'gh auth login')", TokenEnv, HolonTokenEnv, GhTokenEnv)
 	}
 
 	if fromGh {

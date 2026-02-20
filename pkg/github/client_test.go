@@ -649,6 +649,7 @@ func TestGetTokenFromEnv(t *testing.T) {
 	// Save original env vars and restore after test
 	origToken := os.Getenv(TokenEnv)
 	origLegacyToken := os.Getenv(HolonTokenEnv)
+	origGhToken := os.Getenv(GhTokenEnv)
 	defer func() {
 		if origToken != "" {
 			os.Setenv(TokenEnv, origToken)
@@ -659,6 +660,11 @@ func TestGetTokenFromEnv(t *testing.T) {
 			os.Setenv(HolonTokenEnv, origLegacyToken)
 		} else {
 			os.Unsetenv(HolonTokenEnv)
+		}
+		if origGhToken != "" {
+			os.Setenv(GhTokenEnv, origGhToken)
+		} else {
+			os.Unsetenv(GhTokenEnv)
 		}
 	}()
 
@@ -679,6 +685,7 @@ func TestGetTokenFromEnv(t *testing.T) {
 	t.Run("GITHUB_TOKEN set (no HOLON_GITHUB_TOKEN)", func(t *testing.T) {
 		os.Unsetenv(HolonTokenEnv)
 		os.Setenv(TokenEnv, "env-token-123")
+		os.Unsetenv(GhTokenEnv)
 
 		token, fromGh := GetTokenFromEnv()
 
@@ -690,9 +697,24 @@ func TestGetTokenFromEnv(t *testing.T) {
 		}
 	})
 
+	t.Run("GH_TOKEN set (no HOLON_GITHUB_TOKEN/GITHUB_TOKEN)", func(t *testing.T) {
+		os.Unsetenv(HolonTokenEnv)
+		os.Unsetenv(TokenEnv)
+		os.Setenv(GhTokenEnv, "gh-token-abc")
+
+		token, fromGh := GetTokenFromEnv()
+		if token != "gh-token-abc" {
+			t.Errorf("Token = %q, want %q", token, "gh-token-abc")
+		}
+		if fromGh {
+			t.Error("Expected fromGh to be false when GH_TOKEN is set")
+		}
+	})
+
 	t.Run("priority: HOLON_GITHUB_TOKEN > GITHUB_TOKEN", func(t *testing.T) {
 		os.Setenv(HolonTokenEnv, "holon-token")
 		os.Setenv(TokenEnv, "ci-token")
+		os.Setenv(GhTokenEnv, "gh-token")
 
 		token, fromGh := GetTokenFromEnv()
 
@@ -704,9 +726,21 @@ func TestGetTokenFromEnv(t *testing.T) {
 		}
 	})
 
+	t.Run("whitespace env vars are ignored", func(t *testing.T) {
+		os.Setenv(HolonTokenEnv, "   ")
+		os.Setenv(TokenEnv, "\t")
+		os.Setenv(GhTokenEnv, "\n")
+
+		token, fromGh := GetTokenFromEnv()
+		if token != "" && !fromGh {
+			t.Error("Expected whitespace-only env vars to be treated as unset")
+		}
+	})
+
 	t.Run("no env vars, falls back to gh CLI if available", func(t *testing.T) {
 		os.Unsetenv(HolonTokenEnv)
 		os.Unsetenv(TokenEnv)
+		os.Unsetenv(GhTokenEnv)
 
 		token, fromGh := GetTokenFromEnv()
 
@@ -725,6 +759,7 @@ func TestNewClientFromEnv(t *testing.T) {
 	// Save original env vars and restore after test
 	origToken := os.Getenv(TokenEnv)
 	origLegacyToken := os.Getenv(HolonTokenEnv)
+	origGhToken := os.Getenv(GhTokenEnv)
 	defer func() {
 		if origToken != "" {
 			os.Setenv(TokenEnv, origToken)
@@ -736,11 +771,17 @@ func TestNewClientFromEnv(t *testing.T) {
 		} else {
 			os.Unsetenv(HolonTokenEnv)
 		}
+		if origGhToken != "" {
+			os.Setenv(GhTokenEnv, origGhToken)
+		} else {
+			os.Unsetenv(GhTokenEnv)
+		}
 	}()
 
 	t.Run("with GITHUB_TOKEN set", func(t *testing.T) {
 		os.Setenv(TokenEnv, "test-token-123")
 		os.Unsetenv(HolonTokenEnv)
+		os.Unsetenv(GhTokenEnv)
 
 		client, err := NewClientFromEnv()
 		if err != nil {
@@ -757,6 +798,7 @@ func TestNewClientFromEnv(t *testing.T) {
 	t.Run("with HOLON_GITHUB_TOKEN set", func(t *testing.T) {
 		os.Unsetenv(TokenEnv)
 		os.Setenv(HolonTokenEnv, "holon-token-456")
+		os.Unsetenv(GhTokenEnv)
 
 		client, err := NewClientFromEnv()
 		if err != nil {
@@ -773,6 +815,7 @@ func TestNewClientFromEnv(t *testing.T) {
 	t.Run("with no env vars, may use gh CLI if available", func(t *testing.T) {
 		os.Unsetenv(TokenEnv)
 		os.Unsetenv(HolonTokenEnv)
+		os.Unsetenv(GhTokenEnv)
 
 		client, err := NewClientFromEnv()
 		// If gh CLI is available and authenticated, this should succeed
