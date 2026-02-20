@@ -74,23 +74,19 @@ func applyAnthropicAutoEnv(envVars map[string]string, fallback map[string]string
 }
 
 func applyGitHubTokenAutoEnv(envVars map[string]string) string {
-	if token := strings.TrimSpace(os.Getenv("HOLON_GITHUB_TOKEN")); token != "" {
+	token, _ := gh.GetTokenFromEnv()
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+
+	// Preserve explicit HOLON_GITHUB_TOKEN propagation when it is the source.
+	if strings.TrimSpace(os.Getenv("HOLON_GITHUB_TOKEN")) != "" {
 		envVars["HOLON_GITHUB_TOKEN"] = token
-		envVars["GITHUB_TOKEN"] = token
-		envVars["GH_TOKEN"] = token
-		return token
 	}
-	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
-		envVars["GITHUB_TOKEN"] = token
-		envVars["GH_TOKEN"] = token
-		return token
-	}
-	if token := strings.TrimSpace(os.Getenv("GH_TOKEN")); token != "" {
-		envVars["GITHUB_TOKEN"] = token
-		envVars["GH_TOKEN"] = token
-		return token
-	}
-	return ""
+	envVars["GITHUB_TOKEN"] = token
+	envVars["GH_TOKEN"] = token
+	return token
 }
 
 func applyGitHubActorAutoEnv(ctx context.Context, envVars map[string]string, githubToken string, opts runtimeEnvOptions) {

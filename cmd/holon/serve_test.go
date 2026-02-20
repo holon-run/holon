@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -843,6 +844,32 @@ func TestResolveServeRuntimeEnv_PrefersHolonGitHubToken(t *testing.T) {
 		t.Fatalf("GITHUB_TOKEN = %q", got["GITHUB_TOKEN"])
 	}
 	if got["GH_TOKEN"] != "holon-token" {
+		t.Fatalf("GH_TOKEN = %q", got["GH_TOKEN"])
+	}
+}
+
+func TestResolveServeRuntimeEnv_FallbackToGhAuthToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires shell script test helper")
+	}
+
+	td := t.TempDir()
+	ghPath := filepath.Join(td, "gh")
+	script := "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"token\" ]; then\n  echo gh-token-from-cli\n  exit 0\nfi\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+
+	t.Setenv("PATH", td)
+	t.Setenv("HOLON_GITHUB_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	got := resolveServeRuntimeEnv(context.Background())
+	if got["GITHUB_TOKEN"] != "gh-token-from-cli" {
+		t.Fatalf("GITHUB_TOKEN = %q", got["GITHUB_TOKEN"])
+	}
+	if got["GH_TOKEN"] != "gh-token-from-cli" {
 		t.Fatalf("GH_TOKEN = %q", got["GH_TOKEN"])
 	}
 }

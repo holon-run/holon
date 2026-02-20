@@ -542,7 +542,7 @@ func (r *Runner) collectEnvVars(cfg RunnerConfig, absSpec string) (map[string]st
 
 	// 1. Automatic secret and runtime configuration injection.
 	applyRuntimeAutoEnv(context.Background(), envVars, runtimeEnvOptions{
-		IncludeClaudeSettingsFallback: false,
+		IncludeClaudeSettingsFallback: true,
 		IncludeGitHubActorIdentity:    true,
 		ResolveGitHubActor:            r.resolveGitHubActorIdentity,
 		IncludeHolonClaudeConfig:      true,
