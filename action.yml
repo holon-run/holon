@@ -182,6 +182,12 @@ runs:
         cache: true
         cache-dependency-path: ${{ runner.temp }}/holon-source/go.sum
 
+    - name: Setup Node (for source-built agent bundle)
+      if: inputs.build_from_source == 'true' && inputs.agent == ''
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
     - name: Build from source (if enabled)
       if: inputs.build_from_source == 'true'
       shell: bash
@@ -277,6 +283,37 @@ runs:
           echo "   Consider specifying output_dir to enable artifact uploads"
         fi
 
+        # Resolve agent reference in one place:
+        # 1) explicit inputs.agent
+        # 2) source-built local bundle (when build_from_source=true)
+        # 3) empty => holon default agent resolution
+        AGENT_REF="${{ inputs.agent }}"
+        if [ -z "$AGENT_REF" ] && [ "${{ inputs.build_from_source }}" = "true" ]; then
+          HOLON_SRC_DIR="${{ runner.temp }}/holon-source"
+          AGENT_SRC_DIR="$HOLON_SRC_DIR/agents/claude"
+          if [ ! -d "$AGENT_SRC_DIR" ]; then
+            echo "::error::expected agent source directory not found: $AGENT_SRC_DIR"
+            exit 1
+          fi
+          if [ ! -f "$AGENT_SRC_DIR/package.json" ]; then
+            echo "::error::expected agent package.json not found: $AGENT_SRC_DIR/package.json"
+            exit 1
+          fi
+
+          pushd "$AGENT_SRC_DIR" >/dev/null
+          npm ci
+          npm run bundle
+          BUNDLE_REL="$(ls -t dist/agent-bundles/*.tar.gz | head -n 1)"
+          popd >/dev/null
+
+          if [ -z "$BUNDLE_REL" ]; then
+            echo "::error::failed to find built agent bundle under $AGENT_SRC_DIR/dist/agent-bundles"
+            exit 1
+          fi
+          AGENT_REF="$AGENT_SRC_DIR/$BUNDLE_REL"
+          echo "Using source-built agent bundle: $AGENT_REF"
+        fi
+
         # Build solve command arguments
         SOLVE_ARGS=()
         if [ -n "${{ inputs.repo }}" ]; then
@@ -285,8 +322,8 @@ runs:
         if [ -n "${{ inputs.base }}" ]; then
           SOLVE_ARGS+=(--base "${{ inputs.base }}")
         fi
-        if [ -n "${{ inputs.agent }}" ]; then
-          SOLVE_ARGS+=(--agent "${{ inputs.agent }}")
+        if [ -n "$AGENT_REF" ]; then
+          SOLVE_ARGS+=(--agent "$AGENT_REF")
         fi
         if [ -n "${{ inputs.role }}" ]; then
           SOLVE_ARGS+=(--role "${{ inputs.role }}")
