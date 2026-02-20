@@ -527,6 +527,49 @@ func TestRunner_collectEnvVars_SpecEnvParsing(t *testing.T) {
 	}
 }
 
+func TestRunner_collectEnvVars_AnthropicSettingsFallback(t *testing.T) {
+	runner := NewRunner(&MockRuntime{})
+
+	home := t.TempDir()
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "token-from-settings",
+    "ANTHROPIC_BASE_URL": "https://settings.ai"
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_URL", "")
+
+	envVars, err := runner.collectEnvVars(RunnerConfig{}, "")
+	if err != nil {
+		t.Fatalf("collectEnvVars error: %v", err)
+	}
+
+	if envVars["ANTHROPIC_AUTH_TOKEN"] != "token-from-settings" {
+		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q", envVars["ANTHROPIC_AUTH_TOKEN"])
+	}
+	if envVars["ANTHROPIC_API_KEY"] != "token-from-settings" {
+		t.Fatalf("ANTHROPIC_API_KEY = %q", envVars["ANTHROPIC_API_KEY"])
+	}
+	if envVars["ANTHROPIC_BASE_URL"] != "https://settings.ai" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q", envVars["ANTHROPIC_BASE_URL"])
+	}
+	if envVars["ANTHROPIC_API_URL"] != "https://settings.ai" {
+		t.Fatalf("ANTHROPIC_API_URL = %q", envVars["ANTHROPIC_API_URL"])
+	}
+}
+
 func TestRunner_extractGoalFromSpec(t *testing.T) {
 	runner := NewRunner(&MockRuntime{})
 
