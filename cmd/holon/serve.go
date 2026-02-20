@@ -1657,11 +1657,25 @@ func (h *cliControllerHandler) waitForControllerEventResult(ctx context.Context,
 	}
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
+	lastStatus := ""
 
 	for {
 		resp, err := h.getEventStatusRPC(ctx, ref, sessionKey, eventID)
 		if err != nil {
 			return controllerRPCEventResponse{}, err
+		}
+		currentStatus := strings.ToLower(strings.TrimSpace(resp.Status))
+		if currentStatus == "" {
+			currentStatus = "unknown"
+		}
+		if currentStatus != lastStatus {
+			holonlog.Info(
+				"controller event status",
+				"event_id", eventID,
+				"session_key", sessionKey,
+				"status", currentStatus,
+			)
+			lastStatus = currentStatus
 		}
 		if isControllerEventTerminalStatus(resp.Status) {
 			if strings.EqualFold(strings.TrimSpace(resp.Status), "failed") {
