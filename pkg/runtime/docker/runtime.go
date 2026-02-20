@@ -126,19 +126,8 @@ func (r *Runtime) RunHolon(ctx context.Context, cfg *ContainerConfig) (string, e
 	}
 	finalImage := composedImage
 
-	// Pull final image if not present locally
-	_, err = r.cli.ImageInspect(ctx, finalImage)
-	if err != nil {
-		holonlog.Info("image not found locally, attempting to pull", "image", finalImage)
-		reader, err := r.cli.ImagePull(ctx, finalImage, image.PullOptions{})
-		if err != nil {
-			holonlog.Warn("failed to pull image", "image", finalImage, "error", err)
-		} else {
-			defer reader.Close()
-			io.Copy(io.Discard, reader)
-		}
-	} else {
-		holonlog.Debug("image found locally", "image", finalImage)
+	if err := r.ensureImagePresent(ctx, finalImage); err != nil {
+		return "", err
 	}
 
 	// 3. Create Container
@@ -372,19 +361,9 @@ func (r *Runtime) StartSession(ctx context.Context, cfg *ContainerConfig) (*Sess
 	}
 	finalImage := composedImage
 
-	// Pull final image if not present locally
-	_, err = r.cli.ImageInspect(ctx, finalImage)
-	if err != nil {
-		holonlog.Info("image not found locally, attempting to pull", "image", finalImage)
-		reader, err := r.cli.ImagePull(ctx, finalImage, image.PullOptions{})
-		if err != nil {
-			holonlog.Warn("failed to pull image", "image", finalImage, "error", err)
-		} else {
-			defer reader.Close()
-			_, _ = io.Copy(io.Discard, reader)
-		}
-	} else {
-		holonlog.Debug("image found locally", "image", finalImage)
+	if err := r.ensureImagePresent(ctx, finalImage); err != nil {
+		cleanupOnError()
+		return nil, err
 	}
 
 	// 3. Create Container
@@ -692,6 +671,32 @@ ENTRYPOINT ["/holon/agent/bin/agent"]
 	}
 
 	return tag, nil
+}
+
+func (r *Runtime) ensureImagePresent(ctx context.Context, imageRef string) error {
+	_, err := r.cli.ImageInspect(ctx, imageRef)
+	if err == nil {
+		holonlog.Debug("image found locally", "image", imageRef)
+		return nil
+	}
+	if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("failed to inspect image %q: %w", imageRef, err)
+	}
+	if strings.HasPrefix(imageRef, "holon-composed-") {
+		// Composed images are built locally with deterministic names; never pull.
+		return fmt.Errorf("composed image %q not found locally after build", imageRef)
+	}
+
+	holonlog.Info("image not found locally, attempting to pull", "image", imageRef)
+	reader, pullErr := r.cli.ImagePull(ctx, imageRef, image.PullOptions{})
+	if pullErr != nil {
+		return fmt.Errorf("failed to pull image %q: %w", imageRef, pullErr)
+	}
+	defer reader.Close()
+	if _, copyErr := io.Copy(io.Discard, reader); copyErr != nil {
+		return fmt.Errorf("failed to read pull stream for %q: %w", imageRef, copyErr)
+	}
+	return nil
 }
 
 func composeImageTag(baseImage, bundleDigest string) string {
