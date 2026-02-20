@@ -183,8 +183,8 @@ func NewApp(client *RPCClient) *App {
 	input.SetWidth(80)
 	input.Focus()
 	input.KeyMap.InsertNewline = key.NewBinding(
-		key.WithKeys("ctrl+j"),
-		key.WithHelp("ctrl+j", "newline"),
+		key.WithKeys("enter", "ctrl+j"),
+		key.WithHelp("enter/ctrl+j", "newline"),
 	)
 
 	conversation := viewport.New(80, 16)
@@ -371,7 +371,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, a.prevFocus()
 		}
 		return a, nil
-	case "enter":
+	case "ctrl+s":
 		if a.activeDrawer == drawerNone && a.focus == focusInput && strings.TrimSpace(a.input.Value()) != "" && !a.sending {
 			return a, a.sendMessage()
 		}
@@ -769,7 +769,7 @@ func (a *App) renderHelp() string {
 		return helpStyle.Render(help)
 	}
 
-	help := fmt.Sprintf("Keys: [Tab] Focus | [Enter] Send%s | [Ctrl+J] Newline | [Ctrl+U] Clear | [A/L] Drawer (conversation focus) | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit", inputState)
+	help := fmt.Sprintf("Keys: [Tab] Focus | [Ctrl+S] Send%s | [Enter/Ctrl+J] Newline | [Ctrl+U] Clear | [A/L] Drawer (conversation focus) | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit", inputState)
 	return helpStyle.Render(help)
 }
 
