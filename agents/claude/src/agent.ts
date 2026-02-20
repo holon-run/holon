@@ -1135,8 +1135,6 @@ async function runServeClaudeSession(
                   eventRaw,
                   "",
                   `Target session key: ${sessionKey}`,
-                  "Process this event. Decide actions autonomously and execute via available skills/tools.",
-                  "After actions complete, summarize what you decided and what changed.",
                 ].join("\n");
                 const turnResult = await runServeQueryTurn(
                   logger,
@@ -1209,9 +1207,6 @@ async function runServeClaudeSession(
     const turnPrompt = [
       "New event payload (JSON):",
       eventPayload,
-      "",
-      "Process this event. Decide actions autonomously and execute via available skills/tools.",
-      "After actions complete, summarize what you decided and what changed.",
     ].join("\n");
     const mainSession = await ensureSessionReady("main");
     const turnResult = await runServeQueryTurn(
