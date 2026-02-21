@@ -250,12 +250,17 @@ func (ws *WebhookServer) processTurnAcks(ctx context.Context) {
 			if turnID == "" {
 				continue
 			}
-			success := strings.EqualFold(strings.TrimSpace(record.Status), "completed")
-			if !success && !strings.EqualFold(strings.TrimSpace(record.Status), "failed") {
-				continue
-			}
-			if ws.runtime.HandleTurnAck(turnID, success, record.Message) {
-				holonlog.Debug("turn ack applied", "turn_id", turnID, "status", record.Status)
+			status := strings.ToLower(strings.TrimSpace(record.Status))
+			switch status {
+			case "completed", "failed":
+				success := status == "completed"
+				if ws.runtime.HandleTurnAck(turnID, success, record.Message) {
+					holonlog.Debug("turn ack applied", "turn_id", turnID, "status", status)
+				}
+			default:
+				if ws.runtime.HandleTurnProgress(record) {
+					holonlog.Debug("turn progress applied", "turn_id", turnID, "status", status)
+				}
 			}
 		}
 	}

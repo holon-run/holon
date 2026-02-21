@@ -320,6 +320,20 @@ type TurnStartResponse struct {
 	StartedAt string `json:"started_at"`
 }
 
+// TurnInterruptRequest represents a targeted turn interruption request.
+type TurnInterruptRequest struct {
+	TurnID string `json:"turn_id,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// TurnInterruptResponse is the response for turn/interrupt.
+type TurnInterruptResponse struct {
+	TurnID        string `json:"turn_id"`
+	State         string `json:"state"`
+	InterruptedAt string `json:"interrupted_at"`
+	Message       string `json:"message,omitempty"`
+}
+
 // StartTurn starts a new turn with a user message
 func (c *RPCClient) StartTurn(threadID string, message string) (*TurnStartResponse, error) {
 	input := []TurnInputMessage{{
@@ -354,6 +368,19 @@ type ThreadStartResponse struct {
 func (c *RPCClient) StartThread() (*ThreadStartResponse, error) {
 	var resp ThreadStartResponse
 	if err := c.call("thread/start", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// InterruptTurn requests interruption for a specific turn.
+func (c *RPCClient) InterruptTurn(turnID, reason string) (*TurnInterruptResponse, error) {
+	params := TurnInterruptRequest{
+		TurnID: strings.TrimSpace(turnID),
+		Reason: strings.TrimSpace(reason),
+	}
+	var resp TurnInterruptResponse
+	if err := c.call("turn/interrupt", params, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

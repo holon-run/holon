@@ -1423,3 +1423,59 @@ func TestHandleTurnAckCompletesAndEmitsAssistantItem(t *testing.T) {
 		t.Fatalf("expected turn/completed notification in output: %s", output)
 	}
 }
+
+func TestHandleTurnProgressEmitsProgressNotification(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rt, err := NewRuntime(tmpDir)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	rt.setTurnIdleTTLForTest(5 * time.Second)
+
+	b := NewNotificationBroadcaster()
+	var buf bytes.Buffer
+	sw := NewStreamWriter(&buf)
+	b.Subscribe(sw)
+	rt.SetBroadcaster(b)
+
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"thread_id": "thread_progress",
+		"input": []map[string]interface{}{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": "hello"},
+				},
+			},
+		},
+	})
+	startResult, rpcErr := rt.HandleTurnStart(startParams)
+	if rpcErr != nil {
+		t.Fatalf("HandleTurnStart() error = %v", rpcErr)
+	}
+	startResp := startResult.(TurnStartResponse)
+
+	ok := rt.HandleTurnProgress(TurnAckRecord{
+		TurnID:   startResp.TurnID,
+		ThreadID: "thread_progress",
+		Status:   "running",
+		Message:  "controller event status: running",
+		EventID:  "evt_progress_1",
+	})
+	if !ok {
+		t.Fatalf("HandleTurnProgress() returned false, expected true")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "\"method\":\"turn/progress\"") {
+		t.Fatalf("expected turn/progress notification in output: %s", output)
+	}
+	if !strings.Contains(output, "\"state\":\"running\"") {
+		t.Fatalf("expected running progress state in output: %s", output)
+	}
+	if !strings.Contains(output, "\"event_id\":\"evt_progress_1\"") {
+		t.Fatalf("expected event_id in progress output: %s", output)
+	}
+}

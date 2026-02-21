@@ -50,6 +50,7 @@ var (
 
 const controllerRPCSocketPathInContainer = docker.ContainerAgentHome + "/run/agent.sock"
 const defaultControllerEventTimeout = 60 * time.Minute
+const defaultTurnProgressHeartbeat = 3 * time.Second
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -906,6 +907,7 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 		"workspace_host_path", resolvedWorkspace.HostPath,
 		"workspace_container_path", resolvedWorkspace.ContainerPath,
 	)
+	dispatchStartedAt := time.Now().UTC()
 	result, err := h.postEventWithReconnect(ctx, ref, sessionKey, enriched)
 	if err != nil {
 		return err
@@ -915,7 +917,39 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 		if strings.TrimSpace(eventID) == "" {
 			return fmt.Errorf("controller accepted event but did not provide event_id")
 		}
-		result, err = h.waitForControllerEventResult(ctx, ref, sessionKey, eventID)
+		if item.turnID != "" {
+			initialStatus := normalizeControllerProgressState(result.Status)
+			initialMessage := strings.TrimSpace(result.Message)
+			if initialMessage == "" {
+				initialMessage = fmt.Sprintf("controller event status: %s", initialStatus)
+			}
+			h.publishTurnAck(serve.TurnAckRecord{
+				EventID:  eventID,
+				TurnID:   item.turnID,
+				ThreadID: firstNonEmpty(strings.TrimSpace(result.ThreadID), item.threadID),
+				Status:   initialStatus,
+				Message:  initialMessage,
+				At:       time.Now().UTC().Format(time.RFC3339Nano),
+			})
+		}
+		result, err = h.waitForControllerEventResult(ctx, ref, sessionKey, eventID, func(progress controllerRPCEventResponse, elapsed time.Duration) {
+			if item.turnID == "" {
+				return
+			}
+			progressStatus := normalizeControllerProgressState(progress.Status)
+			progressMessage := strings.TrimSpace(progress.Message)
+			if progressMessage == "" {
+				progressMessage = fmt.Sprintf("controller event status: %s", progressStatus)
+			}
+			h.publishTurnAck(serve.TurnAckRecord{
+				EventID:  eventID,
+				TurnID:   item.turnID,
+				ThreadID: firstNonEmpty(strings.TrimSpace(progress.ThreadID), item.threadID),
+				Status:   progressStatus,
+				Message:  progressMessage,
+				At:       dispatchStartedAt.Add(elapsed).Format(time.RFC3339Nano),
+			})
+		})
 		if err != nil {
 			return err
 		}
@@ -1651,13 +1685,22 @@ func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref s
 	return postEventRPC(restartCtx, client, sessionKey, env)
 }
 
-func (h *cliControllerHandler) waitForControllerEventResult(ctx context.Context, ref, sessionKey, eventID string) (controllerRPCEventResponse, error) {
+func (h *cliControllerHandler) waitForControllerEventResult(
+	ctx context.Context,
+	ref,
+	sessionKey,
+	eventID string,
+	onProgress func(controllerRPCEventResponse, time.Duration),
+) (controllerRPCEventResponse, error) {
 	if strings.TrimSpace(eventID) == "" {
 		return controllerRPCEventResponse{}, fmt.Errorf("event_id is required to wait for controller event result")
 	}
 	delay := 300 * time.Millisecond
 	const maxDelay = 5 * time.Second
 	lastStatus := ""
+	startedAt := time.Now()
+	lastProgressEmit := time.Time{}
+	progressHeartbeat := resolveTurnProgressHeartbeat()
 
 	for {
 		resp, err := h.getEventStatusRPC(ctx, ref, sessionKey, eventID)
@@ -1668,7 +1711,8 @@ func (h *cliControllerHandler) waitForControllerEventResult(ctx context.Context,
 		if currentStatus == "" {
 			currentStatus = "unknown"
 		}
-		if currentStatus != lastStatus {
+		statusChanged := currentStatus != lastStatus
+		if statusChanged {
 			holonlog.Info(
 				"controller event status",
 				"event_id", eventID,
@@ -1676,6 +1720,18 @@ func (h *cliControllerHandler) waitForControllerEventResult(ctx context.Context,
 				"status", currentStatus,
 			)
 			lastStatus = currentStatus
+		}
+		if onProgress != nil && !isControllerEventTerminalStatus(resp.Status) {
+			emitProgress := false
+			if lastProgressEmit.IsZero() || statusChanged {
+				emitProgress = true
+			} else if progressHeartbeat > 0 && time.Since(lastProgressEmit) >= progressHeartbeat {
+				emitProgress = true
+			}
+			if emitProgress {
+				onProgress(resp, time.Since(startedAt))
+				lastProgressEmit = time.Now()
+			}
 		}
 		if isControllerEventTerminalStatus(resp.Status) {
 			if strings.EqualFold(strings.TrimSpace(resp.Status), "failed") {
@@ -1698,6 +1754,33 @@ func (h *cliControllerHandler) waitForControllerEventResult(ctx context.Context,
 			return controllerRPCEventResponse{}, ctx.Err()
 		case <-timer.C:
 		}
+	}
+}
+
+func resolveTurnProgressHeartbeat() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("HOLON_SERVE_TURN_PROGRESS_HEARTBEAT"))
+	if raw == "" {
+		return defaultTurnProgressHeartbeat
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval <= 0 {
+		holonlog.Warn("invalid HOLON_SERVE_TURN_PROGRESS_HEARTBEAT; using default", "value", raw, "default", defaultTurnProgressHeartbeat.String())
+		return defaultTurnProgressHeartbeat
+	}
+	return interval
+}
+
+func normalizeControllerProgressState(status string) string {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	switch normalized {
+	case "accepted", "queued":
+		return "queued"
+	case "running":
+		return "running"
+	case "cancel_requested":
+		return "cancel_requested"
+	default:
+		return "waiting"
 	}
 }
 

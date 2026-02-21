@@ -500,19 +500,22 @@ func TestHandleTurnStart_WaitsForAsyncControllerCompletion(t *testing.T) {
 		t.Fatalf("HandleTurnStart() error = %v", err)
 	}
 
-	select {
-	case ack := <-h.TurnAcks():
-		if ack.TurnID != "turn-1" {
-			t.Fatalf("turn ack turn_id = %q, want turn-1", ack.TurnID)
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ack := <-h.TurnAcks():
+			if ack.TurnID != "turn-1" {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(ack.Status), "completed") {
+				if strings.TrimSpace(ack.Message) != "done" {
+					t.Fatalf("turn ack message = %q, want done", ack.Message)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for terminal turn ack")
 		}
-		if ack.Status != "completed" {
-			t.Fatalf("turn ack status = %q, want completed", ack.Status)
-		}
-		if strings.TrimSpace(ack.Message) != "done" {
-			t.Fatalf("turn ack message = %q, want done", ack.Message)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for turn ack")
 	}
 }
 

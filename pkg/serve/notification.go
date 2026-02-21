@@ -20,35 +20,47 @@ type NotificationParams interface{}
 // ItemNotification represents an item lifecycle notification
 // Corresponds to Codex "item/*" notifications
 type ItemNotification struct {
-	ItemID      string                 `json:"item_id"`
-	Type        string                 `json:"type"` // created, updated, deleted
-	Status      string                 `json:"status"`
-	Content     map[string]interface{} `json:"content,omitempty"`
-	Timestamp   string                 `json:"timestamp"`
-	ThreadID    string                 `json:"thread_id,omitempty"`
-	TurnID      string                 `json:"turn_id,omitempty"`
+	ItemID    string                 `json:"item_id"`
+	Type      string                 `json:"type"` // created, updated, deleted
+	Status    string                 `json:"status"`
+	Content   map[string]interface{} `json:"content,omitempty"`
+	Timestamp string                 `json:"timestamp"`
+	ThreadID  string                 `json:"thread_id,omitempty"`
+	TurnID    string                 `json:"turn_id,omitempty"`
 }
 
 // TurnNotification represents a turn lifecycle notification
 // Corresponds to Codex "turn/*" notifications
 type TurnNotification struct {
-	TurnID      string    `json:"turn_id"`
-	Type        string    `json:"type"` // started, completed, interrupted
-	State       string    `json:"state"`
-	ThreadID    string    `json:"thread_id,omitempty"`
-	StartedAt   string    `json:"started_at,omitempty"`
-	CompletedAt string    `json:"completed_at,omitempty"`
-	Message     string    `json:"message,omitempty"`
+	TurnID      string `json:"turn_id"`
+	Type        string `json:"type"` // started, completed, interrupted
+	State       string `json:"state"`
+	ThreadID    string `json:"thread_id,omitempty"`
+	StartedAt   string `json:"started_at,omitempty"`
+	CompletedAt string `json:"completed_at,omitempty"`
+	Message     string `json:"message,omitempty"`
+}
+
+// TurnProgressNotification represents non-terminal turn lifecycle updates.
+// Corresponds to Codex "turn/progress" notifications.
+type TurnProgressNotification struct {
+	TurnID    string `json:"turn_id"`
+	ThreadID  string `json:"thread_id,omitempty"`
+	State     string `json:"state"`
+	Message   string `json:"message,omitempty"`
+	EventID   string `json:"event_id,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	ElapsedMS int64  `json:"elapsed_ms,omitempty"`
 }
 
 // ThreadNotification represents a thread lifecycle notification
 // Corresponds to Codex "thread/*" notifications
 type ThreadNotification struct {
-	ThreadID  string    `json:"thread_id"`
-	Type      string    `json:"type"` // started, resumed, paused, closed
-	State     string    `json:"state"`
-	StartedAt string    `json:"started_at,omitempty"`
-	Message   string    `json:"message,omitempty"`
+	ThreadID  string `json:"thread_id"`
+	Type      string `json:"type"` // started, resumed, paused, closed
+	State     string `json:"state"`
+	StartedAt string `json:"started_at,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 // LogNotification represents a log streaming notification
@@ -77,6 +89,15 @@ func NewTurnNotification(turnID, notificationType, state string) TurnNotificatio
 		Type:      notificationType,
 		State:     state,
 		StartedAt: time.Now().Format(time.RFC3339),
+	}
+}
+
+// NewTurnProgressNotification creates a new non-terminal turn progress notification.
+func NewTurnProgressNotification(turnID, state string) TurnProgressNotification {
+	return TurnProgressNotification{
+		TurnID:    turnID,
+		State:     state,
+		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 }
 
@@ -120,6 +141,20 @@ func (n TurnNotification) ToJSONRPCNotification() (Notification, error) {
 	}, nil
 }
 
+// ToJSONRPCNotification converts a TurnProgressNotification to a JSON-RPC notification.
+func (n TurnProgressNotification) ToJSONRPCNotification() (Notification, error) {
+	params, err := json.Marshal(n)
+	if err != nil {
+		return Notification{}, fmt.Errorf("failed to marshal turn progress notification: %w", err)
+	}
+
+	return Notification{
+		JSONRPC: "2.0",
+		Method:  "turn/progress",
+		Params:  params,
+	}, nil
+}
+
 // ToJSONRPCNotification converts a ThreadNotification to a JSON-RPC notification
 func (n ThreadNotification) ToJSONRPCNotification() (Notification, error) {
 	params, err := json.Marshal(n)
@@ -143,8 +178,8 @@ const (
 	ItemNotificationDeleted = "deleted"
 
 	// Turn notification types
-	TurnNotificationStarted    = "started"
-	TurnNotificationCompleted  = "completed"
+	TurnNotificationStarted     = "started"
+	TurnNotificationCompleted   = "completed"
 	TurnNotificationInterrupted = "interrupted"
 
 	// Thread notification types

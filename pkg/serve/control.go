@@ -216,6 +216,12 @@ func (rt *Runtime) emitTurnNotification(n TurnNotification) {
 	}
 }
 
+func (rt *Runtime) emitTurnProgressNotification(n TurnProgressNotification) {
+	if broadcaster := rt.getBroadcaster(); broadcaster != nil {
+		broadcaster.BroadcastTurnProgressNotification(n)
+	}
+}
+
 func (rt *Runtime) emitItemNotification(n ItemNotification) {
 	if broadcaster := rt.getBroadcaster(); broadcaster != nil {
 		broadcaster.BroadcastItemNotification(n)
@@ -846,6 +852,57 @@ func (rt *Runtime) HandleTurnAck(turnID string, success bool, message string) bo
 	}
 
 	return true
+}
+
+// HandleTurnProgress emits non-terminal progress updates for an active turn.
+func (rt *Runtime) HandleTurnProgress(record TurnAckRecord) bool {
+	turnID := strings.TrimSpace(record.TurnID)
+	if turnID == "" {
+		return false
+	}
+	turn, ok := rt.loadTurn(turnID)
+	if !ok {
+		return false
+	}
+
+	state := normalizeTurnProgressState(record.Status)
+	notif := NewTurnProgressNotification(turnID, state)
+	notif.ThreadID = strings.TrimSpace(record.ThreadID)
+	if notif.ThreadID == "" {
+		notif.ThreadID = turn.ThreadID
+	}
+	notif.EventID = strings.TrimSpace(record.EventID)
+	notif.Message = strings.TrimSpace(record.Message)
+	if notif.Message == "" {
+		notif.Message = fmt.Sprintf("controller event status: %s", state)
+	}
+	now := rt.now()
+	notif.UpdatedAt = now.Format(time.RFC3339)
+	if parsedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(record.At)); err == nil {
+		notif.UpdatedAt = parsedAt.Format(time.RFC3339)
+	}
+	if !turn.StartedAt.IsZero() {
+		notif.ElapsedMS = now.Sub(turn.StartedAt).Milliseconds()
+	}
+	rt.emitTurnProgressNotification(notif)
+	rt.scheduleTurnAutoComplete(turnID)
+	return true
+}
+
+func normalizeTurnProgressState(status string) string {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	switch normalized {
+	case "accepted", "queued":
+		return "queued"
+	case "running":
+		return "running"
+	case "cancel_requested":
+		return "cancel_requested"
+	case "waiting":
+		return "waiting"
+	default:
+		return "waiting"
+	}
 }
 
 func (rt *Runtime) emitUserInputItems(threadID, turnID string, input []TurnInputMessage) {
