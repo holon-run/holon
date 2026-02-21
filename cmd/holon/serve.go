@@ -867,6 +867,7 @@ func (h *cliControllerHandler) InterruptTurn(ctx context.Context, turnID, thread
 	state.CancelReason = reason
 	state.Status = "cancel_requested"
 	state.LastUpdatedAt = time.Now().UTC()
+	threadIDSnapshot := strings.TrimSpace(state.ThreadID)
 	eventID := strings.TrimSpace(state.EventID)
 	if eventID == "" && h.turnEventIndex != nil {
 		eventID = strings.TrimSpace(h.turnEventIndex[turnID])
@@ -876,7 +877,7 @@ func (h *cliControllerHandler) InterruptTurn(ctx context.Context, turnID, thread
 	h.publishTurnAck(serve.TurnAckRecord{
 		EventID:  eventID,
 		TurnID:   turnID,
-		ThreadID: firstNonEmpty(state.ThreadID, threadID),
+		ThreadID: firstNonEmpty(threadIDSnapshot, threadID),
 		Status:   "cancel_requested",
 		Message:  reason,
 		At:       time.Now().UTC().Format(time.RFC3339Nano),
@@ -885,7 +886,7 @@ func (h *cliControllerHandler) InterruptTurn(ctx context.Context, turnID, thread
 	if eventID == "" {
 		h.publishTurnAck(serve.TurnAckRecord{
 			TurnID:   turnID,
-			ThreadID: firstNonEmpty(state.ThreadID, threadID),
+			ThreadID: firstNonEmpty(threadIDSnapshot, threadID),
 			Status:   "interrupted",
 			Message:  reason,
 			At:       time.Now().UTC().Format(time.RFC3339Nano),
@@ -894,7 +895,9 @@ func (h *cliControllerHandler) InterruptTurn(ctx context.Context, turnID, thread
 		return nil
 	}
 
-	resp, err := h.cancelEventWithReconnect(ctx, "local/rpc#0", eventID, reason)
+	cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	resp, err := h.cancelEventWithReconnect(cancelCtx, "local/rpc#0", eventID, reason)
 	if err != nil {
 		return err
 	}
@@ -903,7 +906,7 @@ func (h *cliControllerHandler) InterruptTurn(ctx context.Context, turnID, thread
 		h.publishTurnAck(serve.TurnAckRecord{
 			EventID:  eventID,
 			TurnID:   turnID,
-			ThreadID: firstNonEmpty(strings.TrimSpace(resp.ThreadID), state.ThreadID, threadID),
+			ThreadID: firstNonEmpty(strings.TrimSpace(resp.ThreadID), threadIDSnapshot, threadID),
 			Status:   cancelStatus,
 			Message:  firstNonEmpty(strings.TrimSpace(resp.Message), reason),
 			At:       time.Now().UTC().Format(time.RFC3339Nano),
@@ -1219,7 +1222,9 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 				state.LastUpdatedAt = time.Now().UTC()
 			}
 			h.mu.Unlock()
-			h.setTurnEventIndex(item.turnID, eventID)
+			if err := h.setTurnEventIndex(item.turnID, eventID); err != nil {
+				return fmt.Errorf("failed to persist turn-event mapping for turn %s: %w", item.turnID, err)
+			}
 			h.publishTurnAck(serve.TurnAckRecord{
 				EventID:  eventID,
 				TurnID:   item.turnID,
@@ -2548,6 +2553,9 @@ func resolveControllerEventTimeout() time.Duration {
 }
 
 func isControllerEventPendingStatus(status string) bool {
+	// Canonical serve lifecycle:
+	// pending: accepted -> queued -> running -> cancel_requested
+	// terminal: completed | failed | interrupted
 	normalized := strings.ToLower(strings.TrimSpace(status))
 	return normalized == "" || normalized == "accepted" || normalized == "queued" || normalized == "running" || normalized == "cancel_requested"
 }
@@ -2675,11 +2683,11 @@ func (h *cliControllerHandler) saveTurnEventIndexLocked() error {
 	return nil
 }
 
-func (h *cliControllerHandler) setTurnEventIndex(turnID, eventID string) {
+func (h *cliControllerHandler) setTurnEventIndex(turnID, eventID string) error {
 	turnID = strings.TrimSpace(turnID)
 	eventID = strings.TrimSpace(eventID)
 	if turnID == "" {
-		return
+		return fmt.Errorf("turn_id is required")
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2692,8 +2700,9 @@ func (h *cliControllerHandler) setTurnEventIndex(turnID, eventID string) {
 		h.turnEventIndex[turnID] = eventID
 	}
 	if err := h.saveTurnEventIndexLocked(); err != nil {
-		holonlog.Warn("failed to persist turn event index", "turn_id", turnID, "error", err)
+		return err
 	}
+	return nil
 }
 
 type serveStartupDiagnostics struct {

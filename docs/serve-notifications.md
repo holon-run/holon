@@ -272,6 +272,15 @@ Common state values used across notifications:
 | `paused` | Temporarily suspended |
 | `closed` | Terminated |
 
+## Canonical Turn Status Lifecycle
+
+Turn status lifecycle is aligned between Go serve runtime and TypeScript controller runtime:
+
+- Pending (non-terminal): `accepted -> queued -> running -> cancel_requested`
+- Terminal: `completed | failed | interrupted`
+
+`cancel_requested` is intentionally non-terminal. A turn remains active until it transitions to a terminal status.
+
 ## Bidirectional Streaming
 
 The stream supports both server-to-client notifications and client-to-server requests.

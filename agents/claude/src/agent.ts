@@ -1145,6 +1145,9 @@ async function runServeClaudeSession(
         session_key: record.sessionKey,
       });
 
+      // Canonical status lifecycle shared with Go runtime:
+      // pending: accepted -> queued -> running -> cancel_requested
+      // terminal: completed | failed | interrupted
       const isTerminalStatus = (status: ControllerEventResponse["status"]): boolean =>
         status === "completed" || status === "failed" || status === "interrupted";
 
@@ -1271,14 +1274,8 @@ async function runServeClaudeSession(
                   turnAbortController.signal,
                 );
                 refreshSessionId(record.sessionKey, turnResult.sessionID);
-                const statusAfterTurn = String(record.status);
-                if (statusAfterTurn === "cancel_requested" || turnAbortController.signal.aborted) {
-                  record.status = "interrupted";
-                  record.message = record.cancelReason || "event canceled";
-                } else {
-                  record.status = turnResult.success ? "completed" : "failed";
-                  record.message = truncateMessage(turnResult.result || "");
-                }
+                record.status = turnResult.success ? "completed" : "failed";
+                record.message = truncateMessage(turnResult.result || "");
                 record.updatedAt = Date.now();
                 record.abortController = undefined;
               })
