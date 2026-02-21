@@ -612,8 +612,12 @@ type cliControllerHandler struct {
 	sessionLocks          map[string]*sessionLockEntry
 	turnDispatch          map[string]*turnDispatchState
 	sessionEpoch          map[string]uint64
+	sessionEpochReason    map[string]string
 	turnEventIndex        map[string]string
 	turnEventIndexPath    string
+	sessionQueuedTurns    map[string][]string
+	followupPolicy        serveFollowupPolicy
+	maxQueuedTurns        int
 	closeOnce             sync.Once
 	mu                    sync.Mutex
 }
@@ -634,8 +638,17 @@ type resolvedWorkspace struct {
 }
 
 const defaultServeSessionConcurrency = 4
+const defaultServeMaxQueuedTurns = 8
 const maxSessionLockEntries = 1024
 const sessionLockRetention = 10 * time.Minute
+
+type serveFollowupPolicy string
+
+const (
+	serveFollowupPolicyFollowup  serveFollowupPolicy = "followup"
+	serveFollowupPolicyInterrupt serveFollowupPolicy = "interrupt"
+	serveFollowupPolicyCollect   serveFollowupPolicy = "collect"
+)
 
 type sessionLockEntry struct {
 	mu       sync.Mutex
@@ -696,8 +709,12 @@ func newCLIControllerHandler(
 		sessionLocks:          make(map[string]*sessionLockEntry),
 		turnDispatch:          make(map[string]*turnDispatchState),
 		sessionEpoch:          make(map[string]uint64),
+		sessionEpochReason:    make(map[string]string),
 		turnEventIndex:        make(map[string]string),
 		turnEventIndexPath:    filepath.Join(stateDir, "controller-state", "turn-event-index.json"),
+		sessionQueuedTurns:    make(map[string][]string),
+		followupPolicy:        resolveServeFollowupPolicy(),
+		maxQueuedTurns:        resolveServeMaxQueuedTurns(),
 	}
 	if err := handler.loadTurnEventIndex(); err != nil {
 		return nil, err
@@ -741,11 +758,23 @@ func (h *cliControllerHandler) ensurePumpStartedLocked() {
 	if h.sessionEpoch == nil {
 		h.sessionEpoch = make(map[string]uint64)
 	}
+	if h.sessionEpochReason == nil {
+		h.sessionEpochReason = make(map[string]string)
+	}
 	if h.turnEventIndex == nil {
 		h.turnEventIndex = make(map[string]string)
 	}
+	if h.sessionQueuedTurns == nil {
+		h.sessionQueuedTurns = make(map[string][]string)
+	}
 	if strings.TrimSpace(h.turnEventIndexPath) == "" {
 		h.turnEventIndexPath = filepath.Join(h.stateDir, "controller-state", "turn-event-index.json")
+	}
+	if h.followupPolicy == "" {
+		h.followupPolicy = resolveServeFollowupPolicy()
+	}
+	if h.maxQueuedTurns <= 0 {
+		h.maxQueuedTurns = resolveServeMaxQueuedTurns()
 	}
 	if h.handlerCtx == nil || h.handlerCancel == nil {
 		h.handlerCtx, h.handlerCancel = context.WithCancel(context.Background())
@@ -833,10 +862,7 @@ func (h *cliControllerHandler) InterruptTurn(ctx context.Context, turnID, thread
 	if sessionKey == "" {
 		sessionKey = "main"
 	}
-	if h.sessionEpoch == nil {
-		h.sessionEpoch = make(map[string]uint64)
-	}
-	h.sessionEpoch[sessionKey]++
+	h.advanceSessionEpochLocked(sessionKey, "turn interrupted by user request")
 	state.CancelRequested = true
 	state.CancelReason = reason
 	state.Status = "cancel_requested"
@@ -898,14 +924,30 @@ func (h *cliControllerHandler) enqueueEvent(ctx context.Context, item controller
 	if sessionKey == "" {
 		sessionKey = "main"
 	}
-	if item.sessionEpoch == 0 {
-		item.sessionEpoch = h.sessionEpoch[sessionKey]
-	}
 	if item.turnID != "" {
+		queuedCount := h.queuedTurnsCountLocked(sessionKey)
+		if h.maxQueuedTurns > 0 && queuedCount >= h.maxQueuedTurns {
+			h.mu.Unlock()
+			return fmt.Errorf("session %s queue is full (%d queued turns)", sessionKey, h.maxQueuedTurns)
+		}
+		switch h.followupPolicy {
+		case serveFollowupPolicyCollect:
+			if queuedCount > 0 {
+				item.sessionEpoch = h.advanceSessionEpochLocked(sessionKey, "superseded by newer turn (collect policy)")
+			}
+		case serveFollowupPolicyInterrupt:
+			if queuedCount > 0 {
+				item.sessionEpoch = h.advanceSessionEpochLocked(sessionKey, "superseded by newer turn (interrupt policy)")
+			}
+		}
+		if item.sessionEpoch == 0 {
+			item.sessionEpoch = h.sessionEpoch[sessionKey]
+		}
 		threadID := normalizeSessionKey(item.threadID)
 		if threadID == "" {
 			threadID = sessionKey
 		}
+		h.enqueueTurnLocked(sessionKey, item.turnID)
 		h.turnDispatch[item.turnID] = &turnDispatchState{
 			TurnID:        item.turnID,
 			ThreadID:      threadID,
@@ -913,6 +955,8 @@ func (h *cliControllerHandler) enqueueEvent(ctx context.Context, item controller
 			Status:        "queued",
 			LastUpdatedAt: time.Now().UTC(),
 		}
+	} else if item.sessionEpoch == 0 {
+		item.sessionEpoch = h.sessionEpoch[sessionKey]
 	}
 	h.mu.Unlock()
 
@@ -957,14 +1001,14 @@ func (h *cliControllerHandler) runEventPump() {
 				lockEntry.mu.Lock()
 				defer lockEntry.mu.Unlock()
 
-				if h.shouldSkipQueuedEvent(item, sessionKey) {
+				if shouldSkip, skipReason := h.shouldSkipQueuedEvent(item, sessionKey); shouldSkip {
 					if item.turnID != "" {
 						h.publishTurnAck(serve.TurnAckRecord{
 							EventID:  item.env.ID,
 							TurnID:   item.turnID,
 							ThreadID: item.threadID,
 							Status:   "interrupted",
-							Message:  "turn canceled before execution",
+							Message:  firstNonEmpty(skipReason, "turn canceled before execution"),
 							At:       time.Now().UTC().Format(time.RFC3339Nano),
 						})
 						h.clearTurnDispatch(item.turnID)
@@ -1028,14 +1072,21 @@ func (h *cliControllerHandler) releaseSessionLock(sessionKey string, entry *sess
 	}
 }
 
-func (h *cliControllerHandler) shouldSkipQueuedEvent(item controllerEvent, sessionKey string) bool {
+func (h *cliControllerHandler) shouldSkipQueuedEvent(item controllerEvent, sessionKey string) (bool, string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.sessionEpoch == nil {
-		return false
+		return false, ""
 	}
 	currentEpoch := h.sessionEpoch[sessionKey]
-	return item.sessionEpoch < currentEpoch
+	if item.sessionEpoch < currentEpoch {
+		reason := strings.TrimSpace(h.sessionEpochReason[sessionKey])
+		if reason == "" {
+			reason = "superseded by newer session work"
+		}
+		return true, reason
+	}
+	return false, ""
 }
 
 func (h *cliControllerHandler) clearTurnDispatch(turnID string) {
@@ -1046,12 +1097,63 @@ func (h *cliControllerHandler) clearTurnDispatch(turnID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.turnDispatch != nil {
+		if existing, ok := h.turnDispatch[turnID]; ok {
+			h.dequeueTurnLocked(strings.TrimSpace(existing.SessionKey), turnID)
+		}
 		delete(h.turnDispatch, turnID)
 	}
 	if h.turnEventIndex != nil {
 		delete(h.turnEventIndex, turnID)
 	}
 	_ = h.saveTurnEventIndexLocked()
+}
+
+func (h *cliControllerHandler) advanceSessionEpochLocked(sessionKey, reason string) uint64 {
+	if h.sessionEpoch == nil {
+		h.sessionEpoch = make(map[string]uint64)
+	}
+	if h.sessionEpochReason == nil {
+		h.sessionEpochReason = make(map[string]string)
+	}
+	h.sessionEpoch[sessionKey]++
+	h.sessionEpochReason[sessionKey] = strings.TrimSpace(reason)
+	return h.sessionEpoch[sessionKey]
+}
+
+func (h *cliControllerHandler) queuedTurnsCountLocked(sessionKey string) int {
+	if h.sessionQueuedTurns == nil {
+		return 0
+	}
+	return len(h.sessionQueuedTurns[sessionKey])
+}
+
+func (h *cliControllerHandler) enqueueTurnLocked(sessionKey, turnID string) {
+	if h.sessionQueuedTurns == nil {
+		h.sessionQueuedTurns = make(map[string][]string)
+	}
+	h.sessionQueuedTurns[sessionKey] = append(h.sessionQueuedTurns[sessionKey], turnID)
+}
+
+func (h *cliControllerHandler) dequeueTurnLocked(sessionKey, turnID string) {
+	if h.sessionQueuedTurns == nil {
+		return
+	}
+	queued := h.sessionQueuedTurns[sessionKey]
+	if len(queued) == 0 {
+		return
+	}
+	filtered := make([]string, 0, len(queued))
+	for _, existing := range queued {
+		if existing == turnID {
+			continue
+		}
+		filtered = append(filtered, existing)
+	}
+	if len(filtered) == 0 {
+		delete(h.sessionQueuedTurns, sessionKey)
+		return
+	}
+	h.sessionQueuedTurns[sessionKey] = filtered
 }
 
 func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
@@ -2479,6 +2581,32 @@ func resolveServeSessionConcurrency() int {
 	if err != nil || value <= 0 {
 		holonlog.Warn("invalid HOLON_SERVE_CONCURRENCY; using default", "value", raw, "default", defaultServeSessionConcurrency)
 		return defaultServeSessionConcurrency
+	}
+	return value
+}
+
+func resolveServeFollowupPolicy() serveFollowupPolicy {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("HOLON_SERVE_FOLLOWUP_POLICY")))
+	switch serveFollowupPolicy(raw) {
+	case serveFollowupPolicyFollowup, serveFollowupPolicyInterrupt, serveFollowupPolicyCollect:
+		return serveFollowupPolicy(raw)
+	case "":
+		return serveFollowupPolicyFollowup
+	default:
+		holonlog.Warn("invalid HOLON_SERVE_FOLLOWUP_POLICY; using default", "value", raw, "default", string(serveFollowupPolicyFollowup))
+		return serveFollowupPolicyFollowup
+	}
+}
+
+func resolveServeMaxQueuedTurns() int {
+	raw := strings.TrimSpace(os.Getenv("HOLON_SERVE_MAX_QUEUED_TURNS"))
+	if raw == "" {
+		return defaultServeMaxQueuedTurns
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		holonlog.Warn("invalid HOLON_SERVE_MAX_QUEUED_TURNS; using default", "value", raw, "default", defaultServeMaxQueuedTurns)
+		return defaultServeMaxQueuedTurns
 	}
 	return value
 }

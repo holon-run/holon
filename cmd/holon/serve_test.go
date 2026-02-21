@@ -126,6 +126,64 @@ func TestResolveControllerRPCReadyTimeout(t *testing.T) {
 	}
 }
 
+func TestResolveServeFollowupPolicy(t *testing.T) {
+	t.Parallel()
+
+	key := "HOLON_SERVE_FOLLOWUP_POLICY"
+	original := os.Getenv(key)
+	t.Cleanup(func() {
+		_ = os.Setenv(key, original)
+	})
+
+	_ = os.Unsetenv(key)
+	if got := resolveServeFollowupPolicy(); got != serveFollowupPolicyFollowup {
+		t.Fatalf("resolveServeFollowupPolicy() default = %q, want %q", got, serveFollowupPolicyFollowup)
+	}
+
+	if err := os.Setenv(key, "collect"); err != nil {
+		t.Fatalf("setenv collect: %v", err)
+	}
+	if got := resolveServeFollowupPolicy(); got != serveFollowupPolicyCollect {
+		t.Fatalf("resolveServeFollowupPolicy() = %q, want %q", got, serveFollowupPolicyCollect)
+	}
+
+	if err := os.Setenv(key, "invalid"); err != nil {
+		t.Fatalf("setenv invalid: %v", err)
+	}
+	if got := resolveServeFollowupPolicy(); got != serveFollowupPolicyFollowup {
+		t.Fatalf("resolveServeFollowupPolicy() invalid fallback = %q, want %q", got, serveFollowupPolicyFollowup)
+	}
+}
+
+func TestResolveServeMaxQueuedTurns(t *testing.T) {
+	t.Parallel()
+
+	key := "HOLON_SERVE_MAX_QUEUED_TURNS"
+	original := os.Getenv(key)
+	t.Cleanup(func() {
+		_ = os.Setenv(key, original)
+	})
+
+	_ = os.Unsetenv(key)
+	if got := resolveServeMaxQueuedTurns(); got != defaultServeMaxQueuedTurns {
+		t.Fatalf("resolveServeMaxQueuedTurns() default = %d, want %d", got, defaultServeMaxQueuedTurns)
+	}
+
+	if err := os.Setenv(key, "3"); err != nil {
+		t.Fatalf("setenv 3: %v", err)
+	}
+	if got := resolveServeMaxQueuedTurns(); got != 3 {
+		t.Fatalf("resolveServeMaxQueuedTurns() = %d, want 3", got)
+	}
+
+	if err := os.Setenv(key, "bad"); err != nil {
+		t.Fatalf("setenv bad: %v", err)
+	}
+	if got := resolveServeMaxQueuedTurns(); got != defaultServeMaxQueuedTurns {
+		t.Fatalf("resolveServeMaxQueuedTurns() invalid fallback = %d, want %d", got, defaultServeMaxQueuedTurns)
+	}
+}
+
 func TestRouteEventToSessionKey(t *testing.T) {
 	t.Parallel()
 
