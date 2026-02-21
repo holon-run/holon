@@ -519,6 +519,77 @@ func TestHandleTurnStart_WaitsForAsyncControllerCompletion(t *testing.T) {
 	}
 }
 
+func TestInterruptTurn_PropagatesCancellation(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	agentHome := shortTempDir(t, "holon-serve-interrupt-home")
+	socketPath := filepath.Join(agentHome, "run", "agent.sock")
+	rpcServer := newMockAsyncControllerRPCServer(t, socketPath)
+	defer rpcServer.Close()
+
+	mockRunner := &mockSessionRunner{
+		waitCh:       make(chan error, 1),
+		waitObserved: make(chan struct{}, 1),
+	}
+
+	h := &cliControllerHandler{
+		repoHint:            "holon-run/holon",
+		stateDir:            td,
+		agentHome:           agentHome,
+		controllerWorkspace: t.TempDir(),
+		controllerRoleLabel: "dev",
+		logLevel:            "progress",
+		sessionRunner:       mockRunner,
+	}
+	defer h.Close()
+
+	if err := h.HandleTurnStart(context.Background(), serve.TurnStartRequest{
+		ThreadID: "main",
+	}, "turn-int-1"); err != nil {
+		t.Fatalf("HandleTurnStart() error = %v", err)
+	}
+
+	// Wait until the turn receives at least one non-terminal ack with an event id.
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ack := <-h.TurnAcks():
+			if ack.TurnID != "turn-int-1" {
+				continue
+			}
+			if strings.TrimSpace(ack.EventID) != "" {
+				goto interruptNow
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for initial turn ack before interrupt")
+		}
+	}
+
+interruptNow:
+	if err := h.InterruptTurn(context.Background(), "turn-int-1", "main", "stop now"); err != nil {
+		t.Fatalf("InterruptTurn() error = %v", err)
+	}
+
+	waitTerminal := time.After(3 * time.Second)
+	for {
+		select {
+		case ack := <-h.TurnAcks():
+			if ack.TurnID != "turn-int-1" {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(ack.Status), "interrupted") {
+				if !strings.Contains(strings.ToLower(ack.Message), "stop now") {
+					t.Fatalf("interrupt ack message = %q, want contains stop now", ack.Message)
+				}
+				return
+			}
+		case <-waitTerminal:
+			t.Fatalf("timed out waiting for interrupted terminal ack")
+		}
+	}
+}
+
 func TestClose_RemovesControllerSocketWithoutSession(t *testing.T) {
 	t.Parallel()
 
@@ -1030,16 +1101,53 @@ func newMockAsyncControllerRPCServer(t *testing.T, socketPath string) *mockAsync
 		go func(id string) {
 			time.Sleep(60 * time.Millisecond)
 			s.mu.Lock()
+			current := s.results[id]
+			if strings.EqualFold(strings.TrimSpace(current.Status), "interrupted") {
+				s.mu.Unlock()
+				return
+			}
 			s.results[id] = controllerRPCEventResponse{
-				Status:  "completed",
-				EventID: id,
-				Message: "done",
+				Status:   "completed",
+				EventID:  id,
+				Message:  "done",
+				ThreadID: current.ThreadID,
 			}
 			s.mu.Unlock()
 		}(eventID)
 	})
 	mux.HandleFunc("/v1/runtime/events/", func(w http.ResponseWriter, r *http.Request) {
 		eventID := strings.TrimPrefix(r.URL.Path, "/v1/runtime/events/")
+		if r.Method == http.MethodDelete {
+			reason := strings.TrimSpace(r.URL.Query().Get("reason"))
+			if reason == "" {
+				reason = "event canceled"
+			}
+			s.mu.Lock()
+			result, ok := s.results[eventID]
+			if !ok {
+				s.mu.Unlock()
+				http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+				return
+			}
+			result.Status = "cancel_requested"
+			result.Message = reason
+			s.results[eventID] = result
+			s.mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(result)
+			go func(id string, message string) {
+				time.Sleep(20 * time.Millisecond)
+				s.mu.Lock()
+				current, ok := s.results[id]
+				if ok {
+					current.Status = "interrupted"
+					current.Message = message
+					s.results[id] = current
+				}
+				s.mu.Unlock()
+			}(eventID, reason)
+			return
+		}
 		s.mu.Lock()
 		result, ok := s.results[eventID]
 		s.mu.Unlock()

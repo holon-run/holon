@@ -148,6 +148,7 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	}
 	ws.runtime.SetBroadcaster(ws.broadcaster)
 	ws.runtime.SetTurnDispatcher(cfg.TurnDispatcher)
+	ws.runtime.SetTurnInterruptDispatcher(turnInterruptDispatcherFromHandler(cfg.Handler))
 
 	if err := ws.loadState(); err != nil {
 		eventsLog.Close()
@@ -232,6 +233,20 @@ func turnAckSourceFromHandler(handler EventHandler) TurnAckSource {
 	return src
 }
 
+type turnInterruptSource interface {
+	InterruptTurn(ctx context.Context, turnID, threadID, reason string) error
+}
+
+func turnInterruptDispatcherFromHandler(handler EventHandler) TurnInterruptDispatcher {
+	src, ok := handler.(turnInterruptSource)
+	if !ok {
+		return nil
+	}
+	return func(ctx context.Context, turnID, threadID, reason string) error {
+		return src.InterruptTurn(ctx, turnID, threadID, reason)
+	}
+}
+
 func (ws *WebhookServer) processTurnAcks(ctx context.Context) {
 	acks := ws.turnAckSource.TurnAcks()
 	if acks == nil {
@@ -252,7 +267,7 @@ func (ws *WebhookServer) processTurnAcks(ctx context.Context) {
 			}
 			status := strings.ToLower(strings.TrimSpace(record.Status))
 			switch status {
-			case "completed", "failed":
+			case "completed", "failed", "interrupted":
 				success := status == "completed"
 				if ws.runtime.HandleTurnAck(turnID, success, record.Message) {
 					holonlog.Debug("turn ack applied", "turn_id", turnID, "status", status)

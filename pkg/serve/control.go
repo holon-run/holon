@@ -80,6 +80,7 @@ type Runtime struct {
 	turns            map[string]*activeTurn
 	turnIdleTTL      time.Duration
 	dispatcher       TurnDispatcher
+	interruptor      TurnInterruptDispatcher
 }
 
 type activeTurn struct {
@@ -92,6 +93,10 @@ type activeTurn struct {
 
 // TurnDispatcher handles user turn input and forwards it to the real controller runtime.
 type TurnDispatcher func(ctx context.Context, req TurnStartRequest, turnID string) error
+
+// TurnInterruptDispatcher handles targeted turn interruption and propagates cancellation
+// to the backend controller runtime.
+type TurnInterruptDispatcher func(ctx context.Context, turnID, threadID, reason string) error
 
 // NewRuntime creates a new runtime manager
 func NewRuntime(stateDir string) (*Runtime, error) {
@@ -192,6 +197,13 @@ func (rt *Runtime) SetTurnDispatcher(dispatcher TurnDispatcher) {
 	rt.dispatcher = dispatcher
 }
 
+// SetTurnInterruptDispatcher injects the runtime dispatcher for turn/interrupt requests.
+func (rt *Runtime) SetTurnInterruptDispatcher(interruptor TurnInterruptDispatcher) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.interruptor = interruptor
+}
+
 func (rt *Runtime) getBroadcaster() *NotificationBroadcaster {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -202,6 +214,12 @@ func (rt *Runtime) getTurnDispatcher() TurnDispatcher {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.dispatcher
+}
+
+func (rt *Runtime) getTurnInterruptDispatcher() TurnInterruptDispatcher {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.interruptor
 }
 
 func (rt *Runtime) emitThreadNotification(n ThreadNotification) {
@@ -1050,13 +1068,34 @@ func (rt *Runtime) HandleTurnInterrupt(params json.RawMessage) (interface{}, *JS
 		turnInterrupted.Message = message
 		rt.emitTurnNotification(turnInterrupted)
 	} else {
-		activeTurn, ok := rt.stopAndRemoveTurn(turnID)
+		activeTurn, ok := rt.loadTurn(turnID)
 		if !ok {
 			return nil, newInvalidParamFieldError("turn_id", "turn_id is not active")
 		}
+		if interruptor := rt.getTurnInterruptDispatcher(); interruptor != nil {
+			progress := NewTurnProgressNotification(turnID, "cancel_requested")
+			progress.ThreadID = activeTurn.ThreadID
+			progress.Message = message
+			progress.UpdatedAt = rt.now().Format(time.RFC3339)
+			if !activeTurn.StartedAt.IsZero() {
+				progress.ElapsedMS = rt.now().Sub(activeTurn.StartedAt).Milliseconds()
+			}
+			rt.emitTurnProgressNotification(progress)
+			if err := interruptor(context.Background(), turnID, activeTurn.ThreadID, strings.TrimSpace(req.Reason)); err != nil {
+				return nil, NewJSONRPCError(ErrCodeInternalError, fmt.Sprintf("failed to interrupt backend turn %s: %s", turnID, err))
+			}
+			return TurnInterruptResponse{
+				TurnID:        turnID,
+				State:         "cancel_requested",
+				InterruptedAt: rt.now().Format(time.RFC3339),
+				Message:       message,
+			}, nil
+		}
+
+		removedTurn, _ := rt.stopAndRemoveTurn(turnID)
 		turnInterrupted := NewTurnNotification(turnID, TurnNotificationInterrupted, StateInterrupted)
-		turnInterrupted.ThreadID = activeTurn.ThreadID
-		turnInterrupted.StartedAt = activeTurn.StartedAt.Format(time.RFC3339)
+		turnInterrupted.ThreadID = removedTurn.ThreadID
+		turnInterrupted.StartedAt = removedTurn.StartedAt.Format(time.RFC3339)
 		turnInterrupted.Message = message
 		rt.emitTurnNotification(turnInterrupted)
 	}

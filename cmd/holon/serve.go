@@ -610,6 +610,10 @@ type cliControllerHandler struct {
 	pumpStarted           bool
 	maxConcurrent         int
 	sessionLocks          map[string]*sessionLockEntry
+	turnDispatch          map[string]*turnDispatchState
+	sessionEpoch          map[string]uint64
+	turnEventIndex        map[string]string
+	turnEventIndexPath    string
 	closeOnce             sync.Once
 	mu                    sync.Mutex
 }
@@ -619,6 +623,7 @@ type controllerEvent struct {
 	sessionKey       string
 	turnID           string
 	threadID         string
+	sessionEpoch     uint64
 	skipMainAnnounce bool
 }
 
@@ -636,6 +641,18 @@ type sessionLockEntry struct {
 	mu       sync.Mutex
 	active   int
 	lastUsed time.Time
+}
+
+type turnDispatchState struct {
+	TurnID           string
+	ThreadID         string
+	SessionKey       string
+	EventID          string
+	Status           string
+	CancelRequested  bool
+	CancelReason     string
+	LastUpdatedAt    time.Time
+	DispatchCancelFn context.CancelFunc
 }
 
 func newCLIControllerHandler(
@@ -677,6 +694,13 @@ func newCLIControllerHandler(
 		workerDone:            make(chan struct{}),
 		maxConcurrent:         resolveServeSessionConcurrency(),
 		sessionLocks:          make(map[string]*sessionLockEntry),
+		turnDispatch:          make(map[string]*turnDispatchState),
+		sessionEpoch:          make(map[string]uint64),
+		turnEventIndex:        make(map[string]string),
+		turnEventIndexPath:    filepath.Join(stateDir, "controller-state", "turn-event-index.json"),
+	}
+	if err := handler.loadTurnEventIndex(); err != nil {
+		return nil, err
 	}
 	handler.handlerCtx, handler.handlerCancel = context.WithCancel(context.Background())
 	handler.pumpStarted = true
@@ -710,6 +734,18 @@ func (h *cliControllerHandler) ensurePumpStartedLocked() {
 	}
 	if h.sessionLocks == nil {
 		h.sessionLocks = make(map[string]*sessionLockEntry)
+	}
+	if h.turnDispatch == nil {
+		h.turnDispatch = make(map[string]*turnDispatchState)
+	}
+	if h.sessionEpoch == nil {
+		h.sessionEpoch = make(map[string]uint64)
+	}
+	if h.turnEventIndex == nil {
+		h.turnEventIndex = make(map[string]string)
+	}
+	if strings.TrimSpace(h.turnEventIndexPath) == "" {
+		h.turnEventIndexPath = filepath.Join(h.stateDir, "controller-state", "turn-event-index.json")
 	}
 	if h.handlerCtx == nil || h.handlerCancel == nil {
 		h.handlerCtx, h.handlerCancel = context.WithCancel(context.Background())
@@ -773,11 +809,111 @@ func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.Tu
 	})
 }
 
+func (h *cliControllerHandler) InterruptTurn(ctx context.Context, turnID, threadID, reason string) error {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return fmt.Errorf("turn_id is required")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "user requested interrupt"
+	}
+
+	h.mu.Lock()
+	h.ensurePumpStartedLocked()
+	state, ok := h.turnDispatch[turnID]
+	if !ok {
+		h.mu.Unlock()
+		return fmt.Errorf("turn %s is not tracked in dispatcher", turnID)
+	}
+	sessionKey := normalizeSessionKey(state.SessionKey)
+	if sessionKey == "" {
+		sessionKey = normalizeSessionKey(threadID)
+	}
+	if sessionKey == "" {
+		sessionKey = "main"
+	}
+	if h.sessionEpoch == nil {
+		h.sessionEpoch = make(map[string]uint64)
+	}
+	h.sessionEpoch[sessionKey]++
+	state.CancelRequested = true
+	state.CancelReason = reason
+	state.Status = "cancel_requested"
+	state.LastUpdatedAt = time.Now().UTC()
+	eventID := strings.TrimSpace(state.EventID)
+	if eventID == "" && h.turnEventIndex != nil {
+		eventID = strings.TrimSpace(h.turnEventIndex[turnID])
+	}
+	h.mu.Unlock()
+
+	h.publishTurnAck(serve.TurnAckRecord{
+		EventID:  eventID,
+		TurnID:   turnID,
+		ThreadID: firstNonEmpty(state.ThreadID, threadID),
+		Status:   "cancel_requested",
+		Message:  reason,
+		At:       time.Now().UTC().Format(time.RFC3339Nano),
+	})
+
+	if eventID == "" {
+		h.publishTurnAck(serve.TurnAckRecord{
+			TurnID:   turnID,
+			ThreadID: firstNonEmpty(state.ThreadID, threadID),
+			Status:   "interrupted",
+			Message:  reason,
+			At:       time.Now().UTC().Format(time.RFC3339Nano),
+		})
+		h.clearTurnDispatch(turnID)
+		return nil
+	}
+
+	resp, err := h.cancelEventWithReconnect(ctx, "local/rpc#0", eventID, reason)
+	if err != nil {
+		return err
+	}
+	cancelStatus := strings.ToLower(strings.TrimSpace(resp.Status))
+	if cancelStatus == "interrupted" || cancelStatus == "failed" || cancelStatus == "completed" {
+		h.publishTurnAck(serve.TurnAckRecord{
+			EventID:  eventID,
+			TurnID:   turnID,
+			ThreadID: firstNonEmpty(strings.TrimSpace(resp.ThreadID), state.ThreadID, threadID),
+			Status:   cancelStatus,
+			Message:  firstNonEmpty(strings.TrimSpace(resp.Message), reason),
+			At:       time.Now().UTC().Format(time.RFC3339Nano),
+		})
+		if cancelStatus != "cancel_requested" {
+			h.clearTurnDispatch(turnID)
+		}
+	}
+	return nil
+}
+
 func (h *cliControllerHandler) enqueueEvent(ctx context.Context, item controllerEvent) error {
 	h.mu.Lock()
 	h.ensurePumpStartedLocked()
 	stopCh := h.stopCh
 	eventQueue := h.eventQueue
+	sessionKey := normalizeSessionKey(item.sessionKey)
+	if sessionKey == "" {
+		sessionKey = "main"
+	}
+	if item.sessionEpoch == 0 {
+		item.sessionEpoch = h.sessionEpoch[sessionKey]
+	}
+	if item.turnID != "" {
+		threadID := normalizeSessionKey(item.threadID)
+		if threadID == "" {
+			threadID = sessionKey
+		}
+		h.turnDispatch[item.turnID] = &turnDispatchState{
+			TurnID:        item.turnID,
+			ThreadID:      threadID,
+			SessionKey:    sessionKey,
+			Status:        "queued",
+			LastUpdatedAt: time.Now().UTC(),
+		}
+	}
 	h.mu.Unlock()
 
 	select {
@@ -821,9 +957,25 @@ func (h *cliControllerHandler) runEventPump() {
 				lockEntry.mu.Lock()
 				defer lockEntry.mu.Unlock()
 
+				if h.shouldSkipQueuedEvent(item, sessionKey) {
+					if item.turnID != "" {
+						h.publishTurnAck(serve.TurnAckRecord{
+							EventID:  item.env.ID,
+							TurnID:   item.turnID,
+							ThreadID: item.threadID,
+							Status:   "interrupted",
+							Message:  "turn canceled before execution",
+							At:       time.Now().UTC().Format(time.RFC3339Nano),
+						})
+						h.clearTurnDispatch(item.turnID)
+					}
+					return
+				}
+
 				if err := h.dispatchQueuedEvent(item); err != nil {
 					holonlog.Error("failed to dispatch controller event", "error", err, "event_id", item.env.ID, "type", item.env.Type, "session_key", sessionKey)
 					if item.turnID != "" {
+						h.clearTurnDispatch(item.turnID)
 						h.publishTurnAck(serve.TurnAckRecord{
 							EventID:  item.env.ID,
 							TurnID:   item.turnID,
@@ -876,6 +1028,32 @@ func (h *cliControllerHandler) releaseSessionLock(sessionKey string, entry *sess
 	}
 }
 
+func (h *cliControllerHandler) shouldSkipQueuedEvent(item controllerEvent, sessionKey string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sessionEpoch == nil {
+		return false
+	}
+	currentEpoch := h.sessionEpoch[sessionKey]
+	return item.sessionEpoch < currentEpoch
+}
+
+func (h *cliControllerHandler) clearTurnDispatch(turnID string) {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.turnDispatch != nil {
+		delete(h.turnDispatch, turnID)
+	}
+	if h.turnEventIndex != nil {
+		delete(h.turnEventIndex, turnID)
+	}
+	_ = h.saveTurnEventIndexLocked()
+}
+
 func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 	sessionKey := normalizeSessionKey(item.sessionKey)
 	if sessionKey == "" {
@@ -897,6 +1075,15 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 	h.mu.Unlock()
 	ctx, cancel := context.WithTimeout(baseCtx, resolveControllerEventTimeout())
 	defer cancel()
+	if item.turnID != "" {
+		h.mu.Lock()
+		if state, ok := h.turnDispatch[item.turnID]; ok {
+			state.DispatchCancelFn = cancel
+			state.Status = "running"
+			state.LastUpdatedAt = time.Now().UTC()
+		}
+		h.mu.Unlock()
+	}
 
 	holonlog.Info(
 		"serve workspace resolved",
@@ -923,6 +1110,14 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 			if initialMessage == "" {
 				initialMessage = fmt.Sprintf("controller event status: %s", initialStatus)
 			}
+			h.mu.Lock()
+			if state, ok := h.turnDispatch[item.turnID]; ok {
+				state.EventID = eventID
+				state.Status = initialStatus
+				state.LastUpdatedAt = time.Now().UTC()
+			}
+			h.mu.Unlock()
+			h.setTurnEventIndex(item.turnID, eventID)
 			h.publishTurnAck(serve.TurnAckRecord{
 				EventID:  eventID,
 				TurnID:   item.turnID,
@@ -941,6 +1136,12 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 			if progressMessage == "" {
 				progressMessage = fmt.Sprintf("controller event status: %s", progressStatus)
 			}
+			h.mu.Lock()
+			if state, ok := h.turnDispatch[item.turnID]; ok {
+				state.Status = progressStatus
+				state.LastUpdatedAt = time.Now().UTC()
+			}
+			h.mu.Unlock()
 			h.publishTurnAck(serve.TurnAckRecord{
 				EventID:  eventID,
 				TurnID:   item.turnID,
@@ -969,6 +1170,7 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 			WorkspaceRef:  resolvedWorkspace.Ref,
 			WorkspacePath: resolvedWorkspace.ContainerPath,
 		})
+		h.clearTurnDispatch(item.turnID)
 	}
 	if sessionKey != "main" && !item.skipMainAnnounce {
 		if err := h.enqueueMainAnnounce(item, sessionKey, strings.TrimSpace(result.Message)); err != nil {
@@ -1819,6 +2021,36 @@ func (h *cliControllerHandler) getEventStatusRPC(ctx context.Context, ref, sessi
 	return controllerRPCEventResponse{}, fmt.Errorf("controller status request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", err, dockerErr)
 }
 
+func (h *cliControllerHandler) cancelEventWithReconnect(ctx context.Context, ref, eventID, reason string) (controllerRPCEventResponse, error) {
+	h.mu.Lock()
+	if err := h.ensureControllerLocked(ctx, ref); err != nil {
+		h.mu.Unlock()
+		return controllerRPCEventResponse{}, err
+	}
+	client := h.controllerHTTPClient
+	containerID := ""
+	if h.controllerSession != nil {
+		containerID = strings.TrimSpace(h.controllerSession.ContainerID)
+	}
+	h.mu.Unlock()
+
+	resp, err := cancelEventRPC(ctx, client, eventID, reason)
+	if err == nil || containerID == "" {
+		return resp, err
+	}
+
+	dockerResp, dockerErr := cancelEventRPCViaDockerExec(ctx, containerID, eventID, reason)
+	if dockerErr == nil {
+		id := containerID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		holonlog.Debug("controller cancel fallback succeeded via docker exec", "container_id", id, "event_id", eventID)
+		return dockerResp, nil
+	}
+	return controllerRPCEventResponse{}, fmt.Errorf("controller cancel request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", err, dockerErr)
+}
+
 func (h *cliControllerHandler) logControllerDoneIfAvailableLocked(reason string) {
 	if h.controllerDone == nil {
 		return
@@ -1922,6 +2154,34 @@ func getEventRPC(ctx context.Context, client *http.Client, eventID string) (cont
 	}
 	if resp.StatusCode != http.StatusOK {
 		return controllerRPCEventResponse{}, fmt.Errorf("controller status %d: %s", resp.StatusCode, strings.TrimSpace(result.Message))
+	}
+	return result, nil
+}
+
+func cancelEventRPC(ctx context.Context, client *http.Client, eventID, reason string) (controllerRPCEventResponse, error) {
+	path := "http://unix/v1/runtime/events/" + url.PathEscape(strings.TrimSpace(eventID))
+	reason = strings.TrimSpace(reason)
+	if reason != "" {
+		path = path + "?reason=" + url.QueryEscape(reason)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to create controller cancel request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller cancel request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	result, err := parseControllerRPCResponse(resp.Body)
+	if err != nil {
+		return controllerRPCEventResponse{}, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller event %q not found", eventID)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller cancel status %d: %s", resp.StatusCode, strings.TrimSpace(result.Message))
 	}
 	return result, nil
 }
@@ -2079,6 +2339,50 @@ req.end();`, controllerRPCSocketPathInContainer, escapedEventID)
 	return result, nil
 }
 
+func cancelEventRPCViaDockerExec(ctx context.Context, containerID, eventID, reason string) (controllerRPCEventResponse, error) {
+	if !isSafeDockerContainerID(containerID) {
+		return controllerRPCEventResponse{}, fmt.Errorf("docker exec cancel failed: invalid container id")
+	}
+	escapedEventID := url.PathEscape(strings.TrimSpace(eventID))
+	path := fmt.Sprintf("/v1/runtime/events/%s", escapedEventID)
+	reason = strings.TrimSpace(reason)
+	if reason != "" {
+		path = path + "?reason=" + url.QueryEscape(reason)
+	}
+	script := fmt.Sprintf(`const http=require("http");
+const req=http.request({socketPath:%q,path:%q,method:"DELETE"},(res)=>{
+  let out=""; res.setEncoding("utf8");
+  res.on("data",(c)=>out+=c);
+  res.on("end",()=>{ process.stdout.write(out); process.exit((res.statusCode===200||res.statusCode===202)?0:3); });
+});
+req.on("error",(err)=>{console.error(String(err)); process.exit(2);});
+req.end();`, controllerRPCSocketPathInContainer, path)
+	cmd := exec.CommandContext(ctx, "docker", "exec", containerID, "node", "-e", script)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		stderrStr := strings.TrimSpace(stderr.String())
+		if errors.Is(err, exec.ErrNotFound) {
+			if stderrStr != "" {
+				return controllerRPCEventResponse{}, fmt.Errorf("docker exec cancel failed: docker CLI not found in PATH; ensure Docker is installed and 'docker' is available: %w: %s", err, stderrStr)
+			}
+			return controllerRPCEventResponse{}, fmt.Errorf("docker exec cancel failed: docker CLI not found in PATH; ensure Docker is installed and 'docker' is available: %w", err)
+		}
+		if stderrStr != "" {
+			return controllerRPCEventResponse{}, fmt.Errorf("docker exec cancel failed: %w: %s", err, stderrStr)
+		}
+		return controllerRPCEventResponse{}, fmt.Errorf("docker exec cancel failed: %w", err)
+	}
+	respBody := bytes.TrimSpace(stdout.Bytes())
+	result, err := parseControllerRPCResponse(bytes.NewReader(respBody))
+	if err != nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("failed to parse docker exec cancel response: %w (body=%q)", err, string(respBody))
+	}
+	return result, nil
+}
+
 func removeStaleControllerSocket(socketPath string) error {
 	if strings.TrimSpace(socketPath) == "" {
 		return nil
@@ -2143,12 +2447,12 @@ func resolveControllerEventTimeout() time.Duration {
 
 func isControllerEventPendingStatus(status string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(status))
-	return normalized == "" || normalized == "accepted" || normalized == "queued" || normalized == "running"
+	return normalized == "" || normalized == "accepted" || normalized == "queued" || normalized == "running" || normalized == "cancel_requested"
 }
 
 func isControllerEventTerminalStatus(status string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(status))
-	return normalized == "completed" || normalized == "failed"
+	return normalized == "completed" || normalized == "failed" || normalized == "interrupted"
 }
 
 func isRetryableControllerRPCError(requestCtx context.Context, err error) bool {
@@ -2186,6 +2490,82 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func (h *cliControllerHandler) loadTurnEventIndex() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.turnEventIndex == nil {
+		h.turnEventIndex = make(map[string]string)
+	}
+	path := strings.TrimSpace(h.turnEventIndexPath)
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read turn event index: %w", err)
+	}
+	var raw map[string]string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("failed to parse turn event index: %w", err)
+	}
+	for turnID, eventID := range raw {
+		turnID = strings.TrimSpace(turnID)
+		eventID = strings.TrimSpace(eventID)
+		if turnID == "" || eventID == "" {
+			continue
+		}
+		h.turnEventIndex[turnID] = eventID
+	}
+	return nil
+}
+
+func (h *cliControllerHandler) saveTurnEventIndexLocked() error {
+	path := strings.TrimSpace(h.turnEventIndexPath)
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("failed to create turn event index dir: %w", err)
+	}
+	data, err := json.MarshalIndent(h.turnEventIndex, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal turn event index: %w", err)
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, append(data, '\n'), 0644); err != nil {
+		return fmt.Errorf("failed to write turn event index temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to replace turn event index: %w", err)
+	}
+	return nil
+}
+
+func (h *cliControllerHandler) setTurnEventIndex(turnID, eventID string) {
+	turnID = strings.TrimSpace(turnID)
+	eventID = strings.TrimSpace(eventID)
+	if turnID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.turnEventIndex == nil {
+		h.turnEventIndex = make(map[string]string)
+	}
+	if eventID == "" {
+		delete(h.turnEventIndex, turnID)
+	} else {
+		h.turnEventIndex[turnID] = eventID
+	}
+	if err := h.saveTurnEventIndexLocked(); err != nil {
+		holonlog.Warn("failed to persist turn event index", "turn_id", turnID, "error", err)
+	}
 }
 
 type serveStartupDiagnostics struct {
