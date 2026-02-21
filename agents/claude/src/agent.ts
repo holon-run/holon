@@ -9,6 +9,7 @@ import type { Options } from "./claudeSdk.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtimePaths.js";
+import { formatToolInputForLog } from "./redact.js";
 
 // Re-export for testing
 export { readBundleManifest, getAgentMetadata } from "./bundleMetadata.js";
@@ -129,12 +130,25 @@ export class ProgressLogger {
     this.minimal(`Starting: ${phaseName}`);
   }
 
-  logToolUse(toolName: string, filesTouched?: string[], fileCount?: number): void {
+  logToolUse(
+    toolName: string,
+    filesTouched?: string[],
+    fileCount?: number,
+    toolInput?: Record<string, unknown>
+  ): void {
     this.toolUseCount += 1;
     if (!this.shouldLog(LogLevel.PROGRESS)) {
       return;
     }
 
+    // If tool input is provided, use the new formatted logging with context
+    if (toolInput && Object.keys(toolInput).length > 0) {
+      const formatted = formatToolInputForLog(toolName, toolInput);
+      console.log(`[TOOL] ${formatted}`);
+      return;
+    }
+
+    // Legacy behavior for backward compatibility
     if (filesTouched && filesTouched.length > 0) {
       const safeFiles = filesTouched.map((f) => path.basename(f)).filter(Boolean);
       const countInfo = `${safeFiles.length} files`;
@@ -612,7 +626,8 @@ async function runClaude(
             logger.streamAssistantText(block.text);
           } else if (block.type === "tool_use") {
             const toolName = typeof block.name === "string" ? block.name : "UnknownTool";
-            logger.logToolUse(toolName);
+            const toolInput = typeof block.input === "object" && block.input !== null ? block.input : undefined;
+            logger.logToolUse(toolName, undefined, undefined, toolInput);
           }
         }
       } else if (message?.type === "result") {
@@ -726,7 +741,8 @@ async function runServeQueryTurn(
           logger.streamAssistantText(block.text);
         } else if (block.type === "tool_use") {
           const toolName = typeof block.name === "string" ? block.name : "UnknownTool";
-          logger.logToolUse(toolName);
+          const toolInput = typeof block.input === "object" && block.input !== null ? block.input : undefined;
+          logger.logToolUse(toolName, undefined, undefined, toolInput);
         }
       }
     } else if (safeMessage.type === "result") {
