@@ -146,6 +146,16 @@ func TestWebhookServer_ProcessTurnAcks_FromSource(t *testing.T) {
 
 	handler.acks <- TurnAckRecord{
 		TurnID:  turnID,
+		Status:  "running",
+		Message: "still running",
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := ws.runtime.loadTurn(turnID); !ok {
+		t.Fatalf("turn %s should remain active after non-terminal progress ack", turnID)
+	}
+
+	handler.acks <- TurnAckRecord{
+		TurnID:  turnID,
 		Status:  "completed",
 		Message: "done",
 	}

@@ -89,6 +89,9 @@ type TurnConversation struct {
 	StartedAt     time.Time
 	UpdatedAt     time.Time
 	State         string
+	ProgressText  string
+	ProgressState string
+	ElapsedMS     int64
 	UserText      string
 	AssistantText string
 }
@@ -170,6 +173,11 @@ type messageSentMsg struct {
 
 type pauseSuccessMsg struct {
 	err error
+}
+
+type interruptResultMsg struct {
+	turnID string
+	err    error
 }
 
 // NewApp creates a new TUI application.
@@ -321,6 +329,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.addSystemMessage("Command sent successfully")
 		}
 		return a, nil
+
+	case interruptResultMsg:
+		if msg.err != nil {
+			a.addSystemMessage(fmt.Sprintf("Turn interrupt failed: %s", msg.err))
+			return a, nil
+		}
+		if strings.TrimSpace(msg.turnID) != "" {
+			a.addSystemMessage(fmt.Sprintf("Interrupt requested for turn %s", strings.TrimSpace(msg.turnID)))
+		} else {
+			a.addSystemMessage("Interrupt requested")
+		}
+		return a, nil
 	}
 
 	return a, nil
@@ -338,6 +358,13 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.sendPauseCmd()
 	case "ctrl+r":
 		return a, a.sendResumeCmd()
+	case "ctrl+x":
+		turnID := a.activeTurnID()
+		if turnID == "" {
+			a.addSystemMessage("No active turn to interrupt")
+			return a, nil
+		}
+		return a, a.sendInterruptTurnCmd(turnID)
 	case "ctrl+l":
 		return a, tea.Batch(a.refreshStatusCmd(), a.refreshLogsCmd())
 	case "ctrl+a":
@@ -503,6 +530,21 @@ func (a *App) handleNotification(notif StreamNotification) {
 			a.addTurnLifecycleMessage(msg, "interrupted")
 		}
 
+	case "turn/progress":
+		var params struct {
+			TurnID    string `json:"turn_id"`
+			ThreadID  string `json:"thread_id,omitempty"`
+			State     string `json:"state,omitempty"`
+			Message   string `json:"message,omitempty"`
+			ElapsedMS int64  `json:"elapsed_ms,omitempty"`
+		}
+		if err := json.Unmarshal(notif.Params, &params); err == nil {
+			if params.TurnID != "" {
+				a.ensureTurn(params.TurnID, params.ThreadID)
+				a.setTurnProgress(params.TurnID, params.State, params.Message, params.ElapsedMS)
+			}
+		}
+
 	case "item/created":
 		var params struct {
 			ItemID   string `json:"item_id"`
@@ -574,6 +616,27 @@ func (a *App) setTurnState(turnID, state string) {
 	}
 	turn := a.ensureTurn(turnID, "")
 	turn.State = strings.TrimSpace(state)
+	if turn.State == "completed" || turn.State == "interrupted" {
+		turn.ProgressText = ""
+		turn.ProgressState = ""
+		turn.ElapsedMS = 0
+	}
+	turn.UpdatedAt = time.Now()
+	a.updateConversationViewport(true)
+}
+
+func (a *App) setTurnProgress(turnID, state, message string, elapsedMS int64) {
+	turn := a.ensureTurn(turnID, "")
+	normalizedState := strings.TrimSpace(state)
+	if normalizedState == "" {
+		normalizedState = "running"
+	}
+	turn.State = normalizedState
+	turn.ProgressState = normalizedState
+	turn.ProgressText = strings.TrimSpace(message)
+	if elapsedMS > 0 {
+		turn.ElapsedMS = elapsedMS
+	}
 	turn.UpdatedAt = time.Now()
 	a.updateConversationViewport(true)
 }
@@ -765,11 +828,11 @@ func (a *App) renderHelp() string {
 	}
 
 	if a.activeDrawer != drawerNone {
-		help := "Keys: [Esc] Close Drawer | [A] Activity | [L] Logs | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh | [q] Quit\nScroll: [↑/↓] Line | [PgUp/PgDn] Page"
+		help := "Keys: [Esc] Close Drawer | [A] Activity | [L] Logs | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+X] Interrupt Turn | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh | [q] Quit\nScroll: [↑/↓] Line | [PgUp/PgDn] Page"
 		return helpStyle.Render(help)
 	}
 
-	help := fmt.Sprintf("Keys: [Tab] Focus | [Ctrl+S] Send%s | [Enter/Ctrl+J] Newline | [Ctrl+U] Clear | [A/L] Drawer (conversation focus) | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit", inputState)
+	help := fmt.Sprintf("Keys: [Tab] Focus | [Ctrl+S] Send%s | [Enter/Ctrl+J] Newline | [Ctrl+U] Clear | [A/L] Drawer (conversation focus) | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+X] Interrupt Turn | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit", inputState)
 	return helpStyle.Render(help)
 }
 
@@ -823,6 +886,14 @@ func (a *App) sendResumeCmd() tea.Cmd {
 	return func() tea.Msg {
 		_, err := a.client.Resume()
 		return pauseSuccessMsg{err: err}
+	}
+}
+
+func (a *App) sendInterruptTurnCmd(turnID string) tea.Cmd {
+	turnID = strings.TrimSpace(turnID)
+	return func() tea.Msg {
+		_, err := a.client.InterruptTurn(turnID, "user_interrupt_from_tui")
+		return interruptResultMsg{turnID: turnID, err: err}
 	}
 }
 
@@ -927,6 +998,23 @@ func (a *App) nextFocus() tea.Cmd {
 	}
 	a.focus = focusInput
 	return a.input.Focus()
+}
+
+func (a *App) activeTurnID() string {
+	for idx := len(a.turnOrder) - 1; idx >= 0; idx-- {
+		turnID := a.turnOrder[idx]
+		turn := a.turns[turnID]
+		if turn == nil {
+			continue
+		}
+		switch strings.TrimSpace(turn.State) {
+		case "completed", "interrupted":
+			continue
+		default:
+			return turnID
+		}
+	}
+	return ""
 }
 
 func (a *App) prevFocus() tea.Cmd {
@@ -1040,9 +1128,16 @@ func (a *App) conversationContent() string {
 		if strings.TrimSpace(turn.AssistantText) != "" {
 			lines = append(lines, assistantMsgStyle.Render("Agent"))
 			lines = append(lines, renderIndentedContent(turn.AssistantText)...)
-		} else if turn.State == "active" {
+		} else if !isTerminalTurnState(turn.State) {
 			lines = append(lines, assistantMsgStyle.Render("Agent"))
-			lines = append(lines, "  ...")
+			progressLine := strings.TrimSpace(turn.ProgressText)
+			if progressLine == "" {
+				progressLine = "..."
+			}
+			if turn.ElapsedMS > 0 {
+				progressLine = fmt.Sprintf("%s (%0.1fs)", progressLine, float64(turn.ElapsedMS)/1000.0)
+			}
+			lines = append(lines, "  "+progressLine)
 		}
 		lines = append(lines, "")
 	}
@@ -1056,8 +1151,23 @@ func turnStateLabel(state string) string {
 		return "[Turn Completed]"
 	case "interrupted":
 		return "[Turn Interrupted]"
+	case "queued":
+		return "[Turn Queued]"
+	case "cancel_requested":
+		return "[Turn Cancel Requested]"
+	case "waiting":
+		return "[Turn Waiting]"
 	default:
 		return "[Turn Running]"
+	}
+}
+
+func isTerminalTurnState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "completed", "interrupted":
+		return true
+	default:
+		return false
 	}
 }
 
