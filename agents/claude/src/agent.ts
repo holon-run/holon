@@ -494,8 +494,6 @@ async function runClaude(
   const fallbackModel = env.HOLON_FALLBACK_MODEL;
   const abortController = new AbortController();
 
-  // Explicitly include Skill in allowed tools
-  // This is required when using bypassPermissions mode
   const options: Options = {
     cwd: workspacePath,
     env,
@@ -505,7 +503,6 @@ async function runClaude(
     systemPrompt: { type: "preset", preset: "claude_code", append: systemInstruction },
     settingSources: ["user", "project"],
     tools: { type: "preset", preset: "claude_code" },
-    allowedTools: ["Skill"], // Explicitly enable Skill tool
     stderr: (data: string) => {
       // Filter out SDK internal debug output that looks like variable names
       // These are SDK implementation details that shouldn't be logged
@@ -696,6 +693,7 @@ async function runServeQueryTurn(
   prompt: string,
   resumeSessionID?: string,
 ): Promise<{ success: boolean; result: string; sessionID: string }> {
+  const serveDisallowedTools = ["AskUserQuestion"];
   const options: Options = {
     cwd: workspacePath,
     env,
@@ -704,7 +702,7 @@ async function runServeQueryTurn(
     allowDangerouslySkipPermissions: true,
     settingSources: ["user", "project"],
     tools: { type: "preset", preset: "claude_code" },
-    allowedTools: ["Skill"],
+    disallowedTools: serveDisallowedTools,
     stderr: (data: string) => {
       const trimmed = data.trim();
       if (trimmed && !trimmed.match(/^log_[a-f0-9]+$/i)) {

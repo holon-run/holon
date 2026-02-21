@@ -1245,6 +1245,11 @@ Serve runtime contract:
 8. Session metadata path is HOLON_RUNTIME_SESSION_STATE_PATH.
 9. Goal state path is HOLON_RUNTIME_GOAL_STATE_PATH.
 10. Process events continuously, keep role boundaries strict, and produce concise action-oriented outcomes.
+11. Main session acts as an orchestrator and should acknowledge user-facing turns quickly with visible progress.
+12. For long-running or parallelizable work, prefer Task-based subagent delegation instead of blocking the main session.
+13. Keep subagent usage conservative: max delegation depth = 1 and avoid duplicate child tasks for the same goal.
+14. Do not busy-poll child progress; use concise status updates and surface completion/failure when available.
+15. Keep the parent session responsive for steer/interrupt/control operations while child tasks are running.
 `
 
 func (h *cliControllerHandler) copyControllerMemoryToInput(contextDir string) error {
