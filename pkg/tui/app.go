@@ -550,20 +550,53 @@ func (a *App) handleNotification(notif StreamNotification) {
 			ItemID   string `json:"item_id"`
 			ThreadID string `json:"thread_id,omitempty"`
 			TurnID   string `json:"turn_id,omitempty"`
-			Content  struct {
+			Content  json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(notif.Params, &params); err == nil {
+			if len(params.Content) == 0 {
+				return
+			}
+
+			var announce struct {
+				Type             string `json:"type"`
+				EventID          string `json:"event_id,omitempty"`
+				Source           string `json:"source,omitempty"`
+				EventType        string `json:"event_type,omitempty"`
+				SourceSessionKey string `json:"source_session_key,omitempty"`
+				Decision         string `json:"decision,omitempty"`
+				Action           string `json:"action,omitempty"`
+				Text             string `json:"text,omitempty"`
+			}
+			if err := json.Unmarshal(params.Content, &announce); err == nil {
+				if strings.EqualFold(strings.TrimSpace(announce.Type), "system_announce") {
+					a.addSystemMessage(formatSystemAnnounceMessage(
+						announce.EventID,
+						announce.Source,
+						announce.EventType,
+						announce.SourceSessionKey,
+						announce.Decision,
+						announce.Action,
+						announce.Text,
+					))
+					return
+				}
+			}
+
+			var chatContent struct {
 				Role    string `json:"role"`
 				Content []struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
 				} `json:"content"`
-			} `json:"content"`
-		}
-		if err := json.Unmarshal(notif.Params, &params); err == nil {
-			if params.Content.Role == "" {
+			}
+			if err := json.Unmarshal(params.Content, &chatContent); err != nil {
+				return
+			}
+			if chatContent.Role == "" {
 				return
 			}
 			var chunks []string
-			for _, part := range params.Content.Content {
+			for _, part := range chatContent.Content {
 				text := strings.TrimSpace(part.Text)
 				if text != "" {
 					chunks = append(chunks, text)
@@ -572,9 +605,45 @@ func (a *App) handleNotification(notif StreamNotification) {
 			if len(chunks) == 0 {
 				return
 			}
-			a.appendTurnMessage(params.TurnID, params.ThreadID, params.Content.Role, strings.Join(chunks, "\n"))
+			a.appendTurnMessage(params.TurnID, params.ThreadID, chatContent.Role, strings.Join(chunks, "\n"))
 		}
 	}
+}
+
+func formatSystemAnnounceMessage(eventID, source, eventType, sourceSessionKey, decision, action, text string) string {
+	parts := make([]string, 0, 4)
+	if strings.TrimSpace(eventID) != "" {
+		parts = append(parts, fmt.Sprintf("event=%s", strings.TrimSpace(eventID)))
+	}
+	if strings.TrimSpace(source) != "" {
+		parts = append(parts, fmt.Sprintf("source=%s", strings.TrimSpace(source)))
+	}
+	if strings.TrimSpace(eventType) != "" {
+		parts = append(parts, fmt.Sprintf("type=%s", strings.TrimSpace(eventType)))
+	}
+	if strings.TrimSpace(sourceSessionKey) != "" {
+		parts = append(parts, fmt.Sprintf("session=%s", strings.TrimSpace(sourceSessionKey)))
+	}
+
+	headline := "Background event update"
+	if len(parts) > 0 {
+		headline = headline + " (" + strings.Join(parts, ", ") + ")"
+	}
+
+	var detail []string
+	if strings.TrimSpace(decision) != "" {
+		detail = append(detail, fmt.Sprintf("decision=%s", strings.TrimSpace(decision)))
+	}
+	if strings.TrimSpace(action) != "" {
+		detail = append(detail, fmt.Sprintf("action=%s", strings.TrimSpace(action)))
+	}
+	if strings.TrimSpace(text) != "" {
+		detail = append(detail, strings.TrimSpace(text))
+	}
+	if len(detail) == 0 {
+		return headline
+	}
+	return headline + "\n" + strings.Join(detail, "\n")
 }
 
 func (a *App) ensureTurn(turnID, threadID string) *TurnConversation {

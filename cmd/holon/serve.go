@@ -1212,10 +1212,7 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 		}
 		if item.turnID != "" {
 			initialStatus := normalizeControllerProgressState(result.Status)
-			initialMessage := strings.TrimSpace(result.Message)
-			if initialMessage == "" {
-				initialMessage = fmt.Sprintf("controller event status: %s", initialStatus)
-			}
+			initialMessage := buildTurnProgressMessage(initialStatus, result.Message, item.env, 0)
 			h.mu.Lock()
 			if state, ok := h.turnDispatch[item.turnID]; ok {
 				state.EventID = eventID
@@ -1240,10 +1237,7 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 				return
 			}
 			progressStatus := normalizeControllerProgressState(progress.Status)
-			progressMessage := strings.TrimSpace(progress.Message)
-			if progressMessage == "" {
-				progressMessage = fmt.Sprintf("controller event status: %s", progressStatus)
-			}
+			progressMessage := buildTurnProgressMessage(progressStatus, progress.Message, item.env, elapsed)
 			h.mu.Lock()
 			if state, ok := h.turnDispatch[item.turnID]; ok {
 				state.Status = progressStatus
@@ -2088,6 +2082,92 @@ func normalizeControllerProgressState(status string) string {
 		return "cancel_requested"
 	default:
 		return "waiting"
+	}
+}
+
+func buildTurnProgressMessage(status, rawMessage string, env serve.EventEnvelope, elapsed time.Duration) string {
+	status = normalizeControllerProgressState(status)
+	msg := strings.TrimSpace(rawMessage)
+	if msg != "" && !isGenericTurnProgressMessage(msg, status) {
+		return msg
+	}
+
+	contextLabel := progressEventContextLabel(env)
+	switch status {
+	case "queued":
+		if contextLabel == "" {
+			return "Queued: waiting for available execution slot"
+		}
+		return fmt.Sprintf("Queued: waiting to process %s", contextLabel)
+	case "cancel_requested":
+		return "Cancel requested: waiting for controller to stop current work"
+	case "waiting":
+		if contextLabel == "" {
+			return "Waiting for controller event status update"
+		}
+		return fmt.Sprintf("Waiting for %s status update", contextLabel)
+	default:
+		phase := runningProgressPhase(elapsed)
+		if contextLabel == "" {
+			return phase
+		}
+		return fmt.Sprintf("%s: %s", phase, contextLabel)
+	}
+}
+
+func isGenericTurnProgressMessage(message, normalizedStatus string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return true
+	}
+	if lower == fmt.Sprintf("controller event status: %s", normalizedStatus) {
+		return true
+	}
+	return lower == "running" || lower == "queued" || lower == "waiting"
+}
+
+func runningProgressPhase(elapsed time.Duration) string {
+	switch {
+	case elapsed < 5*time.Second:
+		return "Analyzing event context"
+	case elapsed < 20*time.Second:
+		return "Planning next operation"
+	case elapsed < 60*time.Second:
+		return "Executing selected operation"
+	default:
+		return "Continuing execution"
+	}
+}
+
+func progressEventContextLabel(env serve.EventEnvelope) string {
+	source := strings.TrimSpace(env.Source)
+	eventType := strings.TrimSpace(env.Type)
+	subjectKind := strings.TrimSpace(env.Subject.Kind)
+	subjectID := strings.TrimSpace(env.Subject.ID)
+
+	switch {
+	case strings.EqualFold(source, "rpc") && strings.EqualFold(eventType, "rpc.turn.input"):
+		return "interactive user request"
+	case strings.EqualFold(source, "github"):
+		if subjectKind != "" && subjectID != "" {
+			return fmt.Sprintf("GitHub %s #%s", subjectKind, subjectID)
+		}
+		if eventType != "" {
+			return "GitHub event " + eventType
+		}
+		return "GitHub event"
+	case strings.EqualFold(source, "timer") || strings.EqualFold(eventType, "timer.tick"):
+		return "scheduled timer tick"
+	case strings.EqualFold(source, "serve") && strings.EqualFold(eventType, "session.announce"):
+		return "background event announcement"
+	default:
+		if eventType != "" {
+			return "event " + eventType
+		}
+		if source != "" {
+			return source + " event"
+		}
+		return ""
 	}
 }
 

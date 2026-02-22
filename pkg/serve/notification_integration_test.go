@@ -638,3 +638,22 @@ func TestStreamWriterClosed(t *testing.T) {
 		t.Error("Expected error when writing to closed stream, got nil")
 	}
 }
+
+func TestStreamWriterKeepAlive(t *testing.T) {
+	var buf bytes.Buffer
+	sw := NewStreamWriter(&buf)
+
+	if err := sw.WriteKeepAlive(); err != nil {
+		t.Fatalf("WriteKeepAlive() error = %v", err)
+	}
+	if got := buf.String(); got != "\n" {
+		t.Fatalf("keep-alive output = %q, want %q", got, "\\n")
+	}
+
+	if err := sw.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := sw.WriteKeepAlive(); err == nil {
+		t.Fatal("expected error when writing keep-alive to closed stream")
+	}
+}

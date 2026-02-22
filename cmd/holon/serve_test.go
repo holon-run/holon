@@ -1095,6 +1095,57 @@ func TestDeriveAnnounceOutcome(t *testing.T) {
 	})
 }
 
+func TestBuildTurnProgressMessage(t *testing.T) {
+	t.Run("keeps specific controller message", func(t *testing.T) {
+		env := serve.EventEnvelope{Source: "github", Type: "github.issue.comment.created"}
+		got := buildTurnProgressMessage("running", "cloning repository", env, 2*time.Second)
+		if got != "cloning repository" {
+			t.Fatalf("message = %q", got)
+		}
+	})
+
+	t.Run("uses queued context-aware fallback", func(t *testing.T) {
+		env := serve.EventEnvelope{
+			Source: "github",
+			Type:   "github.issue.comment.created",
+			Subject: serve.EventSubject{
+				Kind: "issue",
+				ID:   "527",
+			},
+		}
+		got := buildTurnProgressMessage("queued", "", env, 0)
+		if got != "Queued: waiting to process GitHub issue #527" {
+			t.Fatalf("message = %q", got)
+		}
+	})
+
+	t.Run("running phase evolves with elapsed time", func(t *testing.T) {
+		env := serve.EventEnvelope{
+			Source: "rpc",
+			Type:   "rpc.turn.input",
+		}
+		gotEarly := buildTurnProgressMessage("running", "", env, 3*time.Second)
+		gotLater := buildTurnProgressMessage("running", "", env, 25*time.Second)
+		if gotEarly != "Analyzing event context: interactive user request" {
+			t.Fatalf("early message = %q", gotEarly)
+		}
+		if gotLater != "Executing selected operation: interactive user request" {
+			t.Fatalf("later message = %q", gotLater)
+		}
+	})
+
+	t.Run("generic controller message is replaced", func(t *testing.T) {
+		env := serve.EventEnvelope{
+			Source: "timer",
+			Type:   "timer.tick",
+		}
+		got := buildTurnProgressMessage("running", "controller event status: running", env, 8*time.Second)
+		if got != "Planning next operation: scheduled timer tick" {
+			t.Fatalf("message = %q", got)
+		}
+	})
+}
+
 type mockSessionRunner struct {
 	mu           sync.Mutex
 	startCount   int

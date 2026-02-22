@@ -77,9 +77,9 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		readTimeout = 10 * time.Second
 	}
 	writeTimeout := cfg.WriteTimeout
-	if writeTimeout == 0 {
-		writeTimeout = 10 * time.Second
-	}
+	// Leave WriteTimeout disabled by default so long-lived /rpc/stream connections
+	// are not force-closed by the HTTP server. ReadTimeout/IdleTimeout remain
+	// enabled, and deployments can still set WriteTimeout explicitly via config.
 	idleTimeout := cfg.IdleTimeout
 	if idleTimeout == 0 {
 		idleTimeout = 60 * time.Second
@@ -447,8 +447,7 @@ func (ws *WebhookServer) handleRPCStream(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Keep-alive must be shorter than server WriteTimeout (default 10s),
-	// otherwise long-lived stream responses can be closed by net/http.
+	// Emit periodic keep-alive lines so intermediaries keep the stream open.
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -457,10 +456,9 @@ func (ws *WebhookServer) handleRPCStream(w http.ResponseWriter, r *http.Request)
 			return
 		case <-ticker.C:
 			// Keep-alive: blank line is valid NDJSON separator and keeps intermediaries from timing out.
-			if _, err := w.Write([]byte("\n")); err != nil {
+			if err := streamWriter.WriteKeepAlive(); err != nil {
 				return
 			}
-			flusher.Flush()
 		}
 	}
 }
