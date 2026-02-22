@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ type App struct {
 	streamErrors  chan error
 	streamClosed  chan struct{}
 	streamRetries int
+	tracer        *tuiDebugTracer
 }
 
 type focusArea int
@@ -215,6 +217,7 @@ func NewApp(client *RPCClient) *App {
 		notifications:  make(chan StreamNotification, 128),
 		streamErrors:   make(chan error, 8),
 		streamClosed:   make(chan struct{}, 1),
+		tracer:         newTUIDebugTracerFromEnv(),
 	}
 }
 
@@ -350,6 +353,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		a.quitting = true
+		if err := a.tracer.close(); err != nil {
+			fmt.Fprintf(os.Stderr, "holon tui: %v\n", err)
+		}
 		if a.streamCancel != nil {
 			a.streamCancel()
 		}
@@ -461,6 +467,8 @@ func (a *App) closeDrawer() {
 }
 
 func (a *App) handleNotification(notif StreamNotification) {
+	a.trace("notification_received", traceFieldsFromNotification(notif))
+
 	switch notif.Method {
 	case "thread/started":
 		var params struct {
@@ -469,13 +477,26 @@ func (a *App) handleNotification(notif StreamNotification) {
 		}
 		if err := json.Unmarshal(notif.Params, &params); err == nil {
 			a.threadID = params.ThreadID
+			a.trace("route", map[string]interface{}{
+				"method":    "thread/started",
+				"panel":     "activity",
+				"thread_id": strings.TrimSpace(params.ThreadID),
+			})
 			a.addTurnLifecycleMessage("Thread started", params.State)
 		}
 
 	case "thread/resumed":
+		a.trace("route", map[string]interface{}{
+			"method": "thread/resumed",
+			"panel":  "activity",
+		})
 		a.addSystemMessage("Thread resumed")
 
 	case "thread/paused":
+		a.trace("route", map[string]interface{}{
+			"method": "thread/paused",
+			"panel":  "activity",
+		})
 		a.addSystemMessage("Thread paused")
 
 	case "turn/started":
@@ -492,6 +513,12 @@ func (a *App) handleNotification(notif StreamNotification) {
 					a.setTurnStartedAt(params.TurnID, ts)
 				}
 			}
+			a.trace("route", map[string]interface{}{
+				"method":    "turn/started",
+				"panel":     "both",
+				"turn_id":   strings.TrimSpace(params.TurnID),
+				"thread_id": strings.TrimSpace(params.ThreadID),
+			})
 			a.addTurnLifecycleMessage(fmt.Sprintf("Turn %s started", params.TurnID), "active")
 		}
 
@@ -509,6 +536,12 @@ func (a *App) handleNotification(notif StreamNotification) {
 					a.appendAssistantIfEmpty(params.TurnID, params.Message)
 				}
 			}
+			a.trace("route", map[string]interface{}{
+				"method":    "turn/completed",
+				"panel":     "both",
+				"turn_id":   strings.TrimSpace(params.TurnID),
+				"thread_id": strings.TrimSpace(params.ThreadID),
+			})
 			a.addTurnLifecycleMessage(fmt.Sprintf("Turn %s completed", params.TurnID), "completed")
 		}
 
@@ -523,6 +556,12 @@ func (a *App) handleNotification(notif StreamNotification) {
 				a.ensureTurn(params.TurnID, params.ThreadID)
 				a.setTurnState(params.TurnID, "interrupted")
 			}
+			a.trace("route", map[string]interface{}{
+				"method":    "turn/interrupted",
+				"panel":     "both",
+				"turn_id":   strings.TrimSpace(params.TurnID),
+				"thread_id": strings.TrimSpace(params.ThreadID),
+			})
 			msg := fmt.Sprintf("Turn %s interrupted", params.TurnID)
 			if strings.TrimSpace(params.Message) != "" {
 				msg += ": " + strings.TrimSpace(params.Message)
@@ -543,17 +582,28 @@ func (a *App) handleNotification(notif StreamNotification) {
 				a.ensureTurn(params.TurnID, params.ThreadID)
 				a.setTurnProgress(params.TurnID, params.State, params.Message, params.ElapsedMS)
 			}
+			a.trace("route", map[string]interface{}{
+				"method":    "turn/progress",
+				"panel":     "conversation",
+				"turn_id":   strings.TrimSpace(params.TurnID),
+				"thread_id": strings.TrimSpace(params.ThreadID),
+				"state":     strings.TrimSpace(params.State),
+			})
 		}
 
 	case "item/created":
 		var params struct {
-			ItemID   string `json:"item_id"`
-			ThreadID string `json:"thread_id,omitempty"`
-			TurnID   string `json:"turn_id,omitempty"`
+			ItemID   string          `json:"item_id"`
+			ThreadID string          `json:"thread_id,omitempty"`
+			TurnID   string          `json:"turn_id,omitempty"`
 			Content  json.RawMessage `json:"content"`
 		}
 		if err := json.Unmarshal(notif.Params, &params); err == nil {
 			if len(params.Content) == 0 {
+				a.trace("notification_dropped", map[string]interface{}{
+					"method": "item/created",
+					"reason": "empty_content",
+				})
 				return
 			}
 
@@ -569,6 +619,14 @@ func (a *App) handleNotification(notif StreamNotification) {
 			}
 			if err := json.Unmarshal(params.Content, &announce); err == nil {
 				if strings.EqualFold(strings.TrimSpace(announce.Type), "system_announce") {
+					a.trace("route", map[string]interface{}{
+						"method":    "item/created",
+						"panel":     "activity",
+						"thread_id": strings.TrimSpace(params.ThreadID),
+						"turn_id":   strings.TrimSpace(params.TurnID),
+						"event_id":  strings.TrimSpace(announce.EventID),
+						"reason":    "system_announce",
+					})
 					a.addSystemMessage(formatSystemAnnounceMessage(
 						announce.EventID,
 						announce.Source,
@@ -590,9 +648,17 @@ func (a *App) handleNotification(notif StreamNotification) {
 				} `json:"content"`
 			}
 			if err := json.Unmarshal(params.Content, &chatContent); err != nil {
+				a.trace("notification_dropped", map[string]interface{}{
+					"method": "item/created",
+					"reason": "invalid_chat_content",
+				})
 				return
 			}
 			if chatContent.Role == "" {
+				a.trace("notification_dropped", map[string]interface{}{
+					"method": "item/created",
+					"reason": "missing_role",
+				})
 				return
 			}
 			var chunks []string
@@ -603,8 +669,19 @@ func (a *App) handleNotification(notif StreamNotification) {
 				}
 			}
 			if len(chunks) == 0 {
+				a.trace("notification_dropped", map[string]interface{}{
+					"method": "item/created",
+					"reason": "empty_text_chunks",
+				})
 				return
 			}
+			a.trace("route", map[string]interface{}{
+				"method":       "item/created",
+				"panel":        "conversation",
+				"thread_id":    strings.TrimSpace(params.ThreadID),
+				"turn_id":      strings.TrimSpace(params.TurnID),
+				"content_role": strings.TrimSpace(chatContent.Role),
+			})
 			a.appendTurnMessage(params.TurnID, params.ThreadID, chatContent.Role, strings.Join(chunks, "\n"))
 		}
 	}
@@ -691,6 +768,13 @@ func (a *App) setTurnState(turnID, state string) {
 		turn.ElapsedMS = 0
 	}
 	turn.UpdatedAt = time.Now()
+	a.trace("panel_write", map[string]interface{}{
+		"panel":      "conversation",
+		"event_kind": "turn_state",
+		"turn_id":    strings.TrimSpace(turnID),
+		"state":      strings.TrimSpace(state),
+		"turn_cnt":   len(a.turnOrder),
+	})
 	a.updateConversationViewport(true)
 }
 
@@ -707,6 +791,14 @@ func (a *App) setTurnProgress(turnID, state, message string, elapsedMS int64) {
 		turn.ElapsedMS = elapsedMS
 	}
 	turn.UpdatedAt = time.Now()
+	a.trace("panel_write", map[string]interface{}{
+		"panel":      "conversation",
+		"event_kind": "turn_progress",
+		"turn_id":    strings.TrimSpace(turnID),
+		"state":      strings.TrimSpace(normalizedState),
+		"elapsed_ms": elapsedMS,
+		"turn_cnt":   len(a.turnOrder),
+	})
 	a.updateConversationViewport(true)
 }
 
@@ -734,6 +826,14 @@ func (a *App) appendTurnMessage(turnID, threadID, role, content string) {
 		turn.AssistantText = appendText(turn.AssistantText, content)
 	}
 	turn.UpdatedAt = time.Now()
+	a.trace("panel_write", map[string]interface{}{
+		"panel":      "conversation",
+		"event_kind": "chat_message",
+		"turn_id":    strings.TrimSpace(turnID),
+		"thread_id":  strings.TrimSpace(threadID),
+		"role":       role,
+		"turn_cnt":   len(a.turnOrder),
+	})
 	a.updateConversationViewport(true)
 }
 
@@ -774,12 +874,25 @@ func parseTimestamp(raw string) (time.Time, bool) {
 	return t, true
 }
 
+func (a *App) trace(kind string, fields map[string]interface{}) {
+	if a == nil || a.tracer == nil {
+		return
+	}
+	a.tracer.trace(kind, fields)
+}
+
 func (a *App) addSystemMessage(content string) {
 	a.activityEvents = append(a.activityEvents, ConversationMessage{
 		ID:        fmt.Sprintf("sys_%d", time.Now().UnixNano()),
 		Type:      "system",
 		Timestamp: time.Now(),
 		Content:   content,
+	})
+	a.trace("panel_write", map[string]interface{}{
+		"panel":         "activity",
+		"event_kind":    "system_message",
+		"activity_cnt":  len(a.activityEvents),
+		"content_lines": len(strings.Split(content, "\n")),
 	})
 	a.updateActivityViewport(true)
 }
@@ -791,6 +904,12 @@ func (a *App) addTurnLifecycleMessage(content, state string) {
 		Timestamp: time.Now(),
 		Content:   content,
 		State:     state,
+	})
+	a.trace("panel_write", map[string]interface{}{
+		"panel":        "activity",
+		"event_kind":   "turn_lifecycle",
+		"state":        strings.TrimSpace(state),
+		"activity_cnt": len(a.activityEvents),
 	})
 	a.updateActivityViewport(true)
 }
