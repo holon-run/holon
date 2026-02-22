@@ -561,6 +561,7 @@ func (ws *WebhookServer) processEnvelope(ctx context.Context, env EventEnvelope)
 	if err := ws.eventsLog.Write(env); err != nil {
 		return err
 	}
+	ws.emitIngressEventNotification(env)
 
 	// Check for duplicates
 	decision := DecisionRecord{
@@ -633,6 +634,41 @@ func (ws *WebhookServer) processEnvelope(ctx context.Context, env EventEnvelope)
 		holonlog.Error("failed to update cursor after event processing", "error", err, "event_id", env.ID)
 	}
 	return nil
+}
+
+func (ws *WebhookServer) emitIngressEventNotification(env EventEnvelope) {
+	source := strings.TrimSpace(env.Source)
+	eventType := strings.TrimSpace(env.Type)
+	if !strings.EqualFold(source, "github") || eventType == "" {
+		return
+	}
+	if ws.broadcaster == nil {
+		return
+	}
+	params, err := json.Marshal(map[string]interface{}{
+		"event_id":    strings.TrimSpace(env.ID),
+		"source":      source,
+		"event_type":  eventType,
+		"repo":        strings.TrimSpace(env.Scope.Repo),
+		"received_at": ws.now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		holonlog.Warn("failed to marshal ingress event notification", "error", err, "event_id", env.ID)
+		return
+	}
+	notif := Notification{
+		JSONRPC: "2.0",
+		Method:  "event/received",
+		Params:  params,
+	}
+	ws.broadcaster.broadcast(notif)
+	traceServe("emit_notification", map[string]interface{}{
+		"method":     "event/received",
+		"event_id":   strings.TrimSpace(env.ID),
+		"source":     source,
+		"event_type": eventType,
+		"repo":       strings.TrimSpace(env.Scope.Repo),
+	})
 }
 
 type sessionAnnouncePayload struct {

@@ -1671,6 +1671,71 @@ func TestWebhookServer_ProcessEnvelope_SkipsInvalidSessionAnnouncePayload(t *tes
 	}
 }
 
+func TestWebhookServer_ProcessEnvelope_EmitsIngressGitHubEventNotification(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	var buf bytes.Buffer
+	sw := NewStreamWriter(&buf)
+	unsubscribe := ws.broadcaster.Subscribe(sw)
+	defer unsubscribe()
+
+	env := EventEnvelope{
+		ID:     "evt_ingress_123",
+		Source: "github",
+		Type:   "github.issue.opened",
+		Scope: EventScope{
+			Repo: "holon-run/holon",
+		},
+	}
+	if err := ws.processEnvelope(context.Background(), env); err != nil {
+		t.Fatalf("processEnvelope failed: %v", err)
+	}
+
+	notifs := decodeNDJSONNotifications(t, buf.String())
+	if len(notifs) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(notifs))
+	}
+	if got := notifs[0].Method; got != "event/received" {
+		t.Fatalf("expected method=event/received, got %q", got)
+	}
+
+	var params struct {
+		EventID    string `json:"event_id"`
+		Source     string `json:"source"`
+		EventType  string `json:"event_type"`
+		Repo       string `json:"repo"`
+		ReceivedAt string `json:"received_at"`
+	}
+	if err := json.Unmarshal(notifs[0].Params, &params); err != nil {
+		t.Fatalf("unmarshal params failed: %v", err)
+	}
+	if params.EventID != "evt_ingress_123" {
+		t.Fatalf("expected event_id=evt_ingress_123, got %q", params.EventID)
+	}
+	if params.Source != "github" {
+		t.Fatalf("expected source=github, got %q", params.Source)
+	}
+	if params.EventType != "github.issue.opened" {
+		t.Fatalf("expected event_type=github.issue.opened, got %q", params.EventType)
+	}
+	if params.Repo != "holon-run/holon" {
+		t.Fatalf("expected repo=holon-run/holon, got %q", params.Repo)
+	}
+	if strings.TrimSpace(params.ReceivedAt) == "" {
+		t.Fatalf("expected received_at to be set")
+	}
+}
+
 func decodeNDJSONNotifications(t *testing.T, raw string) []Notification {
 	t.Helper()
 	trimmed := strings.TrimSpace(raw)

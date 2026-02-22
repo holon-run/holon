@@ -468,6 +468,7 @@ func (a *App) closeDrawer() {
 
 func (a *App) handleNotification(notif StreamNotification) {
 	a.trace("notification_received", traceFieldsFromNotification(notif))
+	a.addNotificationEventToActivity(notif)
 
 	switch notif.Method {
 	case "thread/started":
@@ -619,15 +620,7 @@ func (a *App) handleNotification(notif StreamNotification) {
 			}
 			if err := json.Unmarshal(params.Content, &announce); err == nil {
 				if strings.EqualFold(strings.TrimSpace(announce.Type), "system_announce") {
-					a.trace("route", map[string]interface{}{
-						"method":    "item/created",
-						"panel":     "activity",
-						"thread_id": strings.TrimSpace(params.ThreadID),
-						"turn_id":   strings.TrimSpace(params.TurnID),
-						"event_id":  strings.TrimSpace(announce.EventID),
-						"reason":    "system_announce",
-					})
-					a.addSystemMessage(formatSystemAnnounceMessage(
+					formatted := formatSystemAnnounceMessage(
 						announce.EventID,
 						announce.Source,
 						announce.EventType,
@@ -635,7 +628,19 @@ func (a *App) handleNotification(notif StreamNotification) {
 						announce.Decision,
 						announce.Action,
 						announce.Text,
-					))
+					)
+					a.trace("route", map[string]interface{}{
+						"method":    "item/created",
+						"panel":     "both",
+						"thread_id": strings.TrimSpace(params.ThreadID),
+						"turn_id":   strings.TrimSpace(params.TurnID),
+						"event_id":  strings.TrimSpace(announce.EventID),
+						"reason":    "system_announce",
+					})
+					syntheticTurnID := firstNonEmpty(params.TurnID, "main_announce")
+					a.appendTurnMessage(syntheticTurnID, firstNonEmpty(params.ThreadID, "main"), "assistant", "[Event] "+formatted)
+					a.setTurnState(syntheticTurnID, "completed")
+					a.addSystemMessage(formatted)
 					return
 				}
 			}
@@ -685,6 +690,105 @@ func (a *App) handleNotification(notif StreamNotification) {
 			a.appendTurnMessage(params.TurnID, params.ThreadID, chatContent.Role, strings.Join(chunks, "\n"))
 		}
 	}
+}
+
+func (a *App) addNotificationEventToActivity(notif StreamNotification) {
+	summary := summarizeNotification(notif)
+	if strings.TrimSpace(summary) == "" {
+		return
+	}
+	a.activityEvents = append(a.activityEvents, ConversationMessage{
+		ID:        fmt.Sprintf("evt_%d", time.Now().UnixNano()),
+		Type:      "event",
+		Timestamp: time.Now(),
+		Content:   summary,
+	})
+	a.trace("panel_write", map[string]interface{}{
+		"panel":        "activity",
+		"event_kind":   "notification_event",
+		"method":       strings.TrimSpace(notif.Method),
+		"activity_cnt": len(a.activityEvents),
+	})
+	a.updateActivityViewport(true)
+}
+
+func summarizeNotification(notif StreamNotification) string {
+	method := strings.TrimSpace(notif.Method)
+	if method == "" {
+		return ""
+	}
+	lines := []string{fmt.Sprintf("event=%s", method)}
+
+	var params struct {
+		ThreadID  string          `json:"thread_id,omitempty"`
+		TurnID    string          `json:"turn_id,omitempty"`
+		EventID   string          `json:"event_id,omitempty"`
+		Source    string          `json:"source,omitempty"`
+		EventType string          `json:"event_type,omitempty"`
+		Repo      string          `json:"repo,omitempty"`
+		State     string          `json:"state,omitempty"`
+		Message   string          `json:"message,omitempty"`
+		ItemID    string          `json:"item_id,omitempty"`
+		Content   json.RawMessage `json:"content,omitempty"`
+	}
+	if err := json.Unmarshal(notif.Params, &params); err != nil {
+		return strings.Join(lines, "\n")
+	}
+	if strings.TrimSpace(params.ThreadID) != "" {
+		lines = append(lines, "thread="+strings.TrimSpace(params.ThreadID))
+	}
+	if strings.TrimSpace(params.TurnID) != "" {
+		lines = append(lines, "turn="+strings.TrimSpace(params.TurnID))
+	}
+	if strings.TrimSpace(params.EventID) != "" {
+		lines = append(lines, "event_id="+strings.TrimSpace(params.EventID))
+	}
+	if strings.TrimSpace(params.Source) != "" {
+		lines = append(lines, "source="+strings.TrimSpace(params.Source))
+	}
+	if strings.TrimSpace(params.EventType) != "" {
+		lines = append(lines, "type="+strings.TrimSpace(params.EventType))
+	}
+	if strings.TrimSpace(params.Repo) != "" {
+		lines = append(lines, "repo="+strings.TrimSpace(params.Repo))
+	}
+	if strings.TrimSpace(params.State) != "" {
+		lines = append(lines, "state="+strings.TrimSpace(params.State))
+	}
+	if strings.TrimSpace(params.Message) != "" {
+		lines = append(lines, strings.TrimSpace(params.Message))
+	}
+	if strings.TrimSpace(params.ItemID) != "" {
+		lines = append(lines, "item="+strings.TrimSpace(params.ItemID))
+	}
+
+	if len(params.Content) > 0 {
+		var content struct {
+			Type   string `json:"type,omitempty"`
+			Role   string `json:"role,omitempty"`
+			Text   string `json:"text,omitempty"`
+			Event  string `json:"event_id,omitempty"`
+			Action string `json:"action,omitempty"`
+		}
+		if err := json.Unmarshal(params.Content, &content); err == nil {
+			if strings.TrimSpace(content.Type) != "" {
+				lines = append(lines, "content.type="+strings.TrimSpace(content.Type))
+			}
+			if strings.TrimSpace(content.Role) != "" {
+				lines = append(lines, "content.role="+strings.TrimSpace(content.Role))
+			}
+			if strings.TrimSpace(content.Event) != "" {
+				lines = append(lines, "content.event_id="+strings.TrimSpace(content.Event))
+			}
+			if strings.TrimSpace(content.Action) != "" {
+				lines = append(lines, "content.action="+strings.TrimSpace(content.Action))
+			}
+			if strings.TrimSpace(content.Text) != "" {
+				lines = append(lines, strings.TrimSpace(content.Text))
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func formatSystemAnnounceMessage(eventID, source, eventType, sourceSessionKey, decision, action, text string) string {
@@ -1389,6 +1493,8 @@ func (a *App) activityContent() string {
 
 func (a *App) messageLabel(msg ConversationMessage) (string, lipgloss.Style) {
 	switch msg.Type {
+	case "event":
+		return "[Event]", systemMsgStyle
 	case "turn_lifecycle":
 		if msg.State == "completed" {
 			return "[Turn Done]", systemMsgStyle

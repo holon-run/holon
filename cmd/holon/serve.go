@@ -2107,7 +2107,7 @@ func buildTurnProgressMessage(status, rawMessage string, env serve.EventEnvelope
 		}
 		return fmt.Sprintf("Waiting for %s status update", contextLabel)
 	default:
-		phase := runningProgressPhase(elapsed)
+		phase := runningProgressPhase(env, elapsed)
 		if contextLabel == "" {
 			return phase
 		}
@@ -2126,7 +2126,20 @@ func isGenericTurnProgressMessage(message, normalizedStatus string) bool {
 	return lower == "running" || lower == "queued" || lower == "waiting"
 }
 
-func runningProgressPhase(elapsed time.Duration) string {
+func runningProgressPhase(env serve.EventEnvelope, elapsed time.Duration) string {
+	if strings.EqualFold(strings.TrimSpace(env.Source), "rpc") && strings.EqualFold(strings.TrimSpace(env.Type), "rpc.turn.input") {
+		switch {
+		case elapsed < 6*time.Second:
+			return "Understanding request and scanning relevant code"
+		case elapsed < 20*time.Second:
+			return "Inspecting files and planning code changes"
+		case elapsed < 60*time.Second:
+			return "Implementing changes and running checks"
+		default:
+			return "Verifying results and preparing response"
+		}
+	}
+
 	switch {
 	case elapsed < 5*time.Second:
 		return "Analyzing event context"

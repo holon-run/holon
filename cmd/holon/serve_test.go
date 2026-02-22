@@ -1126,10 +1126,10 @@ func TestBuildTurnProgressMessage(t *testing.T) {
 		}
 		gotEarly := buildTurnProgressMessage("running", "", env, 3*time.Second)
 		gotLater := buildTurnProgressMessage("running", "", env, 25*time.Second)
-		if gotEarly != "Analyzing event context: interactive user request" {
+		if gotEarly != "Understanding request and scanning relevant code: interactive user request" {
 			t.Fatalf("early message = %q", gotEarly)
 		}
-		if gotLater != "Executing selected operation: interactive user request" {
+		if gotLater != "Implementing changes and running checks: interactive user request" {
 			t.Fatalf("later message = %q", gotLater)
 		}
 	})
