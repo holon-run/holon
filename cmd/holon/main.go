@@ -34,7 +34,7 @@ var outDir string
 var agentID string
 var agentHome string
 var cleanupMode string
-var roleName string
+
 var envVarsList []string
 var logLevel string
 var assistantOutput string
@@ -329,21 +329,21 @@ var runCmd = &cobra.Command{
 
 		runner := NewRunner(rt)
 		return runner.Run(ctx, RunnerConfig{
-			SpecPath:              specPath,
-			GoalStr:               goalStr,
-			TaskName:              taskName,
-			BaseImage:             resolved.baseImage,
-			AgentBundle:           resolved.agent,
-			AgentChannel:          resolved.agentChannel,
-			AgentChannelSource:    resolved.agentChannelSource,
-			WorkspacePath:         absWorkspace,
-			ContextPath:           contextPath,
-			InputPath:             inputPath,
-			OutDir:                resolvedOutDir,
-			OutDirIsTemp:          outIsTemp,
-			StateDir:              stateDirForAgentHome(agentResolution.AgentHome),
-			AgentHome:             agentResolution.AgentHome,
-			RoleName:              roleName,
+			SpecPath:           specPath,
+			GoalStr:            goalStr,
+			TaskName:           taskName,
+			BaseImage:          resolved.baseImage,
+			AgentBundle:        resolved.agent,
+			AgentChannel:       resolved.agentChannel,
+			AgentChannelSource: resolved.agentChannelSource,
+			WorkspacePath:      absWorkspace,
+			ContextPath:        contextPath,
+			InputPath:          inputPath,
+			OutDir:             resolvedOutDir,
+			OutDirIsTemp:       outIsTemp,
+			StateDir:           stateDirForAgentHome(agentResolution.AgentHome),
+			AgentHome:          agentResolution.AgentHome,
+
 			EnvVarsList:           envVarsList,
 			LogLevel:              resolved.logLevel,
 			AssistantOutput:       resolved.assistantOutput,
@@ -382,7 +382,7 @@ func init() {
 	runCmd.Flags().StringVar(&agentID, "agent-id", "", "Agent ID (default for run: temporary agent)")
 	runCmd.Flags().StringVar(&agentHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
 	runCmd.Flags().StringVar(&cleanupMode, "cleanup", "auto", "Cleanup mode: auto (clean temp input), none (keep all), all (clean input+output)")
-	runCmd.Flags().StringVarP(&roleName, "role", "r", "", "Role to assume (e.g. developer, reviewer)")
+
 	runCmd.Flags().StringSliceVarP(&envVarsList, "env", "e", []string{}, "Environment variables to pass to the container (K=V)")
 	runCmd.Flags().StringVar(&logLevel, "log-level", "progress", "Log level: debug, info, progress, minimal")
 	runCmd.Flags().StringVar(&assistantOutput, "assistant-output", "none", "Assistant output mode: none (default), stream (stream assistant text to logs)")

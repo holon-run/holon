@@ -13,7 +13,6 @@ import (
 // Config represents the prompt configuration
 type Config struct {
 	Mode           string
-	Role           string
 	Language       string
 	WorkingDir     string
 	ContextFiles   []string
@@ -23,9 +22,6 @@ type Config struct {
 	ActorType    string // "User" or "App"
 	ActorSource  string // "token" or "app"
 	ActorAppSlug string // App slug if type is "App"
-	// SkipModePrompts skips mode-specific prompt layers when true.
-	// Used in skill mode where Claude Code discovers skills natively.
-	SkipModePrompts bool
 }
 
 // Manifest represents the structure of manifest.yaml
@@ -33,7 +29,6 @@ type Manifest struct {
 	Version  string `yaml:"version"`
 	Defaults struct {
 		Mode string `yaml:"mode"`
-		Role string `yaml:"role"`
 	} `yaml:"defaults"`
 }
 
@@ -50,19 +45,8 @@ type Compiler struct {
 
 // NewCompiler creates a new prompt compiler
 func NewCompiler(assetsPath string) *Compiler {
-	// For runtime, we can pass a specific FS or use the embedded one.
-	// If assetsPath is empty, use embedded assets.
-	// However, to support 'misc/prompts' which is outside pkg/prompt,
-	// we should rely on the caller passing the FS or we embed 'misc/prompts' via a slightly different strategy or copy it.
-	// But 'embed' cannot reach outside module easily without `//go:embed` directive in the right place.
-	// For now, let's assume we copy 'misc/prompts' to 'pkg/prompt/assets' during build or we just put the code that does embedding in the root or pass the FS.
-
-	// Simplification: We will assume assets are embedded in THIS package for now,
-	// or we use os.DirFS if running locally and the path exists.
-
 	sub, err := AssetsFS()
 	if err != nil {
-		// Should not happen with embedded assets unless structure is wrong
 		panic(err)
 	}
 
@@ -71,74 +55,47 @@ func NewCompiler(assetsPath string) *Compiler {
 	}
 }
 
-// Global variable to allow setting assets from outside (e.g. tests or custom locations)
-// Not thread safe, but acceptable for CLI entry.
-// A better pattern would be NewCompiler accepting options.
-
 // NewCompilerFromFS creates a compiler from a given FS (useful for testing or external loading)
 func NewCompilerFromFS(assets fs.FS) *Compiler {
 	return &Compiler{assets: assets}
 }
 
 func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
-	resolvedCfg, err := c.resolveModeAndRole(cfg)
+	resolvedCfg, err := c.resolveMode(cfg)
 	if err != nil {
 		return "", err
 	}
 	mode := resolvedCfg.Mode
-	role := resolvedCfg.Role
 
-	// 4. Load Common Contract (base layer)
+	// 1. Load Common Contract (base layer, required)
 	commonData, err := fs.ReadFile(c.assets, "contracts/common.md")
 	if err != nil {
 		return "", fmt.Errorf("failed to read common contract: %w", err)
 	}
 
-	// 5. Load Role (required behavioral layer)
-	rolePath := fmt.Sprintf("roles/%s.md", role)
-	roleData, err := fs.ReadFile(c.assets, rolePath)
+	// 2. Load Mode Contract (optional layer)
+	modeContractPath := fmt.Sprintf("modes/%s/contract.md", mode)
+	modeData, err := readOptionalFile(c.assets, modeContractPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read role %s: %w", role, err)
+		return "", err
 	}
 
-	// 6-9: Load Mode-specific layers (skip if SkipModePrompts is true)
-	// In skill mode, Claude Code discovers skills natively from .claude/skills/
-	var modeData, modeOverlayData, modeContextData, roleOverlayData []byte
-
-	if !cfg.SkipModePrompts {
-		// 6. Load Mode Contract (optional layer)
-		modeContractPath := fmt.Sprintf("modes/%s/contract.md", mode)
-		modeData, err = readOptionalFile(c.assets, modeContractPath)
-		if err != nil {
-			return "", err
-		}
-
-		// 7. Load Mode Overlay (optional layer)
-		modeOverlayPath := fmt.Sprintf("modes/%s/overlay.md", mode)
-		modeOverlayData, err = readOptionalFile(c.assets, modeOverlayPath)
-		if err != nil {
-			return "", err
-		}
-
-		// 8. Load Mode Context (optional layer, uses ContextEntries)
-		modeContextPath := fmt.Sprintf("modes/%s/context.md", mode)
-		modeContextData, err = readOptionalFile(c.assets, modeContextPath)
-		if err != nil {
-			return "", err
-		}
-
-		// 9. Load Role Overlay (optional layer for selected role only)
-		roleOverlayPath := fmt.Sprintf("modes/%s/overlays/%s.md", mode, role)
-		roleOverlayData, err = readOptionalFile(c.assets, roleOverlayPath)
-		if err != nil {
-			return "", err
-		}
+	// 3. Load Mode Overlay (optional layer)
+	modeOverlayPath := fmt.Sprintf("modes/%s/overlay.md", mode)
+	modeOverlayData, err := readOptionalFile(c.assets, modeOverlayPath)
+	if err != nil {
+		return "", err
 	}
 
-	// 10. Combine layers in order: common + role + (mode layers if not skipped)
+	// 4. Load Mode Context (optional layer, uses ContextEntries)
+	modeContextPath := fmt.Sprintf("modes/%s/context.md", mode)
+	modeContextData, err := readOptionalFile(c.assets, modeContextPath)
+	if err != nil {
+		return "", err
+	}
+
+	// 5. Combine layers in order: common + mode layers
 	fullTemplate := string(commonData)
-
-	fullTemplate += "\n\n" + string(roleData)
 
 	if modeData != nil {
 		fullTemplate += "\n\n" + string(modeData)
@@ -152,11 +109,7 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 		fullTemplate += "\n\n" + string(modeContextData)
 	}
 
-	if roleOverlayData != nil {
-		fullTemplate += "\n\n" + string(roleOverlayData)
-	}
-
-	// 11. Template Execution
+	// 6. Template Execution
 	tmpl, err := template.New("system").Parse(fullTemplate)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse template: %w", err)
@@ -172,7 +125,7 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 
 // CompileModeUserPrompt compiles mode-specific user prompt template at modes/<mode>/user.md.
 func (c *Compiler) CompileModeUserPrompt(cfg Config) (string, error) {
-	resolvedCfg, err := c.resolveModeAndRole(cfg)
+	resolvedCfg, err := c.resolveMode(cfg)
 	if err != nil {
 		return "", err
 	}
@@ -195,7 +148,7 @@ func (c *Compiler) CompileModeUserPrompt(cfg Config) (string, error) {
 	return buf.String(), nil
 }
 
-func (c *Compiler) resolveModeAndRole(cfg Config) (Config, error) {
+func (c *Compiler) resolveMode(cfg Config) (Config, error) {
 	manifestData, err := fs.ReadFile(c.assets, "manifest.yaml")
 	if err != nil {
 		return Config{}, fmt.Errorf("failed to read manifest: %w", err)
@@ -210,18 +163,9 @@ func (c *Compiler) resolveModeAndRole(cfg Config) (Config, error) {
 		resolved.Mode = manifest.Defaults.Mode
 	}
 	if resolved.Mode == "" {
-		resolved.Mode = "solve"
+		resolved.Mode = "run"
 	}
 
-	if resolved.Role == "" {
-		resolved.Role = manifest.Defaults.Role
-	}
-	if resolved.Role == "" {
-		resolved.Role = "developer"
-	}
-	if resolved.Role == "coder" {
-		resolved.Role = "developer"
-	}
 	return resolved, nil
 }
 

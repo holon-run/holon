@@ -45,7 +45,6 @@ type RunnerConfig struct {
 	OutDirIsTemp          bool   // true if output dir is a temporary directory (vs user-provided)
 	StateDir              string // Optional: path to state directory for cross-run skill caches
 	AgentHome             string // Optional: path to agent home for persona prompt layering
-	RoleName              string
 	EnvVarsList           []string
 	LogLevel              string
 	UseSkillMode          bool     // true if using skill mode (agent handles collect/publish)
@@ -595,19 +594,11 @@ func (r *Runner) compilePrompts(cfg RunnerConfig, absContext string, envVars map
 
 	contextEntries, contextFileNames := collectContextEntries(absContext)
 
-	// Determine if using skill mode.
-	// Use the value provided by the caller via UseSkillMode.
-	// In skill mode (default for solve command), skip mode-specific prompt layers
-	// and let Claude Code discover skills natively.
-	useSkillMode := cfg.UseSkillMode
-
 	sysPrompt, err = compiler.CompileSystemPrompt(prompt.Config{
-		Role:            cfg.RoleName,
-		Language:        "en", // TODO: Detect or flag
-		WorkingDir:      docker.ContainerWorkspaceDir,
-		ContextFiles:    contextFileNames,
-		ContextEntries:  contextEntries,
-		SkipModePrompts: useSkillMode,
+		Language:       "en", // TODO: Detect or flag
+		WorkingDir:     docker.ContainerWorkspaceDir,
+		ContextFiles:   contextFileNames,
+		ContextEntries: contextEntries,
 		// Pass GitHub actor identity from environment variables
 		ActorLogin:   envVars["HOLON_ACTOR_LOGIN"],
 		ActorType:    envVars["HOLON_ACTOR_TYPE"],
