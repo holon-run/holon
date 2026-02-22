@@ -1508,7 +1508,7 @@ func TestWebhookServer_RPCStream_ReceivesTurnEvents(t *testing.T) {
 	}
 }
 
-func TestWebhookServer_ProcessEnvelope_EmitsSystemAnnounceItemForActionableDecision(t *testing.T) {
+func TestWebhookServer_ProcessEnvelope_DoesNotEmitLegacySessionAnnounceNotifications(t *testing.T) {
 	td := t.TempDir()
 	handler := &mockEventHandler{}
 	ws, err := NewWebhookServer(WebhookConfig{
@@ -1551,123 +1551,8 @@ func TestWebhookServer_ProcessEnvelope_EmitsSystemAnnounceItemForActionableDecis
 	}
 
 	notifs := decodeNDJSONNotifications(t, buf.String())
-	if len(notifs) != 1 {
-		t.Fatalf("expected 1 notification, got %d", len(notifs))
-	}
-	if notifs[0].Method != "item/created" {
-		t.Fatalf("expected item/created, got %s", notifs[0].Method)
-	}
-	var item ItemNotification
-	if err := json.Unmarshal(notifs[0].Params, &item); err != nil {
-		t.Fatalf("unmarshal item notification: %v", err)
-	}
-	if item.ThreadID != "main" {
-		t.Fatalf("expected thread_id=main, got %q", item.ThreadID)
-	}
-	if got, ok := item.Content["type"].(string); !ok || got != "system_announce" {
-		t.Fatalf("expected content.type=system_announce, got %v", item.Content["type"])
-	}
-	if got, ok := item.Content["event_id"].(string); !ok || got != "evt_123" {
-		t.Fatalf("expected content.event_id=evt_123, got %v", item.Content["event_id"])
-	}
-	if got, ok := item.Content["decision"].(string); !ok || got != "pr-fix" {
-		t.Fatalf("expected content.decision=pr-fix, got %v", item.Content["decision"])
-	}
-	if got, ok := item.Content["action"].(string); !ok || got != "updated_branch" {
-		t.Fatalf("expected content.action=updated_branch, got %v", item.Content["action"])
-	}
-}
-
-func TestWebhookServer_ProcessEnvelope_SkipsNoOpSessionAnnounce(t *testing.T) {
-	td := t.TempDir()
-	handler := &mockEventHandler{}
-	ws, err := NewWebhookServer(WebhookConfig{
-		Port:     8080,
-		StateDir: td,
-		Handler:  handler,
-	})
-	if err != nil {
-		t.Fatalf("NewWebhookServer failed: %v", err)
-	}
-	defer ws.Close()
-
-	var buf bytes.Buffer
-	sw := NewStreamWriter(&buf)
-	unsubscribe := ws.broadcaster.Subscribe(sw)
-	defer unsubscribe()
-
-	payload, err := json.Marshal(map[string]string{
-		"event_id":           "evt_124",
-		"source":             "github",
-		"type":               "github.issue.comment.created",
-		"source_session_key": "event:jolestar/uxc",
-		"decision":           "no_op",
-		"action":             "none_required",
-		"text":               "No action needed",
-		"created_at":         "2026-02-22T08:56:17Z",
-	})
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
-	}
-
-	env := EventEnvelope{
-		ID:      "announce_event_noop",
-		Source:  "serve",
-		Type:    "session.announce",
-		Payload: payload,
-	}
-	if err := ws.processEnvelope(context.Background(), env); err != nil {
-		t.Fatalf("processEnvelope failed: %v", err)
-	}
-
-	notifs := decodeNDJSONNotifications(t, buf.String())
 	if len(notifs) != 0 {
-		t.Fatalf("expected no notifications for no-op announce, got %d", len(notifs))
-	}
-}
-
-func TestWebhookServer_ProcessEnvelope_SkipsInvalidSessionAnnouncePayload(t *testing.T) {
-	td := t.TempDir()
-	handler := &mockEventHandler{}
-	ws, err := NewWebhookServer(WebhookConfig{
-		Port:     8080,
-		StateDir: td,
-		Handler:  handler,
-	})
-	if err != nil {
-		t.Fatalf("NewWebhookServer failed: %v", err)
-	}
-	defer ws.Close()
-
-	var buf bytes.Buffer
-	sw := NewStreamWriter(&buf)
-	unsubscribe := ws.broadcaster.Subscribe(sw)
-	defer unsubscribe()
-
-	payload, err := json.Marshal(map[string]string{
-		"event_id": "evt_125",
-		"source":   "github",
-		"type":     "github.issue.comment.created",
-		"decision": "pr-review",
-		"action":   "posted_review",
-	})
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
-	}
-
-	env := EventEnvelope{
-		ID:      "announce_event_invalid",
-		Source:  "serve",
-		Type:    "session.announce",
-		Payload: payload,
-	}
-	if err := ws.processEnvelope(context.Background(), env); err != nil {
-		t.Fatalf("processEnvelope failed: %v", err)
-	}
-
-	notifs := decodeNDJSONNotifications(t, buf.String())
-	if len(notifs) != 0 {
-		t.Fatalf("expected no notifications for invalid payload, got %d", len(notifs))
+		t.Fatalf("expected no notifications for legacy session announce events, got %d", len(notifs))
 	}
 }
 

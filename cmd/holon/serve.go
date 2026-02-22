@@ -19,7 +19,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unicode"
 
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/prompt"
@@ -616,6 +615,9 @@ type cliControllerHandler struct {
 	sessionEpochReason    map[string]string
 	turnEventIndex        map[string]string
 	turnEventIndexPath    string
+	activityLedgerPath    string
+	activityLedgerMu      sync.Mutex
+	activityEmitter       serve.ActivityEmitter
 	sessionQueuedTurns    map[string][]string
 	followupPolicy        serveFollowupPolicy
 	maxQueuedTurns        int
@@ -624,12 +626,20 @@ type cliControllerHandler struct {
 }
 
 type controllerEvent struct {
-	env              serve.EventEnvelope
-	sessionKey       string
-	turnID           string
-	threadID         string
-	sessionEpoch     uint64
-	skipMainAnnounce bool
+	env          serve.EventEnvelope
+	sessionKey   string
+	turnID       string
+	threadID     string
+	sessionEpoch uint64
+}
+
+type eventOutcomeRecord struct {
+	EventID     string   `json:"event_id"`
+	Status      string   `json:"status"`
+	HasAction   bool     `json:"has_action"`
+	ActionRefs  []string `json:"action_refs,omitempty"`
+	Message     string   `json:"message,omitempty"`
+	CompletedAt string   `json:"completed_at"`
 }
 
 type resolvedWorkspace struct {
@@ -713,6 +723,7 @@ func newCLIControllerHandler(
 		sessionEpochReason:    make(map[string]string),
 		turnEventIndex:        make(map[string]string),
 		turnEventIndexPath:    filepath.Join(stateDir, "controller-state", "turn-event-index.json"),
+		activityLedgerPath:    filepath.Join(stateDir, "controller-state", "activity-ledger.ndjson"),
 		sessionQueuedTurns:    make(map[string][]string),
 		followupPolicy:        resolveServeFollowupPolicy(),
 		maxQueuedTurns:        resolveServeMaxQueuedTurns(),
@@ -771,6 +782,9 @@ func (h *cliControllerHandler) ensurePumpStartedLocked() {
 	if strings.TrimSpace(h.turnEventIndexPath) == "" {
 		h.turnEventIndexPath = filepath.Join(h.stateDir, "controller-state", "turn-event-index.json")
 	}
+	if strings.TrimSpace(h.activityLedgerPath) == "" {
+		h.activityLedgerPath = filepath.Join(h.stateDir, "controller-state", "activity-ledger.ndjson")
+	}
 	if h.followupPolicy == "" {
 		h.followupPolicy = resolveServeFollowupPolicy()
 	}
@@ -794,7 +808,7 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 	}
 	return h.enqueueEvent(ctx, controllerEvent{
 		env:        env,
-		sessionKey: routeEventToSessionKey(env),
+		sessionKey: "main",
 	})
 }
 
@@ -806,7 +820,7 @@ func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.Tu
 	payload := map[string]any{
 		"turn_id":          turnID,
 		"thread_id":        threadID,
-		"session_key":      threadID,
+		"session_key":      "main",
 		"input":            req.Input,
 		"extended_context": req.ExtendedContext,
 	}
@@ -833,7 +847,7 @@ func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.Tu
 	}
 	return h.enqueueEvent(ctx, controllerEvent{
 		env:        env,
-		sessionKey: threadID,
+		sessionKey: "main",
 		turnID:     turnID,
 		threadID:   threadID,
 	})
@@ -1006,6 +1020,9 @@ func (h *cliControllerHandler) runEventPump() {
 				defer lockEntry.mu.Unlock()
 
 				if shouldSkip, skipReason := h.shouldSkipQueuedEvent(item, sessionKey); shouldSkip {
+					if _, outcomeErr := h.recordSkippedOutcome(item, skipReason); outcomeErr != nil {
+						holonlog.Warn("failed to record skipped outcome", "event_id", item.env.ID, "error", outcomeErr)
+					}
 					if item.turnID != "" {
 						h.publishTurnAck(serve.TurnAckRecord{
 							EventID:  item.env.ID,
@@ -1160,11 +1177,35 @@ func (h *cliControllerHandler) dequeueTurnLocked(sessionKey, turnID string) {
 	h.sessionQueuedTurns[sessionKey] = filtered
 }
 
-func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
+func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) (retErr error) {
 	sessionKey := normalizeSessionKey(item.sessionKey)
 	if sessionKey == "" {
 		sessionKey = "main"
 	}
+	result := controllerRPCEventResponse{
+		EventID: firstNonEmpty(strings.TrimSpace(item.env.ID)),
+	}
+	defer func() {
+		outcome, outcomeErr := h.recordEventOutcome(item, result, retErr)
+		if outcomeErr != nil {
+			holonlog.Warn("failed to record event outcome", "event_id", item.env.ID, "error", outcomeErr)
+			return
+		}
+		emit, reason := shouldEmitActivity(outcome)
+		if !emit {
+			holonlog.Debug(
+				"activity_skipped",
+				"event_id", outcome.EventID,
+				"status", outcome.Status,
+				"has_action", outcome.HasAction,
+				"gating_reason", reason,
+			)
+			return
+		}
+		if emitErr := h.emitActivityForEvent(item, outcome, reason); emitErr != nil {
+			holonlog.Warn("failed to emit activity", "event_id", outcome.EventID, "error", emitErr, "gating_reason", reason)
+		}
+	}()
 	resolvedWorkspace, err := h.resolveWorkspaceForEvent(item.env)
 	if err != nil {
 		return err
@@ -1201,7 +1242,7 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 		"workspace_container_path", resolvedWorkspace.ContainerPath,
 	)
 	dispatchStartedAt := time.Now().UTC()
-	result, err := h.postEventWithReconnect(ctx, ref, sessionKey, enriched)
+	result, err = h.postEventWithReconnect(ctx, ref, sessionKey, enriched)
 	if err != nil {
 		return err
 	}
@@ -1274,66 +1315,7 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 		})
 		h.clearTurnDispatch(item.turnID)
 	}
-	if sessionKey != "main" && !item.skipMainAnnounce {
-		if err := h.enqueueMainAnnounce(item, sessionKey, result); err != nil {
-			holonlog.Warn("failed to enqueue main announce", "event_id", item.env.ID, "session_key", sessionKey, "error", err)
-		}
-	}
 	return nil
-}
-
-func (h *cliControllerHandler) enqueueMainAnnounce(item controllerEvent, sourceSessionKey string, result controllerRPCEventResponse) error {
-	summary := strings.TrimSpace(result.Message)
-	if strings.TrimSpace(summary) == "" {
-		summary = "event processed"
-	}
-	decision := normalizeAnnounceDecision(result.Decision)
-	action := normalizeAnnounceAction(result.Action)
-	if decision == "" || action == "" {
-		derivedDecision, derivedAction := deriveAnnounceOutcome(summary)
-		if decision == "" {
-			decision = derivedDecision
-		}
-		if action == "" {
-			action = normalizeAnnounceAction(derivedAction)
-		}
-	}
-	announce := map[string]any{
-		"level":              "info",
-		"title":              "Event processed",
-		"text":               summary,
-		"source_session_key": sourceSessionKey,
-		"event_id":           item.env.ID,
-		"source":             item.env.Source,
-		"type":               item.env.Type,
-		"decision":           decision,
-		"action":             action,
-		"created_at":         time.Now().UTC().Format(time.RFC3339),
-	}
-	payloadRaw, err := json.Marshal(announce)
-	if err != nil {
-		return fmt.Errorf("failed to marshal announce payload: %w", err)
-	}
-	mainEvent := controllerEvent{
-		env: serve.EventEnvelope{
-			ID:     fmt.Sprintf("announce_%d", time.Now().UTC().UnixNano()),
-			Source: "serve",
-			Type:   "session.announce",
-			At:     time.Now().UTC(),
-			Scope: serve.EventScope{
-				Repo:      item.env.Scope.Repo,
-				Partition: "main",
-			},
-			Subject: serve.EventSubject{
-				Kind: "session",
-				ID:   "main",
-			},
-			Payload: payloadRaw,
-		},
-		sessionKey:       "main",
-		skipMainAnnounce: true,
-	}
-	return h.enqueueEvent(context.Background(), mainEvent)
 }
 
 func (h *cliControllerHandler) resolveWorkspaceForEvent(env serve.EventEnvelope) (resolvedWorkspace, error) {
@@ -1403,18 +1385,18 @@ func (h *cliControllerHandler) publishTurnAck(record serve.TurnAckRecord) {
 	}
 }
 
+func (h *cliControllerHandler) SetActivityEmitter(emitter serve.ActivityEmitter) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.activityEmitter = emitter
+}
+
 func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error) {
 	repo := env.Scope.Repo
 	if repo == "" {
 		repo = h.repoHint
 	}
 	if env.Type == "rpc.turn.input" {
-		if repo == "" {
-			repo = "local/rpc"
-		}
-		return fmt.Sprintf("%s#0", repo), nil
-	}
-	if env.Source == "serve" && env.Type == "session.announce" {
 		if repo == "" {
 			repo = "local/rpc"
 		}
@@ -1816,65 +1798,6 @@ func normalizeSessionKey(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
-func routeEventToSessionKey(env serve.EventEnvelope) string {
-	if explicit := payloadSessionKey(env.Payload); explicit != "" {
-		return normalizeSessionKey(explicit)
-	}
-	if partition := normalizeSessionKey(env.Scope.Partition); partition != "" {
-		return "event:" + sanitizeSessionPartition(partition)
-	}
-	if repo := normalizeSessionKey(env.Scope.Repo); repo != "" {
-		return "event:" + sanitizeSessionPartition(repo)
-	}
-	source := normalizeSessionKey(env.Source)
-	subjectKind := normalizeSessionKey(env.Subject.Kind)
-	subjectID := normalizeSessionKey(env.Subject.ID)
-	if source != "" && subjectKind != "" && subjectID != "" {
-		return "event:" + sanitizeSessionPartition(source+":"+subjectKind+":"+subjectID)
-	}
-	eventType := normalizeSessionKey(env.Type)
-	if source != "" && eventType != "" {
-		return "event:" + sanitizeSessionPartition(source+":"+eventType)
-	}
-	return "main"
-}
-
-func payloadSessionKey(payload json.RawMessage) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var parsed struct {
-		SessionKey string `json:"session_key"`
-		ThreadID   string `json:"thread_id"`
-	}
-	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return ""
-	}
-	if key := normalizeSessionKey(parsed.SessionKey); key != "" {
-		return key
-	}
-	return normalizeSessionKey(parsed.ThreadID)
-}
-
-func sanitizeSessionPartition(raw string) string {
-	var b strings.Builder
-	b.Grow(len(raw))
-	for _, r := range raw {
-		switch {
-		case unicode.IsLetter(r), unicode.IsNumber(r), r == '-', r == '_', r == '.', r == ':', r == '/':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	sanitized := strings.TrimSpace(b.String())
-	sanitized = strings.Trim(sanitized, "_")
-	if sanitized == "" {
-		return "unknown"
-	}
-	return sanitized
-}
-
 type controllerRPCEventRequest struct {
 	Event      serve.EventEnvelope `json:"event"`
 	SessionKey string              `json:"session_key,omitempty"`
@@ -2170,8 +2093,6 @@ func progressEventContextLabel(env serve.EventEnvelope) string {
 		return "GitHub event"
 	case strings.EqualFold(source, "timer") || strings.EqualFold(eventType, "timer.tick"):
 		return "scheduled timer tick"
-	case strings.EqualFold(source, "serve") && strings.EqualFold(eventType, "session.announce"):
-		return "background event announcement"
 	default:
 		if eventType != "" {
 			return "event " + eventType
@@ -2412,6 +2333,175 @@ func parseControllerRPCResponse(body io.Reader) (controllerRPCEventResponse, err
 		Action:     strings.TrimSpace(raw.Action),
 	}
 	return result, nil
+}
+
+func deriveHasAction(result controllerRPCEventResponse) (bool, []string) {
+	refs := make([]string, 0, 2)
+	addRef := func(ref string) {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return
+		}
+		for _, existing := range refs {
+			if existing == ref {
+				return
+			}
+		}
+		refs = append(refs, ref)
+	}
+
+	if action := normalizeAnnounceAction(result.Action); action != "" && action != "none_required" {
+		addRef("action:" + action)
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(result.Message))
+	for _, marker := range []struct {
+		key      string
+		refValue string
+	}{
+		{key: "opened pr", refValue: "action:opened_pr"},
+		{key: "created pull request", refValue: "action:opened_pr"},
+		{key: "posted review", refValue: "action:posted_review"},
+		{key: "updated branch", refValue: "action:updated_branch"},
+		{key: "pushed commit", refValue: "action:updated_branch"},
+		{key: "posted comment", refValue: "action:commented"},
+		{key: "commented on", refValue: "action:commented"},
+	} {
+		if strings.Contains(lower, marker.key) {
+			addRef(marker.refValue)
+		}
+	}
+	return len(refs) > 0, refs
+}
+
+func normalizeOutcomeStatus(status string, err error) string {
+	if err != nil {
+		if serve.IsSkipEventError(err) {
+			return "skipped"
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "interrupted"
+		}
+		return "failed"
+	}
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	switch normalized {
+	case "ok", "completed", "success":
+		return "ok"
+	case "failed", "error":
+		return "failed"
+	case "interrupted", "cancelled", "canceled":
+		return "interrupted"
+	case "skipped":
+		return "skipped"
+	default:
+		if normalized == "" {
+			return "ok"
+		}
+		return normalized
+	}
+}
+
+func (h *cliControllerHandler) recordEventOutcome(item controllerEvent, result controllerRPCEventResponse, dispatchErr error) (eventOutcomeRecord, error) {
+	status := normalizeOutcomeStatus(result.Status, dispatchErr)
+	hasAction, actionRefs := deriveHasAction(result)
+	message := strings.TrimSpace(result.Message)
+	if dispatchErr != nil {
+		message = strings.TrimSpace(dispatchErr.Error())
+	}
+	record := eventOutcomeRecord{
+		EventID:     firstNonEmpty(strings.TrimSpace(result.EventID), strings.TrimSpace(item.env.ID)),
+		Status:      status,
+		HasAction:   hasAction,
+		ActionRefs:  actionRefs,
+		Message:     message,
+		CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return record, fmt.Errorf("failed to marshal event outcome record: %w", err)
+	}
+	path := strings.TrimSpace(h.activityLedgerPath)
+	if path == "" {
+		path = filepath.Join(h.stateDir, "controller-state", "activity-ledger.ndjson")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return record, fmt.Errorf("failed to create activity ledger dir: %w", err)
+	}
+	h.activityLedgerMu.Lock()
+	defer h.activityLedgerMu.Unlock()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return record, fmt.Errorf("failed to open activity ledger: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return record, fmt.Errorf("failed to append activity ledger: %w", err)
+	}
+	return record, nil
+}
+
+func (h *cliControllerHandler) recordSkippedOutcome(item controllerEvent, reason string) (eventOutcomeRecord, error) {
+	result := controllerRPCEventResponse{
+		EventID: firstNonEmpty(strings.TrimSpace(item.env.ID)),
+		Status:  "skipped",
+		Message: strings.TrimSpace(reason),
+	}
+	if strings.TrimSpace(result.Message) == "" {
+		result.Message = "event skipped before dispatch"
+	}
+	return h.recordEventOutcome(item, result, serve.NewSkipEventError(result.Message))
+}
+
+func shouldEmitActivity(outcome eventOutcomeRecord) (bool, string) {
+	switch strings.ToLower(strings.TrimSpace(outcome.Status)) {
+	case "failed", "interrupted":
+		return true, "terminal_status"
+	}
+	if outcome.HasAction {
+		return true, "has_action"
+	}
+	return false, "no_action"
+}
+
+func (h *cliControllerHandler) emitActivityForEvent(item controllerEvent, outcome eventOutcomeRecord, gatingReason string) error {
+	h.mu.Lock()
+	emitter := h.activityEmitter
+	h.mu.Unlock()
+	if emitter == nil {
+		return fmt.Errorf("activity emitter is not configured")
+	}
+	content := map[string]interface{}{
+		"type":          "system_announce",
+		"title":         "Event handled",
+		"text":          strings.TrimSpace(outcome.Message),
+		"event_id":      outcome.EventID,
+		"source":        strings.TrimSpace(item.env.Source),
+		"event_type":    strings.TrimSpace(item.env.Type),
+		"status":        outcome.Status,
+		"has_action":    outcome.HasAction,
+		"completed_at":  outcome.CompletedAt,
+		"gating_reason": strings.TrimSpace(gatingReason),
+	}
+	if len(outcome.ActionRefs) > 0 {
+		content["action_refs"] = append([]string(nil), outcome.ActionRefs...)
+	}
+	itemNotif := serve.NewItemNotification(
+		fmt.Sprintf("activity_%d", time.Now().UTC().UnixNano()),
+		serve.ItemNotificationCreated,
+		serve.StateCompleted,
+		content,
+	)
+	itemNotif.ThreadID = firstNonEmpty(strings.TrimSpace(item.threadID), "main")
+	emitter(itemNotif)
+	holonlog.Info(
+		"activity_emitted",
+		"event_id", outcome.EventID,
+		"status", outcome.Status,
+		"has_action", outcome.HasAction,
+		"gating_reason", gatingReason,
+	)
+	return nil
 }
 
 func deriveAnnounceOutcome(summary string) (decision string, action string) {

@@ -21,6 +21,12 @@ type EventHandler interface {
 	HandleEvent(ctx context.Context, env EventEnvelope) error
 }
 
+type ActivityEmitter func(ItemNotification)
+
+type ActivityEmitterRegistrar interface {
+	SetActivityEmitter(ActivityEmitter)
+}
+
 // SkipEventError indicates the event is valid but should not trigger execution.
 type SkipEventError struct {
 	Reason string

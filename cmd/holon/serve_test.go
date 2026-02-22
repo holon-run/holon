@@ -184,49 +184,172 @@ func TestResolveServeMaxQueuedTurns(t *testing.T) {
 	}
 }
 
-func TestRouteEventToSessionKey(t *testing.T) {
+func TestHandleEvent_UsesUnifiedMainSession(t *testing.T) {
 	t.Parallel()
 
-	withPayload := serve.EventEnvelope{
-		Scope:   serve.EventScope{Repo: "holon-run/holon"},
-		Payload: []byte(`{"session_key":"thread_x"}`),
-	}
-	if got := routeEventToSessionKey(withPayload); got != "thread_x" {
-		t.Fatalf("routeEventToSessionKey(payload session_key) = %q, want thread_x", got)
-	}
-
-	withPartition := serve.EventEnvelope{
-		Scope: serve.EventScope{Partition: "repo:holon-run/holon"},
-	}
-	if got := routeEventToSessionKey(withPartition); got != "event:repo:holon-run/holon" {
-		t.Fatalf("routeEventToSessionKey(partition) = %q", got)
+	h := &cliControllerHandler{
+		eventQueue:    make(chan controllerEvent, 1),
+		stopCh:        make(chan struct{}),
+		workerDone:    make(chan struct{}),
+		turnAckCh:     make(chan serve.TurnAckRecord, 1),
+		maxConcurrent: 1,
+		sessionLocks:  make(map[string]*sessionLockEntry),
+		turnDispatch:  make(map[string]*turnDispatchState),
+		sessionEpoch:  make(map[string]uint64),
 	}
 
-	withRepo := serve.EventEnvelope{
-		Scope: serve.EventScope{Repo: "holon-run/holon"},
+	env := serve.EventEnvelope{
+		ID:      "evt_1",
+		Source:  "github",
+		Type:    "github.issue.opened",
+		Scope:   serve.EventScope{Partition: "repo:holon-run/holon", Repo: "holon-run/holon"},
+		Payload: []byte(`{"session_key":"thread_x","thread_id":"thread_y"}`),
 	}
-	if got := routeEventToSessionKey(withRepo); got != "event:holon-run/holon" {
-		t.Fatalf("routeEventToSessionKey(repo) = %q", got)
+	if err := h.HandleEvent(context.Background(), env); err != nil {
+		t.Fatalf("HandleEvent() error = %v", err)
 	}
+	select {
+	case queued := <-h.eventQueue:
+		if got := queued.sessionKey; got != "main" {
+			t.Fatalf("queued session_key = %q, want main", got)
+		}
+	default:
+		t.Fatalf("expected enqueued event")
+	}
+}
 
-	withSubject := serve.EventEnvelope{
-		Source: "github",
-		Type:   "github.issue.opened",
-		Subject: serve.EventSubject{
-			Kind: "issue",
-			ID:   "698",
+func TestShouldEmitActivity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		outcome    eventOutcomeRecord
+		wantEmit   bool
+		wantReason string
+	}{
+		{
+			name:       "failed emits",
+			outcome:    eventOutcomeRecord{Status: "failed"},
+			wantEmit:   true,
+			wantReason: "terminal_status",
+		},
+		{
+			name:       "interrupted emits",
+			outcome:    eventOutcomeRecord{Status: "interrupted"},
+			wantEmit:   true,
+			wantReason: "terminal_status",
+		},
+		{
+			name:       "has action emits",
+			outcome:    eventOutcomeRecord{Status: "ok", HasAction: true},
+			wantEmit:   true,
+			wantReason: "has_action",
+		},
+		{
+			name:       "no action skipped",
+			outcome:    eventOutcomeRecord{Status: "ok", HasAction: false},
+			wantEmit:   false,
+			wantReason: "no_action",
 		},
 	}
-	if got := routeEventToSessionKey(withSubject); got != "event:github:issue:698" {
-		t.Fatalf("routeEventToSessionKey(subject) = %q", got)
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotEmit, gotReason := shouldEmitActivity(tt.outcome)
+			if gotEmit != tt.wantEmit || gotReason != tt.wantReason {
+				t.Fatalf("shouldEmitActivity(%+v)=(%v,%q), want (%v,%q)", tt.outcome, gotEmit, gotReason, tt.wantEmit, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestDeriveHasAction(t *testing.T) {
+	t.Parallel()
+
+	hasAction, refs := deriveHasAction(controllerRPCEventResponse{
+		Action:  "updated_branch",
+		Message: "posted review and updated branch",
+	})
+	if !hasAction {
+		t.Fatalf("deriveHasAction should detect action")
+	}
+	if len(refs) == 0 {
+		t.Fatalf("deriveHasAction should include refs")
 	}
 
-	withType := serve.EventEnvelope{
-		Source: "timer",
-		Type:   "timer.tick",
+	hasAction, refs = deriveHasAction(controllerRPCEventResponse{
+		Message: "no-op, no action required",
+	})
+	if hasAction {
+		t.Fatalf("deriveHasAction should not detect action for no-op text")
 	}
-	if got := routeEventToSessionKey(withType); got != "event:timer:timer.tick" {
-		t.Fatalf("routeEventToSessionKey(type) = %q", got)
+	if len(refs) != 0 {
+		t.Fatalf("deriveHasAction refs=%v, want empty", refs)
+	}
+}
+
+func TestRecordEventOutcomeAndSkippedOutcome(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	ledger := filepath.Join(tmp, "controller-state", "activity-ledger.ndjson")
+	h := &cliControllerHandler{
+		stateDir:           tmp,
+		activityLedgerPath: ledger,
+		sessionLocks:       make(map[string]*sessionLockEntry),
+		turnDispatch:       make(map[string]*turnDispatchState),
+		sessionEpoch:       make(map[string]uint64),
+		sessionEpochReason: make(map[string]string),
+		turnEventIndex:     make(map[string]string),
+		sessionQueuedTurns: make(map[string][]string),
+	}
+	item := controllerEvent{
+		env: serve.EventEnvelope{
+			ID:     "evt_ledger_1",
+			Source: "github",
+			Type:   "github.issue.opened",
+		},
+	}
+
+	outcome, err := h.recordEventOutcome(item, controllerRPCEventResponse{
+		EventID: "evt_ledger_1",
+		Status:  "ok",
+		Message: "opened pr #1",
+		Action:  "opened_pr",
+	}, nil)
+	if err != nil {
+		t.Fatalf("recordEventOutcome error = %v", err)
+	}
+	if outcome.EventID != "evt_ledger_1" || !outcome.HasAction {
+		t.Fatalf("unexpected outcome: %+v", outcome)
+	}
+
+	skipped, err := h.recordSkippedOutcome(item, "superseded by newer session work")
+	if err != nil {
+		t.Fatalf("recordSkippedOutcome error = %v", err)
+	}
+	if skipped.Status != "skipped" {
+		t.Fatalf("skipped status = %q, want skipped", skipped.Status)
+	}
+
+	data, err := os.ReadFile(ledger)
+	if err != nil {
+		t.Fatalf("read ledger error = %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ledger lines = %d, want 2", len(lines))
+	}
+	for _, line := range lines {
+		var rec eventOutcomeRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("unmarshal ledger line error = %v", err)
+		}
+		if rec.EventID == "" || rec.Status == "" {
+			t.Fatalf("invalid ledger record: %+v", rec)
+		}
 	}
 }
 
