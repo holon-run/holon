@@ -696,7 +696,7 @@ func parseSessionAnnouncePayload(raw json.RawMessage) (sessionAnnouncePayload, b
 
 func isNoOpDecision(decision string) bool {
 	switch normalizeDecision(decision) {
-	case "no-op", "noop", "no-op.", "none", "none_required":
+	case "no-op", "noop", "no-op.", "none", "none-required":
 		return true
 	default:
 		return false

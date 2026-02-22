@@ -950,14 +950,14 @@ func (h *cliControllerHandler) enqueueMainAnnounce(item controllerEvent, sourceS
 		summary = "event processed"
 	}
 	decision := normalizeAnnounceDecision(result.Decision)
-	action := strings.TrimSpace(result.Action)
+	action := normalizeAnnounceAction(result.Action)
 	if decision == "" || action == "" {
 		derivedDecision, derivedAction := deriveAnnounceOutcome(summary)
 		if decision == "" {
 			decision = derivedDecision
 		}
 		if action == "" {
-			action = derivedAction
+			action = normalizeAnnounceAction(derivedAction)
 		}
 	}
 	announce := map[string]any{
@@ -1895,7 +1895,7 @@ func deriveAnnounceOutcome(summary string) (decision string, action string) {
 	lowerSummary := strings.ToLower(normalizedSummary)
 
 	decision = normalizeAnnounceDecision(extractSummaryFieldValue(normalizedSummary, "decision"))
-	action = strings.TrimSpace(extractSummaryFieldValue(normalizedSummary, "action taken"))
+	action = normalizeAnnounceAction(extractSummaryFieldValue(normalizedSummary, "action taken"))
 
 	if decision == "" {
 		switch {
@@ -1981,6 +1981,43 @@ func normalizeAnnounceDecision(decision string) string {
 	default:
 		return normalized
 	}
+}
+
+func normalizeAnnounceAction(action string) string {
+	normalized := strings.ToLower(strings.TrimSpace(action))
+	if normalized == "" {
+		return ""
+	}
+	switch normalized {
+	case "opened_pr", "opened-pr", "opened pr", "created pull request":
+		return "opened_pr"
+	case "posted_review", "posted-review", "posted review":
+		return "posted_review"
+	case "updated_branch", "updated-branch", "updated branch", "pushed commit":
+		return "updated_branch"
+	case "commented", "posted comment":
+		return "commented"
+	case "none_required", "none-required", "none required", "none", "no action required":
+		return "none_required"
+	}
+
+	var b strings.Builder
+	prevUnderscore := false
+	for _, r := range normalized {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			prevUnderscore = false
+		default:
+			if prevUnderscore || b.Len() == 0 {
+				continue
+			}
+			b.WriteByte('_')
+			prevUnderscore = true
+		}
+	}
+	result := strings.Trim(b.String(), "_")
+	return result
 }
 
 func controllerHealthViaDockerExec(ctx context.Context, containerID string) error {

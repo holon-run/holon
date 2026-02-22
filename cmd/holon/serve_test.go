@@ -937,7 +937,7 @@ func TestDeriveAnnounceOutcome(t *testing.T) {
 		if decision != "no-op" {
 			t.Fatalf("decision = %q", decision)
 		}
-		if action != "None required" {
+		if action != "none_required" {
 			t.Fatalf("action = %q", action)
 		}
 	})
@@ -948,6 +948,16 @@ func TestDeriveAnnounceOutcome(t *testing.T) {
 			t.Fatalf("decision = %q", decision)
 		}
 		if action != "" {
+			t.Fatalf("action = %q", action)
+		}
+	})
+
+	t.Run("normalize freeform action to canonical token", func(t *testing.T) {
+		decision, action := deriveAnnounceOutcome("Decision: pr-review\nAction Taken: Posted Review")
+		if decision != "pr-review" {
+			t.Fatalf("decision = %q", decision)
+		}
+		if action != "posted_review" {
 			t.Fatalf("action = %q", action)
 		}
 	})
