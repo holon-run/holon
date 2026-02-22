@@ -56,6 +56,9 @@ type SubscriptionManager struct {
 	watchReady chan struct{}
 
 	forwarderFactory func(ForwarderConfig) (forwarderRunner, error)
+
+	forwarderRestartCooldown    time.Duration
+	lastForwarderRestartAttempt time.Time
 }
 
 // ManagerConfig holds configuration for SubscriptionManager
@@ -69,9 +72,10 @@ type ManagerConfig struct {
 	NoDefaultSession bool
 
 	// Hot reload configuration. When unset, defaults are used.
-	ReloadDebounce     time.Duration // default: 600ms
-	ReloadPollInterval time.Duration // default: 3s
-	DisableHotReload   bool
+	ReloadDebounce           time.Duration // default: 600ms
+	ReloadPollInterval       time.Duration // default: 3s
+	DisableHotReload         bool
+	ForwarderRestartCooldown time.Duration // default: 10s
 
 	ForwarderFactory func(ForwarderConfig) (forwarderRunner, error)
 }
@@ -79,6 +83,7 @@ type ManagerConfig struct {
 type forwarderRunner interface {
 	Start(ctx context.Context) error
 	Stop() error
+	HealthCheck() error
 	Status() map[string]interface{}
 }
 
@@ -97,6 +102,10 @@ func NewSubscriptionManager(cfg ManagerConfig) (*SubscriptionManager, error) {
 	poll := cfg.ReloadPollInterval
 	if poll <= 0 {
 		poll = 3 * time.Second
+	}
+	restartCooldown := cfg.ForwarderRestartCooldown
+	if restartCooldown <= 0 {
+		restartCooldown = 10 * time.Second
 	}
 
 	forwarderFactory := cfg.ForwarderFactory
@@ -123,6 +132,8 @@ func NewSubscriptionManager(cfg ManagerConfig) (*SubscriptionManager, error) {
 		disableHotReload:   cfg.DisableHotReload,
 
 		forwarderFactory: forwarderFactory,
+
+		forwarderRestartCooldown: restartCooldown,
 	}, nil
 }
 
@@ -181,6 +192,8 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 	if err := sm.writeStatusFile(status); err != nil {
 		return err
 	}
+
+	go sm.watchForwarderHealth(runCtx)
 
 	if !sm.disableHotReload {
 		ready := make(chan struct{})
@@ -763,6 +776,82 @@ func (sm *SubscriptionManager) watchAndReloadConfig(ctx context.Context, ready c
 	}
 }
 
+func (sm *SubscriptionManager) watchForwarderHealth(ctx context.Context) {
+	ticker := time.NewTicker(sm.reloadPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sm.ensureForwarderHealthy(ctx)
+		}
+	}
+}
+
+func (sm *SubscriptionManager) ensureForwarderHealthy(ctx context.Context) {
+	sm.reconcileMu.Lock()
+	defer sm.reconcileMu.Unlock()
+
+	sm.mu.Lock()
+	if sm.activeTransportMode != "gh_forward" || sm.forwarder == nil || sm.webhookServer == nil {
+		sm.mu.Unlock()
+		return
+	}
+	forwarder := sm.forwarder
+	webhookSrv := sm.webhookServer
+	repos := append([]string(nil), sm.activeRepos...)
+	cooldown := sm.forwarderRestartCooldown
+	lastAttempt := sm.lastForwarderRestartAttempt
+	sm.mu.Unlock()
+
+	healthErr := forwarder.HealthCheck()
+	if healthErr == nil {
+		return
+	}
+
+	now := time.Now()
+	if cooldown > 0 && now.Sub(lastAttempt) < cooldown {
+		holonlog.Warn(
+			"gh webhook forward unhealthy but restart cooldown is active",
+			"error", healthErr,
+			"cooldown", cooldown.String(),
+		)
+		return
+	}
+
+	sm.mu.Lock()
+	if sm.activeTransportMode != "gh_forward" || sm.forwarder == nil || sm.webhookServer == nil {
+		sm.mu.Unlock()
+		return
+	}
+	if sm.forwarder != forwarder || sm.webhookServer != webhookSrv {
+		sm.mu.Unlock()
+		return
+	}
+	if cooldown > 0 && now.Sub(sm.lastForwarderRestartAttempt) < cooldown {
+		sm.mu.Unlock()
+		return
+	}
+	repos = append([]string(nil), sm.activeRepos...)
+	sm.lastForwarderRestartAttempt = now
+	sm.mu.Unlock()
+
+	holonlog.Warn("gh webhook forward health check failed; attempting restart", "error", healthErr)
+	if err := sm.reconcileGitHubTransportLocked(ctx, webhookSrv, desiredTransport{
+		Mode:  "gh_forward",
+		Repos: repos,
+	}); err != nil {
+		holonlog.Warn("failed to restart gh webhook forward after health check failure", "error", err)
+		return
+	}
+
+	if err := sm.WriteStatusFile(); err != nil {
+		holonlog.Warn("failed to write status file after gh webhook forward restart", "error", err)
+	}
+}
+
 func watcherEvents(w *fsnotify.Watcher) <-chan fsnotify.Event {
 	if w == nil {
 		return nil
@@ -893,7 +982,10 @@ func (sm *SubscriptionManager) reconcileGitHubTransport(ctx context.Context, web
 	// start new transports without holding sm.mu for the entire operation.
 	sm.reconcileMu.Lock()
 	defer sm.reconcileMu.Unlock()
+	return sm.reconcileGitHubTransportLocked(ctx, webhookSrv, desired)
+}
 
+func (sm *SubscriptionManager) reconcileGitHubTransportLocked(ctx context.Context, webhookSrv *WebhookServer, desired desiredTransport) error {
 	switch desired.Mode {
 	case "":
 		// Stop ingress, keep RPC server alive.
