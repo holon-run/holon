@@ -226,6 +226,52 @@ func TestCompileUserPrompt(t *testing.T) {
 	}
 }
 
+func TestCompileModeUserPrompt(t *testing.T) {
+	t.Run("Compile serve mode user prompt", func(t *testing.T) {
+		mockFS := fstest.MapFS{
+			"manifest.yaml":           {Data: []byte("version: 1.0.0\ndefaults:\n  mode: solve\n  role: developer\n")},
+			"modes/serve/user.md":     {Data: []byte("Serve user: role={{ .Role }} mode={{ .Mode }} wd={{ .WorkingDir }}")},
+			"roles/developer.md":      {Data: []byte("Developer")},
+			"contracts/common.md":     {Data: []byte("Common")},
+			"modes/solve/contract.md": {Data: []byte("Solve")},
+		}
+		compiler := NewCompilerFromFS(mockFS)
+		prompt, err := compiler.CompileModeUserPrompt(Config{
+			Mode:       "serve",
+			Role:       "coder",
+			WorkingDir: "/root/workspace",
+		})
+		if err != nil {
+			t.Fatalf("CompileModeUserPrompt() error: %v", err)
+		}
+		if !strings.Contains(prompt, "role=developer") {
+			t.Fatalf("expected role alias to resolve to developer, got: %q", prompt)
+		}
+		if !strings.Contains(prompt, "mode=serve") {
+			t.Fatalf("expected serve mode in prompt, got: %q", prompt)
+		}
+		if !strings.Contains(prompt, "wd=/root/workspace") {
+			t.Fatalf("expected working dir in prompt, got: %q", prompt)
+		}
+	})
+
+	t.Run("Missing mode user prompt returns error", func(t *testing.T) {
+		mockFS := fstest.MapFS{
+			"manifest.yaml":       {Data: []byte("version: 1.0.0\ndefaults:\n  mode: serve\n  role: developer\n")},
+			"roles/developer.md":  {Data: []byte("Developer")},
+			"contracts/common.md": {Data: []byte("Common")},
+		}
+		compiler := NewCompilerFromFS(mockFS)
+		_, err := compiler.CompileModeUserPrompt(Config{Mode: "serve"})
+		if err == nil {
+			t.Fatal("expected error when mode user prompt is missing")
+		}
+		if !strings.Contains(err.Error(), "failed to read mode user prompt modes/serve/user.md") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 // TestCompileUserPromptStructure verifies specific structural requirements
 func TestCompileUserPromptStructure(t *testing.T) {
 	compiler := NewCompilerFromFS(fstest.MapFS{})
