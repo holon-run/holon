@@ -21,6 +21,20 @@ type serveDebugTracer struct {
 	seq      atomic.Uint64
 }
 
+func safeMapCapacity(base, extra int) int {
+	maxInt := int(^uint(0) >> 1)
+	if base < 0 {
+		base = 0
+	}
+	if extra < 0 {
+		extra = 0
+	}
+	if base > maxInt-extra {
+		return maxInt
+	}
+	return base + extra
+}
+
 func newServeDebugTracerFromEnv() *serveDebugTracer {
 	path := strings.TrimSpace(os.Getenv(serveTraceEnvKey))
 	if path == "" {
@@ -45,7 +59,7 @@ func (t *serveDebugTracer) trace(kind string, fields map[string]interface{}) {
 		return
 	}
 
-	entry := make(map[string]interface{}, len(fields)+4)
+	entry := make(map[string]interface{}, safeMapCapacity(len(fields), 4))
 	entry["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
 	entry["component"] = "serve"
 	entry["kind"] = strings.TrimSpace(kind)
