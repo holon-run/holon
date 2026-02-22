@@ -81,37 +81,12 @@ func NewCompilerFromFS(assets fs.FS) *Compiler {
 }
 
 func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
-	// 1. Load Manifest
-	manifestData, err := fs.ReadFile(c.assets, "manifest.yaml")
+	resolvedCfg, err := c.resolveModeAndRole(cfg)
 	if err != nil {
-		return "", fmt.Errorf("failed to read manifest: %w", err)
+		return "", err
 	}
-	var manifest Manifest
-	if err := yaml.Unmarshal(manifestData, &manifest); err != nil {
-		return "", fmt.Errorf("failed to parse manifest: %w", err)
-	}
-
-	// 2. Resolve Mode (with defaults)
-	mode := cfg.Mode
-	if mode == "" {
-		mode = manifest.Defaults.Mode
-	}
-	if mode == "" {
-		mode = "solve" // Fallback
-	}
-
-	// 3. Resolve Role (with defaults and alias support)
-	role := cfg.Role
-	if role == "" {
-		role = manifest.Defaults.Role
-	}
-	if role == "" {
-		role = "developer" // Fallback
-	}
-	// Support "coder" as an alias for "developer"
-	if role == "coder" {
-		role = "developer"
-	}
+	mode := resolvedCfg.Mode
+	role := resolvedCfg.Role
 
 	// 4. Load Common Contract (base layer)
 	commonData, err := fs.ReadFile(c.assets, "contracts/common.md")
@@ -188,11 +163,66 @@ func (c *Compiler) CompileSystemPrompt(cfg Config) (string, error) {
 	}
 
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, cfg); err != nil {
+	if err := tmpl.Execute(&buf, resolvedCfg); err != nil {
 		return "", fmt.Errorf("failed to execute template: %w", err)
 	}
 
 	return buf.String(), nil
+}
+
+// CompileModeUserPrompt compiles mode-specific user prompt template at modes/<mode>/user.md.
+func (c *Compiler) CompileModeUserPrompt(cfg Config) (string, error) {
+	resolvedCfg, err := c.resolveModeAndRole(cfg)
+	if err != nil {
+		return "", err
+	}
+
+	path := fmt.Sprintf("modes/%s/user.md", resolvedCfg.Mode)
+	data, err := fs.ReadFile(c.assets, path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read mode user prompt %s: %w", path, err)
+	}
+
+	tmpl, err := template.New("mode-user").Parse(string(data))
+	if err != nil {
+		return "", fmt.Errorf("failed to parse mode user prompt template %s: %w", path, err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, resolvedCfg); err != nil {
+		return "", fmt.Errorf("failed to execute mode user prompt template %s: %w", path, err)
+	}
+	return buf.String(), nil
+}
+
+func (c *Compiler) resolveModeAndRole(cfg Config) (Config, error) {
+	manifestData, err := fs.ReadFile(c.assets, "manifest.yaml")
+	if err != nil {
+		return Config{}, fmt.Errorf("failed to read manifest: %w", err)
+	}
+	var manifest Manifest
+	if err := yaml.Unmarshal(manifestData, &manifest); err != nil {
+		return Config{}, fmt.Errorf("failed to parse manifest: %w", err)
+	}
+
+	resolved := cfg
+	if resolved.Mode == "" {
+		resolved.Mode = manifest.Defaults.Mode
+	}
+	if resolved.Mode == "" {
+		resolved.Mode = "solve"
+	}
+
+	if resolved.Role == "" {
+		resolved.Role = manifest.Defaults.Role
+	}
+	if resolved.Role == "" {
+		resolved.Role = "developer"
+	}
+	if resolved.Role == "coder" {
+		resolved.Role = "developer"
+	}
+	return resolved, nil
 }
 
 func readOptionalFile(assets fs.FS, path string) ([]byte, error) {
