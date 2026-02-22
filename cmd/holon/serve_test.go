@@ -184,49 +184,37 @@ func TestResolveServeMaxQueuedTurns(t *testing.T) {
 	}
 }
 
-func TestRouteEventToSessionKey(t *testing.T) {
+func TestHandleEvent_UsesUnifiedMainSession(t *testing.T) {
 	t.Parallel()
 
-	withPayload := serve.EventEnvelope{
-		Scope:   serve.EventScope{Repo: "holon-run/holon"},
-		Payload: []byte(`{"session_key":"thread_x"}`),
-	}
-	if got := routeEventToSessionKey(withPayload); got != "thread_x" {
-		t.Fatalf("routeEventToSessionKey(payload session_key) = %q, want thread_x", got)
-	}
-
-	withPartition := serve.EventEnvelope{
-		Scope: serve.EventScope{Partition: "repo:holon-run/holon"},
-	}
-	if got := routeEventToSessionKey(withPartition); got != "event:repo:holon-run/holon" {
-		t.Fatalf("routeEventToSessionKey(partition) = %q", got)
+	h := &cliControllerHandler{
+		eventQueue: make(chan controllerEvent, 1),
+		stopCh:     make(chan struct{}),
+		workerDone: make(chan struct{}),
+		turnAckCh:  make(chan serve.TurnAckRecord, 1),
+		maxConcurrent: 1,
+		sessionLocks:  make(map[string]*sessionLockEntry),
+		turnDispatch:  make(map[string]*turnDispatchState),
+		sessionEpoch:  make(map[string]uint64),
 	}
 
-	withRepo := serve.EventEnvelope{
-		Scope: serve.EventScope{Repo: "holon-run/holon"},
-	}
-	if got := routeEventToSessionKey(withRepo); got != "event:holon-run/holon" {
-		t.Fatalf("routeEventToSessionKey(repo) = %q", got)
-	}
-
-	withSubject := serve.EventEnvelope{
+	env := serve.EventEnvelope{
+		ID:     "evt_1",
 		Source: "github",
 		Type:   "github.issue.opened",
-		Subject: serve.EventSubject{
-			Kind: "issue",
-			ID:   "698",
-		},
+		Scope:  serve.EventScope{Partition: "repo:holon-run/holon", Repo: "holon-run/holon"},
+		Payload: []byte(`{"session_key":"thread_x","thread_id":"thread_y"}`),
 	}
-	if got := routeEventToSessionKey(withSubject); got != "event:github:issue:698" {
-		t.Fatalf("routeEventToSessionKey(subject) = %q", got)
+	if err := h.HandleEvent(context.Background(), env); err != nil {
+		t.Fatalf("HandleEvent() error = %v", err)
 	}
-
-	withType := serve.EventEnvelope{
-		Source: "timer",
-		Type:   "timer.tick",
-	}
-	if got := routeEventToSessionKey(withType); got != "event:timer:timer.tick" {
-		t.Fatalf("routeEventToSessionKey(type) = %q", got)
+	select {
+	case queued := <-h.eventQueue:
+		if got := queued.sessionKey; got != "main" {
+			t.Fatalf("queued session_key = %q, want main", got)
+		}
+	default:
+		t.Fatalf("expected enqueued event")
 	}
 }
 

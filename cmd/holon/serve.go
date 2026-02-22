@@ -19,7 +19,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unicode"
 
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/prompt"
@@ -627,12 +626,11 @@ type cliControllerHandler struct {
 }
 
 type controllerEvent struct {
-	env              serve.EventEnvelope
-	sessionKey       string
-	turnID           string
-	threadID         string
-	sessionEpoch     uint64
-	skipMainAnnounce bool
+	env          serve.EventEnvelope
+	sessionKey   string
+	turnID       string
+	threadID     string
+	sessionEpoch uint64
 }
 
 type eventOutcomeRecord struct {
@@ -810,7 +808,7 @@ func (h *cliControllerHandler) HandleEvent(ctx context.Context, env serve.EventE
 	}
 	return h.enqueueEvent(ctx, controllerEvent{
 		env:        env,
-		sessionKey: routeEventToSessionKey(env),
+		sessionKey: "main",
 	})
 }
 
@@ -822,7 +820,7 @@ func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.Tu
 	payload := map[string]any{
 		"turn_id":          turnID,
 		"thread_id":        threadID,
-		"session_key":      threadID,
+		"session_key":      "main",
 		"input":            req.Input,
 		"extended_context": req.ExtendedContext,
 	}
@@ -849,7 +847,7 @@ func (h *cliControllerHandler) HandleTurnStart(ctx context.Context, req serve.Tu
 	}
 	return h.enqueueEvent(ctx, controllerEvent{
 		env:        env,
-		sessionKey: threadID,
+		sessionKey: "main",
 		turnID:     turnID,
 		threadID:   threadID,
 	})
@@ -1793,65 +1791,6 @@ func resolveControllerWorkspace(agentHome string) (string, error) {
 
 func normalizeSessionKey(raw string) string {
 	return strings.TrimSpace(raw)
-}
-
-func routeEventToSessionKey(env serve.EventEnvelope) string {
-	if explicit := payloadSessionKey(env.Payload); explicit != "" {
-		return normalizeSessionKey(explicit)
-	}
-	if partition := normalizeSessionKey(env.Scope.Partition); partition != "" {
-		return "event:" + sanitizeSessionPartition(partition)
-	}
-	if repo := normalizeSessionKey(env.Scope.Repo); repo != "" {
-		return "event:" + sanitizeSessionPartition(repo)
-	}
-	source := normalizeSessionKey(env.Source)
-	subjectKind := normalizeSessionKey(env.Subject.Kind)
-	subjectID := normalizeSessionKey(env.Subject.ID)
-	if source != "" && subjectKind != "" && subjectID != "" {
-		return "event:" + sanitizeSessionPartition(source+":"+subjectKind+":"+subjectID)
-	}
-	eventType := normalizeSessionKey(env.Type)
-	if source != "" && eventType != "" {
-		return "event:" + sanitizeSessionPartition(source+":"+eventType)
-	}
-	return "main"
-}
-
-func payloadSessionKey(payload json.RawMessage) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var parsed struct {
-		SessionKey string `json:"session_key"`
-		ThreadID   string `json:"thread_id"`
-	}
-	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return ""
-	}
-	if key := normalizeSessionKey(parsed.SessionKey); key != "" {
-		return key
-	}
-	return normalizeSessionKey(parsed.ThreadID)
-}
-
-func sanitizeSessionPartition(raw string) string {
-	var b strings.Builder
-	b.Grow(len(raw))
-	for _, r := range raw {
-		switch {
-		case unicode.IsLetter(r), unicode.IsNumber(r), r == '-', r == '_', r == '.', r == ':', r == '/':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	sanitized := strings.TrimSpace(b.String())
-	sanitized = strings.Trim(sanitized, "_")
-	if sanitized == "" {
-		return "unknown"
-	}
-	return sanitized
 }
 
 type controllerRPCEventRequest struct {
