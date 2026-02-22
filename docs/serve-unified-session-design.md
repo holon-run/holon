@@ -218,6 +218,10 @@ graph TB
 2. `has_action=true` -> emit
 3. 其他 skip，并记录 `gating_reason`
 
+activity item 内容兼容性：
+1. 发往 UI 的 item `content.type` 继续使用 `system_announce`，避免客户端侧丢弃未知类型。
+2. 同时补充统一字段：`event_id/status/has_action/action_refs/gating_reason` 作为观测元数据。
+
 #### B2. 下线 `enqueueMainAnnounce` 调用
 
 - 文件：`cmd/holon/serve.go`

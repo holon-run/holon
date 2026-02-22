@@ -1020,6 +1020,9 @@ func (h *cliControllerHandler) runEventPump() {
 				defer lockEntry.mu.Unlock()
 
 				if shouldSkip, skipReason := h.shouldSkipQueuedEvent(item, sessionKey); shouldSkip {
+					if _, outcomeErr := h.recordSkippedOutcome(item, skipReason); outcomeErr != nil {
+						holonlog.Warn("failed to record skipped outcome", "event_id", item.env.ID, "error", outcomeErr)
+					}
 					if item.turnID != "" {
 						h.publishTurnAck(serve.TurnAckRecord{
 							EventID:  item.env.ID,
@@ -1179,7 +1182,9 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) (retErr
 	if sessionKey == "" {
 		sessionKey = "main"
 	}
-	var result controllerRPCEventResponse
+	result := controllerRPCEventResponse{
+		EventID: firstNonEmpty(strings.TrimSpace(item.env.ID)),
+	}
 	defer func() {
 		outcome, outcomeErr := h.recordEventOutcome(item, result, retErr)
 		if outcomeErr != nil {
@@ -2436,6 +2441,18 @@ func (h *cliControllerHandler) recordEventOutcome(item controllerEvent, result c
 	return record, nil
 }
 
+func (h *cliControllerHandler) recordSkippedOutcome(item controllerEvent, reason string) (eventOutcomeRecord, error) {
+	result := controllerRPCEventResponse{
+		EventID: firstNonEmpty(strings.TrimSpace(item.env.ID)),
+		Status:  "skipped",
+		Message: strings.TrimSpace(reason),
+	}
+	if strings.TrimSpace(result.Message) == "" {
+		result.Message = "event skipped before dispatch"
+	}
+	return h.recordEventOutcome(item, result, serve.NewSkipEventError(result.Message))
+}
+
 func shouldEmitActivity(outcome eventOutcomeRecord) (bool, string) {
 	switch strings.ToLower(strings.TrimSpace(outcome.Status)) {
 	case "failed", "interrupted":
@@ -2455,13 +2472,14 @@ func (h *cliControllerHandler) emitActivityForEvent(item controllerEvent, outcom
 		return fmt.Errorf("activity emitter is not configured")
 	}
 	content := map[string]interface{}{
-		"type":          "event_activity",
+		"type":          "system_announce",
+		"title":         "Event handled",
+		"text":          strings.TrimSpace(outcome.Message),
 		"event_id":      outcome.EventID,
 		"source":        strings.TrimSpace(item.env.Source),
 		"event_type":    strings.TrimSpace(item.env.Type),
 		"status":        outcome.Status,
 		"has_action":    outcome.HasAction,
-		"message":       strings.TrimSpace(outcome.Message),
 		"completed_at":  outcome.CompletedAt,
 		"gating_reason": strings.TrimSpace(gatingReason),
 	}
@@ -2474,7 +2492,7 @@ func (h *cliControllerHandler) emitActivityForEvent(item controllerEvent, outcom
 		serve.StateCompleted,
 		content,
 	)
-	itemNotif.ThreadID = "main"
+	itemNotif.ThreadID = firstNonEmpty(strings.TrimSpace(item.threadID), "main")
 	emitter(itemNotif)
 	holonlog.Info(
 		"activity_emitted",
