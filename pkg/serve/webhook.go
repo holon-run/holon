@@ -147,6 +147,11 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 		},
 	}
 	ws.runtime.SetBroadcaster(ws.broadcaster)
+	if registrar, ok := cfg.Handler.(ActivityEmitterRegistrar); ok {
+		registrar.SetActivityEmitter(func(item ItemNotification) {
+			ws.runtime.emitItemNotification(item)
+		})
+	}
 	ws.runtime.SetTurnDispatcher(cfg.TurnDispatcher)
 	ws.runtime.SetTurnInterruptDispatcher(turnInterruptDispatcherFromHandler(cfg.Handler))
 

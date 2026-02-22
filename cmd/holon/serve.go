@@ -616,6 +616,9 @@ type cliControllerHandler struct {
 	sessionEpochReason    map[string]string
 	turnEventIndex        map[string]string
 	turnEventIndexPath    string
+	activityLedgerPath    string
+	activityLedgerMu      sync.Mutex
+	activityEmitter       serve.ActivityEmitter
 	sessionQueuedTurns    map[string][]string
 	followupPolicy        serveFollowupPolicy
 	maxQueuedTurns        int
@@ -630,6 +633,15 @@ type controllerEvent struct {
 	threadID         string
 	sessionEpoch     uint64
 	skipMainAnnounce bool
+}
+
+type eventOutcomeRecord struct {
+	EventID     string   `json:"event_id"`
+	Status      string   `json:"status"`
+	HasAction   bool     `json:"has_action"`
+	ActionRefs  []string `json:"action_refs,omitempty"`
+	Message     string   `json:"message,omitempty"`
+	CompletedAt string   `json:"completed_at"`
 }
 
 type resolvedWorkspace struct {
@@ -713,6 +725,7 @@ func newCLIControllerHandler(
 		sessionEpochReason:    make(map[string]string),
 		turnEventIndex:        make(map[string]string),
 		turnEventIndexPath:    filepath.Join(stateDir, "controller-state", "turn-event-index.json"),
+		activityLedgerPath:    filepath.Join(stateDir, "controller-state", "activity-ledger.ndjson"),
 		sessionQueuedTurns:    make(map[string][]string),
 		followupPolicy:        resolveServeFollowupPolicy(),
 		maxQueuedTurns:        resolveServeMaxQueuedTurns(),
@@ -770,6 +783,9 @@ func (h *cliControllerHandler) ensurePumpStartedLocked() {
 	}
 	if strings.TrimSpace(h.turnEventIndexPath) == "" {
 		h.turnEventIndexPath = filepath.Join(h.stateDir, "controller-state", "turn-event-index.json")
+	}
+	if strings.TrimSpace(h.activityLedgerPath) == "" {
+		h.activityLedgerPath = filepath.Join(h.stateDir, "controller-state", "activity-ledger.ndjson")
 	}
 	if h.followupPolicy == "" {
 		h.followupPolicy = resolveServeFollowupPolicy()
@@ -1274,6 +1290,9 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 		})
 		h.clearTurnDispatch(item.turnID)
 	}
+	if _, outcomeErr := h.recordEventOutcome(item, result, nil); outcomeErr != nil {
+		holonlog.Warn("failed to record event outcome", "event_id", item.env.ID, "error", outcomeErr)
+	}
 	if sessionKey != "main" && !item.skipMainAnnounce {
 		if err := h.enqueueMainAnnounce(item, sessionKey, result); err != nil {
 			holonlog.Warn("failed to enqueue main announce", "event_id", item.env.ID, "session_key", sessionKey, "error", err)
@@ -1401,6 +1420,12 @@ func (h *cliControllerHandler) publishTurnAck(record serve.TurnAckRecord) {
 	default:
 		holonlog.Warn("dropping turn ack due to full buffer", "turn_id", record.TurnID, "status", record.Status)
 	}
+}
+
+func (h *cliControllerHandler) SetActivityEmitter(emitter serve.ActivityEmitter) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.activityEmitter = emitter
 }
 
 func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error) {
@@ -2412,6 +2437,109 @@ func parseControllerRPCResponse(body io.Reader) (controllerRPCEventResponse, err
 		Action:     strings.TrimSpace(raw.Action),
 	}
 	return result, nil
+}
+
+func deriveHasAction(result controllerRPCEventResponse) (bool, []string) {
+	refs := make([]string, 0, 2)
+	addRef := func(ref string) {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return
+		}
+		for _, existing := range refs {
+			if existing == ref {
+				return
+			}
+		}
+		refs = append(refs, ref)
+	}
+
+	if action := normalizeAnnounceAction(result.Action); action != "" && action != "none_required" {
+		addRef("action:" + action)
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(result.Message))
+	for _, marker := range []struct {
+		key      string
+		refValue string
+	}{
+		{key: "opened pr", refValue: "action:opened_pr"},
+		{key: "created pull request", refValue: "action:opened_pr"},
+		{key: "posted review", refValue: "action:posted_review"},
+		{key: "updated branch", refValue: "action:updated_branch"},
+		{key: "pushed commit", refValue: "action:updated_branch"},
+		{key: "posted comment", refValue: "action:commented"},
+		{key: "commented on", refValue: "action:commented"},
+	} {
+		if strings.Contains(lower, marker.key) {
+			addRef(marker.refValue)
+		}
+	}
+	return len(refs) > 0, refs
+}
+
+func normalizeOutcomeStatus(status string, err error) string {
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "interrupted"
+		}
+		return "failed"
+	}
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	switch normalized {
+	case "ok", "completed", "success":
+		return "ok"
+	case "failed", "error":
+		return "failed"
+	case "interrupted", "cancelled", "canceled":
+		return "interrupted"
+	case "skipped":
+		return "skipped"
+	default:
+		if normalized == "" {
+			return "ok"
+		}
+		return normalized
+	}
+}
+
+func (h *cliControllerHandler) recordEventOutcome(item controllerEvent, result controllerRPCEventResponse, dispatchErr error) (eventOutcomeRecord, error) {
+	status := normalizeOutcomeStatus(result.Status, dispatchErr)
+	hasAction, actionRefs := deriveHasAction(result)
+	message := strings.TrimSpace(result.Message)
+	if dispatchErr != nil {
+		message = strings.TrimSpace(dispatchErr.Error())
+	}
+	record := eventOutcomeRecord{
+		EventID:     firstNonEmpty(strings.TrimSpace(result.EventID), strings.TrimSpace(item.env.ID)),
+		Status:      status,
+		HasAction:   hasAction,
+		ActionRefs:  actionRefs,
+		Message:     message,
+		CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return record, fmt.Errorf("failed to marshal event outcome record: %w", err)
+	}
+	path := strings.TrimSpace(h.activityLedgerPath)
+	if path == "" {
+		path = filepath.Join(h.stateDir, "controller-state", "activity-ledger.ndjson")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return record, fmt.Errorf("failed to create activity ledger dir: %w", err)
+	}
+	h.activityLedgerMu.Lock()
+	defer h.activityLedgerMu.Unlock()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return record, fmt.Errorf("failed to open activity ledger: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return record, fmt.Errorf("failed to append activity ledger: %w", err)
+	}
+	return record, nil
 }
 
 func deriveAnnounceOutcome(summary string) (decision string, action string) {
