@@ -55,6 +55,25 @@ func (sw *StreamWriter) WriteNotification(n Notification) error {
 	return nil
 }
 
+// WriteKeepAlive writes a blank NDJSON separator line to keep long-lived
+// stream connections open through intermediaries.
+func (sw *StreamWriter) WriteKeepAlive() error {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	if sw.closed {
+		return fmt.Errorf("stream writer is closed")
+	}
+
+	if _, err := sw.writer.Write([]byte("\n")); err != nil {
+		return fmt.Errorf("failed to write keep-alive: %w", err)
+	}
+	if sw.flusher != nil {
+		sw.flusher.Flush()
+	}
+	return nil
+}
+
 // WriteItemNotification writes an item notification to the stream
 func (sw *StreamWriter) WriteItemNotification(n ItemNotification) error {
 	rpcNotif, err := n.ToJSONRPCNotification()
