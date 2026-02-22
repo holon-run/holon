@@ -1529,7 +1529,6 @@ func (h *cliControllerHandler) controllerPrompts() (string, string, error) {
 	compiler := prompt.NewCompiler("")
 	cfg := prompt.Config{
 		Mode:       "serve",
-		Role:       h.controllerRoleLabel,
 		WorkingDir: docker.ContainerWorkspaceDir,
 	}
 

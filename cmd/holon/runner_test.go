@@ -400,7 +400,6 @@ func TestRunner_Run_DebugPromptOutputs(t *testing.T) {
 		OutDir:        outDir,
 		BaseImage:     "test-image",
 		AgentBundle:   bundlePath,
-		RoleName:      "coder",
 	}
 
 	err := runner.Run(context.Background(), cfg)
@@ -601,8 +600,7 @@ func TestRunner_compilePrompts(t *testing.T) {
 
 	// Test without context directory
 	cfg := RunnerConfig{
-		GoalStr:  "Test goal",
-		RoleName: "coder",
+		GoalStr: "Test goal",
 	}
 
 	// This will use the real embedded assets, but still tests the logic
@@ -803,7 +801,6 @@ func TestRunner_Integration(t *testing.T) {
 		BaseImage:     image.DefaultImage,
 		AgentBundle:   bundlePath,
 		AgentHome:     t.TempDir(),
-		RoleName:      "coder",
 		EnvVarsList:   []string{"CLI_VAR=cli-value"},
 		LogLevel:      "debug",
 	}

@@ -21,20 +21,20 @@ import (
 )
 
 var (
-	solveRepo                  string
-	solveBase                  string
-	solveOutDir                string
-	solveContext               string
-	solveInput                 string
-	solveAgentID               string
-	solveAgentHome             string
-	solveCleanup               string
-	solveAgent                 string
-	solveImage                 string
-	solveImageAutoDetect       bool
-	solveSkillPaths            []string // Skill paths (--skill flag, repeatable)
-	solveSkillsList            string   // Comma-separated skills (--skills flag)
-	solveRole                  string
+	solveRepo            string
+	solveBase            string
+	solveOutDir          string
+	solveContext         string
+	solveInput           string
+	solveAgentID         string
+	solveAgentHome       string
+	solveCleanup         string
+	solveAgent           string
+	solveImage           string
+	solveImageAutoDetect bool
+	solveSkillPaths      []string // Skill paths (--skill flag, repeatable)
+	solveSkillsList      string   // Comma-separated skills (--skills flag)
+
 	solveLogLevel              string
 	solveAssistantOutput       string
 	solveDryRun                bool
@@ -763,7 +763,6 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		OutDir:                outDir,
 		StateDir:              stateDirForAgentHome(agentResolution.AgentHome),
 		AgentHome:             agentResolution.AgentHome,
-		RoleName:              solveRole,
 		LogLevel:              solveLogLevel,
 		AssistantOutput:       resolvedAssistantOutput,
 		UseSkillMode:          true, // Always skill-first now
@@ -1063,7 +1062,7 @@ func init() {
 	solveCmd.Flags().BoolVar(&solveImageAutoDetect, "image-auto-detect", true, "Enable automatic base image detection (default: true)")
 	solveCmd.Flags().StringSliceVar(&solveSkillPaths, "skill", []string{}, "Skill reference (e.g., github-issue-solve, github-pr-fix). Repeatable.")
 	solveCmd.Flags().StringVar(&solveSkillsList, "skills", "", "Comma-separated list of skill references")
-	solveCmd.Flags().StringVarP(&solveRole, "role", "r", "", "Role to assume")
+
 	solveCmd.Flags().StringVar(&solveLogLevel, "log-level", "progress", "Log level")
 	solveCmd.Flags().StringVar(&solveAssistantOutput, "assistant-output", "none", "Assistant output mode: none (default), stream (stream assistant text to logs)")
 	solveCmd.Flags().StringVar(&solveAgentConfigMode, "agent-config-mode", "no", "Agent config mount mode: auto (mount if ~/.claude exists), yes (always mount, warn if missing), no (never mount, default)")

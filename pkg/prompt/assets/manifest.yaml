@@ -1,4 +1,3 @@
 version: 1.0.0
 defaults:
-  mode: solve
-  role: developer
+  mode: run
