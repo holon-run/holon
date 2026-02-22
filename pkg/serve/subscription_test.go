@@ -811,9 +811,9 @@ func TestSubscriptionManager_AutoRestartsForwarderWhenHealthCheckFails(t *testin
 	initial := created[0]
 	createdMu.Unlock()
 
-	// Simulate unexpected subprocess exit.
+	// Simulate an unhealthy forwarder while process is still considered started.
 	initial.mu.Lock()
-	initial.started = false
+	initial.unhealthy = true
 	initial.mu.Unlock()
 
 	deadline = time.Now().Add(3 * time.Second)
@@ -841,4 +841,107 @@ func TestSubscriptionManager_AutoRestartsForwarderWhenHealthCheckFails(t *testin
 	if !running {
 		t.Fatalf("expected restarted forwarder to be running")
 	}
+}
+
+func TestSubscriptionManager_AutoRestartsForwarderWhenHotReloadDisabled(t *testing.T) {
+	agentHome := t.TempDir()
+	stateDir := filepath.Join(agentHome, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	cfg := agenthome.Config{
+		Version: "v1",
+		Agent: agenthome.AgentConfig{
+			ID:      "main",
+			Profile: "default",
+		},
+		Subscriptions: []agenthome.Subscription{
+			{
+				GitHub: &agenthome.GitHubSubscription{
+					Repos: []string{"holon-run/holon"},
+					Transport: agenthome.GitHubSubscriptionTransport{
+						Mode: "gh_forward",
+					},
+				},
+			},
+		},
+	}
+	if err := agenthome.SaveConfig(agentHome, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	var (
+		createdMu sync.Mutex
+		created   []*fakeForwarder
+	)
+	factory := func(fc ForwarderConfig) (forwarderRunner, error) {
+		ff := &fakeForwarder{lastRepos: append([]string(nil), fc.Repos...)}
+		createdMu.Lock()
+		created = append(created, ff)
+		createdMu.Unlock()
+		return ff, nil
+	}
+
+	sm, err := NewSubscriptionManager(ManagerConfig{
+		AgentHome:                agentHome,
+		StateDir:                 stateDir,
+		Handler:                  &captureEventHandler{},
+		WebhookPort:              mustGetPort(t),
+		ReloadPollInterval:       20 * time.Millisecond,
+		ForwarderRestartCooldown: 10 * time.Millisecond,
+		DisableHotReload:         true,
+		ForwarderFactory:         factory,
+	})
+	if err != nil {
+		t.Fatalf("new subscription manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sm.Start(ctx); err != nil {
+		t.Fatalf("start subscription manager: %v", err)
+	}
+	defer sm.Stop()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		createdMu.Lock()
+		n := len(created)
+		createdMu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	createdMu.Lock()
+	if len(created) < 1 {
+		createdMu.Unlock()
+		t.Fatalf("expected initial forwarder to be created")
+	}
+	initial := created[0]
+	createdMu.Unlock()
+
+	initial.mu.Lock()
+	initial.unhealthy = true
+	initial.mu.Unlock()
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		createdMu.Lock()
+		n := len(created)
+		createdMu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	createdMu.Lock()
+	if len(created) < 2 {
+		createdMu.Unlock()
+		t.Fatalf("expected a new forwarder to be created after health check failure")
+	}
+	createdMu.Unlock()
 }

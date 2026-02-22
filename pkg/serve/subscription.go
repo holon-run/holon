@@ -193,6 +193,8 @@ func (sm *SubscriptionManager) Start(ctx context.Context) error {
 		return err
 	}
 
+	go sm.watchForwarderHealth(runCtx)
+
 	if !sm.disableHotReload {
 		ready := make(chan struct{})
 		sm.mu.Lock()
@@ -746,7 +748,6 @@ func (sm *SubscriptionManager) watchAndReloadConfig(ctx context.Context, ready c
 				lastSig = sig
 				schedule()
 			}
-			sm.ensureForwarderHealthy(ctx)
 		case ev := <-watcherEvents(watcher):
 			if ev.Name == "" {
 				continue
@@ -775,7 +776,24 @@ func (sm *SubscriptionManager) watchAndReloadConfig(ctx context.Context, ready c
 	}
 }
 
+func (sm *SubscriptionManager) watchForwarderHealth(ctx context.Context) {
+	ticker := time.NewTicker(sm.reloadPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sm.ensureForwarderHealthy(ctx)
+		}
+	}
+}
+
 func (sm *SubscriptionManager) ensureForwarderHealthy(ctx context.Context) {
+	sm.reconcileMu.Lock()
+	defer sm.reconcileMu.Unlock()
+
 	sm.mu.Lock()
 	if sm.activeTransportMode != "gh_forward" || sm.forwarder == nil || sm.webhookServer == nil {
 		sm.mu.Unlock()
@@ -808,20 +826,29 @@ func (sm *SubscriptionManager) ensureForwarderHealthy(ctx context.Context) {
 		sm.mu.Unlock()
 		return
 	}
+	if sm.forwarder != forwarder || sm.webhookServer != webhookSrv {
+		sm.mu.Unlock()
+		return
+	}
 	if cooldown > 0 && now.Sub(sm.lastForwarderRestartAttempt) < cooldown {
 		sm.mu.Unlock()
 		return
 	}
+	repos = append([]string(nil), sm.activeRepos...)
 	sm.lastForwarderRestartAttempt = now
 	sm.mu.Unlock()
 
 	holonlog.Warn("gh webhook forward health check failed; attempting restart", "error", healthErr)
-	if err := sm.reconcileGitHubTransport(ctx, webhookSrv, desiredTransport{
+	if err := sm.reconcileGitHubTransportLocked(ctx, webhookSrv, desiredTransport{
 		Mode:  "gh_forward",
 		Repos: repos,
 	}); err != nil {
 		holonlog.Warn("failed to restart gh webhook forward after health check failure", "error", err)
 		return
+	}
+
+	if err := sm.WriteStatusFile(); err != nil {
+		holonlog.Warn("failed to write status file after gh webhook forward restart", "error", err)
 	}
 }
 
@@ -955,7 +982,10 @@ func (sm *SubscriptionManager) reconcileGitHubTransport(ctx context.Context, web
 	// start new transports without holding sm.mu for the entire operation.
 	sm.reconcileMu.Lock()
 	defer sm.reconcileMu.Unlock()
+	return sm.reconcileGitHubTransportLocked(ctx, webhookSrv, desired)
+}
 
+func (sm *SubscriptionManager) reconcileGitHubTransportLocked(ctx context.Context, webhookSrv *WebhookServer, desired desiredTransport) error {
 	switch desired.Mode {
 	case "":
 		// Stop ingress, keep RPC server alive.
