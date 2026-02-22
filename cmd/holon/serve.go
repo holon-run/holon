@@ -1176,11 +1176,33 @@ func (h *cliControllerHandler) dequeueTurnLocked(sessionKey, turnID string) {
 	h.sessionQueuedTurns[sessionKey] = filtered
 }
 
-func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
+func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) (retErr error) {
 	sessionKey := normalizeSessionKey(item.sessionKey)
 	if sessionKey == "" {
 		sessionKey = "main"
 	}
+	var result controllerRPCEventResponse
+	defer func() {
+		outcome, outcomeErr := h.recordEventOutcome(item, result, retErr)
+		if outcomeErr != nil {
+			holonlog.Warn("failed to record event outcome", "event_id", item.env.ID, "error", outcomeErr)
+			return
+		}
+		emit, reason := shouldEmitActivity(outcome)
+		if !emit {
+			holonlog.Debug(
+				"activity_skipped",
+				"event_id", outcome.EventID,
+				"status", outcome.Status,
+				"has_action", outcome.HasAction,
+				"gating_reason", reason,
+			)
+			return
+		}
+		if emitErr := h.emitActivityForEvent(item, outcome, reason); emitErr != nil {
+			holonlog.Warn("failed to emit activity", "event_id", outcome.EventID, "error", emitErr, "gating_reason", reason)
+		}
+	}()
 	resolvedWorkspace, err := h.resolveWorkspaceForEvent(item.env)
 	if err != nil {
 		return err
@@ -1217,7 +1239,7 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 		"workspace_container_path", resolvedWorkspace.ContainerPath,
 	)
 	dispatchStartedAt := time.Now().UTC()
-	result, err := h.postEventWithReconnect(ctx, ref, sessionKey, enriched)
+	result, err = h.postEventWithReconnect(ctx, ref, sessionKey, enriched)
 	if err != nil {
 		return err
 	}
@@ -1290,69 +1312,7 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 		})
 		h.clearTurnDispatch(item.turnID)
 	}
-	if _, outcomeErr := h.recordEventOutcome(item, result, nil); outcomeErr != nil {
-		holonlog.Warn("failed to record event outcome", "event_id", item.env.ID, "error", outcomeErr)
-	}
-	if sessionKey != "main" && !item.skipMainAnnounce {
-		if err := h.enqueueMainAnnounce(item, sessionKey, result); err != nil {
-			holonlog.Warn("failed to enqueue main announce", "event_id", item.env.ID, "session_key", sessionKey, "error", err)
-		}
-	}
 	return nil
-}
-
-func (h *cliControllerHandler) enqueueMainAnnounce(item controllerEvent, sourceSessionKey string, result controllerRPCEventResponse) error {
-	summary := strings.TrimSpace(result.Message)
-	if strings.TrimSpace(summary) == "" {
-		summary = "event processed"
-	}
-	decision := normalizeAnnounceDecision(result.Decision)
-	action := normalizeAnnounceAction(result.Action)
-	if decision == "" || action == "" {
-		derivedDecision, derivedAction := deriveAnnounceOutcome(summary)
-		if decision == "" {
-			decision = derivedDecision
-		}
-		if action == "" {
-			action = normalizeAnnounceAction(derivedAction)
-		}
-	}
-	announce := map[string]any{
-		"level":              "info",
-		"title":              "Event processed",
-		"text":               summary,
-		"source_session_key": sourceSessionKey,
-		"event_id":           item.env.ID,
-		"source":             item.env.Source,
-		"type":               item.env.Type,
-		"decision":           decision,
-		"action":             action,
-		"created_at":         time.Now().UTC().Format(time.RFC3339),
-	}
-	payloadRaw, err := json.Marshal(announce)
-	if err != nil {
-		return fmt.Errorf("failed to marshal announce payload: %w", err)
-	}
-	mainEvent := controllerEvent{
-		env: serve.EventEnvelope{
-			ID:     fmt.Sprintf("announce_%d", time.Now().UTC().UnixNano()),
-			Source: "serve",
-			Type:   "session.announce",
-			At:     time.Now().UTC(),
-			Scope: serve.EventScope{
-				Repo:      item.env.Scope.Repo,
-				Partition: "main",
-			},
-			Subject: serve.EventSubject{
-				Kind: "session",
-				ID:   "main",
-			},
-			Payload: payloadRaw,
-		},
-		sessionKey:       "main",
-		skipMainAnnounce: true,
-	}
-	return h.enqueueEvent(context.Background(), mainEvent)
 }
 
 func (h *cliControllerHandler) resolveWorkspaceForEvent(env serve.EventEnvelope) (resolvedWorkspace, error) {
@@ -1434,12 +1394,6 @@ func (h *cliControllerHandler) buildRef(env serve.EventEnvelope) (string, error)
 		repo = h.repoHint
 	}
 	if env.Type == "rpc.turn.input" {
-		if repo == "" {
-			repo = "local/rpc"
-		}
-		return fmt.Sprintf("%s#0", repo), nil
-	}
-	if env.Source == "serve" && env.Type == "session.announce" {
 		if repo == "" {
 			repo = "local/rpc"
 		}
@@ -2195,8 +2149,6 @@ func progressEventContextLabel(env serve.EventEnvelope) string {
 		return "GitHub event"
 	case strings.EqualFold(source, "timer") || strings.EqualFold(eventType, "timer.tick"):
 		return "scheduled timer tick"
-	case strings.EqualFold(source, "serve") && strings.EqualFold(eventType, "session.announce"):
-		return "background event announcement"
 	default:
 		if eventType != "" {
 			return "event " + eventType
@@ -2480,6 +2432,9 @@ func deriveHasAction(result controllerRPCEventResponse) (bool, []string) {
 
 func normalizeOutcomeStatus(status string, err error) string {
 	if err != nil {
+		if serve.IsSkipEventError(err) {
+			return "skipped"
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "interrupted"
 		}
@@ -2540,6 +2495,56 @@ func (h *cliControllerHandler) recordEventOutcome(item controllerEvent, result c
 		return record, fmt.Errorf("failed to append activity ledger: %w", err)
 	}
 	return record, nil
+}
+
+func shouldEmitActivity(outcome eventOutcomeRecord) (bool, string) {
+	switch strings.ToLower(strings.TrimSpace(outcome.Status)) {
+	case "failed", "interrupted":
+		return true, "terminal_status"
+	}
+	if outcome.HasAction {
+		return true, "has_action"
+	}
+	return false, "no_action"
+}
+
+func (h *cliControllerHandler) emitActivityForEvent(item controllerEvent, outcome eventOutcomeRecord, gatingReason string) error {
+	h.mu.Lock()
+	emitter := h.activityEmitter
+	h.mu.Unlock()
+	if emitter == nil {
+		return fmt.Errorf("activity emitter is not configured")
+	}
+	content := map[string]interface{}{
+		"type":          "event_activity",
+		"event_id":      outcome.EventID,
+		"source":        strings.TrimSpace(item.env.Source),
+		"event_type":    strings.TrimSpace(item.env.Type),
+		"status":        outcome.Status,
+		"has_action":    outcome.HasAction,
+		"message":       strings.TrimSpace(outcome.Message),
+		"completed_at":  outcome.CompletedAt,
+		"gating_reason": strings.TrimSpace(gatingReason),
+	}
+	if len(outcome.ActionRefs) > 0 {
+		content["action_refs"] = append([]string(nil), outcome.ActionRefs...)
+	}
+	itemNotif := serve.NewItemNotification(
+		fmt.Sprintf("activity_%d", time.Now().UTC().UnixNano()),
+		serve.ItemNotificationCreated,
+		serve.StateCompleted,
+		content,
+	)
+	itemNotif.ThreadID = "main"
+	emitter(itemNotif)
+	holonlog.Info(
+		"activity_emitted",
+		"event_id", outcome.EventID,
+		"status", outcome.Status,
+		"has_action", outcome.HasAction,
+		"gating_reason", gatingReason,
+	)
+	return nil
 }
 
 func deriveAnnounceOutcome(summary string) (decision string, action string) {
