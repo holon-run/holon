@@ -56,6 +56,9 @@ type SubscriptionManager struct {
 	watchReady chan struct{}
 
 	forwarderFactory func(ForwarderConfig) (forwarderRunner, error)
+
+	forwarderRestartCooldown    time.Duration
+	lastForwarderRestartAttempt time.Time
 }
 
 // ManagerConfig holds configuration for SubscriptionManager
@@ -69,9 +72,10 @@ type ManagerConfig struct {
 	NoDefaultSession bool
 
 	// Hot reload configuration. When unset, defaults are used.
-	ReloadDebounce     time.Duration // default: 600ms
-	ReloadPollInterval time.Duration // default: 3s
-	DisableHotReload   bool
+	ReloadDebounce           time.Duration // default: 600ms
+	ReloadPollInterval       time.Duration // default: 3s
+	DisableHotReload         bool
+	ForwarderRestartCooldown time.Duration // default: 10s
 
 	ForwarderFactory func(ForwarderConfig) (forwarderRunner, error)
 }
@@ -79,6 +83,7 @@ type ManagerConfig struct {
 type forwarderRunner interface {
 	Start(ctx context.Context) error
 	Stop() error
+	HealthCheck() error
 	Status() map[string]interface{}
 }
 
@@ -97,6 +102,10 @@ func NewSubscriptionManager(cfg ManagerConfig) (*SubscriptionManager, error) {
 	poll := cfg.ReloadPollInterval
 	if poll <= 0 {
 		poll = 3 * time.Second
+	}
+	restartCooldown := cfg.ForwarderRestartCooldown
+	if restartCooldown <= 0 {
+		restartCooldown = 10 * time.Second
 	}
 
 	forwarderFactory := cfg.ForwarderFactory
@@ -123,6 +132,8 @@ func NewSubscriptionManager(cfg ManagerConfig) (*SubscriptionManager, error) {
 		disableHotReload:   cfg.DisableHotReload,
 
 		forwarderFactory: forwarderFactory,
+
+		forwarderRestartCooldown: restartCooldown,
 	}, nil
 }
 
@@ -735,6 +746,7 @@ func (sm *SubscriptionManager) watchAndReloadConfig(ctx context.Context, ready c
 				lastSig = sig
 				schedule()
 			}
+			sm.ensureForwarderHealthy(ctx)
 		case ev := <-watcherEvents(watcher):
 			if ev.Name == "" {
 				continue
@@ -760,6 +772,56 @@ func (sm *SubscriptionManager) watchAndReloadConfig(ctx context.Context, ready c
 				holonlog.Warn("failed to reload subscription config; keeping existing subscriptions", "error", err)
 			}
 		}
+	}
+}
+
+func (sm *SubscriptionManager) ensureForwarderHealthy(ctx context.Context) {
+	sm.mu.Lock()
+	if sm.activeTransportMode != "gh_forward" || sm.forwarder == nil || sm.webhookServer == nil {
+		sm.mu.Unlock()
+		return
+	}
+	forwarder := sm.forwarder
+	webhookSrv := sm.webhookServer
+	repos := append([]string(nil), sm.activeRepos...)
+	cooldown := sm.forwarderRestartCooldown
+	lastAttempt := sm.lastForwarderRestartAttempt
+	sm.mu.Unlock()
+
+	healthErr := forwarder.HealthCheck()
+	if healthErr == nil {
+		return
+	}
+
+	now := time.Now()
+	if cooldown > 0 && now.Sub(lastAttempt) < cooldown {
+		holonlog.Warn(
+			"gh webhook forward unhealthy but restart cooldown is active",
+			"error", healthErr,
+			"cooldown", cooldown.String(),
+		)
+		return
+	}
+
+	sm.mu.Lock()
+	if sm.activeTransportMode != "gh_forward" || sm.forwarder == nil || sm.webhookServer == nil {
+		sm.mu.Unlock()
+		return
+	}
+	if cooldown > 0 && now.Sub(sm.lastForwarderRestartAttempt) < cooldown {
+		sm.mu.Unlock()
+		return
+	}
+	sm.lastForwarderRestartAttempt = now
+	sm.mu.Unlock()
+
+	holonlog.Warn("gh webhook forward health check failed; attempting restart", "error", healthErr)
+	if err := sm.reconcileGitHubTransport(ctx, webhookSrv, desiredTransport{
+		Mode:  "gh_forward",
+		Repos: repos,
+	}); err != nil {
+		holonlog.Warn("failed to restart gh webhook forward after health check failure", "error", err)
+		return
 	}
 }
 
