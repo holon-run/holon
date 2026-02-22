@@ -29,6 +29,9 @@ type Forwarder struct {
 	stopped   bool
 	process   *os.Process
 	startTime time.Time
+	waitDone  chan struct{}
+	waitErr   error
+	stderrLog []string
 }
 
 // ForwarderConfig holds configuration for gh webhook forward
@@ -62,7 +65,7 @@ func NewForwarder(cfg ForwarderConfig) (*Forwarder, error) {
 	}
 
 	return &Forwarder{
-		port: cfg.Port,
+		port:  cfg.Port,
 		repos: cfg.Repos,
 		url:   cfg.URL,
 	}, nil
@@ -123,21 +126,35 @@ func (f *Forwarder) Start(ctx context.Context) error {
 
 	f.process = f.cmd.Process
 	f.started = true
+	f.stopped = false
 	f.startTime = time.Now()
+	f.waitDone = make(chan struct{})
+	f.waitErr = nil
+	f.stderrLog = nil
 
 	// Start goroutines to log output
-	go f.logOutput(stdout, "gh webhook forward (stdout)")
-	go f.logOutput(stderr, "gh webhook forward (stderr)")
+	go f.logOutput(stdout, "gh webhook forward (stdout)", false)
+	go f.logOutput(stderr, "gh webhook forward (stderr)", true)
 
 	// Start goroutine to wait for command completion
 	go func() {
 		err := f.cmd.Wait()
 		f.mu.Lock()
+		f.waitErr = err
+		waitDone := f.waitDone
+		stderrTail := strings.Join(f.stderrLog, " | ")
 		if f.started && !f.stopped {
-			holonlog.Warn("gh webhook forward process exited unexpectedly", "error", err)
+			if stderrTail != "" {
+				holonlog.Warn("gh webhook forward process exited unexpectedly", "error", err, "stderr_tail", stderrTail)
+			} else {
+				holonlog.Warn("gh webhook forward process exited unexpectedly", "error", err)
+			}
 			f.started = false
 		}
 		f.mu.Unlock()
+		if waitDone != nil {
+			close(waitDone)
+		}
 	}()
 
 	holonlog.Info(
@@ -151,10 +168,18 @@ func (f *Forwarder) Start(ctx context.Context) error {
 	return nil
 }
 
-func (f *Forwarder) logOutput(r io.Reader, prefix string) {
+func (f *Forwarder) logOutput(r io.Reader, prefix string, captureTail bool) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if captureTail {
+			f.mu.Lock()
+			f.stderrLog = append(f.stderrLog, line)
+			if len(f.stderrLog) > 8 {
+				f.stderrLog = f.stderrLog[len(f.stderrLog)-8:]
+			}
+			f.mu.Unlock()
+		}
 		holonlog.Debug(prefix, "line", line)
 	}
 	if err := scanner.Err(); err != nil {
@@ -165,46 +190,73 @@ func (f *Forwarder) logOutput(r io.Reader, prefix string) {
 // Stop stops the gh webhook forward subprocess
 func (f *Forwarder) Stop() error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	if !f.started {
+		f.mu.Unlock()
 		return nil
 	}
 
 	f.stopped = true
+	pid := 0
+	if f.process != nil {
+		pid = f.process.Pid
+	}
+	waitDone := f.waitDone
+	cancel := f.cancel
+	f.mu.Unlock()
 
-	if f.cancel != nil {
-		f.cancel()
+	if cancel != nil {
+		cancel()
 	}
 
 	// Send SIGTERM to the process group
-	if f.process != nil {
-		holonlog.Info("stopping gh webhook forward", "pid", f.process.Pid)
+	if pid > 0 {
+		holonlog.Info("stopping gh webhook forward", "pid", pid)
 
 		// Try graceful shutdown first
-		if err := f.process.Signal(syscall.SIGTERM); err != nil {
+		if err := signalProcessGroup(pid, syscall.SIGTERM); err != nil {
 			holonlog.Warn("failed to send SIGTERM to gh webhook forward", "error", err)
 		}
+	}
 
-		// Wait up to 5 seconds for graceful shutdown
-		done := make(chan error, 1)
-		go func() {
-			_, err := f.process.Wait()
-			done <- err
-		}()
-
+	if waitDone != nil {
 		select {
-		case <-done:
+		case <-waitDone:
 			holonlog.Info("gh webhook forward stopped gracefully")
 		case <-time.After(5 * time.Second):
 			holonlog.Warn("gh webhook forward did not stop gracefully, forcing")
-			if err := f.process.Kill(); err != nil {
-				holonlog.Warn("failed to kill gh webhook forward", "error", err)
+			if pid > 0 {
+				if err := signalProcessGroup(pid, syscall.SIGKILL); err != nil {
+					holonlog.Warn("failed to kill gh webhook forward", "error", err)
+				}
+			}
+			select {
+			case <-waitDone:
+			case <-time.After(2 * time.Second):
 			}
 		}
 	}
 
+	f.mu.Lock()
 	f.started = false
+	f.process = nil
+	f.cmd = nil
+	f.cancel = nil
+	f.waitDone = nil
+	f.mu.Unlock()
+	return nil
+}
+
+func signalProcessGroup(pid int, signal syscall.Signal) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid pid: %d", pid)
+	}
+	if err := syscall.Kill(-pid, signal); err != nil {
+		// If process already exited, treat as non-fatal for shutdown.
+		if err == syscall.ESRCH {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 

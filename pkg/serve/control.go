@@ -223,24 +223,57 @@ func (rt *Runtime) getTurnInterruptDispatcher() TurnInterruptDispatcher {
 }
 
 func (rt *Runtime) emitThreadNotification(n ThreadNotification) {
+	traceServe("emit_notification", map[string]interface{}{
+		"method":    fmt.Sprintf("thread/%s", strings.TrimSpace(n.Type)),
+		"thread_id": strings.TrimSpace(n.ThreadID),
+		"state":     strings.TrimSpace(n.State),
+	})
 	if broadcaster := rt.getBroadcaster(); broadcaster != nil {
 		broadcaster.BroadcastThreadNotification(n)
 	}
 }
 
 func (rt *Runtime) emitTurnNotification(n TurnNotification) {
+	traceServe("emit_notification", map[string]interface{}{
+		"method":    fmt.Sprintf("turn/%s", strings.TrimSpace(n.Type)),
+		"turn_id":   strings.TrimSpace(n.TurnID),
+		"thread_id": strings.TrimSpace(n.ThreadID),
+		"state":     strings.TrimSpace(n.State),
+	})
 	if broadcaster := rt.getBroadcaster(); broadcaster != nil {
 		broadcaster.BroadcastTurnNotification(n)
 	}
 }
 
 func (rt *Runtime) emitTurnProgressNotification(n TurnProgressNotification) {
+	traceServe("emit_notification", map[string]interface{}{
+		"method":    "turn/progress",
+		"turn_id":   strings.TrimSpace(n.TurnID),
+		"thread_id": strings.TrimSpace(n.ThreadID),
+		"event_id":  strings.TrimSpace(n.EventID),
+		"state":     strings.TrimSpace(n.State),
+		"message":   strings.TrimSpace(n.Message),
+	})
 	if broadcaster := rt.getBroadcaster(); broadcaster != nil {
 		broadcaster.BroadcastTurnProgressNotification(n)
 	}
 }
 
 func (rt *Runtime) emitItemNotification(n ItemNotification) {
+	itemType := ""
+	if n.Content != nil {
+		if got, ok := n.Content["type"].(string); ok {
+			itemType = strings.TrimSpace(got)
+		}
+	}
+	traceServe("emit_notification", map[string]interface{}{
+		"method":       fmt.Sprintf("item/%s", strings.TrimSpace(n.Type)),
+		"item_id":      strings.TrimSpace(n.ItemID),
+		"thread_id":    strings.TrimSpace(n.ThreadID),
+		"turn_id":      strings.TrimSpace(n.TurnID),
+		"status":       strings.TrimSpace(n.Status),
+		"content_type": itemType,
+	})
 	if broadcaster := rt.getBroadcaster(); broadcaster != nil {
 		broadcaster.BroadcastItemNotification(n)
 	}

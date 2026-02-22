@@ -282,11 +282,47 @@ func TestSystemNotificationGoesToActivity(t *testing.T) {
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	app.handleNotification(StreamNotification{Method: "thread/resumed"})
 
-	if len(app.activityEvents) != 1 {
-		t.Fatalf("activityEvents len = %d, want 1", len(app.activityEvents))
+	if len(app.activityEvents) != 2 {
+		t.Fatalf("activityEvents len = %d, want 2", len(app.activityEvents))
+	}
+	if got := app.activityEvents[0].Type; got != "event" {
+		t.Fatalf("first activity type = %q, want %q", got, "event")
+	}
+	if got := app.activityEvents[1].Content; got != "Thread resumed" {
+		t.Fatalf("second activity content = %q, want %q", got, "Thread resumed")
 	}
 	if len(app.turnOrder) != 0 {
 		t.Fatalf("turnOrder len = %d, want 0", len(app.turnOrder))
+	}
+}
+
+func TestEventReceivedNotificationGoesToActivity(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	params := map[string]interface{}{
+		"event_id":   "evt_ingress_123",
+		"source":     "github",
+		"event_type": "github.issue.opened",
+		"repo":       "holon-run/holon",
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	app.handleNotification(StreamNotification{Method: "event/received", Params: raw})
+
+	if len(app.activityEvents) != 1 {
+		t.Fatalf("activityEvents len = %d, want 1", len(app.activityEvents))
+	}
+	got := app.activityEvents[0].Content
+	if !strings.Contains(got, "event=event/received") {
+		t.Fatalf("missing method summary: %q", got)
+	}
+	if !strings.Contains(got, "event_id=evt_ingress_123") {
+		t.Fatalf("missing event_id summary: %q", got)
+	}
+	if !strings.Contains(got, "type=github.issue.opened") {
+		t.Fatalf("missing event_type summary: %q", got)
 	}
 }
 
@@ -317,8 +353,11 @@ func TestAssistantItemCreatedGoesToTurnConversation(t *testing.T) {
 	if got := turn.AssistantText; got != "hello from assistant" {
 		t.Fatalf("assistant message = %q, want %q", got, "hello from assistant")
 	}
-	if len(app.activityEvents) != 0 {
-		t.Fatalf("activityEvents len = %d, want 0", len(app.activityEvents))
+	if len(app.activityEvents) != 1 {
+		t.Fatalf("activityEvents len = %d, want 1", len(app.activityEvents))
+	}
+	if got := app.activityEvents[0].Type; got != "event" {
+		t.Fatalf("activity event type = %q, want %q", got, "event")
 	}
 }
 
@@ -345,17 +384,24 @@ func TestSystemAnnounceItemCreatedGoesToActivity(t *testing.T) {
 
 	app.handleNotification(StreamNotification{Method: "item/created", Params: raw})
 
-	if len(app.activityEvents) != 1 {
-		t.Fatalf("activityEvents len = %d, want 1", len(app.activityEvents))
+	if len(app.activityEvents) != 2 {
+		t.Fatalf("activityEvents len = %d, want 2", len(app.activityEvents))
 	}
-	if got := app.activityEvents[0].Content; !strings.Contains(got, "decision=pr-fix") {
+	if got := app.activityEvents[1].Content; !strings.Contains(got, "decision=pr-fix") {
 		t.Fatalf("activity content missing decision: %q", got)
 	}
-	if got := app.activityEvents[0].Content; !strings.Contains(got, "action=updated_branch") {
+	if got := app.activityEvents[1].Content; !strings.Contains(got, "action=updated_branch") {
 		t.Fatalf("activity content missing action: %q", got)
 	}
-	if len(app.turnOrder) != 0 {
-		t.Fatalf("turnOrder len = %d, want 0", len(app.turnOrder))
+	if len(app.turnOrder) != 1 {
+		t.Fatalf("turnOrder len = %d, want 1", len(app.turnOrder))
+	}
+	turn := app.turns["main_announce"]
+	if turn == nil {
+		t.Fatalf("expected synthetic turn main_announce")
+	}
+	if got := turn.AssistantText; !strings.Contains(got, "[Event] Background event update") {
+		t.Fatalf("conversation event text missing: %q", got)
 	}
 }
 

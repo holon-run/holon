@@ -561,6 +561,7 @@ func (ws *WebhookServer) processEnvelope(ctx context.Context, env EventEnvelope)
 	if err := ws.eventsLog.Write(env); err != nil {
 		return err
 	}
+	ws.emitIngressEventNotification(env)
 
 	// Check for duplicates
 	decision := DecisionRecord{
@@ -635,6 +636,41 @@ func (ws *WebhookServer) processEnvelope(ctx context.Context, env EventEnvelope)
 	return nil
 }
 
+func (ws *WebhookServer) emitIngressEventNotification(env EventEnvelope) {
+	source := strings.TrimSpace(env.Source)
+	eventType := strings.TrimSpace(env.Type)
+	if !strings.EqualFold(source, "github") || eventType == "" {
+		return
+	}
+	if ws.broadcaster == nil {
+		return
+	}
+	params, err := json.Marshal(map[string]interface{}{
+		"event_id":    strings.TrimSpace(env.ID),
+		"source":      source,
+		"event_type":  eventType,
+		"repo":        strings.TrimSpace(env.Scope.Repo),
+		"received_at": ws.now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		holonlog.Warn("failed to marshal ingress event notification", "error", err, "event_id", env.ID)
+		return
+	}
+	notif := Notification{
+		JSONRPC: "2.0",
+		Method:  "event/received",
+		Params:  params,
+	}
+	ws.broadcaster.broadcast(notif)
+	traceServe("emit_notification", map[string]interface{}{
+		"method":     "event/received",
+		"event_id":   strings.TrimSpace(env.ID),
+		"source":     source,
+		"event_type": eventType,
+		"repo":       strings.TrimSpace(env.Scope.Repo),
+	})
+}
+
 type sessionAnnouncePayload struct {
 	EventID          string `json:"event_id"`
 	Source           string `json:"source"`
@@ -649,14 +685,30 @@ type sessionAnnouncePayload struct {
 
 func (ws *WebhookServer) maybeEmitSessionAnnounce(env EventEnvelope) {
 	if !strings.EqualFold(strings.TrimSpace(env.Source), "serve") || !strings.EqualFold(strings.TrimSpace(env.Type), "session.announce") {
+		traceServe("session_announce_skipped", map[string]interface{}{
+			"reason":   "not_session_announce",
+			"event_id": strings.TrimSpace(env.ID),
+			"source":   strings.TrimSpace(env.Source),
+			"type":     strings.TrimSpace(env.Type),
+		})
 		return
 	}
 	announce, ok := parseSessionAnnouncePayload(env.Payload)
 	if !ok {
+		traceServe("session_announce_skipped", map[string]interface{}{
+			"reason":   "invalid_payload",
+			"event_id": strings.TrimSpace(env.ID),
+		})
 		holonlog.Warn("failed to parse session announce payload", "event_id", env.ID)
 		return
 	}
 	if isNoOpDecision(announce.Decision) {
+		traceServe("session_announce_skipped", map[string]interface{}{
+			"reason":     "noop_decision",
+			"event_id":   strings.TrimSpace(announce.EventID),
+			"decision":   normalizeDecision(announce.Decision),
+			"event_type": strings.TrimSpace(announce.Type),
+		})
 		holonlog.Debug("skipping no-op session announce", "event_id", announce.EventID)
 		return
 	}
@@ -686,6 +738,15 @@ func (ws *WebhookServer) maybeEmitSessionAnnounce(env EventEnvelope) {
 
 	notif := NewItemNotification(fmt.Sprintf("announce_%d", ws.now().UTC().UnixNano()), ItemNotificationCreated, StateCompleted, content)
 	notif.ThreadID = "main"
+	traceServe("session_announce_emitted", map[string]interface{}{
+		"event_id":           strings.TrimSpace(announce.EventID),
+		"source":             strings.TrimSpace(announce.Source),
+		"event_type":         strings.TrimSpace(announce.Type),
+		"source_session_key": strings.TrimSpace(announce.SourceSessionKey),
+		"decision":           normalizeDecision(announce.Decision),
+		"action":             strings.TrimSpace(announce.Action),
+		"thread_id":          "main",
+	})
 	ws.runtime.emitItemNotification(notif)
 	holonlog.Debug(
 		"emitted session announce notification",
