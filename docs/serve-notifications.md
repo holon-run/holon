@@ -166,6 +166,26 @@ Emitted when a turn is interrupted (e.g., pause, cancel).
 }
 ```
 
+#### `turn/progress`
+
+Emitted for non-terminal liveness/progress updates during long turns.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "turn/progress",
+  "params": {
+    "turn_id": "turn_123",
+    "thread_id": "thread_abc",
+    "state": "queued",
+    "message": "controller event status: queued",
+    "event_id": "evt_456",
+    "updated_at": "2026-02-21T12:00:05Z",
+    "elapsed_ms": 5230
+  }
+}
+```
+
 ### 3. Thread Notifications (`thread/*`)
 
 Thread notifications represent the lifecycle of conversation threads (controller sessions).
@@ -245,9 +265,21 @@ Common state values used across notifications:
 | `active` | Currently processing |
 | `completed` | Successfully finished |
 | `interrupted` | Stopped before completion |
+| `queued` | Accepted and waiting for execution |
+| `waiting` | In-flight but waiting on backend progress |
+| `cancel_requested` | Cancellation has been requested |
 | `running` | Thread is actively running |
 | `paused` | Temporarily suspended |
 | `closed` | Terminated |
+
+## Canonical Turn Status Lifecycle
+
+Turn status lifecycle is aligned between Go serve runtime and TypeScript controller runtime:
+
+- Pending (non-terminal): `accepted -> queued -> running -> cancel_requested`
+- Terminal: `completed | failed | interrupted`
+
+`cancel_requested` is intentionally non-terminal. A turn remains active until it transitions to a terminal status.
 
 ## Bidirectional Streaming
 

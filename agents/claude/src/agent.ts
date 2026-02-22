@@ -494,8 +494,6 @@ async function runClaude(
   const fallbackModel = env.HOLON_FALLBACK_MODEL;
   const abortController = new AbortController();
 
-  // Explicitly include Skill in allowed tools
-  // This is required when using bypassPermissions mode
   const options: Options = {
     cwd: workspacePath,
     env,
@@ -505,7 +503,6 @@ async function runClaude(
     systemPrompt: { type: "preset", preset: "claude_code", append: systemInstruction },
     settingSources: ["user", "project"],
     tools: { type: "preset", preset: "claude_code" },
-    allowedTools: ["Skill"], // Explicitly enable Skill tool
     stderr: (data: string) => {
       // Filter out SDK internal debug output that looks like variable names
       // These are SDK implementation details that shouldn't be logged
@@ -695,7 +692,17 @@ async function runServeQueryTurn(
   systemInstruction: string,
   prompt: string,
   resumeSessionID?: string,
+  externalAbortSignal?: AbortSignal,
 ): Promise<{ success: boolean; result: string; sessionID: string }> {
+  const serveDisallowedTools = ["AskUserQuestion"];
+  const abortController = new AbortController();
+  if (externalAbortSignal) {
+    if (externalAbortSignal.aborted) {
+      abortController.abort();
+    } else {
+      externalAbortSignal.addEventListener("abort", () => abortController.abort(), { once: true });
+    }
+  }
   const options: Options = {
     cwd: workspacePath,
     env,
@@ -704,7 +711,8 @@ async function runServeQueryTurn(
     allowDangerouslySkipPermissions: true,
     settingSources: ["user", "project"],
     tools: { type: "preset", preset: "claude_code" },
-    allowedTools: ["Skill"],
+    disallowedTools: serveDisallowedTools,
+    abortController,
     stderr: (data: string) => {
       const trimmed = data.trim();
       if (trimmed && !trimmed.match(/^log_[a-f0-9]+$/i)) {
@@ -725,42 +733,49 @@ async function runServeQueryTurn(
   let finalOutput = "";
   let observedSessionID = resumeSessionID || "";
 
-  const stream = query({ prompt, options });
-  for await (const message of stream) {
-    const safeMessage = message as SDKMessage & { [key: string]: unknown };
-    logFile.write(`${JSON.stringify(safeMessage)}\n`);
+  try {
+    const stream = query({ prompt, options });
+    for await (const message of stream) {
+      const safeMessage = message as SDKMessage & { [key: string]: unknown };
+      logFile.write(`${JSON.stringify(safeMessage)}\n`);
 
-    if (typeof safeMessage.session_id === "string" && safeMessage.session_id.trim() !== "") {
-      observedSessionID = safeMessage.session_id.trim();
-    }
+      if (typeof safeMessage.session_id === "string" && safeMessage.session_id.trim() !== "") {
+        observedSessionID = safeMessage.session_id.trim();
+      }
 
-    if (safeMessage.type === "assistant" && safeMessage.message && Array.isArray(safeMessage.message.content)) {
-      for (const block of safeMessage.message.content) {
-        if (block.type === "text" && typeof block.text === "string") {
-          finalOutput += block.text;
-          logger.streamAssistantText(block.text);
-        } else if (block.type === "tool_use") {
-          const toolName = typeof block.name === "string" ? block.name : "UnknownTool";
-          const toolInput = typeof block.input === "object" && block.input !== null ? block.input : undefined;
-          logger.logToolUse(toolName, undefined, undefined, toolInput);
+      if (safeMessage.type === "assistant" && safeMessage.message && Array.isArray(safeMessage.message.content)) {
+        for (const block of safeMessage.message.content) {
+          if (block.type === "text" && typeof block.text === "string") {
+            finalOutput += block.text;
+            logger.streamAssistantText(block.text);
+          } else if (block.type === "tool_use") {
+            const toolName = typeof block.name === "string" ? block.name : "UnknownTool";
+            const toolInput = typeof block.input === "object" && block.input !== null ? block.input : undefined;
+            logger.logToolUse(toolName, undefined, undefined, toolInput);
+          }
         }
+      } else if (safeMessage.type === "result") {
+        const isError =
+          typeof safeMessage.is_error === "boolean"
+            ? safeMessage.is_error
+            : Boolean(safeMessage.is_error);
+        if (isError) {
+          success = false;
+        }
+        if (typeof safeMessage.result === "string") {
+          resultText = safeMessage.result;
+        } else if (Array.isArray(safeMessage.errors)) {
+          resultText = safeMessage.errors.join("\n");
+        }
+        resultReceived = true;
+        break;
       }
-    } else if (safeMessage.type === "result") {
-      const isError =
-        typeof safeMessage.is_error === "boolean"
-          ? safeMessage.is_error
-          : Boolean(safeMessage.is_error);
-      if (isError) {
-        success = false;
-      }
-      if (typeof safeMessage.result === "string") {
-        resultText = safeMessage.result;
-      } else if (Array.isArray(safeMessage.errors)) {
-        resultText = safeMessage.errors.join("\n");
-      }
-      resultReceived = true;
-      break;
     }
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      throw new Error("serve turn aborted");
+    }
+    throw error;
   }
 
   if (!resultReceived) {
@@ -792,7 +807,7 @@ type ControllerEventRequest = {
 };
 
 type ControllerEventResponse = {
-  status: "accepted" | "queued" | "running" | "completed" | "failed";
+  status: "accepted" | "queued" | "running" | "cancel_requested" | "interrupted" | "completed" | "failed";
   message?: string;
   event_id?: string;
   turn_id?: string;
@@ -809,6 +824,8 @@ type ControllerEventRecord = {
   sessionKey: string;
   createdAt: number;
   updatedAt: number;
+  abortController?: AbortController;
+  cancelReason?: string;
 };
 
 function toControllerErrorMessage(error: unknown): string {
@@ -1128,9 +1145,55 @@ async function runServeClaudeSession(
         session_key: record.sessionKey,
       });
 
+      // Canonical status lifecycle shared with Go runtime:
+      // pending: accepted -> queued -> running -> cancel_requested
+      // terminal: completed | failed | interrupted
+      const isTerminalStatus = (status: ControllerEventResponse["status"]): boolean =>
+        status === "completed" || status === "failed" || status === "interrupted";
+
+      const isAbortError = (error: unknown): boolean => {
+        const message = toControllerErrorMessage(error).toLowerCase();
+        return (
+          message.includes("aborted") ||
+          message.includes("abort") ||
+          message.includes("cancelled") ||
+          message.includes("canceled")
+        );
+      };
+
+      const requestEventCancellation = (record: ControllerEventRecord, reason: string): boolean => {
+        if (isTerminalStatus(record.status)) {
+          return false;
+        }
+        const cancelReason = truncateMessage(reason || "event canceled by interrupt request");
+        record.cancelReason = cancelReason;
+        switch (record.status) {
+          case "accepted":
+          case "queued":
+            record.status = "interrupted";
+            record.message = cancelReason;
+            record.updatedAt = Date.now();
+            return true;
+          case "running":
+            record.status = "cancel_requested";
+            record.message = cancelReason;
+            record.updatedAt = Date.now();
+            if (record.abortController) {
+              record.abortController.abort();
+            }
+            return true;
+          case "cancel_requested":
+            record.message = cancelReason;
+            record.updatedAt = Date.now();
+            return true;
+          default:
+            return false;
+        }
+      };
+
       const trimEventRecords = (): void => {
         const isInflight = (status: ControllerEventResponse["status"]): boolean =>
-          status === "accepted" || status === "queued" || status === "running";
+          status === "accepted" || status === "queued" || status === "running" || status === "cancel_requested";
 
         while (eventOrder.length > maxEventRecords) {
           const maxScan = eventOrder.length;
@@ -1166,6 +1229,9 @@ async function runServeClaudeSession(
         void (async () => {
           try {
             const entry = await ensureSessionReady(record.sessionKey);
+            if (record.status === "interrupted") {
+              return;
+            }
             const wasBusy = entry.pendingTurns > 0;
             entry.pendingTurns += 1;
             record.status = wasBusy ? "queued" : "running";
@@ -1176,8 +1242,19 @@ async function runServeClaudeSession(
                 logger.info(`controller inflight chain recovered after error: ${toControllerErrorMessage(chainError)}`);
               })
               .then(async () => {
+                if (record.status === "interrupted") {
+                  return;
+                }
+                if (record.status === "cancel_requested") {
+                  record.status = "interrupted";
+                  record.message = record.cancelReason || "event canceled";
+                  record.updatedAt = Date.now();
+                  return;
+                }
                 record.status = "running";
                 record.updatedAt = Date.now();
+                const turnAbortController = new AbortController();
+                record.abortController = turnAbortController;
 
                 const eventRaw = JSON.stringify(event);
                 const turnPrompt = [
@@ -1194,16 +1271,24 @@ async function runServeClaudeSession(
                   systemInstruction,
                   turnPrompt,
                   entry.sessionID || undefined,
+                  turnAbortController.signal,
                 );
                 refreshSessionId(record.sessionKey, turnResult.sessionID);
                 record.status = turnResult.success ? "completed" : "failed";
                 record.message = truncateMessage(turnResult.result || "");
                 record.updatedAt = Date.now();
+                record.abortController = undefined;
               })
               .catch((turnError) => {
-                record.status = "failed";
-                record.message = truncateMessage(toControllerErrorMessage(turnError));
+                if (record.status === "cancel_requested" || isAbortError(turnError)) {
+                  record.status = "interrupted";
+                  record.message = record.cancelReason || "event canceled";
+                } else {
+                  record.status = "failed";
+                  record.message = truncateMessage(toControllerErrorMessage(turnError));
+                }
                 record.updatedAt = Date.now();
+                record.abortController = undefined;
               })
               .finally(() => {
                 entry.pendingTurns = Math.max(0, entry.pendingTurns - 1);
@@ -1238,10 +1323,11 @@ async function runServeClaudeSession(
           return;
         }
 
-        if (req.method === "GET" && typeof req.url === "string" && req.url.startsWith("/v1/runtime/events/")) {
+        if ((req.method === "GET" || req.method === "DELETE") && typeof req.url === "string" && req.url.startsWith("/v1/runtime/events/")) {
+          const requestURL = new URL(req.url, "http://unix");
           let eventID = "";
           try {
-            eventID = decodeURIComponent(req.url.slice("/v1/runtime/events/".length)).trim();
+            eventID = decodeURIComponent(requestURL.pathname.slice("/v1/runtime/events/".length)).trim();
           } catch (error) {
             sendJSON(400, { error: `invalid_event_id: ${String(error)}` });
             return;
@@ -1253,6 +1339,12 @@ async function runServeClaudeSession(
           const record = eventRecords.get(eventID);
           if (!record) {
             sendJSON(404, { error: "event_not_found", event_id: eventID });
+            return;
+          }
+          if (req.method === "DELETE") {
+            const reason = normalizeSessionKey(requestURL.searchParams.get("reason") || "") || "event canceled by interrupt request";
+            requestEventCancellation(record, reason);
+            sendJSON(isTerminalStatus(record.status) ? 200 : 202, toResponse(record));
             return;
           }
           sendJSON(200, toResponse(record));
@@ -1288,7 +1380,7 @@ async function runServeClaudeSession(
           const eventID = normalizeSessionKey(ackFields.eventID) || generateEventID();
           const existing = eventRecords.get(eventID);
           if (existing) {
-            sendJSON(existing.status === "completed" || existing.status === "failed" ? 200 : 202, toResponse(existing));
+            sendJSON(isTerminalStatus(existing.status) ? 200 : 202, toResponse(existing));
             return;
           }
 

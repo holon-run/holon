@@ -126,6 +126,64 @@ func TestResolveControllerRPCReadyTimeout(t *testing.T) {
 	}
 }
 
+func TestResolveServeFollowupPolicy(t *testing.T) {
+	t.Parallel()
+
+	key := "HOLON_SERVE_FOLLOWUP_POLICY"
+	original := os.Getenv(key)
+	t.Cleanup(func() {
+		_ = os.Setenv(key, original)
+	})
+
+	_ = os.Unsetenv(key)
+	if got := resolveServeFollowupPolicy(); got != serveFollowupPolicyFollowup {
+		t.Fatalf("resolveServeFollowupPolicy() default = %q, want %q", got, serveFollowupPolicyFollowup)
+	}
+
+	if err := os.Setenv(key, "collect"); err != nil {
+		t.Fatalf("setenv collect: %v", err)
+	}
+	if got := resolveServeFollowupPolicy(); got != serveFollowupPolicyCollect {
+		t.Fatalf("resolveServeFollowupPolicy() = %q, want %q", got, serveFollowupPolicyCollect)
+	}
+
+	if err := os.Setenv(key, "invalid"); err != nil {
+		t.Fatalf("setenv invalid: %v", err)
+	}
+	if got := resolveServeFollowupPolicy(); got != serveFollowupPolicyFollowup {
+		t.Fatalf("resolveServeFollowupPolicy() invalid fallback = %q, want %q", got, serveFollowupPolicyFollowup)
+	}
+}
+
+func TestResolveServeMaxQueuedTurns(t *testing.T) {
+	t.Parallel()
+
+	key := "HOLON_SERVE_MAX_QUEUED_TURNS"
+	original := os.Getenv(key)
+	t.Cleanup(func() {
+		_ = os.Setenv(key, original)
+	})
+
+	_ = os.Unsetenv(key)
+	if got := resolveServeMaxQueuedTurns(); got != defaultServeMaxQueuedTurns {
+		t.Fatalf("resolveServeMaxQueuedTurns() default = %d, want %d", got, defaultServeMaxQueuedTurns)
+	}
+
+	if err := os.Setenv(key, "3"); err != nil {
+		t.Fatalf("setenv 3: %v", err)
+	}
+	if got := resolveServeMaxQueuedTurns(); got != 3 {
+		t.Fatalf("resolveServeMaxQueuedTurns() = %d, want 3", got)
+	}
+
+	if err := os.Setenv(key, "bad"); err != nil {
+		t.Fatalf("setenv bad: %v", err)
+	}
+	if got := resolveServeMaxQueuedTurns(); got != defaultServeMaxQueuedTurns {
+		t.Fatalf("resolveServeMaxQueuedTurns() invalid fallback = %d, want %d", got, defaultServeMaxQueuedTurns)
+	}
+}
+
 func TestRouteEventToSessionKey(t *testing.T) {
 	t.Parallel()
 
@@ -500,19 +558,93 @@ func TestHandleTurnStart_WaitsForAsyncControllerCompletion(t *testing.T) {
 		t.Fatalf("HandleTurnStart() error = %v", err)
 	}
 
-	select {
-	case ack := <-h.TurnAcks():
-		if ack.TurnID != "turn-1" {
-			t.Fatalf("turn ack turn_id = %q, want turn-1", ack.TurnID)
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ack := <-h.TurnAcks():
+			if ack.TurnID != "turn-1" {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(ack.Status), "completed") {
+				if strings.TrimSpace(ack.Message) != "done" {
+					t.Fatalf("turn ack message = %q, want done", ack.Message)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for terminal turn ack")
 		}
-		if ack.Status != "completed" {
-			t.Fatalf("turn ack status = %q, want completed", ack.Status)
+	}
+}
+
+func TestInterruptTurn_PropagatesCancellation(t *testing.T) {
+	t.Parallel()
+
+	td := t.TempDir()
+	agentHome := shortTempDir(t, "holon-serve-interrupt-home")
+	socketPath := filepath.Join(agentHome, "run", "agent.sock")
+	rpcServer := newMockAsyncControllerRPCServer(t, socketPath)
+	defer rpcServer.Close()
+
+	mockRunner := &mockSessionRunner{
+		waitCh:       make(chan error, 1),
+		waitObserved: make(chan struct{}, 1),
+	}
+
+	h := &cliControllerHandler{
+		repoHint:            "holon-run/holon",
+		stateDir:            td,
+		agentHome:           agentHome,
+		controllerWorkspace: t.TempDir(),
+		controllerRoleLabel: "dev",
+		logLevel:            "progress",
+		sessionRunner:       mockRunner,
+	}
+	defer h.Close()
+
+	if err := h.HandleTurnStart(context.Background(), serve.TurnStartRequest{
+		ThreadID: "main",
+	}, "turn-int-1"); err != nil {
+		t.Fatalf("HandleTurnStart() error = %v", err)
+	}
+
+	// Wait until the turn receives at least one non-terminal ack with an event id.
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ack := <-h.TurnAcks():
+			if ack.TurnID != "turn-int-1" {
+				continue
+			}
+			if strings.TrimSpace(ack.EventID) != "" {
+				goto interruptNow
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for initial turn ack before interrupt")
 		}
-		if strings.TrimSpace(ack.Message) != "done" {
-			t.Fatalf("turn ack message = %q, want done", ack.Message)
+	}
+
+interruptNow:
+	if err := h.InterruptTurn(context.Background(), "turn-int-1", "main", "stop now"); err != nil {
+		t.Fatalf("InterruptTurn() error = %v", err)
+	}
+
+	waitTerminal := time.After(3 * time.Second)
+	for {
+		select {
+		case ack := <-h.TurnAcks():
+			if ack.TurnID != "turn-int-1" {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(ack.Status), "interrupted") {
+				if !strings.Contains(strings.ToLower(ack.Message), "stop now") {
+					t.Fatalf("interrupt ack message = %q, want contains stop now", ack.Message)
+				}
+				return
+			}
+		case <-waitTerminal:
+			t.Fatalf("timed out waiting for interrupted terminal ack")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for turn ack")
 	}
 }
 
@@ -1027,16 +1159,53 @@ func newMockAsyncControllerRPCServer(t *testing.T, socketPath string) *mockAsync
 		go func(id string) {
 			time.Sleep(60 * time.Millisecond)
 			s.mu.Lock()
+			current := s.results[id]
+			if strings.EqualFold(strings.TrimSpace(current.Status), "interrupted") {
+				s.mu.Unlock()
+				return
+			}
 			s.results[id] = controllerRPCEventResponse{
-				Status:  "completed",
-				EventID: id,
-				Message: "done",
+				Status:   "completed",
+				EventID:  id,
+				Message:  "done",
+				ThreadID: current.ThreadID,
 			}
 			s.mu.Unlock()
 		}(eventID)
 	})
 	mux.HandleFunc("/v1/runtime/events/", func(w http.ResponseWriter, r *http.Request) {
 		eventID := strings.TrimPrefix(r.URL.Path, "/v1/runtime/events/")
+		if r.Method == http.MethodDelete {
+			reason := strings.TrimSpace(r.URL.Query().Get("reason"))
+			if reason == "" {
+				reason = "event canceled"
+			}
+			s.mu.Lock()
+			result, ok := s.results[eventID]
+			if !ok {
+				s.mu.Unlock()
+				http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+				return
+			}
+			result.Status = "cancel_requested"
+			result.Message = reason
+			s.results[eventID] = result
+			s.mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(result)
+			go func(id string, message string) {
+				time.Sleep(20 * time.Millisecond)
+				s.mu.Lock()
+				current, ok := s.results[id]
+				if ok {
+					current.Status = "interrupted"
+					current.Message = message
+					s.results[id] = current
+				}
+				s.mu.Unlock()
+			}(eventID, reason)
+			return
+		}
 		s.mu.Lock()
 		result, ok := s.results[eventID]
 		s.mu.Unlock()

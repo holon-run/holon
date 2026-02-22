@@ -371,3 +371,66 @@ func TestReconnectDelay(t *testing.T) {
 		t.Fatalf("reconnectDelay(3)=%v, want 5s", got)
 	}
 }
+
+func TestTurnProgressNotificationUpdatesConversation(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	params := map[string]interface{}{
+		"turn_id":    "turn_progress_1",
+		"thread_id":  "main",
+		"state":      "running",
+		"message":    "controller event status: running",
+		"elapsed_ms": 2500,
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	app.handleNotification(StreamNotification{Method: "turn/progress", Params: raw})
+
+	turn := app.turns["turn_progress_1"]
+	if turn == nil {
+		t.Fatalf("expected turn_progress_1 to exist")
+	}
+	if turn.State != "running" {
+		t.Fatalf("turn state = %q, want running", turn.State)
+	}
+	if turn.ProgressText != "controller event status: running" {
+		t.Fatalf("turn progress text = %q", turn.ProgressText)
+	}
+	if turn.ElapsedMS != 2500 {
+		t.Fatalf("turn elapsed_ms = %d, want 2500", turn.ElapsedMS)
+	}
+}
+
+func TestCtrlXWithoutActiveTurnAddsSystemMessage(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	if len(app.activityEvents) != 0 {
+		t.Fatalf("expected empty activity events before test")
+	}
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	app = model.(*App)
+	if cmd != nil {
+		t.Fatalf("expected no command when no active turn exists")
+	}
+	if len(app.activityEvents) == 0 {
+		t.Fatalf("expected activity message for missing active turn")
+	}
+	last := app.activityEvents[len(app.activityEvents)-1]
+	if !strings.Contains(last.Content, "No active turn to interrupt") {
+		t.Fatalf("unexpected system message: %q", last.Content)
+	}
+}
+
+func TestCtrlXWithActiveTurnReturnsInterruptCommand(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	app.appendTurnMessage("turn_active_1", "main", "user", "hello")
+	app.setTurnState("turn_active_1", "running")
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	app = model.(*App)
+	if cmd == nil {
+		t.Fatalf("expected interrupt command when an active turn exists")
+	}
+}

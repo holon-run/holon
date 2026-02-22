@@ -294,6 +294,15 @@ func (nb *NotificationBroadcaster) BroadcastTurnNotification(n TurnNotification)
 	nb.broadcast(rpcNotif)
 }
 
+// BroadcastTurnProgressNotification broadcasts a turn/progress notification to all subscribers.
+func (nb *NotificationBroadcaster) BroadcastTurnProgressNotification(n TurnProgressNotification) {
+	rpcNotif, err := n.ToJSONRPCNotification()
+	if err != nil {
+		return
+	}
+	nb.broadcast(rpcNotif)
+}
+
 // BroadcastThreadNotification broadcasts a thread notification to all subscribers
 func (nb *NotificationBroadcaster) BroadcastThreadNotification(n ThreadNotification) {
 	rpcNotif, err := n.ToJSONRPCNotification()
