@@ -322,6 +322,43 @@ func TestAssistantItemCreatedGoesToTurnConversation(t *testing.T) {
 	}
 }
 
+func TestSystemAnnounceItemCreatedGoesToActivity(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	params := map[string]interface{}{
+		"item_id":   "announce_1",
+		"thread_id": "main",
+		"content": map[string]interface{}{
+			"type":               "system_announce",
+			"event_id":           "evt_123",
+			"source":             "github",
+			"event_type":         "github.issue.comment.created",
+			"source_session_key": "event:holon-run/holon",
+			"decision":           "pr-fix",
+			"action":             "updated_branch",
+			"text":               "Addressed review feedback",
+		},
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	app.handleNotification(StreamNotification{Method: "item/created", Params: raw})
+
+	if len(app.activityEvents) != 1 {
+		t.Fatalf("activityEvents len = %d, want 1", len(app.activityEvents))
+	}
+	if got := app.activityEvents[0].Content; !strings.Contains(got, "decision=pr-fix") {
+		t.Fatalf("activity content missing decision: %q", got)
+	}
+	if got := app.activityEvents[0].Content; !strings.Contains(got, "action=updated_branch") {
+		t.Fatalf("activity content missing action: %q", got)
+	}
+	if len(app.turnOrder) != 0 {
+		t.Fatalf("turnOrder len = %d, want 0", len(app.turnOrder))
+	}
+}
+
 func TestTurnAggregationCombinesAssistantMessages(t *testing.T) {
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	app.appendTurnMessage("turn_1", "main", "user", "question")

@@ -553,12 +553,10 @@ func TestWebhookServer_DefaultTimeouts(t *testing.T) {
 	}
 	defer ws.Close()
 
-	// Check default timeouts are set
+	// Check default timeouts are set for read/idle, and write timeout remains
+	// disabled for long-lived stream responses.
 	if ws.server.ReadTimeout == 0 {
 		t.Fatal("expected default ReadTimeout to be set")
-	}
-	if ws.server.WriteTimeout == 0 {
-		t.Fatal("expected default WriteTimeout to be set")
 	}
 	if ws.server.IdleTimeout == 0 {
 		t.Fatal("expected default IdleTimeout to be set")
@@ -567,8 +565,8 @@ func TestWebhookServer_DefaultTimeouts(t *testing.T) {
 	if ws.server.ReadTimeout != 10*time.Second {
 		t.Fatalf("expected default ReadTimeout 10s, got %v", ws.server.ReadTimeout)
 	}
-	if ws.server.WriteTimeout != 10*time.Second {
-		t.Fatalf("expected default WriteTimeout 10s, got %v", ws.server.WriteTimeout)
+	if ws.server.WriteTimeout != 0 {
+		t.Fatalf("expected default WriteTimeout 0 (disabled), got %v", ws.server.WriteTimeout)
 	}
 	if ws.server.IdleTimeout != 60*time.Second {
 		t.Fatalf("expected default IdleTimeout 60s, got %v", ws.server.IdleTimeout)
