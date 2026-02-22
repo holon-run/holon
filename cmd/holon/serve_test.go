@@ -1053,6 +1053,48 @@ func TestResolveServeRuntimeEnv_FallbackToGhAuthToken(t *testing.T) {
 	}
 }
 
+func TestDeriveAnnounceOutcome(t *testing.T) {
+	t.Run("explicit decision and action", func(t *testing.T) {
+		decision, action := deriveAnnounceOutcome("Decision: pr-fix\nAction Taken: updated_branch")
+		if decision != "pr-fix" {
+			t.Fatalf("decision = %q", decision)
+		}
+		if action != "updated_branch" {
+			t.Fatalf("action = %q", action)
+		}
+	})
+
+	t.Run("infer no-op from summary", func(t *testing.T) {
+		decision, action := deriveAnnounceOutcome("Action Taken: None required")
+		if decision != "no-op" {
+			t.Fatalf("decision = %q", decision)
+		}
+		if action != "none_required" {
+			t.Fatalf("action = %q", action)
+		}
+	})
+
+	t.Run("default unknown", func(t *testing.T) {
+		decision, action := deriveAnnounceOutcome("Completed processing event")
+		if decision != "unknown" {
+			t.Fatalf("decision = %q", decision)
+		}
+		if action != "" {
+			t.Fatalf("action = %q", action)
+		}
+	})
+
+	t.Run("normalize freeform action to canonical token", func(t *testing.T) {
+		decision, action := deriveAnnounceOutcome("Decision: pr-review\nAction Taken: Posted Review")
+		if decision != "pr-review" {
+			t.Fatalf("decision = %q", decision)
+		}
+		if action != "posted_review" {
+			t.Fatalf("action = %q", action)
+		}
+	})
+}
+
 type mockSessionRunner struct {
 	mu           sync.Mutex
 	startCount   int
