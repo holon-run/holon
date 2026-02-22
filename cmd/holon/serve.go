@@ -937,16 +937,28 @@ func (h *cliControllerHandler) dispatchQueuedEvent(item controllerEvent) error {
 		})
 	}
 	if sessionKey != "main" && !item.skipMainAnnounce {
-		if err := h.enqueueMainAnnounce(item, sessionKey, strings.TrimSpace(result.Message)); err != nil {
+		if err := h.enqueueMainAnnounce(item, sessionKey, result); err != nil {
 			holonlog.Warn("failed to enqueue main announce", "event_id", item.env.ID, "session_key", sessionKey, "error", err)
 		}
 	}
 	return nil
 }
 
-func (h *cliControllerHandler) enqueueMainAnnounce(item controllerEvent, sourceSessionKey, summary string) error {
+func (h *cliControllerHandler) enqueueMainAnnounce(item controllerEvent, sourceSessionKey string, result controllerRPCEventResponse) error {
+	summary := strings.TrimSpace(result.Message)
 	if strings.TrimSpace(summary) == "" {
 		summary = "event processed"
+	}
+	decision := normalizeAnnounceDecision(result.Decision)
+	action := strings.TrimSpace(result.Action)
+	if decision == "" || action == "" {
+		derivedDecision, derivedAction := deriveAnnounceOutcome(summary)
+		if decision == "" {
+			decision = derivedDecision
+		}
+		if action == "" {
+			action = derivedAction
+		}
 	}
 	announce := map[string]any{
 		"level":              "info",
@@ -956,6 +968,8 @@ func (h *cliControllerHandler) enqueueMainAnnounce(item controllerEvent, sourceS
 		"event_id":           item.env.ID,
 		"source":             item.env.Source,
 		"type":               item.env.Type,
+		"decision":           decision,
+		"action":             action,
 		"created_at":         time.Now().UTC().Format(time.RFC3339),
 	}
 	payloadRaw, err := json.Marshal(announce)
@@ -1555,6 +1569,8 @@ type controllerRPCEventResponse struct {
 	TurnID     string `json:"turn_id,omitempty"`
 	ThreadID   string `json:"thread_id,omitempty"`
 	SessionKey string `json:"session_key,omitempty"`
+	Decision   string `json:"decision,omitempty"`
+	Action     string `json:"action,omitempty"`
 }
 
 func newControllerHTTPClient(socketPath string) *http.Client {
@@ -1847,6 +1863,8 @@ func parseControllerRPCResponse(body io.Reader) (controllerRPCEventResponse, err
 		TurnID     string `json:"turn_id,omitempty"`
 		ThreadID   string `json:"thread_id,omitempty"`
 		SessionKey string `json:"session_key,omitempty"`
+		Decision   string `json:"decision,omitempty"`
+		Action     string `json:"action,omitempty"`
 	}
 	respBody, err := io.ReadAll(body)
 	if err != nil {
@@ -1866,8 +1884,103 @@ func parseControllerRPCResponse(body io.Reader) (controllerRPCEventResponse, err
 		TurnID:     strings.TrimSpace(raw.TurnID),
 		ThreadID:   strings.TrimSpace(raw.ThreadID),
 		SessionKey: strings.TrimSpace(raw.SessionKey),
+		Decision:   strings.TrimSpace(raw.Decision),
+		Action:     strings.TrimSpace(raw.Action),
 	}
 	return result, nil
+}
+
+func deriveAnnounceOutcome(summary string) (decision string, action string) {
+	normalizedSummary := strings.TrimSpace(summary)
+	lowerSummary := strings.ToLower(normalizedSummary)
+
+	decision = normalizeAnnounceDecision(extractSummaryFieldValue(normalizedSummary, "decision"))
+	action = strings.TrimSpace(extractSummaryFieldValue(normalizedSummary, "action taken"))
+
+	if decision == "" {
+		switch {
+		case strings.Contains(lowerSummary, "no-op"),
+			strings.Contains(lowerSummary, "no op"),
+			strings.Contains(lowerSummary, "none required"),
+			strings.Contains(lowerSummary, "no action required"):
+			decision = "no-op"
+		case strings.Contains(lowerSummary, "pr-fix"),
+			strings.Contains(lowerSummary, "pr fix"),
+			strings.Contains(lowerSummary, "pull request fix"),
+			strings.Contains(lowerSummary, "github-pr-fix"):
+			decision = "pr-fix"
+		case strings.Contains(lowerSummary, "pr-review"),
+			strings.Contains(lowerSummary, "pr review"),
+			strings.Contains(lowerSummary, "pull request review"),
+			strings.Contains(lowerSummary, "github-review"),
+			strings.Contains(lowerSummary, "posted review"):
+			decision = "pr-review"
+		case strings.Contains(lowerSummary, "issue-solve"),
+			strings.Contains(lowerSummary, "issue solve"),
+			strings.Contains(lowerSummary, "github-issue-solve"),
+			strings.Contains(lowerSummary, "opened pr"),
+			strings.Contains(lowerSummary, "created pull request"):
+			decision = "issue-solve"
+		default:
+			decision = "unknown"
+		}
+	}
+
+	if action == "" {
+		switch {
+		case strings.Contains(lowerSummary, "opened pr"),
+			strings.Contains(lowerSummary, "created pull request"):
+			action = "opened_pr"
+		case strings.Contains(lowerSummary, "posted review"):
+			action = "posted_review"
+		case strings.Contains(lowerSummary, "updated branch"),
+			strings.Contains(lowerSummary, "pushed commit"):
+			action = "updated_branch"
+		case strings.Contains(lowerSummary, "commented"),
+			strings.Contains(lowerSummary, "posted comment"):
+			action = "commented"
+		case decision == "no-op":
+			action = "none_required"
+		}
+	}
+
+	return decision, action
+}
+
+func extractSummaryFieldValue(summary, label string) string {
+	if strings.TrimSpace(summary) == "" || strings.TrimSpace(label) == "" {
+		return ""
+	}
+	labelLower := strings.ToLower(strings.TrimSpace(label)) + ":"
+	for _, line := range strings.Split(summary, "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if !strings.HasPrefix(lower, labelLower) {
+			continue
+		}
+		value := strings.TrimSpace(trimmed[len(labelLower):])
+		return strings.Trim(value, " -*`")
+	}
+	return ""
+}
+
+func normalizeAnnounceDecision(decision string) string {
+	normalized := strings.ToLower(strings.TrimSpace(decision))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	switch normalized {
+	case "issue-solve", "issuesolve":
+		return "issue-solve"
+	case "pr-review", "prreview":
+		return "pr-review"
+	case "pr-fix", "prfix":
+		return "pr-fix"
+	case "no-op", "noop", "none", "no action":
+		return "no-op"
+	case "", "unknown":
+		return ""
+	default:
+		return normalized
+	}
 }
 
 func controllerHealthViaDockerExec(ctx context.Context, containerID string) error {

@@ -603,6 +603,7 @@ func (ws *WebhookServer) processEnvelope(ctx context.Context, env EventEnvelope)
 		result.Status = "ok"
 		// Record successful event in runtime
 		ws.runtime.RecordEvent(env.ID)
+		ws.maybeEmitSessionAnnounce(env)
 	}
 	result.EndedAt = ws.now().UTC()
 
@@ -614,6 +615,101 @@ func (ws *WebhookServer) processEnvelope(ctx context.Context, env EventEnvelope)
 		holonlog.Error("failed to update cursor after event processing", "error", err, "event_id", env.ID)
 	}
 	return nil
+}
+
+type sessionAnnouncePayload struct {
+	EventID          string `json:"event_id"`
+	Source           string `json:"source"`
+	Type             string `json:"type"`
+	SourceSessionKey string `json:"source_session_key"`
+	Title            string `json:"title,omitempty"`
+	Text             string `json:"text,omitempty"`
+	Decision         string `json:"decision,omitempty"`
+	Action           string `json:"action,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
+}
+
+func (ws *WebhookServer) maybeEmitSessionAnnounce(env EventEnvelope) {
+	if !strings.EqualFold(strings.TrimSpace(env.Source), "serve") || !strings.EqualFold(strings.TrimSpace(env.Type), "session.announce") {
+		return
+	}
+	announce, ok := parseSessionAnnouncePayload(env.Payload)
+	if !ok {
+		holonlog.Warn("failed to parse session announce payload", "event_id", env.ID)
+		return
+	}
+	if isNoOpDecision(announce.Decision) {
+		holonlog.Debug("skipping no-op session announce", "event_id", announce.EventID)
+		return
+	}
+
+	createdAt := strings.TrimSpace(announce.CreatedAt)
+	if createdAt == "" {
+		createdAt = ws.now().UTC().Format(time.RFC3339)
+	}
+	content := map[string]interface{}{
+		"type":               "system_announce",
+		"event_id":           announce.EventID,
+		"source":             announce.Source,
+		"event_type":         announce.Type,
+		"source_session_key": announce.SourceSessionKey,
+		"decision":           normalizeDecision(announce.Decision),
+		"created_at":         createdAt,
+	}
+	if strings.TrimSpace(announce.Action) != "" {
+		content["action"] = strings.TrimSpace(announce.Action)
+	}
+	if strings.TrimSpace(announce.Title) != "" {
+		content["title"] = strings.TrimSpace(announce.Title)
+	}
+	if strings.TrimSpace(announce.Text) != "" {
+		content["text"] = strings.TrimSpace(announce.Text)
+	}
+
+	notif := NewItemNotification(fmt.Sprintf("announce_%d", ws.now().UTC().UnixNano()), ItemNotificationCreated, StateCompleted, content)
+	notif.ThreadID = "main"
+	ws.runtime.emitItemNotification(notif)
+	holonlog.Debug(
+		"emitted session announce notification",
+		"event_id", announce.EventID,
+		"decision", normalizeDecision(announce.Decision),
+		"action", strings.TrimSpace(announce.Action),
+	)
+}
+
+func parseSessionAnnouncePayload(raw json.RawMessage) (sessionAnnouncePayload, bool) {
+	var payload sessionAnnouncePayload
+	if len(raw) == 0 {
+		return sessionAnnouncePayload{}, false
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return sessionAnnouncePayload{}, false
+	}
+	if strings.TrimSpace(payload.EventID) == "" ||
+		strings.TrimSpace(payload.Source) == "" ||
+		strings.TrimSpace(payload.Type) == "" ||
+		strings.TrimSpace(payload.SourceSessionKey) == "" {
+		return sessionAnnouncePayload{}, false
+	}
+	return payload, true
+}
+
+func isNoOpDecision(decision string) bool {
+	switch normalizeDecision(decision) {
+	case "no-op", "noop", "no-op.", "none", "none_required":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeDecision(decision string) string {
+	normalized := strings.ToLower(strings.TrimSpace(decision))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	if normalized == "" {
+		return "unknown"
+	}
+	return normalized
 }
 
 func (ws *WebhookServer) updateCursor(env EventEnvelope) error {
