@@ -96,15 +96,15 @@ export class ProgressLogger {
   setLogMirror(stream?: fs.WriteStream): void {
     this.logMirror = stream;
     if (this.logMirror) {
-      this.logMirror.on("error", (error) => {
-        console.error(`[WARN] execution.log write error: ${String(error)}`);
+      this.logMirror.on("error", () => {
+        console.error("[WARN] execution.log write error");
       });
     }
   }
 
   private emit(line: string): void {
     console.log(line);
-    if (this.logMirror && !this.logMirror.destroyed) {
+    if (this.logMirror && !this.logMirror.destroyed && this.logMirror.writable && !this.logMirror.writableEnded && !this.logMirror.writableFinished) {
       const ok = this.logMirror.write(`${line}\n`);
       if (!ok) {
         console.error("[WARN] execution.log write buffer full; log line may be delayed");
@@ -264,15 +264,20 @@ function redactInputForLog(input: string): string {
 
 function writePromptInputLog(logFile: fs.WriteStream, source: string, prompt: string): void {
   const maxChars = Math.max(512, intEnv("HOLON_INPUT_LOG_MAX_CHARS", 12000));
-  const redactedPrompt = redactInputForLog(prompt);
-  const truncated = redactedPrompt.length > maxChars;
-  const loggedPrompt = truncated ? `${redactedPrompt.slice(0, maxChars)}\n... (truncated)` : redactedPrompt;
+  const bufferChars = Math.max(0, intEnv("HOLON_INPUT_LOG_BUFFER_CHARS", 2000));
+  const promptWindow = prompt.slice(0, maxChars + bufferChars);
+  const redactedPrompt = redactInputForLog(promptWindow);
+  const truncated = redactedPrompt.length > maxChars || prompt.length > promptWindow.length;
+  const loggedPrompt = redactedPrompt.length > maxChars ? `${redactedPrompt.slice(0, maxChars)}\n... (truncated)` : redactedPrompt;
   const meta = {
     source,
     prompt_length: prompt.length,
     logged_length: loggedPrompt.length,
     truncated,
   };
+  if (logFile.destroyed || !logFile.writable || logFile.writableEnded || logFile.writableFinished) {
+    return;
+  }
   logFile.write(`[INPUT] ${JSON.stringify(meta)}\n`);
   logFile.write(`${loggedPrompt}\n`);
 }
@@ -1615,29 +1620,32 @@ async function runAgent(): Promise<void> {
   logger.info("Loading compiled user prompt");
 
   if (process.env.HOLON_AGENT_SESSION_MODE === "serve") {
-    hydrateClaudeConfigFromEnv(logger);
-    logger.logPhase("Running persistent controller session");
-    await runServeClaudeSession(logger, systemInstruction, userPrompt, evidenceDir, runtimePaths, executionLog);
+    try {
+      hydrateClaudeConfigFromEnv(logger);
+      logger.logPhase("Running persistent controller session");
+      await runServeClaudeSession(logger, systemInstruction, userPrompt, evidenceDir, runtimePaths, executionLog);
 
-    const bundleManifest = readBundleManifest();
-    const agentMetadata = getAgentMetadata(bundleManifest);
-    const manifest = {
-      metadata: {
-        agent: agentMetadata.agent,
-        version: agentMetadata.version,
-        mode: "serve",
-        ...(agentMetadata.engine && { engine: agentMetadata.engine }),
-      },
-      status: "completed",
-      outcome: "success",
-      artifacts: [
-        { name: "evidence", path: "evidence/" },
-      ],
-    };
-    fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
-    fixPermissions(outputDir, logger);
-    executionLog.end();
-    return;
+      const bundleManifest = readBundleManifest();
+      const agentMetadata = getAgentMetadata(bundleManifest);
+      const manifest = {
+        metadata: {
+          agent: agentMetadata.agent,
+          version: agentMetadata.version,
+          mode: "serve",
+          ...(agentMetadata.engine && { engine: agentMetadata.engine }),
+        },
+        status: "completed",
+        outcome: "success",
+        artifacts: [
+          { name: "evidence", path: "evidence/" },
+        ],
+      };
+      fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+      fixPermissions(outputDir, logger);
+      return;
+    } finally {
+      executionLog.end();
+    }
   }
 
   logger.logPhase("Setting up git workspace");
