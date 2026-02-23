@@ -77,6 +77,7 @@ export class ProgressLogger {
   private toolUseCount = 0;
   private assistantOutputMode: AssistantOutputMode;
   private streamLimiter: AssistantStreamLimiter;
+  private logMirror?: fs.WriteStream;
 
   constructor(level: string, assistantOutput: string = "none") {
     const normalized = level.toLowerCase() as LogLevel;
@@ -92,6 +93,25 @@ export class ProgressLogger {
     this.streamLimiter = new AssistantStreamLimiter();
   }
 
+  setLogMirror(stream?: fs.WriteStream): void {
+    this.logMirror = stream;
+    if (this.logMirror) {
+      this.logMirror.on("error", () => {
+        console.error("[WARN] execution.log write error");
+      });
+    }
+  }
+
+  private emit(line: string): void {
+    console.log(line);
+    if (this.logMirror && !this.logMirror.destroyed && this.logMirror.writable && !this.logMirror.writableEnded && !this.logMirror.writableFinished) {
+      const ok = this.logMirror.write(`${line}\n`);
+      if (!ok) {
+        console.error("[WARN] execution.log write buffer full; log line may be delayed");
+      }
+    }
+  }
+
   private shouldLog(level: LogLevel): boolean {
     const priority: Record<LogLevel, number> = {
       [LogLevel.DEBUG]: 0,
@@ -104,25 +124,25 @@ export class ProgressLogger {
 
   debug(message: string): void {
     if (this.shouldLog(LogLevel.DEBUG)) {
-      console.log(`[DEBUG] ${message}`);
+      this.emit(`[DEBUG] ${message}`);
     }
   }
 
   info(message: string): void {
     if (this.shouldLog(LogLevel.INFO)) {
-      console.log(`[INFO] ${message}`);
+      this.emit(`[INFO] ${message}`);
     }
   }
 
   progress(message: string): void {
     if (this.shouldLog(LogLevel.PROGRESS)) {
-      console.log(`[PROGRESS] ${message}`);
+      this.emit(`[PROGRESS] ${message}`);
     }
   }
 
   minimal(message: string): void {
     if (this.shouldLog(LogLevel.MINIMAL)) {
-      console.log(`[PHASE] ${message}`);
+      this.emit(`[PHASE] ${message}`);
     }
   }
 
@@ -144,7 +164,7 @@ export class ProgressLogger {
     // If tool input is provided, use the new formatted logging with context
     if (toolInput && Object.keys(toolInput).length > 0) {
       const formatted = formatToolInputForLog(toolName, toolInput);
-      console.log(`[TOOL] ${formatted}`);
+      this.emit(`[TOOL] ${formatted}`);
       return;
     }
 
@@ -153,19 +173,19 @@ export class ProgressLogger {
       const safeFiles = filesTouched.map((f) => path.basename(f)).filter(Boolean);
       const countInfo = `${safeFiles.length} files`;
       if (safeFiles.length <= 3) {
-        console.log(`[TOOL] ${toolName} -> ${safeFiles.join(", ")} (${countInfo})`);
+        this.emit(`[TOOL] ${toolName} -> ${safeFiles.join(", ")} (${countInfo})`);
       } else {
-        console.log(`[TOOL] ${toolName} -> ${countInfo}`);
+        this.emit(`[TOOL] ${toolName} -> ${countInfo}`);
       }
       return;
     }
 
     if (fileCount) {
-      console.log(`[TOOL] ${toolName} -> ${fileCount} items`);
+      this.emit(`[TOOL] ${toolName} -> ${fileCount} items`);
       return;
     }
 
-    console.log(`[TOOL] ${toolName}`);
+    this.emit(`[TOOL] ${toolName}`);
   }
 
   logOutcome(success: boolean, durationSeconds: number, error?: string): void {
@@ -203,7 +223,7 @@ export class ProgressLogger {
     }
     const output = this.streamLimiter.shouldOutput(text);
     if (output) {
-      console.log(`[ASSISTANT] ${output}`);
+      this.emit(`[ASSISTANT] ${output}`);
     }
   }
 }
@@ -220,6 +240,46 @@ function intEnv(name: string, fallback: number): number {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+function redactInputForLog(input: string): string {
+  let redacted = input;
+
+  // JSON/YAML-like key-value redaction
+  redacted = redacted.replace(
+    /("?(?:token|access_token|api[_-]?key|authorization|password|secret|session[_-]?token)"?\s*[:=]\s*")([^"\n]+)"/gi,
+    (_match, prefix) => `${String(prefix)}***"`
+  );
+  redacted = redacted.replace(
+    /((?:token|access_token|api[_-]?key|authorization|password|secret|session[_-]?token)\s*[:=]\s*)([^\s\n]+)/gi,
+    (_match, prefix) => `${String(prefix)}***`
+  );
+
+  // Common token prefixes
+  redacted = redacted.replace(/\b(ghp_[A-Za-z0-9_]+|gho_[A-Za-z0-9_]+|ghu_[A-Za-z0-9_]+|ghs_[A-Za-z0-9_]+|ghr_[A-Za-z0-9_]+)\b/g, "***");
+  redacted = redacted.replace(/\b(sk-[A-Za-z0-9_-]{16,}|anthropic_[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})\b/g, "***");
+
+  return redacted;
+}
+
+function writePromptInputLog(logFile: fs.WriteStream, source: string, prompt: string): void {
+  const maxChars = Math.max(512, intEnv("HOLON_INPUT_LOG_MAX_CHARS", 12000));
+  const bufferChars = Math.max(0, intEnv("HOLON_INPUT_LOG_BUFFER_CHARS", 2000));
+  const promptWindow = prompt.slice(0, maxChars + bufferChars);
+  const redactedPrompt = redactInputForLog(promptWindow);
+  const truncated = redactedPrompt.length > maxChars || prompt.length > promptWindow.length;
+  const loggedPrompt = redactedPrompt.length > maxChars ? `${redactedPrompt.slice(0, maxChars)}\n... (truncated)` : redactedPrompt;
+  const meta = {
+    source,
+    prompt_length: prompt.length,
+    logged_length: loggedPrompt.length,
+    truncated,
+  };
+  if (logFile.destroyed || !logFile.writable || logFile.writableEnded || logFile.writableFinished) {
+    return;
+  }
+  logFile.write(`[INPUT] ${JSON.stringify(meta)}\n`);
+  logFile.write(`${loggedPrompt}\n`);
 }
 
 function runCommand(
@@ -577,6 +637,7 @@ async function runClaude(
     }, heartbeatSeconds * 1000)
     : null;
 
+  writePromptInputLog(logFile, "runClaude.user_prompt", userPrompt);
   const queryStream = query({ prompt: userPrompt, options });
 
   try {
@@ -734,6 +795,7 @@ async function runServeQueryTurn(
   let observedSessionID = resumeSessionID || "";
 
   try {
+    writePromptInputLog(logFile, "serve.turn_prompt", prompt);
     const stream = query({ prompt, options });
     for await (const message of stream) {
       const safeMessage = message as SDKMessage & { [key: string]: unknown };
@@ -922,6 +984,7 @@ async function runServeClaudeSession(
   userPrompt: string,
   evidenceDir: string,
   runtimePaths: RuntimePaths,
+  logFile: fs.WriteStream,
 ): Promise<void> {
   const env = { ...process.env } as NodeJS.ProcessEnv;
   const authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
@@ -946,9 +1009,6 @@ async function runServeClaudeSession(
     }
   }
   env.IS_SANDBOX = "1";
-
-  const logFilePath = path.join(evidenceDir, "execution.log");
-  const logFile = fs.createWriteStream(logFilePath, { flags: "a" });
 
   const sessionStatePath = env.HOLON_RUNTIME_SESSION_STATE_PATH?.trim();
   const fallbackResumeID = env.HOLON_RUNTIME_SESSION_ID?.trim();
@@ -1103,7 +1163,7 @@ async function runServeClaudeSession(
   let startupBootstrapState: "idle" | "running" | "completed" | "failed" = "running";
   let startupBootstrapError = "";
 
-  try {
+  {
     await ensureSessionReady("main");
 
     const socketPath = env.HOLON_RUNTIME_RPC_SOCKET?.trim() || path.join(runtimePaths.agentHome, "run", "agent.sock");
@@ -1458,7 +1518,7 @@ async function runServeClaudeSession(
 
     const eventPath = runtimePaths.eventPayloadPath;
     if (!fs.existsSync(eventPath)) {
-      logger.info(`No event payload found at ${eventPath}; session initialized only`);
+      logger.info("No event payload found; session initialized only");
       return;
     }
     const eventPayload = fs.readFileSync(eventPath, "utf8");
@@ -1477,27 +1537,23 @@ async function runServeClaudeSession(
       mainSession.sessionID || undefined,
     );
     refreshSessionId("main", turnResult.sessionID);
-  } finally {
-    logFile.end();
   }
 }
 
 async function runAgent(): Promise<void> {
-  const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress", process.env.ASSISTANT_OUTPUT ?? "none");
   const mode = process.env.HOLON_MODE ?? "solve";
   const isProbe = process.argv.slice(2).includes("--probe");
 
-  console.log("Holon Claude Agent process started...");
-  logger.minimal("Holon Claude Agent Starting...");
-
   const runtimePaths = resolveRuntimePaths(process.env);
   const outputDir = runtimePaths.outputDir;
-  const evidenceDir = path.join(outputDir, "evidence");
-  fs.mkdirSync(evidenceDir, { recursive: true });
+
+  const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress", process.env.ASSISTANT_OUTPUT ?? "none");
+  logger.info("Holon Claude Agent process started...");
+  logger.minimal("Holon Claude Agent Starting...");
 
   const specPath = runtimePaths.specPath;
   if (!fs.existsSync(specPath)) {
-    logger.minimal(`Error: Spec not found at ${specPath}`);
+    logger.minimal("Error: Spec not found");
     process.exit(1);
   }
 
@@ -1505,7 +1561,7 @@ async function runAgent(): Promise<void> {
     logger.logPhase("Probe: Validating inputs");
     const workspacePath = runtimePaths.workspaceDir;
     if (!fs.existsSync(workspacePath)) {
-      logger.minimal(`Error: Workspace not found at ${workspacePath}`);
+      logger.minimal("Error: Workspace not found");
       process.exit(1);
     }
 
@@ -1531,6 +1587,13 @@ async function runAgent(): Promise<void> {
     return;
   }
 
+  const evidenceDir = path.join(outputDir, "evidence");
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const executionLogPath = path.join(evidenceDir, "execution.log");
+  const executionLogFlags = process.env.HOLON_AGENT_SESSION_MODE === "serve" ? "a" : "w";
+  const executionLog = fs.createWriteStream(executionLogPath, { flags: executionLogFlags });
+  logger.setLogMirror(executionLog);
+
   logger.logPhase("Loading specification");
 
   const spec = parseYaml(fs.readFileSync(specPath, "utf8")) as Record<string, any>;
@@ -1540,43 +1603,49 @@ async function runAgent(): Promise<void> {
 
   const systemPromptPath = runtimePaths.systemPromptPath;
   if (!fs.existsSync(systemPromptPath)) {
-    logger.minimal(`Error: Compiled system prompt not found at ${systemPromptPath}`);
+    logger.minimal("Error: Compiled system prompt not found");
+    executionLog.end();
     process.exit(1);
   }
   const systemInstruction = fs.readFileSync(systemPromptPath, "utf8");
-  logger.info(`Loading compiled system prompt from ${systemPromptPath}`);
+  logger.info("Loading compiled system prompt");
 
   const userPromptPath = runtimePaths.userPromptPath;
   if (!fs.existsSync(userPromptPath)) {
-    logger.minimal(`Error: Compiled user prompt not found at ${userPromptPath}`);
+    logger.minimal("Error: Compiled user prompt not found");
+    executionLog.end();
     process.exit(1);
   }
   const userPrompt = fs.readFileSync(userPromptPath, "utf8");
-  logger.info(`Loading compiled user prompt from ${userPromptPath}`);
+  logger.info("Loading compiled user prompt");
 
   if (process.env.HOLON_AGENT_SESSION_MODE === "serve") {
-    hydrateClaudeConfigFromEnv(logger);
-    logger.logPhase("Running persistent controller session");
-    await runServeClaudeSession(logger, systemInstruction, userPrompt, evidenceDir, runtimePaths);
+    try {
+      hydrateClaudeConfigFromEnv(logger);
+      logger.logPhase("Running persistent controller session");
+      await runServeClaudeSession(logger, systemInstruction, userPrompt, evidenceDir, runtimePaths, executionLog);
 
-    const bundleManifest = readBundleManifest();
-    const agentMetadata = getAgentMetadata(bundleManifest);
-    const manifest = {
-      metadata: {
-        agent: agentMetadata.agent,
-        version: agentMetadata.version,
-        mode: "serve",
-        ...(agentMetadata.engine && { engine: agentMetadata.engine }),
-      },
-      status: "completed",
-      outcome: "success",
-      artifacts: [
-        { name: "evidence", path: "evidence/" },
-      ],
-    };
-    fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
-    fixPermissions(outputDir, logger);
-    return;
+      const bundleManifest = readBundleManifest();
+      const agentMetadata = getAgentMetadata(bundleManifest);
+      const manifest = {
+        metadata: {
+          agent: agentMetadata.agent,
+          version: agentMetadata.version,
+          mode: "serve",
+          ...(agentMetadata.engine && { engine: agentMetadata.engine }),
+        },
+        status: "completed",
+        outcome: "success",
+        artifacts: [
+          { name: "evidence", path: "evidence/" },
+        ],
+      };
+      fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+      fixPermissions(outputDir, logger);
+      return;
+    } finally {
+      executionLog.end();
+    }
   }
 
   logger.logPhase("Setting up git workspace");
@@ -1661,9 +1730,6 @@ async function runAgent(): Promise<void> {
     logger.debug(`Failed to check /root/.claude/skills: ${String(error)}`);
   }
 
-  const logFilePath = path.join(evidenceDir, "execution.log");
-  const logFile = fs.createWriteStream(logFilePath, { flags: "w" });
-
   const startTime = Date.now();
   let success: boolean;
   let result = "";
@@ -1674,7 +1740,7 @@ async function runAgent(): Promise<void> {
     logger.minimal("Session established. Running query...");
     logger.minimal("Executing query...");
 
-    const response = await runClaude(logger, workspacePath, systemInstruction, userPrompt, logFile);
+    const response = await runClaude(logger, workspacePath, systemInstruction, userPrompt, executionLog);
     success = response.success;
     result = response.result;
 
@@ -1883,7 +1949,7 @@ async function runAgent(): Promise<void> {
     process.exitCode = 1;
     return;
   } finally {
-    logFile.end();
+    executionLog.end();
   }
 }
 
