@@ -95,12 +95,20 @@ export class ProgressLogger {
 
   setLogMirror(stream?: fs.WriteStream): void {
     this.logMirror = stream;
+    if (this.logMirror) {
+      this.logMirror.on("error", (error) => {
+        console.error(`[WARN] execution.log write error: ${String(error)}`);
+      });
+    }
   }
 
   private emit(line: string): void {
     console.log(line);
     if (this.logMirror && !this.logMirror.destroyed) {
-      this.logMirror.write(`${line}\n`);
+      const ok = this.logMirror.write(`${line}\n`);
+      if (!ok) {
+        console.error("[WARN] execution.log write buffer full; log line may be delayed");
+      }
     }
   }
 
@@ -1505,7 +1513,7 @@ async function runServeClaudeSession(
 
     const eventPath = runtimePaths.eventPayloadPath;
     if (!fs.existsSync(eventPath)) {
-      logger.info(`No event payload found at ${eventPath}; session initialized only`);
+      logger.info("No event payload found; session initialized only");
       return;
     }
     const eventPayload = fs.readFileSync(eventPath, "utf8");
@@ -1533,20 +1541,14 @@ async function runAgent(): Promise<void> {
 
   const runtimePaths = resolveRuntimePaths(process.env);
   const outputDir = runtimePaths.outputDir;
-  const evidenceDir = path.join(outputDir, "evidence");
-  fs.mkdirSync(evidenceDir, { recursive: true });
-  const executionLogPath = path.join(evidenceDir, "execution.log");
-  const executionLogFlags = process.env.HOLON_AGENT_SESSION_MODE === "serve" ? "a" : "w";
-  const executionLog = fs.createWriteStream(executionLogPath, { flags: executionLogFlags });
 
   const logger = new ProgressLogger(process.env.LOG_LEVEL ?? "progress", process.env.ASSISTANT_OUTPUT ?? "none");
-  logger.setLogMirror(executionLog);
   logger.info("Holon Claude Agent process started...");
   logger.minimal("Holon Claude Agent Starting...");
 
   const specPath = runtimePaths.specPath;
   if (!fs.existsSync(specPath)) {
-    logger.minimal(`Error: Spec not found at ${specPath}`);
+    logger.minimal("Error: Spec not found");
     process.exit(1);
   }
 
@@ -1554,7 +1556,7 @@ async function runAgent(): Promise<void> {
     logger.logPhase("Probe: Validating inputs");
     const workspacePath = runtimePaths.workspaceDir;
     if (!fs.existsSync(workspacePath)) {
-      logger.minimal(`Error: Workspace not found at ${workspacePath}`);
+      logger.minimal("Error: Workspace not found");
       process.exit(1);
     }
 
@@ -1577,9 +1579,15 @@ async function runAgent(): Promise<void> {
     fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
     fixPermissions(outputDir, logger);
     logger.minimal("Probe completed.");
-    executionLog.end();
     return;
   }
+
+  const evidenceDir = path.join(outputDir, "evidence");
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const executionLogPath = path.join(evidenceDir, "execution.log");
+  const executionLogFlags = process.env.HOLON_AGENT_SESSION_MODE === "serve" ? "a" : "w";
+  const executionLog = fs.createWriteStream(executionLogPath, { flags: executionLogFlags });
+  logger.setLogMirror(executionLog);
 
   logger.logPhase("Loading specification");
 
@@ -1590,19 +1598,21 @@ async function runAgent(): Promise<void> {
 
   const systemPromptPath = runtimePaths.systemPromptPath;
   if (!fs.existsSync(systemPromptPath)) {
-    logger.minimal(`Error: Compiled system prompt not found at ${systemPromptPath}`);
+    logger.minimal("Error: Compiled system prompt not found");
+    executionLog.end();
     process.exit(1);
   }
   const systemInstruction = fs.readFileSync(systemPromptPath, "utf8");
-  logger.info(`Loading compiled system prompt from ${systemPromptPath}`);
+  logger.info("Loading compiled system prompt");
 
   const userPromptPath = runtimePaths.userPromptPath;
   if (!fs.existsSync(userPromptPath)) {
-    logger.minimal(`Error: Compiled user prompt not found at ${userPromptPath}`);
+    logger.minimal("Error: Compiled user prompt not found");
+    executionLog.end();
     process.exit(1);
   }
   const userPrompt = fs.readFileSync(userPromptPath, "utf8");
-  logger.info(`Loading compiled user prompt from ${userPromptPath}`);
+  logger.info("Loading compiled user prompt");
 
   if (process.env.HOLON_AGENT_SESSION_MODE === "serve") {
     hydrateClaudeConfigFromEnv(logger);
