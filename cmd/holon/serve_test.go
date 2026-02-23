@@ -126,6 +126,147 @@ func TestResolveControllerRPCReadyTimeout(t *testing.T) {
 	}
 }
 
+func TestResolveControllerRPCTransportMode(t *testing.T) {
+	t.Parallel()
+
+	key := "HOLON_SERVE_RPC_TRANSPORT_MODE"
+	original := os.Getenv(key)
+	t.Cleanup(func() {
+		_ = os.Setenv(key, original)
+	})
+
+	_ = os.Unsetenv(key)
+	if got := resolveControllerRPCTransportMode(); got != controllerRPCTransportModeAuto {
+		t.Fatalf("resolveControllerRPCTransportMode() default = %q, want %q", got, controllerRPCTransportModeAuto)
+	}
+
+	if err := os.Setenv(key, "docker_exec_only"); err != nil {
+		t.Fatalf("setenv docker_exec_only: %v", err)
+	}
+	if got := resolveControllerRPCTransportMode(); got != controllerRPCTransportModeDockerExecOnly {
+		t.Fatalf("resolveControllerRPCTransportMode() = %q, want %q", got, controllerRPCTransportModeDockerExecOnly)
+	}
+
+	if err := os.Setenv(key, "bad"); err != nil {
+		t.Fatalf("setenv bad: %v", err)
+	}
+	if got := resolveControllerRPCTransportMode(); got != controllerRPCTransportModeAuto {
+		t.Fatalf("resolveControllerRPCTransportMode() invalid fallback = %q, want %q", got, controllerRPCTransportModeAuto)
+	}
+}
+
+func TestControllerRPCTransportOrder(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		mode      controllerRPCTransportMode
+		operation controllerRPCOperation
+		goos      string
+		want      []controllerRPCTransportKind
+	}{
+		{
+			name:      "auto status on darwin prefers docker exec",
+			mode:      controllerRPCTransportModeAuto,
+			operation: controllerRPCOperationGet,
+			goos:      "darwin",
+			want: []controllerRPCTransportKind{
+				controllerRPCTransportDockerExec,
+				controllerRPCTransportSocket,
+			},
+		},
+		{
+			name:      "auto status on linux prefers socket",
+			mode:      controllerRPCTransportModeAuto,
+			operation: controllerRPCOperationGet,
+			goos:      "linux",
+			want: []controllerRPCTransportKind{
+				controllerRPCTransportSocket,
+				controllerRPCTransportDockerExec,
+			},
+		},
+		{
+			name:      "auto post on darwin prefers socket",
+			mode:      controllerRPCTransportModeAuto,
+			operation: controllerRPCOperationPost,
+			goos:      "darwin",
+			want: []controllerRPCTransportKind{
+				controllerRPCTransportSocket,
+				controllerRPCTransportDockerExec,
+			},
+		},
+		{
+			name:      "docker only",
+			mode:      controllerRPCTransportModeDockerExecOnly,
+			operation: controllerRPCOperationCancel,
+			goos:      "linux",
+			want: []controllerRPCTransportKind{
+				controllerRPCTransportDockerExec,
+			},
+		},
+		{
+			name:      "prefer docker",
+			mode:      controllerRPCTransportModePreferDockerExec,
+			operation: controllerRPCOperationPost,
+			goos:      "linux",
+			want: []controllerRPCTransportKind{
+				controllerRPCTransportDockerExec,
+				controllerRPCTransportSocket,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := controllerRPCTransportOrder(tc.mode, tc.operation, tc.goos)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len(order) = %d, want %d", len(got), len(tc.want))
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("order[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestControllerRPCFallbackLogDedupByEventID(t *testing.T) {
+	t.Parallel()
+
+	h := &cliControllerHandler{
+		statusFallbackLogged: make(map[string]time.Time),
+	}
+	req := controllerRPCDispatchRequest{
+		Operation: controllerRPCOperationGet,
+		EventID:   "evt_dedup",
+	}
+
+	h.logControllerRPCFallbackSuccess(req, controllerRPCTransportSocket, controllerRPCTransportDockerExec, strings.Repeat("a", 12))
+	if got := len(h.statusFallbackLogged); got != 1 {
+		t.Fatalf("logged fallback entries = %d, want 1", got)
+	}
+	firstSeen := h.statusFallbackLogged["evt_dedup"]
+	if firstSeen.IsZero() {
+		t.Fatalf("firstSeen should be recorded")
+	}
+
+	h.logControllerRPCFallbackSuccess(req, controllerRPCTransportSocket, controllerRPCTransportDockerExec, strings.Repeat("a", 12))
+	if got := len(h.statusFallbackLogged); got != 1 {
+		t.Fatalf("logged fallback entries after duplicate = %d, want 1", got)
+	}
+	if got := h.statusFallbackLogged["evt_dedup"]; !got.Equal(firstSeen) {
+		t.Fatalf("duplicate fallback should not update timestamp")
+	}
+
+	h.clearControllerStatusFallbackLog("evt_dedup")
+	if got := len(h.statusFallbackLogged); got != 0 {
+		t.Fatalf("logged fallback entries after clear = %d, want 0", got)
+	}
+}
+
 func TestResolveServeFollowupPolicy(t *testing.T) {
 	t.Parallel()
 

@@ -598,6 +598,7 @@ type cliControllerHandler struct {
 	controllerDone        <-chan error
 	controllerSocketPath  string
 	controllerHTTPClient  *http.Client
+	controllerRPCMode     controllerRPCTransportMode
 	controllerInputDir    string
 	controllerOutput      string
 	restartAttempts       int
@@ -619,6 +620,7 @@ type cliControllerHandler struct {
 	activityLedgerMu      sync.Mutex
 	activityEmitter       serve.ActivityEmitter
 	sessionQueuedTurns    map[string][]string
+	statusFallbackLogged  map[string]time.Time
 	followupPolicy        serveFollowupPolicy
 	maxQueuedTurns        int
 	closeOnce             sync.Once
@@ -712,6 +714,7 @@ func newCLIControllerHandler(
 		extraMounts:           append([]docker.ExtraMount(nil), extraMounts...),
 		dryRun:                dryRun,
 		sessionRunner:         sessionRunner,
+		controllerRPCMode:     resolveControllerRPCTransportMode(),
 		eventQueue:            make(chan controllerEvent, 128),
 		turnAckCh:             make(chan serve.TurnAckRecord, 128),
 		stopCh:                make(chan struct{}),
@@ -725,6 +728,7 @@ func newCLIControllerHandler(
 		turnEventIndexPath:    filepath.Join(stateDir, "controller-state", "turn-event-index.json"),
 		activityLedgerPath:    filepath.Join(stateDir, "controller-state", "activity-ledger.ndjson"),
 		sessionQueuedTurns:    make(map[string][]string),
+		statusFallbackLogged:  make(map[string]time.Time),
 		followupPolicy:        resolveServeFollowupPolicy(),
 		maxQueuedTurns:        resolveServeMaxQueuedTurns(),
 	}
@@ -1814,6 +1818,52 @@ type controllerRPCEventResponse struct {
 	Action     string `json:"action,omitempty"`
 }
 
+type controllerRPCOperation string
+
+const (
+	controllerRPCOperationPost   controllerRPCOperation = "post"
+	controllerRPCOperationGet    controllerRPCOperation = "get"
+	controllerRPCOperationCancel controllerRPCOperation = "cancel"
+)
+
+func (op controllerRPCOperation) label() string {
+	switch op {
+	case controllerRPCOperationPost:
+		return "rpc"
+	case controllerRPCOperationGet:
+		return "status"
+	case controllerRPCOperationCancel:
+		return "cancel"
+	default:
+		return "rpc"
+	}
+}
+
+type controllerRPCTransportKind string
+
+const (
+	controllerRPCTransportSocket     controllerRPCTransportKind = "socket"
+	controllerRPCTransportDockerExec controllerRPCTransportKind = "docker_exec"
+)
+
+type controllerRPCTransportMode string
+
+const (
+	controllerRPCTransportModeAuto             controllerRPCTransportMode = "auto"
+	controllerRPCTransportModeSocketOnly       controllerRPCTransportMode = "socket_only"
+	controllerRPCTransportModeDockerExecOnly   controllerRPCTransportMode = "docker_exec_only"
+	controllerRPCTransportModePreferSocket     controllerRPCTransportMode = "prefer_socket"
+	controllerRPCTransportModePreferDockerExec controllerRPCTransportMode = "prefer_docker_exec"
+)
+
+type controllerRPCDispatchRequest struct {
+	Operation  controllerRPCOperation
+	SessionKey string
+	Event      serve.EventEnvelope
+	EventID    string
+	Reason     string
+}
+
 func newControllerHTTPClient(socketPath string) *http.Client {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -1900,12 +1950,11 @@ func (h *cliControllerHandler) postEventWithReconnect(ctx context.Context, ref s
 		restartCtx = context.Background()
 	}
 	restartErr := h.ensureControllerLocked(restartCtx, ref)
-	client := h.controllerHTTPClient
 	h.mu.Unlock()
 	if restartErr != nil {
 		return controllerRPCEventResponse{}, restartErr
 	}
-	return postEventRPC(restartCtx, client, sessionKey, env)
+	return h.postEventRPC(restartCtx, ref, sessionKey, env)
 }
 
 func (h *cliControllerHandler) waitForControllerEventResult(
@@ -1918,6 +1967,7 @@ func (h *cliControllerHandler) waitForControllerEventResult(
 	if strings.TrimSpace(eventID) == "" {
 		return controllerRPCEventResponse{}, fmt.Errorf("event_id is required to wait for controller event result")
 	}
+	defer h.clearControllerStatusFallbackLog(eventID)
 	delay := 300 * time.Millisecond
 	const maxDelay = 5 * time.Second
 	lastStatus := ""
@@ -2105,63 +2155,176 @@ func progressEventContextLabel(env serve.EventEnvelope) string {
 }
 
 func (h *cliControllerHandler) getEventStatusRPC(ctx context.Context, ref, sessionKey, eventID string) (controllerRPCEventResponse, error) {
-	h.mu.Lock()
-	if err := h.ensureControllerLocked(ctx, ref); err != nil {
-		h.mu.Unlock()
-		return controllerRPCEventResponse{}, err
-	}
-	client := h.controllerHTTPClient
-	containerID := ""
-	if h.controllerSession != nil {
-		containerID = strings.TrimSpace(h.controllerSession.ContainerID)
-	}
-	h.mu.Unlock()
-
-	resp, err := getEventRPC(ctx, client, eventID)
-	if err == nil || containerID == "" {
-		return resp, err
-	}
-
-	dockerResp, dockerErr := getEventRPCViaDockerExec(ctx, containerID, eventID)
-	if dockerErr == nil {
-		id := containerID
-		if len(id) > 12 {
-			id = id[:12]
-		}
-		holonlog.Debug("controller status fallback succeeded via docker exec", "container_id", id, "event_id", eventID)
-		return dockerResp, nil
-	}
-	return controllerRPCEventResponse{}, fmt.Errorf("controller status request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", err, dockerErr)
+	_ = sessionKey // Session key is not needed for status checks.
+	return h.executeControllerRPC(ctx, ref, controllerRPCDispatchRequest{
+		Operation: controllerRPCOperationGet,
+		EventID:   eventID,
+	})
 }
 
 func (h *cliControllerHandler) cancelEventWithReconnect(ctx context.Context, ref, eventID, reason string) (controllerRPCEventResponse, error) {
+	return h.executeControllerRPC(ctx, ref, controllerRPCDispatchRequest{
+		Operation: controllerRPCOperationCancel,
+		EventID:   eventID,
+		Reason:    reason,
+	})
+}
+
+func (h *cliControllerHandler) executeControllerRPC(ctx context.Context, ref string, req controllerRPCDispatchRequest) (controllerRPCEventResponse, error) {
 	h.mu.Lock()
 	if err := h.ensureControllerLocked(ctx, ref); err != nil {
 		h.mu.Unlock()
 		return controllerRPCEventResponse{}, err
 	}
 	client := h.controllerHTTPClient
+	mode := h.controllerRPCMode
 	containerID := ""
 	if h.controllerSession != nil {
 		containerID = strings.TrimSpace(h.controllerSession.ContainerID)
 	}
 	h.mu.Unlock()
-
-	resp, err := cancelEventRPC(ctx, client, eventID, reason)
-	if err == nil || containerID == "" {
-		return resp, err
+	if client == nil {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller rpc client is not initialized")
 	}
 
-	dockerResp, dockerErr := cancelEventRPCViaDockerExec(ctx, containerID, eventID, reason)
-	if dockerErr == nil {
-		id := containerID
-		if len(id) > 12 {
-			id = id[:12]
+	order := controllerRPCTransportOrder(mode, req.Operation, runtime.GOOS)
+	var primaryErr error
+	var primaryTransport controllerRPCTransportKind
+	attempted := 0
+	for _, transport := range order {
+		if transport == controllerRPCTransportDockerExec && containerID == "" {
+			continue
 		}
-		holonlog.Debug("controller cancel fallback succeeded via docker exec", "container_id", id, "event_id", eventID)
-		return dockerResp, nil
+		attempted++
+		resp, err := dispatchControllerRPCTransport(ctx, transport, client, containerID, req)
+		if err == nil {
+			if primaryErr != nil {
+				h.logControllerRPCFallbackSuccess(req, primaryTransport, transport, containerID)
+			}
+			return resp, nil
+		}
+		if primaryErr == nil {
+			primaryErr = err
+			primaryTransport = transport
+			continue
+		}
+		return controllerRPCEventResponse{}, formatControllerRPCTransportFailure(req.Operation, primaryTransport, primaryErr, transport, err)
 	}
-	return controllerRPCEventResponse{}, fmt.Errorf("controller cancel request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", err, dockerErr)
+
+	if primaryErr != nil {
+		return controllerRPCEventResponse{}, primaryErr
+	}
+	if attempted == 0 {
+		return controllerRPCEventResponse{}, fmt.Errorf("controller %s request failed: no transport available (mode=%s)", req.Operation.label(), mode)
+	}
+	return controllerRPCEventResponse{}, fmt.Errorf("controller %s request failed: no transport attempt was made", req.Operation.label())
+}
+
+func dispatchControllerRPCTransport(
+	ctx context.Context,
+	transport controllerRPCTransportKind,
+	client *http.Client,
+	containerID string,
+	req controllerRPCDispatchRequest,
+) (controllerRPCEventResponse, error) {
+	switch transport {
+	case controllerRPCTransportSocket:
+		switch req.Operation {
+		case controllerRPCOperationPost:
+			return postEventRPC(ctx, client, req.SessionKey, req.Event)
+		case controllerRPCOperationGet:
+			return getEventRPC(ctx, client, req.EventID)
+		case controllerRPCOperationCancel:
+			return cancelEventRPC(ctx, client, req.EventID, req.Reason)
+		default:
+			return controllerRPCEventResponse{}, fmt.Errorf("unsupported controller rpc operation: %s", req.Operation)
+		}
+	case controllerRPCTransportDockerExec:
+		switch req.Operation {
+		case controllerRPCOperationPost:
+			return postEventRPCViaDockerExec(ctx, containerID, req.SessionKey, req.Event)
+		case controllerRPCOperationGet:
+			return getEventRPCViaDockerExec(ctx, containerID, req.EventID)
+		case controllerRPCOperationCancel:
+			return cancelEventRPCViaDockerExec(ctx, containerID, req.EventID, req.Reason)
+		default:
+			return controllerRPCEventResponse{}, fmt.Errorf("unsupported controller rpc operation: %s", req.Operation)
+		}
+	default:
+		return controllerRPCEventResponse{}, fmt.Errorf("unsupported controller rpc transport: %s", transport)
+	}
+}
+
+func formatControllerRPCTransportFailure(
+	operation controllerRPCOperation,
+	primaryTransport controllerRPCTransportKind,
+	primaryErr error,
+	fallbackTransport controllerRPCTransportKind,
+	fallbackErr error,
+) error {
+	if primaryTransport == controllerRPCTransportSocket && fallbackTransport == controllerRPCTransportDockerExec {
+		switch operation {
+		case controllerRPCOperationGet:
+			return fmt.Errorf("controller status request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", primaryErr, fallbackErr)
+		case controllerRPCOperationCancel:
+			return fmt.Errorf("controller cancel request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", primaryErr, fallbackErr)
+		case controllerRPCOperationPost:
+			return fmt.Errorf("controller rpc request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", primaryErr, fallbackErr)
+		}
+	}
+	return fmt.Errorf(
+		"controller %s request failed across transports: primary_transport=%s primary_error=%v; fallback_transport=%s fallback_error=%w",
+		operation.label(),
+		primaryTransport,
+		primaryErr,
+		fallbackTransport,
+		fallbackErr,
+	)
+}
+
+func (h *cliControllerHandler) logControllerRPCFallbackSuccess(
+	req controllerRPCDispatchRequest,
+	from controllerRPCTransportKind,
+	to controllerRPCTransportKind,
+	containerID string,
+) {
+	if req.Operation == controllerRPCOperationGet {
+		eventID := strings.TrimSpace(req.EventID)
+		if eventID != "" {
+			h.mu.Lock()
+			if h.statusFallbackLogged == nil {
+				h.statusFallbackLogged = make(map[string]time.Time)
+			}
+			if _, exists := h.statusFallbackLogged[eventID]; exists {
+				h.mu.Unlock()
+				return
+			}
+			h.statusFallbackLogged[eventID] = time.Now()
+			h.mu.Unlock()
+		}
+	}
+	id := strings.TrimSpace(containerID)
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	holonlog.Debug(
+		"controller rpc fallback succeeded",
+		"operation", req.Operation,
+		"from_transport", from,
+		"to_transport", to,
+		"container_id", id,
+		"event_id", strings.TrimSpace(req.EventID),
+	)
+}
+
+func (h *cliControllerHandler) clearControllerStatusFallbackLog(eventID string) {
+	id := strings.TrimSpace(eventID)
+	if id == "" {
+		return
+	}
+	h.mu.Lock()
+	delete(h.statusFallbackLogged, id)
+	h.mu.Unlock()
 }
 
 func (h *cliControllerHandler) logControllerDoneIfAvailableLocked(reason string) {
@@ -2188,31 +2351,11 @@ func (h *cliControllerHandler) logControllerDoneIfAvailableLocked(reason string)
 }
 
 func (h *cliControllerHandler) postEventRPC(ctx context.Context, ref string, sessionKey string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
-	h.mu.Lock()
-	if err := h.ensureControllerLocked(ctx, ref); err != nil {
-		h.mu.Unlock()
-		return controllerRPCEventResponse{}, err
-	}
-	client := h.controllerHTTPClient
-	containerID := ""
-	if h.controllerSession != nil {
-		containerID = strings.TrimSpace(h.controllerSession.ContainerID)
-	}
-	h.mu.Unlock()
-	resp, err := postEventRPC(ctx, client, sessionKey, env)
-	if err == nil || containerID == "" {
-		return resp, err
-	}
-	dockerResp, dockerErr := postEventRPCViaDockerExec(ctx, containerID, sessionKey, env)
-	if dockerErr == nil {
-		id := containerID
-		if len(id) > 12 {
-			id = id[:12]
-		}
-		holonlog.Debug("controller rpc fallback succeeded via docker exec", "container_id", id)
-		return dockerResp, nil
-	}
-	return controllerRPCEventResponse{}, fmt.Errorf("controller rpc request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", err, dockerErr)
+	return h.executeControllerRPC(ctx, ref, controllerRPCDispatchRequest{
+		Operation:  controllerRPCOperationPost,
+		SessionKey: sessionKey,
+		Event:      env,
+	})
 }
 
 func postEventRPC(ctx context.Context, client *http.Client, sessionKey string, env serve.EventEnvelope) (controllerRPCEventResponse, error) {
@@ -2859,6 +3002,43 @@ func resolveControllerEventTimeout() time.Duration {
 		return defaultControllerEventTimeout
 	}
 	return timeout
+}
+
+func resolveControllerRPCTransportMode() controllerRPCTransportMode {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("HOLON_SERVE_RPC_TRANSPORT_MODE")))
+	switch controllerRPCTransportMode(raw) {
+	case "":
+		return controllerRPCTransportModeAuto
+	case controllerRPCTransportModeAuto,
+		controllerRPCTransportModeSocketOnly,
+		controllerRPCTransportModeDockerExecOnly,
+		controllerRPCTransportModePreferSocket,
+		controllerRPCTransportModePreferDockerExec:
+		return controllerRPCTransportMode(raw)
+	default:
+		holonlog.Warn("invalid HOLON_SERVE_RPC_TRANSPORT_MODE; using default", "value", raw, "default", string(controllerRPCTransportModeAuto))
+		return controllerRPCTransportModeAuto
+	}
+}
+
+func controllerRPCTransportOrder(mode controllerRPCTransportMode, operation controllerRPCOperation, goos string) []controllerRPCTransportKind {
+	switch mode {
+	case controllerRPCTransportModeSocketOnly:
+		return []controllerRPCTransportKind{controllerRPCTransportSocket}
+	case controllerRPCTransportModeDockerExecOnly:
+		return []controllerRPCTransportKind{controllerRPCTransportDockerExec}
+	case controllerRPCTransportModePreferDockerExec:
+		return []controllerRPCTransportKind{controllerRPCTransportDockerExec, controllerRPCTransportSocket}
+	case controllerRPCTransportModePreferSocket:
+		return []controllerRPCTransportKind{controllerRPCTransportSocket, controllerRPCTransportDockerExec}
+	case controllerRPCTransportModeAuto:
+		if goos == "darwin" && operation == controllerRPCOperationGet {
+			return []controllerRPCTransportKind{controllerRPCTransportDockerExec, controllerRPCTransportSocket}
+		}
+		return []controllerRPCTransportKind{controllerRPCTransportSocket, controllerRPCTransportDockerExec}
+	default:
+		return []controllerRPCTransportKind{controllerRPCTransportSocket, controllerRPCTransportDockerExec}
+	}
 }
 
 func isControllerEventPendingStatus(status string) bool {
