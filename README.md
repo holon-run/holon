@@ -155,6 +155,7 @@ The state directory persists across runs as `<agent-home>/state`. Skills should 
 - `run` GA contract: `docs/run-ga-contract.md`
 - Skills guide: `docs/skills.md`
 - Serve GitHub MVP: `docs/serve-github-mvp.md`
+- Serve webhook mode: `docs/serve-webhook.md`
 - Design/architecture: `docs/holon-architecture.md`
 - Modes: `docs/modes.md`
 - Contributing: see `CONTRIBUTING.md`

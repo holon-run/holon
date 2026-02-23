@@ -178,10 +178,8 @@ func NewWebhookServer(cfg WebhookConfig) (*WebhookServer, error) {
 	// JSON-RPC control plane
 	mux.HandleFunc("/rpc", ws.handleJSONRPC)
 	mux.HandleFunc("/rpc/stream", ws.handleRPCStream)
-	// Provider-specific ingress path (new)
+	// Provider-specific ingress path
 	mux.HandleFunc("/ingress/github/webhook", ws.handleWebhook)
-	// Legacy path (deprecated for backward compatibility)
-	mux.HandleFunc("/webhook", ws.handleLegacyWebhook)
 	mux.HandleFunc("/health", ws.handleHealth)
 
 	ws.server = &http.Server{
@@ -350,13 +348,6 @@ func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server busy", http.StatusServiceUnavailable)
 		return
 	}
-}
-
-// handleLegacyWebhook handles requests to the old /webhook path with deprecation warning
-func (ws *WebhookServer) handleLegacyWebhook(w http.ResponseWriter, r *http.Request) {
-	holonlog.Warn("webhook legacy path accessed", "path", r.URL.Path, "deprecated_path", "/webhook", "new_path", "/ingress/github/webhook")
-	// Forward to the new handler
-	ws.handleWebhook(w, r)
 }
 
 func (ws *WebhookServer) handleHealth(w http.ResponseWriter, r *http.Request) {

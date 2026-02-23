@@ -53,7 +53,7 @@ func TestWebhookServer_InvalidJSON(t *testing.T) {
 	defer ws.Close()
 
 	// Send invalid JSON
-	req := httptest.NewRequest("POST", "/webhook", strings.NewReader("not json"))
+	req := httptest.NewRequest("POST", "/ingress/github/webhook", strings.NewReader("not json"))
 	req.Header.Set("X-GitHub-Event", "push")
 	req.Header.Set("X-GitHub-Delivery", "del-1")
 	w := httptest.NewRecorder()
@@ -93,14 +93,14 @@ func TestWebhookServer_Deduplication(t *testing.T) {
 	body, _ := json.Marshal(payload)
 
 	// Send first request
-	req1 := httptest.NewRequest("POST", "/webhook", bytes.NewReader(body))
+	req1 := httptest.NewRequest("POST", "/ingress/github/webhook", bytes.NewReader(body))
 	req1.Header.Set("X-GitHub-Event", "issue_comment")
 	req1.Header.Set("X-GitHub-Delivery", "del-1")
 	w1 := httptest.NewRecorder()
 	ws.handleWebhook(w1, req1)
 
 	// Send duplicate request
-	req2 := httptest.NewRequest("POST", "/webhook", bytes.NewReader(body))
+	req2 := httptest.NewRequest("POST", "/ingress/github/webhook", bytes.NewReader(body))
 	req2.Header.Set("X-GitHub-Event", "issue_comment")
 	req2.Header.Set("X-GitHub-Delivery", "del-1")
 	w2 := httptest.NewRecorder()
@@ -265,7 +265,7 @@ func TestWebhookServer_ChannelFull(t *testing.T) {
 
 	// Send more requests than channel capacity (100)
 	for i := 0; i < 150; i++ {
-		req := httptest.NewRequest("POST", "/webhook", bytes.NewReader(body))
+		req := httptest.NewRequest("POST", "/ingress/github/webhook", bytes.NewReader(body))
 		req.Header.Set("X-GitHub-Event", "issue_comment")
 		req.Header.Set("X-GitHub-Delivery", string(rune(i)))
 		w := httptest.NewRecorder()
@@ -310,7 +310,7 @@ func TestWebhookServer_BodySizeLimit(t *testing.T) {
 		largeBody[i] = 'x'
 	}
 
-	req := httptest.NewRequest("POST", "/webhook", bytes.NewReader(largeBody))
+	req := httptest.NewRequest("POST", "/ingress/github/webhook", bytes.NewReader(largeBody))
 	req.Header.Set("X-GitHub-Event", "push")
 	w := httptest.NewRecorder()
 	ws.handleWebhook(w, req)
@@ -356,7 +356,7 @@ func TestWebhookServer_HTTPErrorPaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, "/webhook", strings.NewReader(tt.body))
+			req := httptest.NewRequest(tt.method, "/ingress/github/webhook", strings.NewReader(tt.body))
 			w := httptest.NewRecorder()
 			ws.handleWebhook(w, req)
 
@@ -364,6 +364,51 @@ func TestWebhookServer_HTTPErrorPaths(t *testing.T) {
 				t.Fatalf("expected status %d, got %d", tt.wantStatus, w.Code)
 			}
 		})
+	}
+}
+
+func TestWebhookServer_RouteIngressGitHubWebhook(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	req := httptest.NewRequest("POST", "/ingress/github/webhook", strings.NewReader("{}"))
+	req.Header.Set("X-GitHub-Event", "ping")
+	w := httptest.NewRecorder()
+	ws.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d", http.StatusAccepted, w.Code)
+	}
+}
+
+func TestWebhookServer_RouteLegacyWebhookRemoved(t *testing.T) {
+	td := t.TempDir()
+	handler := &mockEventHandler{}
+	ws, err := NewWebhookServer(WebhookConfig{
+		Port:     8080,
+		StateDir: td,
+		Handler:  handler,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookServer failed: %v", err)
+	}
+	defer ws.Close()
+
+	req := httptest.NewRequest("POST", "/webhook", strings.NewReader("{}"))
+	w := httptest.NewRecorder()
+	ws.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, w.Code)
 	}
 }
 
@@ -387,7 +432,7 @@ func TestWebhookServer_StatePersistence(t *testing.T) {
 	}
 	body, _ := json.Marshal(payload)
 
-	req := httptest.NewRequest("POST", "/webhook", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/ingress/github/webhook", bytes.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "issue_comment")
 	req.Header.Set("X-GitHub-Delivery", "del-1")
 	w := httptest.NewRecorder()
@@ -707,7 +752,7 @@ func TestWebhookServer_ChannelTimeoutBehavior(t *testing.T) {
 
 	// Fill the channel to trigger timeout behavior
 	for i := 0; i < 150; i++ {
-		req := httptest.NewRequest("POST", "/webhook", bytes.NewReader(body))
+		req := httptest.NewRequest("POST", "/ingress/github/webhook", bytes.NewReader(body))
 		req.Header.Set("X-GitHub-Event", "issue_comment")
 		req.Header.Set("X-GitHub-Delivery", string(rune(i)))
 		w := httptest.NewRecorder()
@@ -810,7 +855,7 @@ func TestWebhookServer_ReadBodyError(t *testing.T) {
 	// Create a reader that fails on read
 	failReader := &failingReader{}
 
-	req := httptest.NewRequest("POST", "/webhook", failReader)
+	req := httptest.NewRequest("POST", "/ingress/github/webhook", failReader)
 	req.Header.Set("X-GitHub-Event", "push")
 	w := httptest.NewRecorder()
 	ws.handleWebhook(w, req)
