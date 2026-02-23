@@ -5,7 +5,7 @@
 | **Status** | **Draft** |
 | **Author** | Holon Contributors |
 | **Created** | 2026-02-08 |
-| **Updated** | 2026-02-17 |
+| **Updated** | 2026-02-23 |
 | **Parent** | RFC-0004 |
 | **Issue** | [#600](https://github.com/holon-run/holon/issues/600) |
 
@@ -17,10 +17,15 @@ This RFC defines the API evolution direction for `holon serve` after the GitHub 
 2. **Ingress path design**: Provider-specific webhook endpoints (e.g., `/ingress/github/webhook`)
 3. **Deferred generic events API**: No `/v1/events` until multi-connector stabilization
 
-## Implementation Reality (2026-02-17)
+## Implementation Reality (2026-02-23)
 
-- This document is a direction RFC, not a fully implemented API contract.
-- Control-plane and ingress interfaces should be treated as evolving until promoted to Active status.
+- This document is still a direction RFC, but a substantial subset is implemented.
+- Control-plane JSON-RPC is available at `/rpc` (plus `/rpc/stream`) with:
+  - `holon/status`, `holon/pause`, `holon/resume`, `holon/logStream`
+  - `thread/start`, `turn/start`, `turn/steer`, `turn/interrupt`
+- GitHub ingress is provider-specific at `/ingress/github/webhook`.
+- Legacy `/webhook` has been removed; requests now return `404 Not Found`.
+- Generic `/v1/events` remains deferred until multi-connector validation.
 
 ## 2. Motivation
 
@@ -53,7 +58,7 @@ This RFC defines the API evolution direction for `holon serve` after the GitHub 
 
 - No generic public event ingestion API in this phase
 - No multi-provider connector implementation in this issue
-- No full implementation of JSON-RPC methods (protocol direction only)
+- No attempt to implement the full upstream Codex method surface in this issue
 
 ## 4. Design Decisions
 
@@ -281,44 +286,36 @@ Method naming convention follows Codex/OpenAI protocol style:
 
 Follow-up notifications via server-sent events or WebSocket.
 
-## 6. Implementation Plan
+## 6. Implementation Status
 
-### Phase 1: Documentation + Path Refactoring (This Issue)
+### Completed in/around issue #600
 
-1. ✅ Create RFC-0005 documenting API direction
-2. Refactor webhook route from `/webhook` to `/ingress/github/webhook`
-3. Update documentation to reference provider-specific paths
-4. Add forward compatibility note for control-plane methods
+1. ✅ RFC-0005 documents API direction and rationale.
+2. ✅ Provider-specific ingress route is implemented at `/ingress/github/webhook`.
+3. ✅ JSON-RPC control plane subset is implemented (`holon/*` + core thread/turn methods).
+4. ✅ Webhook legacy alias `/webhook` has been removed.
+5. ✅ `/v1/events` remains explicitly deferred.
 
-### Phase 2: JSON-RPC Control Plane (Follow-up Issue)
+### Remaining for future phases
 
-1. Implement JSON-RPC handler for `holon/*` methods
-2. Add status/pause/resume endpoints
-3. Add log streaming support
-4. Generate TypeScript/Go types from Codex schemas
-
-### Phase 3: Multi-Connector Validation (Future)
-
-1. Implement second connector (e.g., GitLab)
-2. Validate event normalization across providers
-3. Revisit `/v1/events` design with real usage data
+1. Multi-provider connector expansion and cross-provider normalization validation.
+2. Decide schema vendoring/codegen strategy against pinned upstream references.
+3. Revisit `/v1/events` only after multi-connector stabilization criteria are met.
 
 ## 7. Migration Path
 
-### 7.1 Webhook Path Migration
+### 7.1 Webhook Path Migration (Completed)
 
-**Current:** `/webhook`
-**New:** `/ingress/github/webhook`
+**Removed:** `/webhook`  
+**Supported:** `/ingress/github/webhook`
 
-Migration steps:
-1. Add new route `/ingress/github/webhook` with current behavior
-2. Keep `/webhook` as deprecated alias for 1-2 releases
-3. Log deprecation warning when `/webhook` is used
-4. Remove `/webhook` in future release
+Current behavior:
+1. Requests to `/webhook` return `404 Not Found`.
+2. GitHub webhook ingress must target `/ingress/github/webhook`.
 
 ### 7.2 Control Plane Addition
 
-New JSON-RPC endpoints will be added at a separate path (e.g., `/rpc` or `/control`), independent of ingress.
+Control-plane endpoints are available at `/rpc` and `/rpc/stream`, independent of ingress.
 
 ## 8. Risks and Mitigations
 
@@ -327,8 +324,8 @@ New JSON-RPC endpoints will be added at a separate path (e.g., `/rpc` or `/contr
 1. **Codex protocol changes**: Upstream schema may evolve
    - Mitigation: Pin to specific commit SHA, vendor schemas if needed
 
-2. **Provider path confusion**: Users may expect generic `/webhook`
-   - Mitigation: Clear documentation, deprecation period for old path
+2. **Provider path confusion**: Users may still target removed `/webhook`
+   - Mitigation: Clear documentation and migration guidance to `/ingress/github/webhook`
 
 3. **Deferred `/v1/events` blocks use cases**: Potential future need
    - Mitigation: Document clear revisit criteria, keep design flexible
@@ -356,25 +353,14 @@ New JSON-RPC endpoints will be added at a separate path (e.g., `/rpc` or `/contr
 
 ## 11. Follow-up Tasks
 
-### Documentation
+### Near-term
 
-- [ ] Update `docs/serve-webhook.md` with new `/ingress/github/webhook` path
-- [ ] Add control-plane section to `docs/serve.md` (new file)
-- [ ] Link RFC-0005 from CLI help text
-
-### Implementation (Future)
-
-- [ ] Implement JSON-RPC handler skeleton
-- [ ] Implement protocol-compatible minimal subset only (not full Codex method surface)
-- [ ] Add `thread/start`, `turn/start`, `turn/interrupt` equivalents (Holon mapping)
-- [ ] Add `holon/status` method
-- [ ] Add `holon/pause` and `holon/resume` methods
-- [ ] Add `holon/logStream` streaming support
-- [ ] Add tests for control-plane endpoints
-- [ ] Generate TypeScript/Go types from JSON schemas
+- [ ] Define authentication/authorization model for control-plane endpoints.
+- [ ] Decide whether to vendor Codex schemas or keep external pinned references only.
+- [ ] Clarify long-term endpoint versioning strategy (`/rpc` vs versioned RPC path).
 
 ### Multi-Connector (Future)
 
-- [ ] Implement GitLab connector
-- [ ] Validate event normalization
-- [ ] Revisit `/v1/events` design
+- [ ] Implement at least one additional connector (for example GitLab).
+- [ ] Validate normalized event contracts across connectors in real usage.
+- [ ] Revisit `/v1/events` only if the revisit criteria in Section 4.3 are met.

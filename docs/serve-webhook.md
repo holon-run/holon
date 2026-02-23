@@ -8,7 +8,7 @@
 
 See the RFC for details on:
 - Provider-specific ingress paths (`/ingress/<provider>/webhook`)
-- Codex/OpenAI-style JSON-RPC control plane (future)
+- Codex/OpenAI-style JSON-RPC control plane
 - Deferred generic `/v1/events` endpoint
 
 ## Prerequisites
@@ -32,8 +32,6 @@ This starts an HTTP server on port 8080 that:
 - Provides a health check endpoint at `/health`
 - Normalizes incoming GitHub webhook events to EventEnvelope format
 - Forwards events to the controller agent
-
-**Note**: The legacy `/webhook` path is still supported for backward compatibility but is deprecated. See [Migration](#migration) below.
 
 ### 2. Forward webhooks from GitHub
 
@@ -227,10 +225,11 @@ Returns:
 
 ### Webhook Path Change
 
-**Old path (deprecated)**: `/webhook`
+**Old path (removed)**: `/webhook`
 **New path**: `/ingress/github/webhook`
 
-The legacy `/webhook` path remains supported for backward compatibility but will log a deprecation warning. Please update your integrations to use the new provider-specific path.
+`/webhook` has been removed and now returns `404 Not Found`.
+Use `/ingress/github/webhook` for all GitHub webhook ingress requests.
 
 #### Why this change?
 
@@ -241,13 +240,9 @@ This aligns with [RFC-0005](../rfc/0005-serve-api-direction.md) which establishe
 
 #### Updating integrations
 
-If you're using `gh webhook forward`, no changes are needed - just ensure you're targeting the correct port.
-
-For custom integrations, update your webhook URLs:
+Update all integrations to use the provider-specific webhook URL:
 - Before: `http://localhost:8080/webhook`
 - After: `http://localhost:8080/ingress/github/webhook`
-
-The old path will be removed in a future release after a deprecation period.
 
 ## Limitations
 
