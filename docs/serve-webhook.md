@@ -13,7 +13,7 @@ See the RFC for details on:
 
 ## Prerequisites
 
-1. **GitHub CLI (gh) installed**: The runtime Docker image now includes `gh` CLI and the `gh-webhook` extension.
+1. **GitHub CLI (gh) installed**: Ensure `gh webhook forward` is available in your environment.
 2. **GitHub authentication**: Run `gh auth login` to authenticate with GitHub.
 3. **Repository access**: You need access to the target repository for webhooks.
 
@@ -38,13 +38,12 @@ This starts an HTTP server on port 8080 that:
 In a separate terminal, start webhook forwarding:
 
 ```bash
-gh webhook forward --repo holon-run/holon --events=issues,pull_requests,pull_request_review_comments,issue_comment --port 8080
+gh webhook forward --repo holon-run/holon --events=issues,issue_comment,pull_request,pull_request_review,pull_request_review_comment --url=http://127.0.0.1:8080/ingress/github/webhook
 ```
 
 This command:
-- Uses `gh webhook forward` (requires the `gh-webhook` extension)
+- Uses `gh webhook forward`
 - Forwards specified GitHub events to your local `holon serve` instance
-- Requires the `gh-webhook` extension (now installed in runtime image)
 
 ### 3. Trigger events
 
@@ -199,11 +198,16 @@ Operational guidance:
 - Choose a different port: `--webhook-port 8081`
 - Stop the process using port 8080: `lsof -i :8080`
 
-### gh-webhook extension not found
+### `Hook already exists on this repository`
+- Cause: GitHub already has an active webhook for the same target URL.
+- List existing hooks: `gh api repos/<owner>/<repo>/hooks --jq '.[] | {id, url: .config.url, events}'`
+- Delete the conflicting hook: `gh api -X DELETE repos/<owner>/<repo>/hooks/<id>`
+- Retry `holon serve` after cleanup.
+
+### `gh webhook forward` not available
 - Verify gh CLI is installed: `gh --version`
-- Check extension is installed: `gh extension list`
-- Install manually: `gh extension install cli/gh-webhook`
-- For runtime images, the extension is auto-installed during image build
+- Verify webhook forwarding command exists: `gh webhook forward --help`
+- If missing, upgrade `gh` or install the webhook forwarding extension required by your distribution
 
 ## Health Check
 

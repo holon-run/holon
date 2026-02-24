@@ -69,6 +69,35 @@ func TestAppInputRegularKeysDontTriggerRuntimeCommands(t *testing.T) {
 	}
 }
 
+func TestAppInputQDoesNotQuit(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = model.(*App)
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	app = model.(*App)
+
+	if app.quitting {
+		t.Fatalf("expected quitting=false when typing q")
+	}
+	if got := app.input.Value(); got != "q" {
+		t.Fatalf("input value = %q, want %q", got, "q")
+	}
+}
+
+func TestAppCtrlCQuits(t *testing.T) {
+	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(*App)
+
+	if cmd == nil {
+		t.Fatalf("expected quit command on ctrl+c")
+	}
+	if !app.quitting {
+		t.Fatalf("expected quitting=true on ctrl+c")
+	}
+}
+
 func TestAppCtrlATogglesAutoRefreshWhileInputFocused(t *testing.T) {
 	app := NewApp(NewRPCClient("http://127.0.0.1:8080/rpc"))
 	if !app.autoRefresh {

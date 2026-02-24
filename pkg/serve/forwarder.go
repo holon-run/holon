@@ -3,9 +3,11 @@ package serve
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -25,6 +27,7 @@ type Forwarder struct {
 	url       string
 	cancel    context.CancelFunc
 	mu        sync.Mutex
+	starting  bool
 	started   bool
 	stopped   bool
 	process   *os.Process
@@ -39,6 +42,39 @@ type ForwarderConfig struct {
 	Port  int
 	Repos []string
 	URL   string // e.g., "http://127.0.0.1:8080/ingress/github/webhook"
+}
+
+const (
+	webhookEvents                 = "issues,issue_comment,pull_request,pull_request_review,pull_request_review_comment"
+	forwarderStartupGracePeriod   = 1200 * time.Millisecond
+	forwarderStderrCaptureLineMax = 64
+	webhookTargetFlagURL          = "url"
+	webhookTargetFlagPort         = "port"
+	existingHookConflictMarker    = "Hook already exists on this repository"
+)
+
+type githubRepoHook struct {
+	ID     int64    `json:"id"`
+	Events []string `json:"events"`
+	Config struct {
+		URL string `json:"url"`
+	} `json:"config"`
+}
+
+var listGitHubRepoHooks = func(ctx context.Context, repo string) ([]githubRepoHook, error) {
+	cmd := exec.CommandContext(ctx, "gh", "api", fmt.Sprintf("repos/%s/hooks", repo))
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("gh api repos/%s/hooks failed: %w (stderr: %s)", repo, err, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, fmt.Errorf("gh api repos/%s/hooks failed: %w", repo, err)
+	}
+	var hooks []githubRepoHook
+	if err := json.Unmarshal(out, &hooks); err != nil {
+		return nil, fmt.Errorf("decode repo hooks for %s: %w", repo, err)
+	}
+	return hooks, nil
 }
 
 // NewForwarder creates a new gh webhook forward manager
@@ -74,63 +110,88 @@ func NewForwarder(cfg ForwarderConfig) (*Forwarder, error) {
 // Start starts the gh webhook forward subprocess
 func (f *Forwarder) Start(ctx context.Context) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	if f.started {
+		f.mu.Unlock()
 		return fmt.Errorf("forwarder already started")
 	}
+	if f.starting {
+		f.mu.Unlock()
+		return fmt.Errorf("forwarder already starting")
+	}
 	if f.stopped {
+		f.mu.Unlock()
 		return fmt.Errorf("forwarder was stopped and cannot be restarted")
 	}
+	f.starting = true
+	f.mu.Unlock()
 
 	// Build gh webhook forward command
+	targetFlag, err := detectWebhookForwardTargetFlag(ctx)
+	if err != nil {
+		f.clearStarting()
+		return fmt.Errorf("failed to detect gh webhook target flag: %w", err)
+	}
 	args := []string{"webhook", "forward"}
 	for _, repo := range f.repos {
 		args = append(args, "--repo="+repo)
 	}
-	args = append(args,
-		"--events=issues,issue_comment,pull_request,pull_request_review,pull_request_review_comment",
-		"--url="+f.url,
-	)
+	args = append(args, "--events="+webhookEvents)
+	switch targetFlag {
+	case webhookTargetFlagURL:
+		args = append(args, "--url="+f.url)
+	case webhookTargetFlagPort:
+		args = append(args, "--port="+strconv.Itoa(f.port))
+	default:
+		f.clearStarting()
+		return fmt.Errorf("unsupported webhook target flag: %s", targetFlag)
+	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	f.cancel = cancel
+	cmdCtx, cancel := context.WithCancel(ctx)
 
-	f.cmd = exec.CommandContext(ctx, "gh", args...)
-	f.cmd.SysProcAttr = &syscall.SysProcAttr{
+	cmd := exec.CommandContext(cmdCtx, "gh", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
 
 	// Capture stdout and stderr for logging
-	stdout, err := f.cmd.StdoutPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
+		f.clearStarting()
 		return fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
-	stderr, err := f.cmd.StderrPipe()
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
 		// Clean up stdout pipe
 		_ = stdout.Close()
+		f.clearStarting()
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
 	// Start the command
-	if err := f.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		cancel()
 		// Clean up pipes
 		_ = stdout.Close()
 		_ = stderr.Close()
+		f.clearStarting()
 		return fmt.Errorf("failed to start gh webhook forward: %w", err)
 	}
 
-	f.process = f.cmd.Process
+	f.mu.Lock()
+	f.cancel = cancel
+	f.cmd = cmd
+	f.process = cmd.Process
+	f.starting = false
 	f.started = true
 	f.stopped = false
 	f.startTime = time.Now()
 	f.waitDone = make(chan struct{})
 	f.waitErr = nil
 	f.stderrLog = nil
+	waitDone := f.waitDone
+	f.mu.Unlock()
 
 	// Start goroutines to log output
 	go f.logOutput(stdout, "gh webhook forward (stdout)", false)
@@ -138,7 +199,7 @@ func (f *Forwarder) Start(ctx context.Context) error {
 
 	// Start goroutine to wait for command completion
 	go func() {
-		err := f.cmd.Wait()
+		err := cmd.Wait()
 		f.mu.Lock()
 		f.waitErr = err
 		waitDone := f.waitDone
@@ -161,11 +222,140 @@ func (f *Forwarder) Start(ctx context.Context) error {
 		"gh webhook forward started",
 		"pid", f.process.Pid,
 		"port", f.port,
+		"target_flag", targetFlag,
 		"repos", strings.Join(f.repos, ","),
 		"url", f.url,
 	)
 
+	select {
+	case <-waitDone:
+		f.mu.Lock()
+		waitErr := f.waitErr
+		stderrTail := strings.Join(f.stderrLog, " | ")
+		f.mu.Unlock()
+		return f.buildStartupFailureError(ctx, waitErr, stderrTail)
+	case <-time.After(forwarderStartupGracePeriod):
+	}
+
 	return nil
+}
+
+func (f *Forwarder) buildStartupFailureError(ctx context.Context, waitErr error, stderrTail string) error {
+	var baseErr error
+	if waitErr != nil {
+		if stderrTail != "" {
+			baseErr = fmt.Errorf("gh webhook forward exited during startup: %w (stderr: %s)", waitErr, stderrTail)
+		} else {
+			baseErr = fmt.Errorf("gh webhook forward exited during startup: %w", waitErr)
+		}
+	} else {
+		baseErr = fmt.Errorf("gh webhook forward exited during startup")
+	}
+	if !strings.Contains(stderrTail, existingHookConflictMarker) {
+		return baseErr
+	}
+
+	remediation, err := buildExistingHookRemediation(ctx, f.repos, f.url)
+	if err != nil {
+		return fmt.Errorf("%w; detected existing webhook conflict but failed to inspect hooks: %v", baseErr, err)
+	}
+	if remediation == "" {
+		return fmt.Errorf("%w; detected existing webhook conflict, remove the existing webhook and retry", baseErr)
+	}
+	return fmt.Errorf("%w; %s", baseErr, remediation)
+}
+
+func buildExistingHookRemediation(ctx context.Context, repos []string, targetURL string) (string, error) {
+	if len(repos) == 0 {
+		return "", fmt.Errorf("no repositories configured")
+	}
+
+	inspectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	hints := make([]string, 0)
+	var inspectErrs []string
+	for _, repo := range repos {
+		hooks, err := listGitHubRepoHooks(inspectCtx, repo)
+		if err != nil {
+			inspectErrs = append(inspectErrs, err.Error())
+			continue
+		}
+		for _, hook := range hooks {
+			if webhookURLsEquivalent(hook.Config.URL, targetURL) {
+				hints = append(hints, fmt.Sprintf("existing hook id %d on %s (delete with: gh api -X DELETE repos/%s/hooks/%d)", hook.ID, repo, repo, hook.ID))
+			}
+		}
+	}
+
+	if len(hints) > 0 {
+		return strings.Join(hints, "; "), nil
+	}
+	if len(inspectErrs) > 0 {
+		return "", fmt.Errorf("%s", strings.Join(inspectErrs, "; "))
+	}
+	return "", nil
+}
+
+func webhookURLsEquivalent(a, b string) bool {
+	na := normalizeWebhookURL(a)
+	nb := normalizeWebhookURL(b)
+	if na == "" || nb == "" {
+		return false
+	}
+	if na == nb {
+		return true
+	}
+
+	ua, errA := neturl.Parse(na)
+	ub, errB := neturl.Parse(nb)
+	if errA != nil || errB != nil {
+		return false
+	}
+	if !strings.EqualFold(ua.Scheme, ub.Scheme) {
+		return false
+	}
+	if !strings.EqualFold(ua.Path, ub.Path) {
+		return false
+	}
+	if normalizePort(ua) != normalizePort(ub) {
+		return false
+	}
+	return isLocalHost(ua.Hostname()) && isLocalHost(ub.Hostname())
+}
+
+func normalizeWebhookURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	return strings.TrimRight(trimmed, "/")
+}
+
+func normalizePort(u *neturl.URL) string {
+	port := u.Port()
+	if port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
+}
+
+func isLocalHost(host string) bool {
+	h := strings.TrimSpace(strings.ToLower(host))
+	return h == "127.0.0.1" || h == "localhost"
+}
+
+func (f *Forwarder) clearStarting() {
+	f.mu.Lock()
+	f.starting = false
+	f.mu.Unlock()
 }
 
 func (f *Forwarder) logOutput(r io.Reader, prefix string, captureTail bool) {
@@ -175,8 +365,8 @@ func (f *Forwarder) logOutput(r io.Reader, prefix string, captureTail bool) {
 		if captureTail {
 			f.mu.Lock()
 			f.stderrLog = append(f.stderrLog, line)
-			if len(f.stderrLog) > 8 {
-				f.stderrLog = f.stderrLog[len(f.stderrLog)-8:]
+			if len(f.stderrLog) > forwarderStderrCaptureLineMax {
+				f.stderrLog = f.stderrLog[len(f.stderrLog)-forwarderStderrCaptureLineMax:]
 			}
 			f.mu.Unlock()
 		}
@@ -184,6 +374,29 @@ func (f *Forwarder) logOutput(r io.Reader, prefix string, captureTail bool) {
 	}
 	if err := scanner.Err(); err != nil {
 		holonlog.Warn(prefix+" read error", "error", err)
+	}
+}
+
+func detectWebhookForwardTargetFlag(ctx context.Context) (string, error) {
+	detectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(detectCtx, "gh", "webhook", "forward", "--help")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to run gh webhook forward --help: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	return selectWebhookForwardTargetFlag(string(out))
+}
+
+func selectWebhookForwardTargetFlag(helpOutput string) (string, error) {
+	switch {
+	case strings.Contains(helpOutput, "--url"):
+		return webhookTargetFlagURL, nil
+	case strings.Contains(helpOutput, "--port"):
+		return webhookTargetFlagPort, nil
+	default:
+		return "", fmt.Errorf("gh webhook forward help output missing --url/--port")
 	}
 }
 
