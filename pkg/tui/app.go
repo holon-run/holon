@@ -351,7 +351,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "ctrl+c":
 		a.quitting = true
 		if err := a.tracer.close(); err != nil {
 			fmt.Fprintf(os.Stderr, "holon tui: %v\n", err)
@@ -1120,11 +1120,11 @@ func (a *App) renderHelp() string {
 	}
 
 	if a.activeDrawer != drawerNone {
-		help := "Keys: [Esc] Close Drawer | [A] Activity | [L] Logs | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+X] Interrupt Turn | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh | [q] Quit\nScroll: [↑/↓] Line | [PgUp/PgDn] Page"
+		help := "Keys: [Esc] Close Drawer | [A] Activity | [L] Logs | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+X] Interrupt Turn | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh | [Ctrl+C] Quit\nScroll: [↑/↓] Line | [PgUp/PgDn] Page"
 		return helpStyle.Render(help)
 	}
 
-	help := fmt.Sprintf("Keys: [Tab] Focus | [Ctrl+S] Send%s | [Enter/Ctrl+J] Newline | [Ctrl+U] Clear | [A/L] Drawer (conversation focus) | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+X] Interrupt Turn | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [q] Quit", inputState)
+	help := fmt.Sprintf("Keys: [Tab] Focus | [Ctrl+S] Send%s | [Enter/Ctrl+J] Newline | [Ctrl+U] Clear | [A/L] Drawer (conversation focus) | [Ctrl+P] Pause | [Ctrl+R] Resume | [Ctrl+X] Interrupt Turn | [Ctrl+L] Refresh | [Ctrl+A] Auto-Refresh\nScroll: [↑/↓] Line | [PgUp/PgDn] Page | [Ctrl+C] Quit", inputState)
 	return helpStyle.Render(help)
 }
 
