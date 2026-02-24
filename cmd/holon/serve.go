@@ -2262,23 +2262,23 @@ func formatControllerRPCTransportFailure(
 	fallbackTransport controllerRPCTransportKind,
 	fallbackErr error,
 ) error {
+	joinedErr := errors.Join(primaryErr, fallbackErr)
 	if primaryTransport == controllerRPCTransportSocket && fallbackTransport == controllerRPCTransportDockerExec {
 		switch operation {
 		case controllerRPCOperationGet:
-			return fmt.Errorf("controller status request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", primaryErr, fallbackErr)
+			return fmt.Errorf("controller status request failed and docker exec fallback failed: %w", joinedErr)
 		case controllerRPCOperationCancel:
-			return fmt.Errorf("controller cancel request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", primaryErr, fallbackErr)
+			return fmt.Errorf("controller cancel request failed and docker exec fallback failed: %w", joinedErr)
 		case controllerRPCOperationPost:
-			return fmt.Errorf("controller rpc request failed and docker exec fallback failed: rpc_error=%v; fallback_error=%w", primaryErr, fallbackErr)
+			return fmt.Errorf("controller rpc request failed and docker exec fallback failed: %w", joinedErr)
 		}
 	}
 	return fmt.Errorf(
-		"controller %s request failed across transports: primary_transport=%s primary_error=%v; fallback_transport=%s fallback_error=%w",
+		"controller %s request failed across transports: primary_transport=%s fallback_transport=%s: %w",
 		operation.label(),
 		primaryTransport,
-		primaryErr,
 		fallbackTransport,
-		fallbackErr,
+		joinedErr,
 	)
 }
 

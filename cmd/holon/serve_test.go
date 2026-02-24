@@ -98,8 +98,6 @@ func TestRemoveStaleControllerSocket_ActiveSocket(t *testing.T) {
 }
 
 func TestResolveControllerRPCReadyTimeout(t *testing.T) {
-	t.Parallel()
-
 	key := "HOLON_SERVE_RPC_READY_TIMEOUT"
 	original := os.Getenv(key)
 	t.Cleanup(func() {
@@ -127,8 +125,6 @@ func TestResolveControllerRPCReadyTimeout(t *testing.T) {
 }
 
 func TestResolveControllerRPCTransportMode(t *testing.T) {
-	t.Parallel()
-
 	key := "HOLON_SERVE_RPC_TRANSPORT_MODE"
 	original := os.Getenv(key)
 	t.Cleanup(func() {
@@ -268,8 +264,6 @@ func TestControllerRPCFallbackLogDedupByEventID(t *testing.T) {
 }
 
 func TestResolveServeFollowupPolicy(t *testing.T) {
-	t.Parallel()
-
 	key := "HOLON_SERVE_FOLLOWUP_POLICY"
 	original := os.Getenv(key)
 	t.Cleanup(func() {
@@ -297,8 +291,6 @@ func TestResolveServeFollowupPolicy(t *testing.T) {
 }
 
 func TestResolveServeMaxQueuedTurns(t *testing.T) {
-	t.Parallel()
-
 	key := "HOLON_SERVE_MAX_QUEUED_TURNS"
 	original := os.Getenv(key)
 	t.Cleanup(func() {
