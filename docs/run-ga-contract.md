@@ -37,6 +37,7 @@ This document defines the compatibility contract for `holon run` in v0.11.
   - spec metadata
   - auto-discovered workspace skills
 - CLI skills have highest precedence but do not disable lower-precedence sources.
+- For `holon run`, project config (`.holon/config.yaml`) is discovered from the resolved run workspace path (and its parents), not from shell current working directory.
 
 ### 4. Default agent-home behavior
 
