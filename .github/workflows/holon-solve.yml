@@ -377,7 +377,7 @@ jobs:
 
           # Skip PR review events by default to avoid per-inline triggers unless explicitly requested.
           if { [ "$EVENT_NAME" = 'pull_request_review' ] || [ "$EVENT_NAME" = 'pull_request_review_comment' ]; } && \
-             [ -z "$INPUT_SKILL" ] && [ "$INPUT_AUTO_REVIEW" != 'true' ]; then
+             [ "$INPUT_AUTO_REVIEW" != 'true' ]; then
             REASON='PR review events are ignored by default to avoid multiple inline triggers'
             echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
             echo "reason=$REASON" >> "$GITHUB_OUTPUT"
