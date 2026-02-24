@@ -382,7 +382,8 @@ jobs:
             echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
             echo "reason=$REASON" >> "$GITHUB_OUTPUT"
             echo "goal_hint=$GOAL_HINT" >> "$GITHUB_OUTPUT"
-            echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+            # This branch only matches PR review event types.
+            echo "is_pr=true" >> "$GITHUB_OUTPUT"
             echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
             exit 0
           fi
