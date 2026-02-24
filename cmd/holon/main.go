@@ -216,17 +216,19 @@ func resolveOutDir(workspace string) (string, bool, error) {
 	return tempDir, true, nil
 }
 
+func loadRunProjectConfig(workspace string) (*config.ProjectConfig, error) {
+	projectCfg, err := config.Load(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load project config from workspace %s: %w", workspace, err)
+	}
+	return projectCfg, nil
+}
+
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run a Holon agent execution",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
-
-		// Load project config
-		projectCfg, err := config.LoadFromCurrentDir()
-		if err != nil {
-			return fmt.Errorf("failed to load project config: %w", err)
-		}
 
 		agentResolution, err := resolveAgentHome("run", agentID, agentHome, true)
 		if err != nil {
@@ -241,6 +243,13 @@ var runCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+
+		// Load project config from the resolved workspace (not from shell CWD).
+		projectCfg, err := loadRunProjectConfig(absWorkspace)
+		if err != nil {
+			return err
+		}
+
 		// Apply config with precedence: CLI flags > project config > defaults
 		resolved := resolveWithProjectConfig(cmd, projectCfg, absWorkspace)
 
