@@ -6,11 +6,7 @@ on:
   issues:
     types: [labeled, assigned]
   pull_request:
-    types: [labeled]
-  pull_request_review:
-    types: [submitted, edited]
-  pull_request_review_comment:
-    types: [created]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 permissions:
   contents: write
@@ -28,8 +24,9 @@ jobs:
       assignee_login: ${{ github.event.assignee.login || '' }}
       comment_id: ${{ github.event.comment.id || 0 }}
       review_id: ${{ github.event.review.id || 0 }}
-      # Optional: enable auto-review for every PR when true
-      auto_review: false
+      # Optional: enable auto-review for every PR when true (default false)
+      # Configure repo variable HOLON_AUTO_REVIEW=true to enable.
+      auto_review: ${{ fromJSON(vars.HOLON_AUTO_REVIEW || 'false') }}
       # Optional: Specify custom runner labels.
       # Plain string for single label (e.g., 'self-hosted' or 'ubuntu-24.04-large'):
       # runs_on: 'self-hosted'
