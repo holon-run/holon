@@ -706,14 +706,14 @@ jobs:
           if [ "$IS_PR_INPUT" = 'true' ]; then
             TARGET_URL="https://github.com/$REPO/pull/$TARGET_NUMBER"
             LOWER_CMD="$(printf '%s' "$COMMAND_TEXT" | tr '[:upper:]' '[:lower:]')"
-            if printf '%s' "$LOWER_CMD" | grep -Eq '\b(review|re-review|recheck)\b'; then
+            if printf '%s' "$LOWER_CMD" | grep -Eq '(^|[^[:alnum:]_])(review|re-review|recheck)($|[^[:alnum:]_])'; then
               GOAL="Review the PR $TARGET_URL. Analyze code changes for correctness, security, and maintainability, then publish structured review findings to GitHub."
             else
               GOAL="Fix the PR $TARGET_URL by addressing outstanding review feedback and requested changes. Implement necessary code changes and publish replies to GitHub."
             fi
           else
             TARGET_URL="https://github.com/$REPO/issues/$TARGET_NUMBER"
-            GOAL="Solve the GitHub issue $TARGET_URL end-to-end. Collect relevant context, implement the requested changes, and publish the expected results to GitHub."
+            GOAL="Solve the GitHub issue $TARGET_URL end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure \${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure \${GITHUB_OUTPUT_DIR}/manifest.json contains pr_number and pr_url for the created PR. The runtime validates success based on the manifest contract (status/outcome), with summary.md treated as optional human-readable output."
           fi
 
           GOAL="$GOAL"$'\n\n'"User request: $COMMAND_TEXT"

@@ -113,6 +113,49 @@ func TestBuildIssueGoal(t *testing.T) {
 	}
 }
 
+func TestInferPRIntentFromSignals(t *testing.T) {
+	tests := []struct {
+		name                  string
+		unresolvedThreadCount int
+		latestReviewState     string
+		want                  string
+	}{
+		{
+			name:                  "unresolved threads force fix",
+			unresolvedThreadCount: 2,
+			latestReviewState:     "",
+			want:                  "fix",
+		},
+		{
+			name:                  "changes requested forces fix",
+			unresolvedThreadCount: 0,
+			latestReviewState:     "CHANGES_REQUESTED",
+			want:                  "fix",
+		},
+		{
+			name:                  "changes requested is case insensitive",
+			unresolvedThreadCount: 0,
+			latestReviewState:     "changes_requested",
+			want:                  "fix",
+		},
+		{
+			name:                  "no review signals defaults to review",
+			unresolvedThreadCount: 0,
+			latestReviewState:     "COMMENTED",
+			want:                  "review",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferPRIntentFromSignals(tt.unresolvedThreadCount, tt.latestReviewState)
+			if got != tt.want {
+				t.Fatalf("inferPRIntentFromSignals() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPrepareWorkspaceForSolve_WithWorkspace_UsesDirectWorkspace(t *testing.T) {
 	userWorkspace := t.TempDir()
 	ref := &pkggithub.SolveRef{Owner: "holon-run", Repo: "holon", Number: 627}

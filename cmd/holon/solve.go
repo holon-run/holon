@@ -876,19 +876,23 @@ func determinePRDefaultIntent(ctx context.Context, ref *pkggithub.SolveRef, toke
 	if err != nil {
 		return "review", fmt.Errorf("failed to fetch PR review threads: %w", err)
 	}
-	if len(threads) > 0 {
-		return "fix", nil
-	}
 
 	latestState, err := fetchLatestPRReviewState(ctx, client, ref.Owner, ref.Repo, ref.Number)
 	if err != nil {
 		return "review", err
 	}
-	if latestState == "CHANGES_REQUESTED" {
-		return "fix", nil
-	}
 
-	return "review", nil
+	return inferPRIntentFromSignals(len(threads), latestState), nil
+}
+
+func inferPRIntentFromSignals(unresolvedThreadCount int, latestReviewState string) string {
+	if unresolvedThreadCount > 0 {
+		return "fix"
+	}
+	if strings.EqualFold(strings.TrimSpace(latestReviewState), "CHANGES_REQUESTED") {
+		return "fix"
+	}
+	return "review"
 }
 
 func fetchLatestPRReviewState(ctx context.Context, client *pkggithub.Client, owner, repo string, prNumber int) (string, error) {
