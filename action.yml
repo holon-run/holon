@@ -50,11 +50,10 @@ inputs:
     description: 'Assistant output mode for CI visibility (none, stream)'
     required: false
     default: 'none'
-  skill:
-    description: 'Deprecated. Skill selection is now driven by workflow goal hints; this input is ignored.'
+  goal:
+    description: 'Explicit execution goal passed to holon solve --goal. Empty = solve defaults by target type and PR review signals.'
     required: false
     default: ''
-    deprecationMessage: 'Deprecated: skill is no longer passed to holon solve. Use workflow goal hints (workflow.json trigger.goal_hint) to influence behavior.'
   role:
     description: 'Role to assume (e.g. developer, reviewer)'
     required: false
@@ -336,6 +335,9 @@ runs:
         fi
         if [ -n "${{ inputs.state_dir }}" ]; then
           SOLVE_ARGS+=(--state-dir "${{ inputs.state_dir }}")
+        fi
+        if [ -n "${{ inputs.goal }}" ]; then
+          SOLVE_ARGS+=(--goal "${{ inputs.goal }}")
         fi
 
         # Always add output directory (either user-specified or temp)

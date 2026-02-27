@@ -26,6 +26,8 @@ jobs:
       comment_id: ${{ github.event.comment.id || 0 }}
       review_id: ${{ github.event.review.id || 0 }}
       auto_review: ${{ fromJSON(vars.HOLON_AUTO_REVIEW || 'false') }}
+      # Optional: override goal for all runs.
+      # goal: 'Review this PR and publish findings.'
 
       # Repo-local workflow uses the current branch Holon implementation.
       log_level: 'debug'

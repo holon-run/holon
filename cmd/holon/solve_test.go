@@ -10,15 +10,14 @@ import (
 	pkggithub "github.com/holon-run/holon/pkg/github"
 )
 
-func TestBuildGoal_SkillModePRReviewUsesGithubReviewSkill(t *testing.T) {
-	ref := &pkggithub.SolveRef{Owner: "holon-run", Repo: "holon", Number: 564}
-	goal := buildGoal("", ref, "pr", "", "github-review")
+func TestBuildPRGoal_ReviewIntent(t *testing.T) {
+	goal := buildPRGoal("https://github.com/holon-run/holon/pull/564", "review")
 
-	if !strings.Contains(goal, "Use the github-review skill") {
-		t.Fatalf("expected github-review goal, got: %s", goal)
+	if !strings.Contains(goal, "Review the PR") {
+		t.Fatalf("expected review goal, got: %s", goal)
 	}
-	if strings.Contains(goal, "github-pr-fix") {
-		t.Fatalf("expected goal to avoid github-pr-fix for review skill, got: %s", goal)
+	if strings.Contains(strings.ToLower(goal), "fix the pr") {
+		t.Fatalf("expected review goal to avoid fix wording, got: %s", goal)
 	}
 }
 
@@ -93,22 +92,17 @@ func TestInferRefTypeFromURL(t *testing.T) {
 	}
 }
 
-func TestBuildGoal_SkillModePRFixUsesGithubPrFixSkill(t *testing.T) {
-	ref := &pkggithub.SolveRef{Owner: "holon-run", Repo: "holon", Number: 564}
-	goal := buildGoal("", ref, "pr", "", "github-pr-fix")
+func TestBuildPRGoal_FixIntent(t *testing.T) {
+	goal := buildPRGoal("https://github.com/holon-run/holon/pull/564", "fix")
 
-	if !strings.Contains(goal, "Use the github-pr-fix skill") {
-		t.Fatalf("expected github-pr-fix goal, got: %s", goal)
+	if !strings.Contains(strings.ToLower(goal), "fix the pr") {
+		t.Fatalf("expected fix goal, got: %s", goal)
 	}
 }
 
-func TestBuildGoal_SkillModeIssueUsesGithubIssueSolveSkill(t *testing.T) {
-	ref := &pkggithub.SolveRef{Owner: "holon-run", Repo: "holon", Number: 527}
-	goal := buildGoal("", ref, "issue", "", "github-issue-solve")
+func TestBuildIssueGoal(t *testing.T) {
+	goal := buildIssueGoal("https://github.com/holon-run/holon/issues/527")
 
-	if !strings.Contains(goal, "Use the github-issue-solve skill") {
-		t.Fatalf("expected github-issue-solve goal, got: %s", goal)
-	}
 	// Verify it uses generic manifest contract, not publish-intent.json
 	if strings.Contains(goal, "publish-intent.json") {
 		t.Fatalf("goal should not mention publish-intent.json, got: %s", goal)
@@ -116,6 +110,49 @@ func TestBuildGoal_SkillModeIssueUsesGithubIssueSolveSkill(t *testing.T) {
 	// Verify it mentions manifest status/outcome validation
 	if !strings.Contains(goal, "status='completed'") || !strings.Contains(goal, "outcome='success'") {
 		t.Fatalf("goal should mention manifest status/outcome validation, got: %s", goal)
+	}
+}
+
+func TestInferPRIntentFromSignals(t *testing.T) {
+	tests := []struct {
+		name                  string
+		unresolvedThreadCount int
+		latestReviewState     string
+		want                  string
+	}{
+		{
+			name:                  "unresolved threads force fix",
+			unresolvedThreadCount: 2,
+			latestReviewState:     "",
+			want:                  "fix",
+		},
+		{
+			name:                  "changes requested forces fix",
+			unresolvedThreadCount: 0,
+			latestReviewState:     "CHANGES_REQUESTED",
+			want:                  "fix",
+		},
+		{
+			name:                  "changes requested is case insensitive",
+			unresolvedThreadCount: 0,
+			latestReviewState:     "changes_requested",
+			want:                  "fix",
+		},
+		{
+			name:                  "no review signals defaults to review",
+			unresolvedThreadCount: 0,
+			latestReviewState:     "COMMENTED",
+			want:                  "review",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferPRIntentFromSignals(tt.unresolvedThreadCount, tt.latestReviewState)
+			if got != tt.want {
+				t.Fatalf("inferPRIntentFromSignals() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
