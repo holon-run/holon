@@ -1,121 +1,60 @@
 # PR-Fix Workflow
 
-Detailed workflow for fixing issues in pull requests.
+Detailed execution workflow for `github-pr-fix`.
 
-## Context
+## 1) Context intake (manifest-first)
 
-This guide applies when PR context is detected (review comments, test failures, CI issues).
+1. Read `${GITHUB_CONTEXT_DIR}/manifest.json`.
+2. Confirm `kind=pr` and collection status.
+3. Resolve available artifacts by id/path/status, typically:
+   - `pr_metadata`
+   - `review_threads`
+   - `comments`
+   - `check_runs`
+   - `diff`
+   - `commits`
 
-## Error Triage (Priority Order)
+Use only artifacts marked `status=present`.  
+If critical artifacts are missing, document limitations before remediation.
 
-You MUST identify all errors first, then fix in this order. Do not fix lower-priority issues while higher-priority failures remain.
+## 2) Triage and prioritization
 
-1. **Build/compile failures** (blocks all tests)
-2. **Runtime test failures**
-3. **Import/module resolution errors**
-4. **Lint/style warnings**
+Identify all actionable problems, then fix in order:
+1. build/compile blockers
+2. failing tests/regressions
+3. type/import/module issues
+4. lint/style issues
 
-## Environment Setup
+Treat large non-blocking refactors as defer candidates.
 
-Before claiming "Fixed", verify required tools are available (build/test runners, package managers, compilers).
+## 3) Fix and verify
 
-If tools or dependencies are missing, attempt at least three setup paths:
+1. Apply targeted code fixes.
+2. Run relevant verification commands.
+3. Commit and push fixes to the existing PR branch.
 
-1. Project-recommended install commands
-2. Alternate install method (package manager, global install)
-3. Inspect CI workflow/config files for canonical setup steps
+Do not publish replies before push completes.
 
-If setup still fails, attempt a build/compile step (if possible) and report the failure.
+## 4) Publish replies
 
-## Verification Requirements
+Preferred:
+- Use `ghx` publish commands for review-thread replies and related comments.
 
-- You may mark `fix_status: "fixed"` only if you ran a build/test command successfully
-- If you cannot run tests, run the most relevant build/compile command and report that result
-- If you made changes but cannot complete verification, use `fix_status: "unverified"` and document every attempt
-- If you cannot address the issue or made no meaningful progress, use `fix_status: "unfixed"`
-- Never claim success based on reasoning or syntax checks alone
+Fallback:
+- Use direct `gh api` reply operations only when `ghx` publish is unavailable.
 
-## Test Failure Diagnosis
+Always capture per-action status in `${GITHUB_OUTPUT_DIR}/publish-results.json`.
 
-When CI tests fail, follow this workflow:
+## 5) Finalize outputs
 
-1. **Check for test logs**: Look for `${GITHUB_CONTEXT_DIR}/github/test-failure-logs.txt`
-2. **Read the logs**: Use grep to find specific test failures
-3. **Analyze the failure**: What error/assertion failed? What file/line is failing?
-4. **Determine relevance**: Check if modified files relate to the failure by comparing against `pr.diff`
+Write/update:
+- `${GITHUB_OUTPUT_DIR}/summary.md`
+- `${GITHUB_OUTPUT_DIR}/manifest.json`
+- `${GITHUB_OUTPUT_DIR}/publish-results.json`
 
-### Using Logs
+## Completion criteria
 
-```bash
-# Find all failing tests
-grep -E "(FAIL|FAIL:|FAILED)" "${GITHUB_CONTEXT_DIR}/github/test-failure-logs.txt"
-
-# Search for a specific test name
-grep "TestRunner_Run_EnvVariablePrecedence" "${GITHUB_CONTEXT_DIR}/github/test-failure-logs.txt"
-
-# Show context around a failure
-grep -A 20 "FAIL:" "${GITHUB_CONTEXT_DIR}/github/test-failure-logs.txt"
-```
-
-## Handling Non-Blocking Refactor Requests
-
-When review comments request substantial refactoring that is **valid but non-blocking**:
-
-### 1. Determine if Truly Non-Blocking
-
-A refactor request is non-blocking if it:
-- Does not affect correctness, security, or API contracts
-- Would substantially increase PR scope (large refactor, comprehensive test suite)
-- Can be reasonably addressed in a follow-up without impacting this PR's value
-- Is an improvement rather than a fix for a problem introduced in this PR
-
-### 2. Use `status: "deferred"` with Clear Explanation
-
-- Acknowledge the validity of the suggestion
-- Explain why it's being deferred (scope, complexity, etc.)
-- Reference that a follow-up issue has been created
-
-### 3. Create a Follow-Up Issue
-
-Create an issue directly via `gh issue create` with:
-- Clear actionable title
-- Context and rationale from the deferred review comment
-- Link back to the PR and review thread
-
-### 4. Defer vs Fix Guidelines
-
-**BLOCKING issues must be fixed:**
-- Bugs
-- Security issues
-- Breaking changes
-- Missing critical functionality
-
-**DEFER appropriate improvements:**
-- Additional test coverage
-- Refactoring for clarity
-- Performance optimizations
-
-**Use `wontfix` for rejected suggestions:**
-- Requests that don't align with project goals
-
-## Posting Review Replies
-
-Publish through `ghx` batch mechanism. `github-pr-fix` should not define ghx internal publish schema; follow `ghx` docs for current request format.
-
-```bash
-ghx.sh intent run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
-```
-
-`ghx` handles action execution, idempotency, and batching for replies.
-
-Fallback when `ghx` is unavailable:
-- Use `gh api` to post replies based on your collected review plan.
-- Write `${GITHUB_OUTPUT_DIR}/publish-results.json` with equivalent per-action success/failure results.
-
-## Completion Criteria (Mandatory)
-
-Do not mark the run successful unless all of the following are true:
-
-1. Code fixes are pushed to the PR branch.
-2. `${GITHUB_OUTPUT_DIR}/publish-results.json` exists after publish.
-3. `publish-results.json` contains no failed `reply_review` action.
+Run is successful only when:
+1. Required fixes are committed and pushed.
+2. Replies planned for this run are published.
+3. `publish-results.json` contains no failed required reply actions.

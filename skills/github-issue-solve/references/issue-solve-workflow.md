@@ -1,82 +1,56 @@
 # Issue-Solve Workflow
 
-Detailed workflow for solving GitHub issues and creating pull requests.
+Detailed execution workflow for `github-issue-solve`.
 
-## Context
+## 1) Context intake (manifest-first)
 
-This guide applies when only issue context is detected (no PR exists yet).
+1. Read `${GITHUB_CONTEXT_DIR}/manifest.json`.
+2. Confirm `kind=issue` and `success=true`.
+3. Locate available artifacts from `manifest.artifacts[]`:
+   - preferred ids: `issue_metadata`, `comments`
+4. Build analysis context only from artifacts with `status=present`.
 
-## Workflow
+If required context is missing, record explicit limitations in `summary.md`.
 
-When issue context is detected (no PR):
+## 2) Solution planning
 
-1. **Analyze the issue**: Read `issue.json` and `comments.json` (if present)
-2. **Implement the solution**: Make code changes to address the issue
-3. **Commit changes**:
-   ```bash
-   git checkout -b feature/issue-<number>
-   git add .
-   git commit -m "Feature: <brief description>"
-   git push -u origin feature/issue-<number>
-   ```
-4. **Draft output artifacts before publish**:
-   - Write an initial `${GITHUB_OUTPUT_DIR}/summary.md` (implementation/testing summary used for PR body)
-   - Write `${GITHUB_OUTPUT_DIR}/manifest.json` with execution metadata
-5. **Publish via direct `gh` (mandatory)**:
-   ```bash
-   ISSUE_NUMBER=<issue number>
-   HEAD_BRANCH="$(git branch --show-current)"
-   BASE_BRANCH="${BASE_BRANCH:-main}"
-   PR_TITLE="Fix #${ISSUE_NUMBER}: <short title>"
+1. Extract requested outcome and constraints from issue content.
+2. Convert into an implementation checklist.
+3. Choose the smallest change set that satisfies acceptance criteria.
 
-   EXISTING_PR_NUMBER="$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')"
+## 3) Implementation and verification
 
-   if [ -n "$EXISTING_PR_NUMBER" ]; then
-     gh pr edit "$EXISTING_PR_NUMBER" --title "$PR_TITLE" --body-file "${GITHUB_OUTPUT_DIR}/summary.md" --base "$BASE_BRANCH"
-     PR_NUMBER="$EXISTING_PR_NUMBER"
-   else
-     gh pr create --base "$BASE_BRANCH" --head "$HEAD_BRANCH" --title "$PR_TITLE" --body-file "${GITHUB_OUTPUT_DIR}/summary.md"
-     PR_NUMBER="$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')"
-   fi
+1. Create/switch branch (`feature/issue-<number>` or `fix/issue-<number>`).
+2. Implement code changes.
+3. Run relevant validation commands.
+4. Commit and push.
 
-   if [ -z "$PR_NUMBER" ]; then
-     echo "ERROR: Failed to determine PR number for head branch '$HEAD_BRANCH' after create/edit." >&2
-     exit 1
-   fi
+Never claim success without commit and push.
 
-   PR_URL="$(gh pr view "$PR_NUMBER" --json url --jq .url)"
+## 4) PR publish
 
-   if [ -z "$PR_URL" ]; then
-     echo "ERROR: Failed to resolve PR URL for PR #$PR_NUMBER." >&2
-     exit 1
-   fi
-   ```
-6. **Finalize outputs after publish**:
-   - Update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json`
-   - Record publish result fields (`pr_number`, `pr_url`, branch/ref)
-   - If publish fails, mark failure and include actionable error details
+Preferred publish path:
+- `ghx` PR commands (`pr create` / `pr update`) with `--body-file`.
 
-## Completion Criteria (Mandatory)
+Fallback path:
+- direct `gh pr create` / `gh pr edit`.
 
-Do not mark the run successful unless a PR was actually created or updated.
+After publish, verify PR identity:
+- `pr_number`
+- `pr_url`
 
-- `gh` publish commands (`gh pr create`/`gh pr edit`) are mandatory for completion.
-- A successful run must include publish result data (`pr_number` and `pr_url`) in `summary.md` and `manifest.json`.
-- If publishing fails, mark the run as failed and record the actionable error details.
+## 5) Output finalization
 
-## Output Files
+Write/update:
+- `${GITHUB_OUTPUT_DIR}/summary.md`
+- `${GITHUB_OUTPUT_DIR}/manifest.json`
 
-### Required Outputs
+When `ghx` publish is used, keep `${GITHUB_OUTPUT_DIR}/publish-results.json` for audit/debug.
 
-1. **`${GITHUB_OUTPUT_DIR}/summary.md`**: Human-readable summary of your analysis and actions taken
-   - This will be used as the PR body
+## Completion criteria
 
-2. **`${GITHUB_OUTPUT_DIR}/manifest.json`**: Execution metadata and status
-
-## Best Practices
-
-- **Branch naming**: Use descriptive names like `feature/issue-<number>` or `fix/issue-<number>`
-- **Commit messages**: Be concise and descriptive (e.g., "Feature: Add test coverage for skill mode")
-- **PR titles**: Reference the issue (e.g., "Feature: Add non-LLM test coverage for skill mode (#520)")
-- **PR body**: Include `${GITHUB_OUTPUT_DIR}/summary.md` which explains the changes
-- **Testing**: Run tests before pushing to ensure the changes work
+The run is complete only when:
+1. Code changes are implemented for issue intent.
+2. Changes are committed and pushed.
+3. A PR was created or updated and can be verified (`pr_number`, `pr_url`).
+4. Outputs include verification details and final status.

@@ -1,226 +1,112 @@
 ---
 name: github-issue-solve
-description: "Solve GitHub issues by implementing features or fixes and creating pull requests. Use when: (1) Implementing features described in issues, (2) Fixing bugs reported in issues, (3) Creating PRs from issue requirements."
+description: "Solve GitHub issues by implementing changes and creating or updating a pull request."
 ---
 
 # GitHub Issue Solve Skill
 
-Automation skill for solving GitHub issues by implementing solutions and creating pull requests.
-
-## Purpose
-
-This skill helps you:
-1. Analyze GitHub issues and understand requirements
-2. Implement features or fixes in the codebase
-3. Create feature branches and commit changes
-4. Create pull requests with proper descriptions
+`github-issue-solve` focuses on delivery: understand issue intent, implement code changes, and publish a PR.
 
 ## Prerequisites
 
-This skill can use:
-- **`ghx`** (default): Must be attempted first for context collection
-- **`gh` CLI** (fallback): Use only when `ghx` is unavailable or fails
+- `gh` CLI authentication is required.
+- Prefer `ghx` for context collection and PR publishing commands.
+- `GITHUB_TOKEN`/`GH_TOKEN` must allow issue/PR read-write operations.
 
-`ghx` here means the `ghx` skill (for example `skills/ghx/scripts/ghx.sh`), not a standalone `ghx` binary on `PATH`.
+## Runtime Paths
 
-## Environment & Paths
+- `GITHUB_OUTPUT_DIR`: output artifacts directory (caller-provided preferred; otherwise temp dir).
+- `GITHUB_CONTEXT_DIR`: context directory (default `${GITHUB_OUTPUT_DIR}/github-context`).
 
-- **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
-  - Default: system-recommended output directory if provided by caller; otherwise a temp dir `/tmp/holon-ghissue-*`
-- **`GITHUB_CONTEXT_DIR`**: Where `ghx` writes collected data  
-  - Default: `${GITHUB_OUTPUT_DIR}/github-context`
-- **`GITHUB_TOKEN` / `GH_TOKEN`**: Token used for GitHub operations (scopes: `repo` or `public_repo`)
+## Inputs (Manifest-First)
 
-## Inputs & Outputs
+Required input:
+- `${GITHUB_CONTEXT_DIR}/manifest.json` produced by `ghx context collect`.
 
-- **Inputs**: `${GITHUB_CONTEXT_DIR}/github/issue.json`, `${GITHUB_CONTEXT_DIR}/github/comments.json` (produced via `ghx` by default; fallback via `gh` commands only if `ghx` fails)
-- **Outputs** (agent writes under `${GITHUB_OUTPUT_DIR}`):
-  - `summary.md`
-  - `manifest.json`
+Optional inputs:
+- Any artifact listed as `status=present` in `manifest.artifacts[]`.
 
-## Definition of Done (Strict)
-
-The run is successful only if all of the following are true:
-1. Code changes are implemented for the target issue.
-2. Changes are pushed to a branch.
-3. A GitHub PR is actually created or updated using `gh`.
-4. PR existence is verified via `gh pr view`.
-5. `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json` include publish result details (`pr_number` and `pr_url`).
+Do not assume fixed file names under `github/`.  
+Resolve usable inputs from `manifest.artifacts[]` by `id`/`path`/`status`/`description`.
 
 ## Workflow
 
-### 1. Context Collection
+### 1. Collect context
 
-If context is not pre-populated, always follow this decision order:
-1. Attempt `ghx` collection first.
-2. If `ghx` is unavailable or fails, fall back to `gh issue view` / `gh api` and write equivalent context files under `${GITHUB_CONTEXT_DIR}/github/`.
-3. Record the collector and fallback reason (if any) in outputs:
-   - `context_collector`: `ghx` or `gh`
-   - `fallback_reason`: non-empty only when `context_collector=gh`
-     - Example: `ghx command not found in PATH`
-     - Example: `ghx context collect failed with exit code 1`
+Preferred:
+- `skills/ghx/scripts/ghx.sh context collect <issue_ref>`
 
-### 2. Analyze Issue
+Fallback:
+- Direct `gh` collection only if `ghx` is unavailable; still produce equivalent manifest contract.
 
-Read the collected context:
-- `${GITHUB_CONTEXT_DIR}/github/issue.json`: Issue metadata (title, body, labels, assignees)
-- `${GITHUB_CONTEXT_DIR}/github/comments.json`: Discussion comments
+### 2. Analyze and implement
 
-Understand:
-- What feature or fix is requested
-- Any specific requirements or constraints
-- Related issues or PRs mentioned
+- Extract acceptance criteria and constraints from issue metadata and discussion.
+- Implement minimal complete changes for the requested outcome.
+- Use deterministic branch naming (`feature/issue-<number>` or `fix/issue-<number>`).
+- Run relevant verification commands before publish.
 
-### 3. Implement Solution
+### 3. Commit and push
 
-Create a feature branch and implement the solution:
+- Commit only intentional changes.
+- Push branch to remote before PR publish.
 
-```bash
-# Create feature branch
-git checkout -b feature/issue-<number>
+### 4. Publish PR
 
-# Make your changes to the codebase
-# ... implement the feature or fix ...
+Preferred:
+- Use `ghx` PR capability commands (`pr create` / `pr update`) with `--body-file`.
 
-# Commit changes
-git add .
-git commit -m "Feature: <description>"
+Fallback:
+- Use `gh pr create` / `gh pr edit` directly if `ghx` publish path is unavailable.
 
-# Push to remote
-git push -u origin feature/issue-<number>
-```
+Publish completion is mandatory; do not report success without a real PR side effect.
 
-### 4. Generate Artifacts
+### 5. Finalize outputs
 
-Create the required output files:
+Required outputs under `${GITHUB_OUTPUT_DIR}`:
+- `summary.md`
+- `manifest.json`
 
-#### `${GITHUB_OUTPUT_DIR}/summary.md`
+Optional:
+- `publish-results.json` (when publish executed via `ghx`)
 
-Human-readable summary of your work:
-- Issue reference and description
-- What was implemented
-- Key changes made
-- Testing performed
+## Delivery Standards
 
-#### `${GITHUB_OUTPUT_DIR}/manifest.json`
-
-Execution metadata:
-```json
-{
-  "provider": "github-issue-solve",
-  "issue_ref": "holon-run/holon#502",
-  "context_collector": "ghx|gh",
-  "fallback_reason": "",
-  "branch": "feature/issue-502",
-  "status": "completed|failed",
-  "commits": ["abc123", "def456"]
-}
-```
-
-### 5. Create Pull Request
-
-Use a direct `gh` publish flow (single mandatory path):
-
-```bash
-ISSUE_NUMBER=<issue number>
-HEAD_BRANCH="$(git branch --show-current)"
-BASE_BRANCH="${BASE_BRANCH:-main}"
-PR_TITLE="Fix #${ISSUE_NUMBER}: <short title>"
-PR_BODY_FILE="${GITHUB_OUTPUT_DIR}/summary.md"
-
-EXISTING_PR_NUMBER="$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')"
-
-if [ -n "$EXISTING_PR_NUMBER" ]; then
-  gh pr edit "$EXISTING_PR_NUMBER" --title "$PR_TITLE" --body-file "$PR_BODY_FILE" --base "$BASE_BRANCH"
-  PR_NUMBER="$EXISTING_PR_NUMBER"
-else
-  gh pr create --base "$BASE_BRANCH" --head "$HEAD_BRANCH" --title "$PR_TITLE" --body-file "$PR_BODY_FILE"
-  PR_NUMBER="$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')"
-fi
-
-if [ -z "$PR_NUMBER" ]; then
-  echo "ERROR: failed to resolve PR number after publish" >&2
-  exit 1
-fi
-
-PR_URL="$(gh pr view "$PR_NUMBER" --json url --jq .url)"
-if [ -z "$PR_URL" ]; then
-  echo "ERROR: failed to resolve PR url after publish" >&2
-  exit 1
-fi
-```
-
-Treat publish execution as mandatory completion work, not optional cleanup.
-Update `${GITHUB_OUTPUT_DIR}/summary.md` and `${GITHUB_OUTPUT_DIR}/manifest.json` with `pr_number` and `pr_url`.
+- Keep scope aligned with issue intent; avoid unrelated refactors.
+- State assumptions explicitly when requirements are ambiguous.
+- Include concrete verification results (commands + outcomes).
+- If full verification is impossible, report what was attempted and why it is incomplete.
 
 ## Output Contract
 
-### Required Outputs
+### `summary.md`
 
-1. **`${GITHUB_OUTPUT_DIR}/summary.md`**: Human-readable summary
-   - Issue reference and description
-   - Implementation details
-   - Changes made
-   - Testing performed
+Must include:
+- issue reference and interpreted requirements
+- key code changes
+- verification performed and outcomes
+- PR publish result (`pr_number`, `pr_url`, branch)
+- explicit blockers or follow-ups (if any)
 
-2. **`${GITHUB_OUTPUT_DIR}/manifest.json`**: Execution metadata
-   ```json
-   {
-     "provider": "github-issue-solve",
-     "issue_ref": "holon-run/holon#502",
-     "context_collector": "ghx|gh",
-     "fallback_reason": "",
-     "branch": "feature/issue-502",
-     "status": "completed|failed",
-     "commits": ["abc123"],
-     "pr_number": 123,
-     "pr_url": "https://github.com/holon-run/holon/pull/123"
-   }
-   ```
+### `manifest.json`
 
-### Failure Rules
+Execution metadata for this skill, including:
+- `provider: "github-issue-solve"`
+- issue reference
+- branch
+- publish result fields (`pr_number`, `pr_url`)
+- `status` (`completed|failed`)
 
-- If PR create/edit or PR verification fails, mark the run as failed.
-- Do not report success when only artifacts were generated without a PR side effect.
-- On failure, write actionable publish error details and next steps in `${GITHUB_OUTPUT_DIR}/summary.md`.
-- If `ghx` is available but not attempted first for context collection, treat as process failure and correct before reporting success.
+## Failure Rules
 
-## Git Operations
+Mark run as failed if any of the following is true:
+- no meaningful code change was produced for the issue intent
+- commit/push was not completed
+- PR create/update failed or PR URL cannot be verified
 
-You are responsible for all git operations:
+Do not report success from artifacts alone.
 
-```bash
-# Create feature branch
-git checkout -b feature/issue-<number>
+## Notes
 
-# Stage changes
-git add .
-
-# Commit with descriptive message
-git commit -m "Feature: <description>"
-
-# Push to remote
-git push -u origin feature/issue-<number>
-```
-
-## GitHub CLI Operations
-
-You MAY use these commands:
-- `gh issue view <number>` - View issue details
-- `gh issue comment <number>` - Comment on issues
-- `gh pr create` / `gh pr edit` - Create or update PR
-- `gh pr view <number>` - Verify PR details after publish
-
-## Important Notes
-
-- You are running **HEADLESSLY** - do not wait for user input or confirmation
-- Attempt `ghx` first for context collection; use `gh` only as explicit fallback with documented reason
-- Create feature branches following the pattern `feature/issue-<number>` or `fix/issue-<number>`
-- Write clear commit messages describing what was changed
-- Include "Closes #<number>" in PR body to auto-link the issue
-- Run tests if available before creating the PR
-- Do not mark success until `gh pr view` returns a valid PR URL
-
-## Reference Documentation
-
-See [references/issue-solve-workflow.md](references/issue-solve-workflow.md) for detailed workflow guide.
+- This skill defines issue-solving behavior and completion criteria.
+- `ghx` defines context artifact semantics via `manifest.json`.

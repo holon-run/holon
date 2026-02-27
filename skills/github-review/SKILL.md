@@ -1,270 +1,147 @@
 ---
 name: github-review
-description: "Automated PR code review skill that collects context, performs AI-powered analysis, and publishes structured reviews with inline comments. Use when Claude needs to review pull requests: (1) Analyzing code changes for correctness/security/performance issues, (2) Generating review findings with inline comments, (3) Publishing reviews via GitHub API. Supports one-shot review and CI integration."
+description: "Automated PR code review skill. Collects context through ghx, performs standards-based analysis, and publishes one structured review with optional inline comments."
 ---
 
 # GitHub Review Skill
 
-Automated code review skill for pull requests. Collects PR context, performs AI-powered code review, and publishes structured reviews with inline comments.
+`github-review` focuses on review quality and publishing rules.  
+Context acquisition details are owned by `ghx`.
 
-**Prerequisites:** `gh` CLI authentication is required. `ghx` is an optional accelerator for faster context collection/publishing, but not a hard dependency.
+## Prerequisites
 
-`ghx` here means the `ghx` skill (for example `skills/ghx/scripts/ghx.sh`), not a standalone `ghx` binary on `PATH`.
+- `gh` CLI authentication is required.
+- Prefer `ghx` for context and publish operations.
+- `GITHUB_TOKEN`/`GH_TOKEN` needs permissions to read PR data and publish reviews/comments.
 
-## Environment and Paths
+## Runtime Paths
 
-This skill uses environment variables to stay portable across Holon, local shells, and CI. It defines required inputs/outputs and publish outcomes. Prefer `ghx` when available; otherwise use `gh` commands to satisfy the same contract.
+- `GITHUB_OUTPUT_DIR`: output artifacts directory (caller-provided preferred; otherwise temp dir).
+- `GITHUB_CONTEXT_DIR`: context directory (default `${GITHUB_OUTPUT_DIR}/github-context`).
 
-### Key Environment Variables
+## Inputs (Manifest-First)
 
-- **`GITHUB_OUTPUT_DIR`**: Where this skill writes artifacts  
-  - Default: system-recommended output directory if provided by caller; otherwise a temp dir `/tmp/holon-ghreview-*`
-- **`GITHUB_CONTEXT_DIR`**: Directory for collected PR data  
-  - Default: `${GITHUB_OUTPUT_DIR}/github-context`
-- **`GITHUB_TOKEN` / `GH_TOKEN`**: Token used for GitHub operations (scopes: `repo` or `public_repo`)
-- Publishing options (e.g., inline limits) apply regardless of implementation (`ghx` or direct `gh`).
+Required input:
+- `${GITHUB_CONTEXT_DIR}/manifest.json` from `ghx context collect`.
 
-### Path Examples
+Optional inputs:
+- Any context artifact listed as `status=present` in `manifest.json`.
 
-```bash
-# Runtime-provided output directory (recommended)
-export GITHUB_OUTPUT_DIR=/path/to/output
-
-# Local development (keeps workspace clean by defaulting to /tmp if unset)
-export GITHUB_OUTPUT_DIR=./output
-export GITHUB_TOKEN=ghp_xxx
-
-# CI/CD environment
-export GITHUB_OUTPUT_DIR=${PWD}/artifacts
-export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
-export MAX_INLINE=10
-```
+This skill must not assume fixed context filenames.  
+Use `manifest.artifacts[]` (`id`, `path`, `status`, `description`) to determine available context.
 
 ## Workflow
 
-This skill follows a three-step workflow. Agents gather context, generate artifacts, then publish. Use `ghx` if present; otherwise execute equivalent `gh` commands.
+### 1. Collect context
 
-### 1. Collect Context
-Collect PR information (review-friendly defaults recommended):
-- PR metadata (title, description, author, stats)
-- Changed files list with full diff
-- Existing review threads (to avoid duplicates)
-- PR comments and commit history
+Preferred:
+- `skills/ghx/scripts/ghx.sh context collect <pr_ref>`
 
-### 2. Perform Review
-Agent analyzes the collected context and generates:
-- `review.md` - Human-readable review summary
-- `review.json` - Structured findings with path/line/severity/message
-- `summary.md` - Brief process summary
+Fallback:
+- Direct `gh` commands only if `ghx` is unavailable; still produce equivalent manifest contract.
 
-Agent follows review guidelines in `prompts/review.md`.
+### 2. Perform review
 
-Behavior requirements for this step:
-- **Incremental-first**: prioritize newly introduced changes (new commits/diff hunks), and only expand scope when needed for validation.
-- **Historical dedup**: consult existing review threads/comments and avoid repeating already-raised findings unless there is new evidence or changed impact.
-- **Concise output**: keep review text short, direct, and action-oriented; avoid repetitive background narration.
+Generate:
+- `${GITHUB_OUTPUT_DIR}/review.md`
+- `${GITHUB_OUTPUT_DIR}/review.json`
+- `${GITHUB_OUTPUT_DIR}/summary.md`
+- Optional `${GITHUB_OUTPUT_DIR}/manifest.json` (execution metadata)
 
-### 3. Publish Review
-Publish the produced artifacts (`review.md`, `review.json`, `summary.md`, `manifest.json`) as one PR review with inline comments.
+### 3. Publish review
 
-Implementation guidance:
-- Preferred: use `ghx` skill publish flow.
-- Fallback: use `gh api graphql`/`gh api repos/.../pulls/.../reviews` to create a single review with inline comments.
+Preferred:
+- `skills/ghx/scripts/ghx.sh review publish --pr=<owner/repo#num> --body-file=review.md --comments-file=review.json`
 
-### Direct API Example (Inline Comment)
+Fallback:
+- Direct GitHub API only when primary publish clearly failed.
 
-When posting inline comments directly with `gh api`, use typed fields (`-F`) so numeric fields are sent as integers:
+## Review Standards
 
-```bash
-PR=597
-REPO=holon-run/holon
-HEAD_SHA="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+### Scope and priority
 
-gh api "repos/$REPO/pulls/$PR/comments" \
-  -X POST \
-  -H "Accept: application/vnd.github+json" \
-  -F body='[warn] Example inline finding message' \
-  -F commit_id="$HEAD_SHA" \
-  -F path='skills/github-issue-solve/SKILL.md' \
-  -F line=166 \
-  -F side='RIGHT'
-```
+Review focus order:
+1. Correctness bugs
+2. Security/safety issues
+3. Performance/scalability risks
+4. API compatibility and error handling
+5. High-impact maintainability issues
 
-Notes:
-- `path` + `line` must map to a line in the PR diff for the selected `commit_id`.
-- Use `-F` for `line`/`position`; avoid `-f` for numeric fields to prevent string-type API errors.
+### Incremental-first
 
-## Usage
+- Prioritize newly introduced changes (new commits and new diff hunks).
+- Expand scope only when needed to validate correctness or safety.
 
-### Basic Usage
+### Historical deduplication
 
-- Collect PR context with `ghx` (agent-triggered if missing).
-- Run `github-review` to produce `review.md`, `review.json`, `summary.md`.
-- Publish via `ghx` using those artifacts.
+- Check existing review threads/comments before raising findings.
+- Do not repeat already-raised issues unless there is new evidence or changed impact.
+- If re-raising, explain the delta briefly.
 
-### Advanced Options
+### Keep signal high
 
-```bash
-# Preview review without posting (dry-run)
-export DRY_RUN=true
-holon --skill github-review holon-run/holon#123
-
-# Limit inline comments
-export MAX_INLINE=10
-holon --skill github-review holon-run/holon#123
-
-# Post review even if no findings
-export POST_EMPTY=true
-holon --skill github-review holon-run/holon#123
-
-# Combine options
-export MAX_INLINE=15 POST_EMPTY=true
-holon --skill github-review holon-run/holon#123
-```
-
-## Implementation Note
-
-This skill specifies behavior and artifacts, not a mandatory script path. Prefer `ghx` skill/script when available in the skill runtime; otherwise direct `gh` commands are valid if outputs and publish semantics match this contract.
-
-## Agent Prompts
-
-**`prompts/review.md`**: Review guidelines and output format for agents
-
-Agents should read this file to understand review priorities, what to skip, and how to structure findings.
+- Avoid low-value style nitpicks unless they affect behavior/maintainability.
+- Keep feedback concise, specific, and actionable.
+- Prefer fewer high-impact findings over exhaustive noise.
 
 ## Output Contract
 
-### Required Inputs (from collection script)
+### `review.md`
 
-1. **`${GITHUB_CONTEXT_DIR}/github/pr.json`**: PR metadata
-2. **`${GITHUB_CONTEXT_DIR}/github/files.json`**: Changed files list
-3. **`${GITHUB_CONTEXT_DIR}/github/pr.diff`**: Full diff of changes
+Human-readable review summary containing:
+- conclusion-first summary
+- key findings ordered by severity
+- actionable recommendations
 
-### Optional Inputs (from collection script)
+### `review.json`
 
-4. **`${GITHUB_CONTEXT_DIR}/github/review_threads.json`**: Existing review comments
-5. **`${GITHUB_CONTEXT_DIR}/github/comments.json`**: PR discussion comments
-6. **`${GITHUB_CONTEXT_DIR}/github/commits.json`**: Commit history
-7. **`${GITHUB_CONTEXT_DIR}/github/check_runs.json`**: Check runs (when `INCLUDE_CHECKS=true`)
+Structured inline findings:
 
-### Required Outputs (from agent)
-
-1. **`${GITHUB_OUTPUT_DIR}/review.md`**: Human-readable review summary
-   - Overall summary of the PR
-   - Key findings by severity
-   - Detailed feedback organized by category
-   - Positive notes and recommendations
-
-2. **`${GITHUB_OUTPUT_DIR}/review.json`**: Structured review findings
-   ```json
-   [
-     {
-       "path": "path/to/file.go",
-       "line": 42,
-       "severity": "error|warn|nit",
-       "message": "Clear description of the issue",
-       "suggestion": "Specific suggestion for fixing (optional)"
-     }
-   ]
-   ```
-
-3. **`${GITHUB_OUTPUT_DIR}/summary.md`**: Brief summary of the review process
-   - PR reference and metadata
-   - Number of findings
-   - Review outcomes
-
-### Optional Outputs (from agent)
-
-4. **`${GITHUB_OUTPUT_DIR}/manifest.json`**: Execution metadata
-   ```json
-   {
-     "provider": "github-review",
-     "pr_ref": "holon-run/holon#123",
-     "findings_count": 5,
-     "inline_comments_count": 3,
-     "status": "completed|completed_with_empty|failed"
-   }
-   ```
-
-## Context Files
-
-When context is collected, the following files are available under `${GITHUB_CONTEXT_DIR}/github/`:
-
-- `pr.json`: Pull request metadata
-- `files.json`: List of changed files
-- `pr.diff`: Full diff of changes
-- `review_threads.json`: Existing review comments (if any)
-- `comments.json`: PR discussion comments (if any)
-- `commits.json`: Commit history (if any)
-
-## Integration Examples
-
-### Holon Skill Mode
-
-```yaml
-# .github/workflows/pr-review.yml
-name: PR Review
-on:
-  pull_request:
-    types: [opened, synchronize]
-
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Run Holon review
-        uses: holon-run/holon@main
-        with:
-          skill: github-review
-          args: ${{ github.repository }}#${{ github.event.pull_request.number }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MAX_INLINE: 20
+```json
+[
+  {
+    "path": "path/to/file.go",
+    "line": 42,
+    "severity": "error|warn|nit",
+    "message": "Issue description",
+    "suggestion": "Optional concrete fix"
+  }
+]
 ```
 
-### Manual Review
+Severity semantics:
+- `error`: must-fix before merge
+- `warn`: should-fix
+- `nit`: optional improvement
 
-```bash
-# Review a PR manually
-export GITHUB_TOKEN=ghp_xxx
-export GITHUB_OUTPUT_DIR=./my-review
-mkdir -p $GITHUB_OUTPUT_DIR
+### `summary.md`
 
-# Collect context (implementation-defined)
-# Prefer ghx; fallback to gh commands that produce equivalent artifacts.
+Short execution summary:
+- reviewed ref/head
+- context coverage summary from manifest
+- number of findings and publish outcome
+- explicit degradation/failure reason when context is insufficient
 
-# Perform review (agent reads context, generates findings)
-# ... agent processes ...
+## Degradation Rules
 
-# Publish review with inline comments
-# Prefer ghx; fallback to gh api review endpoints.
-```
+- If core review artifacts are missing (for example `pr_metadata`, `diff` and `files` both unavailable), do not fabricate certainty.
+- Either:
+  - produce summary-only review with explicit limitations and no inline comments, or
+  - fail with clear reason in `summary.md`.
 
-## Important Notes
+## Publishing Guardrails
 
-- **Idempotency**: The skill fetches existing review threads to avoid duplicating comments
-- **Incremental review default**: repeated PR updates should be reviewed with incremental priority, not full re-review by default
-- **Dedup by history**: previously explicit feedback should not be repeated unless context materially changes
-- **No workflow trigger changes**: this skill update does not alter `.github/workflows/` trigger behavior
-- **Rate limits**: GitHub API has rate limits; the skill uses pagination and batching appropriately
-- **Large PRs**: Use `MAX_FILES` to limit context collection for PRs with many changed files
-- **Inline limits**: Use `MAX_INLINE` to avoid overwhelming reviewers with too many comments
-- **Silent success**: By default, the skill doesn't post reviews when no findings are found (use `POST_EMPTY=true` to change this)
-- **Headless operation**: The skill runs without user interaction; all configuration is via environment variables
+- Publish at most one review per execution round.
+- A successful primary publish is terminal; do not run alternate publish paths.
+- Before fallback publish, check whether an equivalent Holon review already exists for the same head SHA and skip if present.
 
-## Capabilities
+## Configuration
 
-You MAY use these commands directly via `gh` CLI:
-- `gh pr view` - View PR details
-- `gh pr diff` - Get PR diff
-- `gh api` - Make API calls
+- `DRY_RUN=true`: preview only.
+- `MAX_INLINE=N`: cap inline comments.
+- `POST_EMPTY=true`: allow posting empty review.
 
-If `ghx` is available, prefer it for lower implementation cost. If not, direct `gh` usage is acceptable.
+## Notes
 
-## Reference Documentation
-
-See [prompts/review.md](prompts/review.md) for detailed review guidelines and instructions.
-Implementation guidance:
-- Preferred: use `ghx` context collection.
-- Fallback: use `gh pr view`, `gh pr diff`, `gh api` to collect equivalent artifacts under `${GITHUB_CONTEXT_DIR}/github/`.
+- `github-review` defines review standards and output expectations.
+- `ghx` defines context collection structure and artifact semantics.
