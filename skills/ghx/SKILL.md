@@ -37,6 +37,10 @@ scripts/ghx.sh review publish --pr=holon-run/holon#123 --body-file=review.md --c
 scripts/ghx.sh pr create --repo=holon-run/holon --title="Title" --body-file=summary.md --head=feature/x --base=main
 scripts/ghx.sh pr update --pr=holon-run/holon#123 --title="New title" --body-file=summary.md
 scripts/ghx.sh pr comment --pr=holon-run/holon#123 --body-file=summary.md
+# stdin body is also supported
+scripts/ghx.sh pr comment --pr=holon-run/holon#123 --body-file=- <<'EOF'
+Multiline body from stdin.
+EOF
 ```
 
 ### Batch mode
@@ -143,8 +147,8 @@ Supported `type` values:
 To reduce failure rate from quoting/newline/markdown escaping:
 
 1. Never pass large markdown/JSON payloads inline on command line.
-2. Always write content to files and pass file arguments:
-   - `ghx`: `--body-file`, `--comments-file`
+2. Always pass payloads via file arguments:
+   - `ghx`: `--body-file`, `--comments-file` (`--body-file=-` is allowed to read from stdin)
    - raw `gh`: `--body-file`
 3. Apply this rule to PR reviews, PR comments/description, issue comments, and issue creation.
 

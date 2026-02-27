@@ -29,6 +29,7 @@ Always write payloads to files first, then pass file flags.
 Required patterns:
 - `ghx`: `--body-file`, `--comments-file`
 - raw `gh`: `--body-file`
+- `--body-file=-` is supported when you want to stream body content from stdin.
 
 Reason:
 - Avoid shell escaping/newline truncation/backtick interpolation errors.
@@ -42,6 +43,15 @@ cat > /tmp/review.md <<'EOF'
 Multi-line content with markdown/code fences.
 EOF
 scripts/ghx.sh pr comment --pr=owner/repo#123 --body-file=/tmp/review.md
+```
+
+Stdin example (no temp file):
+
+```bash
+scripts/ghx.sh pr comment --pr=owner/repo#123 --body-file=- <<'EOF'
+## Review Summary
+Multiline content streamed from stdin.
+EOF
 ```
 
 Mode selection:

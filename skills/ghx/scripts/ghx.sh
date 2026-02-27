@@ -10,10 +10,10 @@ usage() {
 Usage:
   ghx.sh context collect <ref> [repo_hint]
   ghx.sh batch run --batch=<path> [--dry-run] [--from=N] [--pr=OWNER/REPO#NUM]
-  ghx.sh review publish --pr=OWNER/REPO#NUM --body-file=<review.md> [--comments-file=review.json] [--max-inline=N] [--post-empty]
-  ghx.sh pr create --repo=OWNER/REPO --title=... --body-file=... --head=... --base=...
-  ghx.sh pr update --pr=OWNER/REPO#NUM [--title=...] [--body-file=...] [--state=open|closed]
-  ghx.sh pr comment --pr=OWNER/REPO#NUM --body-file=<summary.md>
+  ghx.sh review publish --pr=OWNER/REPO#NUM --body-file=<review.md|-> [--comments-file=review.json] [--max-inline=N] [--post-empty]
+  ghx.sh pr create --repo=OWNER/REPO --title=... --body-file=<file|-> --head=... --base=...
+  ghx.sh pr update --pr=OWNER/REPO#NUM [--title=...] [--body-file=<file|->] [--state=open|closed]
+  ghx.sh pr comment --pr=OWNER/REPO#NUM --body-file=<summary.md|->
 USAGE
 }
 

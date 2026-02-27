@@ -38,10 +38,10 @@ Batch mode:
   publish.sh --batch=/path/to/publish-batch.json [OPTIONS]
 
 Direct command mode:
-  publish.sh --pr=OWNER/REPO#NUM comment --body-file summary.md
-  publish.sh --pr=OWNER/REPO#NUM post-review --body-file review.md [--comments-file review.json]
-  publish.sh --pr=OWNER/REPO#NUM update-pr --title "..." [--body-file summary.md]
-  publish.sh --repo=OWNER/REPO create-pr --title "..." --body-file summary.md --head feature/x --base main
+  publish.sh --pr=OWNER/REPO#NUM comment --body-file summary.md|-
+  publish.sh --pr=OWNER/REPO#NUM post-review --body-file review.md|- [--comments-file review.json]
+  publish.sh --pr=OWNER/REPO#NUM update-pr --title "..." [--body-file summary.md|-]
+  publish.sh --repo=OWNER/REPO create-pr --title "..." --body-file summary.md|- --head feature/x --base main
 
 Global options:
   --batch=PATH          Path to publish-batch.json file

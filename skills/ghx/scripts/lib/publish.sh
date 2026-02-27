@@ -34,12 +34,12 @@ find_existing_comment() {
     local pr_number="$1"
     local marker="$2"
 
-    log_info "Looking for existing comment with marker: $marker"
+    log_info "Looking for existing comment with marker: $marker" >&2
 
     # Get all comments for the PR
     local comments
     if ! comments=$(gh api "repos/$PR_OWNER/$PR_REPO/issues/$pr_number/comments" 2>/dev/null); then
-        log_warn "Failed to fetch comments for PR #$pr_number"
+        log_warn "Failed to fetch comments for PR #$pr_number" >&2
         echo ""
         return 0
     fi
@@ -51,10 +51,10 @@ find_existing_comment() {
     ')
 
     if [[ -n "$comment_id" ]]; then
-        log_info "Found existing comment: #$comment_id"
+        log_info "Found existing comment: #$comment_id" >&2
         echo "$comment_id"
     else
-        log_info "No existing comment found with marker"
+        log_info "No existing comment found with marker" >&2
         echo ""
     fi
 }
@@ -72,6 +72,21 @@ parse_body_param() {
     if [[ -z "$body_param" || "$body_param" == "null" ]]; then
         log_error "Missing 'body' parameter"
         return 1
+    fi
+
+    # Read from stdin when body is "-"
+    if [[ "$body_param" == "-" ]]; then
+        # Cache stdin content for this process so multiple actions can reuse it.
+        if [[ "${GHX_STDIN_BODY_CAPTURED:-false}" != "true" ]]; then
+            if [[ -t 0 ]]; then
+                log_error "Body parameter '-' requires stdin input"
+                return 1
+            fi
+            GHX_STDIN_BODY="$(cat)"
+            GHX_STDIN_BODY_CAPTURED="true"
+        fi
+        echo "$GHX_STDIN_BODY"
+        return 0
     fi
 
     # Check if it's a file path (ends in .md)
@@ -334,7 +349,10 @@ action_post_comment() {
 
     # Get or generate marker for idempotency
     local marker
-    marker=$(echo "$params" | jq -r '.marker // "holon-publish-marker"')
+    marker=$(echo "$params" | jq -r '.marker // empty')
+    if [[ -z "$marker" ]]; then
+        marker="holon-publish-marker"
+    fi
 
     # Add marker to body if not present
     if [[ ! "$body_content" =~ $marker ]]; then

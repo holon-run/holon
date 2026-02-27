@@ -296,6 +296,118 @@ INNEREOF
     cleanup_test_env "$tmp_dir"
 }
 
+test_body_file_stdin() {
+    local test_name="body_file_stdin"
+    log_info "Running test: $test_name"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local output_dir="$tmp_dir/output"
+    local bin_dir="$tmp_dir/bin"
+    local captured_body_file="$tmp_dir/captured-body.txt"
+
+    mkdir -p "$output_dir"
+    mkdir -p "$bin_dir"
+
+    # Provide a gh stub that captures posted comment body.
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+
+if [[ "${1:-}" == "api" ]]; then
+  endpoint="${2:-}"
+  shift 2 || true
+
+  method="GET"
+  body=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -X)
+        shift
+        method="${1:-GET}"
+        ;;
+      -f)
+        shift
+        if [[ "${1:-}" == body=* ]]; then
+          body="${1#body=}"
+        fi
+        ;;
+      -q|--jq|-F|--input)
+        # Consume value for flags that have one.
+        if [[ "$1" != "--input" ]]; then
+          shift
+        fi
+        ;;
+    esac
+    shift || true
+  done
+
+  if [[ "$endpoint" == repos/*/issues/*/comments && "$method" == "GET" ]]; then
+    # find_existing_comment path
+    echo "[]"
+    exit 0
+  fi
+
+  if [[ "$endpoint" == repos/*/issues/*/comments && "$method" == "POST" ]]; then
+    # create comment path
+    if [[ -n "${GHX_CAPTURED_BODY_FILE:-}" ]]; then
+      printf '%s' "$body" > "${GHX_CAPTURED_BODY_FILE}"
+    fi
+    echo "12345"
+    exit 0
+  fi
+
+  echo "{}"
+  exit 0
+fi
+
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+    export GITHUB_OUTPUT_DIR="$output_dir"
+
+    cd "$tmp_dir"
+
+    local output
+    local status=0
+    if output=$(cat << 'EOF' | GHX_CAPTURED_BODY_FILE="$captured_body_file" bash "$GHX_SCRIPT" pr comment --pr=owner/repo#123 --body-file - 2>&1
+## Summary
+line one
+line two
+EOF
+); then
+        status=0
+    else
+        status=$?
+    fi
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ $status -eq 0 ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ Publisher accepts --body-file - from stdin"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ Publisher should accept --body-file - (status=$status, output: $output)"
+    fi
+
+    assert_file_exists "$captured_body_file" "Captured body should exist"
+    local captured
+    captured=$(cat "$captured_body_file" 2>/dev/null || true)
+    assert_contains "$captured" "## Summary" "Captured body contains stdin markdown"
+    assert_contains "$captured" "line two" "Captured body contains multiline stdin content"
+    assert_file_exists "$output_dir/publish-results.json" "publish-results.json should be generated"
+    assert_json_valid "$output_dir/publish-results.json" "publish-results.json should be valid JSON"
+
+    cleanup_test_env "$tmp_dir"
+}
+
 test_reply_review_multiline_messages() {
     local test_name="reply_review_multiline"
     log_info "Running test: $test_name (regression test for issue #551)"
@@ -394,6 +506,7 @@ main() {
     test_publisher_missing_batch
     test_publisher_invalid_json
     test_publisher_valid_batch
+    test_body_file_stdin
     test_reply_review_multiline_messages
     
     # Summary
