@@ -1,7 +1,7 @@
 #!/bin/bash
 # test_publisher.sh - Tests for the ghx publish entrypoint
 #
-# These tests validate ghx intent/publish behavior using real jq.
+# These tests validate ghx batch/direct publish behavior using real jq.
 
 set -euo pipefail
 
@@ -9,6 +9,7 @@ set -euo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 GHX_SCRIPT="$REPO_ROOT/skills/ghx/scripts/ghx.sh"
+GHX_PUBLISH_SCRIPT="$REPO_ROOT/skills/ghx/scripts/publish.sh"
 
 # Test counters
 TESTS_RUN=0
@@ -136,8 +137,8 @@ test_publisher_help() {
     assert_contains "$output" "ghx.sh" "Help text mentions script name"
 }
 
-test_publisher_missing_intent() {
-    local test_name="missing_intent"
+test_publisher_missing_batch() {
+    local test_name="missing_batch"
     log_info "Running test: $test_name"
 
     local tmp_dir
@@ -166,17 +167,17 @@ INNEREOF
 
     cd "$tmp_dir"
 
-    # Run publisher without intent file and expect error
+    # Run publisher without batch file and expect error
     local output
-    output=$(bash "$GHX_SCRIPT" intent run --intent=/nonexistent/intent.json 2>&1 || true)
+    output=$(bash "$GHX_SCRIPT" batch run --batch=/nonexistent/publish-batch.json 2>&1 || true)
 
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$output" == *"Error"* ]] || [[ "$output" == *"error"* ]] || [[ "$output" == *"not found"* ]] || [[ "$output" == *"No such file"* ]]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
-        log_info "✓ Publisher correctly handles missing intent file"
+        log_info "✓ Publisher correctly handles missing batch file"
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
-        log_error "✗ Publisher should error on missing intent file"
+        log_error "✗ Publisher should error on missing batch file"
         log_error "Output: $output"
     fi
 
@@ -208,9 +209,9 @@ INNEREOF
     chmod +x "$bin_dir/gh"
     export PATH="$bin_dir:$PATH"
 
-    # Create invalid JSON intent file
+    # Create invalid JSON batch file
     mkdir -p "$output_dir"
-    echo "{ invalid json" > "$output_dir/publish-intent.json"
+    echo "{ invalid json" > "$output_dir/publish-batch.json"
 
     export GITHUB_OUTPUT_DIR="$output_dir"
 
@@ -218,7 +219,7 @@ INNEREOF
 
     # Run publisher and expect failure
     local output
-    output=$(bash "$GHX_SCRIPT" intent run --intent="$output_dir/publish-intent.json" 2>&1 || true)
+    output=$(bash "$GHX_SCRIPT" batch run --batch="$output_dir/publish-batch.json" 2>&1 || true)
 
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$output" == *"parse error"* ]] || [[ "$output" == *"invalid"* ]] || [[ "$output" == *"Error"* ]]; then
@@ -232,8 +233,8 @@ INNEREOF
     cleanup_test_env "$tmp_dir"
 }
 
-test_publisher_valid_intent() {
-    local test_name="valid_intent"
+test_publisher_valid_batch() {
+    local test_name="valid_batch"
     log_info "Running test: $test_name"
 
     local tmp_dir
@@ -241,9 +242,9 @@ test_publisher_valid_intent() {
     local output_dir="$tmp_dir/output"
     local bin_dir="$tmp_dir/bin"
 
-    # Create valid intent file with proper schema
+    # Create valid batch file with proper schema
     mkdir -p "$output_dir"
-    cat > "$output_dir/publish-intent.json" << 'EOF'
+    cat > "$output_dir/publish-batch.json" << 'EOF'
 {
   "version": "1.0",
   "pr_ref": "owner/repo#123",
@@ -277,7 +278,7 @@ INNEREOF
     # Test dry-run mode (should succeed and not crash)
     local output
     local status=0
-    if output=$(bash "$GHX_SCRIPT" intent run --dry-run --intent="$output_dir/publish-intent.json" 2>&1); then
+    if output=$(bash "$GHX_SCRIPT" batch run --dry-run --batch="$output_dir/publish-batch.json" 2>&1); then
         status=0
     else
         status=$?
@@ -287,10 +288,231 @@ INNEREOF
     # In dry-run mode, it should succeed and not emit syntax errors
     if [[ $status -eq 0 && "$output" != *"syntax error"* ]]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
-        log_info "✓ Publisher handles valid intent in dry-run mode"
+        log_info "✓ Publisher handles valid batch in dry-run mode"
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
-        log_error "✗ Publisher should handle valid intent (status=$status, output: $output)"
+        log_error "✗ Publisher should handle valid batch (status=$status, output: $output)"
+    fi
+
+    cleanup_test_env "$tmp_dir"
+}
+
+test_body_file_stdin() {
+    local test_name="body_file_stdin"
+    log_info "Running test: $test_name"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local output_dir="$tmp_dir/output"
+    local bin_dir="$tmp_dir/bin"
+    local captured_body_file="$tmp_dir/captured-body.txt"
+
+    mkdir -p "$output_dir"
+    mkdir -p "$bin_dir"
+
+    # Provide a gh stub that captures posted comment body.
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+
+if [[ "${1:-}" == "api" ]]; then
+  endpoint="${2:-}"
+  shift 2 || true
+
+  method="GET"
+  body=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -X)
+        shift
+        method="${1:-GET}"
+        ;;
+      -f)
+        shift
+        if [[ "${1:-}" == body=* ]]; then
+          body="${1#body=}"
+        fi
+        ;;
+      -q|--jq|-F|--input)
+        # Consume value for flags that have one.
+        if [[ "$1" != "--input" ]]; then
+          shift
+        fi
+        ;;
+    esac
+    shift || true
+  done
+
+  if [[ "$endpoint" == repos/*/issues/*/comments && "$method" == "GET" ]]; then
+    # find_existing_comment path
+    echo "[]"
+    exit 0
+  fi
+
+  if [[ "$endpoint" == repos/*/issues/*/comments && "$method" == "POST" ]]; then
+    # create comment path
+    if [[ -n "${GHX_CAPTURED_BODY_FILE:-}" ]]; then
+      printf '%s' "$body" > "${GHX_CAPTURED_BODY_FILE}"
+    fi
+    echo "12345"
+    exit 0
+  fi
+
+  echo "{}"
+  exit 0
+fi
+
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+    export GITHUB_OUTPUT_DIR="$output_dir"
+
+    cd "$tmp_dir"
+
+    local output
+    local status=0
+    if output=$(cat << 'EOF' | GHX_CAPTURED_BODY_FILE="$captured_body_file" bash "$GHX_SCRIPT" pr comment --pr=owner/repo#123 --body-file - 2>&1
+## Summary
+line one
+line two
+EOF
+); then
+        status=0
+    else
+        status=$?
+    fi
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ $status -eq 0 ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ Publisher accepts --body-file - from stdin"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ Publisher should accept --body-file - (status=$status, output: $output)"
+    fi
+
+    assert_file_exists "$captured_body_file" "Captured body should exist"
+    local captured
+    captured=$(cat "$captured_body_file" 2>/dev/null || true)
+    assert_contains "$captured" "## Summary" "Captured body contains stdin markdown"
+    assert_contains "$captured" "line two" "Captured body contains multiline stdin content"
+    assert_file_exists "$output_dir/publish-results.json" "publish-results.json should be generated"
+    assert_json_valid "$output_dir/publish-results.json" "publish-results.json should be valid JSON"
+
+    cleanup_test_env "$tmp_dir"
+}
+
+test_batch_and_direct_conflict() {
+    local test_name="batch_and_direct_conflict"
+    log_info "Running test: $test_name"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local output_dir="$tmp_dir/output"
+    local bin_dir="$tmp_dir/bin"
+
+    mkdir -p "$output_dir" "$bin_dir"
+
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+    export GITHUB_OUTPUT_DIR="$output_dir"
+
+    cat > "$output_dir/publish-batch.json" << 'EOF'
+{
+  "version": "1.0",
+  "pr_ref": "owner/repo#123",
+  "actions": []
+}
+EOF
+
+    local output
+    output=$(bash "$GHX_PUBLISH_SCRIPT" --batch="$output_dir/publish-batch.json" --pr=owner/repo#123 comment --body-file=- << 'EOF' 2>&1 || true
+from stdin
+EOF
+)
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ "$output" == *"Cannot combine --batch with direct command"* ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ Publisher rejects mixed batch and direct command mode"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ Publisher should reject mixed batch and direct command mode"
+        log_error "Output: $output"
+    fi
+
+    cleanup_test_env "$tmp_dir"
+}
+
+test_batch_path_traversal_rejected() {
+    local test_name="batch_path_traversal_rejected"
+    log_info "Running test: $test_name"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local output_dir="$tmp_dir/output"
+    local outside_dir="$tmp_dir/outside"
+    local bin_dir="$tmp_dir/bin"
+
+    mkdir -p "$output_dir" "$outside_dir" "$bin_dir"
+    echo "secret" > "$outside_dir/secret.md"
+
+    cat > "$output_dir/publish-batch.json" << 'EOF'
+{
+  "version": "1.0",
+  "pr_ref": "owner/repo#123",
+  "actions": [
+    {
+      "type": "post_comment",
+      "params": {
+        "body": "../outside/secret.md",
+        "marker": "test-marker"
+      }
+    }
+  ]
+}
+EOF
+
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+    export GITHUB_OUTPUT_DIR="$output_dir"
+
+    local output
+    output=$(bash "$GHX_SCRIPT" batch run --batch="$output_dir/publish-batch.json" 2>&1 || true)
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ "$output" == *"Path traversal not allowed"* ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ Batch mode rejects traversal in body file path"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ Batch mode should reject traversal in body file path"
+        log_error "Output: $output"
     fi
 
     cleanup_test_env "$tmp_dir"
@@ -305,9 +527,9 @@ test_reply_review_multiline_messages() {
     local output_dir="$tmp_dir/output"
     local bin_dir="$tmp_dir/bin"
 
-    # Create intent with reply_review action containing multi-word/multiline messages
+    # Create batch file with reply_review action containing multi-word/multiline messages
     mkdir -p "$output_dir"
-    cat > "$output_dir/publish-intent.json" << 'EOF'
+    cat > "$output_dir/publish-batch.json" << 'EOF'
 {
   "version": "1.0",
   "pr_ref": "owner/repo#123",
@@ -357,7 +579,7 @@ INNEREOF
     # Run in dry-run mode and check for jq parse errors
     local output
     local status=0
-    if output=$(bash "$GHX_SCRIPT" intent run --dry-run --intent="$output_dir/publish-intent.json" 2>&1); then
+    if output=$(bash "$GHX_SCRIPT" batch run --dry-run --batch="$output_dir/publish-batch.json" 2>&1); then
         status=0
     else
         status=$?
@@ -391,9 +613,12 @@ main() {
     test_publisher_script_exists
     test_publisher_script_executable
     test_publisher_help
-    test_publisher_missing_intent
+    test_publisher_missing_batch
     test_publisher_invalid_json
-    test_publisher_valid_intent
+    test_publisher_valid_batch
+    test_body_file_stdin
+    test_batch_and_direct_conflict
+    test_batch_path_traversal_rejected
     test_reply_review_multiline_messages
     
     # Summary

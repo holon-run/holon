@@ -1,7 +1,7 @@
 #!/bin/bash
 # publish.sh - GitHub publishing script for ghx skill
 #
-# Supports batch publish intent execution and direct single-action commands.
+# Supports batch publish execution and direct single-action commands.
 
 set -euo pipefail
 
@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -z "${GITHUB_OUTPUT_DIR:-}" ]]; then
   GITHUB_OUTPUT_DIR="$(mktemp -d /tmp/holon-ghpub-XXXXXX)"
 fi
-INTENT_FILE=""
+BATCH_FILE=""
 DRY_RUN=false
 FROM_INDEX=0
 PR_REF=""
@@ -35,16 +35,16 @@ usage() {
 Usage: publish.sh [OPTIONS] [COMMAND [ARGS]]
 
 Batch mode:
-  publish.sh --intent=/path/to/publish-intent.json [OPTIONS]
+  publish.sh --batch=/path/to/publish-batch.json [OPTIONS]
 
 Direct command mode:
-  publish.sh --pr=OWNER/REPO#NUM comment --body-file summary.md
-  publish.sh --pr=OWNER/REPO#NUM post-review --body-file review.md [--comments-file review.json]
-  publish.sh --pr=OWNER/REPO#NUM update-pr --title "..." [--body-file summary.md]
-  publish.sh --repo=OWNER/REPO create-pr --title "..." --body-file summary.md --head feature/x --base main
+  publish.sh --pr=OWNER/REPO#NUM comment --body-file summary.md|-
+  publish.sh --pr=OWNER/REPO#NUM post-review --body-file review.md|- [--comments-file review.json]
+  publish.sh --pr=OWNER/REPO#NUM update-pr --title "..." [--body-file summary.md|-]
+  publish.sh --repo=OWNER/REPO create-pr --title "..." --body-file summary.md|- --head feature/x --base main
 
 Global options:
-  --intent=PATH         Path to publish-intent.json file
+  --batch=PATH          Path to publish-batch.json file
   --dry-run             Show what would be done without executing
   --from=N              Start from action N (for resume)
   --pr=OWNER/REPO#NUM   Target PR reference
@@ -93,37 +93,37 @@ parse_repo_ref_string() {
   return 1
 }
 
-validate_intent() {
-  local intent_file="$1"
-  log_info "Validating intent file: $intent_file"
+validate_batch() {
+  local batch_file="$1"
+  log_info "Validating batch file: $batch_file"
 
-  if [[ ! -f "$intent_file" ]]; then
-    log_error "Intent file not found: $intent_file"
+  if [[ ! -f "$batch_file" ]]; then
+    log_error "Batch file not found: $batch_file"
     return 1
   fi
 
   local version
-  version=$(jq -r '.version // "1.0"' "$intent_file" 2>/dev/null)
+  version=$(jq -r '.version // "1.0"' "$batch_file" 2>/dev/null)
   if [[ "$version" != "1.0" ]]; then
     log_error "Unsupported version: $version (supported: 1.0)"
     return 1
   fi
 
-  if ! jq -e 'has("pr_ref") and has("actions")' "$intent_file" >/dev/null 2>&1; then
-    log_error "Missing required fields in intent file (pr_ref, actions)"
+  if ! jq -e 'has("pr_ref") and has("actions")' "$batch_file" >/dev/null 2>&1; then
+    log_error "Missing required fields in batch file (pr_ref, actions)"
     return 1
   fi
 
   local action_count
-  action_count=$(jq '.actions | length' "$intent_file")
+  action_count=$(jq '.actions | length' "$batch_file")
   if [[ "$action_count" -eq 0 ]]; then
-    log_warn "No actions to execute in intent file"
+    log_warn "No actions to execute in batch file"
     return 0
   fi
 
   for ((i=0; i<action_count; i++)); do
     local action_type
-    action_type=$(jq -r ".actions[$i].type // empty" "$intent_file")
+    action_type=$(jq -r ".actions[$i].type // empty" "$batch_file")
     case "$action_type" in
       create_pr|update_pr|post_comment|reply_review|post_review) ;;
       *)
@@ -133,15 +133,16 @@ validate_intent() {
     esac
   done
 
-  log_info "Intent file validation passed"
+  log_info "Batch file validation passed"
 }
 
-parse_pr_ref_from_intent() {
+parse_pr_ref_from_batch() {
+  local batch_file="$1"
   if [[ -z "$PR_REF" ]]; then
-    PR_REF=$(jq -r '.pr_ref' "$INTENT_FILE")
+    PR_REF=$(jq -r '.pr_ref' "$batch_file")
   fi
   if [[ "$PR_REF" == "null" || -z "$PR_REF" ]]; then
-    log_error "No PR reference specified and not found in intent file"
+    log_error "No PR reference specified and not found in batch file"
     return 1
   fi
   if ! parse_pr_ref_string "$PR_REF"; then
@@ -216,13 +217,13 @@ show_summary() {
   echo ""
 }
 
-execute_intent() {
-  local intent_file="$1"
-  validate_intent "$intent_file" || return 1
-  parse_pr_ref_from_intent || return 1
+execute_batch() {
+  local batch_file="$1"
+  validate_batch "$batch_file" || return 1
+  parse_pr_ref_from_batch "$batch_file" || return 1
 
   local action_count
-  action_count=$(jq '.actions | length' "$intent_file")
+  action_count=$(jq '.actions | length' "$batch_file")
   local results_json='[]'
   local total=0 completed=0 failed=0
 
@@ -230,8 +231,8 @@ execute_intent() {
 
   for ((i=FROM_INDEX; i<action_count; i++)); do
     local action_type action_params
-    action_type=$(jq -r ".actions[$i].type" "$intent_file")
-    action_params=$(jq ".actions[$i].params // (.actions[$i] | del(.type, .description))" "$intent_file")
+    action_type=$(jq -r ".actions[$i].type" "$batch_file")
+    action_params=$(jq ".actions[$i].params // (.actions[$i] | del(.type, .description))" "$batch_file")
     total=$((total + 1))
 
     if [[ "$DRY_RUN" == "true" ]]; then
@@ -399,8 +400,8 @@ while [[ $# -gt 0 ]]; do
     --from=*)
       FROM_INDEX="${1#*=}"
       ;;
-    --intent=*)
-      INTENT_FILE="${1#*=}"
+    --batch=*)
+      BATCH_FILE="${1#*=}"
       ;;
     --pr=*)
       PR_REF="${1#*=}"
@@ -436,8 +437,14 @@ main() {
   log_info "GitHub publishing script for ghx skill"
   check_dependencies
 
-  if [[ -n "$INTENT_FILE" ]]; then
-    execute_intent "$INTENT_FILE"
+  if [[ -n "$BATCH_FILE" && -n "$DIRECT_CMD" ]]; then
+    log_error "Cannot combine --batch with direct command '$DIRECT_CMD'"
+    usage
+    exit 2
+  fi
+
+  if [[ -n "$BATCH_FILE" ]]; then
+    execute_batch "$BATCH_FILE"
     exit $?
   fi
 
@@ -446,7 +453,7 @@ main() {
     exit $?
   fi
 
-  log_error "No mode specified. Use --intent=<file> or a direct command."
+  log_error "No mode specified. Use --batch=<file> or a direct command."
   usage
   exit 2
 }

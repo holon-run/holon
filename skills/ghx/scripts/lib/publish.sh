@@ -27,6 +27,59 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Helper Functions
 # ============================================================================
 
+# Resolve and validate a relative path under GITHUB_OUTPUT_DIR.
+# - Reject absolute paths.
+# - Reject path traversal segments ("..").
+# - For existing paths, verify canonical path is under canonical GITHUB_OUTPUT_DIR.
+# Echoes resolved candidate path on success.
+resolve_output_path_for_read() {
+    local rel_path="$1"
+
+    if [[ -z "$rel_path" || "$rel_path" == "null" ]]; then
+        log_error "Path is required"
+        return 1
+    fi
+
+    if [[ "$rel_path" =~ ^/ ]]; then
+        log_error "Absolute paths not allowed for security: $rel_path"
+        return 1
+    fi
+
+    if [[ "$rel_path" =~ (^|/)\.\.(/|$) ]]; then
+        log_error "Path traversal not allowed: $rel_path"
+        return 1
+    fi
+
+    local candidate="$GITHUB_OUTPUT_DIR/$rel_path"
+
+    # If path doesn't exist yet, the traversal checks above are sufficient for safety.
+    if [[ ! -e "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+    fi
+
+    local base_real parent_real candidate_real
+    if ! base_real=$(cd "$GITHUB_OUTPUT_DIR" && pwd -P); then
+        log_error "Failed to resolve GITHUB_OUTPUT_DIR: $GITHUB_OUTPUT_DIR"
+        return 1
+    fi
+    if ! parent_real=$(cd "$(dirname "$candidate")" && pwd -P); then
+        log_error "Failed to resolve parent path: $(dirname "$candidate")"
+        return 1
+    fi
+    candidate_real="$parent_real/$(basename "$candidate")"
+
+    case "$candidate_real" in
+        "$base_real"/*)
+            echo "$candidate_real"
+            ;;
+        *)
+            log_error "Invalid file path (outside output directory): $rel_path"
+            return 1
+            ;;
+    esac
+}
+
 # Find existing comment by marker
 # Usage: find_existing_comment <pr_number> <marker>
 # Output: Comment ID if found, empty string otherwise
@@ -34,12 +87,12 @@ find_existing_comment() {
     local pr_number="$1"
     local marker="$2"
 
-    log_info "Looking for existing comment with marker: $marker"
+    log_info "Looking for existing comment with marker: $marker" >&2
 
     # Get all comments for the PR
     local comments
     if ! comments=$(gh api "repos/$PR_OWNER/$PR_REPO/issues/$pr_number/comments" 2>/dev/null); then
-        log_warn "Failed to fetch comments for PR #$pr_number"
+        log_warn "Failed to fetch comments for PR #$pr_number" >&2
         echo ""
         return 0
     fi
@@ -51,10 +104,10 @@ find_existing_comment() {
     ')
 
     if [[ -n "$comment_id" ]]; then
-        log_info "Found existing comment: #$comment_id"
+        log_info "Found existing comment: #$comment_id" >&2
         echo "$comment_id"
     else
-        log_info "No existing comment found with marker"
+        log_info "No existing comment found with marker" >&2
         echo ""
     fi
 }
@@ -74,24 +127,25 @@ parse_body_param() {
         return 1
     fi
 
+    # Read from stdin when body is "-"
+    if [[ "$body_param" == "-" ]]; then
+        # Cache stdin content for this process so multiple actions can reuse it.
+        if [[ "${GHX_STDIN_BODY_CAPTURED:-false}" != "true" ]]; then
+            if [[ -t 0 ]]; then
+                log_error "Body parameter '-' requires stdin input"
+                return 1
+            fi
+            GHX_STDIN_BODY="$(cat)"
+            GHX_STDIN_BODY_CAPTURED="true"
+        fi
+        echo "$GHX_STDIN_BODY"
+        return 0
+    fi
+
     # Check if it's a file path (ends in .md)
     if [[ "$body_param" =~ \.md$ ]]; then
-        # Resolve and validate file path within GITHUB_OUTPUT_DIR
         local resolved_file
-        if [[ "$body_param" =~ ^/ ]]; then
-            # Absolute path - reject for security
-            log_error "Absolute paths not allowed for security: $body_param"
-            return 1
-        fi
-
-        # Resolve relative to GITHUB_OUTPUT_DIR
-        resolved_file="$GITHUB_OUTPUT_DIR/$body_param"
-
-        # Validate the resolved path is within GITHUB_OUTPUT_DIR
-        if [[ "$resolved_file" != "$GITHUB_OUTPUT_DIR"/* ]]; then
-            log_error "Invalid file path (outside output directory): $body_param"
-            return 1
-        fi
+        resolved_file=$(resolve_output_path_for_read "$body_param") || return 1
 
         # Read from file if it exists
         if [[ -f "$resolved_file" ]]; then
@@ -334,7 +388,10 @@ action_post_comment() {
 
     # Get or generate marker for idempotency
     local marker
-    marker=$(echo "$params" | jq -r '.marker // "holon-publish-marker"')
+    marker=$(echo "$params" | jq -r '.marker // empty')
+    if [[ -z "$marker" ]]; then
+        marker="holon-publish-marker"
+    fi
 
     # Add marker to body if not present
     if [[ ! "$body_content" =~ $marker ]]; then
@@ -499,11 +556,8 @@ action_post_review() {
     body_content=$(parse_body_param "$params") || return 1
 
     # Resolve comments file path (relative to output dir)
-    if [[ "$comments_file" =~ ^/ ]]; then
-        log_error "Absolute paths not allowed for comments_file: $comments_file"
-        return 1
-    fi
-    local comments_path="$GITHUB_OUTPUT_DIR/$comments_file"
+    local comments_path
+    comments_path=$(resolve_output_path_for_read "$comments_file") || return 1
 
     local inline_comments=()
     if [[ -f "$comments_path" ]]; then
