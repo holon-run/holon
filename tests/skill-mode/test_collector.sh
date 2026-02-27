@@ -99,6 +99,29 @@ assert_contains() {
     fi
 }
 
+assert_json_expr() {
+    local file="$1"
+    local expr="$2"
+    local msg="${3:-JSON expression should match: $expr}"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if command -v jq >/dev/null 2>&1; then
+        if jq -e "$expr" "$file" >/dev/null 2>&1; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            log_info "✓ $msg"
+            return 0
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            log_error "✗ $msg"
+            return 1
+        fi
+    else
+        log_warn "jq not available, skipping JSON expression assertion"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        return 0
+    fi
+}
+
 # Test setup
 setup_test_env() {
     local test_name="$1"
@@ -267,6 +290,45 @@ test_collector_parsing_urls() {
     done
 }
 
+test_manifest_schema_v2() {
+    local test_name="manifest_schema_v2"
+    log_info "Running test: $test_name"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local manifest_dir="$tmp_dir/context"
+    local manifest_file="$manifest_dir/manifest.json"
+    mkdir -p "$manifest_dir"
+
+    local artifacts_json='[{"id":"pr_metadata","path":"github/pr.json","required_for":["review"],"status":"present","format":"json","description":"Pull request metadata and head/base refs."}]'
+    local notes_json='["Skipped check run collection because INCLUDE_CHECKS=false."]'
+    local helpers_script="$REPO_ROOT/skills/ghx/scripts/lib/helpers.sh"
+
+    if ! bash -c '
+        set -euo pipefail
+        source "$1"
+        MANIFEST_PROVIDER="ghx"
+        write_manifest "$2" "owner" "repo" "123" "pr" "true" "$3" "$4"
+    ' _ "$helpers_script" "$manifest_dir" "$artifacts_json" "$notes_json"; then
+        TESTS_RUN=$((TESTS_RUN + 1))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ Failed to generate manifest via write_manifest"
+        cleanup_test_env "$tmp_dir"
+        return 1
+    fi
+
+    assert_file_exists "$manifest_file" "Manifest file exists"
+    assert_json_valid "$manifest_file" "Manifest is valid JSON"
+    assert_json_expr "$manifest_file" '.schema_version == "2.0"' "Manifest schema version is 2.0"
+    assert_json_expr "$manifest_file" '.success == true' "Manifest success is true"
+    assert_json_expr "$manifest_file" '.artifacts | length == 1' "Manifest has artifact entries"
+    assert_json_expr "$manifest_file" '.artifacts[0].id == "pr_metadata"' "Artifact id is present"
+    assert_json_expr "$manifest_file" '.artifacts[0].required_for == ["review"]' "Artifact required_for is present"
+    assert_json_expr "$manifest_file" '.notes | length == 1' "Manifest notes are present"
+
+    cleanup_test_env "$tmp_dir"
+}
+
 # Main test runner
 main() {
     log_info "=== Collector Script Tests ==="
@@ -281,6 +343,7 @@ main() {
     test_collector_invalid_ref
     test_collector_missing_jq
     test_collector_parsing_urls
+    test_manifest_schema_v2
     
     # Summary
     echo ""

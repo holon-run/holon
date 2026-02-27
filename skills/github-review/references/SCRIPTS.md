@@ -24,33 +24,14 @@ collect.sh <pr_ref> [repo_hint]
 
 ### What It Collects
 
-1. **PR Metadata** (`github/pr.json`)
-   - Title, description, author
-   - Addition, deletion, modification counts
-   - Created at, updated at, state
+`collect.sh` delegates to `ghx` collection and writes a manifest-driven context contract:
 
-2. **Changed Files** (`github/files.json`)
-   - List of modified files with statistics
-   - Configurable limit via `MAX_FILES`
-
-3. **Full Diff** (`github/pr.diff`)
-   - Complete diff of all changes
-   - Used for code review analysis
-
-4. **Review Threads** (`github/review_threads.json`)
-   - Existing review comments
-   - Used to avoid duplicating feedback
-
-5. **Discussion Comments** (`github/comments.json`)
-   - PR conversation history
-   - Provides additional context
-
-6. **Commit History** (`github/commits.json`)
-   - Commit messages and metadata
-   - Helps understand evolution of changes
-
-7. **Check Runs** (`github/check_runs.json`) *(optional)*
-   - Only when `INCLUDE_CHECKS=true`
+1. `manifest.json` (schema `2.0`) with:
+   - normalized ref (`owner/repo#number`)
+   - collection success status
+   - `artifacts[]` entries (`id`, `path`, `status`, `description`, `required_for`)
+   - diagnostic `notes[]`
+2. Context files under `github/` referenced by `manifest.artifacts[]` (for example `pr.json`, `files.json`, `pr.diff`, `review_threads.json`, `comments.json`, `commits.json`, `check_runs.json`)
 
 ### Environment Variables
 
@@ -67,16 +48,10 @@ collect.sh <pr_ref> [repo_hint]
 
 ### Output Files
 
-All files written to `GITHUB_CONTEXT_DIR` (default: `GITHUB_OUTPUT_DIR/github-context/`):
+All files are written to `GITHUB_CONTEXT_DIR` (default: `GITHUB_OUTPUT_DIR/github-context/`):
 
-- `github/pr.json` - PR metadata
-- `github/files.json` - Changed files list
-- `github/pr.diff` - Full diff
-- `github/review_threads.json` - Existing reviews
-- `github/comments.json` - PR comments
-- `github/commits.json` - Commit history
-- `github/check_runs.json` - Check runs (when `INCLUDE_CHECKS=true`)
-- `manifest.json` - Collection metadata
+- `manifest.json` - canonical artifact contract for consumers
+- `github/*` - artifact files listed in `manifest.artifacts[]`
 
 ### Requirements
 
@@ -125,7 +100,7 @@ MAX_INLINE=10 POST_EMPTY=false skills/ghx/scripts/ghx.sh review publish --pr=own
 ### Required artifacts (in `${GITHUB_OUTPUT_DIR}`; defaults to temp when unset)
 - `review.md`: Review summary/body
 - `review.json`: Structured findings with `path`/`line`/`severity`/`message` (and optional `suggestion`)
-- `github-context/manifest.json`: Collection manifest (for PR ref and head SHA)
+- Optional `github-context/manifest.json`: collection metadata for audit/debug context
 
 ### Output
 - Updates GitHub with one review (event=COMMENT) plus inline comments (up to `MAX_INLINE`).

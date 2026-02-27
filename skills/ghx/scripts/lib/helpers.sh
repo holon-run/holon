@@ -584,8 +584,8 @@ verify_context_files() {
     return 0
 }
 
-# Write collection manifest
-# Usage: write_manifest <output_dir> <owner> <repo> <number> <ref_type> <success>
+# Write collection manifest (schema v2.0)
+# Usage: write_manifest <output_dir> <owner> <repo> <number> <ref_type> <success> [artifacts_json] [notes_json]
 write_manifest() {
     local output_dir="$1"
     local owner="$2"
@@ -593,30 +593,39 @@ write_manifest() {
     local number="$4"
     local ref_type="$5"
     local success="$6"
+    local artifacts_json="${7:-[]}"
+    local notes_json="${8:-[]}"
 
     local provider="${MANIFEST_PROVIDER:-ghx}"
     local manifest_file="$output_dir/manifest.json"
     local timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-    cat > "$manifest_file" <<EOF
-{
-  "provider": "$provider",
-  "kind": "$ref_type",
-  "ref": "$owner/$repo#$number",
-  "owner": "$owner",
-  "repo": "$repo",
-  "number": $number,
-  "collected_at": "$timestamp",
-  "include_diff": ${INCLUDE_DIFF:-false},
-  "include_checks": ${INCLUDE_CHECKS:-false},
-  "include_files": ${INCLUDE_FILES:-false},
-  "include_commits": ${INCLUDE_COMMITS:-false},
-  "include_threads": ${INCLUDE_THREADS:-false},
-  "max_files": ${MAX_FILES:-0},
-  "success": $success
-}
-EOF
+    jq -n \
+      --arg schema_version "2.0" \
+      --arg provider "$provider" \
+      --arg kind "$ref_type" \
+      --arg ref "$owner/$repo#$number" \
+      --arg owner "$owner" \
+      --arg repo "$repo" \
+      --arg collected_at "$timestamp" \
+      --argjson number "$number" \
+      --argjson success "$success" \
+      --argjson artifacts "$artifacts_json" \
+      --argjson notes "$notes_json" \
+      '{
+        schema_version: $schema_version,
+        provider: $provider,
+        kind: $kind,
+        ref: $ref,
+        owner: $owner,
+        repo: $repo,
+        number: $number,
+        collected_at: $collected_at,
+        success: $success,
+        artifacts: $artifacts,
+        notes: $notes
+      }' > "$manifest_file"
 
     log_info "Wrote collection manifest to $manifest_file"
     return 0
