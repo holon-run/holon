@@ -154,8 +154,8 @@ MAX_INLINE=10 skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --bod
 # Post even if no findings
 POST_EMPTY=true skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 
-# Use intent file
-skills/ghx/scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
+# Use batch mode for multi-action publish
+skills/ghx/scripts/ghx.sh batch run --batch=publish-batch.json
 ```
 
 ---

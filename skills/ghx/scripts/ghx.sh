@@ -9,7 +9,7 @@ usage() {
   cat <<USAGE
 Usage:
   ghx.sh context collect <ref> [repo_hint]
-  ghx.sh intent run --intent=<path> [--dry-run] [--from=N] [--pr=OWNER/REPO#NUM]
+  ghx.sh batch run --batch=<path> [--dry-run] [--from=N] [--pr=OWNER/REPO#NUM]
   ghx.sh review publish --pr=OWNER/REPO#NUM --body-file=<review.md> [--comments-file=review.json] [--max-inline=N] [--post-empty]
   ghx.sh pr create --repo=OWNER/REPO --title=... --body-file=... --head=... --base=...
   ghx.sh pr update --pr=OWNER/REPO#NUM [--title=...] [--body-file=...] [--state=open|closed]
@@ -32,7 +32,7 @@ case "$1" in
     shift
     exec "$SCRIPT_DIR/collect.sh" "$@"
     ;;
-  intent)
+  batch)
     shift
     if [[ "${1:-}" != "run" ]]; then
       usage
@@ -58,7 +58,7 @@ case "$1" in
     sub_args=()
     for arg in "$@"; do
       case "$arg" in
-        --pr=*|--repo=*|--dry-run|--from=*|--intent=*)
+        --pr=*|--repo=*|--dry-run|--from=*|--batch=*)
           global_opts+=("$arg")
           ;;
         *)

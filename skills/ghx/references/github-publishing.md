@@ -4,14 +4,14 @@
 
 Boundary:
 - External skills should call `ghx` capability commands and rely on `publish-results.json`.
-- `publish-intent.json` is an internal ghx action format; avoid coupling external skills to its schema.
+- `publish-batch.json` is a public batch schema for `ghx.sh batch run`.
 
 ## Modes
 
-1. Intent mode (batch actions)
+1. Batch mode (multiple actions)
 
 ```bash
-scripts/ghx.sh intent run --intent=${GITHUB_OUTPUT_DIR}/publish-intent.json
+scripts/ghx.sh batch run --batch=${GITHUB_OUTPUT_DIR}/publish-batch.json
 ```
 
 2. Direct mode (single action)
@@ -21,9 +21,36 @@ scripts/ghx.sh pr comment --pr=owner/repo#123 --body-file=summary.md
 scripts/ghx.sh review publish --pr=owner/repo#123 --body-file=review.md --comments-file=review.json
 ```
 
-## Intent Schema (Internal to ghx)
+## Text Payload Safety (Required)
 
-`publish-intent.json`:
+When publishing markdown/json content, do not inline large text directly in shell arguments.
+Always write payloads to files first, then pass file flags.
+
+Required patterns:
+- `ghx`: `--body-file`, `--comments-file`
+- raw `gh`: `--body-file`
+
+Reason:
+- Avoid shell escaping/newline truncation/backtick interpolation errors.
+- Improve reproducibility and debugging (payload can be inspected as a file).
+
+Example:
+
+```bash
+cat > /tmp/review.md <<'EOF'
+## Review Summary
+Multi-line content with markdown/code fences.
+EOF
+scripts/ghx.sh pr comment --pr=owner/repo#123 --body-file=/tmp/review.md
+```
+
+Mode selection:
+- Use direct mode for one publish action.
+- Use batch mode when one run needs multiple publish actions.
+
+## Batch Schema (Public)
+
+`publish-batch.json`:
 
 ```json
 {
@@ -45,12 +72,27 @@ Notes:
 - `version` is optional; default is `1.0`.
 - Action parameters are read from `params`, and legacy inline action fields are also accepted.
 
+Top-level fields:
+- `version` (optional): schema version, currently `1.0`
+- `pr_ref` (required): `owner/repo#number`
+- `actions` (required): ordered list of actions
+
+Action fields:
+- `type` (required): action type
+- `description` (optional): human-readable note
+- `params` (optional): action payload object
+
 Supported action types:
 - `create_pr`
 - `update_pr`
 - `post_comment`
 - `reply_review`
 - `post_review`
+
+Third-party skill guidance:
+- You can use this batch schema directly when needed.
+- For single actions, prefer direct commands instead of batch files.
+- Do not depend on undocumented fields outside this schema.
 
 ## Output
 

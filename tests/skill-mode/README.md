@@ -20,9 +20,9 @@ These tests validate the skill-mode workflow (collector/publisher scripts) with 
   - Empty comments
   - Error handling
 
-- **test_publisher.sh**: Tests the ghx publish entrypoint (`skills/ghx/scripts/ghx.sh intent run`)
+- **test_publisher.sh**: Tests the ghx publish entrypoint (`skills/ghx/scripts/ghx.sh batch run`)
   - Help functionality
-  - Missing intent files
+  - Missing batch files
   - Invalid JSON
   - Dry-run mode
 
@@ -140,7 +140,7 @@ The tests cover:
 
 These tests do NOT cover:
 - Actual GitHub API interactions (covered by integration tests with tokens)
-- LLM-generated patches/intent (covered by manual or smoke tests)
+- LLM-generated patches/batch plans (covered by manual or smoke tests)
 - Real network calls
 
 For full end-to-end testing, see the integration test suite in `tests/integration/`.

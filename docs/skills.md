@@ -555,7 +555,7 @@ For **code workflow skills** (issue-to-PR, PR-fix, code review), these artifacts
 
 Your skill may produce ANY artifacts with ANY names:
 
-- **GitHub skill**: `pr-fix.json`, `publish-intent.json`
+- **GitHub skill**: `pr-fix.json`, `publish-batch.json`
 - **Documentation skill**: `docs-updated.md`, `broken-links.json`
 - **Testing skill**: `coverage-report.html`, `test-results.xml`
 - **Custom skills**: Any outputs relevant to the skill's purpose
