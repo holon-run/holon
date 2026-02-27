@@ -1,29 +1,29 @@
 # Diagnostics and Best Practices
 
-Diagnostic confidence levels and common contract rules for the github-pr-fix skill.
+Diagnostic guidance for `github-pr-fix`.
 
 ## Diagnostic Confidence Levels
 
-When diagnosing CI failures, communicate your confidence:
+When reporting CI/test diagnosis, label confidence explicitly:
 
-- **High**: Root cause is clearly identified, all evidence points to the same conclusion
-- **Medium**: Root cause is likely but not 100% certain, some evidence supports diagnosis
-- **Low**: Significant conflicting evidence exists (e.g., tests pass locally but fail in CI)
+- **High**: Root cause is directly supported by logs/diff/evidence.
+- **Medium**: Most evidence supports one cause, with minor uncertainty.
+- **Low**: Competing explanations remain plausible.
 
-When confidence is **low** or fix_status is **"not-applicable"**:
+When confidence is low:
+1. Record conflicting evidence.
+2. List plausible alternatives.
+3. State what additional data would disambiguate.
+4. Avoid claiming definitive remediation.
 
-1. Document all conflicting evidence
-2. List alternative explanations
-3. Request specific investigation
-4. Consider `fix_status: "unverified"` instead of "not-applicable"
+## Manifest-Aware Diagnosis
 
-## Common Contract Rules
+- Use `${GITHUB_CONTEXT_DIR}/manifest.json` as source of truth for available artifacts.
+- If key artifacts are missing (`status != present`), downgrade confidence and explain impact.
+- Do not infer absent context from expected filenames.
 
-Use the common contract rules without modification. The common contract provides:
+## Verification Discipline
 
-- Sandbox environment rules and physics
-- Developer role expectations
-- Output artifact requirements
-- Testing and verification guidelines
-
-For detailed information on the common contract, see the main project documentation.
+- Prefer runnable build/test evidence over static reasoning.
+- If full verification is impossible, report exact attempted commands and blockers.
+- Keep summary actionable: diagnosis, change applied, residual risk, and next step.

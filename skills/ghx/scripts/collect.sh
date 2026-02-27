@@ -157,57 +157,57 @@ SUCCESS=false
 if [[ "$REF_TYPE" == "pr" ]]; then
     if ! fetch_pr_metadata "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/pr.json"; then
         log_error "Failed to fetch PR metadata"
-        record_artifact "pr_metadata" "github/pr.json" "error" "json" "Pull request metadata and head/base refs." "review"
+        record_artifact "pr_metadata" "github/pr.json" "error" "json" "Pull request metadata and head/base refs." "review,pr_fix"
         append_manifest_note "Failed to fetch PR metadata."
         write_manifest "$GITHUB_CONTEXT_DIR" "$OWNER" "$REPO" "$NUMBER" "$REF_TYPE" "false" "$ARTIFACTS_JSON" "$MANIFEST_NOTES_JSON"
         exit 1
     fi
-    record_artifact "pr_metadata" "github/pr.json" "present" "json" "Pull request metadata and head/base refs." "review"
+    record_artifact "pr_metadata" "github/pr.json" "present" "json" "Pull request metadata and head/base refs." "review,pr_fix"
 
     if [[ "$INCLUDE_FILES" == "true" ]]; then
         if fetch_pr_files "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/files.json" "$MAX_FILES"; then
-            record_artifact "files" "github/files.json" "present" "json" "Changed files list with per-file stats." "review"
+            record_artifact "files" "github/files.json" "present" "json" "Changed files list with per-file stats." "review,pr_fix"
         else
             log_warn "Failed to fetch PR files (continuing...)"
-            record_artifact "files" "github/files.json" "error" "json" "Changed files list with per-file stats." "review"
+            record_artifact "files" "github/files.json" "error" "json" "Changed files list with per-file stats." "review,pr_fix"
             append_manifest_note "Failed to fetch PR files."
         fi
     else
-        record_artifact "files" "github/files.json" "missing" "json" "Changed files list with per-file stats." "review"
+        record_artifact "files" "github/files.json" "missing" "json" "Changed files list with per-file stats." "review,pr_fix"
         append_manifest_note "Skipped files collection because INCLUDE_FILES=false."
     fi
 
     if [[ "$INCLUDE_THREADS" == "true" ]]; then
         if fetch_pr_review_threads "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/review_threads.json" "$UNRESOLVED_ONLY" "$TRIGGER_COMMENT_ID"; then
-            record_artifact "review_threads" "github/review_threads.json" "present" "json" "Existing review threads for deduplication." "review"
+            record_artifact "review_threads" "github/review_threads.json" "present" "json" "Existing review threads for deduplication." "review,pr_fix"
         else
             log_warn "Failed to fetch review threads (continuing...)"
-            record_artifact "review_threads" "github/review_threads.json" "error" "json" "Existing review threads for deduplication." "review"
+            record_artifact "review_threads" "github/review_threads.json" "error" "json" "Existing review threads for deduplication." "review,pr_fix"
             append_manifest_note "Failed to fetch review threads."
         fi
     else
-        record_artifact "review_threads" "github/review_threads.json" "missing" "json" "Existing review threads for deduplication." "review"
+        record_artifact "review_threads" "github/review_threads.json" "missing" "json" "Existing review threads for deduplication." "review,pr_fix"
         append_manifest_note "Skipped review thread collection because INCLUDE_THREADS=false."
     fi
 
     if fetch_pr_comments "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/comments.json" "$TRIGGER_COMMENT_ID"; then
-        record_artifact "comments" "github/comments.json" "present" "json" "Issue-style PR comments from the discussion timeline." "review"
+        record_artifact "comments" "github/comments.json" "present" "json" "Issue-style PR comments from the discussion timeline." "review,pr_fix"
     else
         log_warn "Failed to fetch PR comments (continuing...)"
-        record_artifact "comments" "github/comments.json" "error" "json" "Issue-style PR comments from the discussion timeline." "review"
+        record_artifact "comments" "github/comments.json" "error" "json" "Issue-style PR comments from the discussion timeline." "review,pr_fix"
         append_manifest_note "Failed to fetch PR comments."
     fi
 
     if [[ "$INCLUDE_DIFF" == "true" ]]; then
         if fetch_pr_diff "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/pr.diff"; then
-            record_artifact "diff" "github/pr.diff" "present" "text" "Unified diff for the pull request." "review"
+            record_artifact "diff" "github/pr.diff" "present" "text" "Unified diff for the pull request." "review,pr_fix"
         else
             log_warn "Failed to fetch PR diff (continuing...)"
-            record_artifact "diff" "github/pr.diff" "error" "text" "Unified diff for the pull request." "review"
+            record_artifact "diff" "github/pr.diff" "error" "text" "Unified diff for the pull request." "review,pr_fix"
             append_manifest_note "Failed to fetch PR diff."
         fi
     else
-        record_artifact "diff" "github/pr.diff" "missing" "text" "Unified diff for the pull request." "review"
+        record_artifact "diff" "github/pr.diff" "missing" "text" "Unified diff for the pull request." "review,pr_fix"
         append_manifest_note "Skipped diff collection because INCLUDE_DIFF=false."
     fi
 
@@ -215,7 +215,7 @@ if [[ "$REF_TYPE" == "pr" ]]; then
         HEAD_SHA=$(jq -r '.headRefOid' "$GITHUB_CONTEXT_DIR/github/pr.json")
         if [[ -n "$HEAD_SHA" && "$HEAD_SHA" != "null" ]]; then
             if fetch_pr_check_runs "$OWNER" "$REPO" "$HEAD_SHA" "$GITHUB_CONTEXT_DIR/github/check_runs.json"; then
-                record_artifact "check_runs" "github/check_runs.json" "present" "json" "Check runs on the PR head SHA." "review"
+                record_artifact "check_runs" "github/check_runs.json" "present" "json" "Check runs on the PR head SHA." "review,pr_fix"
                 if [[ -f "$GITHUB_CONTEXT_DIR/github/check_runs.json" ]]; then
                     fetch_workflow_logs "$GITHUB_CONTEXT_DIR/github" "$GITHUB_CONTEXT_DIR/github/check_runs.json" || {
                         log_warn "Failed to fetch workflow logs (continuing...)"
@@ -224,29 +224,29 @@ if [[ "$REF_TYPE" == "pr" ]]; then
                 fi
             else
                 log_warn "Failed to fetch check runs (continuing...)"
-                record_artifact "check_runs" "github/check_runs.json" "error" "json" "Check runs on the PR head SHA." "review"
+                record_artifact "check_runs" "github/check_runs.json" "error" "json" "Check runs on the PR head SHA." "review,pr_fix"
                 append_manifest_note "Failed to fetch check runs."
             fi
         else
             log_warn "Could not get head SHA from PR metadata, skipping check runs"
-            record_artifact "check_runs" "github/check_runs.json" "missing" "json" "Check runs on the PR head SHA." "review"
+            record_artifact "check_runs" "github/check_runs.json" "missing" "json" "Check runs on the PR head SHA." "review,pr_fix"
             append_manifest_note "Skipped check runs because headRefOid was not available."
         fi
     else
-        record_artifact "check_runs" "github/check_runs.json" "missing" "json" "Check runs on the PR head SHA." "review"
+        record_artifact "check_runs" "github/check_runs.json" "missing" "json" "Check runs on the PR head SHA." "review,pr_fix"
         append_manifest_note "Skipped check run collection because INCLUDE_CHECKS=false."
     fi
 
     if [[ "$INCLUDE_COMMITS" == "true" ]]; then
         if fetch_pr_commits "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/commits.json"; then
-            record_artifact "commits" "github/commits.json" "present" "json" "Commit list and metadata for the pull request." "review"
+            record_artifact "commits" "github/commits.json" "present" "json" "Commit list and metadata for the pull request." "review,pr_fix"
         else
             log_warn "Failed to fetch commits (continuing...)"
-            record_artifact "commits" "github/commits.json" "error" "json" "Commit list and metadata for the pull request." "review"
+            record_artifact "commits" "github/commits.json" "error" "json" "Commit list and metadata for the pull request." "review,pr_fix"
             append_manifest_note "Failed to fetch PR commits."
         fi
     else
-        record_artifact "commits" "github/commits.json" "missing" "json" "Commit list and metadata for the pull request." "review"
+        record_artifact "commits" "github/commits.json" "missing" "json" "Commit list and metadata for the pull request." "review,pr_fix"
         append_manifest_note "Skipped commit collection because INCLUDE_COMMITS=false."
     fi
 
@@ -255,18 +255,18 @@ if [[ "$REF_TYPE" == "pr" ]]; then
 elif [[ "$REF_TYPE" == "issue" ]]; then
     if ! fetch_issue_metadata "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/issue.json"; then
         log_error "Failed to fetch issue metadata"
-        record_artifact "issue_metadata" "github/issue.json" "error" "json" "Issue metadata including title/body/state." ""
+        record_artifact "issue_metadata" "github/issue.json" "error" "json" "Issue metadata including title/body/state." "issue_solve"
         append_manifest_note "Failed to fetch issue metadata."
         write_manifest "$GITHUB_CONTEXT_DIR" "$OWNER" "$REPO" "$NUMBER" "$REF_TYPE" "false" "$ARTIFACTS_JSON" "$MANIFEST_NOTES_JSON"
         exit 1
     fi
-    record_artifact "issue_metadata" "github/issue.json" "present" "json" "Issue metadata including title/body/state." ""
+    record_artifact "issue_metadata" "github/issue.json" "present" "json" "Issue metadata including title/body/state." "issue_solve"
 
     if fetch_issue_comments "$OWNER" "$REPO" "$NUMBER" "$GITHUB_CONTEXT_DIR/github/comments.json" "$TRIGGER_COMMENT_ID"; then
-        record_artifact "comments" "github/comments.json" "present" "json" "Issue comments in chronological order." ""
+        record_artifact "comments" "github/comments.json" "present" "json" "Issue comments in chronological order." "issue_solve"
     else
         log_warn "Failed to fetch issue comments (continuing...)"
-        record_artifact "comments" "github/comments.json" "error" "json" "Issue comments in chronological order." ""
+        record_artifact "comments" "github/comments.json" "error" "json" "Issue comments in chronological order." "issue_solve"
         append_manifest_note "Failed to fetch issue comments."
     fi
 
