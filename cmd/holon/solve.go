@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/go-github/v68/github"
 	"github.com/holon-run/holon/pkg/config"
 	"github.com/holon-run/holon/pkg/git"
 	pkggithub "github.com/holon-run/holon/pkg/github"
@@ -34,6 +35,7 @@ var (
 	solveImageAutoDetect bool
 	solveSkillPaths      []string // Skill paths (--skill flag, repeatable)
 	solveSkillsList      string   // Comma-separated skills (--skills flag)
+	solveGoal            string
 
 	solveLogLevel              string
 	solveAssistantOutput       string
@@ -58,7 +60,7 @@ This is a high-level command that orchestrates the full workflow:
 1. Prepare workspace using smart workspace preparation
 2. Collect context from the GitHub Issue or PR
 3. Run Holon with the collected context
-4. Publish results (create PR for issues, or push/fix for PRs)
+	4. Publish results (create PR for issues, or review/fix for PRs)
 
 Skill-First Mode:
   Holon solve uses skill-first IO mode, which delegates context
@@ -90,7 +92,7 @@ Examples:
   # Solve an issue (creates/updates a PR) - uses skill-first mode
   holon solve https://github.com/holon-run/holon/issues/123
 
-  # Solve a PR (fixes review comments) - uses skill-first mode
+  # Solve a PR (defaults to review; switches to fix when review signals exist)
   holon solve https://github.com/holon-run/holon/pull/456
 
   # Short form
@@ -140,14 +142,17 @@ Examples:
 // solvePRCmd is the explicit "solve pr" subcommand
 var solvePRCmd = &cobra.Command{
 	Use:   "pr <ref>",
-	Short: "Solve a GitHub PR (fixes review comments)",
-	Long: `Solve a GitHub PR by collecting context, running Holon, and fixing review comments.
+	Short: "Solve a GitHub PR (review or fix)",
+	Long: `Solve a GitHub PR by collecting context, running Holon, and publishing review/fix results.
 
 The workflow:
 1. Collect PR context (diff, review threads, checks)
-2. Run Holon in "pr-fix" mode
+2. Resolve goal:
+   - default review when no review signals exist
+   - default fix when review feedback exists
+   - explicit --goal overrides defaults
 3. If diff.patch exists: apply/push to PR branch
-4. Publish replies based on pr-fix.json
+4. Publish review findings or fix replies to GitHub
 
 Examples:
   holon solve pr https://github.com/holon-run/holon/pull/123
@@ -515,31 +520,6 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		return fmt.Errorf("failed to create context directory: %w", err)
 	}
 
-	// Read workflow.json for trigger metadata (if exists)
-	// This is populated by the holon-solve workflow when triggered by comments
-	// We read it once and pass the data to buildGoal to avoid duplicate reads
-	type workflowMetadata struct {
-		TriggerCommentID int64
-		TriggerGoalHint  string
-	}
-	var workflowMeta workflowMetadata
-	workflowPath := filepath.Join(inputDir, "workflow.json")
-	if workflowData, err := os.ReadFile(workflowPath); err == nil {
-		var workflow struct {
-			Trigger struct {
-				CommentID int64  `json:"comment_id"`
-				GoalHint  string `json:"goal_hint"`
-			} `json:"trigger"`
-		}
-		if err := json.Unmarshal(workflowData, &workflow); err == nil {
-			workflowMeta.TriggerCommentID = workflow.Trigger.CommentID
-			workflowMeta.TriggerGoalHint = workflow.Trigger.GoalHint
-			if workflowMeta.TriggerCommentID > 0 {
-				fmt.Printf("Found trigger comment ID: %d\n", workflowMeta.TriggerCommentID)
-			}
-		}
-	}
-
 	// Resolve skills early to determine skill configuration
 	// In skill mode, the skill (agent) is responsible for context collection and publishing
 	// Parse CLI skills
@@ -571,15 +551,14 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		allSkills = configSkills
 	}
 
-	// Skill-first is the default: always use skill mode
-	// If no skills are configured, add a default skill bundle for issues only.
-	// For PRs, leave skills empty so PR-specific defaults can be applied later.
+	// Skill-first is the default: always use skill mode.
+	// If no skills are configured, add a default skill bundle for issues.
+	// For PRs, leave skills empty and rely on the goal for review/fix behavior.
 	useSkillMode := true // Always skill-first now
 	if len(allSkills) == 0 {
 		if refType == "pr" {
 			// In PR solves, do not force an issue-solve default skill.
-			// Leaving skills empty allows buildGoal's PR defaults to select appropriate skills.
-			fmt.Printf("Config: skills = [] (source: skill-first mode for PR; deferring to PR-specific defaults)\n")
+			fmt.Printf("Config: skills = [] (source: skill-first mode for PR)\n")
 		} else {
 			// Add default skill bundle for skill-first mode on issues
 			// This ensures skill-first IO is used by default
@@ -650,13 +629,16 @@ func runSolve(ctx context.Context, refStr, explicitType string) error {
 		return fmt.Errorf("failed to resolve assistant output: %w", err)
 	}
 
-	// Determine goal from the reference (skill mode already determined earlier)
-	// Pass useSkillMode to generate appropriate goal
-	selectedSkill := ""
-	if len(allSkills) > 0 {
-		selectedSkill = strings.TrimSpace(allSkills[0])
+	goal := strings.TrimSpace(solveGoal)
+	if goal == "" {
+		defaultGoal, err := buildDefaultSolveGoal(ctx, solveRef, refType, token)
+		if err != nil {
+			return fmt.Errorf("failed to build default goal: %w", err)
+		}
+		goal = defaultGoal
+	} else {
+		fmt.Println("Using explicit solve goal from --goal")
 	}
-	goal := buildGoal(inputDir, solveRef, refType, workflowMeta.TriggerGoalHint, selectedSkill)
 
 	// Resolve output directory with precedence: CLI flag > temp dir
 	// For solve command, we use a temp directory by default to avoid polluting the workspace
@@ -862,34 +844,80 @@ func getGitHubToken() (string, error) {
 	return token, nil
 }
 
-// buildGoal builds a goal description from the reference
-// triggerGoalHint is the optional goal hint from free-form triggers (e.g., "@holonbot fix this bug")
-func buildGoal(inputDir string, ref *pkggithub.SolveRef, refType string, triggerGoalHint string, selectedSkill string) string {
-	baseGoal := ""
+func buildDefaultSolveGoal(ctx context.Context, ref *pkggithub.SolveRef, refType, token string) (string, error) {
 	if refType == "pr" {
-		switch selectedSkill {
-		case "github-review":
-			baseGoal = fmt.Sprintf("Use the github-review skill to review the PR %s. The skill will guide you through: (1) Collecting PR context, (2) Analyzing code changes for issues, and (3) Publishing structured review findings to GitHub.", ref.URL())
-		case "github-pr-fix", "":
-			baseGoal = fmt.Sprintf("Use the github-pr-fix skill to fix the PR %s. The skill will guide you through: (1) Analyzing review comments, (2) Implementing fixes, (3) Publishing replies to GitHub.", ref.URL())
-		default:
-			baseGoal = fmt.Sprintf("Use the %s skill to process the PR %s according to the skill instructions, and publish the expected results back to GitHub.", selectedSkill, ref.URL())
+		intent, err := determinePRDefaultIntent(ctx, ref, token)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to inspect PR review signals, defaulting to review goal: %v\n", err)
+			intent = "review"
 		}
-	} else {
-		switch selectedSkill {
-		case "github-issue-solve", "":
-			baseGoal = fmt.Sprintf("Use the github-issue-solve skill to solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/manifest.json contains pr_number and pr_url for the created PR. The runtime validates success based on the manifest contract (status/outcome), with summary.md treated as optional human-readable output.", ref.URL())
-		default:
-			baseGoal = fmt.Sprintf("Use the %s skill to solve the GitHub issue %s end-to-end following the skill instructions and publish the expected results to GitHub. Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success' for successful execution.", selectedSkill, ref.URL())
-		}
+
+		return buildPRGoal(ref.URL(), intent), nil
 	}
 
-	// Append goal hint from free-form triggers if provided
-	if triggerGoalHint != "" {
-		return fmt.Sprintf("%s\n\nUser intent: %s", baseGoal, triggerGoalHint)
+	return buildIssueGoal(ref.URL()), nil
+}
+
+func buildPRGoal(prURL, intent string) string {
+	if intent == "fix" {
+		return fmt.Sprintf("Fix the PR %s by addressing outstanding review feedback and requested changes. Implement necessary code changes and publish replies to GitHub.", prURL)
+	}
+	return fmt.Sprintf("Review the PR %s. Analyze code changes for correctness, security, and maintainability, then publish structured review findings to GitHub.", prURL)
+}
+
+func buildIssueGoal(issueURL string) string {
+	return fmt.Sprintf("Solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/manifest.json contains pr_number and pr_url for the created PR. The runtime validates success based on the manifest contract (status/outcome), with summary.md treated as optional human-readable output.", issueURL)
+}
+
+func determinePRDefaultIntent(ctx context.Context, ref *pkggithub.SolveRef, token string) (string, error) {
+	client := pkggithub.NewClient(token)
+
+	threads, err := client.FetchReviewThreads(ctx, ref.Owner, ref.Repo, ref.Number, true)
+	if err != nil {
+		return "review", fmt.Errorf("failed to fetch PR review threads: %w", err)
+	}
+	if len(threads) > 0 {
+		return "fix", nil
 	}
 
-	return baseGoal
+	latestState, err := fetchLatestPRReviewState(ctx, client, ref.Owner, ref.Repo, ref.Number)
+	if err != nil {
+		return "review", err
+	}
+	if latestState == "CHANGES_REQUESTED" {
+		return "fix", nil
+	}
+
+	return "review", nil
+}
+
+func fetchLatestPRReviewState(ctx context.Context, client *pkggithub.Client, owner, repo string, prNumber int) (string, error) {
+	opts := &github.ListOptions{PerPage: 100}
+	latestState := ""
+
+	for {
+		reviews, resp, err := client.GitHubClient().PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch PR reviews: %w", err)
+		}
+
+		for _, review := range reviews {
+			if review == nil {
+				continue
+			}
+			state := strings.ToUpper(strings.TrimSpace(review.GetState()))
+			if state != "" {
+				latestState = state
+			}
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return latestState, nil
 }
 
 // publishResults publishes the holon execution results
@@ -1050,6 +1078,7 @@ func init() {
 	solveCmd.Flags().StringVar(&solveRepo, "repo", "", "Default repository in owner/repo format (for numeric references)")
 	solveCmd.Flags().StringVar(&solveBase, "base", "main", "Base branch for PR creation (issue mode only)")
 	solveCmd.Flags().StringVarP(&solveOutDir, "output", "O", "", "Output directory (default: creates temp dir to avoid polluting workspace)")
+	solveCmd.Flags().StringVarP(&solveGoal, "goal", "g", "", "Explicit goal description (when set, skips default issue/PR goal generation)")
 	_ = solveCmd.Flags().MarkDeprecated("out", "use --output instead")
 	solveCmd.Flags().StringVarP(&solveOutDir, "out", "o", "", "Deprecated: use --output")
 	solveCmd.Flags().StringVarP(&solveContext, "context", "c", "", "Additional context directory (deprecated)")

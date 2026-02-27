@@ -27,6 +27,8 @@ jobs:
       # Optional: enable auto-review for every PR when true (default false)
       # Configure repo variable HOLON_AUTO_REVIEW=true to enable.
       auto_review: ${{ fromJSON(vars.HOLON_AUTO_REVIEW || 'false') }}
+      # Optional: override goal for all runs. Empty = Holon defaults by target type.
+      # goal: 'Review this PR and publish findings.'
       # Optional: Specify custom runner labels.
       # Plain string for single label (e.g., 'self-hosted' or 'ubuntu-24.04-large'):
       # runs_on: 'self-hosted'
