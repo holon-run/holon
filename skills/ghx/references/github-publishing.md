@@ -92,6 +92,12 @@ Action fields:
 - `description` (optional): human-readable note
 - `params` (optional): action payload object
 
+Path safety for file-like params (`body`, `comments_file`):
+- Paths must be relative to `GITHUB_OUTPUT_DIR`.
+- Absolute paths are rejected.
+- `..` traversal segments are rejected.
+- For existing files, canonical resolved path must stay under `GITHUB_OUTPUT_DIR`.
+
 Supported action types:
 - `create_pr`
 - `update_pr`

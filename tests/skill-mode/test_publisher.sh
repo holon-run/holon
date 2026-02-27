@@ -460,6 +460,64 @@ EOF
     cleanup_test_env "$tmp_dir"
 }
 
+test_batch_path_traversal_rejected() {
+    local test_name="batch_path_traversal_rejected"
+    log_info "Running test: $test_name"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local output_dir="$tmp_dir/output"
+    local outside_dir="$tmp_dir/outside"
+    local bin_dir="$tmp_dir/bin"
+
+    mkdir -p "$output_dir" "$outside_dir" "$bin_dir"
+    echo "secret" > "$outside_dir/secret.md"
+
+    cat > "$output_dir/publish-batch.json" << 'EOF'
+{
+  "version": "1.0",
+  "pr_ref": "owner/repo#123",
+  "actions": [
+    {
+      "type": "post_comment",
+      "params": {
+        "body": "../outside/secret.md",
+        "marker": "test-marker"
+      }
+    }
+  ]
+}
+EOF
+
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+    export GITHUB_OUTPUT_DIR="$output_dir"
+
+    local output
+    output=$(bash "$GHX_SCRIPT" batch run --batch="$output_dir/publish-batch.json" 2>&1 || true)
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ "$output" == *"Path traversal not allowed"* ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ Batch mode rejects traversal in body file path"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ Batch mode should reject traversal in body file path"
+        log_error "Output: $output"
+    fi
+
+    cleanup_test_env "$tmp_dir"
+}
+
 test_reply_review_multiline_messages() {
     local test_name="reply_review_multiline"
     log_info "Running test: $test_name (regression test for issue #551)"
@@ -560,6 +618,7 @@ main() {
     test_publisher_valid_batch
     test_body_file_stdin
     test_batch_and_direct_conflict
+    test_batch_path_traversal_rejected
     test_reply_review_multiline_messages
     
     # Summary

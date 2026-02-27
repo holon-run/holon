@@ -27,6 +27,59 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Helper Functions
 # ============================================================================
 
+# Resolve and validate a relative path under GITHUB_OUTPUT_DIR.
+# - Reject absolute paths.
+# - Reject path traversal segments ("..").
+# - For existing paths, verify canonical path is under canonical GITHUB_OUTPUT_DIR.
+# Echoes resolved candidate path on success.
+resolve_output_path_for_read() {
+    local rel_path="$1"
+
+    if [[ -z "$rel_path" || "$rel_path" == "null" ]]; then
+        log_error "Path is required"
+        return 1
+    fi
+
+    if [[ "$rel_path" =~ ^/ ]]; then
+        log_error "Absolute paths not allowed for security: $rel_path"
+        return 1
+    fi
+
+    if [[ "$rel_path" =~ (^|/)\.\.(/|$) ]]; then
+        log_error "Path traversal not allowed: $rel_path"
+        return 1
+    fi
+
+    local candidate="$GITHUB_OUTPUT_DIR/$rel_path"
+
+    # If path doesn't exist yet, the traversal checks above are sufficient for safety.
+    if [[ ! -e "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+    fi
+
+    local base_real parent_real candidate_real
+    if ! base_real=$(cd "$GITHUB_OUTPUT_DIR" && pwd -P); then
+        log_error "Failed to resolve GITHUB_OUTPUT_DIR: $GITHUB_OUTPUT_DIR"
+        return 1
+    fi
+    if ! parent_real=$(cd "$(dirname "$candidate")" && pwd -P); then
+        log_error "Failed to resolve parent path: $(dirname "$candidate")"
+        return 1
+    fi
+    candidate_real="$parent_real/$(basename "$candidate")"
+
+    case "$candidate_real" in
+        "$base_real"/*)
+            echo "$candidate_real"
+            ;;
+        *)
+            log_error "Invalid file path (outside output directory): $rel_path"
+            return 1
+            ;;
+    esac
+}
+
 # Find existing comment by marker
 # Usage: find_existing_comment <pr_number> <marker>
 # Output: Comment ID if found, empty string otherwise
@@ -91,22 +144,8 @@ parse_body_param() {
 
     # Check if it's a file path (ends in .md)
     if [[ "$body_param" =~ \.md$ ]]; then
-        # Resolve and validate file path within GITHUB_OUTPUT_DIR
         local resolved_file
-        if [[ "$body_param" =~ ^/ ]]; then
-            # Absolute path - reject for security
-            log_error "Absolute paths not allowed for security: $body_param"
-            return 1
-        fi
-
-        # Resolve relative to GITHUB_OUTPUT_DIR
-        resolved_file="$GITHUB_OUTPUT_DIR/$body_param"
-
-        # Validate the resolved path is within GITHUB_OUTPUT_DIR
-        if [[ "$resolved_file" != "$GITHUB_OUTPUT_DIR"/* ]]; then
-            log_error "Invalid file path (outside output directory): $body_param"
-            return 1
-        fi
+        resolved_file=$(resolve_output_path_for_read "$body_param") || return 1
 
         # Read from file if it exists
         if [[ -f "$resolved_file" ]]; then
@@ -517,11 +556,8 @@ action_post_review() {
     body_content=$(parse_body_param "$params") || return 1
 
     # Resolve comments file path (relative to output dir)
-    if [[ "$comments_file" =~ ^/ ]]; then
-        log_error "Absolute paths not allowed for comments_file: $comments_file"
-        return 1
-    fi
-    local comments_path="$GITHUB_OUTPUT_DIR/$comments_file"
+    local comments_path
+    comments_path=$(resolve_output_path_for_read "$comments_file") || return 1
 
     local inline_comments=()
     if [[ -f "$comments_path" ]]; then
