@@ -137,8 +137,9 @@ validate_batch() {
 }
 
 parse_pr_ref_from_batch() {
+  local batch_file="$1"
   if [[ -z "$PR_REF" ]]; then
-    PR_REF=$(jq -r '.pr_ref' "$BATCH_FILE")
+    PR_REF=$(jq -r '.pr_ref' "$batch_file")
   fi
   if [[ "$PR_REF" == "null" || -z "$PR_REF" ]]; then
     log_error "No PR reference specified and not found in batch file"
@@ -219,7 +220,7 @@ show_summary() {
 execute_batch() {
   local batch_file="$1"
   validate_batch "$batch_file" || return 1
-  parse_pr_ref_from_batch || return 1
+  parse_pr_ref_from_batch "$batch_file" || return 1
 
   local action_count
   action_count=$(jq '.actions | length' "$batch_file")
@@ -435,6 +436,12 @@ fi
 main() {
   log_info "GitHub publishing script for ghx skill"
   check_dependencies
+
+  if [[ -n "$BATCH_FILE" && -n "$DIRECT_CMD" ]]; then
+    log_error "Cannot combine --batch with direct command '$DIRECT_CMD'"
+    usage
+    exit 2
+  fi
 
   if [[ -n "$BATCH_FILE" ]]; then
     execute_batch "$BATCH_FILE"

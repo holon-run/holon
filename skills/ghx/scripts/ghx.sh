@@ -58,7 +58,7 @@ case "$1" in
     sub_args=()
     for arg in "$@"; do
       case "$arg" in
-        --pr=*|--repo=*|--dry-run|--from=*|--batch=*)
+        --pr=*|--repo=*|--dry-run|--from=*)
           global_opts+=("$arg")
           ;;
         *)

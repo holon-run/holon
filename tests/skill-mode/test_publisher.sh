@@ -9,6 +9,7 @@ set -euo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 GHX_SCRIPT="$REPO_ROOT/skills/ghx/scripts/ghx.sh"
+GHX_PUBLISH_SCRIPT="$REPO_ROOT/skills/ghx/scripts/publish.sh"
 
 # Test counters
 TESTS_RUN=0
@@ -408,6 +409,57 @@ EOF
     cleanup_test_env "$tmp_dir"
 }
 
+test_batch_and_direct_conflict() {
+    local test_name="batch_and_direct_conflict"
+    log_info "Running test: $test_name"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local output_dir="$tmp_dir/output"
+    local bin_dir="$tmp_dir/bin"
+
+    mkdir -p "$output_dir" "$bin_dir"
+
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+    export GITHUB_OUTPUT_DIR="$output_dir"
+
+    cat > "$output_dir/publish-batch.json" << 'EOF'
+{
+  "version": "1.0",
+  "pr_ref": "owner/repo#123",
+  "actions": []
+}
+EOF
+
+    local output
+    output=$(bash "$GHX_PUBLISH_SCRIPT" --batch="$output_dir/publish-batch.json" --pr=owner/repo#123 comment --body-file=- << 'EOF' 2>&1 || true
+from stdin
+EOF
+)
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ "$output" == *"Cannot combine --batch with direct command"* ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ Publisher rejects mixed batch and direct command mode"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ Publisher should reject mixed batch and direct command mode"
+        log_error "Output: $output"
+    fi
+
+    cleanup_test_env "$tmp_dir"
+}
+
 test_reply_review_multiline_messages() {
     local test_name="reply_review_multiline"
     log_info "Running test: $test_name (regression test for issue #551)"
@@ -507,6 +559,7 @@ main() {
     test_publisher_invalid_json
     test_publisher_valid_batch
     test_body_file_stdin
+    test_batch_and_direct_conflict
     test_reply_review_multiline_messages
     
     # Summary
