@@ -101,10 +101,11 @@ func (p *GitClonePreparer) Cleanup(dest string) error {
 // buildCloneOptions constructs the git clone options based on the request
 func (p *GitClonePreparer) buildCloneOptions(ctx context.Context, req PrepareRequest) git.CloneOptions {
 	opts := git.CloneOptions{
-		Source: req.Source,
-		Dest:   req.Dest,
-		Ref:    req.Ref,
-		Quiet:  true,
+		Source:    req.Source,
+		Dest:      req.Dest,
+		Ref:       req.Ref,
+		Quiet:     true,
+		AuthToken: req.AuthToken,
 	}
 
 	// Handle history mode

@@ -926,6 +926,12 @@ func TestPrepareWorkspace_TemporaryWorkspace(t *testing.T) {
 	if err := runCmd(tempWorkspace, "git", "config", "user.name", "Test User"); err != nil {
 		t.Fatalf("git config failed: %v", err)
 	}
+	if err := runCmd(tempWorkspace, "git", "remote", "add", "origin", "https://github.com/holon-run/holon.git"); err != nil {
+		t.Fatalf("git remote add failed: %v", err)
+	}
+	if err := runCmd(tempWorkspace, "git", "config", "--local", "--add", "http.https://github.com/.extraheader", "AUTHORIZATION: basic abc123"); err != nil {
+		t.Fatalf("git config extraheader failed: %v", err)
+	}
 
 	// Create and commit a file so we have a HEAD SHA
 	testFile := filepath.Join(tempWorkspace, "test.txt")
@@ -1058,6 +1064,27 @@ func TestPrepareWorkspace_TemporaryWorkspace(t *testing.T) {
 				if manifest.IsShallow {
 					t.Error("Manifest IsShallow = true, want false (not a shallow clone)")
 				}
+			}
+
+			helperOutput, err := exec.Command("git", "-C", resultPath, "config", "--get", "credential.helper").CombinedOutput()
+			if err != nil {
+				t.Fatalf("failed to read credential.helper: %v (%s)", err, strings.TrimSpace(string(helperOutput)))
+			}
+			if strings.TrimSpace(string(helperOutput)) != holonGit.GitHubCredentialHelperScript {
+				t.Fatalf("credential.helper = %q, want %q", strings.TrimSpace(string(helperOutput)), holonGit.GitHubCredentialHelperScript)
+			}
+
+			useHTTPPathOutput, err := exec.Command("git", "-C", resultPath, "config", "--get", "credential.https://github.com.useHttpPath").CombinedOutput()
+			if err != nil {
+				t.Fatalf("failed to read useHttpPath config: %v (%s)", err, strings.TrimSpace(string(useHTTPPathOutput)))
+			}
+			if strings.TrimSpace(string(useHTTPPathOutput)) != "true" {
+				t.Fatalf("credential.https://github.com.useHttpPath = %q, want true", strings.TrimSpace(string(useHTTPPathOutput)))
+			}
+
+			extraHeaderOutput, err := exec.Command("git", "-C", resultPath, "config", "--local", "--get-all", "http.https://github.com/.extraheader").CombinedOutput()
+			if err == nil && strings.TrimSpace(string(extraHeaderOutput)) != "" {
+				t.Fatalf("expected github extraheader to be cleared, got %q", strings.TrimSpace(string(extraHeaderOutput)))
 			}
 
 			// Cleanup preparer if it implements Cleanup

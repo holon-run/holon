@@ -11,6 +11,10 @@ type PrepareRequest struct {
 	// Examples: local path "/path/to/repo", remote URL "https://github.com/owner/repo.git"
 	Source string
 
+	// AuthToken is an optional token used by preparers that need authenticated
+	// repository access (for example, git-clone from private GitHub repositories).
+	AuthToken string
+
 	// Ref is the git reference to checkout (branch, tag, or SHA)
 	// Examples: "main", "v1.0.0", "abc123def", "" (HEAD)
 	Ref string

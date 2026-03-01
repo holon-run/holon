@@ -908,6 +908,7 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 		if err != nil {
 			return "", "", nil, fmt.Errorf("failed to prepare workspace for direct use: %w", err)
 		}
+		configureGitHubWorkspaceAuth(ctx, cfg.Workspace, "existing")
 
 		// Create skills staging directory
 		skillsDir, err := prepareSkillsDir()
@@ -1013,18 +1014,10 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 						holonlog.Warn("failed to preserve origin from source", "url", originURL, "error", err)
 					}
 
-					// Configure git credential helper for GitHub HTTPS authentication.
-					// This works for both skill mode and traditional mode:
-					// - Skill mode: agent can push branches using gh auth
-					// - Traditional mode: publisher can push (simplifies publisher logic)
-					if err := snapshotClient.ConfigCredentialHelper(ctx, git.GitHubCredentialHelperScript); err != nil {
-						holonlog.Warn("failed to configure git credential helper", "error", err)
-					} else {
-						holonlog.Info("configured git credential helper for GitHub auth")
-					}
 				}
 			}
 		}
+		configureGitHubWorkspaceAuth(ctx, snapshotDir, "git-clone")
 	}
 
 	// Log preparation details
@@ -1075,6 +1068,36 @@ func prepareWorkspace(ctx context.Context, cfg *ContainerConfig) (string, string
 	}
 
 	return snapshotDir, skillsDir, preparer, nil
+}
+
+func configureGitHubWorkspaceAuth(ctx context.Context, repoPath string, strategy string) {
+	client := git.NewClient(repoPath)
+	if !client.IsRepo(ctx) {
+		return
+	}
+
+	originURL, err := client.ConfigGet(ctx, "remote.origin.url")
+	if err != nil || strings.TrimSpace(originURL) == "" {
+		return
+	}
+
+	if !strings.HasPrefix(originURL, "https://github.com/") && !strings.HasPrefix(originURL, "git@github.com:") {
+		return
+	}
+
+	if err := client.ConfigCredentialHelper(ctx, git.GitHubCredentialHelperScript); err != nil {
+		holonlog.Warn("failed to configure git credential helper", "workspace_strategy", strategy, "error", err)
+		return
+	}
+
+	// actions/checkout may persist extraheader. Remove it when present so helper/token auth is used.
+	if headers, getErr := client.ExecCommand(ctx, "config", "--local", "--get-all", "http.https://github.com/.extraheader"); getErr == nil && strings.TrimSpace(string(headers)) != "" {
+		if _, unsetErr := client.ExecCommand(ctx, "config", "--local", "--unset-all", "http.https://github.com/.extraheader"); unsetErr != nil {
+			holonlog.Warn("failed to clear github extraheader", "workspace_strategy", strategy, "error", unsetErr)
+		}
+	}
+
+	holonlog.Info("configured github workspace auth", "workspace_strategy", strategy, "workspace_auth_mode", "github-helper")
 }
 
 // writeWorkspaceManifest writes the workspace manifest to the output directory

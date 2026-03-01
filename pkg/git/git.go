@@ -112,6 +112,9 @@ type CloneOptions struct {
 
 	// Quiet suppresses output.
 	Quiet bool
+
+	// AuthToken is an optional GitHub token used for authenticated HTTPS clones.
+	AuthToken string
 }
 
 // CloneResult holds the result of a clone operation.
@@ -170,7 +173,20 @@ func (c *Client) quietFlag() string {
 // Clone clones a repository.
 func Clone(ctx context.Context, opts CloneOptions) (*CloneResult, error) {
 	// Build clone arguments
-	args := []string{"clone"}
+	args := []string{}
+	token := strings.TrimSpace(opts.AuthToken)
+	useGitHubHTTPSAuth := token != "" && strings.HasPrefix(opts.Source, "https://github.com/")
+
+	// Apply per-command credential configuration for GitHub HTTPS clones.
+	// This avoids embedding tokens in URLs and keeps auth setup local to clone.
+	if useGitHubHTTPSAuth {
+		args = append(args,
+			"-c", fmt.Sprintf("credential.helper=%s", GitHubCredentialHelperScript),
+			"-c", "credential.https://github.com.useHttpPath=true",
+			"-c", "http.https://github.com/.extraheader=",
+		)
+	}
+	args = append(args, "clone")
 
 	if opts.Quiet {
 		args = append(args, "--quiet")
@@ -193,6 +209,10 @@ func Clone(ctx context.Context, opts CloneOptions) (*CloneResult, error) {
 
 	// Execute git clone
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if useGitHubHTTPSAuth {
+		cmd.Env = append(cmd.Env, "GITHUB_TOKEN="+token, "GH_TOKEN="+token)
+	}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git clone failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}

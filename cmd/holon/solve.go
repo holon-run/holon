@@ -181,10 +181,8 @@ type workspacePreparation struct {
 //     prepare a clean workspace under agent_home/workspaces via git-clone with Source=current repo (using --local internally)
 //  3. Otherwise: prepare via git-clone from the ref's repo URL into agent_home/workspaces (full history by default)
 //
-// Note: The token parameter is currently unused for authentication during git clone operations.
-// This means that private repositories may fail to clone if they require authentication.
-// This is intentional for the initial implementation to avoid embedding credentials in git URLs.
-// Future enhancement could add git credential helper integration or SSH-based authentication.
+// Note: token is used for authenticated git-clone operations (for example private GitHub repos)
+// via clone-time credential helper configuration.
 func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef, token, workspaceRoot string) (*workspacePreparation, error) {
 	var workspacePath string
 	var preparer workspace.Preparer
@@ -260,6 +258,7 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 		// Prepare using git-clone strategy
 		_, err = preparer.Prepare(ctx, workspace.PrepareRequest{
 			Source:    source,
+			AuthToken: token,
 			Dest:      workspacePath,
 			Ref:       solveWorkspaceRef,
 			History:   workspace.HistoryMode(historyMode),
@@ -297,6 +296,7 @@ func prepareWorkspaceForSolve(ctx context.Context, solveRef *pkggithub.SolveRef,
 		// Prepare using git-clone strategy
 		result, err := preparer.Prepare(ctx, workspace.PrepareRequest{
 			Source:    source,
+			AuthToken: token,
 			Dest:      workspacePath,
 			Ref:       solveWorkspaceRef,
 			History:   workspace.HistoryMode(historyMode),
@@ -860,13 +860,13 @@ func buildDefaultSolveGoal(ctx context.Context, ref *pkggithub.SolveRef, refType
 
 func buildPRGoal(prURL, intent string) string {
 	if intent == "fix" {
-		return fmt.Sprintf("Fix the PR %s by addressing outstanding review feedback and requested changes. Implement necessary code changes and publish replies to GitHub.", prURL)
+		return fmt.Sprintf("Fix the PR %s by addressing outstanding review feedback and requested changes. Default to the github-pr-fix skill workflow for context collection, implementation, and publishing replies to GitHub.", prURL)
 	}
-	return fmt.Sprintf("Review the PR %s. Analyze code changes for correctness, security, and maintainability, then publish structured review findings to GitHub.", prURL)
+	return fmt.Sprintf("Review the PR %s. Default to the github-review skill workflow for context collection, analysis, and publishing structured review findings to GitHub.", prURL)
 }
 
 func buildIssueGoal(issueURL string) string {
-	return fmt.Sprintf("Solve the GitHub issue %s end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/manifest.json contains pr_number and pr_url for the created PR. The runtime validates success based on the manifest contract (status/outcome), with summary.md treated as optional human-readable output.", issueURL)
+	return fmt.Sprintf("Solve the GitHub issue %s end-to-end. Default to the github-issue-solve skill workflow for context collection, implementation, and publishing. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure ${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure ${GITHUB_OUTPUT_DIR}/manifest.json contains pr_number and pr_url for the created PR. The runtime validates success based on the manifest contract (status/outcome), with summary.md treated as optional human-readable output.", issueURL)
 }
 
 func determinePRDefaultIntent(ctx context.Context, ref *pkggithub.SolveRef, token string) (string, error) {
