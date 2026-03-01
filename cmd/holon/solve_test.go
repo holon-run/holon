@@ -16,6 +16,9 @@ func TestBuildPRGoal_ReviewIntent(t *testing.T) {
 	if !strings.Contains(goal, "Review the PR") {
 		t.Fatalf("expected review goal, got: %s", goal)
 	}
+	if !strings.Contains(goal, "github-review") {
+		t.Fatalf("expected review goal to mention github-review skill, got: %s", goal)
+	}
 	if strings.Contains(strings.ToLower(goal), "fix the pr") {
 		t.Fatalf("expected review goal to avoid fix wording, got: %s", goal)
 	}
@@ -98,6 +101,9 @@ func TestBuildPRGoal_FixIntent(t *testing.T) {
 	if !strings.Contains(strings.ToLower(goal), "fix the pr") {
 		t.Fatalf("expected fix goal, got: %s", goal)
 	}
+	if !strings.Contains(goal, "github-pr-fix") {
+		t.Fatalf("expected fix goal to mention github-pr-fix skill, got: %s", goal)
+	}
 }
 
 func TestBuildIssueGoal(t *testing.T) {
@@ -110,6 +116,9 @@ func TestBuildIssueGoal(t *testing.T) {
 	// Verify it mentions manifest status/outcome validation
 	if !strings.Contains(goal, "status='completed'") || !strings.Contains(goal, "outcome='success'") {
 		t.Fatalf("goal should mention manifest status/outcome validation, got: %s", goal)
+	}
+	if !strings.Contains(goal, "github-issue-solve") {
+		t.Fatalf("goal should mention github-issue-solve skill, got: %s", goal)
 	}
 }
 

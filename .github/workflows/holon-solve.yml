@@ -84,10 +84,10 @@ on:
         type: string
         default: 'none'
       workspace:
-        description: 'Workspace path (default: .)'
+        description: 'Optional workspace path (empty by default; set only when caller provides a prepared local workspace).'
         required: false
         type: string
-        default: '.'
+        default: ''
       input_dir:
         description: 'Input directory path for artifact packaging (empty = temp dir, kept for debug)'
         required: false
@@ -707,13 +707,13 @@ jobs:
             TARGET_URL="https://github.com/$REPO/pull/$TARGET_NUMBER"
             LOWER_CMD="$(printf '%s' "$COMMAND_TEXT" | tr '[:upper:]' '[:lower:]')"
             if printf '%s' "$LOWER_CMD" | grep -Eq '(^|[^[:alnum:]_])(review|re-review|recheck)($|[^[:alnum:]_])'; then
-              GOAL="Review the PR $TARGET_URL. Analyze code changes for correctness, security, and maintainability, then publish structured review findings to GitHub."
+              GOAL="Review the PR $TARGET_URL. Default to the github-review skill workflow for context collection, analysis, and publishing structured review findings to GitHub."
             else
-              GOAL="Fix the PR $TARGET_URL by addressing outstanding review feedback and requested changes. Implement necessary code changes and publish replies to GitHub."
+              GOAL="Fix the PR $TARGET_URL by addressing outstanding review feedback and requested changes. Default to the github-pr-fix skill workflow for context collection, implementation, and publishing replies to GitHub."
             fi
           else
             TARGET_URL="https://github.com/$REPO/issues/$TARGET_NUMBER"
-            GOAL="Solve the GitHub issue $TARGET_URL end-to-end. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure \${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure \${GITHUB_OUTPUT_DIR}/manifest.json contains pr_number and pr_url for the created PR. The runtime validates success based on the manifest contract (status/outcome), with summary.md treated as optional human-readable output."
+            GOAL="Solve the GitHub issue $TARGET_URL end-to-end. Default to the github-issue-solve skill workflow for context collection, implementation, and publishing. Success requires all of the following: (1) Collect GitHub context, (2) Implement the solution, (3) Ensure \${GITHUB_OUTPUT_DIR}/manifest.json has status='completed' and outcome='success', and (4) After publish completes, ensure \${GITHUB_OUTPUT_DIR}/manifest.json contains pr_number and pr_url for the created PR. The runtime validates success based on the manifest contract (status/outcome), with summary.md treated as optional human-readable output."
           fi
 
           GOAL="$GOAL"$'\n\n'"User request: $COMMAND_TEXT"
@@ -767,45 +767,6 @@ jobs:
           REPO: ${{ github.repository }}
           INPUT_BASE: ${{ inputs.base }}
           EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-
-      - name: Checkout repository
-        if: steps.gate.outputs.should_run == 'true' && steps.ctx.outputs.is_pr != 'true'
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Fetch all history to avoid shallow clone issues
-          persist-credentials: false
-
-      - name: Resolve PR checkout ref
-        id: pr-ref
-        if: steps.gate.outputs.should_run == 'true' && steps.ctx.outputs.is_pr == 'true'
-        run: |
-          set -euo pipefail
-
-          if [ -n "${EVENT_PR_HEAD_SHA:-}" ]; then
-            echo "ref=$EVENT_PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          REF="$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER" --jq '.head.sha')"
-          if [ -z "$REF" ] || [ "$REF" = 'null' ]; then
-            echo "::error::Unable to resolve PR head sha for $REPO#$ISSUE_NUMBER" >&2
-            exit 1
-          fi
-
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ secrets.holon_github_token || github.token }}
-          REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ steps.ctx.outputs.issue_number }}
-          EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-
-      - name: Checkout repository (PR)
-        if: steps.gate.outputs.should_run == 'true' && steps.ctx.outputs.is_pr == 'true'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.pr-ref.outputs.ref }}
-          fetch-depth: 0  # Fetch all history to avoid shallow clone issues
-          persist-credentials: false
 
       - name: Write input metadata
         id: input-meta
@@ -872,13 +833,6 @@ jobs:
             sudo systemctl start docker || sudo service docker start
           fi
           docker info
-
-      - name: Clear checkout auth header
-        if: steps.gate.outputs.should_run == 'true'
-        run: |
-          # actions/checkout may persist github.token via extraheader; remove it
-          # so downstream git auth uses Holon-selected credentials.
-          git config --local --unset-all http.https://github.com/.extraheader || true
 
       - name: Run Holon
         id: run

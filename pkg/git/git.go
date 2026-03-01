@@ -112,6 +112,9 @@ type CloneOptions struct {
 
 	// Quiet suppresses output.
 	Quiet bool
+
+	// AuthToken is an optional GitHub token used for authenticated HTTPS clones.
+	AuthToken string
 }
 
 // CloneResult holds the result of a clone operation.
@@ -169,30 +172,10 @@ func (c *Client) quietFlag() string {
 
 // Clone clones a repository.
 func Clone(ctx context.Context, opts CloneOptions) (*CloneResult, error) {
-	// Build clone arguments
-	args := []string{"clone"}
-
-	if opts.Quiet {
-		args = append(args, "--quiet")
-	}
-
-	args = append(args, "--no-checkout")
-
-	// Handle depth for shallow clone
-	if opts.Depth > 0 {
-		args = append(args, "--depth", fmt.Sprintf("%d", opts.Depth))
-	}
-
-	// Use --local for local repositories
-	if opts.Local {
-		args = append(args, "--local")
-	}
-
-	// Source and destination
-	args = append(args, opts.Source, opts.Dest)
-
+	args, env := buildCloneInvocation(opts)
 	// Execute git clone
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), env...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git clone failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -234,6 +217,48 @@ func Clone(ctx context.Context, opts CloneOptions) (*CloneResult, error) {
 		Branch:    info.Branch,
 		IsShallow: info.IsShallow,
 	}, nil
+}
+
+func buildCloneInvocation(opts CloneOptions) ([]string, []string) {
+	args := []string{}
+	env := []string{"GIT_TERMINAL_PROMPT=0"}
+
+	token := strings.TrimSpace(opts.AuthToken)
+	useGitHubHTTPSAuth := token != "" && strings.HasPrefix(opts.Source, "https://github.com/")
+
+	// Apply per-command credential configuration for GitHub HTTPS clones.
+	// This avoids embedding tokens in URLs and keeps auth setup local to clone.
+	if useGitHubHTTPSAuth {
+		args = append(args,
+			"-c", fmt.Sprintf("credential.helper=%s", GitHubCredentialHelperScript),
+			"-c", "credential.https://github.com.useHttpPath=true",
+			"-c", "http.https://github.com/.extraheader=",
+		)
+		env = append(env, "GITHUB_TOKEN="+token, "GH_TOKEN="+token)
+	}
+
+	args = append(args, "clone")
+
+	if opts.Quiet {
+		args = append(args, "--quiet")
+	}
+
+	args = append(args, "--no-checkout")
+
+	// Handle depth for shallow clone
+	if opts.Depth > 0 {
+		args = append(args, "--depth", fmt.Sprintf("%d", opts.Depth))
+	}
+
+	// Use --local for local repositories
+	if opts.Local {
+		args = append(args, "--local")
+	}
+
+	// Source and destination
+	args = append(args, opts.Source, opts.Dest)
+
+	return args, env
 }
 
 // IsRepo checks if the directory is a git repository.

@@ -71,9 +71,9 @@ inputs:
     required: false
     default: 'holon-run/holon'
   workspace:
-    description: 'Workspace path (default: ., assumes workflow already checked out code)'
+    description: 'Optional workspace path (empty by default; set only when caller provides a prepared local workspace)'
     required: false
-    default: '.'
+    default: ''
   input_dir:
     description: 'Input directory path for artifact packaging (default: temp dir, auto-cleaned)'
     required: false
