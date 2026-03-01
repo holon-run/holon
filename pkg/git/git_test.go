@@ -651,6 +651,103 @@ func TestClient_CommitWith(t *testing.T) {
 	}
 }
 
+func TestBuildCloneInvocation_GitHubHTTPSWithToken(t *testing.T) {
+	args, env := buildCloneInvocation(CloneOptions{
+		Source:    "https://github.com/holon-run/holon.git",
+		Dest:      "/tmp/dest",
+		AuthToken: "test-token",
+		Quiet:     true,
+	})
+
+	if len(args) < 7 {
+		t.Fatalf("unexpected args length: %d, args=%v", len(args), args)
+	}
+	if args[0] != "-c" || !strings.HasPrefix(args[1], "credential.helper=") {
+		t.Fatalf("expected first clone config to be credential.helper, args=%v", args)
+	}
+	if args[2] != "-c" || args[3] != "credential.https://github.com.useHttpPath=true" {
+		t.Fatalf("expected useHttpPath config, args=%v", args)
+	}
+	if args[4] != "-c" || args[5] != "http.https://github.com/.extraheader=" {
+		t.Fatalf("expected extraheader reset config, args=%v", args)
+	}
+	if args[6] != "clone" {
+		t.Fatalf("expected clone subcommand after -c options, args=%v", args)
+	}
+
+	if !containsString(env, "GIT_TERMINAL_PROMPT=0") {
+		t.Fatalf("expected GIT_TERMINAL_PROMPT env, env=%v", env)
+	}
+	if !containsString(env, "GITHUB_TOKEN=test-token") {
+		t.Fatalf("expected GITHUB_TOKEN env, env=%v", env)
+	}
+	if !containsString(env, "GH_TOKEN=test-token") {
+		t.Fatalf("expected GH_TOKEN env, env=%v", env)
+	}
+}
+
+func TestBuildCloneInvocation_NoGitHubAuthForNonGitHubOrMissingToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		token  string
+	}{
+		{
+			name:   "non-github https source",
+			source: "https://gitlab.com/org/repo.git",
+			token:  "test-token",
+		},
+		{
+			name:   "github source without token",
+			source: "https://github.com/holon-run/holon.git",
+			token:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args, env := buildCloneInvocation(CloneOptions{
+				Source:    tt.source,
+				Dest:      "/tmp/dest",
+				AuthToken: tt.token,
+			})
+			if len(args) == 0 || args[0] != "clone" {
+				t.Fatalf("expected clone command without auth configs, args=%v", args)
+			}
+			if containsArgPrefix(args, "credential.helper=") {
+				t.Fatalf("did not expect credential.helper config, args=%v", args)
+			}
+			if containsString(env, "GITHUB_TOKEN="+tt.token) && tt.token != "" {
+				t.Fatalf("did not expect GITHUB_TOKEN env for this case, env=%v", env)
+			}
+			if containsString(env, "GH_TOKEN="+tt.token) && tt.token != "" {
+				t.Fatalf("did not expect GH_TOKEN env for this case, env=%v", env)
+			}
+			if !containsString(env, "GIT_TERMINAL_PROMPT=0") {
+				t.Fatalf("expected GIT_TERMINAL_PROMPT env, env=%v", env)
+			}
+		})
+	}
+}
+
+func containsString(items []string, expected string) bool {
+	for _, item := range items {
+		if item == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArgPrefix(args []string, prefix string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestClone(t *testing.T) {
 	ctx := context.Background()
 
