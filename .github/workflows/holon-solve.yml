@@ -582,6 +582,7 @@ jobs:
       issues: write
       pull-requests: write
       id-token: write
+      packages: read
     outputs:
       result: ${{ steps.result.outputs.result }}
       summary: ${{ steps.result.outputs.summary }}
@@ -833,6 +834,17 @@ jobs:
             sudo systemctl start docker || sudo service docker start
           fi
           docker info
+
+      - name: Login to GHCR (best effort)
+        if: steps.gate.outputs.should_run == 'true' && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+
+          if echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin; then
+            echo "Authenticated to ghcr.io with github.token."
+          else
+            echo "::warning title=GHCR Auth::Failed to authenticate to ghcr.io with github.token. Private GHCR base images may fail to pull. Ensure caller workflow grants permissions.packages=read."
+          fi
 
       - name: Run Holon
         id: run
