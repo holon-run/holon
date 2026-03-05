@@ -840,7 +840,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin; then
+          if printf '%s' "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin; then
             echo "Authenticated to ghcr.io with github.token."
           else
             echo "::warning title=GHCR Auth::Failed to authenticate to ghcr.io with github.token. Private GHCR base images may fail to pull. Ensure caller workflow grants permissions.packages=read."
