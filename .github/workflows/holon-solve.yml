@@ -58,6 +58,11 @@ on:
         required: false
         type: boolean
         default: false
+      auto_review_on_push:
+        description: 'When auto_review is enabled, also run on pull_request.synchronize events (default false)'
+        required: false
+        type: boolean
+        default: false
       goal:
         description: 'Explicit execution goal. When set, bypasses default goal generation.'
         required: false
@@ -500,12 +505,24 @@ jobs:
             fi
           fi
 
-          # Auto-review: run only for pull_request / pull_request_review events.
-          # Do NOT auto-run on issue_comment for PRs (avoids bot comment storms).
+          # Auto-review runs only on selected PR events.
+          # Default behavior avoids re-reviewing every push unless explicitly enabled.
           if [ "$SHOULD_RUN" != 'true' ] && [ "$INPUT_AUTO_REVIEW" = 'true' ] && [ "$IS_PR" = 'true' ]; then
-            if [ "$EVENT_NAME" = 'pull_request' ] || [ "$EVENT_NAME" = 'pull_request_review' ]; then
-              SHOULD_RUN='true'
-              REASON="Auto-review enabled (${EVENT_NAME})"
+            if [ "$EVENT_NAME" = 'pull_request' ]; then
+              case "$EVENT_ACTION" in
+                opened|reopened|ready_for_review)
+                  SHOULD_RUN='true'
+                  REASON="Auto-review enabled for pull_request.${EVENT_ACTION}"
+                  ;;
+                synchronize)
+                  if [ "$INPUT_AUTO_REVIEW_ON_PUSH" = 'true' ]; then
+                    SHOULD_RUN='true'
+                    REASON='Auto-review enabled for pull_request.synchronize'
+                  else
+                    REASON='Auto-review skipped for pull_request.synchronize; enable auto_review_on_push to review every push'
+                  fi
+                  ;;
+              esac
             fi
           fi
 
@@ -555,6 +572,7 @@ jobs:
           INPUT_REVIEW_BODY: ${{ inputs.review_body }}
           EVENT_REVIEW_BODY: ${{ github.event.review.body }}
           INPUT_AUTO_REVIEW: ${{ inputs.auto_review }}
+          INPUT_AUTO_REVIEW_ON_PUSH: ${{ inputs.auto_review_on_push }}
 
       - name: Gate summary
         if: always()
