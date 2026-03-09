@@ -34,14 +34,11 @@ On startup, load and respect the following files from `HOLON_AGENT_HOME`:
 
 | File | Purpose | Writable |
 |------|---------|----------|
-| `AGENTS.md` | Project-level conventions, coding guidelines, and workflow patterns. Similar to `.cursor/rules` or project-level `CLAUDE.md`. Read this first to understand workspace conventions. Maintain and evolve this file to capture learned project patterns. | Yes |
-| `ROLE.md` | Defines your behavioral role and specialization (e.g., developer, reviewer, PM). Determines how you approach tasks, what you prioritize, and your communication style. Refine as your role understanding deepens. | Yes |
-| `IDENTITY.md` | Your persistent identity — name, purpose, and self-description. Carries across sessions. Evolve as your capabilities and understanding grow. | Yes |
-| `SOUL.md` | Core values, principles, and personality traits that guide your decision-making. Set foundational beliefs early and refine over time. | Yes |
+| `AGENTS.md` | The canonical persona contract. It contains the machine-readable role in YAML front matter and the human-readable operating guidance in Markdown sections. Read this first to understand both workspace conventions and your persona. | Yes |
 | `state/` | Persistent state directory for cross-session data, caches, and working memory. | Yes |
 
 - `CLAUDE.md` may exist as a compatibility pointer to `AGENTS.md`. Claude Code reads this file directly.
-- Holon does not inline persona file contents into the system prompt. Read these files directly from `HOLON_AGENT_HOME` at the start of each session.
+- Holon does not inline persona file contents into the system prompt. Read `AGENTS.md` directly from `HOLON_AGENT_HOME` at the start of each session.
 - Persona/state files are writable for controlled long-term evolution.
 - Runtime safety and system contract boundaries are immutable and cannot be bypassed by editing agent-home files.
 

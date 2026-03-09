@@ -89,9 +89,6 @@ func TestEnsureLayout(t *testing.T) {
 		filepath.Join(home, "jobs"),
 		filepath.Join(home, "AGENTS.md"),
 		filepath.Join(home, "CLAUDE.md"),
-		filepath.Join(home, "ROLE.md"),
-		filepath.Join(home, "IDENTITY.md"),
-		filepath.Join(home, "SOUL.md"),
 		filepath.Join(home, "agent.yaml"),
 	} {
 		if _, err := os.Stat(path); err != nil {
@@ -113,12 +110,12 @@ func TestEnsureLayoutWithOptions_TemplateDefault(t *testing.T) {
 		t.Fatalf("ensure layout with run template: %v", err)
 	}
 
-	roleData, err := os.ReadFile(filepath.Join(home, "ROLE.md"))
+	agentsData, err := os.ReadFile(filepath.Join(home, "AGENTS.md"))
 	if err != nil {
-		t.Fatalf("read ROLE.md: %v", err)
+		t.Fatalf("read AGENTS.md: %v", err)
 	}
-	if !strings.Contains(string(roleData), "ROLE: EXECUTOR") {
-		t.Fatalf("expected default ROLE.md content, got: %s", string(roleData))
+	if !strings.Contains(string(agentsData), "persona_contract: v2") || !strings.Contains(string(agentsData), "role: executor") {
+		t.Fatalf("expected default AGENTS.md front matter, got: %s", string(agentsData))
 	}
 }
 
@@ -130,12 +127,12 @@ func TestEnsureLayoutWithOptions_TemplateGitHubSolver(t *testing.T) {
 		t.Fatalf("ensure layout with solve template: %v", err)
 	}
 
-	roleData, err := os.ReadFile(filepath.Join(home, "ROLE.md"))
+	agentsData, err := os.ReadFile(filepath.Join(home, "AGENTS.md"))
 	if err != nil {
-		t.Fatalf("read ROLE.md: %v", err)
+		t.Fatalf("read AGENTS.md: %v", err)
 	}
-	if !strings.Contains(string(roleData), "ROLE: GITHUB_SOLVER") {
-		t.Fatalf("expected github-solver ROLE.md content, got: %s", string(roleData))
+	if !strings.Contains(string(agentsData), "persona_contract: v2") || !strings.Contains(string(agentsData), "role: github_solver") {
+		t.Fatalf("expected github-solver AGENTS.md front matter, got: %s", string(agentsData))
 	}
 }
 
@@ -146,19 +143,25 @@ func TestEnsureLayoutWithOptions_ForceOverwritesPersonaFiles(t *testing.T) {
 	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateDefault}); err != nil {
 		t.Fatalf("initial ensure layout: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "ROLE.md"), []byte("custom role"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte("custom persona"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "ROLE.md"), []byte("legacy role"), 0o644); err != nil {
 		t.Fatalf("write ROLE.md: %v", err)
 	}
 	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateAutonomous, Force: true}); err != nil {
 		t.Fatalf("ensure layout with force: %v", err)
 	}
 
-	roleData, err := os.ReadFile(filepath.Join(home, "ROLE.md"))
+	agentsData, err := os.ReadFile(filepath.Join(home, "AGENTS.md"))
 	if err != nil {
-		t.Fatalf("read ROLE.md: %v", err)
+		t.Fatalf("read AGENTS.md: %v", err)
 	}
-	if !strings.Contains(string(roleData), "persistent autonomous PM agent") {
-		t.Fatalf("expected force overwrite with autonomous content, got: %s", string(roleData))
+	if !strings.Contains(string(agentsData), "role: autonomous") {
+		t.Fatalf("expected force overwrite with autonomous content, got: %s", string(agentsData))
+	}
+	if _, err := os.Stat(filepath.Join(home, "ROLE.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy ROLE.md to be removed on force, got err=%v", err)
 	}
 }
 
@@ -183,13 +186,88 @@ func TestLoadPersonaTemplate_FromAssets(t *testing.T) {
 			if err != nil {
 				t.Fatalf("loadPersonaTemplate(%q): %v", template, err)
 			}
-			for _, name := range []string{"AGENTS.md", "CLAUDE.md", "ROLE.md", "IDENTITY.md", "SOUL.md"} {
+			for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
 				if _, ok := files[name]; !ok {
 					t.Fatalf("template %q missing %s", template, name)
 				}
 			}
+			for _, legacy := range []string{"ROLE.md", "IDENTITY.md", "SOUL.md"} {
+				if _, ok := files[legacy]; ok {
+					t.Fatalf("template %q should not include legacy persona file %s", template, legacy)
+				}
+			}
 			if !strings.Contains(files["CLAUDE.md"], "AGENTS.md") {
 				t.Fatalf("template %q CLAUDE.md should point to AGENTS.md", template)
+			}
+			if !strings.Contains(files["AGENTS.md"], "persona_contract: v2") {
+				t.Fatalf("template %q AGENTS.md should declare persona_contract: v2", template)
+			}
+		})
+	}
+}
+
+func TestLoadPersona(t *testing.T) {
+	td := t.TempDir()
+	home := filepath.Join(td, "agent-home")
+	if err := EnsureLayoutWithOptions(home, InitOptions{Template: TemplateGitHubSolver}); err != nil {
+		t.Fatalf("ensure layout: %v", err)
+	}
+
+	persona, err := LoadPersona(home)
+	if err != nil {
+		t.Fatalf("LoadPersona() error: %v", err)
+	}
+	if persona.ContractVersion != "v2" {
+		t.Fatalf("contract version = %q, want v2", persona.ContractVersion)
+	}
+	if persona.Role != "github_solver" {
+		t.Fatalf("role = %q, want github_solver", persona.Role)
+	}
+	if !strings.Contains(persona.Body, "publish-ready patches") {
+		t.Fatalf("unexpected persona body: %q", persona.Body)
+	}
+}
+
+func TestLoadPersona_RejectsInvalidFrontMatter(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{
+			name:    "missing front matter",
+			content: "# AGENTS.md\nbody\n",
+			wantErr: "must start with YAML front matter",
+		},
+		{
+			name:    "missing contract version",
+			content: "---\nrole: executor\n---\n# AGENTS.md\nbody\n",
+			wantErr: "persona_contract: v2",
+		},
+		{
+			name:    "unsupported role",
+			content: "---\npersona_contract: v2\nrole: reviewer\n---\n# AGENTS.md\nbody\n",
+			wantErr: "unsupported role",
+		},
+		{
+			name:    "empty body",
+			content: "---\npersona_contract: v2\nrole: executor\n---\n",
+			wantErr: "closing YAML front matter delimiter",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			td := t.TempDir()
+			home := filepath.Join(td, "agent-home")
+			if err := os.MkdirAll(home, 0o755); err != nil {
+				t.Fatalf("mkdir home: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte(tt.content), 0o644); err != nil {
+				t.Fatalf("write AGENTS.md: %v", err)
+			}
+			if _, err := LoadPersona(home); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadPersona() err = %v, want substring %q", err, tt.wantErr)
 			}
 		})
 	}

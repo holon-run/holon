@@ -55,16 +55,13 @@
 2. 可演进层（位于 `agent_home`，agent 可改）
 - `AGENTS.md`
 - `CLAUDE.md`（兼容入口，指向 `AGENTS.md`）
-- `ROLE.md`
-- `IDENTITY.md`
-- `SOUL.md`
 
 3. 运行时组装
 - 每轮重建 system prompt：
   1) immutable contract
   2) mode overlay (`run` / `serve`)
   3) runtime/tool/event context
-  4) agent-home persona files
+  4) agent-home persona contract
 
 ### 3.5 workspace 抽象（与 agent_home 解耦）
 
@@ -110,9 +107,6 @@
   agent.yaml
   AGENTS.md
   CLAUDE.md
-  ROLE.md
-  IDENTITY.md
-  SOUL.md
   state/
     serve-state.json
     goal-state.json
@@ -186,9 +180,6 @@ runtime:
 prompt:
   persona_files:
     - AGENTS.md
-    - ROLE.md
-    - IDENTITY.md
-    - SOUL.md
   system_contract: builtin://contracts/serve
 event_source:
   type: github-webhook
@@ -221,7 +212,7 @@ event_source:
 ### Phase 2: Prompt Loader 统一
 
 1. 新增统一 prompt 组装器
-- 输入：mode + runtime + tools + persona files
+- 输入：mode + runtime + tools + persona contract
 - 输出：system/user prompt
 
 2. 将 `run/solve/serve` 改为共用同一组装器

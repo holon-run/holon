@@ -17,8 +17,8 @@ Current `holon agent init` persona files are too thin and inconsistent:
    - `github-solver`
    - `autonomous`
 4. Keep runtime behavior aligned with agent-home model:
-   - Holon contract explains file responsibilities
-   - Persona files are read/written by agent directly from `HOLON_AGENT_HOME`
+   - Holon contract explains the `AGENTS.md` responsibility
+   - Persona is read/written by agent directly from `HOLON_AGENT_HOME`
    - Holon does not inline persona content into the system prompt
 
 ## Non-Goals
@@ -31,13 +31,10 @@ Current `holon agent init` persona files are too thin and inconsistent:
 
 ### 1. Persona File Set
 
-`holon agent init` and `EnsureLayout*` generate the following files:
+`holon agent init` and `EnsureLayout*` generate the following persona files:
 
-- `AGENTS.md` (canonical persona and operating protocol)
+- `AGENTS.md` (canonical persona contract, including role front matter and operating protocol)
 - `CLAUDE.md` (compatibility pointer to `AGENTS.md`)
-- `ROLE.md` (current mission and scope)
-- `IDENTITY.md` (identity and collaboration defaults)
-- `SOUL.md` (decision principles)
 
 `CLAUDE.md` stays minimal and must not become a second source of truth.
 
@@ -73,7 +70,7 @@ Refactor `pkg/prompt/assets/contracts/common.md` into explicit sections:
 5. Reporting requirements
 6. Context handling
 
-The contract should reference `AGENTS.md` (not `AGENT.md`) and reinforce that persona files are loaded from `HOLON_AGENT_HOME`.
+The contract should reference `AGENTS.md` (not `AGENT.md`) and reinforce that persona is loaded from `HOLON_AGENT_HOME`.
 
 ## Implementation Plan
 
