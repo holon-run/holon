@@ -12,6 +12,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  packages: read
   id-token: write
 
 jobs:
@@ -24,9 +25,12 @@ jobs:
       assignee_login: ${{ github.event.assignee.login || '' }}
       comment_id: ${{ github.event.comment.id || 0 }}
       review_id: ${{ github.event.review.id || 0 }}
-      # Optional: enable auto-review for every PR when true (default false)
+      # Optional: enable auto-review for PR open/reopen/ready_for_review events.
       # Configure repo variable HOLON_AUTO_REVIEW=true to enable.
       auto_review: ${{ fromJSON(vars.HOLON_AUTO_REVIEW || 'false') }}
+      # Optional: also auto-review on every new push to the PR.
+      # Configure repo variable HOLON_AUTO_REVIEW_ON_PUSH=true to enable.
+      auto_review_on_push: ${{ fromJSON(vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false') }}
       # Optional: override goal for all runs. Empty = Holon defaults by target type.
       # goal: 'Review this PR and publish findings.'
       # Optional: Specify custom runner labels.

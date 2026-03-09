@@ -12,6 +12,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  packages: read
   id-token: write
 
 jobs:
@@ -26,6 +27,7 @@ jobs:
       comment_id: ${{ github.event.comment.id || 0 }}
       review_id: ${{ github.event.review.id || 0 }}
       auto_review: ${{ fromJSON(vars.HOLON_AUTO_REVIEW || 'false') }}
+      auto_review_on_push: ${{ fromJSON(vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false') }}
       # Optional: override goal for all runs.
       # goal: 'Review this PR and publish findings.'
 
