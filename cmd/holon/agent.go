@@ -405,7 +405,7 @@ func init() {
 	agentInitCmd.Flags().StringVar(&agentInitID, "agent-id", "main", "Agent ID (default: main)")
 	agentInitCmd.Flags().StringVar(&agentInitHome, "agent-home", "", "Agent home directory (overrides --agent-id)")
 	agentInitCmd.Flags().StringVar(&agentInitTemplate, "template", agenthome.DefaultTemplate, "Persona template: default, github-solver, autonomous")
-	agentInitCmd.Flags().BoolVar(&agentInitForce, "force", false, "Overwrite existing persona files (AGENTS.md/ROLE.md/IDENTITY.md/SOUL.md/CLAUDE.md)")
+	agentInitCmd.Flags().BoolVar(&agentInitForce, "force", false, "Overwrite persona files (AGENTS.md/CLAUDE.md) and remove legacy persona files")
 
 	agentInstallCmd.Flags().String("name", "", "Alias name for the agent bundle (required)")
 	_ = agentInstallCmd.MarkFlagRequired("name")

@@ -82,6 +82,18 @@ type GitHubSubscriptionTransport struct {
 	WebsocketURL string `yaml:"websocket_url,omitempty"`
 }
 
+type Persona struct {
+	ContractVersion string
+	Role            string
+	Body            string
+	SourcePath      string
+}
+
+type personaFrontMatter struct {
+	ContractVersion string `yaml:"persona_contract"`
+	Role            string `yaml:"role"`
+}
+
 func ValidateAgentID(id string) error {
 	trimmed := strings.TrimSpace(id)
 	if trimmed == "" {
@@ -207,6 +219,14 @@ func EnsureLayoutWithOptions(agentHome string, opts InitOptions) error {
 			return err
 		}
 	}
+	if opts.Force {
+		for _, legacyName := range []string{"ROLE.md", "IDENTITY.md", "SOUL.md"} {
+			legacyPath := filepath.Join(agentHome, legacyName)
+			if err := os.Remove(legacyPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("failed to remove legacy persona file %s: %w", legacyPath, err)
+			}
+		}
+	}
 
 	cfgPath := filepath.Join(agentHome, "agent.yaml")
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
@@ -240,6 +260,70 @@ func EnsureLayoutWithOptions(agentHome string, opts InitOptions) error {
 	}
 
 	return nil
+}
+
+func LoadPersona(agentHome string) (Persona, error) {
+	personaPath := filepath.Join(agentHome, "AGENTS.md")
+	info, err := os.Stat(personaPath)
+	if err != nil {
+		return Persona{}, fmt.Errorf("failed to stat %s: %w", personaPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return Persona{}, fmt.Errorf("persona path is not a regular file: %s", personaPath)
+	}
+
+	data, err := os.ReadFile(personaPath)
+	if err != nil {
+		return Persona{}, fmt.Errorf("failed to read %s: %w", personaPath, err)
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return Persona{}, fmt.Errorf("persona file is empty: %s", personaPath)
+	}
+	if !strings.HasPrefix(content, "---\n") {
+		return Persona{}, fmt.Errorf("persona file %s must start with YAML front matter", personaPath)
+	}
+
+	rest := strings.TrimPrefix(content, "---\n")
+	idx := strings.Index(rest, "\n---\n")
+	if idx < 0 {
+		return Persona{}, fmt.Errorf("persona file %s must contain a closing YAML front matter delimiter", personaPath)
+	}
+
+	frontMatterRaw := rest[:idx]
+	body := strings.TrimSpace(rest[idx+len("\n---\n"):])
+	if body == "" {
+		return Persona{}, fmt.Errorf("persona file body is empty: %s", personaPath)
+	}
+
+	var frontMatter personaFrontMatter
+	if err := yaml.Unmarshal([]byte(frontMatterRaw), &frontMatter); err != nil {
+		return Persona{}, fmt.Errorf("failed to parse persona front matter in %s: %w", personaPath, err)
+	}
+	if strings.TrimSpace(frontMatter.ContractVersion) != "v2" {
+		return Persona{}, fmt.Errorf("persona file %s must declare persona_contract: v2", personaPath)
+	}
+
+	role := normalizePersonaRole(frontMatter.Role)
+	if role == "" {
+		return Persona{}, fmt.Errorf("persona file %s has unsupported role %q", personaPath, strings.TrimSpace(frontMatter.Role))
+	}
+
+	return Persona{
+		ContractVersion: "v2",
+		Role:            role,
+		Body:            body,
+		SourcePath:      personaPath,
+	}, nil
+}
+
+func normalizePersonaRole(role string) string {
+	switch strings.TrimSpace(role) {
+	case "executor", "github_solver", "pm", "autonomous":
+		return strings.TrimSpace(role)
+	default:
+		return ""
+	}
 }
 
 func ensureFile(path, content string) error {

@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/holon-run/holon/pkg/agenthome"
 	holonlog "github.com/holon-run/holon/pkg/log"
 	"github.com/holon-run/holon/pkg/prompt"
 	"github.com/holon-run/holon/pkg/runtime/docker"
@@ -114,7 +115,7 @@ for local development and testing.`,
 		if err != nil {
 			return err
 		}
-		roleSource := filepath.Join(agentResolution.AgentHome, "ROLE.md")
+		roleSource := filepath.Join(agentResolution.AgentHome, "AGENTS.md")
 
 		handler, err := newCLIControllerHandler(
 			serveRepo,
@@ -369,70 +370,22 @@ for local development and testing.`,
 }
 
 func loadControllerRole(agentHome string) (string, error) {
-	rolePath := filepath.Join(agentHome, "ROLE.md")
-	info, err := os.Stat(rolePath)
+	persona, err := agenthome.LoadPersona(agentHome)
 	if err != nil {
-		return "", fmt.Errorf("failed to stat %s: %w", rolePath, err)
+		return "", err
 	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("role prompt path is not a regular file: %s", rolePath)
-	}
-	data, err := os.ReadFile(rolePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read role prompt %s: %w", rolePath, err)
-	}
-	content := strings.TrimSpace(string(data))
-	if content == "" {
-		return "", fmt.Errorf("role prompt file is empty: %s (please add a role definition, e.g., '# ROLE: PM')", rolePath)
-	}
-	return inferControllerRole(content), nil
+	return controllerRoleLabelForPersona(persona.Role), nil
 }
 
-func inferControllerRole(content string) string {
-	lower := strings.ToLower(content)
-	if role := inferRoleFromFrontMatter(lower); role != "" {
-		return role
-	}
+func controllerRoleLabelForPersona(role string) string {
 	switch {
-	case strings.Contains(lower, "role: dev"),
-		strings.Contains(lower, "role dev"),
-		strings.Contains(lower, "developer"),
-		strings.Contains(lower, "software engineer"):
+	case role == "executor", role == "github_solver":
 		return "dev"
-	case strings.Contains(lower, "role: pm"),
-		strings.Contains(lower, "role pm"),
-		strings.Contains(lower, "product manager"):
+	case role == "pm", role == "autonomous":
 		return "pm"
 	default:
 		return "pm"
 	}
-}
-
-func inferRoleFromFrontMatter(lower string) string {
-	trimmed := strings.TrimSpace(lower)
-	if !strings.HasPrefix(trimmed, "---\n") {
-		return ""
-	}
-	lines := strings.Split(trimmed, "\n")
-	for i := 1; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if line == "---" {
-			return ""
-		}
-		if !strings.HasPrefix(line, "role:") {
-			continue
-		}
-		role := strings.TrimSpace(strings.TrimPrefix(line, "role:"))
-		switch role {
-		case "pm", "product-manager", "product_manager":
-			return "pm"
-		case "dev", "developer", "engineer":
-			return "dev"
-		default:
-			return ""
-		}
-	}
-	return ""
 }
 
 func startServeTickEmitter(ctx context.Context, interval time.Duration, repo string, sink func(context.Context, serve.EventEnvelope) error) {

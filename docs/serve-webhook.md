@@ -85,8 +85,8 @@ holon serve \
 On startup, `holon serve` writes `${state_dir}/serve-startup-diagnostics.json` and logs the same diagnostic snapshot.
 
 Key fields:
-- `role_source`: Always `${agent_home}/ROLE.md` (single source of truth)
-- `role_inferred`: Role inferred from `ROLE.md` content (`pm`/`dev`)
+- `role_source`: Always `${agent_home}/AGENTS.md` (single source of truth)
+- `role_inferred`: Controller role derived from `AGENTS.md` front matter (`pm`/`dev`)
 - `config_source`: `${agent_home}/agent.yaml`
 - `input_mode`: `subscription`, `webhook_legacy`, or `stdin_file`
 - `transport_mode`: `gh_forward`, `websocket`, `webhook`, `rpc_only`, or `none`

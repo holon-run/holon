@@ -495,7 +495,7 @@ func TestBuildServeStartupDiagnostics_SubscriptionRPCOnly(t *testing.T) {
 		StateDir:            "/tmp/agent/state",
 		Workspace:           "/tmp/agent/workspace",
 		ConfigSource:        "/tmp/agent/agent.yaml",
-		RoleSource:          "/tmp/agent/ROLE.md",
+		RoleSource:          "/tmp/agent/AGENTS.md",
 		RoleInferred:        "pm",
 		ServeInput:          "-",
 		InputMode:           "subscription",
@@ -515,7 +515,7 @@ func TestBuildServeStartupDiagnostics_SubscriptionRPCOnly(t *testing.T) {
 	if diag.SubscriptionReason != "empty_repos" {
 		t.Fatalf("subscription_reason = %q, want empty_repos", diag.SubscriptionReason)
 	}
-	if diag.RoleSource != "/tmp/agent/ROLE.md" {
+	if diag.RoleSource != "/tmp/agent/AGENTS.md" {
 		t.Fatalf("role_source = %q", diag.RoleSource)
 	}
 	if diag.RoleInferred != "pm" {
@@ -579,7 +579,7 @@ func TestWriteServeStartupDiagnostics(t *testing.T) {
 	td := t.TempDir()
 	diag := serveStartupDiagnostics{
 		AgentID:      "main",
-		RoleSource:   filepath.Join(td, "ROLE.md"),
+		RoleSource:   filepath.Join(td, "AGENTS.md"),
 		RoleInferred: "pm",
 		Preview:      "experimental",
 	}
@@ -961,20 +961,20 @@ func TestClose_StopsControllerAndRemovesSocket(t *testing.T) {
 	}
 }
 
-func TestInferControllerRole(t *testing.T) {
+func TestControllerRoleLabelForPersona(t *testing.T) {
 	t.Parallel()
 
-	if got := inferControllerRole("ROLE: PM\nProduct manager"); got != "pm" {
-		t.Fatalf("infer pm = %q", got)
+	tests := map[string]string{
+		"pm":            "pm",
+		"autonomous":    "pm",
+		"executor":      "dev",
+		"github_solver": "dev",
+		"unknown":       "pm",
 	}
-	if got := inferControllerRole("ROLE: DEV\nSoftware engineer"); got != "dev" {
-		t.Fatalf("infer dev = %q", got)
-	}
-	if got := inferControllerRole("unknown"); got != "pm" {
-		t.Fatalf("infer default = %q", got)
-	}
-	if got := inferControllerRole("---\nrole: dev\n---\nbody"); got != "dev" {
-		t.Fatalf("infer frontmatter dev = %q", got)
+	for role, want := range tests {
+		if got := controllerRoleLabelForPersona(role); got != want {
+			t.Fatalf("controllerRoleLabelForPersona(%q) = %q, want %q", role, got, want)
+		}
 	}
 }
 
@@ -1058,9 +1058,10 @@ func TestLoadControllerRole(t *testing.T) {
 	t.Parallel()
 
 	agentHome := t.TempDir()
-	rolePath := filepath.Join(agentHome, "ROLE.md")
-	if err := os.WriteFile(rolePath, []byte("ROLE: DEV\n"), 0o644); err != nil {
-		t.Fatalf("write role: %v", err)
+	agentsPath := filepath.Join(agentHome, "AGENTS.md")
+	content := "---\npersona_contract: v2\nrole: executor\n---\n# AGENTS.md\nbody\n"
+	if err := os.WriteFile(agentsPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
 	}
 	roleLabel, err := loadControllerRole(agentHome)
 	if err != nil {
@@ -1075,12 +1076,12 @@ func TestLoadControllerRole_EmptyFile(t *testing.T) {
 	t.Parallel()
 
 	agentHome := t.TempDir()
-	rolePath := filepath.Join(agentHome, "ROLE.md")
-	if err := os.WriteFile(rolePath, []byte("   \n"), 0o644); err != nil {
-		t.Fatalf("write role: %v", err)
+	agentsPath := filepath.Join(agentHome, "AGENTS.md")
+	if err := os.WriteFile(agentsPath, []byte("   \n"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
 	}
 	if _, err := loadControllerRole(agentHome); err == nil {
-		t.Fatalf("expected error for empty ROLE.md")
+		t.Fatalf("expected error for empty AGENTS.md")
 	}
 }
 

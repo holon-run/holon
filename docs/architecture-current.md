@@ -11,7 +11,7 @@
 Holon executes agents in a sandboxed container runtime and centers persistence on `agent_home`.
 
 `agent_home` holds:
-- agent identity/persona files (`AGENTS.md`, `ROLE.md`, `IDENTITY.md`, `SOUL.md`, `CLAUDE.md`)
+- the canonical persona contract (`AGENTS.md`) and `CLAUDE.md` compatibility pointer
 - persistent runtime state
 - caches
 - long-lived agent/session metadata and optional job input/output history (for example logs, manifests, indexes)

@@ -72,6 +72,9 @@ func TestEmbeddedAssets(t *testing.T) {
 	if !strings.Contains(prompt, "Holon does not inline persona file contents") {
 		t.Errorf("Expected persona self-read contract in prompt, got: %s", prompt)
 	}
+	if strings.Contains(prompt, "ROLE.md") || strings.Contains(prompt, "SOUL.md") || strings.Contains(prompt, "IDENTITY.md") {
+		t.Errorf("Prompt should not reference legacy persona files, got: %s", prompt)
+	}
 	if !strings.Contains(prompt, "Sandbox Environment") {
 		t.Errorf("Expected 'Sandbox Environment' section in prompt, got: %s", prompt)
 	}

@@ -12,7 +12,7 @@ Current product split:
 ## Agent Home Model
 
 `agent_home` is the long-lived identity and state root for an agent instance:
-- persona files (`AGENTS.md`, `ROLE.md`, `IDENTITY.md`, `SOUL.md`, `CLAUDE.md`)
+- the persona contract (`AGENTS.md`) plus `CLAUDE.md` as a compatibility pointer
 - runtime state and caches
 - job outputs and other runtime-managed artifacts (which may be associated with per-job workspaces)
 - optional runtime configuration
