@@ -80,6 +80,11 @@ resolve_output_path_for_read() {
     esac
 }
 
+extract_pr_url_from_text() {
+    local text="$1"
+    printf '%s\n' "$text" | grep -Eo 'https://github\.com/[^[:space:]]+/pull/[0-9]+' | tail -n 1
+}
+
 # Find existing comment by marker
 # Usage: find_existing_comment <pr_number> <marker>
 # Output: Comment ID if found, empty string otherwise
@@ -234,17 +239,26 @@ action_create_pr() {
         return 0
     fi
 
-    # Check if head branch exists (best-effort, don't fail for remote branches)
+    # Check if head branch exists (best-effort, don't fail for remote branches).
+    # Avoid assuming the caller's current directory is a git worktree.
     log_info "Verifying head branch (best-effort): $head"
-    if ! git rev-parse --verify "$head" >/dev/null 2>&1; then
-        log_warn "Unable to verify local branch '$head'; it may be remote-only or a cross-fork ref. Proceeding and letting 'gh pr create' validate the head."
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        if ! git rev-parse --verify "$head" >/dev/null 2>&1; then
+            log_warn "Unable to verify local branch '$head'; it may be remote-only or a cross-fork ref. Proceeding and letting 'gh pr create' validate the head."
+        fi
+    else
+        log_info "Current directory is not a git worktree; skipping local branch verification."
     fi
+
+    local body_file
+    body_file=$(mktemp "${TMPDIR:-/tmp}/ghx-pr-body-XXXXXX.md")
+    printf '%s' "$body_content" > "$body_file"
 
     # Build gh pr create command
     local cmd=(gh pr create)
     cmd+=("--repo" "$PR_OWNER/$PR_REPO")
     cmd+=("--title" "$title")
-    cmd+=("--body" "$body_content")
+    cmd+=("--body-file" "$body_file")
     cmd+=("--base" "$base")
     cmd+=("--head" "$head")
 
@@ -259,18 +273,34 @@ action_create_pr() {
         cmd+=("--label" "$label_list")
     fi
 
-    # Create PR
+    # Create PR. Older gh versions do not support `gh pr create --json`.
     log_info "Creating PR..."
-    local pr_json
-    if ! pr_json=$("${cmd[@]}" --json number,url 2>&1); then
-        log_error "Failed to create PR: $pr_json"
+    local pr_output
+    if ! pr_output=$("${cmd[@]}" 2>&1); then
+        rm -f "$body_file"
+        log_error "Failed to create PR: $pr_output"
         return 1
     fi
+    rm -f "$body_file"
 
-    # Extract PR info from structured JSON output
+    # gh pr create typically prints the PR URL on stdout. Fall back to pr list if needed.
     local pr_number pr_url
-    pr_number=$(echo "$pr_json" | jq -r '.number')
-    pr_url=$(echo "$pr_json" | jq -r '.url')
+    pr_url=$(extract_pr_url_from_text "$pr_output" || true)
+    if [[ -z "$pr_url" ]]; then
+        local created_pr
+        created_pr=$(gh pr list --head "$head" --repo "$PR_OWNER/$PR_REPO" --json number,url --jq '.[0] // empty' 2>/dev/null || echo "")
+        if [[ -n "$created_pr" ]]; then
+            pr_number=$(echo "$created_pr" | jq -r '.number // empty')
+            pr_url=$(echo "$created_pr" | jq -r '.url // empty')
+        fi
+    fi
+    if [[ -z "${pr_number:-}" && "$pr_url" =~ /pull/([0-9]+)$ ]]; then
+        pr_number="${BASH_REMATCH[1]}"
+    fi
+    if [[ -z "${pr_number:-}" || -z "$pr_url" ]]; then
+        log_error "Created PR but could not determine PR number/url from gh output: $pr_output"
+        return 1
+    fi
 
     log_info "✅ Created PR #$pr_number"
     log_info "   URL: $pr_url"

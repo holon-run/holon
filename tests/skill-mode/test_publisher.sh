@@ -518,6 +518,85 @@ INNEREOF
     cleanup_test_env "$tmp_dir"
 }
 
+test_create_pr_compat_and_cwd_stable() {
+    local test_name="create_pr_compat_and_cwd_stable"
+    log_info "Running test: $test_name"
+
+    local tmp_dir
+    tmp_dir=$(setup_test_env "$test_name")
+    local output_dir="$tmp_dir/output"
+    local bin_dir="$tmp_dir/bin"
+    local caller_dir="$tmp_dir/caller"
+    local body_file_rel="pr-body.md"
+
+    mkdir -p "$output_dir" "$bin_dir" "$caller_dir"
+    printf 'PR body\n' > "$output_dir/$body_file_rel"
+
+    cat > "$bin_dir/gh" << 'INNEREOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  echo "github.com"
+  echo "  ✓ Logged in to github.com"
+  exit 0
+fi
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  echo "[]"
+  exit 0
+fi
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
+  for arg in "$@"; do
+    if [[ "$arg" == "--json" ]]; then
+      echo "unknown flag: --json" >&2
+      exit 1
+    fi
+  done
+  echo "https://github.com/owner/repo/pull/123"
+  exit 0
+fi
+
+exit 0
+INNEREOF
+    chmod +x "$bin_dir/gh"
+    export PATH="$bin_dir:$PATH"
+    export GITHUB_OUTPUT_DIR="$output_dir"
+
+    local before_pwd after_pwd output status=0
+    before_pwd=$(cd "$caller_dir" && pwd)
+    if output=$(cd "$caller_dir" && bash "$GHX_SCRIPT" pr create --repo=owner/repo --title="Compat PR" --body-file="$body_file_rel" --head=feature/test --base=main 2>&1); then
+        status=0
+    else
+        status=$?
+    fi
+    after_pwd=$(cd "$caller_dir" && pwd)
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ $status -eq 0 ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ create-pr works without gh --json support"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ create-pr should work with older gh (status=$status, output: $output)"
+    fi
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ "$before_pwd" == "$after_pwd" ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ create-pr does not disturb caller working directory"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_error "✗ create-pr should not change caller working directory"
+    fi
+
+    assert_file_exists "$output_dir/publish-results.json" "publish-results.json should be generated for create-pr"
+    assert_json_valid "$output_dir/publish-results.json" "create-pr publish-results.json should be valid JSON"
+
+    cleanup_test_env "$tmp_dir"
+}
+
 test_reply_review_multiline_messages() {
     local test_name="reply_review_multiline"
     log_info "Running test: $test_name (regression test for issue #551)"
@@ -619,6 +698,7 @@ main() {
     test_body_file_stdin
     test_batch_and_direct_conflict
     test_batch_path_traversal_rejected
+    test_create_pr_compat_and_cwd_stable
     test_reply_review_multiline_messages
     
     # Summary
