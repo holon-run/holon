@@ -157,7 +157,7 @@ See:
 - `docs/workspace-manifest-format.md`
 
 ## Publishing
-Publishing is handled in skill workflows (for example `ghx`) rather than by a standalone `holon publish` command.
+Publishing is handled in skill workflows and external automation rather than by a standalone `holon publish` command.
 
 - `holon solve` runs end-to-end in skill-first mode.
 - `holon run` executes a spec/goal and emits artifacts (`manifest.json`, `diff.patch`, `summary.md`) for downstream tooling.

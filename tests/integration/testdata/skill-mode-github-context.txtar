@@ -1,7 +1,7 @@
 [!docker] skip 'docker not available'
 
-# Test skill-mode with GitHub context collection
-# Verifies the collector script works inside the container
+# Test skill-mode with GitHub tooling available
+# Verifies the ghx skill is staged as text guidance inside the container
 
 mkdir work
 mkdir out
@@ -19,8 +19,7 @@ exec sh -c 'echo "test content" > work/test.txt'
 exec git -C work add test.txt
 exec git -C work commit -m 'test commit'
 
-# Run holon to verify gh CLI is available
-# This tests that the collector script can run in skill mode
+# Run holon to verify GitHub tooling and the ghx skill are available
 exec holon run --goal 'verify gh CLI available' --workspace work --output out --agent agent-bundle.tar.gz --skill ghx --log-level minimal --no-preflight
 
 # Verify outputs
@@ -66,18 +65,11 @@ else
     tools_missing="$tools_missing jq"
 fi
 
-# Verify collector script exists
-if [ -f "/root/.claude/skills/ghx/scripts/collect.sh" ]; then
-    tools_found="$tools_found collector-script"
+# Verify ghx skill manifest exists
+if [ -f "/root/.claude/skills/ghx/SKILL.md" ]; then
+    tools_found="$tools_found ghx-skill"
 else
-    tools_missing="$tools_missing collector-script"
-fi
-
-# Verify publisher script exists
-if [ -f "/root/.claude/skills/ghx/scripts/publish.sh" ]; then
-    tools_found="$tools_found publisher-script"
-else
-    tools_missing="$tools_missing publisher-script"
+    tools_missing="$tools_missing ghx-skill"
 fi
 
 # Create required outputs
