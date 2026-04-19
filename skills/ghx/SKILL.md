@@ -94,7 +94,7 @@ gh api graphql -f query='
         }
       }
     }
-  }' -F owner=owner -F repo=repo -F number=123
+  }' -F owner=<owner> -F repo=<repo> -F number=<pr_number>
 ```
 
 ### Create or update a PR
