@@ -1,16 +1,29 @@
 ---
 name: github-pr-fix
-description: "Fix pull requests based on review feedback and CI failures, then publish review replies."
+description: "Fix a GitHub pull request by addressing feedback or CI failures, pushing changes, and publishing replies."
 ---
 
 # GitHub PR Fix Skill
 
-`github-pr-fix` focuses on remediation: diagnose PR problems, apply fixes, push commits, and publish review replies.
+## Summary
+
+Use this skill when you need to remediate an existing pull request: diagnose what is broken, apply targeted fixes, push commits, and reply on review threads.
+
+## When To Use
+
+- Fixing CI failures on an existing PR
+- Addressing requested changes or review feedback
+- Updating the PR branch and publishing review replies
+
+## Do Not Use
+
+- Opening a brand-new PR from an issue
+- Performing a review-only pass without code changes
+- Project-wide triage or roadmap planning
 
 ## Prerequisites
 
 - `gh` CLI authentication is required.
-- Prefer `ghx` for context collection and publish operations.
 - `GITHUB_TOKEN`/`GH_TOKEN` must allow PR read-write operations.
 
 ## Runtime Paths
@@ -20,24 +33,44 @@ description: "Fix pull requests based on review feedback and CI failures, then p
 
 ## Inputs (Manifest-First)
 
-Required input:
-- `${GITHUB_CONTEXT_DIR}/manifest.json` from `ghx context collect`.
+Preferred input when already available:
+- `${GITHUB_CONTEXT_DIR}/manifest.json`
 
 Optional inputs:
 - Any artifact listed as `status=present` in `manifest.artifacts[]`.
 
-Do not assume fixed `github/*.json` files.  
+If no manifest is provided, collect PR context directly with `gh`:
+
+```bash
+gh pr view <pr_number> --repo <owner/repo> --json number,title,body,state,url,baseRefName,headRefName,headRefOid,author,createdAt,updatedAt,mergeable,reviews,changedFiles,additions,deletions
+gh pr view <pr_number> --repo <owner/repo> --json files
+gh api repos/<owner>/<repo>/issues/<pr_number>/comments --paginate
+gh api graphql -f query='
+  query($owner:String!, $repo:String!, $number:Int!) {
+    repository(owner:$owner, name:$repo) {
+      pullRequest(number:$number) {
+        reviewThreads(first:100) {
+          nodes {
+            isResolved
+            comments(first:100) {
+              nodes { id body path line author { login } }
+            }
+          }
+        }
+      }
+    }
+  }' -F owner=<owner> -F repo=<repo> -F number=<pr_number>
+```
+
+Do not assume fixed `github/*.json` files.
 Resolve available context through artifact metadata (`id`, `path`, `status`, `description`).
 
 ## Workflow
 
 ### 1. Collect context
 
-Preferred:
-- `skills/ghx/scripts/ghx.sh context collect <pr_ref>`
-
-Fallback:
-- Direct `gh` collection only when `ghx` is unavailable; still produce equivalent manifest contract.
+- If `${GITHUB_CONTEXT_DIR}/manifest.json` exists, use it.
+- Otherwise, collect PR metadata, files, comments, and review threads directly with `gh`.
 
 ### 2. Diagnose and prioritize
 
@@ -58,18 +91,20 @@ Use existing review threads/comments to avoid duplicate or stale responses.
 
 ### 4. Publish review replies
 
-Preferred:
-- Use `ghx` publish capabilities for reply workflows.
+Use direct `gh api` reply operations:
 
-Fallback:
-- Use direct `gh api` reply operations only if `ghx` publish path is unavailable.
+```bash
+gh api repos/<owner>/<repo>/pulls/<pr_number>/comments \
+  -X POST \
+  -F in_reply_to=<comment_id> \
+  -f body='Thanks, fixed in the latest commit.'
+```
 
 ### 5. Finalize outputs
 
 Required outputs under `${GITHUB_OUTPUT_DIR}`:
 - `summary.md`
 - `manifest.json`
-- `publish-results.json`
 
 ## Remediation Standards
 
@@ -97,20 +132,11 @@ Execution metadata for this skill, including:
 - fix/reply counters
 - `status` (`completed|partial|failed`)
 
-### `publish-results.json`
-
-Publish execution record from `ghx` or equivalent fallback format.
-
 ## Completion Criteria
 
 A successful run requires all of the following:
 1. Blocking fixes are committed and pushed to the PR branch.
-2. `publish-results.json` exists.
-3. Reply publish contains no failed required reply action.
+2. Replies planned for this run are published successfully.
+3. `summary.md` records what changed, which replies were posted, and any remaining risks.
 
 If replies are planned but not published, the run is not successful.
-
-## Notes
-
-- This skill defines diagnosis/remediation/reply behavior.
-- `ghx` defines context artifact semantics and publish command surfaces.

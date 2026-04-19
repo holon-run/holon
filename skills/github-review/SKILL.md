@@ -1,17 +1,29 @@
 ---
 name: github-review
-description: "Automated PR code review skill. Collects context through ghx, performs standards-based analysis, and publishes one structured review with optional inline comments."
+description: "Review a GitHub pull request by collecting PR context, analyzing risks, and publishing one structured review."
 ---
 
 # GitHub Review Skill
 
-`github-review` focuses on review quality and publishing rules.  
-Context acquisition details are owned by `ghx`.
+## Summary
+
+Use this skill when you need to review a pull request, identify the highest-signal findings, and publish one structured GitHub review.
+
+## When To Use
+
+- Reviewing an open pull request for correctness, regressions, or safety issues
+- Publishing a review summary plus optional inline comments
+- Working directly from raw GitHub CLI and API data
+
+## Do Not Use
+
+- Implementing fixes on the PR branch
+- Opening a new PR from an issue
+- Project-wide prioritization or PM analysis
 
 ## Prerequisites
 
 - `gh` CLI authentication is required.
-- Prefer `ghx` for context and publish operations.
 - `GITHUB_TOKEN`/`GH_TOKEN` needs permissions to read PR data and publish reviews/comments.
 
 ## Runtime Paths
@@ -21,24 +33,45 @@ Context acquisition details are owned by `ghx`.
 
 ## Inputs (Manifest-First)
 
-Required input:
-- `${GITHUB_CONTEXT_DIR}/manifest.json` from `ghx context collect`.
+Preferred input when already available:
+- `${GITHUB_CONTEXT_DIR}/manifest.json`
 
 Optional inputs:
 - Any context artifact listed as `status=present` in `manifest.json`.
 
-This skill must not assume fixed context filenames.  
+If no manifest is provided, collect PR context directly with `gh`:
+
+```bash
+gh pr view <pr_number> --repo <owner/repo> --json number,title,body,state,url,baseRefName,headRefName,headRefOid,author,createdAt,updatedAt,mergeable,reviews,changedFiles,additions,deletions
+gh pr view <pr_number> --repo <owner/repo> --json files
+gh pr diff <pr_number> --repo <owner/repo>
+gh api repos/<owner>/<repo>/issues/<pr_number>/comments --paginate
+gh api graphql -f query='
+  query($owner:String!, $repo:String!, $number:Int!) {
+    repository(owner:$owner, name:$repo) {
+      pullRequest(number:$number) {
+        reviewThreads(first:100) {
+          nodes {
+            isResolved
+            comments(first:100) {
+              nodes { id body path line author { login } }
+            }
+          }
+        }
+      }
+    }
+  }' -F owner=<owner> -F repo=<repo> -F number=<pr_number>
+```
+
+This skill must not assume fixed context filenames.
 Use `manifest.artifacts[]` (`id`, `path`, `status`, `description`) to determine available context.
 
 ## Workflow
 
 ### 1. Collect context
 
-Preferred:
-- `skills/ghx/scripts/ghx.sh context collect <pr_ref>`
-
-Fallback:
-- Direct `gh` commands only if `ghx` is unavailable; still produce equivalent manifest contract.
+- If `${GITHUB_CONTEXT_DIR}/manifest.json` exists, use it.
+- Otherwise, collect PR metadata, files, diff, comments, and review-thread context directly with `gh`.
 
 ### 2. Perform review
 
@@ -50,11 +83,11 @@ Generate:
 
 ### 3. Publish review
 
-Preferred:
-- `skills/ghx/scripts/ghx.sh review publish --pr=<owner/repo#num> --body-file=review.md --comments-file=review.json`
+Use `gh api` with a JSON payload file:
 
-Fallback:
-- Direct GitHub API only when primary publish clearly failed.
+```bash
+gh api repos/<owner>/<repo>/pulls/<pr_number>/reviews -X POST --input <review-payload.json>
+```
 
 ## Review Standards
 
@@ -140,8 +173,3 @@ Short execution summary:
 - `DRY_RUN=true`: preview only.
 - `MAX_INLINE=N`: cap inline comments.
 - `POST_EMPTY=true`: allow posting empty review.
-
-## Notes
-
-- `github-review` defines review standards and output expectations.
-- `ghx` defines context collection structure and artifact semantics.

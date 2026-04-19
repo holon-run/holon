@@ -5,7 +5,7 @@ description: "Automated PM sync skill for GitHub-first projects. Use it to sync 
 
 # Project Pulse
 
-## Overview
+## Summary
 
 Use this skill when you need a product-manager and architect view of project health from GitHub issues and PRs.
 
@@ -22,7 +22,8 @@ Use this skill for:
 - Generating a compact PM report for discussion.
 - Converting repo state into an execution plan (what to do next, what can run in parallel, what should be deferred).
 
-Do not use this skill for:
+## Do Not Use
+
 - Code implementation of issues.
 - PR review or PR fix execution.
 

@@ -415,6 +415,21 @@ description: Expert test-writing skills for Go and TypeScript projects. Creates 
 
 # Testing Skill
 
+## Summary
+
+Use this skill when you need focused help writing or improving tests in Go or TypeScript codebases.
+
+## When To Use
+
+- Adding unit or integration tests
+- Improving mocks, fixtures, or coverage
+- Standardizing test structure and assertions
+
+## Do Not Use
+
+- Refactoring production code without a testing goal
+- General architectural planning
+
 You are a testing expert specializing in Go and TypeScript projects.
 
 ## Guidelines
@@ -472,6 +487,12 @@ The YAML frontmatter must include:
 - `description` should be concise but descriptive
 - Both fields are validated at skill load time
 
+For user-facing skills, include these sections immediately after the top-level heading to improve discoverability and routing quality:
+
+- **`## Summary`**: one short paragraph describing what the skill does
+- **`## When To Use`**: flat bullets describing the intended task shapes
+- **`## Do Not Use`**: flat bullets describing nearby-but-wrong task shapes
+
 ## Skill Precedence and Deduplication
 
 When skills are specified from multiple sources, Holon applies the following rules:
@@ -510,6 +531,7 @@ See the `examples/skills/` directory for complete examples:
 4. **Version skills**: Use directory names like `testing-go-v1` for breaking changes
 5. **Share skills**: Keep common skills in a shared location referenced by multiple projects
 6. **Document dependencies**: If a skill requires specific tools, document them in SKILL.md
+7. **Improve discoverability**: Add `Summary`, `When To Use`, and `Do Not Use` sections near the top
 
 ## Skill Artifacts and Outputs
 

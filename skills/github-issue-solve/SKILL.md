@@ -1,16 +1,29 @@
 ---
 name: github-issue-solve
-description: "Solve GitHub issues by implementing changes and creating or updating a pull request."
+description: "Solve a GitHub issue by collecting context, implementing a fix, and opening or updating a pull request."
 ---
 
 # GitHub Issue Solve Skill
 
-`github-issue-solve` focuses on delivery: understand issue intent, implement code changes, and publish a PR.
+## Summary
+
+Use this skill when you need to turn a GitHub issue into a concrete code change and publish the result as a pull request.
+
+## When To Use
+
+- Fixing a GitHub issue end-to-end
+- Collecting issue context and comments with raw `gh` commands
+- Implementing code changes and opening or updating a PR
+
+## Do Not Use
+
+- Reviewing an existing PR without making changes
+- Replying to review feedback on an existing PR
+- Project-wide planning or backlog triage
 
 ## Prerequisites
 
 - `gh` CLI authentication is required.
-- Prefer `ghx` for context collection and PR publishing commands.
 - `GITHUB_TOKEN`/`GH_TOKEN` must allow issue/PR read-write operations.
 
 ## Runtime Paths
@@ -20,24 +33,28 @@ description: "Solve GitHub issues by implementing changes and creating or updati
 
 ## Inputs (Manifest-First)
 
-Required input:
-- `${GITHUB_CONTEXT_DIR}/manifest.json` produced by `ghx context collect`.
+Preferred input when already available:
+- `${GITHUB_CONTEXT_DIR}/manifest.json`
 
 Optional inputs:
 - Any artifact listed as `status=present` in `manifest.artifacts[]`.
 
-Do not assume fixed file names under `github/`.  
+If no manifest is provided, collect issue metadata and comments directly with `gh`:
+
+```bash
+gh issue view <issue_number> --repo <owner/repo> --json number,title,body,state,url,author,createdAt,updatedAt,labels
+gh api repos/<owner>/<repo>/issues/<issue_number>/comments --paginate
+```
+
+Do not assume fixed file names under `github/`.
 Resolve usable inputs from `manifest.artifacts[]` by `id`/`path`/`status`/`description`.
 
 ## Workflow
 
 ### 1. Collect context
 
-Preferred:
-- `skills/ghx/scripts/ghx.sh context collect <issue_ref>`
-
-Fallback:
-- Direct `gh` collection only if `ghx` is unavailable; still produce equivalent manifest contract.
+- If `${GITHUB_CONTEXT_DIR}/manifest.json` exists, use it.
+- Otherwise, collect the issue body and comments directly with `gh`.
 
 ### 2. Analyze and implement
 
@@ -53,11 +70,12 @@ Fallback:
 
 ### 4. Publish PR
 
-Preferred:
-- Use `ghx` PR capability commands (`pr create` / `pr update`) with `--body-file`.
+Use raw `gh` commands with `--body-file`:
 
-Fallback:
-- Use `gh pr create` / `gh pr edit` directly if `ghx` publish path is unavailable.
+```bash
+gh pr create --repo <owner/repo> --title "<title>" --body-file <summary.md> --head <branch> --base <base>
+gh pr edit <pr_number> --repo <owner/repo> --title "<title>" --body-file <summary.md>
+```
 
 Publish completion is mandatory; do not report success without a real PR side effect.
 
@@ -66,9 +84,6 @@ Publish completion is mandatory; do not report success without a real PR side ef
 Required outputs under `${GITHUB_OUTPUT_DIR}`:
 - `summary.md`
 - `manifest.json`
-
-Optional:
-- `publish-results.json` (when publish executed via `ghx`)
 
 ## Delivery Standards
 
@@ -105,8 +120,3 @@ Mark run as failed if any of the following is true:
 - PR create/update failed or PR URL cannot be verified
 
 Do not report success from artifacts alone.
-
-## Notes
-
-- This skill defines issue-solving behavior and completion criteria.
-- `ghx` defines context artifact semantics via `manifest.json`.

@@ -2,13 +2,16 @@
 
 Detailed execution workflow for `github-issue-solve`.
 
-## 1) Context intake (manifest-first)
+## 1) Context intake
 
-1. Read `${GITHUB_CONTEXT_DIR}/manifest.json`.
-2. Confirm `kind=issue` and `success=true`.
-3. Locate available artifacts from `manifest.artifacts[]`:
-   - preferred ids: `issue_metadata`, `comments`
-4. Build analysis context only from artifacts with `status=present`.
+1. If `${GITHUB_CONTEXT_DIR}/manifest.json` exists, read it first.
+2. When a manifest exists:
+   - confirm `kind=issue` and `success=true`
+   - locate available artifacts from `manifest.artifacts[]`
+   - build analysis context only from artifacts with `status=present`
+3. If no manifest exists, collect context directly:
+   - `gh issue view <issue_number> --repo <owner/repo> --json ...`
+   - `gh api repos/<owner>/<repo>/issues/<issue_number>/comments --paginate`
 
 If required context is missing, record explicit limitations in `summary.md`.
 
@@ -29,11 +32,9 @@ Never claim success without commit and push.
 
 ## 4) PR publish
 
-Preferred publish path:
-- `ghx` PR commands (`pr create` / `pr update`) with `--body-file`.
-
-Fallback path:
-- direct `gh pr create` / `gh pr edit`.
+Publish with direct `gh` commands:
+- `gh pr create --body-file`
+- `gh pr edit --body-file`
 
 After publish, verify PR identity:
 - `pr_number`
@@ -44,8 +45,6 @@ After publish, verify PR identity:
 Write/update:
 - `${GITHUB_OUTPUT_DIR}/summary.md`
 - `${GITHUB_OUTPUT_DIR}/manifest.json`
-
-When `ghx` publish is used, keep `${GITHUB_OUTPUT_DIR}/publish-results.json` for audit/debug.
 
 ## Completion criteria
 
