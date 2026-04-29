@@ -1424,6 +1424,7 @@ impl RuntimeHandle {
             .as_ref()
             .is_some_and(|task| task.kind == TaskKind::CommandTask);
         let mut force_stop_requested = false;
+        let mut command_handle_missing = false;
         if is_command_task {
             let mut handles = self.inner.task_handles.lock().await;
             match handles.get_mut(task_id) {
@@ -1441,7 +1442,8 @@ impl RuntimeHandle {
                     return Err(anyhow!("task {} has an unexpected async handle", task_id));
                 }
                 None => {
-                    return Err(anyhow!("task {} is not currently running", task_id));
+                    command_handle_missing = true;
+                    force_stop_requested = true;
                 }
             }
             drop(handles);
@@ -1489,7 +1491,11 @@ impl RuntimeHandle {
 
         let agent_id = self.agent_id().await?;
         let status = if is_command_task {
-            TaskStatus::Cancelling
+            if command_handle_missing {
+                TaskStatus::Cancelled
+            } else {
+                TaskStatus::Cancelling
+            }
         } else {
             TaskStatus::Cancelled
         };

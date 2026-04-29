@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Holon - Local-First Runtime for Long-Lived Agents</title>
+    <meta name="description"
+        content="Holon is a local-first, headless, event-driven runtime for long-lived agents that can wait, wake, delegate, and keep durable state.">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" type="image/png" href="assets/logo.png">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="background-glow"></div>
+
+    <header class="site-header">
+        <div class="container">
+            <a href="#" class="logo">
+                <img src="assets/logo.png" alt="Holon Logo">
+                <span>Holon</span>
+            </a>
+            <nav class="site-nav">
+                <a href="https://github.com/holon-run/holon/blob/main/docs" class="nav-link">Docs</a>
+                <a href="https://github.com/holon-run/holon" class="nav-link github-link">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path
+                            d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22">
+                        </path>
+                    </svg>
+                    GitHub
+                </a>
+                <button id="theme-toggle" class="theme-toggle" aria-label="Toggle Light/Dark Theme">
+                    <span class="sr-only">Toggle Theme</span>
+                    <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="5"></circle>
+                        <line x1="12" y1="1" x2="12" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="23"></line>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                        <line x1="1" y1="12" x2="3" y2="12"></line>
+                        <line x1="21" y1="12" x2="23" y2="12"></line>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                    <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                    </svg>
+                </button>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero-section">
+            <div class="container hero-content">
+                <div class="hero-text">
+                    <a href="https://github.com/holon-run/holon/releases" id="version-badge" class="badge">Latest
+                        Release</a>
+                    <h1>Keep Agents.<br>Wake Them Later.<br>Make Work Durable.</h1>
+                    <p class="subhead">Holon is a local-first runtime for agents that should keep working across time,
+                        not just answer one prompt and disappear.</p>
+                    <p class="description">Headless by default. Event-driven. Explicit about state, trust, tools, and
+                        user-facing delivery.</p>
+                    <div class="cta-group">
+                        <a href="https://github.com/holon-run/holon" class="btn btn-primary">Get Started on GitHub</a>
+                        <a href="#quickstart" class="btn btn-secondary">See Quickstart</a>
+                    </div>
+                </div>
+                <div class="hero-visual">
+                    <div class="terminal-window">
+                        <div class="terminal-header">
+                            <span class="dot red"></span>
+                            <span class="dot yellow"></span>
+                            <span class="dot green"></span>
+                        </div>
+                        <div class="terminal-body">
+	                            <div class="code-line"><span class="prompt">$</span> holon run "watch this task"</div>
+	                            <div class="code-line dimmed">Loading durable agent state...</div>
+	                            <div class="code-line dimmed">Opening tools and workspace context...</div>
+	                            <div class="code-line info">Agent entered waiting state:</div>
+	                            <div class="code-line indent">timer, callback, or operator wake</div>
+	                            <div class="code-line dimmed">Recording transcript and task state...</div>
+	                            <div class="code-line success">✔ Ready to resume when work arrives</div>
+	                            <div class="code-line info">http://127.0.0.1:8787/agents/default/status</div>
+	                            <div class="code-line"><span class="prompt">$</span> _</div>
+	                        </div>
+	                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="quickstart-section" id="quickstart">
+            <div class="container">
+                <div class="section-header center">
+                    <h2>Quickstart</h2>
+                    <p>Build the current Rust runtime locally and try the CLI.</p>
+                </div>
+                <div class="quickstart-tabs" role="tablist">
+                    <button class="tab-button active" data-tab="local-cli" role="tab" aria-selected="true"
+                        aria-controls="local-cli">Local CLI</button>
+                    <button class="tab-button" data-tab="daemon" role="tab" aria-selected="false"
+                        aria-controls="daemon">Daemon</button>
+                </div>
+                <div class="tab-content active" id="local-cli" role="tabpanel">
+                    <div class="code-block">
+                        <pre><code># Build from source
+git clone https://github.com/holon-run/holon.git
+cd holon
+cargo build
+
+# Run a one-shot prompt through the runtime
+cargo run -- run "Summarize the current workspace"
+
+# Inspect CLI surfaces
+cargo run -- --help
+cargo run -- agents --help</code></pre>
+                    </div>
+                    <div class="quickstart-note">
+                        <strong>Status:</strong> The Rust runtime is now the main development line. Release packaging
+                        and old workflow automation will be rebuilt after this cutover.
+                    </div>
+                </div>
+                <div class="tab-content" id="daemon" role="tabpanel">
+                    <div class="code-block">
+                        <pre><code># Start the local HTTP runtime
+cargo run -- serve
+
+# In another shell, inspect status
+curl http://127.0.0.1:8787/runtime/status
+
+# List public agents
+curl http://127.0.0.1:8787/agents</code></pre>
+                    </div>
+                    <div class="quickstart-note">
+                        <strong>Model:</strong> Holon keeps runtime state, events, tasks, transcripts, and agent
+                        control surfaces explicit so long-lived work remains inspectable.
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="value-prop-section">
+            <div class="container">
+                <div class="section-header center">
+                    <h2>Why Holon?</h2>
+                    <p>Useful agents need more than a chat loop. They need <strong>state, wakeups, delegation, and clear
+                            delivery boundaries</strong>.</p>
+                </div>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <div class="icon-box">🎯</div>
+                        <h3>Headless by Default</h3>
+                        <p>Run agents from a CLI, daemon, or control surface without binding the runtime to a single UI.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="icon-box">📦</div>
+                        <h3>Durable State</h3>
+                        <p>Keep transcripts, tasks, events, timers, work items, and runtime status available for later turns.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="icon-box">🔒</div>
+                        <h3>Explicit Trust</h3>
+                        <p>Preserve provenance for operator input, runtime events, external callbacks, and tool results.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="icon-box">🔄</div>
+                        <h3>Wait And Wake</h3>
+                        <p>Let agents sleep on timers, callbacks, tasks, or operator input and resume with context intact.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="icon-box">🔌</div>
+                        <h3>Provider Model</h3>
+                        <p>Keep model providers and tool execution behind runtime contracts instead of a separate SDK bundle.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="icon-box">⚙️</div>
+                        <h3>Inspectable Work</h3>
+                        <p>Expose agent state, task output, worktree summaries, and user-facing briefs through stable surfaces.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="how-it-works-section" id="how-it-works">
+            <div class="container">
+                <div class="section-header">
+                    <h2>How It Works</h2>
+                    <p>Holon separates runtime orchestration from one-off model calls.</p>
+                </div>
+                <div class="workflow-diagram">
+                    <div class="step">
+                        <div class="step-number">01</div>
+                        <div class="step-content">
+                            <h4>Ingress</h4>
+                            <p>Prompt or event</p>
+                        </div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="step">
+                        <div class="step-number">02</div>
+                        <div class="step-content">
+                            <h4>State</h4>
+                            <p>Load context</p>
+                        </div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="step">
+                        <div class="step-number">03</div>
+                        <div class="step-content">
+                            <h4>Execute</h4>
+                            <p>Tools and tasks</p>
+                        </div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="step">
+                        <div class="step-number">04</div>
+                        <div class="step-content">
+                            <h4>Wait</h4>
+                            <p>Sleep or delegate</p>
+                        </div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="step">
+                        <div class="step-number">05</div>
+                        <div class="step-content">
+                            <h4>Deliver</h4>
+                            <p>Brief or resume</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="cta-section">
+            <div class="container center">
+                <h2>Build agents that can keep working.</h2>
+                <p class="tagline">Holon makes runtime state explicit.</p>
+                <div class="cta-group">
+                    <a href="https://github.com/holon-run/holon" class="btn btn-primary btn-large">Get Started on
+                        GitHub</a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-logo">
+                    <img src="assets/logo.png" alt="Holon">
+                    <span>Holon</span>
+                </div>
+                <div class="copyright">
+                    © 2025 Holon Project. Open Source.
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
