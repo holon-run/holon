@@ -1,13 +1,19 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use holon::{
     client::LocalClient,
     config::{
-        config_schema, default_holon_home, get_config_key, load_persisted_config_at,
-        persisted_config_path, save_persisted_config_at, set_config_key, unset_config_key,
-        AppConfig,
+        config_schema, credential_store_path, default_holon_home, get_config_key,
+        list_credential_profiles_at, load_persisted_config_at, persisted_config_path,
+        provider_config_view, provider_config_views, remove_credential_profile_at,
+        save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
+        validate_provider_config, AppConfig, CredentialKind, CredentialSource, ProviderAuthConfig,
+        ProviderConfigFile, ProviderId, ProviderTransportKind,
     },
     daemon::{
         daemon_logs, daemon_restart, daemon_start, daemon_status, daemon_stop,
@@ -180,12 +186,73 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum ConfigCommands {
-    Get { key: String },
-    Set { key: String, value: String },
-    Unset { key: String },
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        value: String,
+    },
+    Unset {
+        key: String,
+    },
+    Providers {
+        #[command(subcommand)]
+        command: ConfigProviderCommands,
+    },
+    Credentials {
+        #[command(subcommand)]
+        command: ConfigCredentialCommands,
+    },
     List,
     Schema,
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigProviderCommands {
+    Set {
+        provider: String,
+        #[arg(long)]
+        transport: String,
+        #[arg(long)]
+        base_url: String,
+        #[arg(long, default_value = "none")]
+        credential_source: String,
+        #[arg(long, default_value = "none")]
+        credential_kind: String,
+        #[arg(long)]
+        credential_env: Option<String>,
+        #[arg(long)]
+        credential_profile: Option<String>,
+        #[arg(long)]
+        credential_external: Option<String>,
+    },
+    Get {
+        provider: String,
+    },
+    List,
+    Remove {
+        provider: String,
+    },
+    Doctor {
+        provider: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCredentialCommands {
+    Set {
+        profile: String,
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        stdin: bool,
+    },
+    List,
+    Remove {
+        profile: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -756,6 +823,8 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
                 "status": "unset"
             }))
         }
+        ConfigCommands::Providers { command } => handle_config_providers_command(command).await,
+        ConfigCommands::Credentials { command } => handle_config_credentials_command(command).await,
         ConfigCommands::List => {
             let path = config_file_path();
             let config = load_persisted_config_at(&path)?;
@@ -769,11 +838,158 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
     }
 }
 
+async fn handle_config_providers_command(command: ConfigProviderCommands) -> Result<()> {
+    match command {
+        ConfigProviderCommands::Set {
+            provider,
+            transport,
+            base_url,
+            credential_source,
+            credential_kind,
+            credential_env,
+            credential_profile,
+            credential_external,
+        } => {
+            let id = ProviderId::parse(&provider)?;
+            let provider_config = ProviderConfigFile {
+                transport: ProviderTransportKind::parse(&transport)?,
+                base_url,
+                auth: ProviderAuthConfig {
+                    source: CredentialSource::parse(&credential_source)?,
+                    kind: CredentialKind::parse(&credential_kind)?,
+                    env: credential_env,
+                    profile: credential_profile.map(|value| value.trim().to_string()),
+                    external: credential_external,
+                },
+            };
+            validate_provider_config(&id, &provider_config)?;
+
+            let path = config_file_path();
+            let mut config = load_persisted_config_at(&path)?;
+            config.providers.insert(id.clone(), provider_config);
+            save_persisted_config_at(&path, &config)?;
+
+            let effective = AppConfig::load()?;
+            let provider = effective.providers.get(&id).with_context(|| {
+                format!("provider {} was saved but did not resolve", id.as_str())
+            })?;
+            print_json(&serde_json::json!({
+                "applied_via": "offline_store",
+                "provider": provider_config_view(&effective, provider),
+            }))
+        }
+        ConfigProviderCommands::Get { provider } => {
+            let id = ProviderId::parse(&provider)?;
+            let config = AppConfig::load()?;
+            let provider = config
+                .providers
+                .get(&id)
+                .with_context(|| format!("unknown provider {}", id.as_str()))?;
+            print_json(&serde_json::to_value(provider_config_view(
+                &config, provider,
+            ))?)
+        }
+        ConfigProviderCommands::List => {
+            let config = AppConfig::load()?;
+            print_json(&serde_json::to_value(provider_config_views(&config))?)
+        }
+        ConfigProviderCommands::Remove { provider } => {
+            let id = ProviderId::parse(&provider)?;
+            let path = config_file_path();
+            let mut config = load_persisted_config_at(&path)?;
+            let removed = config.providers.remove(&id).is_some();
+            save_persisted_config_at(&path, &config)?;
+            print_json(&serde_json::json!({
+                "applied_via": "offline_store",
+                "provider": id.as_str(),
+                "status": if removed { "removed" } else { "not_configured" },
+            }))
+        }
+        ConfigProviderCommands::Doctor { provider } => {
+            let id = ProviderId::parse(&provider)?;
+            let config = AppConfig::load()?;
+            let provider_cfg = config
+                .providers
+                .get(&id)
+                .with_context(|| format!("unknown provider {}", id.as_str()))?;
+            let doctor = provider_doctor(&config);
+            let chain_entries = doctor["providers"]
+                .as_array()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter(|entry| entry["provider"].as_str() == Some(id.as_str()))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            print_json(&serde_json::json!({
+                "provider": provider_config_view(&config, provider_cfg),
+                "model_chain_diagnostics": chain_entries,
+            }))
+        }
+    }
+}
+
+async fn handle_config_credentials_command(command: ConfigCredentialCommands) -> Result<()> {
+    let path = credentials_file_path();
+    match command {
+        ConfigCredentialCommands::Set {
+            profile,
+            kind,
+            stdin,
+        } => {
+            if !stdin {
+                anyhow::bail!("credential material input requires --stdin");
+            }
+            let mut material = String::new();
+            std::io::stdin()
+                .read_to_string(&mut material)
+                .context("failed to read credential material from stdin")?;
+            trim_trailing_newlines(&mut material);
+            let status = set_credential_profile_at(
+                &path,
+                &profile,
+                CredentialKind::parse(&kind)?,
+                material,
+            )?;
+            print_json(&serde_json::json!({
+                "applied_via": "offline_store",
+                "credential": status,
+            }))
+        }
+        ConfigCredentialCommands::List => {
+            let profiles = list_credential_profiles_at(&path)?;
+            print_json(&serde_json::to_value(profiles)?)
+        }
+        ConfigCredentialCommands::Remove { profile } => {
+            let status = remove_credential_profile_at(&path, &profile)?;
+            print_json(&serde_json::json!({
+                "applied_via": "offline_store",
+                "credential": status,
+            }))
+        }
+    }
+}
+
 fn config_file_path() -> std::path::PathBuf {
     let home_dir = std::env::var("HOLON_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| default_holon_home());
     persisted_config_path(&home_dir)
+}
+
+fn credentials_file_path() -> std::path::PathBuf {
+    let home_dir = std::env::var("HOLON_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| default_holon_home());
+    credential_store_path(&home_dir)
+}
+
+fn trim_trailing_newlines(value: &mut String) {
+    while value.ends_with('\n') || value.ends_with('\r') {
+        value.pop();
+    }
 }
 
 fn print_json(value: &serde_json::Value) -> Result<()> {

@@ -68,3 +68,4 @@ Current decision notes:
 - [048 Compatible Provider Catalog](./048-compatible-provider-catalog.md)
 - [049 Anthropic Cache Break Classification](./049-anthropic-cache-break-classification.md)
 - [050 Anthropic Claude CLI-Like Cache Lowering](./050-anthropic-claude-cli-like-cache-lowering.md)
+- [051 Runtime Config Provider Credentials](./051-runtime-config-provider-credentials.md)
