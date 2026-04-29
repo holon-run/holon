@@ -729,7 +729,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
                     source: CredentialSource::parse(&credential_source)?,
                     kind: CredentialKind::parse(&credential_kind)?,
                     env: credential_env,
-                    profile: credential_profile,
+                    profile: credential_profile.map(|value| value.trim().to_string()),
                     external: credential_external,
                 },
             };

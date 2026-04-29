@@ -346,7 +346,11 @@ impl AppConfig {
         });
         let config_file_path = persisted_config_path(&home_dir);
         let stored_config = load_persisted_config_at(&config_file_path)?;
-        let credential_store = load_credential_store_at(&credential_store_path(&home_dir))?;
+        let credential_store = if config_uses_credential_profiles(&stored_config) {
+            load_credential_store_at(&credential_store_path(&home_dir))?
+        } else {
+            CredentialStoreFile::default()
+        };
         let http_addr = env::var("HOLON_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
         let callback_base_url =
             env::var("HOLON_CALLBACK_BASE_URL").unwrap_or_else(|_| format!("http://{http_addr}"));
@@ -1862,7 +1866,9 @@ fn resolve_provider_credential(
         CredentialSource::AuthProfile => auth
             .profile
             .as_deref()
-            .and_then(|profile| credential_store.profiles.get(profile))
+            .map(normalize_credential_profile_id)
+            .transpose()?
+            .and_then(|profile| credential_store.profiles.get(&profile))
             .map(|entry| {
                 if entry.kind != auth.kind {
                     return Err(anyhow!(
@@ -1912,18 +1918,24 @@ fn validate_provider_auth(provider_id: &ProviderId, auth: &ProviderAuthConfig) -
             | CredentialKind::OAuth
             | CredentialKind::SessionToken,
         ) => {
-            if auth
-                .profile
-                .as_deref()
-                .unwrap_or_default()
-                .trim()
-                .is_empty()
-            {
+            let profile = auth.profile.as_deref().ok_or_else(|| {
+                anyhow!(
+                    "provider {} credential_profile auth requires auth.profile",
+                    provider_id.as_str()
+                )
+            })?;
+            if profile.trim().is_empty() {
                 return Err(anyhow!(
                     "provider {} credential_profile auth requires auth.profile",
                     provider_id.as_str()
                 ));
             }
+            normalize_credential_profile_id(profile).with_context(|| {
+                format!(
+                    "provider {} credential_profile auth has invalid auth.profile",
+                    provider_id.as_str()
+                )
+            })?;
         }
         (CredentialSource::None, CredentialKind::None) => {}
         _ => {
@@ -2347,13 +2359,21 @@ fn ensure_owner_only_file(path: &Path) -> Result<()> {
         let mode = metadata.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
             return Err(anyhow!(
-                "credential store {} must be owner-only; found mode {:o}",
+                "credential store {} must be owner-only; found mode {:o}. Fix it with: chmod 600 {}",
                 path.display(),
-                mode
+                mode,
+                path.display()
             ));
         }
     }
     Ok(())
+}
+
+fn config_uses_credential_profiles(config: &HolonConfigFile) -> bool {
+    config
+        .providers
+        .values()
+        .any(|provider| provider.auth.source == CredentialSource::AuthProfile)
 }
 
 fn is_startup_only_config_key(key: &str) -> bool {
@@ -2421,12 +2441,12 @@ mod tests {
         config_schema, credential_store_path, default_holon_home, get_config_key, get_config_value,
         list_credential_profiles_at, load_persisted_config_at, parse_anthropic_cache_strategy,
         parse_anthropic_cache_strategy_env, parse_comma_separated_values, parse_url_value,
-        provider_registry_for_tests, resolve_anthropic_context_management_config,
-        save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
-        AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig, ControlAuthMode,
-        CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile, ModelRef,
-        ProviderAuthConfig, ProviderConfigFile, ProviderId, ProviderTransportKind,
-        RuntimeModelCatalog,
+        persisted_config_path, provider_registry_for_tests,
+        resolve_anthropic_context_management_config, save_persisted_config_at, set_config_key,
+        set_credential_profile_at, unset_config_key, AnthropicCacheStrategy,
+        AnthropicContextManagementConfig, AppConfig, ControlAuthMode, CredentialKind,
+        CredentialSource, CredentialStoreFile, HolonConfigFile, ModelRef, ProviderAuthConfig,
+        ProviderConfigFile, ProviderId, ProviderTransportKind, RuntimeModelCatalog,
     };
 
     struct EnvVarGuard {
@@ -2865,7 +2885,7 @@ mod tests {
                     source: CredentialSource::AuthProfile,
                     kind: CredentialKind::ApiKey,
                     env: None,
-                    profile: Some("openrouter:default".into()),
+                    profile: Some(" openrouter:default ".into()),
                     external: None,
                 },
             },
@@ -2877,6 +2897,44 @@ mod tests {
 
         assert_eq!(runtime.id, id);
         assert_eq!(runtime.credential.as_deref(), Some("profile-value"));
+    }
+
+    #[test]
+    fn app_config_ignores_bad_credential_store_permissions_until_profile_auth_is_used() {
+        let dir = tempdir().unwrap();
+        let store_path = credential_store_path(dir.path());
+        fs::write(&store_path, r#"{"profiles":{}}"#).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&store_path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap();
+
+        let config_path = persisted_config_path(dir.path());
+        let mut config = HolonConfigFile::default();
+        config.providers.insert(
+            ProviderId::parse("openrouter").unwrap(),
+            ProviderConfigFile {
+                transport: ProviderTransportKind::OpenAiResponses,
+                base_url: "https://openrouter.example/v1".into(),
+                auth: ProviderAuthConfig {
+                    source: CredentialSource::AuthProfile,
+                    kind: CredentialKind::ApiKey,
+                    env: None,
+                    profile: Some("openrouter:default".into()),
+                    external: None,
+                },
+            },
+        );
+        save_persisted_config_at(&config_path, &config).unwrap();
+
+        #[cfg(unix)]
+        {
+            let err = AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap_err();
+            assert!(err.to_string().contains("chmod 600"));
+        }
     }
 
     #[test]
