@@ -1,0 +1,235 @@
+name: Holon Solve
+description: Run the Rust Holon GitHub solve preset against a checked-out repository.
+branding:
+  icon: cpu
+  color: blue
+
+inputs:
+  ref:
+    description: GitHub issue or PR reference, such as owner/repo#123.
+    required: true
+  repo:
+    description: Repository hint for numeric refs.
+    required: false
+    default: ''
+  base:
+    description: Base branch hint.
+    required: false
+    default: ''
+  goal:
+    description: Explicit solve goal.
+    required: false
+    default: ''
+  role:
+    description: Optional role hint.
+    required: false
+    default: ''
+  model:
+    description: Holon model ref, such as openai/gpt-5.4 or anthropic/claude-sonnet-4-6.
+    required: false
+    default: ''
+  max_turns:
+    description: Maximum foreground model turns.
+    required: false
+    default: '12'
+  anthropic_auth_token:
+    description: Anthropic Auth Token.
+    required: false
+  anthropic_api_key:
+    description: Legacy alias for anthropic_auth_token.
+    required: false
+    deprecationMessage: Use anthropic_auth_token instead.
+  anthropic_base_url:
+    description: Anthropic Base URL.
+    required: false
+    default: https://api.anthropic.com
+  openai_api_key:
+    description: OpenAI API key.
+    required: false
+  openai_base_url:
+    description: OpenAI Base URL.
+    required: false
+    default: ''
+  github_token:
+    description: GitHub token. Defaults to github.token.
+    required: false
+    default: ''
+  version:
+    description: Holon release version to download when build_from_source is false.
+    required: false
+    default: latest
+  build_from_source:
+    description: Build Holon from source before running.
+    required: false
+    default: 'true'
+  holon_repository:
+    description: Holon repository for source builds.
+    required: false
+    default: holon-run/holon
+  holon_ref:
+    description: Optional Holon git ref for source builds.
+    required: false
+    default: ''
+  workspace:
+    description: Checked-out repository path. Defaults to GITHUB_WORKSPACE.
+    required: false
+    default: ''
+  cwd:
+    description: Working directory for the solve run. Defaults to workspace.
+    required: false
+    default: ''
+  input_dir:
+    description: Input context directory.
+    required: false
+    default: ''
+  output_dir:
+    description: Output artifact directory.
+    required: false
+    default: ''
+  state_dir:
+    description: Holon home directory for runtime state.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout Holon source
+      if: inputs.build_from_source == 'true'
+      shell: bash
+      env:
+        HOLON_REPOSITORY: ${{ inputs.holon_repository }}
+        HOLON_REF: ${{ inputs.holon_ref }}
+      run: |
+        set -euo pipefail
+        src_dir="$RUNNER_TEMP/holon-source"
+        rm -rf "$src_dir"
+        git clone --depth 1 "https://github.com/${HOLON_REPOSITORY}.git" "$src_dir"
+        if [ -n "$HOLON_REF" ]; then
+          git -C "$src_dir" fetch --depth 1 origin "$HOLON_REF"
+          git -C "$src_dir" checkout FETCH_HEAD
+        fi
+        echo "HOLON_SOURCE_DIR=$src_dir" >> "$GITHUB_ENV"
+
+    - name: Set up Rust
+      if: inputs.build_from_source == 'true'
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build Holon from source
+      if: inputs.build_from_source == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo build --release --locked --manifest-path "$HOLON_SOURCE_DIR/Cargo.toml"
+        mkdir -p "$RUNNER_TEMP/holon/bin"
+        cp "$HOLON_SOURCE_DIR/target/release/holon" "$RUNNER_TEMP/holon/bin/holon"
+        chmod +x "$RUNNER_TEMP/holon/bin/holon"
+
+    - name: Download Holon binary
+      if: inputs.build_from_source != 'true'
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64) arch=amd64 ;;
+          arm64|aarch64) arch=arm64 ;;
+        esac
+        if [ "$platform" != "linux" ] && [ "$platform" != "darwin" ]; then
+          echo "::error::Unsupported platform: $platform"
+          exit 1
+        fi
+        if [ "$platform" = "linux" ] && [ "$arch" != "amd64" ]; then
+          echo "::error::Linux release assets currently support amd64 only."
+          exit 1
+        fi
+        release_path=latest/download
+        if [ "$INPUT_VERSION" != "latest" ]; then
+          release_path="download/$INPUT_VERSION"
+        fi
+        mkdir -p "$RUNNER_TEMP/holon/bin"
+        curl -fsSL "https://github.com/holon-run/holon/releases/$release_path/holon-$platform-$arch.tar.gz" |
+          tar -xz -C "$RUNNER_TEMP/holon/bin"
+        chmod +x "$RUNNER_TEMP/holon/bin/holon"
+
+    - name: Run Holon solve
+      shell: bash
+      env:
+        INPUT_REF: ${{ inputs.ref }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_GOAL: ${{ inputs.goal }}
+        INPUT_ROLE: ${{ inputs.role }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_MAX_TURNS: ${{ inputs.max_turns }}
+        INPUT_WORKSPACE: ${{ inputs.workspace }}
+        INPUT_CWD: ${{ inputs.cwd }}
+        INPUT_INPUT_DIR: ${{ inputs.input_dir }}
+        INPUT_OUTPUT_DIR: ${{ inputs.output_dir }}
+        INPUT_STATE_DIR: ${{ inputs.state_dir }}
+        ANTHROPIC_AUTH_TOKEN_INPUT: ${{ inputs.anthropic_auth_token || inputs.anthropic_api_key }}
+        ANTHROPIC_BASE_URL_INPUT: ${{ inputs.anthropic_base_url }}
+        OPENAI_API_KEY_INPUT: ${{ inputs.openai_api_key }}
+        OPENAI_BASE_URL_INPUT: ${{ inputs.openai_base_url }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token || github.token }}
+      run: |
+        set -euo pipefail
+        export PATH="$RUNNER_TEMP/holon/bin:$PATH"
+        export GITHUB_TOKEN="$GITHUB_TOKEN_INPUT"
+        export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+        if [ -n "$ANTHROPIC_AUTH_TOKEN_INPUT" ]; then
+          export ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN_INPUT"
+        fi
+        if [ -n "$ANTHROPIC_BASE_URL_INPUT" ]; then
+          export ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL_INPUT"
+        fi
+        if [ -n "$OPENAI_API_KEY_INPUT" ]; then
+          export OPENAI_API_KEY="$OPENAI_API_KEY_INPUT"
+        fi
+        if [ -n "$OPENAI_BASE_URL_INPUT" ]; then
+          export OPENAI_BASE_URL="$OPENAI_BASE_URL_INPUT"
+        fi
+
+        workspace="$INPUT_WORKSPACE"
+        if [ -z "$workspace" ]; then
+          workspace="${GITHUB_WORKSPACE:-$PWD}"
+        fi
+        cwd="$INPUT_CWD"
+        if [ -z "$cwd" ]; then
+          cwd="$workspace"
+        fi
+        input_dir="$INPUT_INPUT_DIR"
+        if [ -z "$input_dir" ]; then
+          input_dir="$RUNNER_TEMP/holon/input"
+        fi
+        output_dir="$INPUT_OUTPUT_DIR"
+        if [ -z "$output_dir" ]; then
+          output_dir="$RUNNER_TEMP/holon/output"
+        fi
+        state_dir="$INPUT_STATE_DIR"
+        if [ -z "$state_dir" ]; then
+          state_dir="$RUNNER_TEMP/holon/home"
+        fi
+        mkdir -p "$input_dir" "$output_dir" "$state_dir"
+
+        args=("$INPUT_REF" --home "$state_dir" --workspace "$workspace" --cwd "$cwd" --input "$input_dir" --output "$output_dir" --max-turns "$INPUT_MAX_TURNS" --json)
+        if [ -n "$INPUT_REPO" ]; then
+          args+=(--repo "$INPUT_REPO")
+        fi
+        if [ -n "$INPUT_BASE" ]; then
+          args+=(--base "$INPUT_BASE")
+        fi
+        if [ -n "$INPUT_GOAL" ]; then
+          args+=(--goal "$INPUT_GOAL")
+        fi
+        if [ -n "$INPUT_ROLE" ]; then
+          args+=(--role "$INPUT_ROLE")
+        fi
+        if [ -n "$INPUT_MODEL" ]; then
+          args+=(--model "$INPUT_MODEL")
+        fi
+
+        holon solve "${args[@]}"

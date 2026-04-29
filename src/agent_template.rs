@@ -53,6 +53,14 @@ const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[
         agents_md: include_str!("../builtin_templates/holon-release/AGENTS.md"),
         skills_json: None,
     },
+    BuiltinTemplate {
+        template_id: "holon-github-solve",
+        version: 1,
+        agents_md: include_str!("../builtin_templates/holon-github-solve/AGENTS.md"),
+        skills_json: Some(include_str!(
+            "../builtin_templates/holon-github-solve/skills.json"
+        )),
+    },
 ];
 
 struct BuiltinTemplate {
@@ -107,7 +115,32 @@ struct TemplateSkillsManifest {
 enum TemplateSkillRef {
     Local { path: PathBuf },
     Github { package: String },
+    Builtin { name: String },
 }
+
+struct BuiltinSkill {
+    name: &'static str,
+    skill_md: &'static str,
+}
+
+const BUILTIN_SKILLS: &[BuiltinSkill] = &[
+    BuiltinSkill {
+        name: "ghx",
+        skill_md: include_str!("../skills/ghx/SKILL.md"),
+    },
+    BuiltinSkill {
+        name: "github-issue-solve",
+        skill_md: include_str!("../skills/github-issue-solve/SKILL.md"),
+    },
+    BuiltinSkill {
+        name: "github-pr-fix",
+        skill_md: include_str!("../skills/github-pr-fix/SKILL.md"),
+    },
+    BuiltinSkill {
+        name: "github-review",
+        skill_md: include_str!("../skills/github-review/SKILL.md"),
+    },
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -426,10 +459,18 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
     let manifest: TemplateSkillsManifest = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     for skill_ref in &manifest.skill_refs {
-        if let TemplateSkillRef::Github { package } = skill_ref {
-            bail!(
-                "github skill refs are not supported in phase 1; use local skill refs instead: {package}"
-            );
+        match skill_ref {
+            TemplateSkillRef::Github { package } => {
+                bail!(
+                    "github skill refs are not supported in phase 1; use local or builtin skill refs instead: {package}"
+                );
+            }
+            TemplateSkillRef::Builtin { name } => {
+                if builtin_skill(name).is_none() {
+                    bail!("unknown builtin skill ref: {name}");
+                }
+            }
+            TemplateSkillRef::Local { .. } => {}
         }
     }
     Ok(manifest.skill_refs)
@@ -740,10 +781,32 @@ async fn materialize_skill_ref(
 ) -> Result<PathBuf> {
     match skill_ref {
         TemplateSkillRef::Local { path } => materialize_local_skill_ref(skills_root, path),
+        TemplateSkillRef::Builtin { name } => materialize_builtin_skill_ref(skills_root, name),
         TemplateSkillRef::Github { package } => bail!(
-            "github skill refs are not supported in phase 1; use local skill refs instead: {package}"
+            "github skill refs are not supported in phase 1; use local or builtin skill refs instead: {package}"
         ),
     }
+}
+
+fn builtin_skill(name: &str) -> Option<&'static BuiltinSkill> {
+    BUILTIN_SKILLS.iter().find(|skill| skill.name == name)
+}
+
+fn materialize_builtin_skill_ref(skills_root: &Path, name: &str) -> Result<PathBuf> {
+    let skill = builtin_skill(name).ok_or_else(|| anyhow!("unknown builtin skill ref: {name}"))?;
+    fs::create_dir_all(skills_root)
+        .with_context(|| format!("failed to create {}", skills_root.display()))?;
+    let destination = skills_root.join(skill.name);
+    if destination.exists() {
+        bail!(
+            "template skill destination {} already exists",
+            destination.display()
+        );
+    }
+    fs::create_dir_all(&destination)
+        .with_context(|| format!("failed to create {}", destination.display()))?;
+    write_file_atomically(&destination.join("SKILL.md"), skill.skill_md.as_bytes())?;
+    Ok(destination)
 }
 
 fn materialize_local_skill_ref(skills_root: &Path, path: &Path) -> Result<PathBuf> {
@@ -949,6 +1012,30 @@ mod tests {
         };
 
         assert!(builtin_template_is_managed(&template_dir, &state).unwrap());
+    }
+
+    #[tokio::test]
+    async fn github_solve_template_materializes_builtin_skills() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempdir().unwrap();
+        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        seed_builtin_templates().unwrap();
+
+        let agent_home = home.path().join("agent");
+        initialize_agent_home_from_template(&agent_home, "holon-github-solve")
+            .await
+            .unwrap();
+
+        let agents_md = fs::read_to_string(agent_home.join("AGENTS.md")).unwrap();
+        assert!(agents_md.contains("Holon GitHub Solve Agent"));
+        assert!(agent_home
+            .join("skills/github-issue-solve/SKILL.md")
+            .is_file());
+        assert!(agent_home.join("skills/github-pr-fix/SKILL.md").is_file());
+        assert!(agent_home.join("skills/github-review/SKILL.md").is_file());
+        assert!(agent_home.join("skills/ghx/SKILL.md").is_file());
     }
 
     #[tokio::test]
