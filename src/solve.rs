@@ -92,7 +92,7 @@ pub async fn run_solve(config: AppConfig, request: SolveRequest) -> Result<RunOn
 
     let response = match run_once(config.clone(), run_request.clone()).await {
         Ok(response) => response,
-        Err(err) if err.to_string().contains("already exists") => {
+        Err(err) if is_agent_template_already_initialized_error(&err) => {
             let retry = RunOnceRequest {
                 create_agent: false,
                 template: None,
@@ -105,6 +105,15 @@ pub async fn run_solve(config: AppConfig, request: SolveRequest) -> Result<RunOn
 
     write_run_artifacts(&output_dir, &request, target.as_ref(), &response)?;
     Ok(response)
+}
+
+fn is_agent_template_already_initialized_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains(
+            "already exists; template initialization only applies when creating a new agent",
+        )
+    })
 }
 
 fn prepare_output_dir(output_dir: Option<&Path>) -> Result<PathBuf> {
@@ -412,5 +421,16 @@ mod tests {
         assert!(prompt.contains("github-pr-fix"));
         assert!(prompt.contains("github-review"));
         assert!(prompt.contains("/tmp/out/manifest.json"));
+    }
+
+    #[test]
+    fn agent_template_retry_only_matches_specific_create_agent_error() {
+        let expected = anyhow!(
+            "agent github-solve already exists; template initialization only applies when creating a new agent"
+        );
+        assert!(is_agent_template_already_initialized_error(&expected));
+
+        let unrelated = anyhow!("target file already exists: README.md");
+        assert!(!is_agent_template_already_initialized_error(&unrelated));
     }
 }

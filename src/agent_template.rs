@@ -121,24 +121,48 @@ enum TemplateSkillRef {
 struct BuiltinSkill {
     name: &'static str,
     skill_md: &'static str,
+    files: &'static [BuiltinSkillFile],
+}
+
+struct BuiltinSkillFile {
+    path: &'static str,
+    content: &'static str,
 }
 
 const BUILTIN_SKILLS: &[BuiltinSkill] = &[
     BuiltinSkill {
         name: "ghx",
         skill_md: include_str!("../skills/ghx/SKILL.md"),
+        files: &[],
     },
     BuiltinSkill {
         name: "github-issue-solve",
         skill_md: include_str!("../skills/github-issue-solve/SKILL.md"),
+        files: &[BuiltinSkillFile {
+            path: "references/issue-solve-workflow.md",
+            content: include_str!(
+                "../skills/github-issue-solve/references/issue-solve-workflow.md"
+            ),
+        }],
     },
     BuiltinSkill {
         name: "github-pr-fix",
         skill_md: include_str!("../skills/github-pr-fix/SKILL.md"),
+        files: &[
+            BuiltinSkillFile {
+                path: "references/diagnostics.md",
+                content: include_str!("../skills/github-pr-fix/references/diagnostics.md"),
+            },
+            BuiltinSkillFile {
+                path: "references/pr-fix-workflow.md",
+                content: include_str!("../skills/github-pr-fix/references/pr-fix-workflow.md"),
+            },
+        ],
     },
     BuiltinSkill {
         name: "github-review",
         skill_md: include_str!("../skills/github-review/SKILL.md"),
+        files: &[],
     },
 ];
 
@@ -806,6 +830,9 @@ fn materialize_builtin_skill_ref(skills_root: &Path, name: &str) -> Result<PathB
     fs::create_dir_all(&destination)
         .with_context(|| format!("failed to create {}", destination.display()))?;
     write_file_atomically(&destination.join("SKILL.md"), skill.skill_md.as_bytes())?;
+    for file in skill.files {
+        write_file_atomically(&destination.join(file.path), file.content.as_bytes())?;
+    }
     Ok(destination)
 }
 
@@ -1033,7 +1060,16 @@ mod tests {
         assert!(agent_home
             .join("skills/github-issue-solve/SKILL.md")
             .is_file());
+        assert!(agent_home
+            .join("skills/github-issue-solve/references/issue-solve-workflow.md")
+            .is_file());
         assert!(agent_home.join("skills/github-pr-fix/SKILL.md").is_file());
+        assert!(agent_home
+            .join("skills/github-pr-fix/references/diagnostics.md")
+            .is_file());
+        assert!(agent_home
+            .join("skills/github-pr-fix/references/pr-fix-workflow.md")
+            .is_file());
         assert!(agent_home.join("skills/github-review/SKILL.md").is_file());
         assert!(agent_home.join("skills/ghx/SKILL.md").is_file());
     }

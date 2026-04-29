@@ -7,6 +7,11 @@ on:
         description: GitHub issue or PR reference, such as owner/repo#123.
         required: true
         type: string
+      repo:
+        description: GitHub repository hint for shorthand refs such as #123.
+        required: false
+        type: string
+        default: ''
       base:
         description: Base branch hint.
         required: false
@@ -68,7 +73,6 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -131,6 +135,14 @@ jobs:
             x86_64) arch=amd64 ;;
             arm64|aarch64) arch=arm64 ;;
           esac
+          if [ "$platform" != "linux" ] && [ "$platform" != "darwin" ]; then
+            echo "::error::Unsupported platform for Holon binary download: $platform"
+            exit 1
+          fi
+          if [ "$platform" = "linux" ] && [ "$arch" != "amd64" ]; then
+            echo "::error::Linux release assets currently support amd64 only. Set inputs.build_from_source=true or use a linux/amd64 runner."
+            exit 1
+          fi
           release_path=latest/download
           if [ "$INPUT_VERSION" != "latest" ]; then
             release_path="download/$INPUT_VERSION"
@@ -144,6 +156,7 @@ jobs:
         shell: bash
         env:
           INPUT_REF: ${{ inputs.ref }}
+          INPUT_REPO: ${{ inputs.repo }}
           INPUT_BASE: ${{ inputs.base }}
           INPUT_GOAL: ${{ inputs.goal }}
           INPUT_MODEL: ${{ inputs.model }}
@@ -171,6 +184,9 @@ jobs:
           fi
 
           args=("$INPUT_REF" --home "${{ steps.dirs.outputs.home }}" --workspace "${{ github.workspace }}" --input "${{ steps.dirs.outputs.input }}" --output "${{ steps.dirs.outputs.output }}" --json)
+          if [ -n "$INPUT_REPO" ]; then
+            args+=(--repo "$INPUT_REPO")
+          fi
           if [ -n "$INPUT_BASE" ]; then
             args+=(--base "$INPUT_BASE")
           fi
