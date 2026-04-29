@@ -1,0 +1,29 @@
+{
+  "name": "task-inspection-subagent-status",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "analysis-runtime"
+  },
+  "tool_profile": "read_only",
+  "timeout_seconds": 180,
+  "turns": [
+    {
+      "prompt": "Do not answer directly. Create a bounded subagent task that inspects this fixture and summarizes the main module split. Once the task is queued, stop the main turn."
+    },
+    {
+      "prompt": "Now inspect the task state and answer only this: what task is present, what is its final status, and what result did it produce? Use the task inspection tools rather than guessing."
+    }
+  ],
+  "setup": [],
+  "verify": [],
+  "success_criteria": {
+    "max_files_changed": 0,
+    "min_final_message_length": 140,
+    "required_regexes": [
+      "task",
+      "completed|running|queued",
+      "runtime\\.js|storage\\.js|http\\.js"
+    ]
+  }
+}

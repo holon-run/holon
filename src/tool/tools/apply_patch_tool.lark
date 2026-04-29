@@ -1,0 +1,36 @@
+start: file_patch+
+
+file_patch: git_header metadata_line* rename_header metadata_line* old_file new_file hunk+
+          | git_header metadata_line* rename_header metadata_line*
+          | git_header? metadata_line* old_file new_file hunk+
+
+git_header: "diff --git " path_token " " path_token LF
+rename_header: metadata_line* rename_from rename_to metadata_line*
+rename_from: "rename from " filename LF
+rename_to: "rename to " filename LF
+
+metadata_line: ("index " /[^\n]+/
+              | "similarity index " /[^\n]+/
+              | "new file mode " /[^\n]+/
+              | "deleted file mode " /[^\n]+/
+              | "old mode " /[^\n]+/
+              | "new mode " /[^\n]+/) LF
+
+old_file: "--- " file_path LF
+new_file: "+++ " file_path LF
+file_path: "/dev/null" | path_token
+path_token: ("a/" | "b/")? filename
+filename: /[^\n]+/
+
+hunk: hunk_header hunk_line+
+hunk_header: "@@ -" range " +" range " @@" /[^\n]*/ LF
+range: INT ("," INT)?
+
+hunk_line: context_line | add_line | remove_line | no_newline
+context_line: " " /[^\n]*/ LF
+add_line: "+" /[^\n]*/ LF
+remove_line: "-" /[^\n]*/ LF
+no_newline: "\\ No newline at end of file" LF
+
+%import common.INT
+%import common.LF

@@ -1,47 +1,21 @@
-# Binaries
+# Generated
+dist/
+build/
+coverage/
+.DS_Store
+target/
 bin/
-/holon              # Root binary only (leading / ensures it doesn't affect cmd/holon/)
+_testwork/
 
-# Holon execution outputs
+# Dependencies
+node_modules/
+
+# Local runtime data
+.holon/
+.benchmark-results/
 holon-output/
 holon-output-*/
-holon-output-fix/
-
-# Go artifacts
-vendor/
-*.test
-*.out
 .gocache/
 
-# Python artifacts
-__pycache__/
-*.py[cod]
-
-# OS/IDE
-.DS_Store
-.idea/
-.vscode/
-
-# Env
-.env
-.env.local
-thirdparty/
-
-.tmp
-.vercel
-
-dist
-
-# Claude directories
+# Local tool state
 .claude/
-
-# Exception: allow .claude in agents/claude (needed for agent development)
-!agents/claude/.claude/
-
-# Builtin skills (generated copy from repository-level skills/)
-# Run 'go generate ./pkg/builtin' to regenerate
-pkg/builtin/skills/
-pkg/builtin/skills/.git-commit
-
-# E2E manual artifacts
-e2e-manual/**/artifacts/

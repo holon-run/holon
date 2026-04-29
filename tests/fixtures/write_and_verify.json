@@ -1,0 +1,36 @@
+{
+  "prompt": "Create a note and verify it from the shell.",
+  "steps": [
+    {
+      "blocks": [
+        {
+          "type": "tool_use",
+          "id": "write-1",
+          "name": "ApplyPatch",
+          "input": {
+            "patch": "--- /dev/null\n+++ b/notes/fixture.txt\n@@ -0,0 +1,1 @@\n+fixture content\n"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "exec-1",
+          "name": "ExecCommand",
+          "input": {
+            "cmd": "cat notes/fixture.txt"
+          }
+        }
+      ]
+    },
+    {
+      "blocks": [
+        {
+          "type": "text",
+          "text": "fixture coding loop complete"
+        }
+      ]
+    }
+  ],
+  "expected_file": "notes/fixture.txt",
+  "expected_content": "fixture content\n",
+  "expected_brief": "fixture coding loop complete"
+}

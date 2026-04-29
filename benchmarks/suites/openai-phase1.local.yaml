@@ -1,0 +1,17 @@
+suite_id: openai-phase1-local
+label_prefix: openai-phase1
+tasks:
+  - ../tasks/holon-0015-tool-guidance-registry.yaml
+runners:
+  - runner_id: holon-openai
+    driver: holon
+    model_ref: openai-codex/gpt-5.3-codex-spark
+  - runner_id: codex-openai
+    driver: codex
+    model: gpt-5.3-codex-spark
+pr:
+  submit_pr: false
+  draft_pr: false
+  push_branch: false
+timeouts:
+  ci_poll_minutes: 30

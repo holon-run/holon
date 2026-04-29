@@ -1,3 +1,0 @@
-# Flag / validation behavior
-! exec holon run --skip-checks
-stderr 'either --spec or --goal is required'

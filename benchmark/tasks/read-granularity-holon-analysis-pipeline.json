@@ -1,0 +1,32 @@
+{
+  "name": "read-granularity-holon-analysis-pipeline",
+  "mode": "controlled",
+  "workspace": {
+    "type": "repo_snapshot",
+    "path": ".",
+    "include_paths": [
+      "README.md",
+      "src/context.rs",
+      "src/prompt.rs",
+      "src/runtime.rs",
+      "src/tools.rs",
+      "benchmark/run.mjs",
+      "docs/benchmark-results.md"
+    ]
+  },
+  "tool_profile": "read_only",
+  "timeout_seconds": 180,
+  "prompt": "Map the Holon analysis pipeline for this snapshot. Identify where prompt assembly, context assembly, tool execution, and benchmark comparison live, and explain each responsibility concisely with specific file references.",
+  "setup": [],
+  "verify": [],
+  "success_criteria": {
+    "max_files_changed": 0,
+    "min_final_message_length": 220,
+    "required_regexes": [
+      "src/prompt\\.rs",
+      "src/context\\.rs",
+      "src/tools\\.rs",
+      "benchmark/run\\.mjs"
+    ]
+  }
+}

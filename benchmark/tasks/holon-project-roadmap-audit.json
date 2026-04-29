@@ -1,0 +1,32 @@
+{
+  "name": "holon-project-roadmap-audit",
+  "mode": "controlled",
+  "workspace": {
+    "type": "repo_snapshot",
+    "path": ".",
+    "include_paths": [
+      "README.md",
+      "src",
+      "tests",
+      "docs/benchmark-plan.md",
+      "docs/benchmark-results.md",
+      "docs/post-benchmark-roadmap.md",
+      "docs/prompt-architecture-roadmap.md",
+      "benchmark/tasks"
+    ]
+  },
+  "tool_profile": "read_only",
+  "timeout_seconds": 240,
+  "prompt": "Read this Holon codebase snapshot and recommend the next three concrete improvements or milestones. Base every recommendation on the current code and docs, cite specific files, and avoid repeating already completed work.",
+  "setup": [],
+  "verify": [],
+  "success_criteria": {
+    "max_files_changed": 0,
+    "min_final_message_length": 400,
+    "required_regexes": [
+      "src/(runtime|prompt|context)\\.rs",
+      "docs/(benchmark-results|prompt-architecture-roadmap)\\.md",
+      "recommend|next"
+    ]
+  }
+}

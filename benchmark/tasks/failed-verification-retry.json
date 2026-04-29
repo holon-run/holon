@@ -1,0 +1,21 @@
+{
+  "name": "failed-verification-retry",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "sequential-render-bugs"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 240,
+  "prompt": "Fix the bug in this workspace so the verification command passes. Preserve the public behavior, explain the root cause briefly, and verify before finishing.",
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0,
+    "min_final_message_length": 120
+  }
+}
