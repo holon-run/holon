@@ -19,6 +19,3 @@ holon-output-*/
 
 # Local tool state
 .claude/
-
-# Exception: allow .claude in agents/claude for agent bundle development.
-!agents/claude/.claude/

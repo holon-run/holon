@@ -10,7 +10,6 @@ explicit, and easy to reason about.
 - `builtin_templates/`: runtime-managed agent templates.
 - `benchmark/` and `benchmarks/`: benchmark harness, fixtures, suites, and task manifests.
 - `docs/`: current runtime contracts, architecture notes, and design records.
-- `agents/claude/`: TypeScript Claude agent bundle source retained as a non-runtime asset.
 - `holonbot/`: Node-based GitHub App/bot retained as a separate service asset.
 - `skills/`: repository skills that remain useful outside the old Go runtime.
 - `README.md`: public-facing project definition.
@@ -92,8 +91,11 @@ current source of truth.
 - The main runtime is now the Rust `holon` binary produced by Cargo.
 - Do not reintroduce the old Go CLI/runtime path while adapting workflows.
 - GitHub workflow and release automation should be rebuilt around the Rust binary.
-- The existing `holonbot` and `agents/claude` directories are separate assets; do
-  not couple them back into the runtime core without a specific design decision.
+- The old TypeScript Claude agent bundle has been removed; runtime integration
+  should go through the Rust provider/tooling model instead of a separate
+  Claude SDK bundle.
+- `holonbot` remains a separate service asset; do not couple it back into the
+  runtime core without a specific design decision.
 
 ## What To Avoid
 
