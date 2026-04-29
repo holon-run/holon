@@ -34,6 +34,7 @@ pub enum ControlTransportKind {
 pub enum CredentialSource {
     Env,
     ExternalCli,
+    #[serde(rename = "credential_profile", alias = "auth_profile")]
     AuthProfile,
     CredentialProcess,
     None,
@@ -239,6 +240,47 @@ pub struct ProviderConfigFile {
     pub auth: ProviderAuthConfig,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CredentialStoreFile {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profiles: BTreeMap<String, CredentialProfileFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialProfileFile {
+    pub kind: CredentialKind,
+    pub secret: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialProfileStatus {
+    pub profile: String,
+    pub kind: String,
+    pub configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderConfigView {
+    pub id: String,
+    pub transport: String,
+    pub base_url: String,
+    pub auth: ProviderAuthView,
+    pub credential_configured: bool,
+    pub configured_in_config: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderAuthView {
+    pub source: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<String>,
+}
+
 impl Default for ProviderAuthConfig {
     fn default() -> Self {
         Self {
@@ -304,6 +346,7 @@ impl AppConfig {
         });
         let config_file_path = persisted_config_path(&home_dir);
         let stored_config = load_persisted_config_at(&config_file_path)?;
+        let credential_store = load_credential_store_at(&credential_store_path(&home_dir))?;
         let http_addr = env::var("HOLON_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
         let callback_base_url =
             env::var("HOLON_CALLBACK_BASE_URL").unwrap_or_else(|_| format!("http://{http_addr}"));
@@ -379,7 +422,8 @@ impl AppConfig {
         let validated_model_overrides = resolve_model_catalog(&stored_config)?;
         let validated_unknown_model_fallback =
             validate_optional_model_runtime_override(stored_config.model.unknown_fallback.clone())?;
-        let providers = resolve_provider_registry(&stored_config, &settings_env)?;
+        let providers =
+            resolve_provider_registry(&stored_config, &settings_env, &credential_store)?;
         let tui_alternate_screen = env::var("HOLON_TUI_ALTERNATE_SCREEN")
             .ok()
             .map(|value| AltScreenMode::parse(&value))
@@ -565,11 +609,11 @@ impl CredentialSource {
         match value.trim().to_ascii_lowercase().as_str() {
             "env" => Ok(Self::Env),
             "external_cli" => Ok(Self::ExternalCli),
-            "auth_profile" => Ok(Self::AuthProfile),
+            "credential_profile" | "auth_profile" => Ok(Self::AuthProfile),
             "credential_process" => Ok(Self::CredentialProcess),
             "none" => Ok(Self::None),
             other => Err(anyhow!(
-                "invalid credential source {other}; expected env|external_cli|auth_profile|credential_process|none"
+                "invalid credential source {other}; expected env|external_cli|credential_profile|credential_process|none"
             )),
         }
     }
@@ -578,7 +622,7 @@ impl CredentialSource {
         match self {
             Self::Env => "env",
             Self::ExternalCli => "external_cli",
-            Self::AuthProfile => "auth_profile",
+            Self::AuthProfile => "credential_profile",
             Self::CredentialProcess => "credential_process",
             Self::None => "none",
         }
@@ -586,6 +630,20 @@ impl CredentialSource {
 }
 
 impl CredentialKind {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "api_key" => Ok(Self::ApiKey),
+            "bearer_token" => Ok(Self::BearerToken),
+            "oauth" => Ok(Self::OAuth),
+            "session_token" => Ok(Self::SessionToken),
+            "aws_sdk" => Ok(Self::AwsSdk),
+            "none" => Ok(Self::None),
+            other => Err(anyhow!(
+                "invalid credential kind {other}; expected api_key|bearer_token|oauth|session_token|aws_sdk|none"
+            )),
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ApiKey => "api_key",
@@ -599,6 +657,18 @@ impl CredentialKind {
 }
 
 impl ProviderTransportKind {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "openai_codex_responses" => Ok(Self::OpenAiCodexResponses),
+            "openai_responses" => Ok(Self::OpenAiResponses),
+            "openai_chat_completions" => Ok(Self::OpenAiChatCompletions),
+            "anthropic_messages" => Ok(Self::AnthropicMessages),
+            other => Err(anyhow!(
+                "invalid provider transport {other}; expected openai_codex_responses|openai_responses|openai_chat_completions|anthropic_messages"
+            )),
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OpenAiCodexResponses => "openai_codex_responses",
@@ -818,6 +888,10 @@ pub fn persisted_config_path(home_dir: &Path) -> PathBuf {
     home_dir.join("config.json")
 }
 
+pub fn credential_store_path(home_dir: &Path) -> PathBuf {
+    home_dir.join("credentials.json")
+}
+
 pub fn load_persisted_config_at(path: &Path) -> Result<HolonConfigFile> {
     if !path.exists() {
         return Ok(HolonConfigFile::default());
@@ -850,6 +924,127 @@ pub fn save_persisted_config_at(path: &Path, config: &HolonConfigFile) -> Result
     file.flush()
         .with_context(|| format!("failed to flush {}", path.display()))?;
     Ok(())
+}
+
+pub fn load_credential_store_at(path: &Path) -> Result<CredentialStoreFile> {
+    if !path.exists() {
+        return Ok(CredentialStoreFile::default());
+    }
+    ensure_owner_only_file(path)?;
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+pub fn save_credential_store_at(path: &Path, store: &CredentialStoreFile) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let content =
+        serde_json::to_string_pretty(store).context("failed to serialize credential store")?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    file.write_all(content.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    file.flush()
+        .with_context(|| format!("failed to flush {}", path.display()))?;
+    Ok(())
+}
+
+pub fn set_credential_profile_at(
+    path: &Path,
+    profile: &str,
+    kind: CredentialKind,
+    secret: String,
+) -> Result<CredentialProfileStatus> {
+    let profile = normalize_credential_profile_id(profile)?;
+    validate_stored_credential_kind(kind)?;
+    if secret.trim().is_empty() {
+        return Err(anyhow!("credential secret must not be empty"));
+    }
+    let mut store = load_credential_store_at(path)?;
+    store
+        .profiles
+        .insert(profile.clone(), CredentialProfileFile { kind, secret });
+    save_credential_store_at(path, &store)?;
+    Ok(CredentialProfileStatus {
+        profile,
+        kind: kind.as_str().to_string(),
+        configured: true,
+    })
+}
+
+pub fn remove_credential_profile_at(path: &Path, profile: &str) -> Result<CredentialProfileStatus> {
+    let profile = normalize_credential_profile_id(profile)?;
+    let mut store = load_credential_store_at(path)?;
+    let removed = store.profiles.remove(&profile);
+    save_credential_store_at(path, &store)?;
+    Ok(CredentialProfileStatus {
+        profile,
+        kind: removed
+            .map(|entry| entry.kind.as_str().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        configured: false,
+    })
+}
+
+pub fn list_credential_profiles_at(path: &Path) -> Result<Vec<CredentialProfileStatus>> {
+    let store = load_credential_store_at(path)?;
+    Ok(store
+        .profiles
+        .into_iter()
+        .map(|(profile, entry)| CredentialProfileStatus {
+            profile,
+            kind: entry.kind.as_str().to_string(),
+            configured: !entry.secret.trim().is_empty(),
+        })
+        .collect())
+}
+
+pub fn validate_provider_config(
+    provider_id: &ProviderId,
+    provider_config: &ProviderConfigFile,
+) -> Result<()> {
+    parse_url_value("providers.<id>.base_url", &provider_config.base_url)?;
+    validate_provider_auth(provider_id, &provider_config.auth)
+}
+
+pub fn provider_config_views(config: &AppConfig) -> Vec<ProviderConfigView> {
+    config
+        .providers
+        .values()
+        .map(|provider| provider_config_view(config, provider))
+        .collect()
+}
+
+pub fn provider_config_view(
+    config: &AppConfig,
+    provider: &ProviderRuntimeConfig,
+) -> ProviderConfigView {
+    ProviderConfigView {
+        id: provider.id.as_str().to_string(),
+        transport: provider.transport.as_str().to_string(),
+        base_url: provider.base_url.clone(),
+        auth: ProviderAuthView {
+            source: provider.auth.source.as_str().to_string(),
+            kind: provider.auth.kind.as_str().to_string(),
+            env: provider.auth.env.clone(),
+            profile: provider.auth.profile.clone(),
+            external: provider.auth.external.clone(),
+        },
+        credential_configured: provider.has_configured_credential()
+            || matches!(provider.auth.source, CredentialSource::None),
+        configured_in_config: config.stored_config.providers.contains_key(&provider.id),
+    }
 }
 
 pub fn config_schema() -> Vec<ConfigSchemaEntry> {
@@ -1202,6 +1397,7 @@ fn settings_path() -> PathBuf {
 fn resolve_provider_registry(
     stored_config: &HolonConfigFile,
     settings_env: &HashMap<String, String>,
+    credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRegistry> {
     let mut registry = built_in_provider_registry(settings_env)?;
     for (id, provider_config) in &stored_config.providers {
@@ -1210,6 +1406,7 @@ fn resolve_provider_registry(
             id.clone(),
             provider_config.clone(),
             settings_env,
+            credential_store,
             built_in,
         )?;
         registry.insert(id.clone(), runtime);
@@ -1628,10 +1825,12 @@ fn materialize_provider_config(
     id: ProviderId,
     provider_config: ProviderConfigFile,
     settings_env: &HashMap<String, String>,
+    credential_store: &CredentialStoreFile,
     built_in: Option<ProviderRuntimeConfig>,
 ) -> Result<ProviderRuntimeConfig> {
     validate_provider_auth(&id, &provider_config.auth)?;
-    let credential = resolve_provider_credential(&provider_config.auth, settings_env);
+    let credential =
+        resolve_provider_credential(&provider_config.auth, settings_env, credential_store)?;
     let mut runtime = built_in.unwrap_or_else(|| ProviderRuntimeConfig {
         id: id.clone(),
         transport: provider_config.transport,
@@ -1653,16 +1852,32 @@ fn materialize_provider_config(
 fn resolve_provider_credential(
     auth: &ProviderAuthConfig,
     settings_env: &HashMap<String, String>,
-) -> Option<String> {
+    credential_store: &CredentialStoreFile,
+) -> Result<Option<String>> {
     match auth.source {
-        CredentialSource::Env => auth
+        CredentialSource::Env => Ok(auth
             .env
             .as_deref()
-            .and_then(|key| get_config_value(key, None, settings_env)),
+            .and_then(|key| get_config_value(key, None, settings_env))),
+        CredentialSource::AuthProfile => auth
+            .profile
+            .as_deref()
+            .and_then(|profile| credential_store.profiles.get(profile))
+            .map(|entry| {
+                if entry.kind != auth.kind {
+                    return Err(anyhow!(
+                        "credential profile {} has kind {}, but provider expects {}",
+                        auth.profile.as_deref().unwrap_or_default(),
+                        entry.kind.as_str(),
+                        auth.kind.as_str()
+                    ));
+                }
+                Ok(entry.secret.clone())
+            })
+            .transpose(),
         CredentialSource::None
         | CredentialSource::ExternalCli
-        | CredentialSource::AuthProfile
-        | CredentialSource::CredentialProcess => None,
+        | CredentialSource::CredentialProcess => Ok(None),
     }
 }
 
@@ -1686,6 +1901,26 @@ fn validate_provider_auth(provider_id: &ProviderId, auth: &ProviderAuthConfig) -
             {
                 return Err(anyhow!(
                     "provider {} external_cli auth requires auth.external",
+                    provider_id.as_str()
+                ));
+            }
+        }
+        (
+            CredentialSource::AuthProfile,
+            CredentialKind::ApiKey
+            | CredentialKind::BearerToken
+            | CredentialKind::OAuth
+            | CredentialKind::SessionToken,
+        ) => {
+            if auth
+                .profile
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                return Err(anyhow!(
+                    "provider {} credential_profile auth requires auth.profile",
                     provider_id.as_str()
                 ));
             }
@@ -2065,7 +2300,6 @@ fn clear_unknown_model_fallback_field(
     }
 }
 
-#[cfg(test)]
 fn parse_url_value(key: &str, raw_value: &str) -> Result<()> {
     let trimmed = raw_value.trim();
     if trimmed.is_empty() {
@@ -2078,6 +2312,50 @@ fn parse_url_value(key: &str, raw_value: &str) -> Result<()> {
     }
     Ok(())
 }
+
+fn normalize_credential_profile_id(profile: &str) -> Result<String> {
+    let trimmed = profile.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("credential profile id must not be empty"));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(anyhow!(
+            "credential profile id must not contain control characters"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_stored_credential_kind(kind: CredentialKind) -> Result<()> {
+    match kind {
+        CredentialKind::ApiKey
+        | CredentialKind::BearerToken
+        | CredentialKind::OAuth
+        | CredentialKind::SessionToken => Ok(()),
+        CredentialKind::AwsSdk | CredentialKind::None => Err(anyhow!(
+            "credential profiles support api_key|bearer_token|oauth|session_token"
+        )),
+    }
+}
+
+fn ensure_owner_only_file(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata =
+            fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(anyhow!(
+                "credential store {} must be owner-only; found mode {:o}",
+                path.display(),
+                mode
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn is_startup_only_config_key(key: &str) -> bool {
     let _ = key;
     false
@@ -2130,6 +2408,7 @@ fn unknown_config_key(key: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fs;
     use std::path::{Path, PathBuf};
 
     use serde_json::{json, Value};
@@ -2139,14 +2418,15 @@ mod tests {
     use crate::model_catalog::ModelRuntimeOverride;
 
     use super::{
-        config_schema, default_holon_home, get_config_key, get_config_value,
-        load_persisted_config_at, parse_anthropic_cache_strategy,
+        config_schema, credential_store_path, default_holon_home, get_config_key, get_config_value,
+        list_credential_profiles_at, load_persisted_config_at, parse_anthropic_cache_strategy,
         parse_anthropic_cache_strategy_env, parse_comma_separated_values, parse_url_value,
         provider_registry_for_tests, resolve_anthropic_context_management_config,
-        save_persisted_config_at, set_config_key, unset_config_key, AnthropicCacheStrategy,
-        AnthropicContextManagementConfig, AppConfig, ControlAuthMode, CredentialKind,
-        CredentialSource, HolonConfigFile, ModelRef, ProviderAuthConfig, ProviderConfigFile,
-        ProviderId, ProviderTransportKind, RuntimeModelCatalog,
+        save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
+        AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig, ControlAuthMode,
+        CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile, ModelRef,
+        ProviderAuthConfig, ProviderConfigFile, ProviderId, ProviderTransportKind,
+        RuntimeModelCatalog,
     };
 
     struct EnvVarGuard {
@@ -2504,12 +2784,99 @@ mod tests {
                 },
             },
             &settings_env,
+            &CredentialStoreFile::default(),
             None,
         )
         .unwrap();
 
         assert_eq!(runtime.id, id);
         assert_eq!(runtime.credential.as_deref(), Some("settings-key"));
+    }
+
+    #[test]
+    fn credential_source_accepts_credential_profile_alias() {
+        assert_eq!(
+            CredentialSource::parse("credential_profile").unwrap(),
+            CredentialSource::AuthProfile
+        );
+        assert_eq!(
+            CredentialSource::parse("auth_profile").unwrap(),
+            CredentialSource::AuthProfile
+        );
+        assert_eq!(CredentialSource::AuthProfile.as_str(), "credential_profile");
+    }
+
+    #[test]
+    fn credential_store_lists_profiles_without_secret_material() {
+        let dir = tempdir().unwrap();
+        let path = credential_store_path(dir.path());
+
+        let status = set_credential_profile_at(
+            &path,
+            "openai:default",
+            CredentialKind::ApiKey,
+            "sk-test-secret".into(),
+        )
+        .unwrap();
+
+        assert_eq!(status.profile, "openai:default");
+        let profiles = list_credential_profiles_at(&path).unwrap();
+        assert_eq!(
+            serde_json::to_value(&profiles).unwrap(),
+            json!([{
+                "profile": "openai:default",
+                "kind": "api_key",
+                "configured": true
+            }])
+        );
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("sk-test-secret"));
+        assert!(!serde_json::to_string(&profiles)
+            .unwrap()
+            .contains("sk-test-secret"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn materialize_provider_config_resolves_credential_profile() {
+        let settings_env = HashMap::new();
+        let id = ProviderId::parse("openrouter").unwrap();
+        let mut credential_store = CredentialStoreFile::default();
+        credential_store.profiles.insert(
+            "openrouter:default".into(),
+            super::CredentialProfileFile {
+                kind: CredentialKind::ApiKey,
+                secret: "profile-secret".into(),
+            },
+        );
+
+        let runtime = super::materialize_provider_config(
+            id.clone(),
+            ProviderConfigFile {
+                transport: ProviderTransportKind::OpenAiResponses,
+                base_url: "https://openrouter.example/v1".into(),
+                auth: ProviderAuthConfig {
+                    source: CredentialSource::AuthProfile,
+                    kind: CredentialKind::ApiKey,
+                    env: None,
+                    profile: Some("openrouter:default".into()),
+                    external: None,
+                },
+            },
+            &settings_env,
+            &credential_store,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(runtime.id, id);
+        assert_eq!(runtime.credential.as_deref(), Some("profile-secret"));
     }
 
     #[test]
@@ -2594,6 +2961,7 @@ mod tests {
                 },
             },
             &settings_env,
+            &CredentialStoreFile::default(),
             Some(built_in),
         )
         .unwrap();
