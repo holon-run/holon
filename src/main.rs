@@ -21,7 +21,7 @@ use holon::{
     },
     host::RuntimeHost,
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
-    provider::provider_doctor,
+    provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
     solve::{run_solve, SolveRequest},
     tui::run_tui,
@@ -204,9 +204,18 @@ enum ConfigCommands {
         #[command(subcommand)]
         command: ConfigCredentialCommands,
     },
+    Models {
+        #[command(subcommand)]
+        command: ConfigModelCommands,
+    },
     List,
     Schema,
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigModelCommands {
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -825,6 +834,7 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
         }
         ConfigCommands::Providers { command } => handle_config_providers_command(command).await,
         ConfigCommands::Credentials { command } => handle_config_credentials_command(command).await,
+        ConfigCommands::Models { command } => handle_config_models_command(command).await,
         ConfigCommands::List => {
             let path = config_file_path();
             let config = load_persisted_config_at(&path)?;
@@ -834,6 +844,15 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
         ConfigCommands::Doctor => {
             let config = AppConfig::load()?;
             print_json(&provider_doctor(&config))
+        }
+    }
+}
+
+async fn handle_config_models_command(command: ConfigModelCommands) -> Result<()> {
+    match command {
+        ConfigModelCommands::List => {
+            let config = AppConfig::load()?;
+            print_json(&serde_json::to_value(resolved_model_availability(&config))?)
         }
     }
 }
