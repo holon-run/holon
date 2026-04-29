@@ -254,7 +254,15 @@ async fn anthropic_claude_cli_like_strategy_moves_context_to_system_prefix() {
             .expect("metadata user_id should be a string"),
     )
     .expect("metadata user_id should contain valid escaped JSON");
-    assert_eq!(user_id["session_id"], json!("cache\"key\\with\nnewline"));
+    let session_id = user_id["session_id"]
+        .as_str()
+        .expect("metadata session_id should be a string");
+    assert_ne!(session_id, "cache\"key\\with\nnewline");
+    assert!(session_id.len() >= 6 && session_id.len() <= 64);
+    assert!(session_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'));
+    assert!(session_id.starts_with("cache-key-with-newline-"));
     assert_eq!(
         body["system"][0]["text"],
         json!("x-anthropic-billing-header: holon")
