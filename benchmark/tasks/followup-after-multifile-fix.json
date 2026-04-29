@@ -1,0 +1,33 @@
+{
+  "name": "followup-after-multifile-fix",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "config-merger-bug"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 240,
+  "turns": [
+    {
+      "prompt": "Fix the configuration merge bug so the verification command passes. Preserve the public API, keep the fix local, explain the root cause briefly, and verify before finishing."
+    },
+    {
+      "prompt": "Now answer only this follow-up: which file or files changed, what was the real root cause, and what verification did you run?"
+    }
+  ],
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0,
+    "required_regexes": [
+      "src/(merge|normalize)\\.js",
+      "root cause",
+      "test"
+    ],
+    "min_final_message_length": 180
+  }
+}

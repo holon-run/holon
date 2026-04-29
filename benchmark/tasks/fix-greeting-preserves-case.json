@@ -1,0 +1,20 @@
+{
+  "name": "fix-greeting-preserves-case",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "greeting-bug"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 180,
+  "prompt": "Fix the bug in this workspace so the verification command passes. Preserve the surrounding behavior, explain the root cause briefly, and verify the change before finishing.",
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0
+  }
+}

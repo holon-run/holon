@@ -1,0 +1,32 @@
+{
+  "name": "followup-greeting-context",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "greeting-bug"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 180,
+  "turns": [
+    {
+      "prompt": "Fix the bug in this workspace so the verification command passes. Preserve the surrounding behavior, explain the root cause briefly, and verify the change before finishing."
+    },
+    {
+      "prompt": "Now answer only this follow-up: which file did you change, what was the root cause, and what verification did you run?"
+    }
+  ],
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0,
+    "required_substrings": [
+      "greeting.js",
+      "tolowercase",
+      "node test.js"
+    ]
+  }
+}

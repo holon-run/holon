@@ -1,0 +1,18 @@
+{
+  "name": "analysis-runtime-architecture",
+  "mode": "controlled",
+  "workspace": {
+    "type": "fixture",
+    "path": "analysis-runtime"
+  },
+  "tool_profile": "read_only",
+  "timeout_seconds": 120,
+  "prompt": "Analyze this project. Summarize the main module split, explain the runtime data flow, and recommend the single highest-leverage next milestone. Ground your answer in concrete file and module evidence.",
+  "success_criteria": {
+    "required_substrings": [
+      "runtime.js",
+      "storage.js",
+      "http.js"
+    ]
+  }
+}

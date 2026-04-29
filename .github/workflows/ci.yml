@@ -2,156 +2,73 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
 
 jobs:
-  test-agent:
-    name: Test Agent
+  rust:
+    name: Rust
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Node
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
-    - name: Test Agent
-      run: make test-agent
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-  build-agent-bundle:
-    name: Build Agent Bundle
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Test
+        run: cargo test --all-targets -- --test-threads=1
+
+  benchmark:
+    name: Benchmark Harness
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Node
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: benchmark/package-lock.json
 
-    - name: Build Agent Bundle
-      run: |
-        cd agents/claude
-        npm run bundle
+      - name: Install dependencies
+        working-directory: benchmark
+        run: npm ci
 
-    - name: Smoke Test Agent Bundle
-      run: |
-        cd agents/claude
-        npm run smoke-test
+      - name: Test benchmark harness
+        working-directory: benchmark
+        run: npm test
 
-    - name: Verify Agent Bundle
-      run: |
-        cd agents/claude
-        npm ci
-        npm run verify-bundle
-
-    - name: Test Agent Bundle (Node.js tests)
-      run: |
-        cd agents/claude
-        node --test tests/bundle.test.js
-
-  test-unit:
-    name: Test Unit
+  agent-bundle:
+    name: Agent Bundle
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: true
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: agents/claude/package-lock.json
 
-    - name: Install gotestfmt
-      run: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+      - name: Install dependencies
+        working-directory: agents/claude
+        run: npm ci
 
-    - name: Test Unit
-      run: make test-unit
+      - name: Build
+        working-directory: agents/claude
+        run: npm run build
 
-  test-run-safety:
-    name: Test Run Safety
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: true
-
-    - name: Test Run Safety
-      run: make test-run-safety
-
-  test-integration:
-    name: Test Integration
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: true
-
-    - name: Install gotestfmt
-      run: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
-
-    - name: Set up Docker
-      uses: docker/setup-buildx-action@v3
-
-    - name: Set up Node
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Build Agent Bundle
-      run: |
-        cd agents/claude
-        npm ci
-        npm run bundle
-
-    - name: Test Integration
-      id: test
-      run: make test-integration-artifacts
-      continue-on-error: true
-
-    - name: Upload test artifacts on failure
-      if: steps.test.outcome == 'failure'
-      uses: actions/upload-artifact@v4
-      with:
-        name: integration-test-artifacts
-        path: |
-          _testwork/
-          /tmp/go-test*/
-        retention-days: 7
-        if-no-files-found: ignore
-
-    - name: Fail if tests failed
-      if: steps.test.outcome == 'failure'
-      run: exit 1
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    needs: [test-agent, build-agent-bundle, test-unit, test-run-safety, test-integration]
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: true
-
-    - name: Set up Node
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Build
-      run: make build
+      - name: Test
+        working-directory: agents/claude
+        run: npm test

@@ -1,0 +1,40 @@
+schema_version: 1
+task_id: holon-0015-tool-guidance-registry
+repo:
+  name: holon-run/holon
+  local_path: ../..
+issue:
+  number: 15
+  title: "Dogfood: extract a tool guidance registry from the prompt assembly"
+base:
+  branch: main
+  sha: 3de25d1409af03ade2c42cfe4c8999ada5cf8b59
+benchmark:
+  mode: live
+task:
+  kind: implementation
+  operator_prompt: |
+    Extract a tool guidance registry from the prompt assembly.
+    Keep behavior stable unless a change is required to complete the extraction cleanly.
+verification:
+  commands:
+    - "cargo test --manifest-path Cargo.toml prompt::tools::"
+evaluation:
+  summary: |
+    Tool guidance is registry-backed, existing behavior is preserved,
+    and the targeted test command passes.
+  scope_policy: soft
+  allowed_paths:
+    - src/prompt
+    - src/tool
+  forbidden_paths:
+    - src/runtime
+budget:
+  max_minutes: 90
+  max_operator_followups: 0
+review:
+  mode: standardized
+  expected_comment_count: 2
+metadata:
+  difficulty: medium
+  benchmark_group: prompt-system

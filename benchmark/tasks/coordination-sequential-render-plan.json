@@ -1,0 +1,33 @@
+{
+  "name": "coordination-sequential-render-plan",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "sequential-render-bugs"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 240,
+  "turns": [
+    {
+      "prompt": "Write a short plan for fixing this workspace, keep track of completed and pending steps while you work, then fix the bug so the verification command passes. Verify before finishing."
+    },
+    {
+      "prompt": "Now answer only this follow-up: which planned steps are completed, is anything still pending, and what verification did you run?"
+    }
+  ],
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0,
+    "required_regexes": [
+      "completed",
+      "pending|none",
+      "node test\\.js"
+    ],
+    "min_final_message_length": 160
+  }
+}

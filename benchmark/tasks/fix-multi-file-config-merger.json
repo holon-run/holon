@@ -1,0 +1,20 @@
+{
+  "name": "fix-multi-file-config-merger",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "config-merger-bug"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 240,
+  "prompt": "Fix the configuration merge bug so the verification command passes. Preserve the public API, keep the fix local, explain the root cause briefly, and verify before finishing.",
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0
+  }
+}

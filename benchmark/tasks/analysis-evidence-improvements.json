@@ -1,0 +1,22 @@
+{
+  "name": "analysis-evidence-improvements",
+  "mode": "controlled",
+  "workspace": {
+    "type": "fixture",
+    "path": "analysis-evidence-runtime"
+  },
+  "tool_profile": "read_only",
+  "timeout_seconds": 180,
+  "prompt": "Analyze this runtime fixture and recommend the next three concrete improvements. Every recommendation must cite specific files and explain the current implementation limitation that motivates it. Avoid generic agent-platform advice.",
+  "setup": [],
+  "verify": [],
+  "success_criteria": {
+    "max_files_changed": 0,
+    "min_final_message_length": 250,
+    "required_regexes": [
+      "src/runtime\\.js",
+      "src/(parser|storage|report)\\.js",
+      "recommend|improve"
+    ]
+  }
+}

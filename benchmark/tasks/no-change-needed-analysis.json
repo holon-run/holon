@@ -1,0 +1,22 @@
+{
+  "name": "no-change-needed-analysis",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "greeting-healthy"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 180,
+  "prompt": "Review this workspace. Run the local verification command. If the verification already passes and the implementation matches the tested behavior, do not change any files. Explain whether any code changes are needed and why.",
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0,
+    "max_files_changed": 0,
+    "min_final_message_length": 80
+  }
+}

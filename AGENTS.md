@@ -1,78 +1,104 @@
 # Repository Guidelines
 
-`AGENTS.md` is the source of truth for repository-specific guidance for agent tooling. `CLAUDE.md` is intentionally minimal and points here.
-
-For deeper contributor references (debugging, contracts, detection), see `docs/development.md`.
+`Holon` is an early-stage headless runtime project. Keep the codebase small,
+explicit, and easy to reason about.
 
 ## Project Structure & Module Organization
 
-- `cmd/holon/`: Go CLI entrypoint (`holon`).
-- `pkg/`: Go libraries used by the CLI (API spec, prompt compilation, runner/runtime).
-- `agents/claude/`: TypeScript-based agent bundle sources (Claude Agent SDK integration).
-- `tests/integration/`: Go `testscript` integration tests (`*.txtar`).
-- `holonbot/`: Node-based GitHub App/bot (separate CI workflow).
-- `rfc/`: Design notes and proposals.
-- `.github/workflows/`: CI and automation workflows; `action.yml` defines the local GitHub Action.
+- `src/`: Rust runtime implementation and executable entrypoints.
+- `tests/`: Rust integration tests and shared test support.
+- `builtin_templates/`: runtime-managed agent templates.
+- `benchmark/` and `benchmarks/`: benchmark harness, fixtures, suites, and task manifests.
+- `docs/`: current runtime contracts, architecture notes, and design records.
+- `agents/claude/`: TypeScript Claude agent bundle source retained as a non-runtime asset.
+- `holonbot/`: Node-based GitHub App/bot retained as a separate service asset.
+- `skills/`: repository skills that remain useful outside the old Go runtime.
+- `README.md`: public-facing project definition.
 
-## Build, Test, and Development Commands
+Do not introduce large framework scaffolding before the runtime model is clear.
 
-- `make build`: Build the Go CLI to `bin/holon`.
-- `make test`: Run agent checks (`make test-agent`) followed by Go tests (`go test ./...`).
-- `make test-agent`: Build/check the TypeScript agent under `agents/claude/`.
-- `npm run bundle` (under `agents/claude/`): Build the agent bundle archive.
-- `make test-integration`: Run integration tests (requires Docker).
-- `make run-example`: Run an example spec (requires Docker and Anthropic credentials).
+## Product Intent
+
+Holon is meant to be:
+
+- headless
+- event-driven
+- long-lived
+- explicit about trust boundaries
+- explicit about user-facing versus internal output
+
+When design choices conflict, prefer runtime clarity over convenience.
+
+## Development Priorities
+
+Prioritize work in this order:
+
+1. Runtime model and message envelope.
+2. Queue, wake, sleep, and task lifecycle.
+3. Event ingress and trust classification.
+4. Structured user-facing output.
+5. Integrations and adapters.
+
+Do not start with UI work unless the task explicitly requires it.
 
 ## Coding Style & Naming Conventions
 
-- Go: run `gofmt` on all `.go` files; keep exported identifiers and package names idiomatic.
-- TypeScript agent: keep changes minimal and deterministic; avoid committing `node_modules/` and `dist/` (maintain `.gitignore`).
-- Files/paths: prefer explicit, stable artifact names in `holon-output/` (e.g., `diff.patch`, `summary.md`).
+- Prefer simple, direct modules over indirection-heavy abstractions.
+- Make state transitions explicit in code and types.
+- Name modules after runtime responsibilities, not implementation accidents.
+- Keep comments short and only where state or lifecycle behavior is non-obvious.
+- Avoid hidden background behavior. If something wakes, retries, sleeps, or
+  enqueues work, make that visible in names and logs.
 
-## Go Error Handling Requirements
+## Architecture Guardrails
 
-**CRITICAL**: Never ignore returned errors in Go code unless absolutely necessary.
+- Treat `origin`, `trust`, and `priority` as first-class runtime concepts.
+- Keep `brief` or user-facing delivery separate from internal execution traces.
+- Do not mix operator input and external channel input without preserving
+  provenance.
+- Prefer append-only event/state logs when possible over opaque mutable state.
+- Avoid coupling the core runtime to any single model vendor or UI surface.
 
-- **Always handle errors**: Every function returning `(result, error)` must check the error
-- **No error ignoring**: Never use `err, _` unless you add a comment explaining why
-- **Proper error wrapping**: Use `fmt.Errorf("context: %w", err)` to add context
+## Documentation Expectations
 
-**Example:**
-```go
-data, err := os.ReadFile(filename)
-if err != nil {
-    return "", fmt.Errorf("failed to read file %s: %w", filename, err)
-}
+When changing the project definition, update the relevant entry docs such as
+`README.md`, `docs/project-goals.md`, `docs/runtime-spec.md`, `docs/roadmap.md`,
+or `docs/coding-roadmap.md`.
 
-// Best-effort cleanup: failure to remove temp file is not critical
-_ = os.Remove(tempFile)
-```
+If a change affects runtime contracts or architecture, add or update the
+relevant document under `docs/rfcs/` before or alongside implementation. Keep
+historical or one-off notes out of the top-level `docs/` surface when
+possible.
 
-## Testing Guidelines
+If implementation work has multiple reasonable choices, and the final choice
+matters for future maintenance but the reasoning cannot be expressed clearly in
+code, add one short focused note under `docs/implementation-decisions/`.
+Prefer one decision per file and keep the note limited to the choice, the
+reason, and the preserved boundary or tradeoff.
 
-- Go unit tests live alongside packages as `*_test.go`.
-- Integration tests use `github.com/rogpeppe/go-internal/testscript` under `tests/integration/testdata/*.txtar`.
-- Prefer unit tests for logic that should not depend on Docker/LLM connectivity; keep Docker-dependent tests scoped to integration.
+Before architecture or roadmap work, review the relevant current RFCs under
+`docs/rfcs/` and the current GitHub issues. Do not treat archived docs as the
+current source of truth.
 
 ## Commit & Pull Request Guidelines
 
-- Commit messages generally use short, imperative summaries (often with issue/PR references like `(#123)`); keep them specific.
-- PRs should link the relevant issue, describe behavior changes, and mention how you validated (e.g., `make test`, `make test-integration`).
-- If your change affects automation, include notes about workflows touched under `.github/workflows/`.
+- Use clear conventional commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`,
+  `test:`, `chore:`.
+- Keep early commits narrow. This repository is still defining its core model.
+- In PR descriptions, explain which runtime concept changed and why.
 
-## GitHub CLI Conventions
+## Migration Notes
 
-- For `gh issue comment/create/edit` and `gh pr create/edit/review`, always write the body to a file first and pass it via `--body-file` (or `-F`).
-- Do not use inline multi-line `--body "..."` for substantive content; this avoids shell escaping and newline/backtick interpolation issues.
+- The main runtime is now the Rust `holon` binary produced by Cargo.
+- Do not reintroduce the old Go CLI/runtime path while adapting workflows.
+- GitHub workflow and release automation should be rebuilt around the Rust binary.
+- The existing `holonbot` and `agents/claude` directories are separate assets; do
+  not couple them back into the runtime core without a specific design decision.
 
-## Agent-Specific Notes
+## What To Avoid
 
-Holon runtime is now centered on `agent_home`:
-- the canonical persona contract lives under agent home in `AGENTS.md` (with `CLAUDE.md` as a compatibility pointer)
-- runtime/skill behavior should rely on runtime contract variables and system-recommended directories
-- skills should avoid hardcoded Holon-specific filesystem paths and prefer runtime contract environment variables (for example `HOLON_OUTPUT_DIR`, `HOLON_STATE_DIR`, `HOLON_WORKSPACE_DIR`) instead of literal paths
-
-When changing runtime path semantics, update:
-- `README.md`
-- `rfc/README.md` + affected RFC status/notes
-- relevant docs under `docs/` (especially architecture and operator guides)
+- Premature plugin systems
+- UI-first architecture
+- Hidden global state
+- Implicit trust elevation
+- Tight coupling between scheduling and transport-specific adapters

@@ -1,0 +1,24 @@
+{
+  "name": "bounded-synthesis-analysis-runtime",
+  "mode": "controlled",
+  "workspace": {
+    "type": "fixture",
+    "path": "analysis-runtime"
+  },
+  "tool_profile": "read_only",
+  "timeout_seconds": 180,
+  "prompt": "In at most 220 words, explain the module split of this fixture, describe the runtime data flow, and recommend the single highest-leverage next milestone. Cite specific files and avoid generic platform advice.",
+  "setup": [],
+  "verify": [],
+  "success_criteria": {
+    "max_files_changed": 0,
+    "min_final_message_length": 140,
+    "max_final_message_length": 1800,
+    "required_regexes": [
+      "runtime\\.js",
+      "storage\\.js",
+      "http\\.js",
+      "milestone|next"
+    ]
+  }
+}
