@@ -415,12 +415,13 @@ fn build_anthropic_metadata(
     if cache_strategy != AnthropicCacheStrategy::ClaudeCliLike {
         return None;
     }
-    let session_id = request
-        .prompt_frame
-        .cache
-        .as_ref()
-        .map(|cache| cache.prompt_cache_key.as_str())
-        .unwrap_or("holon-default");
+    let session_id = normalize_anthropic_session_id(
+        request
+            .prompt_frame
+            .cache
+            .as_ref()
+            .map(|cache| cache.prompt_cache_key.as_str()),
+    );
     let user_id = json!({
         "device_id": "holon",
         "account_uuid": "",
@@ -430,6 +431,70 @@ fn build_anthropic_metadata(
     Some(json!({
         "user_id": user_id
     }))
+}
+
+const ANTHROPIC_SESSION_ID_DEFAULT: &str = "holon-default";
+const ANTHROPIC_SESSION_ID_MIN_LEN: usize = 6;
+const ANTHROPIC_SESSION_ID_MAX_LEN: usize = 64;
+const ANTHROPIC_SESSION_ID_HASH_LEN: usize = 16;
+
+fn normalize_anthropic_session_id(raw: Option<&str>) -> String {
+    let raw = raw.unwrap_or_default().trim();
+    if raw.is_empty() {
+        return ANTHROPIC_SESSION_ID_DEFAULT.to_string();
+    }
+
+    if is_anthropic_session_id_safe(raw)
+        && raw.len() >= ANTHROPIC_SESSION_ID_MIN_LEN
+        && raw.len() <= ANTHROPIC_SESSION_ID_MAX_LEN
+    {
+        return raw.to_string();
+    }
+
+    let digest = sha256_hex(raw.as_bytes());
+    let hash = &digest[..ANTHROPIC_SESSION_ID_HASH_LEN];
+    let max_prefix_len = ANTHROPIC_SESSION_ID_MAX_LEN - ANTHROPIC_SESSION_ID_HASH_LEN - 1;
+    let mut prefix = sanitized_anthropic_session_id_prefix(raw, max_prefix_len);
+    if prefix.len() > max_prefix_len {
+        prefix.truncate(max_prefix_len);
+        trim_anthropic_session_id_suffix(&mut prefix);
+    }
+    if prefix.is_empty() {
+        prefix.push_str("holon");
+    }
+
+    format!("{prefix}-{hash}")
+}
+
+fn is_anthropic_session_id_safe(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn sanitized_anthropic_session_id_prefix(raw: &str, max_prefix_len: usize) -> String {
+    let mut prefix = String::with_capacity(raw.len().min(max_prefix_len));
+    for byte in raw.bytes() {
+        if prefix.len() >= max_prefix_len {
+            break;
+        }
+
+        if byte.is_ascii_alphanumeric() {
+            prefix.push(byte.to_ascii_lowercase() as char);
+        } else if byte == b'-' || byte == b'_' {
+            prefix.push(byte as char);
+        } else if !prefix.ends_with('-') {
+            prefix.push('-');
+        }
+    }
+    trim_anthropic_session_id_suffix(&mut prefix);
+    prefix
+}
+
+fn trim_anthropic_session_id_suffix(value: &mut String) {
+    while value.ends_with('-') || value.ends_with('_') {
+        value.pop();
+    }
 }
 
 fn anthropic_request_lowering_mode(
@@ -1462,6 +1527,63 @@ mod tests {
             context_management: None,
         };
         serde_json::to_value(body).expect("test request payload should serialize")
+    }
+
+    #[test]
+    fn normalize_anthropic_session_id_preserves_safe_range() {
+        assert_eq!(
+            normalize_anthropic_session_id(Some("cache-key_123")),
+            "cache-key_123"
+        );
+    }
+
+    #[test]
+    fn normalize_anthropic_session_id_uses_default_for_empty_key() {
+        assert_eq!(normalize_anthropic_session_id(None), "holon-default");
+        assert_eq!(
+            normalize_anthropic_session_id(Some(" \n\t ")),
+            "holon-default"
+        );
+    }
+
+    #[test]
+    fn normalize_anthropic_session_id_handles_short_long_unicode_and_escaped_keys() {
+        let short = normalize_anthropic_session_id(Some("abc"));
+        assert_ne!(short, "abc");
+        assert_normalized_anthropic_session_id(&short);
+        assert!(short.starts_with("abc-"));
+
+        let long_key = "safe-key-".repeat(12);
+        let long = normalize_anthropic_session_id(Some(&long_key));
+        assert_ne!(long, long_key);
+        assert_normalized_anthropic_session_id(&long);
+        assert!(long.starts_with("safe-key-safe-key"));
+
+        let unicode = normalize_anthropic_session_id(Some("会话-缓存-キー"));
+        assert_normalized_anthropic_session_id(&unicode);
+        assert!(unicode.starts_with("holon-"));
+
+        let escaped = normalize_anthropic_session_id(Some("cache\"key\\with\nnewline"));
+        assert_normalized_anthropic_session_id(&escaped);
+        assert!(escaped.starts_with("cache-key-with-newline-"));
+        assert_eq!(
+            escaped,
+            normalize_anthropic_session_id(Some("cache\"key\\with\nnewline"))
+        );
+    }
+
+    fn assert_normalized_anthropic_session_id(value: &str) {
+        assert!(
+            value.len() >= ANTHROPIC_SESSION_ID_MIN_LEN
+                && value.len() <= ANTHROPIC_SESSION_ID_MAX_LEN,
+            "session id length should be in provider-compatible range"
+        );
+        assert!(
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'),
+            "session id should be ASCII metadata-safe"
+        );
     }
 
     #[test]
