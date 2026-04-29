@@ -811,15 +811,19 @@ async fn handle_config_credentials_command(command: ConfigCredentialCommands) ->
             stdin,
         } => {
             if !stdin {
-                anyhow::bail!("credential secret input requires --stdin");
+                anyhow::bail!("credential material input requires --stdin");
             }
-            let mut secret = String::new();
+            let mut material = String::new();
             std::io::stdin()
-                .read_to_string(&mut secret)
-                .context("failed to read credential secret from stdin")?;
-            trim_trailing_newlines(&mut secret);
-            let status =
-                set_credential_profile_at(&path, &profile, CredentialKind::parse(&kind)?, secret)?;
+                .read_to_string(&mut material)
+                .context("failed to read credential material from stdin")?;
+            trim_trailing_newlines(&mut material);
+            let status = set_credential_profile_at(
+                &path,
+                &profile,
+                CredentialKind::parse(&kind)?,
+                material,
+            )?;
             print_json(&serde_json::json!({
                 "applied_via": "offline_store",
                 "credential": status,

@@ -249,7 +249,7 @@ pub struct CredentialStoreFile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CredentialProfileFile {
     pub kind: CredentialKind,
-    pub secret: String,
+    pub material: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -964,17 +964,17 @@ pub fn set_credential_profile_at(
     path: &Path,
     profile: &str,
     kind: CredentialKind,
-    secret: String,
+    material: String,
 ) -> Result<CredentialProfileStatus> {
     let profile = normalize_credential_profile_id(profile)?;
     validate_stored_credential_kind(kind)?;
-    if secret.trim().is_empty() {
-        return Err(anyhow!("credential secret must not be empty"));
+    if material.trim().is_empty() {
+        return Err(anyhow!("credential material must not be empty"));
     }
     let mut store = load_credential_store_at(path)?;
     store
         .profiles
-        .insert(profile.clone(), CredentialProfileFile { kind, secret });
+        .insert(profile.clone(), CredentialProfileFile { kind, material });
     save_credential_store_at(path, &store)?;
     Ok(CredentialProfileStatus {
         profile,
@@ -1005,7 +1005,7 @@ pub fn list_credential_profiles_at(path: &Path) -> Result<Vec<CredentialProfileS
         .map(|(profile, entry)| CredentialProfileStatus {
             profile,
             kind: entry.kind.as_str().to_string(),
-            configured: !entry.secret.trim().is_empty(),
+            configured: !entry.material.trim().is_empty(),
         })
         .collect())
 }
@@ -1872,7 +1872,7 @@ fn resolve_provider_credential(
                         auth.kind.as_str()
                     ));
                 }
-                Ok(entry.secret.clone())
+                Ok(entry.material.clone())
             })
             .transpose(),
         CredentialSource::None
@@ -2480,7 +2480,7 @@ mod tests {
             compaction_keep_recent_estimated_tokens: 768,
             recent_episode_candidates: 12,
             max_relevant_episodes: 3,
-            control_token: Some("secret".into()),
+            control_token: Some("control-value".into()),
             control_auth_mode: ControlAuthMode::Auto,
             config_file_path: home_path.join("config.json"),
             stored_config: Default::default(),
@@ -2807,7 +2807,7 @@ mod tests {
     }
 
     #[test]
-    fn credential_store_lists_profiles_without_secret_material() {
+    fn credential_store_lists_profiles_without_raw_material() {
         let dir = tempdir().unwrap();
         let path = credential_store_path(dir.path());
 
@@ -2815,7 +2815,7 @@ mod tests {
             &path,
             "openai:default",
             CredentialKind::ApiKey,
-            "sk-test-secret".into(),
+            "sk-test-value".into(),
         )
         .unwrap();
 
@@ -2830,10 +2830,10 @@ mod tests {
             }])
         );
         let raw = fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("sk-test-secret"));
+        assert!(raw.contains("sk-test-value"));
         assert!(!serde_json::to_string(&profiles)
             .unwrap()
-            .contains("sk-test-secret"));
+            .contains("sk-test-value"));
 
         #[cfg(unix)]
         {
@@ -2852,7 +2852,7 @@ mod tests {
             "openrouter:default".into(),
             super::CredentialProfileFile {
                 kind: CredentialKind::ApiKey,
-                secret: "profile-secret".into(),
+                material: "profile-value".into(),
             },
         );
 
@@ -2876,7 +2876,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(runtime.id, id);
-        assert_eq!(runtime.credential.as_deref(), Some("profile-secret"));
+        assert_eq!(runtime.credential.as_deref(), Some("profile-value"));
     }
 
     #[test]
