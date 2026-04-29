@@ -44,6 +44,25 @@ The core problem it solves is not "talking to a model". The core problem is:
 `Holon` currently has two primary runtime entry points plus one operator
 lifecycle surface.
 
+## Install
+
+The main branch builds a Rust binary named `holon`.
+
+Build from source:
+
+```bash
+cargo install --path .
+holon --help
+```
+
+Released binaries are published as GitHub Release assets for Linux amd64,
+macOS amd64, and macOS arm64. Once a release is tagged, install with Homebrew:
+
+```bash
+brew tap holon-run/tap
+brew install holon
+```
+
 ### `holon run`
 
 This is the simplest way to use `Holon`.

@@ -26,6 +26,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Debug, Parser)]
 #[command(name = "holon")]
 #[command(about = "A headless, event-driven runtime for long-lived agents")]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
