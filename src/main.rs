@@ -17,6 +17,7 @@ use holon::{
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
     provider::provider_doctor,
     run_once::{run_once, RunOnceRequest},
+    solve::{run_solve, SolveRequest},
     tui::run_tui,
     types::{ControlAction, TrustLevel},
 };
@@ -126,6 +127,42 @@ enum Commands {
         workspace_root: Option<PathBuf>,
         #[arg(long)]
         cwd: Option<PathBuf>,
+    },
+    Solve {
+        #[arg(value_name = "REF")]
+        target_ref: String,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long)]
+        goal: Option<String>,
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        template: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        max_turns: Option<u64>,
+        #[arg(long, default_value = "trusted-operator")]
+        trust: TrustLevel,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        home: Option<PathBuf>,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        #[arg(long)]
+        input: Option<PathBuf>,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     Workspace {
         #[command(subcommand)]
@@ -257,6 +294,45 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Commands::Solve {
+            target_ref,
+            repo,
+            base,
+            goal,
+            role,
+            agent,
+            template,
+            model,
+            max_turns,
+            trust,
+            json,
+            home,
+            workspace,
+            workspace_root,
+            cwd,
+            input,
+            output,
+        } => {
+            run_solve_command(
+                target_ref,
+                repo,
+                base,
+                goal,
+                role,
+                agent,
+                template,
+                model,
+                max_turns,
+                trust,
+                json,
+                home,
+                workspace.or(workspace_root),
+                cwd,
+                input,
+                output,
+            )
+            .await
+        }
         command => run_runtime_command(command).await,
     }
 }
@@ -358,6 +434,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Workspace { command } => handle_workspace_command(&config, command).await,
         Commands::Tui { no_alt_screen } => run_tui(config, no_alt_screen).await,
         Commands::Run { .. } => unreachable!("run command is handled separately"),
+        Commands::Solve { .. } => unreachable!("solve command is handled separately"),
         Commands::Debug { command } => handle_debug_command(config, command).await,
         Commands::Config { .. } => unreachable!("config commands are handled separately"),
     }
@@ -389,6 +466,58 @@ async fn run_one_shot(
             wait_for_tasks: !no_wait_for_tasks,
             workspace_root,
             cwd,
+        },
+    )
+    .await?;
+
+    if json {
+        print_json(&serde_json::to_value(&response)?)?;
+    } else {
+        println!("{}", response.render_text());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_solve_command(
+    target_ref: String,
+    repo: Option<String>,
+    base: Option<String>,
+    goal: Option<String>,
+    role: Option<String>,
+    agent: Option<String>,
+    template: Option<String>,
+    model: Option<String>,
+    max_turns: Option<u64>,
+    trust: TrustLevel,
+    json: bool,
+    home: Option<PathBuf>,
+    workspace_root: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    input_dir: Option<PathBuf>,
+    output_dir: Option<PathBuf>,
+) -> Result<()> {
+    if let Some(model) = model.as_deref().filter(|model| !model.trim().is_empty()) {
+        std::env::set_var("HOLON_MODEL", model);
+    }
+    let config = AppConfig::load_with_home(home)?;
+    let response = run_solve(
+        config,
+        SolveRequest {
+            target_ref,
+            repo,
+            base,
+            goal,
+            role,
+            agent_id: agent,
+            template,
+            max_turns,
+            trust,
+            json,
+            workspace_root,
+            cwd,
+            input_dir,
+            output_dir,
         },
     )
     .await?;

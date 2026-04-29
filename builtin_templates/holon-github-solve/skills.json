@@ -1,0 +1,20 @@
+{
+  "skill_refs": [
+    {
+      "kind": "builtin",
+      "name": "github-issue-solve"
+    },
+    {
+      "kind": "builtin",
+      "name": "github-pr-fix"
+    },
+    {
+      "kind": "builtin",
+      "name": "github-review"
+    },
+    {
+      "kind": "builtin",
+      "name": "ghx"
+    }
+  ]
+}
