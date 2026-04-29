@@ -2077,7 +2077,7 @@ fn effective_task_output_status(
     task_status: &TaskStatus,
     latest_message: Option<&TaskMessageSnapshot>,
 ) -> TaskStatus {
-    if is_terminal_task_status(task_status) {
+    if is_terminal_task_status(task_status) || matches!(task_status, TaskStatus::Cancelling) {
         return task_status.clone();
     }
 
