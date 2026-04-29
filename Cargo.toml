@@ -1,6 +1,6 @@
 [package]
 name = "holon"
-version = "0.1.0"
+version = "0.13.0"
 edition = "2021"
 authors = ["Holon Contributors"]
 description = "A headless, event-driven runtime for long-lived agents"
