@@ -13,37 +13,42 @@ use crate::{
 use super::{build_candidate, classify_provider_error, retry::provider_retry_policy_json};
 
 pub fn provider_doctor(config: &AppConfig) -> Value {
-    let providers = config
-        .provider_chain()
-        .into_iter()
-        .map(|model_ref| {
-            let availability = provider_availability(config, &model_ref);
-            let provider_cfg = config
-                .providers
-                .get(&model_ref.provider)
-                .map(|provider| {
-                    json!({
-                        "base_url": provider.base_url,
-                        "transport": provider.transport.as_str(),
-                        "auth": {
-                            "source": provider.auth.source.as_str(),
-                            "kind": provider.auth.kind.as_str(),
-                            "env": provider.auth.env,
-                            "profile": provider.auth.profile,
-                            "external": provider.auth.external,
-                            "credential_configured": provider.has_configured_credential(),
-                        },
-                    })
+    let catalog = RuntimeModelCatalog::from_config(config);
+    let mut providers = Vec::new();
+    let mut model_availability = Vec::new();
+    for model_ref in config.provider_chain() {
+        let availability = provider_availability(config, &model_ref);
+        let provider_cfg = config
+            .providers
+            .get(&model_ref.provider)
+            .map(|provider| {
+                json!({
+                    "base_url": provider.base_url,
+                    "transport": provider.transport.as_str(),
+                    "auth": {
+                        "source": provider.auth.source.as_str(),
+                        "kind": provider.auth.kind.as_str(),
+                        "env": provider.auth.env,
+                        "profile": provider.auth.profile,
+                        "external": provider.auth.external,
+                        "credential_configured": provider.has_configured_credential(),
+                    },
                 })
-                .unwrap_or_else(|| json!({"error": "provider_not_configured"}));
-            json!({
-                "model": model_ref.as_string(),
-                "provider": model_ref.provider.as_str(),
-                "settings": provider_cfg,
-                "availability": availability,
             })
-        })
-        .collect::<Vec<_>>();
+            .unwrap_or_else(|| json!({"error": "provider_not_configured"}));
+        providers.push(json!({
+            "model": model_ref.as_string(),
+            "provider": model_ref.provider.as_str(),
+            "settings": provider_cfg,
+            "availability": availability,
+        }));
+        model_availability.push(resolved_model_availability_entry(
+            config,
+            &catalog,
+            &model_ref,
+            &availability,
+        ));
+    }
 
     json!({
         "default_model": config.default_model.as_string(),
@@ -51,7 +56,7 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
         "disable_provider_fallback": config.provider_fallback_disabled(),
         "runtime_max_output_tokens": config.runtime_max_output_tokens,
         "retry_policy": provider_retry_policy_json(),
-        "model_availability": resolved_model_availability_for_chain(config),
+        "model_availability": model_availability,
         "providers": providers,
     })
 }
@@ -97,16 +102,10 @@ pub fn resolved_model_availability(config: &AppConfig) -> Vec<ResolvedModelAvail
 
     models
         .into_values()
-        .map(|model_ref| resolved_model_availability_entry(config, &catalog, &model_ref))
-        .collect()
-}
-
-pub fn resolved_model_availability_for_chain(config: &AppConfig) -> Vec<ResolvedModelAvailability> {
-    let catalog = RuntimeModelCatalog::from_config(config);
-    config
-        .provider_chain()
-        .into_iter()
-        .map(|model_ref| resolved_model_availability_entry(config, &catalog, &model_ref))
+        .map(|model_ref| {
+            let availability = provider_availability(config, &model_ref);
+            resolved_model_availability_entry(config, &catalog, &model_ref, &availability)
+        })
         .collect()
 }
 
@@ -114,6 +113,7 @@ fn resolved_model_availability_entry(
     config: &AppConfig,
     catalog: &RuntimeModelCatalog,
     model_ref: &ModelRef,
+    availability: &Value,
 ) -> ResolvedModelAvailability {
     let base_context = base_context_config(config);
     let policy = catalog.resolved_model_policy(&base_context, Some(model_ref));
@@ -141,19 +141,23 @@ fn resolved_model_availability_entry(
     let credential_configured = provider
         .map(provider_static_credential_configured)
         .unwrap_or(false);
-    let availability = provider_availability(config, model_ref);
     let available = availability["available"].as_bool().unwrap_or(false);
+    let availability_failure_reason = availability["error"]
+        .as_str()
+        .or_else(|| availability["failure_kind"].as_str())
+        .map(ToString::to_string);
     let unavailable_reason = if available {
         None
     } else if !provider_configured {
         Some("provider_not_configured".to_string())
-    } else if !credential_configured {
+    } else if provider
+        .map(|provider| credential_missing_should_be_static_reason(provider.auth.source))
+        .unwrap_or(false)
+        && !credential_configured
+    {
         Some("credential_missing".to_string())
     } else {
-        availability["failure_kind"]
-            .as_str()
-            .or_else(|| availability["error"].as_str())
-            .map(ToString::to_string)
+        availability_failure_reason
     };
 
     ResolvedModelAvailability {
@@ -175,6 +179,13 @@ fn resolved_model_availability_entry(
 
 fn provider_static_credential_configured(provider: &crate::config::ProviderRuntimeConfig) -> bool {
     provider.has_configured_credential() || matches!(provider.auth.source, CredentialSource::None)
+}
+
+fn credential_missing_should_be_static_reason(source: CredentialSource) -> bool {
+    matches!(
+        source,
+        CredentialSource::Env | CredentialSource::AuthProfile
+    )
 }
 
 fn base_context_config(config: &AppConfig) -> ContextConfig {
@@ -336,6 +347,35 @@ mod tests {
             openai.unavailable_reason.as_deref(),
             Some("credential_missing")
         );
+    }
+
+    #[test]
+    fn resolved_model_availability_preserves_external_cli_config_errors() {
+        let mut fixture = test_config(Some("openai-key"));
+        fixture
+            .config
+            .providers
+            .get_mut(&ProviderId::openai_codex())
+            .expect("openai codex provider")
+            .codex_home = None;
+
+        let models = resolved_model_availability(&fixture.config);
+        let codex = models
+            .iter()
+            .find(|entry| entry.model == "openai-codex/gpt-5.4")
+            .expect("openai codex model entry");
+
+        assert!(codex.provider_configured);
+        assert!(!codex.available);
+        assert_ne!(
+            codex.unavailable_reason.as_deref(),
+            Some("credential_missing")
+        );
+        assert!(codex
+            .unavailable_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("codex_home"));
     }
 
     #[test]
