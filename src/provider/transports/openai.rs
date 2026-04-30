@@ -1753,9 +1753,7 @@ fn openai_provider_window_compaction_candidate(
 
     let boundary =
         latest_complete_openai_tool_call_boundary(&window.items).ok_or("unpaired_tool_call")?;
-    if boundary == 0 {
-        return Err("unpaired_tool_call");
-    }
+    debug_assert!(boundary > 0);
 
     let compact_items = window.items[..boundary].to_vec();
     if items_since_latest_openai_compaction(&compact_items) < OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS
