@@ -101,6 +101,14 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
+          ## Runtime line
+
+          Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
+
+          This line is intentionally breaking relative to the old Go-line releases. If you need the old Go implementation, stay on \`v0.12.0\`.
+
+          Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
+
           ## Install
 
           Homebrew:

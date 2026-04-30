@@ -47,7 +47,7 @@ The core question Holon explores is:
 
 ## Install
 
-Build from source:
+Build the current checkout from source:
 
 ```bash
 cargo install --path .
@@ -61,6 +61,10 @@ macOS amd64, and macOS arm64. Once a release is tagged, install with Homebrew:
 brew tap holon-run/tap
 brew install holon
 ```
+
+The command examples below assume `holon` is installed on `PATH`. When working
+directly from a source checkout, run `cargo install --path .` first so the
+quickstart matches the released binary surface.
 
 ## Core Commands
 
