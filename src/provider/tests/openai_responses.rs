@@ -286,6 +286,102 @@ async fn openai_responses_skips_remote_compaction_for_unpaired_tool_call() {
 }
 
 #[tokio::test]
+async fn openai_responses_remote_compacts_before_request_after_tool_output_pairs_call() {
+    let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let response_bodies_for_server = response_bodies.clone();
+    let compact_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let compact_bodies_for_server = compact_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/responses",
+                post(move |Json(body): Json<Value>| {
+                    let captured = response_bodies_for_server.clone();
+                    let attempts = attempts_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        let response = match attempt {
+                            0 => openai_tool_call_response("resp_1"),
+                            _ => openai_text_response("resp_2", "done"),
+                        };
+                        Json(response)
+                    }
+                }),
+            )
+            .route(
+                "/responses/compact",
+                post(move |Json(body): Json<Value>| {
+                    let captured = compact_bodies_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        Json(json!({
+                            "output": [
+                                { "type": "compaction", "encrypted_content": "opaque" },
+                                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "recent" }] }
+                            ]
+                        }))
+                    }
+                }),
+            ),
+    )
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let first = provider
+        .complete_turn(provider_large_window_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let second = provider
+        .complete_turn(provider_large_window_continuation_with_prompt_frame())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        first
+            .request_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+            .map(|diagnostics| diagnostics.status.as_str()),
+        Some("skipped_unpaired_tool_call")
+    );
+    let remote_compaction = second
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+        .expect("pre-request remote compaction diagnostics");
+    assert_eq!(remote_compaction.status, "compacted");
+    assert_eq!(
+        remote_compaction.trigger_reason.as_deref(),
+        Some("provider_window_item_threshold_before_request")
+    );
+    assert_eq!(remote_compaction.input_items, Some(10));
+
+    let response_bodies = response_bodies.lock().unwrap();
+    assert_eq!(response_bodies.len(), 2);
+    assert!(response_bodies[1].get("previous_response_id").is_none());
+    let replayed_input = response_bodies[1]["input"].as_array().unwrap();
+    assert_eq!(replayed_input[0]["type"], json!("compaction"));
+    assert_eq!(
+        replayed_input.last().unwrap()["type"],
+        json!("function_call_output")
+    );
+
+    let compact_bodies = compact_bodies.lock().unwrap();
+    assert_eq!(compact_bodies.len(), 1);
+    assert_eq!(compact_bodies[0]["input"].as_array().unwrap().len(), 10);
+}
+
+#[tokio::test]
 async fn openai_responses_local_shape_change_does_not_rewrite_compacted_provider_window() {
     let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let response_bodies_for_server = response_bodies.clone();

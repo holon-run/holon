@@ -258,18 +258,32 @@ impl AgentProvider for OpenAiProvider {
             OpenAiResponsesTransportContract::StandardJson,
             ToolSchemaContract::Relaxed,
         )?;
-        let plan = plan_openai_responses_request(body, &request, &self.continuation)?;
+        let mut plan = plan_openai_responses_request(body, &request, &self.continuation)?;
         let mut sent_diagnostics = plan.diagnostics.clone();
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
+        let headers = self
+            .api_key
+            .as_ref()
+            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
+            .unwrap_or_default();
+        if let Some(remote_compaction) = maybe_compact_openai_request_plan(
+            &self.continuation,
+            &mut plan,
+            &self.client,
+            format!("{}/responses/compact", self.base_url),
+            headers.clone(),
+        )
+        .await
+        {
+            sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
+            sent_diagnostics.request_lowering_mode = plan.diagnostics.request_lowering_mode.clone();
+        }
         let parsed = match send_openai_responses_request(
             &self.client,
             format!("{}/responses", self.base_url),
             plan.body,
-            self.api_key
-                .as_ref()
-                .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-                .unwrap_or_default(),
+            headers.clone(),
         )
         .await
         {
@@ -287,18 +301,17 @@ impl AgentProvider for OpenAiProvider {
             plan.provider_input,
             &parsed,
         );
-        sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
-            &self.continuation,
-            plan_scope.as_ref(),
-            &plan_request_shape,
-            &self.client,
-            format!("{}/responses/compact", self.base_url),
-            self.api_key
-                .as_ref()
-                .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-                .unwrap_or_default(),
-        )
-        .await;
+        if sent_diagnostics.openai_remote_compaction.is_none() {
+            sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
+                &self.continuation,
+                plan_scope.as_ref(),
+                &plan_request_shape,
+                &self.client,
+                format!("{}/responses/compact", self.base_url),
+                headers,
+            )
+            .await;
+        }
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
@@ -327,23 +340,36 @@ impl AgentProvider for OpenAiCodexProvider {
             OpenAiResponsesTransportContract::CodexStreaming,
             ToolSchemaContract::Relaxed,
         )?;
-        let plan = plan_openai_responses_request(body, &request, &self.continuation)?;
+        let mut plan = plan_openai_responses_request(body, &request, &self.continuation)?;
         let mut sent_diagnostics = plan.diagnostics.clone();
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
+        let headers = vec![
+            (
+                "authorization",
+                format!("Bearer {}", credential.access_token),
+            ),
+            ("chatgpt-account-id", credential.account_id.clone()),
+            ("OpenAI-Beta", "responses=experimental".to_string()),
+            ("originator", self.originator.clone()),
+        ];
+        if let Some(remote_compaction) = maybe_compact_openai_request_plan(
+            &self.continuation,
+            &mut plan,
+            &self.client,
+            format!("{}/responses/compact", self.base_url),
+            headers.clone(),
+        )
+        .await
+        {
+            sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
+            sent_diagnostics.request_lowering_mode = plan.diagnostics.request_lowering_mode.clone();
+        }
         let parsed = match send_openai_responses_streaming_request(
             &self.client,
             format!("{}/codex/responses", self.base_url),
             plan.body,
-            vec![
-                (
-                    "authorization",
-                    format!("Bearer {}", credential.access_token),
-                ),
-                ("chatgpt-account-id", credential.account_id.clone()),
-                ("OpenAI-Beta", "responses=experimental".to_string()),
-                ("originator", self.originator.clone()),
-            ],
+            headers.clone(),
         )
         .await
         {
@@ -361,23 +387,17 @@ impl AgentProvider for OpenAiCodexProvider {
             plan.provider_input,
             &parsed,
         );
-        sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
-            &self.continuation,
-            plan_scope.as_ref(),
-            &plan_request_shape,
-            &self.client,
-            format!("{}/responses/compact", self.base_url),
-            vec![
-                (
-                    "authorization",
-                    format!("Bearer {}", credential.access_token),
-                ),
-                ("chatgpt-account-id", credential.account_id),
-                ("OpenAI-Beta", "responses=experimental".to_string()),
-                ("originator", self.originator.clone()),
-            ],
-        )
-        .await;
+        if sent_diagnostics.openai_remote_compaction.is_none() {
+            sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
+                &self.continuation,
+                plan_scope.as_ref(),
+                &plan_request_shape,
+                &self.client,
+                format!("{}/responses/compact", self.base_url),
+                headers,
+            )
+            .await;
+        }
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
@@ -1360,6 +1380,159 @@ async fn maybe_compact_openai_provider_window(
         encrypted_content_bytes: Some(encrypted_content_bytes),
         request_shape_hash: Some(request_shape_hash),
         continuation_generation: Some(generation),
+        error: None,
+    })
+}
+
+async fn maybe_compact_openai_request_plan(
+    continuation: &Arc<Mutex<OpenAiContinuationState>>,
+    plan: &mut OpenAiRequestPlan,
+    client: &Client,
+    compact_url: String,
+    headers: Vec<(&str, String)>,
+) -> Option<ProviderOpenAiRemoteCompactionDiagnostics> {
+    if plan.diagnostics.request_lowering_mode != "incremental_continuation" {
+        return None;
+    }
+    let scope = plan.scope.as_ref()?;
+    let previous = {
+        let state = lock_openai_continuation(continuation);
+        state.windows.get(scope).cloned()
+    }?;
+    previous.response_id.as_ref()?;
+
+    let mut compactable_items = previous.items.clone();
+    compactable_items.extend(plan.provider_input.clone());
+    let compactable_window = OpenAiProviderWindow {
+        response_id: None,
+        request_shape: plan.request_shape.clone(),
+        latest_compaction_index: latest_openai_compaction_index(&compactable_items),
+        items: compactable_items,
+        append_match_items: plan.full_input.clone(),
+        generation: previous.generation,
+    };
+    if let Some(skip_reason) = openai_provider_window_compaction_skip_reason(&compactable_window) {
+        if skip_reason == "below_item_threshold" {
+            return None;
+        }
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: format!("skipped_{skip_reason}"),
+            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            input_items: Some(compactable_window.items.len()),
+            output_items: None,
+            compaction_items: None,
+            latest_compaction_index: compactable_window.latest_compaction_index,
+            encrypted_content_hashes: None,
+            encrypted_content_bytes: None,
+            request_shape_hash: Some(request_shape_hash(&plan.request_shape)),
+            continuation_generation: Some(previous.generation),
+            error: None,
+        });
+    }
+
+    let input_items = compactable_window.items.len();
+    let request_shape_hash = request_shape_hash(&plan.request_shape);
+    let compact_body =
+        build_openai_compact_request_body(&plan.request_shape, &compactable_window.items);
+    let compacted =
+        match send_openai_compact_request(client, compact_url, compact_body, headers).await {
+            Ok(compacted) => compacted,
+            Err(error) => {
+                return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+                    status: "failed".into(),
+                    trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+                    input_items: Some(input_items),
+                    output_items: None,
+                    compaction_items: None,
+                    latest_compaction_index: compactable_window.latest_compaction_index,
+                    encrypted_content_hashes: None,
+                    encrypted_content_bytes: None,
+                    request_shape_hash: Some(request_shape_hash),
+                    continuation_generation: Some(previous.generation),
+                    error: Some(error.to_string()),
+                });
+            }
+        };
+    if compacted.is_empty() {
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: "rejected_empty_output".into(),
+            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            input_items: Some(input_items),
+            output_items: Some(0),
+            compaction_items: Some(0),
+            latest_compaction_index: compactable_window.latest_compaction_index,
+            encrypted_content_hashes: Some(Vec::new()),
+            encrypted_content_bytes: Some(Vec::new()),
+            request_shape_hash: Some(request_shape_hash),
+            continuation_generation: Some(previous.generation),
+            error: Some("OpenAI compact response returned an empty output window".into()),
+        });
+    }
+
+    let latest_compaction_index = latest_openai_compaction_index(&compacted);
+    let encrypted_content_hashes = openai_compaction_encrypted_content_hashes(&compacted);
+    let encrypted_content_bytes = openai_compaction_encrypted_content_bytes(&compacted);
+    let compaction_items = encrypted_content_hashes.len();
+    if compaction_items == 0 {
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: "rejected_missing_compaction_item".into(),
+            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            input_items: Some(input_items),
+            output_items: Some(compacted.len()),
+            compaction_items: Some(0),
+            latest_compaction_index: None,
+            encrypted_content_hashes: Some(Vec::new()),
+            encrypted_content_bytes: Some(Vec::new()),
+            request_shape_hash: Some(request_shape_hash),
+            continuation_generation: Some(previous.generation),
+            error: Some("OpenAI compact response did not include a compaction item".into()),
+        });
+    }
+
+    let current_generation = {
+        let state = lock_openai_continuation(continuation);
+        state.windows.get(scope).map(|current| current.generation)
+    };
+    if current_generation != Some(previous.generation) {
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: "stale_generation".into(),
+            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            input_items: Some(input_items),
+            output_items: Some(compacted.len()),
+            compaction_items: Some(compaction_items),
+            latest_compaction_index,
+            encrypted_content_hashes: Some(encrypted_content_hashes),
+            encrypted_content_bytes: Some(encrypted_content_bytes),
+            request_shape_hash: Some(request_shape_hash),
+            continuation_generation: current_generation,
+            error: Some(format!(
+                "OpenAI provider window advanced while compact request was in flight; captured generation {}",
+                previous.generation
+            )),
+        });
+    }
+
+    let output_items = compacted.len();
+    let mut provider_input = compacted;
+    provider_input.extend(plan.provider_input.clone());
+    plan.body["input"] = Value::Array(provider_input.clone());
+    if let Some(object) = plan.body.as_object_mut() {
+        object.remove("previous_response_id");
+    }
+    plan.provider_input = provider_input;
+    plan.diagnostics.request_lowering_mode = "provider_window_compacted".into();
+
+    Some(ProviderOpenAiRemoteCompactionDiagnostics {
+        status: "compacted".into(),
+        trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+        input_items: Some(input_items),
+        output_items: Some(output_items),
+        compaction_items: Some(compaction_items),
+        latest_compaction_index,
+        encrypted_content_hashes: Some(encrypted_content_hashes),
+        encrypted_content_bytes: Some(encrypted_content_bytes),
+        request_shape_hash: Some(request_shape_hash),
+        continuation_generation: Some(previous.generation),
         error: None,
     })
 }
