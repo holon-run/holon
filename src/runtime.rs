@@ -15,6 +15,7 @@ mod tasks;
 #[cfg(test)]
 mod test_util;
 mod turn;
+mod workspace;
 mod worktree;
 
 use std::{
@@ -166,23 +167,11 @@ impl RuntimeHandle {
         projection_kind: WorkspaceProjectionKind,
         execution_root: &Path,
     ) -> Result<String> {
-        Ok(match projection_kind {
-            WorkspaceProjectionKind::CanonicalRoot => {
-                format!("canonical_root:{workspace_id}")
-            }
-            WorkspaceProjectionKind::GitWorktreeRoot => format!(
-                "git_worktree_root:{workspace_id}:{}",
-                crate::system::workspace::normalize_path(execution_root)?.display()
-            ),
-        })
+        workspace::build_execution_root_id(workspace_id, projection_kind, execution_root)
     }
 
     fn agent_home_workspace_entry(data_dir: &Path) -> WorkspaceEntry {
-        WorkspaceEntry::new(
-            AGENT_HOME_WORKSPACE_ID,
-            data_dir.to_path_buf(),
-            Some("AgentHome".into()),
-        )
+        workspace::agent_home_workspace_entry(data_dir)
     }
 
     pub fn new(
@@ -649,122 +638,17 @@ impl RuntimeHandle {
         self.workspace_view_from_state(&guard.state)
     }
 
-    fn detached_execution_root(&self) -> PathBuf {
-        self.inner.storage.data_dir().to_path_buf()
-    }
-
     pub(crate) fn workspace_view_for_root(
         &self,
         execution_root: PathBuf,
         cwd: PathBuf,
         worktree_root: Option<PathBuf>,
     ) -> Result<WorkspaceView> {
-        let state = self
-            .inner
-            .storage
-            .read_agent()?
-            .ok_or_else(|| anyhow!("agent state not found"))?;
-        let workspace_id = state
-            .active_workspace_entry
-            .as_ref()
-            .map(|entry| entry.workspace_id.clone());
-        let workspace_anchor = state
-            .active_workspace_entry
-            .as_ref()
-            .map(|entry| entry.workspace_anchor.clone())
-            .unwrap_or_else(|| self.detached_execution_root());
-        let execution_root_id = state
-            .active_workspace_entry
-            .as_ref()
-            .map(|entry| entry.execution_root_id.clone());
-        let access_mode = state
-            .active_workspace_entry
-            .as_ref()
-            .map(|entry| entry.access_mode);
-        WorkspaceView::new(
-            workspace_id,
-            workspace_anchor,
-            execution_root,
-            cwd,
-            execution_root_id,
-            access_mode,
-            worktree_root,
-        )
+        workspace::workspace_view_for_root(&self.inner.storage, execution_root, cwd, worktree_root)
     }
 
     fn workspace_view_from_state(&self, state: &AgentState) -> Result<WorkspaceView> {
-        if let Some(entry) = state.active_workspace_entry.as_ref() {
-            let worktree_root = (entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot)
-                .then(|| entry.execution_root.clone());
-            return WorkspaceView::new(
-                Some(entry.workspace_id.clone()),
-                entry.workspace_anchor.clone(),
-                entry.execution_root.clone(),
-                entry.cwd.clone(),
-                Some(entry.execution_root_id.clone()),
-                Some(entry.access_mode),
-                worktree_root,
-            );
-        }
-
-        // If no active_workspace_entry is set, use detached execution root
-        let execution_root = self.detached_execution_root();
-        WorkspaceView::new(
-            None,
-            execution_root.clone(),
-            execution_root.clone(),
-            execution_root.clone(),
-            None,
-            Some(WorkspaceAccessMode::ExclusiveWrite),
-            None,
-        )
-    }
-
-    /// Load all attached workspace (id, path) pairs from storage.
-    fn load_attached_workspace_entries(&self) -> Result<Vec<(String, PathBuf)>> {
-        let entries = self.inner.storage.latest_workspace_entries()?;
-        Ok(entries
-            .into_iter()
-            .map(|entry| (entry.workspace_id, entry.workspace_anchor))
-            .collect())
-    }
-
-    fn load_attached_workspace_entries_for(
-        &self,
-        attached_workspace_ids: &[String],
-        workspace: &WorkspaceView,
-    ) -> Result<Vec<(String, PathBuf)>> {
-        let known_entries = self
-            .load_attached_workspace_entries()?
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
-        let active_workspace_id = workspace.workspace_id().map(ToString::to_string);
-        let mut ordered_ids = Vec::new();
-
-        if let Some(active_id) = active_workspace_id.as_ref() {
-            if attached_workspace_ids.is_empty()
-                || attached_workspace_ids.iter().any(|id| id == active_id)
-            {
-                ordered_ids.push(active_id.clone());
-            }
-        }
-
-        for workspace_id in attached_workspace_ids {
-            if !ordered_ids.iter().any(|id| id == workspace_id) {
-                ordered_ids.push(workspace_id.clone());
-            }
-        }
-
-        let mut resolved = Vec::new();
-        for workspace_id in ordered_ids {
-            if let Some(anchor) = known_entries.get(&workspace_id) {
-                resolved.push((workspace_id, anchor.clone()));
-            } else if active_workspace_id.as_deref() == Some(workspace_id.as_str()) {
-                resolved.push((workspace_id, workspace.workspace_anchor().to_path_buf()));
-            }
-        }
-
-        Ok(resolved)
+        workspace::workspace_view_from_state(state, self.inner.storage.data_dir().to_path_buf())
     }
 
     fn execution_snapshot_for_view(
@@ -773,61 +657,20 @@ impl RuntimeHandle {
         workspace: &WorkspaceView,
         attached_workspace_ids: &[String],
     ) -> ExecutionSnapshot {
-        let attached_workspaces = self
-            .load_attached_workspace_entries_for(attached_workspace_ids, workspace)
-            .unwrap_or_else(|_| {
-                workspace
-                    .workspace_id()
-                    .map(|id| (id.to_string(), workspace.workspace_anchor().to_path_buf()))
-                    .into_iter()
-                    .collect()
-            });
-
-        ExecutionSnapshot {
-            policy: profile.policy_snapshot(),
+        workspace::execution_snapshot_for_view(
             profile,
-            attached_workspaces,
-            workspace_id: workspace.workspace_id().map(ToString::to_string),
-            workspace_anchor: workspace.workspace_anchor().to_path_buf(),
-            execution_root: workspace.execution_root().to_path_buf(),
-            cwd: workspace.cwd().to_path_buf(),
-            execution_root_id: workspace.execution_root_id().map(ToString::to_string),
-            projection_kind: if workspace.worktree_root().is_some() {
-                Some(WorkspaceProjectionKind::GitWorktreeRoot)
-            } else {
-                Some(WorkspaceProjectionKind::CanonicalRoot)
-            },
-            access_mode: workspace.access_mode(),
-            worktree_root: workspace.worktree_root().map(|path| path.to_path_buf()),
-        }
+            workspace,
+            attached_workspace_ids,
+            &self.inner.storage,
+        )
     }
 
     fn workspace_anchor_for_state_ref<'a>(&self, state: &'a AgentState) -> Option<&'a Path> {
-        state
-            .active_workspace_entry
-            .as_ref()
-            .map(|entry| entry.workspace_anchor.as_path())
+        workspace::workspace_anchor_for_state_ref(state)
     }
 
     fn execution_root_sync(&self) -> PathBuf {
-        self.inner
-            .storage
-            .read_agent()
-            .ok()
-            .flatten()
-            .and_then(|state| {
-                state
-                    .active_workspace_entry
-                    .as_ref()
-                    .map(|entry| entry.execution_root.clone())
-                    .or_else(|| {
-                        state
-                            .worktree_session
-                            .as_ref()
-                            .map(|worktree| worktree.worktree_path.clone())
-                    })
-            })
-            .unwrap_or_else(|| self.detached_execution_root())
+        workspace::execution_root_sync(&self.inner.storage)
     }
 
     pub(crate) async fn effective_execution(
@@ -839,22 +682,13 @@ impl RuntimeHandle {
         let attached_workspace_ids = guard.state.attached_workspaces.clone();
         drop(guard);
         let workspace = self.workspace_view().await?;
-        let attached_workspaces = self
-            .load_attached_workspace_entries_for(&attached_workspace_ids, &workspace)
-            .unwrap_or_else(|_| {
-                workspace
-                    .workspace_id()
-                    .map(|id| (id.to_string(), workspace.workspace_anchor().to_path_buf()))
-                    .into_iter()
-                    .collect()
-            });
-
-        Ok(EffectiveExecution {
+        Ok(workspace::build_effective_execution(
+            &self.inner.storage,
+            scope,
             profile,
             workspace,
-            scope,
-            attached_workspaces,
-        })
+            &attached_workspace_ids,
+        ))
     }
 
     pub(crate) async fn effective_execution_for_workspace(
@@ -866,21 +700,13 @@ impl RuntimeHandle {
         let profile = guard.state.execution_profile.clone();
         let attached_workspace_ids = guard.state.attached_workspaces.clone();
         drop(guard);
-        let attached_workspaces = self
-            .load_attached_workspace_entries_for(&attached_workspace_ids, &workspace)
-            .unwrap_or_else(|_| {
-                workspace
-                    .workspace_id()
-                    .map(|id| (id.to_string(), workspace.workspace_anchor().to_path_buf()))
-                    .into_iter()
-                    .collect()
-            });
-        Ok(EffectiveExecution {
+        Ok(workspace::build_effective_execution(
+            &self.inner.storage,
+            scope,
             profile,
             workspace,
-            scope,
-            attached_workspaces,
-        })
+            &attached_workspace_ids,
+        ))
     }
 
     pub async fn execution_snapshot(&self) -> Result<ExecutionSnapshot> {
