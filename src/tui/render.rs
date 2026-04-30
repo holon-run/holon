@@ -290,11 +290,24 @@ fn render_activity_text(app: &TuiApp) -> String {
             .unwrap_or_default();
     }
 
-    let text = events
+    let mut text_parts = Vec::new();
+    
+    // Prepend status line message if it exists (for UI feedback like "Opened help")
+    if !app.status_line.trim().is_empty() {
+        text_parts.push(app.status_line.trim().to_string());
+    }
+    
+    let event_text = events
         .into_iter()
         .map(|event| format_activity_event(event))
         .collect::<Vec<_>>()
         .join("\n");
+    
+    if !event_text.is_empty() {
+        text_parts.push(event_text);
+    }
+    
+    let text = text_parts.join("\n");
     if !text.is_empty() {
         *app.activity_text_cache.borrow_mut() = Some(super::CachedActivityText {
             agent_id: agent_id.to_string(),
