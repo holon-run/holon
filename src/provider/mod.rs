@@ -169,6 +169,24 @@ pub struct ProviderIncrementalContinuationDiagnostics {
     pub incremental_input_items: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_input_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_prefix_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_mismatch_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_item_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_item_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_item_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_item_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_shape_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

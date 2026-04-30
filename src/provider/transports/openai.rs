@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::{Client, Response};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -93,6 +94,19 @@ struct OpenAiRequestPlan {
     full_input: Vec<Value>,
     request_shape: OpenAiRequestShape,
     diagnostics: ProviderRequestDiagnostics,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OpenAiContinuationMismatchDiagnostics {
+    expected_prefix_items: usize,
+    first_mismatch_index: Option<usize>,
+    previous_item_type: Option<String>,
+    current_item_type: Option<String>,
+    previous_item_id: Option<String>,
+    current_item_id: Option<String>,
+    previous_item_hash: Option<String>,
+    current_item_hash: Option<String>,
+    request_shape_hash: Option<String>,
 }
 
 #[derive(Debug)]
@@ -556,6 +570,7 @@ fn plan_chat_completion_request(
                     "missing_continuation_scope",
                     None,
                     full_message_count,
+                    None,
                 ),
             },
         ));
@@ -580,6 +595,7 @@ fn plan_chat_completion_request(
                     "not_applicable_initial_request",
                     None,
                     full_message_count,
+                    None,
                 ),
             },
         ));
@@ -588,6 +604,7 @@ fn plan_chat_completion_request(
     // Check if request shape changed
     if previous.request_shape != request_shape {
         // Request changed - send full request
+        let request_shape_hash = request_shape_hash(&request_shape);
         return Ok((
             full_body.clone(),
             OpenAiRequestPlan {
@@ -600,6 +617,10 @@ fn plan_chat_completion_request(
                     "request_shape_changed",
                     None,
                     full_message_count,
+                    Some(OpenAiContinuationMismatchDiagnostics {
+                        request_shape_hash: Some(request_shape_hash),
+                        ..OpenAiContinuationMismatchDiagnostics::default()
+                    }),
                 ),
             },
         ));
@@ -610,6 +631,7 @@ fn plan_chat_completion_request(
     // `full_messages` contains message objects, but `response_output` is not
     // guaranteed to store a comparable message value, so incremental
     // continuation would be unreliable here. Send the full request instead.
+    let request_shape_hash = request_shape_hash(&request_shape);
     return Ok((
         full_body.clone(),
         OpenAiRequestPlan {
@@ -622,6 +644,10 @@ fn plan_chat_completion_request(
                 "chat_completions_incremental_continuation_unsupported",
                 None,
                 full_message_count,
+                Some(OpenAiContinuationMismatchDiagnostics {
+                    request_shape_hash: Some(request_shape_hash),
+                    ..OpenAiContinuationMismatchDiagnostics::default()
+                }),
             ),
         },
     ));
@@ -830,6 +856,7 @@ fn plan_openai_responses_request(
                 "missing_continuation_scope",
                 None,
                 full_input_items,
+                None,
             ),
         });
     };
@@ -848,11 +875,13 @@ fn plan_openai_responses_request(
                 "not_applicable_initial_request",
                 None,
                 full_input_items,
+                None,
             ),
         });
     };
 
     if previous.request_shape != request_shape {
+        let request_shape_hash = request_shape_hash(&request_shape);
         return Ok(OpenAiRequestPlan {
             body,
             scope,
@@ -863,12 +892,21 @@ fn plan_openai_responses_request(
                 "request_shape_changed",
                 None,
                 full_input_items,
+                Some(OpenAiContinuationMismatchDiagnostics {
+                    request_shape_hash: Some(request_shape_hash),
+                    ..OpenAiContinuationMismatchDiagnostics::default()
+                }),
             ),
         });
     }
 
     let mut expected_prefix = previous.full_input.clone();
     expected_prefix.extend(previous.response_output.clone());
+    let mismatch = openai_continuation_mismatch_diagnostics(
+        &expected_prefix,
+        &full_input,
+        &request_shape,
+    );
     if expected_prefix.is_empty()
         || full_input.len() <= expected_prefix.len()
         || !full_input.starts_with(&expected_prefix)
@@ -883,6 +921,7 @@ fn plan_openai_responses_request(
                 "conversation_not_strict_append_only",
                 None,
                 full_input_items,
+                Some(mismatch),
             ),
         });
     }
@@ -890,6 +929,7 @@ fn plan_openai_responses_request(
     let incremental_input = full_input[expected_prefix.len()..].to_vec();
     body["input"] = Value::Array(incremental_input.clone());
     body["previous_response_id"] = Value::String(previous.response_id);
+    let request_shape_hash = request_shape_hash(&request_shape);
     Ok(OpenAiRequestPlan {
         body,
         scope,
@@ -904,6 +944,15 @@ fn plan_openai_responses_request(
                 fallback_reason: None,
                 incremental_input_items: Some(incremental_input.len()),
                 full_input_items: Some(full_input_items),
+                expected_prefix_items: Some(expected_prefix.len()),
+                first_mismatch_index: None,
+                previous_item_type: None,
+                current_item_type: None,
+                previous_item_id: None,
+                current_item_id: None,
+                previous_item_hash: None,
+                current_item_hash: None,
+                request_shape_hash: Some(request_shape_hash),
             }),
         },
     })
@@ -932,12 +981,116 @@ fn request_shape_without_input(body: &Value, request: &ProviderTurnRequest) -> O
     }
 }
 
+fn openai_continuation_mismatch_diagnostics(
+    expected_prefix: &[Value],
+    full_input: &[Value],
+    request_shape: &OpenAiRequestShape,
+) -> OpenAiContinuationMismatchDiagnostics {
+    let first_mismatch_index = expected_prefix
+        .iter()
+        .zip(full_input.iter())
+        .position(|(previous, current)| previous != current)
+        .or_else(|| {
+            (expected_prefix.len() != full_input.len())
+                .then_some(expected_prefix.len().min(full_input.len()))
+        });
+    let previous = first_mismatch_index.and_then(|index| expected_prefix.get(index));
+    let current = first_mismatch_index.and_then(|index| full_input.get(index));
+    OpenAiContinuationMismatchDiagnostics {
+        expected_prefix_items: expected_prefix.len(),
+        first_mismatch_index,
+        previous_item_type: previous.map(openai_item_type),
+        current_item_type: current.map(openai_item_type),
+        previous_item_id: previous.and_then(openai_item_stable_id),
+        current_item_id: current.and_then(openai_item_stable_id),
+        previous_item_hash: previous.map(openai_item_hash),
+        current_item_hash: current.map(openai_item_hash),
+        request_shape_hash: Some(request_shape_hash(request_shape)),
+    }
+}
+
+fn openai_item_type(item: &Value) -> String {
+    item.get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| match item {
+            Value::Object(_) => "object",
+            Value::Array(_) => "array",
+            Value::String(_) => "string",
+            Value::Number(_) => "number",
+            Value::Bool(_) => "bool",
+            Value::Null => "null",
+        })
+        .to_string()
+}
+
+fn openai_item_stable_id(item: &Value) -> Option<String> {
+    if let Some(id) = ["id", "call_id"]
+        .into_iter()
+        .find_map(|key| item.get(key).and_then(Value::as_str))
+    {
+        return Some(id.to_string());
+    }
+    item.get("role").and_then(Value::as_str).map(|role| {
+        let item_type = openai_item_type(item);
+        format!("{item_type}:{role}")
+    })
+}
+
+fn openai_item_hash(item: &Value) -> String {
+    sha256_hex(canonical_json(item).as_bytes())
+}
+
+fn request_shape_hash(request_shape: &OpenAiRequestShape) -> String {
+    let value = json!({
+        "wire_shape": request_shape.wire_shape,
+        "prompt_frame": request_shape.prompt_frame,
+    });
+    sha256_hex(canonical_json(&value).as_bytes())
+}
+
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into()),
+        Value::Array(values) => {
+            let items = values.iter().map(canonical_json).collect::<Vec<_>>();
+            format!("[{}]", items.join(","))
+        }
+        Value::Object(map) => {
+            let ordered = map
+                .iter()
+                .map(|(key, value)| (key, value))
+                .collect::<BTreeMap<_, _>>();
+            let items = ordered
+                .into_iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into()),
+                        canonical_json(value)
+                    )
+                })
+                .collect::<Vec<_>>();
+            format!("{{{}}}", items.join(","))
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{:02x}", byte)).collect()
+}
+
 fn incremental_diagnostics(
     request_lowering_mode: &str,
     fallback_reason: &str,
     incremental_input_items: Option<usize>,
     full_input_items: usize,
+    mismatch: Option<OpenAiContinuationMismatchDiagnostics>,
 ) -> ProviderRequestDiagnostics {
+    let mismatch = mismatch.unwrap_or_default();
     ProviderRequestDiagnostics {
         request_lowering_mode: request_lowering_mode.into(),
         anthropic_cache: None,
@@ -947,6 +1100,15 @@ fn incremental_diagnostics(
             fallback_reason: Some(fallback_reason.into()),
             incremental_input_items,
             full_input_items: Some(full_input_items),
+            expected_prefix_items: Some(mismatch.expected_prefix_items),
+            first_mismatch_index: mismatch.first_mismatch_index,
+            previous_item_type: mismatch.previous_item_type,
+            current_item_type: mismatch.current_item_type,
+            previous_item_id: mismatch.previous_item_id,
+            current_item_id: mismatch.current_item_id,
+            previous_item_hash: mismatch.previous_item_hash,
+            current_item_hash: mismatch.current_item_hash,
+            request_shape_hash: mismatch.request_shape_hash,
         }),
     }
 }

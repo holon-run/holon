@@ -326,6 +326,20 @@ async fn openai_responses_falls_back_when_conversation_is_not_append_only() {
             .and_then(|diagnostics| diagnostics.fallback_reason.as_deref()),
         Some("conversation_not_strict_append_only")
     );
+    let diagnostics = response
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.incremental_continuation.as_ref())
+        .expect("incremental continuation diagnostics");
+    assert_eq!(diagnostics.expected_prefix_items, Some(2));
+    assert_eq!(diagnostics.first_mismatch_index, Some(1));
+    assert_eq!(diagnostics.previous_item_type.as_deref(), Some("function_call"));
+    assert_eq!(diagnostics.current_item_type, None);
+    assert_eq!(diagnostics.previous_item_id.as_deref(), Some("exec-1"));
+    assert_eq!(diagnostics.current_item_id, None);
+    assert!(diagnostics.previous_item_hash.is_some());
+    assert!(diagnostics.current_item_hash.is_none());
+    assert!(diagnostics.request_shape_hash.is_some());
     let bodies = captured_bodies.lock().unwrap();
     assert_eq!(bodies.len(), 2);
     assert!(bodies[1].get("previous_response_id").is_none());
