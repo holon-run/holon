@@ -1707,6 +1707,146 @@ mod tests {
         updated.id
     }
 
+    #[tokio::test]
+    async fn work_item_query_tools_return_current_open_done_views() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+
+        let active = runtime
+            .update_work_item(
+                None,
+                "finish active delivery".into(),
+                WorkItemStatus::Active,
+                Some("active summary".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        runtime
+            .update_work_plan(
+                active.id.clone(),
+                vec![crate::types::WorkPlanItem {
+                    step: "inspect query surface".into(),
+                    status: crate::types::WorkPlanStepStatus::InProgress,
+                }],
+            )
+            .await
+            .unwrap();
+        let queued = runtime
+            .update_work_item(
+                None,
+                "queued delivery".into(),
+                WorkItemStatus::Queued,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let completed = runtime
+            .update_work_item(
+                None,
+                "completed delivery".into(),
+                WorkItemStatus::Completed,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        bind_turn_to_work_item(&runtime, &active.id).await;
+
+        let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+        let (active_result, _) = registry
+            .execute(
+                &runtime,
+                "default",
+                &TrustLevel::TrustedOperator,
+                &crate::tool::ToolCall {
+                    id: "active".into(),
+                    name: "GetActiveWorkItem".into(),
+                    input: serde_json::json!({"include_plan": true}),
+                },
+            )
+            .await
+            .unwrap();
+        let active_payload = active_result.envelope.result.unwrap();
+        assert_eq!(
+            active_payload["context"]["current_work_item_id"].as_str(),
+            Some(active.id.as_str())
+        );
+        assert_eq!(active_payload["work_item"]["state"].as_str(), Some("open"));
+        assert_eq!(
+            active_payload["work_item"]["focus"].as_str(),
+            Some("current")
+        );
+        assert_eq!(
+            active_payload["work_item"]["is_current"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            active_payload["work_item"]["plan"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let (list_result, _) = registry
+            .execute(
+                &runtime,
+                "default",
+                &TrustLevel::TrustedOperator,
+                &crate::tool::ToolCall {
+                    id: "list".into(),
+                    name: "ListWorkItems".into(),
+                    input: serde_json::json!({"filter": "open", "limit": 10}),
+                },
+            )
+            .await
+            .unwrap();
+        let list_payload = list_result.envelope.result.unwrap();
+        let items = list_payload["work_items"].as_array().unwrap();
+        assert_eq!(list_payload["total_matching"].as_u64(), Some(2));
+        assert!(items
+            .iter()
+            .any(|item| item["id"].as_str() == Some(active.id.as_str())));
+        assert!(items
+            .iter()
+            .any(|item| item["id"].as_str() == Some(queued.id.as_str())));
+        assert!(!items
+            .iter()
+            .any(|item| item["id"].as_str() == Some(completed.id.as_str())));
+
+        let (done_result, _) = registry
+            .execute(
+                &runtime,
+                "default",
+                &TrustLevel::TrustedOperator,
+                &crate::tool::ToolCall {
+                    id: "done".into(),
+                    name: "GetWorkItem".into(),
+                    input: serde_json::json!({"work_item_id": completed.id}),
+                },
+            )
+            .await
+            .unwrap();
+        let done_payload = done_result.envelope.result.unwrap();
+        assert_eq!(done_payload["work_item"]["state"].as_str(), Some("done"));
+        assert_eq!(done_payload["work_item"]["focus"].as_str(), Some("done"));
+    }
+
     async fn mark_blocking_task(runtime: &RuntimeHandle, task_id: &str) {
         runtime
             .inner
