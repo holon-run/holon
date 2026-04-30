@@ -115,6 +115,9 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
         OverlayState::Events { .. } => "Events: Up/Down, PgUp/PgDn, Home/End, Esc",
         OverlayState::Transcript { .. } => "Transcript: Up/Down, PgUp/PgDn, Home/End, Esc",
         OverlayState::Tasks { .. } => "Tasks: Up/Down, PgUp/PgDn, Home/End, Esc",
+        OverlayState::ModelPicker { .. } => {
+            "Model: type filter, Backspace edit, Up/Down move, Enter select, Esc cancel"
+        }
         OverlayState::DebugPromptInput { .. } => "Debug prompt: Enter confirm, Esc cancel",
         OverlayState::DebugPromptView { .. } => "Debug prompt: Up/Down, PgUp/PgDn, Home/End, Esc",
         OverlayState::HelpView { .. } => "Help: Up/Down, PgUp/PgDn, Home/End, Esc",
@@ -143,10 +146,14 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
             app.connection_label()
         )
     };
+    let model = app
+        .selected_agent_summary()
+        .map(render_model_status)
+        .unwrap_or_else(|| "model: <no agent selected>".into());
     let text = if app.status_line.trim().is_empty() {
-        format!("{help}\n{connection}")
+        format!("{help}\n{connection}  {model}")
     } else {
-        format!("{help}\n{connection}\n{}", app.status_line)
+        format!("{help}\n{connection}  {model}\n{}", app.status_line)
     };
     let paragraph = Paragraph::new(text).block(Block::default().borders(Borders::TOP));
     frame.render_widget(paragraph, area);
@@ -172,6 +179,7 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
             "Closure: {:?} / {:?}",
             agent.closure.outcome, agent.closure.runtime_posture
         ),
+        render_model_status(agent),
     ];
 
     lines.push(String::new());
@@ -541,6 +549,30 @@ pub(super) fn render_task_detail(task: &TaskRecord) -> String {
     lines.join("\n")
 }
 
+pub(super) fn render_model_status(agent: &AgentSummary) -> String {
+    let model = agent
+        .model
+        .active_model
+        .as_ref()
+        .unwrap_or(&agent.model.effective_model);
+    if agent.model.fallback_active {
+        let requested = agent
+            .model
+            .requested_model
+            .as_ref()
+            .unwrap_or(&agent.model.effective_model);
+        return format!(
+            "model: {} (fallback from {})",
+            model.as_string(),
+            requested.as_string()
+        );
+    }
+    if agent.model.override_model.is_some() {
+        return format!("model: {} (agent override)", model.as_string());
+    }
+    format!("model: {}", model.as_string())
+}
+
 pub(super) fn render_summary(agent: &AgentSummary) -> String {
     let mut lines = vec![
         format!("Agent: {}", agent.identity.agent_id),
@@ -664,8 +696,8 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_activity_event, prompt_cursor_position, render_header, render_prompt_buffer,
-        render_prompt_text, render_summary, status_bar_height,
+        format_activity_event, prompt_cursor_position, render_header, render_model_status,
+        render_prompt_buffer, render_prompt_text, render_summary, status_bar_height,
     };
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
@@ -736,6 +768,7 @@ mod tests {
                     source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
                 },
                 available_models: Vec::new(),
+                model_availability: Vec::new(),
             },
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),
@@ -838,6 +871,38 @@ mod tests {
         assert!(rendered.contains("SpawnAgent returns `agent_id` only"));
         assert!(
             rendered.contains("child_1:AwakeRunning[private/parent_supervised (private_child)]")
+        );
+    }
+
+    #[test]
+    fn model_status_distinguishes_inherited_override_and_fallback() {
+        let inherited = sample_agent_summary();
+        assert_eq!(
+            render_model_status(&inherited),
+            "model: anthropic/claude-sonnet-4-6"
+        );
+
+        let mut overridden = sample_agent_summary();
+        overridden.model.override_model =
+            Some(crate::config::ModelRef::parse("openai/gpt-5.4").unwrap());
+        overridden.model.effective_model =
+            crate::config::ModelRef::parse("openai/gpt-5.4").unwrap();
+        overridden.model.active_model =
+            Some(crate::config::ModelRef::parse("openai/gpt-5.4").unwrap());
+        assert_eq!(
+            render_model_status(&overridden),
+            "model: openai/gpt-5.4 (agent override)"
+        );
+
+        let mut fallback = overridden;
+        fallback.model.requested_model =
+            Some(crate::config::ModelRef::parse("openai/gpt-5.4").unwrap());
+        fallback.model.active_model =
+            Some(crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap());
+        fallback.model.fallback_active = true;
+        assert_eq!(
+            render_model_status(&fallback),
+            "model: anthropic/claude-sonnet-4-6 (fallback from openai/gpt-5.4)"
         );
     }
 

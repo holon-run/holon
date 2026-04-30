@@ -1604,6 +1604,7 @@ mod tests {
                     source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
                 },
                 available_models: Vec::new(),
+                model_availability: Vec::new(),
             },
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),

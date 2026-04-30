@@ -36,6 +36,7 @@ mod chat;
 mod composer;
 mod input;
 mod logging;
+mod model_picker;
 mod overlay;
 mod projection;
 mod render;
@@ -925,6 +926,7 @@ mod tests {
                     source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
                 },
                 available_models: Vec::new(),
+                model_availability: Vec::new(),
             },
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),
@@ -1284,6 +1286,27 @@ mod tests {
             app.overlay,
             OverlayState::DebugPromptInput {
                 composer: ComposerState::new()
+            }
+        );
+        assert_eq!(app.composer.as_str(), "");
+    }
+
+    #[tokio::test]
+    async fn slash_model_opens_model_picker_overlay() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/model");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.overlay,
+            OverlayState::ModelPicker {
+                filter: String::new(),
+                selected: 0
             }
         );
         assert_eq!(app.composer.as_str(), "");
