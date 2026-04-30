@@ -64,7 +64,8 @@ pub(crate) enum OpenAiResponsesTransportContract {
 
 #[derive(Debug, Default)]
 struct OpenAiContinuationState {
-    snapshots: HashMap<OpenAiContinuationScope, OpenAiContinuationSnapshot>,
+    windows: HashMap<OpenAiContinuationScope, OpenAiProviderWindow>,
+    next_generation: u64,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -74,11 +75,12 @@ struct OpenAiContinuationScope {
 }
 
 #[derive(Debug, Clone)]
-struct OpenAiContinuationSnapshot {
-    response_id: String,
+struct OpenAiProviderWindow {
+    response_id: Option<String>,
     request_shape: OpenAiRequestShape,
-    full_input: Vec<Value>,
-    response_output: Vec<Value>,
+    items: Vec<Value>,
+    latest_compaction_index: Option<usize>,
+    generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -577,7 +579,7 @@ fn plan_chat_completion_request(
     };
 
     let previous = lock_openai_continuation(continuation)
-        .snapshots
+        .windows
         .get(scope_ref)
         .cloned();
 
@@ -627,7 +629,7 @@ fn plan_chat_completion_request(
     }
 
     // Chat Completions continuation currently cannot safely reconstruct an
-    // assistant message from `previous.response_output` for prefix matching.
+    // assistant message from the provider window for prefix matching.
     // `full_messages` contains message objects, but `response_output` is not
     // guaranteed to store a comparable message value, so incremental
     // continuation would be unreliable here. Send the full request instead.
@@ -861,7 +863,7 @@ fn plan_openai_responses_request(
         });
     };
     let previous = lock_openai_continuation(continuation)
-        .snapshots
+        .windows
         .get(scope_ref)
         .cloned();
     let Some(previous) = previous else {
@@ -900,8 +902,23 @@ fn plan_openai_responses_request(
         });
     }
 
-    let mut expected_prefix = previous.full_input.clone();
-    expected_prefix.extend(previous.response_output.clone());
+    if previous.response_id.is_none() {
+        return Ok(OpenAiRequestPlan {
+            body,
+            scope,
+            full_input,
+            request_shape,
+            diagnostics: incremental_diagnostics(
+                "full_request",
+                "missing_response_id",
+                None,
+                full_input_items,
+                None,
+            ),
+        });
+    }
+
+    let expected_prefix = previous.items.clone();
     let mismatch = openai_continuation_mismatch_diagnostics(
         &expected_prefix,
         &full_input,
@@ -928,7 +945,8 @@ fn plan_openai_responses_request(
 
     let incremental_input = full_input[expected_prefix.len()..].to_vec();
     body["input"] = Value::Array(incremental_input.clone());
-    body["previous_response_id"] = Value::String(previous.response_id);
+    body["previous_response_id"] =
+        Value::String(previous.response_id.expect("response id checked above"));
     let request_shape_hash = request_shape_hash(&request_shape);
     Ok(OpenAiRequestPlan {
         body,
@@ -1040,6 +1058,16 @@ fn openai_item_hash(item: &Value) -> String {
     sha256_hex(canonical_json(item).as_bytes())
 }
 
+fn latest_openai_compaction_index(items: &[Value]) -> Option<usize> {
+    items
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, item)| {
+            (item.get("type").and_then(Value::as_str) == Some("compaction")).then_some(index)
+        })
+}
+
 fn request_shape_hash(request_shape: &OpenAiRequestShape) -> String {
     let value = json!({
         "wire_shape": request_shape.wire_shape,
@@ -1123,20 +1151,26 @@ fn update_openai_continuation(
     let Some(scope) = scope else {
         return;
     };
+    let mut state = lock_openai_continuation(continuation);
     let next = match (parsed.response_id.as_ref(), parsed.output_items.is_empty()) {
-        (Some(response_id), false) => Some(OpenAiContinuationSnapshot {
-            response_id: response_id.clone(),
-            request_shape,
-            full_input,
-            response_output: parsed.output_items.clone(),
-        }),
+        (Some(response_id), false) => {
+            state.next_generation = state.next_generation.saturating_add(1);
+            let mut items = full_input;
+            items.extend(parsed.output_items.clone());
+            Some(OpenAiProviderWindow {
+                response_id: Some(response_id.clone()),
+                request_shape,
+                latest_compaction_index: latest_openai_compaction_index(&items),
+                items,
+                generation: state.next_generation,
+            })
+        }
         _ => None,
     };
-    let mut state = lock_openai_continuation(continuation);
     if let Some(next) = next {
-        state.snapshots.insert(scope, next);
+        state.windows.insert(scope, next);
     } else {
-        state.snapshots.remove(&scope);
+        state.windows.remove(&scope);
     }
 }
 
@@ -1146,9 +1180,9 @@ fn invalidate_openai_continuation(
 ) {
     let mut state = lock_openai_continuation(continuation);
     if let Some(scope) = scope {
-        state.snapshots.remove(scope);
+        state.windows.remove(scope);
     } else {
-        state.snapshots.clear();
+        state.windows.clear();
     }
 }
 
@@ -2394,7 +2428,8 @@ fn unsupported_streaming_transport_error(provider_name: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::chat_completions_url;
+    use super::{chat_completions_url, latest_openai_compaction_index};
+    use serde_json::json;
 
     #[test]
     fn chat_completions_url_accepts_openai_compatible_base_urls() {
@@ -2422,5 +2457,17 @@ mod tests {
             chat_completions_url("https://proxy.example/chat/completions"),
             "https://proxy.example/chat/completions"
         );
+    }
+
+    #[test]
+    fn openai_provider_window_tracks_latest_compaction_item() {
+        let items = vec![
+            json!({ "type": "message", "role": "user" }),
+            json!({ "type": "compaction", "encrypted_content": "first" }),
+            json!({ "type": "message", "role": "user" }),
+            json!({ "type": "compaction", "encrypted_content": "second" }),
+        ];
+
+        assert_eq!(latest_openai_compaction_index(&items), Some(3));
     }
 }
