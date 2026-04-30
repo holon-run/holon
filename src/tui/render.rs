@@ -281,7 +281,8 @@ fn render_activity_text(app: &TuiApp) -> String {
             return "No in-flight activity.".into();
         }
         // During active turn, show the last cached text for this agent or empty
-        return app.activity_text_cache
+        return app
+            .activity_text_cache
             .borrow()
             .as_ref()
             .filter(|c| c.agent_id == agent_id)
@@ -291,9 +292,7 @@ fn render_activity_text(app: &TuiApp) -> String {
 
     let text = events
         .into_iter()
-        .map(|event| {
-            format_activity_event(event)
-        })
+        .map(|event| format_activity_event(event))
         .collect::<Vec<_>>()
         .join("\n");
     if !text.is_empty() {
