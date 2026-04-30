@@ -51,9 +51,17 @@ inputs:
     required: false
     default: ''
   github_token:
-    description: GitHub token. Defaults to github.token.
+    description: Explicit GitHub token override. Defaults to Holonbot broker token when available, then github.token.
     required: false
     default: ''
+  holonbot_broker_url:
+    description: Holonbot token broker URL. Leave empty to skip OIDC broker exchange.
+    required: false
+    default: https://bot.holon.run/api/exchange-token
+  holonbot_oidc_audience:
+    description: OIDC audience for Holonbot token broker exchange.
+    required: false
+    default: holon-token-broker
   version:
     description: Holon release version to download when build_from_source is false.
     required: false
@@ -153,7 +161,87 @@ runs:
         mkdir -p "$RUNNER_TEMP/holon/bin"
         curl -fsSL "https://github.com/holon-run/holon/releases/$release_path/holon-$platform-$arch.tar.gz" |
           tar -xz -C "$RUNNER_TEMP/holon/bin"
-        chmod +x "$RUNNER_TEMP/holon/bin/holon"
+        if [ -f "$RUNNER_TEMP/holon/bin/holon" ]; then
+          chmod +x "$RUNNER_TEMP/holon/bin/holon"
+        elif [ -f "$RUNNER_TEMP/holon/bin/holon-$platform-$arch" ]; then
+          mv "$RUNNER_TEMP/holon/bin/holon-$platform-$arch" "$RUNNER_TEMP/holon/bin/holon"
+          chmod +x "$RUNNER_TEMP/holon/bin/holon"
+        else
+          echo "::error::Failed to find holon binary after extracting release asset."
+          ls -la "$RUNNER_TEMP/holon/bin"
+          exit 1
+        fi
+
+    - name: Resolve GitHub token
+      id: github-token
+      shell: bash
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+        HOLONBOT_BROKER_URL: ${{ inputs.holonbot_broker_url }}
+        HOLONBOT_OIDC_AUDIENCE: ${{ inputs.holonbot_oidc_audience }}
+        GITHUB_TOKEN_FALLBACK: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        if [ -n "$INPUT_GITHUB_TOKEN" ]; then
+          echo "Using explicit github_token input."
+          echo "::add-mask::$INPUT_GITHUB_TOKEN"
+          {
+            echo "token=$INPUT_GITHUB_TOKEN"
+            echo "actor_source=explicit"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] && [ -n "$HOLONBOT_BROKER_URL" ]; then
+          echo "Fetching GitHub Actions OIDC token for Holonbot broker exchange."
+          oidc_url="$ACTIONS_ID_TOKEN_REQUEST_URL"
+          if [ -n "$HOLONBOT_OIDC_AUDIENCE" ]; then
+            if [[ "$oidc_url" == *\?* ]]; then
+              oidc_url="${oidc_url}&audience=${HOLONBOT_OIDC_AUDIENCE}"
+            else
+              oidc_url="${oidc_url}?audience=${HOLONBOT_OIDC_AUDIENCE}"
+            fi
+          fi
+
+          oidc_response="$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$oidc_url" || true)"
+          oidc_token="$(printf '%s' "$oidc_response" | jq -r '.value // empty' 2>/dev/null || true)"
+          if [ -n "$oidc_token" ] && [ "$oidc_token" != "null" ]; then
+            broker_response="$(curl -sS -X POST "$HOLONBOT_BROKER_URL" \
+              -H "Authorization: Bearer $oidc_token" \
+              -H "Content-Type: application/json" || true)"
+            bot_token="$(printf '%s' "$broker_response" | jq -r '.token // empty' 2>/dev/null || true)"
+            if [ -n "$bot_token" ] && [ "$bot_token" != "null" ]; then
+              echo "Successfully obtained Holonbot token from broker."
+              echo "::add-mask::$bot_token"
+              {
+                echo "token=$bot_token"
+                echo "actor_login=holonbot[bot]"
+                echo "actor_type=App"
+                echo "actor_app_slug=holonbot"
+                echo "actor_source=token"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            broker_error="$(printf '%s' "$broker_response" | jq -r '.error // empty' 2>/dev/null || true)"
+            broker_message="$(printf '%s' "$broker_response" | jq -r '.message // empty' 2>/dev/null || true)"
+            echo "::warning title=Holonbot Auth::Token broker exchange failed: ${broker_error:-unknown error} ${broker_message:-}"
+          else
+            echo "::warning title=Holonbot Auth::Failed to fetch OIDC token from GitHub Actions runtime."
+          fi
+        else
+          echo "Skipping Holonbot token exchange: id-token permission is unavailable or holonbot_broker_url is empty."
+        fi
+
+        echo "Falling back to github.token."
+        echo "::add-mask::$GITHUB_TOKEN_FALLBACK"
+        {
+          echo "token=$GITHUB_TOKEN_FALLBACK"
+          echo "actor_login=github-actions[bot]"
+          echo "actor_type=App"
+          echo "actor_app_slug=github-actions"
+          echo "actor_source=token"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Run Holon solve
       shell: bash
@@ -174,12 +262,17 @@ runs:
         ANTHROPIC_BASE_URL_INPUT: ${{ inputs.anthropic_base_url }}
         OPENAI_API_KEY_INPUT: ${{ inputs.openai_api_key }}
         OPENAI_BASE_URL_INPUT: ${{ inputs.openai_base_url }}
-        GITHUB_TOKEN_INPUT: ${{ inputs.github_token || github.token }}
+        GITHUB_TOKEN_INPUT: ${{ steps.github-token.outputs.token }}
+        HOLON_ACTOR_LOGIN: ${{ steps.github-token.outputs.actor_login }}
+        HOLON_ACTOR_TYPE: ${{ steps.github-token.outputs.actor_type }}
+        HOLON_ACTOR_APP_SLUG: ${{ steps.github-token.outputs.actor_app_slug }}
+        HOLON_ACTOR_SOURCE: ${{ steps.github-token.outputs.actor_source }}
       run: |
         set -euo pipefail
         export PATH="$RUNNER_TEMP/holon/bin:$PATH"
         export GITHUB_TOKEN="$GITHUB_TOKEN_INPUT"
         export GH_TOKEN="$GITHUB_TOKEN_INPUT"
+        export HOLON_GITHUB_TOKEN="$GITHUB_TOKEN_INPUT"
         if [ -n "$ANTHROPIC_AUTH_TOKEN_INPUT" ]; then
           export ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN_INPUT"
         fi
