@@ -504,15 +504,18 @@ impl TuiApp {
                 self.slash_menu_selected = 0;
                 self.slash_menu_dismissed_for = None;
             }
-            _ => match edit_buffer(key, &mut self.composer) {
-                Some(BufferAction::Submit) => self.submit_prompt_buffer().await?,
-                Some(BufferAction::Cancel) => {
-                    self.composer.clear();
-                    self.slash_menu_selected = 0;
-                    self.slash_menu_dismissed_for = None;
+            _ => {
+                let before = self.composer.as_str().to_string();
+                match edit_buffer(key, &mut self.composer) {
+                    Some(BufferAction::Submit) => self.submit_prompt_buffer().await?,
+                    Some(BufferAction::Cancel) => {
+                        self.composer.clear();
+                        self.slash_menu_selected = 0;
+                        self.slash_menu_dismissed_for = None;
+                    }
+                    None => self.sync_slash_menu_after_edit(before != self.composer.as_str()),
                 }
-                None => self.sync_slash_menu_after_edit(),
-            },
+            }
         }
 
         Ok(())
@@ -579,8 +582,10 @@ impl TuiApp {
         slash_menu_specs(self.composer.as_str())
     }
 
-    fn sync_slash_menu_after_edit(&mut self) {
-        self.slash_menu_dismissed_for = None;
+    fn sync_slash_menu_after_edit(&mut self, buffer_changed: bool) {
+        if buffer_changed {
+            self.slash_menu_dismissed_for = None;
+        }
         let len = slash_menu_specs(self.composer.as_str()).len();
         if len == 0 {
             self.slash_menu_selected = 0;

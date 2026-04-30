@@ -1315,6 +1315,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slash_menu_cursor_movement_preserves_dismissal() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/mo");
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.composer.as_str(), "/mo");
+        assert_eq!(app.slash_menu_dismissed_for.as_deref(), Some("/mo"));
+    }
+
+    #[tokio::test]
     async fn slash_debug_prompt_opens_overlay() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(

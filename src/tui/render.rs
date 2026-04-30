@@ -388,7 +388,10 @@ fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
     }
 
     let buffer = app.composer.as_str();
-    if !buffer.trim_start().starts_with('/') || buffer.trim_start().starts_with("//") {
+    if buffer.contains('\n')
+        || !buffer.trim_start().starts_with('/')
+        || buffer.trim_start().starts_with("//")
+    {
         return Vec::new();
     }
     let specs = slash_menu_specs(buffer);
