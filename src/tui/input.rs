@@ -20,9 +20,9 @@ enum ComposerSubmission {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SlashCommandSpec {
-    name: &'static str,
-    description: &'static str,
+pub(super) struct SlashCommandSpec {
+    pub(super) name: &'static str,
+    pub(super) description: &'static str,
     command: SlashCommand,
 }
 
@@ -81,6 +81,21 @@ fn slash_command_spec(command: &str) -> Option<SlashCommandSpec> {
         .find(|spec| spec.name == command)
 }
 
+pub(super) fn slash_menu_specs(buffer: &str) -> Vec<SlashCommandSpec> {
+    let trimmed = buffer.trim_start();
+    if !trimmed.starts_with('/') || trimmed.starts_with("//") || buffer.contains('\n') {
+        return Vec::new();
+    }
+
+    let token = trimmed.split_whitespace().next().unwrap_or("/");
+    let query = token.trim_start_matches('/');
+    SLASH_COMMAND_SPECS
+        .iter()
+        .filter(|spec| query.is_empty() || spec.name[1..].starts_with(query))
+        .copied()
+        .collect()
+}
+
 fn parse_composer_submission(buffer: &str) -> Result<Option<ComposerSubmission>> {
     let text = buffer.trim().to_string();
     if text.is_empty() {
@@ -116,21 +131,19 @@ fn parse_composer_submission(buffer: &str) -> Result<Option<ComposerSubmission>>
     Ok(Some(ComposerSubmission::Slash(slash_command)))
 }
 
-pub(super) fn slash_prompt_lines(buffer: &str) -> Option<Vec<String>> {
-    let trimmed = buffer.trim_start();
-    if !trimmed.starts_with('/') || trimmed.starts_with("//") || buffer.contains('\n') {
+#[cfg(test)]
+fn slash_prompt_lines(buffer: &str) -> Option<Vec<String>> {
+    if buffer.trim_start().starts_with("//") || buffer.contains('\n') {
         return None;
     }
 
-    let token = trimmed.split_whitespace().next().unwrap_or("/");
-    let query = token.trim_start_matches('/');
-    let matches = SLASH_COMMAND_SPECS
-        .iter()
-        .filter(|spec| query.is_empty() || spec.name[1..].starts_with(query))
-        .copied()
-        .collect::<Vec<_>>();
+    let token = buffer.trim_start().split_whitespace().next().unwrap_or("/");
+    let matches = slash_menu_specs(buffer);
 
     if matches.is_empty() {
+        if !token.starts_with('/') {
+            return None;
+        }
         return Some(vec![format!(
             "Slash: no command matches {token}. Use /help for the full list."
         )]);
@@ -439,6 +452,10 @@ impl TuiApp {
     }
 
     async fn handle_main_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.handle_slash_menu_key(key).await? {
+            return Ok(());
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('a') => {
@@ -484,15 +501,110 @@ impl TuiApp {
             }
             KeyCode::Esc => {
                 self.composer.clear();
+                self.slash_menu_selected = 0;
+                self.slash_menu_dismissed_for = None;
             }
-            _ => match edit_buffer(key, &mut self.composer) {
-                Some(BufferAction::Submit) => self.submit_prompt_buffer().await?,
-                Some(BufferAction::Cancel) => self.composer.clear(),
-                None => {}
-            },
+            _ => {
+                let before = self.composer.as_str().to_string();
+                match edit_buffer(key, &mut self.composer) {
+                    Some(BufferAction::Submit) => self.submit_prompt_buffer().await?,
+                    Some(BufferAction::Cancel) => {
+                        self.composer.clear();
+                        self.slash_menu_selected = 0;
+                        self.slash_menu_dismissed_for = None;
+                    }
+                    None => self.sync_slash_menu_after_edit(before != self.composer.as_str()),
+                }
+            }
         }
 
         Ok(())
+    }
+
+    async fn handle_slash_menu_key(&mut self, key: KeyEvent) -> Result<bool> {
+        if !self.is_slash_menu_visible() {
+            return Ok(false);
+        }
+
+        let specs = self.active_slash_menu_specs();
+
+        match key.code {
+            KeyCode::Esc => {
+                self.slash_menu_dismissed_for = Some(self.composer.as_str().to_string());
+                self.slash_menu_selected = 0;
+                Ok(true)
+            }
+            _ if specs.is_empty() => Ok(false),
+            KeyCode::Up | KeyCode::Char('p')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    || matches!(key.code, KeyCode::Up) =>
+            {
+                self.slash_menu_selected = self.slash_menu_selected.saturating_sub(1);
+                Ok(true)
+            }
+            KeyCode::Down | KeyCode::Char('n')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    || matches!(key.code, KeyCode::Down) =>
+            {
+                self.slash_menu_selected =
+                    (self.slash_menu_selected + 1).min(specs.len().saturating_sub(1));
+                Ok(true)
+            }
+            KeyCode::Tab => {
+                let selected = self.slash_menu_selected.min(specs.len().saturating_sub(1));
+                self.composer = ComposerState::from(specs[selected].name);
+                self.slash_menu_selected = selected;
+                self.slash_menu_dismissed_for = None;
+                Ok(true)
+            }
+            KeyCode::Enter => {
+                let selected = self.slash_menu_selected.min(specs.len().saturating_sub(1));
+                let command = specs[selected].command;
+                self.execute_slash_command(command).await?;
+                self.composer.clear();
+                self.slash_menu_selected = 0;
+                self.slash_menu_dismissed_for = None;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn is_slash_menu_visible(&self) -> bool {
+        if self.overlay != OverlayState::None {
+            return false;
+        }
+        if self
+            .slash_menu_dismissed_for
+            .as_deref()
+            .is_some_and(|dismissed| dismissed == self.composer.as_str())
+        {
+            return false;
+        }
+
+        let buffer = self.composer.as_str();
+        !buffer.contains('\n')
+            && buffer.trim_start().starts_with('/')
+            && !buffer.trim_start().starts_with("//")
+    }
+
+    fn active_slash_menu_specs(&self) -> Vec<SlashCommandSpec> {
+        if !self.is_slash_menu_visible() {
+            return Vec::new();
+        }
+        slash_menu_specs(self.composer.as_str())
+    }
+
+    fn sync_slash_menu_after_edit(&mut self, buffer_changed: bool) {
+        if buffer_changed {
+            self.slash_menu_dismissed_for = None;
+        }
+        let len = slash_menu_specs(self.composer.as_str()).len();
+        if len == 0 {
+            self.slash_menu_selected = 0;
+        } else {
+            self.slash_menu_selected = self.slash_menu_selected.min(len - 1);
+        }
     }
 
     async fn handle_agents_overlay_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -620,7 +732,10 @@ fn adjust_scroll_for_key(scroll: u16, code: KeyCode) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_composer_submission, slash_prompt_lines, ComposerSubmission, SlashCommand};
+    use super::{
+        parse_composer_submission, slash_menu_specs, slash_prompt_lines, ComposerSubmission,
+        SlashCommand,
+    };
 
     #[test]
     fn parses_plain_chat_submission() {
@@ -698,6 +813,11 @@ mod tests {
     #[test]
     fn slash_prompt_ignores_escaped_slash_chat() {
         assert!(slash_prompt_lines("//hello").is_none());
+    }
+
+    #[test]
+    fn slash_menu_ignores_multiline_input() {
+        assert!(slash_menu_specs("/mo\nextra").is_empty());
     }
 
     #[test]
