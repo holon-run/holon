@@ -1,12 +1,12 @@
 use super::overlay::draw_overlay;
 use super::*;
-use crate::tui::input::slash_prompt_lines;
+use crate::tui::input::slash_menu_specs;
 use unicode_width::UnicodeWidthStr;
 
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
     let area = frame.area();
-    let slash_hint = slash_prompt_lines(app.composer.as_str());
-    let prompt_height = prompt_pane_height(app.composer.as_str(), slash_hint.as_deref());
+    let slash_menu = slash_menu_lines(app);
+    let prompt_height = prompt_pane_height(app.composer.as_str(), slash_menu.len());
     let status_height = status_bar_height(&app.status_line);
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -22,7 +22,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
     draw_header(frame, outer[0], app);
     draw_main_panels(frame, outer[1], app);
     draw_activity_pane(frame, outer[2], app);
-    draw_prompt_pane(frame, outer[3], app, slash_hint.as_deref());
+    draw_prompt_pane(frame, outer[3], app, &slash_menu);
     draw_status_bar(frame, outer[4], app);
     draw_overlay(frame, app);
 }
@@ -84,13 +84,8 @@ fn draw_activity_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_prompt_pane(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    app: &TuiApp,
-    slash_hint: Option<&[String]>,
-) {
-    let paragraph = Paragraph::new(render_prompt_text(app.composer.as_str(), slash_hint))
+fn draw_prompt_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_menu: &[Line<'static>]) {
+    let paragraph = Paragraph::new(render_prompt_text(app.composer.as_str(), slash_menu))
         .block(Block::default().borders(Borders::ALL))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
@@ -100,7 +95,7 @@ fn draw_prompt_pane(
             area,
             app.composer.as_str(),
             app.composer.cursor(),
-            slash_hint.map(|lines| lines.len() as u16).unwrap_or(0),
+            slash_menu.len() as u16,
         );
         frame.set_cursor_position(ratatui::layout::Position { x, y });
     }
@@ -108,6 +103,9 @@ fn draw_prompt_pane(
 
 fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
     let help = match app.overlay {
+        OverlayState::None if !slash_menu_lines(app).is_empty() => {
+            "Slash: Up/Down select  Tab complete  Enter run  Esc close"
+        }
         OverlayState::None => {
             "/help commands  Left/Right/Home/End edit  Up/Down scroll  Ctrl+A agents  Ctrl+E events  Ctrl+J tasks  Ctrl+C quit"
         }
@@ -312,14 +310,13 @@ fn render_activity_text(app: &TuiApp) -> String {
     }
 }
 
-fn prompt_pane_height(buffer: &str, slash_hint: Option<&[String]>) -> u16 {
+fn prompt_pane_height(buffer: &str, slash_menu_rows: usize) -> u16 {
     let mut prompt_lines = buffer.lines().count();
     if buffer.is_empty() || buffer.ends_with('\n') {
         prompt_lines += 1;
     }
     let prompt_lines = prompt_lines.max(1) as u16;
-    let slash_hint_lines = slash_hint.map(|lines| lines.len() as u16).unwrap_or(0);
-    (prompt_lines + slash_hint_lines + 2).clamp(3, 11)
+    (prompt_lines + slash_menu_rows as u16 + 2).clamp(3, 12)
 }
 
 fn status_bar_height(status_line: &str) -> u16 {
@@ -358,12 +355,11 @@ fn render_prompt_buffer(buffer: &str) -> String {
     rendered
 }
 
-fn render_prompt_text(buffer: &str, slash_hint: Option<&[String]>) -> Text<'static> {
-    if let Some(lines) = slash_hint.filter(|lines| !lines.is_empty()) {
-        let mut rendered = lines.join("\n");
-        rendered.push('\n');
-        rendered.push_str(&render_prompt_buffer(buffer));
-        return Text::from(rendered);
+fn render_prompt_text(buffer: &str, slash_menu: &[Line<'static>]) -> Text<'static> {
+    if !slash_menu.is_empty() {
+        let mut lines = slash_menu.to_vec();
+        lines.push(Line::from(render_prompt_buffer(buffer)));
+        return Text::from(lines);
     }
 
     if !buffer.is_empty() {
@@ -377,6 +373,55 @@ fn render_prompt_text(buffer: &str, slash_hint: Option<&[String]>) -> Text<'stat
             Style::default().add_modifier(Modifier::DIM),
         ),
     ]))
+}
+
+fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
+    if app.overlay != OverlayState::None {
+        return Vec::new();
+    }
+    if app
+        .slash_menu_dismissed_for
+        .as_deref()
+        .is_some_and(|dismissed| dismissed == app.composer.as_str())
+    {
+        return Vec::new();
+    }
+
+    let buffer = app.composer.as_str();
+    if !buffer.trim_start().starts_with('/') || buffer.trim_start().starts_with("//") {
+        return Vec::new();
+    }
+    let specs = slash_menu_specs(buffer);
+    if specs.is_empty() {
+        let token = buffer.trim_start().split_whitespace().next().unwrap_or("/");
+        return vec![Line::from(vec![
+            Span::styled("  ", Style::default().add_modifier(Modifier::DIM)),
+            Span::styled(
+                format!("no command matches {token}"),
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+        ])];
+    }
+
+    specs
+        .iter()
+        .take(8)
+        .enumerate()
+        .map(|(index, spec)| {
+            let selected = index == app.slash_menu_selected.min(specs.len().saturating_sub(1));
+            let style = if selected {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            let prefix = if selected { "> " } else { "  " };
+            Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(format!("{:<14}", spec.name), style),
+                Span::styled(spec.description, style.add_modifier(Modifier::DIM)),
+            ])
+        })
+        .collect()
 }
 
 fn prompt_cursor_position(area: Rect, buffer: &str, cursor: usize, hint_rows: u16) -> (u16, u16) {
@@ -709,7 +754,7 @@ mod tests {
         SkillsRuntimeView, TokenUsage,
     };
     use chrono::Utc;
-    use ratatui::prelude::Rect;
+    use ratatui::prelude::{Line, Rect};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -847,7 +892,7 @@ mod tests {
 
     #[test]
     fn empty_prompt_renders_dim_placeholder() {
-        let rendered = render_prompt_text("", None);
+        let rendered = render_prompt_text("", &[]);
         let line = rendered.lines.first().expect("placeholder line");
         let text: String = line
             .spans
@@ -949,13 +994,13 @@ mod tests {
     }
 
     #[test]
-    fn slash_hint_renders_above_prompt_buffer() {
+    fn slash_menu_renders_above_prompt_buffer() {
         let rendered = render_prompt_text(
             "/de",
-            Some(&[
-                "Slash: >/debug-prompt".to_string(),
-                "Best: /debug-prompt open debug prompt dialog".to_string(),
-            ]),
+            &[
+                Line::from("  /debug-prompt open debug prompt dialog"),
+                Line::from("  /help         show slash command help"),
+            ],
         );
         let joined = rendered
             .lines
@@ -968,12 +1013,12 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(joined.contains("Slash: >/debug-prompt"));
+        assert!(joined.contains("/debug-prompt open debug prompt dialog"));
         assert!(joined.contains("> /de"));
     }
 
     #[test]
-    fn prompt_cursor_offsets_for_slash_hint_rows() {
+    fn prompt_cursor_offsets_for_slash_menu_rows() {
         let area = Rect::new(10, 5, 20, 8);
         assert_eq!(prompt_cursor_position(area, "/de", 3, 2), (16, 9));
     }

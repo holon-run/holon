@@ -156,6 +156,8 @@ struct TuiApp {
     chat_scroll: ChatScrollState,
     chat_max_scroll: u16,
     composer: ComposerState,
+    slash_menu_selected: usize,
+    slash_menu_dismissed_for: Option<String>,
     overlay: OverlayState,
     last_refresh_at: Option<DateTime<Local>>,
     last_event_at: Option<DateTime<Local>>,
@@ -216,6 +218,8 @@ impl TuiApp {
             chat_scroll: ChatScrollState::new(),
             chat_max_scroll: 0,
             composer: ComposerState::new(),
+            slash_menu_selected: 0,
+            slash_menu_dismissed_for: None,
             overlay: OverlayState::None,
             last_refresh_at: None,
             last_event_at: None,
@@ -1269,6 +1273,45 @@ mod tests {
             .unwrap();
         assert_eq!(app.overlay, OverlayState::None);
         assert_eq!(app.composer.as_str(), "draft:");
+    }
+
+    #[tokio::test]
+    async fn slash_menu_navigation_and_tab_complete_selected_command() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/");
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.slash_menu_selected, 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.composer.as_str(), "/agents");
+        assert_eq!(app.overlay, OverlayState::None);
+    }
+
+    #[tokio::test]
+    async fn slash_menu_esc_dismisses_without_clearing_prompt() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/mo");
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.composer.as_str(), "/mo");
+        assert_eq!(app.overlay, OverlayState::None);
+        assert_eq!(app.slash_menu_dismissed_for.as_deref(), Some("/mo"));
     }
 
     #[tokio::test]
