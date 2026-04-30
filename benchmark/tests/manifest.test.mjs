@@ -923,6 +923,59 @@ test("summarizeHolonTokenOptimization reports OpenAI incremental continuation hi
   assert.deepEqual(diagnostics.summary.incremental_fallback_reasons, {});
 });
 
+test("summarizeHolonTokenOptimization reports OpenAI remote compaction", () => {
+  const diagnostics = summarizeHolonTokenOptimization(
+    [
+      {
+        kind: "provider_round_completed",
+        data: {
+          round: 3,
+          input_tokens: 900,
+          output_tokens: 80,
+          provider_request_diagnostics: {
+            request_lowering_mode: "provider_window_compacted",
+            openai_remote_compaction: {
+              status: "compacted",
+              trigger_reason: "provider_window_item_threshold",
+              input_items: 12,
+              output_items: 3,
+              compaction_items: 2,
+              latest_compaction_index: 2,
+              encrypted_content_hashes: ["hash-a", "hash-b"],
+              encrypted_content_bytes: [8, 9],
+              request_shape_hash: "shape-hash",
+              continuation_generation: 4
+            }
+          },
+          provider_attempt_timeline: {
+            attempts: [
+              {
+                provider: "openai",
+                model_ref: "openai/gpt-5.4",
+                outcome: "succeeded"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    [],
+    {
+      modelRef: "openai/gpt-5.4"
+    }
+  );
+
+  assert.equal(diagnostics.rounds[0].request_lowering_mode, "provider_window_compacted");
+  assert.equal(diagnostics.rounds[0].openai_remote_compaction.status, "compacted");
+  assert.equal(diagnostics.rounds[0].openai_remote_compaction.input_items, 12);
+  assert.equal(diagnostics.summary.request_lowering_modes.provider_window_compacted, 1);
+  assert.equal(diagnostics.summary.openai_remote_compaction_rounds, 1);
+  assert.equal(diagnostics.summary.openai_remote_compaction_statuses.compacted, 1);
+  assert.equal(diagnostics.summary.openai_remote_compaction_input_items, 12);
+  assert.equal(diagnostics.summary.openai_remote_compaction_output_items, 3);
+  assert.equal(diagnostics.summary.openai_remote_compaction_items, 2);
+});
+
 test("summarizeHolonTokenOptimization reports Anthropic context management usage", () => {
   const diagnostics = summarizeHolonTokenOptimization([
     {

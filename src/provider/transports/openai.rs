@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::{Client, Response};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -12,8 +13,9 @@ use crate::{
     config::{AppConfig, CredentialKind, CredentialSource, ProviderId, ProviderRuntimeConfig},
     provider::{
         emitted_tool_json_schema, AgentProvider, ConversationMessage, ModelBlock,
-        ProviderCacheUsage, ProviderIncrementalContinuationDiagnostics, ProviderPromptFrame,
-        ProviderRequestDiagnostics, ProviderTurnRequest, ProviderTurnResponse, ToolSchemaContract,
+        ProviderCacheUsage, ProviderIncrementalContinuationDiagnostics,
+        ProviderOpenAiRemoteCompactionDiagnostics, ProviderPromptFrame, ProviderRequestDiagnostics,
+        ProviderTurnRequest, ProviderTurnResponse, ToolSchemaContract,
     },
 };
 
@@ -61,9 +63,12 @@ pub(crate) enum OpenAiResponsesTransportContract {
     ChatCompletions,
 }
 
+const OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS: usize = 8;
+
 #[derive(Debug, Default)]
 struct OpenAiContinuationState {
-    snapshots: HashMap<OpenAiContinuationScope, OpenAiContinuationSnapshot>,
+    windows: HashMap<OpenAiContinuationScope, OpenAiProviderWindow>,
+    next_generation: u64,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -73,11 +78,13 @@ struct OpenAiContinuationScope {
 }
 
 #[derive(Debug, Clone)]
-struct OpenAiContinuationSnapshot {
-    response_id: String,
+struct OpenAiProviderWindow {
+    response_id: Option<String>,
     request_shape: OpenAiRequestShape,
-    full_input: Vec<Value>,
-    response_output: Vec<Value>,
+    items: Vec<Value>,
+    append_match_items: Vec<Value>,
+    latest_compaction_index: Option<usize>,
+    generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,8 +98,22 @@ struct OpenAiRequestPlan {
     body: Value,
     scope: Option<OpenAiContinuationScope>,
     full_input: Vec<Value>,
+    provider_input: Vec<Value>,
     request_shape: OpenAiRequestShape,
     diagnostics: ProviderRequestDiagnostics,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OpenAiContinuationMismatchDiagnostics {
+    expected_prefix_items: usize,
+    first_mismatch_index: Option<usize>,
+    previous_item_type: Option<String>,
+    current_item_type: Option<String>,
+    previous_item_id: Option<String>,
+    current_item_id: Option<String>,
+    previous_item_hash: Option<String>,
+    current_item_hash: Option<String>,
+    request_shape_hash: Option<String>,
 }
 
 #[derive(Debug)]
@@ -237,16 +258,32 @@ impl AgentProvider for OpenAiProvider {
             OpenAiResponsesTransportContract::StandardJson,
             ToolSchemaContract::Relaxed,
         )?;
-        let plan = plan_openai_responses_request(body, &request, &self.continuation)?;
-        let sent_diagnostics = plan.diagnostics.clone();
+        let mut plan = plan_openai_responses_request(body, &request, &self.continuation)?;
+        let mut sent_diagnostics = plan.diagnostics.clone();
+        let plan_scope = plan.scope.clone();
+        let plan_request_shape = plan.request_shape.clone();
+        let headers = self
+            .api_key
+            .as_ref()
+            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
+            .unwrap_or_default();
+        if let Some(remote_compaction) = maybe_compact_openai_request_plan(
+            &self.continuation,
+            &mut plan,
+            &self.client,
+            format!("{}/responses/compact", self.base_url),
+            headers.clone(),
+        )
+        .await
+        {
+            sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
+            sent_diagnostics.request_lowering_mode = plan.diagnostics.request_lowering_mode.clone();
+        }
         let parsed = match send_openai_responses_request(
             &self.client,
             format!("{}/responses", self.base_url),
             plan.body,
-            self.api_key
-                .as_ref()
-                .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-                .unwrap_or_default(),
+            headers.clone(),
         )
         .await
         {
@@ -258,11 +295,23 @@ impl AgentProvider for OpenAiProvider {
         };
         update_openai_continuation(
             &self.continuation,
-            plan.scope,
-            plan.request_shape,
+            plan_scope.clone(),
+            plan_request_shape.clone(),
             plan.full_input,
+            plan.provider_input,
             &parsed,
         );
+        if sent_diagnostics.openai_remote_compaction.is_none() {
+            sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
+                &self.continuation,
+                plan_scope.as_ref(),
+                &plan_request_shape,
+                &self.client,
+                format!("{}/responses/compact", self.base_url),
+                headers,
+            )
+            .await;
+        }
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
@@ -291,21 +340,36 @@ impl AgentProvider for OpenAiCodexProvider {
             OpenAiResponsesTransportContract::CodexStreaming,
             ToolSchemaContract::Relaxed,
         )?;
-        let plan = plan_openai_responses_request(body, &request, &self.continuation)?;
-        let sent_diagnostics = plan.diagnostics.clone();
+        let mut plan = plan_openai_responses_request(body, &request, &self.continuation)?;
+        let mut sent_diagnostics = plan.diagnostics.clone();
+        let plan_scope = plan.scope.clone();
+        let plan_request_shape = plan.request_shape.clone();
+        let headers = vec![
+            (
+                "authorization",
+                format!("Bearer {}", credential.access_token),
+            ),
+            ("chatgpt-account-id", credential.account_id.clone()),
+            ("OpenAI-Beta", "responses=experimental".to_string()),
+            ("originator", self.originator.clone()),
+        ];
+        if let Some(remote_compaction) = maybe_compact_openai_request_plan(
+            &self.continuation,
+            &mut plan,
+            &self.client,
+            format!("{}/responses/compact", self.base_url),
+            headers.clone(),
+        )
+        .await
+        {
+            sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
+            sent_diagnostics.request_lowering_mode = plan.diagnostics.request_lowering_mode.clone();
+        }
         let parsed = match send_openai_responses_streaming_request(
             &self.client,
             format!("{}/codex/responses", self.base_url),
             plan.body,
-            vec![
-                (
-                    "authorization",
-                    format!("Bearer {}", credential.access_token),
-                ),
-                ("chatgpt-account-id", credential.account_id),
-                ("OpenAI-Beta", "responses=experimental".to_string()),
-                ("originator", self.originator.clone()),
-            ],
+            headers.clone(),
         )
         .await
         {
@@ -317,11 +381,23 @@ impl AgentProvider for OpenAiCodexProvider {
         };
         update_openai_continuation(
             &self.continuation,
-            plan.scope,
-            plan.request_shape,
+            plan_scope.clone(),
+            plan_request_shape.clone(),
             plan.full_input,
+            plan.provider_input,
             &parsed,
         );
+        if sent_diagnostics.openai_remote_compaction.is_none() {
+            sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
+                &self.continuation,
+                plan_scope.as_ref(),
+                &plan_request_shape,
+                &self.client,
+                format!("{}/responses/compact", self.base_url),
+                headers,
+            )
+            .await;
+        }
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
@@ -377,6 +453,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             plan.scope,
             plan.request_shape,
             plan.full_input,
+            plan.provider_input,
             &parsed,
         );
 
@@ -549,20 +626,22 @@ fn plan_chat_completion_request(
             OpenAiRequestPlan {
                 body: full_body,
                 scope,
-                full_input: full_messages,
+                full_input: full_messages.clone(),
+                provider_input: full_messages,
                 request_shape,
                 diagnostics: incremental_diagnostics(
                     "full_request",
                     "missing_continuation_scope",
                     None,
                     full_message_count,
+                    None,
                 ),
             },
         ));
     };
 
     let previous = lock_openai_continuation(continuation)
-        .snapshots
+        .windows
         .get(scope_ref)
         .cloned();
 
@@ -573,13 +652,15 @@ fn plan_chat_completion_request(
             OpenAiRequestPlan {
                 body: full_body,
                 scope,
-                full_input: full_messages,
+                full_input: full_messages.clone(),
+                provider_input: full_messages,
                 request_shape,
                 diagnostics: incremental_diagnostics(
                     "full_request",
                     "not_applicable_initial_request",
                     None,
                     full_message_count,
+                    None,
                 ),
             },
         ));
@@ -588,40 +669,52 @@ fn plan_chat_completion_request(
     // Check if request shape changed
     if previous.request_shape != request_shape {
         // Request changed - send full request
+        let request_shape_hash = request_shape_hash(&request_shape);
         return Ok((
             full_body.clone(),
             OpenAiRequestPlan {
                 body: full_body,
                 scope,
-                full_input: full_messages,
+                full_input: full_messages.clone(),
+                provider_input: full_messages,
                 request_shape,
                 diagnostics: incremental_diagnostics(
                     "full_request",
                     "request_shape_changed",
                     None,
                     full_message_count,
+                    Some(OpenAiContinuationMismatchDiagnostics {
+                        request_shape_hash: Some(request_shape_hash),
+                        ..OpenAiContinuationMismatchDiagnostics::default()
+                    }),
                 ),
             },
         ));
     }
 
     // Chat Completions continuation currently cannot safely reconstruct an
-    // assistant message from `previous.response_output` for prefix matching.
+    // assistant message from the provider window for prefix matching.
     // `full_messages` contains message objects, but `response_output` is not
     // guaranteed to store a comparable message value, so incremental
     // continuation would be unreliable here. Send the full request instead.
+    let request_shape_hash = request_shape_hash(&request_shape);
     return Ok((
         full_body.clone(),
         OpenAiRequestPlan {
             body: full_body,
             scope,
-            full_input: full_messages,
+            full_input: full_messages.clone(),
+            provider_input: full_messages,
             request_shape,
             diagnostics: incremental_diagnostics(
                 "full_request",
                 "chat_completions_incremental_continuation_unsupported",
                 None,
                 full_message_count,
+                Some(OpenAiContinuationMismatchDiagnostics {
+                    request_shape_hash: Some(request_shape_hash),
+                    ..OpenAiContinuationMismatchDiagnostics::default()
+                }),
             ),
         },
     ));
@@ -823,52 +916,63 @@ fn plan_openai_responses_request(
         return Ok(OpenAiRequestPlan {
             body,
             scope,
-            full_input,
+            full_input: full_input.clone(),
+            provider_input: full_input,
             request_shape,
             diagnostics: incremental_diagnostics(
                 "full_request",
                 "missing_continuation_scope",
                 None,
                 full_input_items,
+                None,
             ),
         });
     };
     let previous = lock_openai_continuation(continuation)
-        .snapshots
+        .windows
         .get(scope_ref)
         .cloned();
     let Some(previous) = previous else {
         return Ok(OpenAiRequestPlan {
             body,
             scope,
-            full_input,
+            full_input: full_input.clone(),
+            provider_input: full_input,
             request_shape,
             diagnostics: incremental_diagnostics(
                 "full_request",
                 "not_applicable_initial_request",
                 None,
                 full_input_items,
+                None,
             ),
         });
     };
 
     if previous.request_shape != request_shape {
+        let request_shape_hash = request_shape_hash(&request_shape);
         return Ok(OpenAiRequestPlan {
             body,
             scope,
-            full_input,
+            full_input: full_input.clone(),
+            provider_input: full_input,
             request_shape,
             diagnostics: incremental_diagnostics(
                 "full_request",
                 "request_shape_changed",
                 None,
                 full_input_items,
+                Some(OpenAiContinuationMismatchDiagnostics {
+                    request_shape_hash: Some(request_shape_hash),
+                    ..OpenAiContinuationMismatchDiagnostics::default()
+                }),
             ),
         });
     }
 
-    let mut expected_prefix = previous.full_input.clone();
-    expected_prefix.extend(previous.response_output.clone());
+    let expected_prefix = previous.append_match_items.clone();
+    let mismatch =
+        openai_continuation_mismatch_diagnostics(&expected_prefix, &full_input, &request_shape);
     if expected_prefix.is_empty()
         || full_input.len() <= expected_prefix.len()
         || !full_input.starts_with(&expected_prefix)
@@ -876,34 +980,61 @@ fn plan_openai_responses_request(
         return Ok(OpenAiRequestPlan {
             body,
             scope,
-            full_input,
+            full_input: full_input.clone(),
+            provider_input: full_input,
             request_shape,
             diagnostics: incremental_diagnostics(
                 "full_request",
                 "conversation_not_strict_append_only",
                 None,
                 full_input_items,
+                Some(mismatch),
             ),
         });
     }
 
     let incremental_input = full_input[expected_prefix.len()..].to_vec();
-    body["input"] = Value::Array(incremental_input.clone());
-    body["previous_response_id"] = Value::String(previous.response_id);
+    let has_response_id = previous.response_id.is_some();
+    let provider_input = if let Some(response_id) = previous.response_id {
+        body["input"] = Value::Array(incremental_input.clone());
+        body["previous_response_id"] = Value::String(response_id);
+        incremental_input.clone()
+    } else {
+        let mut provider_input = previous.items.clone();
+        provider_input.extend(incremental_input.clone());
+        body["input"] = Value::Array(provider_input.clone());
+        provider_input
+    };
+    let request_shape_hash = request_shape_hash(&request_shape);
     Ok(OpenAiRequestPlan {
         body,
         scope,
         full_input,
+        provider_input,
         request_shape,
         diagnostics: ProviderRequestDiagnostics {
-            request_lowering_mode: "incremental_continuation".into(),
+            request_lowering_mode: if has_response_id {
+                "incremental_continuation".into()
+            } else {
+                "provider_window_compacted".into()
+            },
             anthropic_cache: None,
             anthropic_context_management: None,
+            openai_remote_compaction: None,
             incremental_continuation: Some(ProviderIncrementalContinuationDiagnostics {
                 status: "hit".into(),
                 fallback_reason: None,
                 incremental_input_items: Some(incremental_input.len()),
                 full_input_items: Some(full_input_items),
+                expected_prefix_items: Some(expected_prefix.len()),
+                first_mismatch_index: None,
+                previous_item_type: None,
+                current_item_type: None,
+                previous_item_id: None,
+                current_item_id: None,
+                previous_item_hash: None,
+                current_item_hash: None,
+                request_shape_hash: Some(request_shape_hash),
             }),
         },
     })
@@ -932,21 +1063,141 @@ fn request_shape_without_input(body: &Value, request: &ProviderTurnRequest) -> O
     }
 }
 
+fn openai_continuation_mismatch_diagnostics(
+    expected_prefix: &[Value],
+    full_input: &[Value],
+    request_shape: &OpenAiRequestShape,
+) -> OpenAiContinuationMismatchDiagnostics {
+    let first_mismatch_index = expected_prefix
+        .iter()
+        .zip(full_input.iter())
+        .position(|(previous, current)| previous != current)
+        .or_else(|| {
+            (expected_prefix.len() != full_input.len())
+                .then_some(expected_prefix.len().min(full_input.len()))
+        });
+    let previous = first_mismatch_index.and_then(|index| expected_prefix.get(index));
+    let current = first_mismatch_index.and_then(|index| full_input.get(index));
+    OpenAiContinuationMismatchDiagnostics {
+        expected_prefix_items: expected_prefix.len(),
+        first_mismatch_index,
+        previous_item_type: previous.map(openai_item_type),
+        current_item_type: current.map(openai_item_type),
+        previous_item_id: previous.and_then(openai_item_stable_id),
+        current_item_id: current.and_then(openai_item_stable_id),
+        previous_item_hash: previous.map(openai_item_hash),
+        current_item_hash: current.map(openai_item_hash),
+        request_shape_hash: Some(request_shape_hash(request_shape)),
+    }
+}
+
+fn openai_item_type(item: &Value) -> String {
+    item.get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| match item {
+            Value::Object(_) => "object",
+            Value::Array(_) => "array",
+            Value::String(_) => "string",
+            Value::Number(_) => "number",
+            Value::Bool(_) => "bool",
+            Value::Null => "null",
+        })
+        .to_string()
+}
+
+fn openai_item_stable_id(item: &Value) -> Option<String> {
+    if let Some(id) = ["id", "call_id"]
+        .into_iter()
+        .find_map(|key| item.get(key).and_then(Value::as_str))
+    {
+        return Some(id.to_string());
+    }
+    item.get("role").and_then(Value::as_str).map(|role| {
+        let item_type = openai_item_type(item);
+        format!("{item_type}:{role}")
+    })
+}
+
+fn openai_item_hash(item: &Value) -> String {
+    sha256_hex(canonical_json(item).as_bytes())
+}
+
+fn latest_openai_compaction_index(items: &[Value]) -> Option<usize> {
+    items.iter().enumerate().rev().find_map(|(index, item)| {
+        (item.get("type").and_then(Value::as_str) == Some("compaction")).then_some(index)
+    })
+}
+
+fn request_shape_hash(request_shape: &OpenAiRequestShape) -> String {
+    let value = json!({
+        "wire_shape": request_shape.wire_shape,
+        "prompt_frame": request_shape.prompt_frame,
+    });
+    sha256_hex(canonical_json(&value).as_bytes())
+}
+
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into()),
+        Value::Array(values) => {
+            let items = values.iter().map(canonical_json).collect::<Vec<_>>();
+            format!("[{}]", items.join(","))
+        }
+        Value::Object(map) => {
+            let ordered = map
+                .iter()
+                .map(|(key, value)| (key, value))
+                .collect::<BTreeMap<_, _>>();
+            let items = ordered
+                .into_iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into()),
+                        canonical_json(value)
+                    )
+                })
+                .collect::<Vec<_>>();
+            format!("{{{}}}", items.join(","))
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{:02x}", byte)).collect()
+}
+
 fn incremental_diagnostics(
     request_lowering_mode: &str,
     fallback_reason: &str,
     incremental_input_items: Option<usize>,
     full_input_items: usize,
+    mismatch: Option<OpenAiContinuationMismatchDiagnostics>,
 ) -> ProviderRequestDiagnostics {
+    let mismatch = mismatch.unwrap_or_default();
     ProviderRequestDiagnostics {
         request_lowering_mode: request_lowering_mode.into(),
         anthropic_cache: None,
         anthropic_context_management: None,
+        openai_remote_compaction: None,
         incremental_continuation: Some(ProviderIncrementalContinuationDiagnostics {
             status: "fallback_full_request".into(),
             fallback_reason: Some(fallback_reason.into()),
             incremental_input_items,
             full_input_items: Some(full_input_items),
+            expected_prefix_items: Some(mismatch.expected_prefix_items),
+            first_mismatch_index: mismatch.first_mismatch_index,
+            previous_item_type: mismatch.previous_item_type,
+            current_item_type: mismatch.current_item_type,
+            previous_item_id: mismatch.previous_item_id,
+            current_item_id: mismatch.current_item_id,
+            previous_item_hash: mismatch.previous_item_hash,
+            current_item_hash: mismatch.current_item_hash,
+            request_shape_hash: mismatch.request_shape_hash,
         }),
     }
 }
@@ -956,26 +1207,430 @@ fn update_openai_continuation(
     scope: Option<OpenAiContinuationScope>,
     request_shape: OpenAiRequestShape,
     full_input: Vec<Value>,
+    provider_input: Vec<Value>,
     parsed: &ParsedOpenAiResponse,
 ) {
     let Some(scope) = scope else {
         return;
     };
+    let mut state = lock_openai_continuation(continuation);
     let next = match (parsed.response_id.as_ref(), parsed.output_items.is_empty()) {
-        (Some(response_id), false) => Some(OpenAiContinuationSnapshot {
-            response_id: response_id.clone(),
-            request_shape,
-            full_input,
-            response_output: parsed.output_items.clone(),
-        }),
+        (Some(response_id), false) => {
+            state.next_generation = state.next_generation.saturating_add(1);
+            let mut items = provider_input;
+            items.extend(parsed.output_items.clone());
+            let mut append_match_items = full_input;
+            append_match_items.extend(parsed.output_items.clone());
+            Some(OpenAiProviderWindow {
+                response_id: Some(response_id.clone()),
+                request_shape,
+                latest_compaction_index: latest_openai_compaction_index(&items),
+                items,
+                append_match_items,
+                generation: state.next_generation,
+            })
+        }
         _ => None,
     };
-    let mut state = lock_openai_continuation(continuation);
     if let Some(next) = next {
-        state.snapshots.insert(scope, next);
+        state.windows.insert(scope, next);
     } else {
-        state.snapshots.remove(&scope);
+        state.windows.remove(&scope);
     }
+}
+
+async fn maybe_compact_openai_provider_window(
+    continuation: &Arc<Mutex<OpenAiContinuationState>>,
+    scope: Option<&OpenAiContinuationScope>,
+    request_shape: &OpenAiRequestShape,
+    client: &Client,
+    compact_url: String,
+    headers: Vec<(&str, String)>,
+) -> Option<ProviderOpenAiRemoteCompactionDiagnostics> {
+    let Some(scope) = scope else {
+        return None;
+    };
+    let window = {
+        let state = lock_openai_continuation(continuation);
+        state.windows.get(scope).cloned()
+    }?;
+    if let Some(skip_reason) = openai_provider_window_compaction_skip_reason(&window) {
+        if skip_reason == "below_item_threshold" {
+            return None;
+        }
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: format!("skipped_{skip_reason}"),
+            trigger_reason: Some("provider_window_item_threshold".into()),
+            input_items: Some(window.items.len()),
+            output_items: None,
+            compaction_items: None,
+            latest_compaction_index: window.latest_compaction_index,
+            encrypted_content_hashes: None,
+            encrypted_content_bytes: None,
+            request_shape_hash: Some(request_shape_hash(request_shape)),
+            continuation_generation: Some(window.generation),
+            error: None,
+        });
+    }
+
+    let input_items = window.items.len();
+    let request_shape_hash = request_shape_hash(request_shape);
+    let compact_body = build_openai_compact_request_body(request_shape, &window.items);
+    let compacted =
+        match send_openai_compact_request(client, compact_url, compact_body, headers).await {
+            Ok(compacted) => compacted,
+            Err(error) => {
+                return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+                    status: "failed".into(),
+                    trigger_reason: Some("provider_window_item_threshold".into()),
+                    input_items: Some(input_items),
+                    output_items: None,
+                    compaction_items: None,
+                    latest_compaction_index: window.latest_compaction_index,
+                    encrypted_content_hashes: None,
+                    encrypted_content_bytes: None,
+                    request_shape_hash: Some(request_shape_hash),
+                    continuation_generation: Some(window.generation),
+                    error: Some(error.to_string()),
+                });
+            }
+        };
+    if compacted.is_empty() {
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: "rejected_empty_output".into(),
+            trigger_reason: Some("provider_window_item_threshold".into()),
+            input_items: Some(input_items),
+            output_items: Some(0),
+            compaction_items: Some(0),
+            latest_compaction_index: window.latest_compaction_index,
+            encrypted_content_hashes: Some(Vec::new()),
+            encrypted_content_bytes: Some(Vec::new()),
+            request_shape_hash: Some(request_shape_hash),
+            continuation_generation: Some(window.generation),
+            error: Some("OpenAI compact response returned an empty output window".into()),
+        });
+    }
+
+    let latest_compaction_index = latest_openai_compaction_index(&compacted);
+    let encrypted_content_hashes = openai_compaction_encrypted_content_hashes(&compacted);
+    let encrypted_content_bytes = openai_compaction_encrypted_content_bytes(&compacted);
+    let compaction_items = encrypted_content_hashes.len();
+    if compaction_items == 0 {
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: "rejected_missing_compaction_item".into(),
+            trigger_reason: Some("provider_window_item_threshold".into()),
+            input_items: Some(input_items),
+            output_items: Some(compacted.len()),
+            compaction_items: Some(0),
+            latest_compaction_index: None,
+            encrypted_content_hashes: Some(Vec::new()),
+            encrypted_content_bytes: Some(Vec::new()),
+            request_shape_hash: Some(request_shape_hash),
+            continuation_generation: Some(window.generation),
+            error: Some("OpenAI compact response did not include a compaction item".into()),
+        });
+    }
+
+    let output_items = compacted.len();
+    let generation = {
+        let mut state = lock_openai_continuation(continuation);
+        let current_generation = state.windows.get(scope).map(|current| current.generation);
+        if current_generation != Some(window.generation) {
+            return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+                status: "stale_generation".into(),
+                trigger_reason: Some("provider_window_item_threshold".into()),
+                input_items: Some(input_items),
+                output_items: Some(output_items),
+                compaction_items: Some(compaction_items),
+                latest_compaction_index,
+                encrypted_content_hashes: Some(encrypted_content_hashes),
+                encrypted_content_bytes: Some(encrypted_content_bytes),
+                request_shape_hash: Some(request_shape_hash),
+                continuation_generation: current_generation,
+                error: Some(format!(
+                    "OpenAI provider window advanced while compact request was in flight; captured generation {}",
+                    window.generation
+                )),
+            });
+        }
+        state.next_generation = state.next_generation.saturating_add(1);
+        let generation = state.next_generation;
+        state.windows.insert(
+            scope.clone(),
+            OpenAiProviderWindow {
+                response_id: None,
+                request_shape: request_shape.clone(),
+                items: compacted,
+                append_match_items: window.append_match_items,
+                latest_compaction_index,
+                generation,
+            },
+        );
+        generation
+    };
+
+    Some(ProviderOpenAiRemoteCompactionDiagnostics {
+        status: "compacted".into(),
+        trigger_reason: Some("provider_window_item_threshold".into()),
+        input_items: Some(input_items),
+        output_items: Some(output_items),
+        compaction_items: Some(compaction_items),
+        latest_compaction_index,
+        encrypted_content_hashes: Some(encrypted_content_hashes),
+        encrypted_content_bytes: Some(encrypted_content_bytes),
+        request_shape_hash: Some(request_shape_hash),
+        continuation_generation: Some(generation),
+        error: None,
+    })
+}
+
+async fn maybe_compact_openai_request_plan(
+    continuation: &Arc<Mutex<OpenAiContinuationState>>,
+    plan: &mut OpenAiRequestPlan,
+    client: &Client,
+    compact_url: String,
+    headers: Vec<(&str, String)>,
+) -> Option<ProviderOpenAiRemoteCompactionDiagnostics> {
+    if plan.diagnostics.request_lowering_mode != "incremental_continuation" {
+        return None;
+    }
+    let scope = plan.scope.as_ref()?;
+    let previous = {
+        let state = lock_openai_continuation(continuation);
+        state.windows.get(scope).cloned()
+    }?;
+    previous.response_id.as_ref()?;
+
+    let mut compactable_items = previous.items.clone();
+    compactable_items.extend(plan.provider_input.clone());
+    let compactable_window = OpenAiProviderWindow {
+        response_id: None,
+        request_shape: plan.request_shape.clone(),
+        latest_compaction_index: latest_openai_compaction_index(&compactable_items),
+        items: compactable_items,
+        append_match_items: plan.full_input.clone(),
+        generation: previous.generation,
+    };
+    if let Some(skip_reason) = openai_provider_window_compaction_skip_reason(&compactable_window) {
+        if skip_reason == "below_item_threshold" {
+            return None;
+        }
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: format!("skipped_{skip_reason}"),
+            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            input_items: Some(compactable_window.items.len()),
+            output_items: None,
+            compaction_items: None,
+            latest_compaction_index: compactable_window.latest_compaction_index,
+            encrypted_content_hashes: None,
+            encrypted_content_bytes: None,
+            request_shape_hash: Some(request_shape_hash(&plan.request_shape)),
+            continuation_generation: Some(previous.generation),
+            error: None,
+        });
+    }
+
+    let input_items = compactable_window.items.len();
+    let request_shape_hash = request_shape_hash(&plan.request_shape);
+    let compact_body =
+        build_openai_compact_request_body(&plan.request_shape, &compactable_window.items);
+    let compacted =
+        match send_openai_compact_request(client, compact_url, compact_body, headers).await {
+            Ok(compacted) => compacted,
+            Err(error) => {
+                return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+                    status: "failed".into(),
+                    trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+                    input_items: Some(input_items),
+                    output_items: None,
+                    compaction_items: None,
+                    latest_compaction_index: compactable_window.latest_compaction_index,
+                    encrypted_content_hashes: None,
+                    encrypted_content_bytes: None,
+                    request_shape_hash: Some(request_shape_hash),
+                    continuation_generation: Some(previous.generation),
+                    error: Some(error.to_string()),
+                });
+            }
+        };
+    if compacted.is_empty() {
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: "rejected_empty_output".into(),
+            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            input_items: Some(input_items),
+            output_items: Some(0),
+            compaction_items: Some(0),
+            latest_compaction_index: compactable_window.latest_compaction_index,
+            encrypted_content_hashes: Some(Vec::new()),
+            encrypted_content_bytes: Some(Vec::new()),
+            request_shape_hash: Some(request_shape_hash),
+            continuation_generation: Some(previous.generation),
+            error: Some("OpenAI compact response returned an empty output window".into()),
+        });
+    }
+
+    let latest_compaction_index = latest_openai_compaction_index(&compacted);
+    let encrypted_content_hashes = openai_compaction_encrypted_content_hashes(&compacted);
+    let encrypted_content_bytes = openai_compaction_encrypted_content_bytes(&compacted);
+    let compaction_items = encrypted_content_hashes.len();
+    if compaction_items == 0 {
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: "rejected_missing_compaction_item".into(),
+            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            input_items: Some(input_items),
+            output_items: Some(compacted.len()),
+            compaction_items: Some(0),
+            latest_compaction_index: None,
+            encrypted_content_hashes: Some(Vec::new()),
+            encrypted_content_bytes: Some(Vec::new()),
+            request_shape_hash: Some(request_shape_hash),
+            continuation_generation: Some(previous.generation),
+            error: Some("OpenAI compact response did not include a compaction item".into()),
+        });
+    }
+
+    let current_generation = {
+        let state = lock_openai_continuation(continuation);
+        state.windows.get(scope).map(|current| current.generation)
+    };
+    if current_generation != Some(previous.generation) {
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: "stale_generation".into(),
+            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            input_items: Some(input_items),
+            output_items: Some(compacted.len()),
+            compaction_items: Some(compaction_items),
+            latest_compaction_index,
+            encrypted_content_hashes: Some(encrypted_content_hashes),
+            encrypted_content_bytes: Some(encrypted_content_bytes),
+            request_shape_hash: Some(request_shape_hash),
+            continuation_generation: current_generation,
+            error: Some(format!(
+                "OpenAI provider window advanced while compact request was in flight; captured generation {}",
+                previous.generation
+            )),
+        });
+    }
+
+    let output_items = compacted.len();
+    let mut provider_input = compacted;
+    provider_input.extend(plan.provider_input.clone());
+    plan.body["input"] = Value::Array(provider_input.clone());
+    if let Some(object) = plan.body.as_object_mut() {
+        object.remove("previous_response_id");
+    }
+    plan.provider_input = provider_input;
+    plan.diagnostics.request_lowering_mode = "provider_window_compacted".into();
+
+    Some(ProviderOpenAiRemoteCompactionDiagnostics {
+        status: "compacted".into(),
+        trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+        input_items: Some(input_items),
+        output_items: Some(output_items),
+        compaction_items: Some(compaction_items),
+        latest_compaction_index,
+        encrypted_content_hashes: Some(encrypted_content_hashes),
+        encrypted_content_bytes: Some(encrypted_content_bytes),
+        request_shape_hash: Some(request_shape_hash),
+        continuation_generation: Some(previous.generation),
+        error: None,
+    })
+}
+
+fn openai_provider_window_compaction_skip_reason(
+    window: &OpenAiProviderWindow,
+) -> Option<&'static str> {
+    let since_latest_compaction = window
+        .latest_compaction_index
+        .map(|index| window.items.len().saturating_sub(index + 1))
+        .unwrap_or(window.items.len());
+    if since_latest_compaction < OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS {
+        return Some("below_item_threshold");
+    }
+    if has_unpaired_openai_tool_call(&window.items) {
+        return Some("unpaired_tool_call");
+    }
+    None
+}
+
+fn has_unpaired_openai_tool_call(items: &[Value]) -> bool {
+    let mut function_calls = HashSet::new();
+    let mut custom_tool_calls = HashSet::new();
+    let mut function_outputs = HashSet::new();
+    let mut custom_tool_outputs = HashSet::new();
+
+    for item in items {
+        let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
+            continue;
+        };
+        match item.get("type").and_then(Value::as_str) {
+            Some("function_call") => {
+                function_calls.insert(call_id.to_string());
+            }
+            Some("custom_tool_call") => {
+                custom_tool_calls.insert(call_id.to_string());
+            }
+            Some("function_call_output") => {
+                function_outputs.insert(call_id.to_string());
+            }
+            Some("custom_tool_call_output") => {
+                custom_tool_outputs.insert(call_id.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    !function_calls.is_subset(&function_outputs)
+        || !custom_tool_calls.is_subset(&custom_tool_outputs)
+}
+
+fn build_openai_compact_request_body(request_shape: &OpenAiRequestShape, items: &[Value]) -> Value {
+    let mut body = json!({
+        "model": request_shape.wire_shape.get("model").cloned().unwrap_or(Value::Null),
+        "input": items,
+        "instructions": request_shape
+            .wire_shape
+            .get("instructions")
+            .cloned()
+            .unwrap_or_else(|| Value::String(request_shape.prompt_frame.system_prompt.clone())),
+        "tools": request_shape
+            .wire_shape
+            .get("tools")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        "parallel_tool_calls": request_shape
+            .wire_shape
+            .get("parallel_tool_calls")
+            .cloned()
+            .unwrap_or(Value::Bool(false)),
+    });
+    if let Some(reasoning) = request_shape.wire_shape.get("reasoning") {
+        if !reasoning.is_null() {
+            body["reasoning"] = reasoning.clone();
+        }
+    }
+    if let Some(text) = request_shape.wire_shape.get("text") {
+        body["text"] = text.clone();
+    }
+    body
+}
+
+fn openai_compaction_encrypted_content_hashes(items: &[Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("compaction"))
+        .filter_map(|item| item.get("encrypted_content").and_then(Value::as_str))
+        .map(|content| sha256_hex(content.as_bytes()))
+        .collect()
+}
+
+fn openai_compaction_encrypted_content_bytes(items: &[Value]) -> Vec<usize> {
+    items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("compaction"))
+        .filter_map(|item| item.get("encrypted_content").and_then(Value::as_str))
+        .map(str::len)
+        .collect()
 }
 
 fn invalidate_openai_continuation(
@@ -984,9 +1639,9 @@ fn invalidate_openai_continuation(
 ) {
     let mut state = lock_openai_continuation(continuation);
     if let Some(scope) = scope {
-        state.snapshots.remove(scope);
+        state.windows.remove(scope);
     } else {
-        state.snapshots.clear();
+        state.windows.clear();
     }
 }
 
@@ -1764,6 +2419,62 @@ async fn send_openai_responses_request(
     parse_openai_response_with_transport_state(parsed)
 }
 
+async fn send_openai_compact_request(
+    client: &Client,
+    url: String,
+    body: Value,
+    headers: Vec<(&str, String)>,
+) -> Result<Vec<Value>> {
+    let mut request = client.post(&url).header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+
+    let response = request.json(&body).send().await.map_err(|error| {
+        classify_reqwest_transport_error(
+            "OpenAI compact request failed",
+            "request_send",
+            "openai",
+            Some(&provider_model_ref("openai", &body)),
+            Some(url.as_str()),
+            error,
+        )
+    })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(classify_status_error(
+            "OpenAI compact request failed",
+            status,
+            body,
+        ));
+    }
+
+    let response_body = response.text().await.map_err(|error| {
+        classify_reqwest_transport_error(
+            "OpenAI compact response body failed",
+            "response_body",
+            "openai",
+            Some(&provider_model_ref("openai", &body)),
+            Some(url.as_str()),
+            error,
+        )
+    })?;
+    let parsed: Value = serde_json::from_str(&response_body)
+        .map_err(|error| invalid_response_error("invalid OpenAI compact JSON", error))?;
+    parsed
+        .get("output")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| {
+            invalid_response_error(
+                "OpenAI compact response did not contain output array",
+                "missing output array",
+            )
+        })
+}
+
 async fn send_openai_responses_streaming_request(
     client: &Client,
     url: String,
@@ -2232,7 +2943,8 @@ fn unsupported_streaming_transport_error(provider_name: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::chat_completions_url;
+    use super::{chat_completions_url, latest_openai_compaction_index};
+    use serde_json::json;
 
     #[test]
     fn chat_completions_url_accepts_openai_compatible_base_urls() {
@@ -2260,5 +2972,17 @@ mod tests {
             chat_completions_url("https://proxy.example/chat/completions"),
             "https://proxy.example/chat/completions"
         );
+    }
+
+    #[test]
+    fn openai_provider_window_tracks_latest_compaction_item() {
+        let items = vec![
+            json!({ "type": "message", "role": "user" }),
+            json!({ "type": "compaction", "encrypted_content": "first" }),
+            json!({ "type": "message", "role": "user" }),
+            json!({ "type": "compaction", "encrypted_content": "second" }),
+        ];
+
+        assert_eq!(latest_openai_compaction_index(&items), Some(3));
     }
 }

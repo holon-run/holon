@@ -2544,6 +2544,7 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
         requestLoweringMode,
         requestDiagnostics
       ),
+      openai_remote_compaction: openaiRemoteCompactionDiagnostic(provider, requestDiagnostics),
       context_management: contextManagement,
       previous_tool: previousTool,
       anthropic_cache: anthropicCache,
@@ -2861,6 +2862,33 @@ function incrementalContinuationDiagnostic(provider, round, requestLoweringMode,
   return {
     status: "fallback_full_request",
     fallback_reason: "incremental_continuation_not_observed_in_provider_round"
+  };
+}
+
+function openaiRemoteCompactionDiagnostic(provider, requestDiagnostics) {
+  if (provider !== "openai" && provider !== "openai-codex") {
+    return null;
+  }
+  const compaction = requestDiagnostics?.openai_remote_compaction;
+  if (!compaction) {
+    return null;
+  }
+  return {
+    status: compaction.status ?? "unknown",
+    trigger_reason: compaction.trigger_reason ?? null,
+    input_items: numberOrNull(compaction.input_items),
+    output_items: numberOrNull(compaction.output_items),
+    compaction_items: numberOrNull(compaction.compaction_items),
+    latest_compaction_index: numberOrNull(compaction.latest_compaction_index),
+    encrypted_content_hashes: Array.isArray(compaction.encrypted_content_hashes)
+      ? compaction.encrypted_content_hashes
+      : [],
+    encrypted_content_bytes: Array.isArray(compaction.encrypted_content_bytes)
+      ? compaction.encrypted_content_bytes.map(numberOrNull)
+      : [],
+    request_shape_hash: compaction.request_shape_hash ?? null,
+    continuation_generation: numberOrNull(compaction.continuation_generation),
+    error: compaction.error ?? null
   };
 }
 
@@ -3270,6 +3298,11 @@ function summarizeTokenOptimizationRounds(rounds) {
   const contextManagementAppliedEditCounts = {};
   let contextManagementClearedInputTokens = 0;
   let contextManagementClearedToolUses = 0;
+  let openaiRemoteCompactionRounds = 0;
+  const openaiRemoteCompactionStatuses = {};
+  let openaiRemoteCompactionInputItems = 0;
+  let openaiRemoteCompactionOutputItems = 0;
+  let openaiRemoteCompactionItems = 0;
   let cacheMissWithContextManagementAppliedRounds = 0;
   let cacheRecoveredAfterContextManagementAppliedRounds = 0;
   let previousContextManagementAppliedMiss = false;
@@ -3308,6 +3341,15 @@ function summarizeTokenOptimizationRounds(rounds) {
       }
       contextManagementClearedInputTokens += round.context_management.cleared_input_tokens ?? 0;
       contextManagementClearedToolUses += round.context_management.cleared_tool_uses ?? 0;
+    }
+    if (round.openai_remote_compaction) {
+      openaiRemoteCompactionRounds += 1;
+      const status = round.openai_remote_compaction.status ?? "unknown";
+      openaiRemoteCompactionStatuses[status] =
+        (openaiRemoteCompactionStatuses[status] ?? 0) + 1;
+      openaiRemoteCompactionInputItems += round.openai_remote_compaction.input_items ?? 0;
+      openaiRemoteCompactionOutputItems += round.openai_remote_compaction.output_items ?? 0;
+      openaiRemoteCompactionItems += round.openai_remote_compaction.compaction_items ?? 0;
     }
     if (round.cache_break_classification) {
       cacheBreakClassificationCounts[round.cache_break_classification] =
@@ -3369,6 +3411,11 @@ function summarizeTokenOptimizationRounds(rounds) {
     context_management_applied_edit_counts: contextManagementAppliedEditCounts,
     context_management_cleared_input_tokens: contextManagementClearedInputTokens,
     context_management_cleared_tool_uses: contextManagementClearedToolUses,
+    openai_remote_compaction_rounds: openaiRemoteCompactionRounds,
+    openai_remote_compaction_statuses: openaiRemoteCompactionStatuses,
+    openai_remote_compaction_input_items: openaiRemoteCompactionInputItems,
+    openai_remote_compaction_output_items: openaiRemoteCompactionOutputItems,
+    openai_remote_compaction_items: openaiRemoteCompactionItems,
     cache_miss_with_context_management_applied_rounds: cacheMissWithContextManagementAppliedRounds,
     cache_recovered_after_context_management_applied_rounds:
       cacheRecoveredAfterContextManagementAppliedRounds,

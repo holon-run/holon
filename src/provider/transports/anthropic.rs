@@ -285,6 +285,7 @@ impl AgentProvider for AnthropicProvider {
                 anthropic_cache: Some(cache_diagnostics),
                 anthropic_context_management: parsed.context_management,
                 incremental_continuation: None,
+                openai_remote_compaction: None,
             }),
         })
     }
