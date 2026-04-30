@@ -38,6 +38,18 @@ The workflow also generates `Formula/holon.rb`. If `HOMEBREW_TAP_TOKEN` is
 configured, it pushes the formula to `holon-run/homebrew-tap`; otherwise the
 formula is available as a workflow artifact.
 
-Before pushing the tag, run the release tracker verification checklist and make
-sure the README quickstart still uses installed `holon ...` commands rather
-than `cargo run -- ...` commands.
+## Pre-Tag Checklist
+
+Before pushing the tag, verify:
+
+- `Cargo.toml` and `Cargo.lock` are aligned with the tag version
+- release notes call out the Rust runtime line and Go-line fallback boundary
+- release notes state that `v0.12.0` remains the fallback tag for old Go
+  behavior
+- supported binary assets are Linux amd64, macOS amd64, and macOS arm64
+- `checksums.txt` will be included with the release assets
+- `Formula/holon.rb` will be generated, and either pushed to
+  `holon-run/homebrew-tap` or retained as a workflow artifact when
+  `HOMEBREW_TAP_TOKEN` is not configured
+- the README quickstart uses installed `holon ...` commands rather than
+  `cargo run -- ...` commands
