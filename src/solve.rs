@@ -279,7 +279,27 @@ pub fn build_solve_prompt(
         "GitHub operating rules:\n- Use GITHUB_TOKEN or GH_TOKEN when publishing through gh.\n- The repository checkout is already prepared by the caller; do not clone by default.\n- If code changes are required, create or reuse an appropriate branch, commit intentionally, push, and create or update a PR yourself.\n- If this is a review-only task, publish one structured review or comment only when the requested skill workflow calls for it.\n- Prefer the github-issue-solve, github-pr-fix, github-review, and ghx skills when their descriptions match the target."
             .to_string(),
     );
+    if should_include_review_publish_guardrails(request, target) {
+        sections.push(
+            "Review publishing guardrails:\n- Treat PR review/comment publishing as a single-shot external side effect.\n- For a review-only goal, choose exactly one publish surface: one PR review or one PR comment, not both.\n- Before publishing, read the current PR head SHA and existing reviews/comments by Holon/Holonbot for that same head. If an equivalent review/comment already exists, do not publish again; record the existing URL/status in the output artifacts.\n- After any review/comment publish command succeeds, stop all other publish paths immediately. Do not run fallback `gh pr review`, `gh api .../reviews`, or issue-comment publish commands after a successful primary publish.\n- If a publish command result is ambiguous, verify existing reviews/comments for the same head SHA before retrying. Retry only when no Holon/Holonbot review or comment for that head exists."
+                .to_string(),
+        );
+    }
     sections.join("\n\n")
+}
+
+fn should_include_review_publish_guardrails(
+    request: &SolveRequest,
+    target: Option<&GitHubTarget>,
+) -> bool {
+    matches!(
+        target.map(|target| target.kind),
+        Some(GitHubTargetKind::PullRequest)
+    ) || request
+        .goal
+        .as_deref()
+        .map(|goal| goal.to_ascii_lowercase().contains("review"))
+        .unwrap_or(false)
 }
 
 fn default_goal(target: Option<&GitHubTarget>) -> String {
@@ -421,6 +441,22 @@ mod tests {
         assert!(prompt.contains("github-pr-fix"));
         assert!(prompt.contains("github-review"));
         assert!(prompt.contains("/tmp/out/manifest.json"));
+    }
+
+    #[test]
+    fn build_prompt_adds_review_publish_guardrails_for_review_goals() {
+        let mut request = request("https://github.com/holon-run/holon-test/pull/52");
+        request.goal = Some(
+            "Review the target pull request only. Publish one concise review or PR comment.".into(),
+        );
+        let target = parse_github_target(&request.target_ref, None).unwrap();
+        let prompt = build_solve_prompt(&request, target.as_ref(), Path::new("/tmp/out"));
+
+        assert!(prompt.contains("Review publishing guardrails"));
+        assert!(prompt.contains("single-shot external side effect"));
+        assert!(prompt.contains("one PR review or one PR comment, not both"));
+        assert!(prompt.contains("After any review/comment publish command succeeds"));
+        assert!(prompt.contains("verify existing reviews/comments for the same head SHA"));
     }
 
     #[test]
