@@ -60,7 +60,6 @@ pub struct OpenAiChatCompletionsProvider {
 pub(crate) enum OpenAiResponsesTransportContract {
     StandardJson,
     CodexStreaming,
-    ChatCompletions,
 }
 
 const OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS: usize = 8;
@@ -565,56 +564,23 @@ fn plan_chat_completion_request(
     stream: bool,
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
 ) -> Result<(Value, OpenAiRequestPlan)> {
-    // Build full messages array
-    let messages =
-        build_chat_completion_messages(&request.prompt_frame.system_prompt, &request.conversation)?;
+    let full_body = build_chat_completion_request(
+        model,
+        max_output_tokens,
+        request,
+        tool_schema_contract,
+        stream,
+    )?;
 
-    // Build tools array
-    let tools = if !request.tools.is_empty() {
-        Some(
-            request
-                .tools
-                .iter()
-                .map(|tool| {
-                    Ok(json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": emitted_tool_json_schema(&tool.input_schema, tool_schema_contract)?,
-                            "strict": matches!(tool_schema_contract, ToolSchemaContract::Strict),
-                        }
-                    }))
-                })
-                .collect::<Result<Vec<_>>>()?,
-        )
-    } else {
-        None
-    };
-
-    // Create full request body for shape comparison
-    let mut full_body = json!({
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_output_tokens,
-        "stream": stream,
-    });
-
-    if let Some(tools) = &tools {
-        full_body["tools"] = Value::Array(tools.clone());
-        full_body["tool_choice"] = Value::String("auto".to_string());
-    }
-
-    if let Some(cache) = request.prompt_frame.cache.as_ref() {
-        full_body["prompt_cache_key"] = Value::String(cache.prompt_cache_key.clone());
-    }
+    let body_messages = full_body
+        .get("messages")
+        .and_then(|messages| messages.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     // Calculate continuation scope
     let scope = continuation_scope(request);
-    let full_messages = full_body["messages"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let full_messages = body_messages;
     let full_message_count = full_messages.len();
     let request_shape = request_shape_for_chat_completion(&full_body, request);
 
@@ -884,11 +850,6 @@ pub(crate) fn build_openai_responses_request(
             body["stream"] = Value::Bool(true);
             body["reasoning"] = Value::Null;
             body["include"] = Value::Array(Vec::new());
-        }
-        OpenAiResponsesTransportContract::ChatCompletions => {
-            // ChatCompletions uses a separate request building function
-            // This branch should not be reached
-            body["max_output_tokens"] = Value::from(max_output_tokens);
         }
     }
     Ok(body)
@@ -2050,6 +2011,7 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
     })
 }
 
+#[cfg(test)]
 pub(crate) async fn send_chat_completion_stream_request(
     client: &Client,
     url: String,
@@ -2086,6 +2048,7 @@ pub(crate) async fn send_chat_completion_stream_request(
     parse_chat_completion_response(response)
 }
 
+#[cfg(test)]
 async fn read_chat_completion_stream(response: Response) -> Result<Value> {
     const MAX_STREAMED_EVENTS: usize = 128;
     let mut streamed_events = Vec::new();
@@ -2191,6 +2154,7 @@ async fn read_chat_completion_stream(response: Response) -> Result<Value> {
     Ok(accumulated)
 }
 
+#[cfg(test)]
 fn process_chat_completion_sse_event(
     data_lines: &mut Vec<String>,
 ) -> Result<Option<ChatCompletionSseEvent>> {
@@ -2262,6 +2226,7 @@ fn process_chat_completion_sse_event(
     Ok(None)
 }
 
+#[cfg(test)]
 pub(crate) fn accumulate_chat_completion_stream_events(events: Vec<Value>) -> Result<Value> {
     let mut content = String::new();
     let mut tool_calls: Vec<Value> = Vec::new();
@@ -2366,6 +2331,7 @@ pub(crate) fn accumulate_chat_completion_stream_events(events: Vec<Value>) -> Re
     }))
 }
 
+#[cfg(test)]
 enum ChatCompletionSseEvent {
     ContentDelta(String),
     ToolCallDelta(Value),
