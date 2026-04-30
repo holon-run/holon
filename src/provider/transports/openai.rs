@@ -58,7 +58,6 @@ pub struct OpenAiChatCompletionsProvider {
 pub(crate) enum OpenAiResponsesTransportContract {
     StandardJson,
     CodexStreaming,
-    ChatCompletions,
 }
 
 #[derive(Debug, Default)]
@@ -488,49 +487,13 @@ fn plan_chat_completion_request(
     stream: bool,
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
 ) -> Result<(Value, OpenAiRequestPlan)> {
-    // Build full messages array
-    let messages =
-        build_chat_completion_messages(&request.prompt_frame.system_prompt, &request.conversation)?;
-
-    // Build tools array
-    let tools = if !request.tools.is_empty() {
-        Some(
-            request
-                .tools
-                .iter()
-                .map(|tool| {
-                    Ok(json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": emitted_tool_json_schema(&tool.input_schema, tool_schema_contract)?,
-                            "strict": matches!(tool_schema_contract, ToolSchemaContract::Strict),
-                        }
-                    }))
-                })
-                .collect::<Result<Vec<_>>>()?,
-        )
-    } else {
-        None
-    };
-
-    // Create full request body for shape comparison
-    let mut full_body = json!({
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_output_tokens,
-        "stream": stream,
-    });
-
-    if let Some(tools) = &tools {
-        full_body["tools"] = Value::Array(tools.clone());
-        full_body["tool_choice"] = Value::String("auto".to_string());
-    }
-
-    if let Some(cache) = request.prompt_frame.cache.as_ref() {
-        full_body["prompt_cache_key"] = Value::String(cache.prompt_cache_key.clone());
-    }
+    let full_body = build_chat_completion_request(
+        model,
+        max_output_tokens,
+        request,
+        tool_schema_contract,
+        stream,
+    )?;
 
     // Calculate continuation scope
     let scope = continuation_scope(request);
@@ -791,11 +754,6 @@ pub(crate) fn build_openai_responses_request(
             body["stream"] = Value::Bool(true);
             body["reasoning"] = Value::Null;
             body["include"] = Value::Array(Vec::new());
-        }
-        OpenAiResponsesTransportContract::ChatCompletions => {
-            // ChatCompletions uses a separate request building function
-            // This branch should not be reached
-            body["max_output_tokens"] = Value::from(max_output_tokens);
         }
     }
     Ok(body)
@@ -1105,47 +1063,7 @@ async fn send_chat_completion_request(
     body: Value,
     headers: Vec<(&str, String)>,
 ) -> Result<ParsedOpenAiResponse> {
-    let mut request = client.post(&url).header("content-type", "application/json");
-    for (name, value) in headers {
-        request = request.header(name, value);
-    }
-
-    let response = request.json(&body).send().await.map_err(|error| {
-        classify_reqwest_transport_error(
-            "OpenAI Chat Completions request failed",
-            "request_send",
-            "openai",
-            Some(&provider_model_ref("openai", &body)),
-            Some(url.as_str()),
-            error,
-        )
-    })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(classify_chat_completion_status_error(
-            "OpenAI Chat Completions request failed",
-            status,
-            body,
-        ));
-    }
-
-    let body = response.text().await.map_err(|error| {
-        classify_reqwest_transport_error(
-            "OpenAI Chat Completions response body failed",
-            "response_body",
-            "openai",
-            Some(&provider_model_ref("openai", &body)),
-            Some(url.as_str()),
-            error,
-        )
-    })?;
-
-    let parsed: Value = serde_json::from_str(&body)
-        .map_err(|error| invalid_response_error("invalid OpenAI Chat Completions JSON", error))?;
-
-    parse_chat_completion_response(parsed)
+    send_chat_completion_stream_request(client, url, body, headers).await
 }
 
 fn classify_chat_completion_status_error(
@@ -1427,29 +1345,34 @@ pub(crate) async fn send_chat_completion_stream_request(
         ));
     }
 
-    let response = read_chat_completion_stream(response).await?;
-    parse_chat_completion_response(response)
+    let body = response.text().await.map_err(|error| {
+        classify_reqwest_transport_error(
+            "OpenAI Chat Completions streaming response body failed",
+            "streaming_response_body",
+            "openai",
+            Some(&provider_model_ref("openai", &body)),
+            Some(url.as_str()),
+            error,
+        )
+    })?;
+    let body = body.trim_start().to_string();
+    if body.starts_with('{') || body.starts_with('[') {
+        let parsed: Value = serde_json::from_str(&body)
+            .map_err(|error| invalid_response_error("invalid OpenAI Chat Completions JSON", error))?;
+        parse_chat_completion_response(parsed)
+    } else {
+        parse_chat_completion_response(read_chat_completion_stream(body)?)
+    }
 }
 
-async fn read_chat_completion_stream(response: Response) -> Result<Value> {
+fn read_chat_completion_stream(response_body: String) -> Result<Value> {
     const MAX_STREAMED_EVENTS: usize = 128;
     let mut streamed_events = Vec::new();
-
-    let mut response = response;
     let mut pending = String::new();
     let mut data_lines = Vec::new();
 
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        classify_reqwest_transport_error(
-            "OpenAI Chat Completions streaming response failed",
-            "streaming_response_body",
-            "openai",
-            None,
-            None,
-            error,
-        )
-    })? {
-        pending.push_str(&String::from_utf8_lossy(&chunk));
+    for chunk in response_body.split_inclusive('\n') {
+        pending.push_str(chunk);
         while let Some(newline_idx) = pending.find('\n') {
             let mut line = pending[..newline_idx].to_string();
             pending.drain(..newline_idx + 1);
