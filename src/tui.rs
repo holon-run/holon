@@ -1315,6 +1315,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slash_menu_esc_dismisses_unknown_command_without_clearing_prompt() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/unknown");
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.composer.as_str(), "/unknown");
+        assert_eq!(app.overlay, OverlayState::None);
+        assert_eq!(app.slash_menu_dismissed_for.as_deref(), Some("/unknown"));
+    }
+
+    #[tokio::test]
     async fn slash_menu_cursor_movement_preserves_dismissal() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(

@@ -522,10 +522,11 @@ impl TuiApp {
     }
 
     async fn handle_slash_menu_key(&mut self, key: KeyEvent) -> Result<bool> {
-        let specs = self.active_slash_menu_specs();
-        if specs.is_empty() {
+        if !self.is_slash_menu_visible() {
             return Ok(false);
         }
+
+        let specs = self.active_slash_menu_specs();
 
         match key.code {
             KeyCode::Esc => {
@@ -533,6 +534,7 @@ impl TuiApp {
                 self.slash_menu_selected = 0;
                 Ok(true)
             }
+            _ if specs.is_empty() => Ok(false),
             KeyCode::Up | KeyCode::Char('p')
                 if key.modifiers.contains(KeyModifiers::CONTROL)
                     || matches!(key.code, KeyCode::Up) =>
@@ -568,15 +570,26 @@ impl TuiApp {
         }
     }
 
-    fn active_slash_menu_specs(&self) -> Vec<SlashCommandSpec> {
+    fn is_slash_menu_visible(&self) -> bool {
         if self.overlay != OverlayState::None {
-            return Vec::new();
+            return false;
         }
         if self
             .slash_menu_dismissed_for
             .as_deref()
             .is_some_and(|dismissed| dismissed == self.composer.as_str())
         {
+            return false;
+        }
+
+        let buffer = self.composer.as_str();
+        !buffer.contains('\n')
+            && buffer.trim_start().starts_with('/')
+            && !buffer.trim_start().starts_with("//")
+    }
+
+    fn active_slash_menu_specs(&self) -> Vec<SlashCommandSpec> {
+        if !self.is_slash_menu_visible() {
             return Vec::new();
         }
         slash_menu_specs(self.composer.as_str())
