@@ -104,7 +104,7 @@ This makes `Work Item` the correct home for:
 - queueing
 - activation
 - progress tracking
-- waiting state
+- blocker state
 - completion state
 
 ### Relationship between the three
@@ -165,35 +165,44 @@ Instead, the work queue answers the question:
 
 Without a work queue, the runtime has no stable place to hold:
 
-- the current active work item
-- queued follow-on work
-- work that is waiting on input
+- the agent's current work-item focus
+- follow-on work
+- work that is blocked on input or an external condition
 - work that has completed and should no longer trigger activation
 
 This makes tick, proactive behavior, and resume logic much harder to reason about.
 
-### Work queue status model
+### Work queue lifecycle model
 
-The minimal initial status model is:
+The minimal initial lifecycle model is:
 
-- `active`
-- `queued`
-- `waiting`
-- `completed`
+- `open`
+- `done`
 
-`active`
-- the work item currently being advanced
+`open`
+- the work item still represents unfinished work
 
-`queued`
-- the work item is known and runnable, but not currently active
+`done`
+- the work item is complete and should no longer drive activation
 
-`waiting`
-- the work item exists, but is blocked on missing input or some external condition
+The current work item is not represented as a lifecycle status.
 
-`completed`
-- the work item is no longer expected to drive activation
+Instead, the agent owns an explicit focus pointer:
 
-This RFC intentionally avoids introducing more statuses until the basic model is working.
+- `current_work_item_id`
+
+If `current_work_item_id` points to an open work item, that item is the current
+work item for the agent.
+
+Queued and blocked are derived views, not primary statuses:
+
+- queued work is `open` work that is not the current work item and has no blocker
+- blocked work is `open` work with `blocked_by` set
+- completed work is `done` work
+
+This avoids forcing the agent to encode scheduling intent by writing a status
+field such as `active` or `waiting`. The agent can instead call explicit actions
+such as `PickWorkItem` and `CompleteWorkItem`.
 
 ## Ingress and work-item resolution
 
@@ -219,7 +228,7 @@ A new ingress may result in one of the following high-level outcomes:
 
 - update the current work item
 - create a new work item
-- update an existing queued or waiting work item
+- update an existing open or blocked work item
 - remain informational only
 
 The important point is that ingress and work items are different layers:
@@ -264,13 +273,17 @@ Tick should ask:
 
 The minimal initial rule is:
 
-1. if there is an `active` work item, continue that work item
-2. otherwise, if there is a runnable `queued` work item, activate one
+1. if `current_work_item_id` points to an open, unblocked work item, continue that work item
+2. otherwise, if there is another open, unblocked work item, wake the agent so it can pick one
 3. otherwise, do not wake the agent for more work
 
 This is intentionally simple.
 
-It gives tick a concrete purpose without requiring a full planning system.
+It gives tick a concrete purpose without turning the runtime into a semantic
+scheduler.
+
+The runtime may surface candidate work items, but the agent is responsible for
+choosing the current work item with `PickWorkItem`.
 
 ### Why this matters
 
@@ -282,51 +295,54 @@ A resumed or background-capable agent can keep working because there is known ru
 
 The initial scheduling model should remain deliberately simple.
 
-This RFC proposes a single-active-work-item scheduler.
+This RFC proposes a single-current-work-item model.
 
-### Scheduling states
+### Lifecycle and focus
 
-Only the following work-item states matter for scheduling:
+Only the following stored lifecycle states matter for the first version:
 
-- `active`
-- `queued`
-- `waiting`
-- `completed`
+- `open`
+- `done`
+
+The current work item is stored separately as:
+
+- `current_work_item_id`
 
 Runnable work is:
 
-- the current `active` work item
-- or, if none is active, a `queued` work item
+- any `open` work item whose `blocked_by` field is not set
 
-Non-runnable work is:
+Blocked work is:
 
-- `waiting`
-- `completed`
+- any `open` work item whose `blocked_by` field is set
+
+Completed work is:
+
+- any `done` work item
+
+`queued` and `blocked` can still appear in UI or prompt copy as derived labels,
+but they should not be fields the agent has to set directly.
 
 ### Minimal scheduling loop
 
 The minimal scheduling loop is:
 
-1. select the work item to advance
-2. run one turn against that work item
-3. commit work-item state updates
-
-In practice:
-
-- if there is an `active` work item, continue it
-- otherwise, if there is a `queued` work item, activate one and continue it
-- otherwise, do not wake for more work
+1. determine whether there is a current runnable work item
+2. if not, surface open runnable candidates to the agent
+3. let the agent pick the current work item
+4. run one turn against that current work item
+5. persist explicit work-item actions from the agent
 
 ### Non-preemptive by default
 
 The initial model should be non-preemptive.
 
-If a work item is already `active`, new ingress should not automatically interrupt it.
+If the agent already has a current work item, new ingress should not automatically interrupt it.
 
 Instead:
 
 - if the ingress still belongs to the same delivery target, it should update the current work item
-- if it forms a different delivery target, it should usually become a `queued` work item
+- if it forms a different delivery target, it should usually become another open work item
 
 This keeps the scheduler stable and avoids unnecessary objective thrashing.
 
@@ -338,71 +354,90 @@ Tick should ask whether there is any runnable work item worth activating.
 
 The minimal tick rule is:
 
-1. if there is an `active` work item, wake and continue it
-2. else if there is a runnable `queued` work item, activate one and wake it
+1. if the current work item is open and unblocked, wake and continue it
+2. else if there is another open and unblocked work item, wake so the agent can pick it
 3. else remain idle
 
-### One active work item per agent
+### One current work item per agent
 
-The initial model should allow only one `active` work item per agent.
+The initial model should allow only one current work item per agent.
 
 This does not forbid multiple internal runtime tasks or delegated child tasks.
 
 It only means that, at the high-level work-item layer, the agent is advancing one top-level delivery target at a time.
 
-### End-of-turn work-item transitions
+### Focus changes
 
-At the end of a turn, the current `active` work item should normally transition to one of:
+Switching work items should be an explicit tool action, not an implicit status
+write.
 
-- `active`
-- `waiting`
-- `completed`
-- `queued`
+`PickWorkItem` sets `current_work_item_id`.
 
-Typical cases:
+If there was a previous current work item, it remains open unless the agent
+explicitly completes it or marks it blocked through a separate action.
 
-- `active -> active`
-  - more work remains and should continue soon
-- `active -> waiting`
-  - progress now depends on user input or some external condition
-- `active -> completed`
-  - the work item is finished and should stop driving activation
-- `active -> queued`
-  - the item remains unfinished, but does not need to monopolize the active slot
+This keeps switching simple for the agent:
+
+- pick the work item to work on now
+- update it if its checklist or blocker changed
+- complete it when the delivery target is satisfied
 
 ## Progress and state updates
 
-Each work item should be able to carry lightweight progress state.
+Each work item should carry lightweight task-card state.
 
 The minimal useful fields are:
 
 - `id`
 - `delivery_target`
-- `status`
-- `summary`
-- `progress_note`
+- `state`
+- `blocked_by`
+- `plan`
+- `result_summary`
 - `created_at`
 - `updated_at`
 
 `delivery_target` is the stable statement of what this work item is trying to deliver.
 
-`summary` and `progress_note` are runtime-facing projections of current understanding and recent progress.
+`id` is generated by the runtime, not supplied by the agent. The current
+implementation uses a `work_` prefix plus a UUID v4 value. The identifier should
+be treated as globally unique in practice, not as a per-agent or per-workspace
+sequence.
 
-The `Work Plan` represents how the runtime currently intends to achieve the `delivery_target`.
+`state` is `open` or `done`.
+
+`blocked_by` is optional and explains why an open work item cannot currently be
+advanced.
+
+`plan` is the current checklist for reaching the delivery target.
+
+`result_summary` is optional completion metadata written when the work item is
+completed.
+
+Progress narration should normally remain in the transcript, briefs, tool
+records, and final messages. The runtime should associate those records with
+the current work item through `current_work_item_id` and explicit
+`work_item_id` fields, rather than asking the agent to duplicate progress prose
+inside the work item itself.
 
 The goal is not to create a full project-management system.
 
 The goal is to let the runtime answer:
 
 - what are we doing?
-- what happened since last activation?
-- why is this still active, queued, or waiting?
+- what checklist remains?
+- is this item blocked?
+- what transcript/tool/brief records belong to this item?
 
 ## Persistence model
 
 `WorkItem` and `WorkPlan` should be persisted as first-class runtime records.
 
 They should not be embedded directly into `AgentState`.
+
+`current_work_item_id` is per-agent focus state. It may be stored as a small
+work-queue focus record or as an explicit field on agent runtime state, but it
+should not be inferred from a work-item lifecycle status.
 
 `AgentState` remains the home for:
 
@@ -419,6 +454,7 @@ This keeps the runtime model explicit:
 
 - `AgentState` answers how the runtime is currently postured
 - `WorkItem` answers what meaningful work currently exists
+- `current_work_item_id` answers which work item the agent is currently advancing
 - `WorkPlan` answers the current checklist for one work item
 
 The first implementation may store these as append-only runtime records, using
@@ -428,7 +464,7 @@ runtime snapshots.
 `WorkPlan` is work-item-scoped.
 
 It should not be treated as identical to an agent-wide todo snapshot, even if
-the initial plan-step status set overlaps with existing todo/checklist concepts.
+the initial plan-step state set overlaps with existing todo/checklist concepts.
 
 ## Prompt and tool model
 
@@ -443,55 +479,71 @@ The proposed model is:
 
 At the start of a turn, the runtime should inject a compact work-queue summary into the prompt.
 
-That projection should distinguish between the current active work item and non-active work items.
+That projection should distinguish between the current work item and other open work items.
 
-For the current active work item, the runtime should inject the full current snapshot, including:
+For the current work item, the runtime should inject the full current snapshot, including:
 
 - `id`
 - `delivery_target`
-- `status`
-- `summary`
-- `progress_note`
-- `parent_id` when present
+- `state`
+- `blocked_by` when present
+- `plan` when present
 
-It should also inject the current full work-plan snapshot for that active work item.
+The prompt should call this section `current_work_item`, not `active_work_item`.
 
-For non-active work items, prompt projection should remain compact.
+For other open work items, prompt projection should remain compact.
 
 That compact summary should include:
 
-- a small number of `queued` work items
-- whether any work item is currently `waiting`
-- short progress summaries where useful
+- a small number of runnable open work items
+- a small number of blocked open work items
+- each item's id, delivery target, and blocker when present
 
 This makes the agent work-item-aware by default.
 
-`completed` work items should not be injected into the normal prompt projection.
+`done` work items should not be injected into the normal prompt projection.
+
+If the agent changes focus during a turn with `PickWorkItem`, the initial prompt
+will still contain the old projection. The `PickWorkItem` tool result must
+therefore return the new current work-item snapshot and clearly state that
+subsequent tool calls in the current turn are bound to the new current work
+item.
 
 ### Tool model
 
-The initial tool surface can remain write-oriented.
+The initial tool surface should be action-oriented.
 
-A first phase does not need a dedicated read tool if prompt projection already provides current awareness.
+The agent should not have to encode scheduling decisions by writing lifecycle
+status strings. It should call tools whose names match the intended action.
 
-The minimal initial tool surface is:
+The proposed tool surface is:
 
-- `update_work_item`
-- `update_work_plan`
+- `CreateWorkItem`
+- `PickWorkItem`
+- `UpdateWorkItem`
+- `CompleteWorkItem`
+- `GetWorkItem`
+- `ListWorkItems`
 
-`update_work_item` is the single mutation tool for high-level work-item state. It is responsible for:
+`CreateWorkItem` creates a new open work item.
 
-- creating a work item
-- updating `delivery_target`
-- updating `summary`
-- updating `progress_note`
-- updating `status`
+`PickWorkItem` sets the agent's `current_work_item_id`.
 
-`update_work_plan` manages the current structured checklist for a work item.
+`UpdateWorkItem` updates mutable task-card fields for an existing work item.
 
-This is intentionally closer to an explicit checklist/progress update model than to a large family of fine-grained patch tools.
+`CompleteWorkItem` marks a work item done and optionally records the completion
+summary.
 
-The source of truth remains the persisted work-item store, not the prompt.
+`GetWorkItem` and `ListWorkItems` provide explicit read access so the prompt
+projection does not become a hidden database query surface.
+
+There is no separate `UpdateWorkPlan` in this model. The current plan is
+exposed through the work-item tool surface and is updated by `UpdateWorkItem`
+using full-snapshot replacement semantics. The storage layer may still persist
+plan snapshots separately from work-item snapshots.
+
+The source of truth remains the persisted work-item store and focus pointer,
+not the prompt.
 
 The prompt is only a projection of that store.
 
@@ -514,60 +566,91 @@ paths.
 
 The initial explicit adoption paths are:
 
-- agent-issued `update_work_item`
-- agent-issued `update_work_plan`
-- a host/control-plane path that can enqueue a new queued work item directly
+- agent-issued `CreateWorkItem`
+- agent-issued `PickWorkItem`
+- agent-issued `UpdateWorkItem`
+- agent-issued `SpawnAgent` with work-item delegation metadata
+- a host/control-plane path that can create a new open work item directly
 
 This keeps `WorkItem` as an explicit runtime container rather than turning every
 incoming message into a required work-item classification problem.
 
 ### Proposed minimal schemas
 
-The initial `update_work_item` shape should be:
+The initial `CreateWorkItem` shape should be:
 
-- `id` optional
 - `delivery_target` required
-- `status` required
-- `summary` optional
-- `progress_note` optional
-- `parent_id` optional
-
-`id`
-- omitted when creating a new work item
-- provided when updating an existing work item
-- generated by the system, not by the agent
+- `plan` optional
 
 `delivery_target`
 - the stable statement of what this work item is trying to deliver
+- should not be edited during normal progress updates
 
-`summary`
-- a compact statement of the current overall state of the work item
+`plan`
+- optional full checklist snapshot
 
-`progress_note`
-- the latest meaningful checkpoint or blocker note
-- intentionally stores only the latest note, not a history log
-
-The initial `update_work_plan` shape should be:
+The initial `PickWorkItem` shape should be:
 
 - `work_item_id` required
-- `plan` required
+
+The tool should return:
+
+- the new current work item snapshot
+- the previous current work item snapshot when present
+- a clear binding note that subsequent tool calls in this turn are associated
+  with the new current work item unless they explicitly specify another
+  `work_item_id`
+
+The initial `UpdateWorkItem` shape should be:
+
+- `work_item_id` required
+- `blocked_by` optional
+- `plan` optional
+
+`blocked_by`
+- set when the item cannot currently be advanced
+- omitted when no blocker changes
+- explicitly cleared when the item becomes runnable again
+
+`plan`
+- replaces the current full checklist snapshot for the work item
 
 Each plan item should contain:
 
 - `step`
-- `status`
+- `state`
 
-The initial step status set should be:
+The initial step state set should be:
 
 - `pending`
-- `in_progress`
-- `completed`
+- `doing`
+- `done`
+
+The initial `CompleteWorkItem` shape should be:
+
+- `work_item_id` required
+- `result_summary` optional
+
+`result_summary`
+- the short completion record, not a full progress log
+
+The initial read shapes should be:
+
+- `GetWorkItem(work_item_id)`
+- `ListWorkItems(filter?, limit?)`
+
+Useful initial filters are:
+
+- all open work items
+- runnable open work items
+- blocked open work items
+- done work items
 
 ### Work-plan update semantics
 
-`update_work_plan` should use full-snapshot replacement semantics.
+Work-plan updates should use full-snapshot replacement semantics.
 
-When a plan item changes status, the agent should submit the current complete work-plan snapshot, not a patch for one individual item.
+When a plan item changes state, the agent should submit the current complete work-plan snapshot, not a patch for one individual item.
 
 This keeps the first version simpler for both the agent and the runtime:
 
@@ -575,13 +658,99 @@ This keeps the first version simpler for both the agent and the runtime:
 - the runtime stores the latest plan snapshot
 - prompt projection can read from one stable current plan
 
+## Delegation and child agents
+
+Child-agent delegation should not be represented by a generic `parent_id` field
+on `WorkItem`.
+
+The ordinary work-item model should stay flat:
+
+- `CreateWorkItem` creates one task card for the current agent
+- same-agent decomposition should normally be represented in the work plan
+- cross-agent delegation should be represented by a structured delegation record
+
+This avoids making every work item carry ambiguous hierarchy metadata before the
+runtime has UI, scheduling, query, or completion semantics for arbitrary work
+graphs.
+
+### SpawnAgent work-item delegation
+
+The first version should not introduce a separate `DelegateWorkItem` tool.
+
+Instead, `SpawnAgent` should accept optional work-item delegation metadata:
+
+```text
+SpawnAgent(
+  summary,
+  prompt,
+  preset?,
+  agent_id?,
+  template?,
+  workspace_mode?,
+  work_item?: {
+    parent_work_item_id: string,
+    child_delivery_target?: string,
+    child_plan?: WorkPlanItem[]
+  }
+)
+```
+
+If `work_item` is omitted, `SpawnAgent` behaves as a normal child-agent spawn
+without work-item delegation semantics.
+
+If `work_item` is present, the runtime should:
+
+- validate that `parent_work_item_id` belongs to the parent agent
+- create a child work item for the spawned child agent
+- set the child agent's `current_work_item_id` to the child work item
+- create a delegation record linking parent and child
+- return the child work item id and delegation id in the `SpawnAgent` result
+
+The child delivery target may be provided explicitly. If omitted, the runtime
+may derive it from the spawn summary or prompt.
+
+### Delegation record
+
+A delegation record should include:
+
+- `delegation_id`
+- `parent_agent_id`
+- `parent_work_item_id`
+- `child_agent_id`
+- `child_work_item_id`
+- `state`
+- `result_summary` when complete
+
+Delegation state should be separate from work-item blocker state.
+
+The `WorkItem` schema should not include `parent_work_item_id`. Read surfaces
+and prompt projection can return delegation context by joining delegation
+records with work items:
+
+- child-side reads can include the parent agent, parent work item, and
+  delegation id
+- parent-side reads can include child delegations for that work item
+
+This keeps `WorkItem` focused on the task card while still making delegation
+context visible when it matters.
+
+Spawning a child agent does not automatically make the parent work item blocked.
+The parent agent may continue working on the same work item, switch to another
+work item, or explicitly set `blocked_by` if it is truly waiting on the child.
+
+Child-agent results must be associated back to the parent work item through the
+delegation record, not by looking at the parent agent's current focus when the
+result is delivered. This keeps result routing correct even if the parent agent
+has already picked a different current work item.
+
 ## Completion boundary
 
 This RFC does not fully specify work-item completion semantics.
 
 It only establishes where completion belongs.
 
-Completion should be attached to `Work Item`, not overloaded onto:
+Completion should be expressed by `CompleteWorkItem` and persisted on the
+`WorkItem`, not overloaded onto:
 
 - turn settlement
 - internal task termination
@@ -590,40 +759,36 @@ Completion should be attached to `Work Item`, not overloaded onto:
 Future RFCs or follow-up issues can define:
 
 - what evidence is required to complete a work item
-- when a work item should remain waiting instead of completing
+- when a work item should remain open but blocked instead of completing
 - how closure claims and evidence artifacts should interact
 
-## Work-item transition semantics
+## Work-item action semantics
 
-Transitions between:
-
-- `active`
-- `waiting`
-- `queued`
-- `completed`
-
-should not be decided by runtime code alone, and should not be accepted from agent prose alone.
+Work-item scheduling should be expressed through tool actions, not by asking the
+agent to directly mutate a status machine.
 
 The proposed model is:
 
-1. agent transition claim
+1. agent action
 2. minimal runtime fact check
-3. scheduler/controller commit
+3. persisted work-item or focus update
 
-### Agent transition claim
+### Agent actions
 
-At the end of a turn, the agent should be able to express its intended transition for the current active work item.
+The useful first-version actions are:
 
-The useful transition intents are:
+- create a work item
+- pick the current work item
+- update a work item's checklist or blocker
+- complete a work item
 
-- remain `active`
-- move to `waiting`
-- move to `queued`
-- mark `completed`
+The agent should not have to produce progress prose just to keep the work item
+fresh. Normal progress can live in transcript text, brief records, tool records,
+and final answers, all associated to the current work item by runtime binding.
 
-The agent should also provide a short reason for the transition.
-
-This keeps the semantic interpretation close to the model, rather than trying to fully hard-code it in the runtime.
+This keeps the semantic interpretation close to the model, rather than trying to
+fully hard-code it in the runtime, while avoiding ambiguous fields such as
+`summary` and `progress_note`.
 
 ### Minimal runtime fact check
 
@@ -631,31 +796,33 @@ Runtime fact checks should remain intentionally small.
 
 The runtime should only guard against obvious contradictions, such as:
 
-- marking a work item `completed` while there is still clearly active unfinished execution
-- marking a work item `waiting` without any stated waiting reason
+- picking a work item that does not belong to the agent
+- picking a work item that is already done
+- completing a work item while there is still clearly unfinished execution
+- setting an empty blocker
 
 The runtime should not attempt full semantic judgment about whether the delivery target is truly satisfied.
 
 Its role is only to prevent obviously inconsistent state transitions.
 
-### Scheduler/controller commit
+### Commit
 
-The scheduler or controller should commit the final persisted state transition.
+The runtime should commit the persisted state or focus update.
 
 This layer combines:
 
-- the agent's transition claim
+- the agent's explicit action
 - the minimal runtime facts
 
-and writes the resulting work-item state.
+and writes the resulting work-item record or `current_work_item_id`.
 
 ### Default bias
 
 The initial default bias should be conservative:
 
-- if there is no convincing reason to move out of `active`, remain `active`
-- `waiting` should require an explicit reason
-- `completed` should require that runtime facts do not show obvious unfinished execution
+- if the agent does not pick a different work item, keep the current work item
+- blocked state should require `blocked_by`
+- completion should require that runtime facts do not show obvious unfinished execution
 
 This keeps first-version behavior simple while avoiding the most obvious forms of false completion.
 
@@ -666,16 +833,18 @@ This RFC does not attempt to:
 - define full evidence or verification policy
 - introduce a separate resolver agent
 - model the full external issue backlog inside the runtime
-- define every future status or scheduling policy
+- define every future lifecycle field or scheduling policy
 - redesign the user-facing UI in this document
 
 ## Open questions
 
 The main open questions after this RFC are:
 
-1. how explicit work-item mutation should be in the tool surface
-2. how much work-item state should be injected into prompt projection
-3. how completion should interact with closure evidence
+1. whether `blocked_by` is enough for the first blocked-work model, or whether
+   a later `resume_hint` field is needed
+2. how much delegation state should be injected into prompt projection
+3. how much work-item state should be injected into prompt projection
+4. how completion should interact with closure evidence
 
 ## Current design direction
 
@@ -686,7 +855,13 @@ This RFC currently assumes:
 - newly discovered work that forms a different delivery target may become a new `Work Item`
 - the first rollout remains message-driven by default
 - `WorkItem` creation is explicit in early phases rather than inferred from every ingress
-- a direct control-plane enqueue path is allowed for future queued work
+- `current_work_item_id` is controlled by explicit agent action
+- queued and blocked views are derived from `open`, `current_work_item_id`, and `blocked_by`
+- progress narration remains in transcript/brief/tool records and is associated
+  back to work items by runtime binding
+- child-agent delegation is expressed through `SpawnAgent` work-item metadata
+  and delegation records, not `WorkItem.parent_id`
+- a direct control-plane path is allowed for future open work
 
 This RFC does not yet impose stronger policy constraints on agent-derived work creation.
 
