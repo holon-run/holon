@@ -702,6 +702,13 @@ mod tests {
             model: AgentModelState {
                 effective_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6")
                     .unwrap(),
+                requested_model: Some(
+                    crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+                ),
+                active_model: Some(
+                    crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+                ),
+                fallback_active: false,
                 runtime_default_model: crate::config::ModelRef::parse(
                     "anthropic/claude-sonnet-4-6",
                 )

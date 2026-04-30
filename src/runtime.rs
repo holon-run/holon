@@ -493,6 +493,13 @@ impl RuntimeHandle {
             .inner
             .model_catalog
             .effective_model(state.model_override.as_ref());
+        let active_model = state
+            .last_requested_model
+            .as_ref()
+            .filter(|requested| *requested == &effective_model)
+            .and_then(|_| state.last_active_model.clone())
+            .unwrap_or_else(|| effective_model.clone());
+        let fallback_active = active_model != effective_model;
         let effective_chain = self
             .inner
             .model_catalog
@@ -508,7 +515,10 @@ impl RuntimeHandle {
                 crate::types::AgentModelSource::RuntimeDefault
             },
             runtime_default_model: self.inner.model_catalog.default_model.clone(),
-            effective_model,
+            effective_model: effective_model.clone(),
+            requested_model: Some(effective_model),
+            active_model: Some(active_model),
+            fallback_active,
             effective_fallback_models: effective_chain.into_iter().skip(1).collect(),
             override_model: state.model_override.clone(),
             resolved_policy,
@@ -4579,6 +4589,8 @@ mod tests {
                         },
                     ],
                     aggregated_token_usage: Some(TokenUsage::new(12, 6)),
+                    requested_model_ref: "openai/gpt-5.4".into(),
+                    active_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
                     winning_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
                 }),
             ))
@@ -4855,6 +4867,8 @@ mod tests {
                         }),
                     }],
                     aggregated_token_usage: None,
+                    requested_model_ref: "openai/gpt-5.4".into(),
+                    active_model_ref: None,
                     winning_model_ref: None,
                 },
                 anyhow!("bad request"),
@@ -4885,6 +4899,8 @@ mod tests {
                         transport_diagnostics: None,
                     }],
                     aggregated_token_usage: Some(TokenUsage::new(125_166, 0)),
+                    requested_model_ref: "openai-codex/gpt-5.3-codex-spark".into(),
+                    active_model_ref: None,
                     winning_model_ref: None,
                 },
                 anyhow!("context_length_exceeded: input too long"),
@@ -5609,6 +5625,26 @@ mod tests {
             Some("anthropic/claude-sonnet-4-6")
         );
         assert_eq!(
+            timeline["requested_model_ref"].as_str(),
+            Some("openai/gpt-5.4")
+        );
+        assert_eq!(
+            timeline["active_model_ref"].as_str(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+        assert_eq!(
+            assistant_round.data["requested_model"].as_str(),
+            Some("openai/gpt-5.4")
+        );
+        assert_eq!(
+            assistant_round.data["active_model"].as_str(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+        assert_eq!(
+            assistant_round.data["fallback_active"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
             assistant_round.data["token_usage"]["total_tokens"].as_u64(),
             Some(18)
         );
@@ -5634,6 +5670,15 @@ mod tests {
                 .len(),
             2
         );
+        assert_eq!(
+            provider_event.data["requested_model"].as_str(),
+            Some("openai/gpt-5.4")
+        );
+        assert_eq!(
+            provider_event.data["active_model"].as_str(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+        assert_eq!(provider_event.data["fallback_active"].as_bool(), Some(true));
     }
 
     #[tokio::test]

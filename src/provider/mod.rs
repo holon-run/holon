@@ -314,6 +314,10 @@ pub struct ProviderAttemptRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderAttemptTimeline {
     pub attempts: Vec<ProviderAttemptRecord>,
+    #[serde(default)]
+    pub requested_model_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub winning_model_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
