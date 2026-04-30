@@ -97,14 +97,14 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_apply_patch",
             PromptStability::Stable,
-            "Use ApplyPatch as the primary file-mutation tool. Use it for new files, whole-file replacement, small local edits, multi-hunk single-file changes, structural edits, and non-trivial refactors. Do not expect separate Write or Edit tools; express all file mutation as unified diff text. On providers that expose ApplyPatch as a freeform grammar tool, send the unified diff body directly and do not wrap it in JSON. On JSON/function fallback providers, ApplyPatch expects exactly `{\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}`; do not use `input`. The model-visible ApplyPatch receipt is concise text with action markers like `A`, `M`, `D`, or `R`, while the canonical result still records structured changed-file metadata, `changed_paths`, `changed_file_count`, ignored metadata, diagnostics, and `summary_text`.".to_string(),
+            "Use ApplyPatch as the primary precise file-mutation tool. Use it for focused new files, small local edits, multi-hunk single-file changes, structural edits, and bounded refactors. For very large new files, generated files, whole-file rewrites, bulk deletes, or broad mechanical refactors, choose the lower-context path: split the change into smaller ApplyPatch calls, or use a carefully bounded ExecCommand/scripted rewrite when that avoids emitting a huge diff and is easier to verify. Do not expect separate Write or Edit tools; express ordinary file mutation as unified diff text. On providers that expose ApplyPatch as a freeform grammar tool, send the unified diff body directly and do not wrap it in JSON. On JSON/function fallback providers, ApplyPatch expects exactly `{\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}`; do not use `input`. The model-visible ApplyPatch receipt is concise text with action markers like `A`, `M`, `D`, or `R`, while the canonical result still records structured changed-file metadata, `changed_paths`, `changed_file_count`, ignored metadata, diagnostics, and `summary_text`.".to_string(),
         ));
     }
     if names.contains(&"ApplyPatch") {
         sections.push(section(
             "tool_file_mutation",
             PromptStability::Stable,
-            "File mutation is workspace-scoped and centered on ApplyPatch. Use unified diff `---`/`+++` file headers and `@@` hunks for new files, deletes, precise edits, and renames. Prefer focused hunks with enough surrounding context to stay unambiguous. Include at least 3 context lines before and after each changed line, and expand to 5–10 lines when the file contains repeated structures or similar patterns. Blank lines within hunks must have a space prefix to be valid context lines. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path. After any file mutation, rely on the ApplyPatch receipt first, then run focused verification with ExecCommand when correctness matters. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead.".to_string(),
+            "File mutation is workspace-scoped and centered on ApplyPatch. Use unified diff `---`/`+++` file headers and `@@` hunks for deletes, precise edits, and renames. Prefer focused hunks with enough surrounding context to stay unambiguous. Include at least 3 context lines before and after each changed line, and expand to 5–10 lines when the file contains repeated structures or similar patterns. Blank lines within hunks must have a space prefix to be valid context lines. Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After any file mutation, rely on the ApplyPatch receipt first, then run focused verification with ExecCommand when correctness matters. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead.".to_string(),
         ));
     }
     if names.contains(&"UseWorkspace") {
@@ -405,12 +405,18 @@ mod tests {
         assert!(apply_patch
             .content
             .contains("Do not expect separate Write or Edit tools"));
+        assert!(apply_patch.content.contains("lower-context path"));
+        assert!(apply_patch.content.contains("very large new files"));
         let section = sections
             .iter()
             .find(|s| s.name == "tool_file_mutation")
             .expect("file mutation section");
         assert!(section.content.contains("centered on ApplyPatch"));
         assert!(section.content.contains("sed -i"));
+        assert!(section
+            .content
+            .contains("do not retry the same large failed patch unchanged"));
+        assert!(section.content.contains("bounded script or heredoc"));
     }
 
     #[test]

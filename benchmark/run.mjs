@@ -2455,6 +2455,10 @@ function summarizeHolonToolExecutions(entries) {
 
 export function summarizeHolonTokenOptimization(events, toolExecutions = [], options = {}) {
   const toolSummaries = toolExecutions.map(summarizeToolPayloadSize);
+  const truncatedMutationToolCallRejections = events.filter((event) => {
+    const kind = event?.kind ?? event?.event ?? event?.type;
+    return kind === "truncated_mutation_tool_call_rejected";
+  }).length;
   let nextToolIndex = 0;
   let previousTool = null;
   const rounds = [];
@@ -2556,7 +2560,10 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
     }
   }
 
-  const summary = summarizeTokenOptimizationRounds(rounds);
+  const summary = {
+    ...summarizeTokenOptimizationRounds(rounds),
+    truncated_mutation_tool_call_rejections: truncatedMutationToolCallRejections
+  };
   return {
     schema_version: 1,
     generated_from: "holon_events",

@@ -8,9 +8,9 @@ use crate::{
     system::ExecutionScopeKind,
     tool::{
         apply_patch,
-        helpers::{invalid_tool_input, validate_non_empty},
+        helpers::{invalid_tool_input, truncate_text, validate_non_empty},
         spec::{ToolFreeformGrammar, ToolResultStatus},
-        ToolResult,
+        ToolError, ToolResult,
     },
     types::{ApplyPatchAction, ApplyPatchResult, ToolCapabilityFamily, TrustLevel},
 };
@@ -20,6 +20,8 @@ use crate::tool::{helpers::parse_tool_args, schema::tool_input_schema};
 
 pub(crate) const NAME: &str = "ApplyPatch";
 const APPLY_PATCH_LARK_GRAMMAR: &str = include_str!("apply_patch_tool.lark");
+const MODEL_ERROR_TEXT_LIMIT: usize = 700;
+const MODEL_ERROR_TOKEN_LIMIT: usize = 96;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -85,7 +87,7 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
         let error = result
             .tool_error()
             .ok_or_else(|| anyhow!("ApplyPatch error result missing tool error"))?;
-        return Ok(format!("ApplyPatch failed\n{}\n", error.render()));
+        return Ok(render_apply_patch_error_for_model(error));
     }
 
     let value = result
@@ -102,6 +104,59 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
         lines.extend(result.changed_files.iter().map(render_changed_file_receipt));
     }
     Ok(lines.join("\n"))
+}
+
+fn render_apply_patch_error_for_model(error: &ToolError) -> String {
+    let mut lines = vec![
+        "ApplyPatch failed".to_string(),
+        format!("- kind: {}", error.kind),
+        format!(
+            "- message: {}",
+            sanitize_model_visible_error_text(&error.message)
+        ),
+    ];
+    if let Some(recovery_hint) = error.recovery_hint.as_deref() {
+        lines.push(format!(
+            "- recovery_hint: {}",
+            sanitize_model_visible_error_text(recovery_hint)
+        ));
+    }
+    if error.details.is_some() {
+        lines.push(
+            "- details: omitted from model-visible receipt; inspect audit/tool records if exact parser details are needed"
+                .to_string(),
+        );
+    }
+    if error.retryable {
+        lines.push("- retryable: true".to_string());
+    }
+    lines.push(
+        "Use a smaller, valid unified diff or inspect the target file before retrying.".to_string(),
+    );
+    format!("{}\n", lines.join("\n"))
+}
+
+fn sanitize_model_visible_error_text(text: &str) -> String {
+    let mut sanitized = String::new();
+    let mut token_len = 0usize;
+    let mut omitting_token = false;
+    for ch in text.trim().chars() {
+        if ch.is_whitespace() {
+            token_len = 0;
+            omitting_token = false;
+            sanitized.push(ch);
+            continue;
+        }
+
+        token_len += 1;
+        if token_len <= MODEL_ERROR_TOKEN_LIMIT {
+            sanitized.push(ch);
+        } else if !omitting_token {
+            sanitized.push_str("[long token omitted]");
+            omitting_token = true;
+        }
+    }
+    truncate_text(&sanitized, MODEL_ERROR_TEXT_LIMIT)
 }
 
 fn extract_patch_input(input: &Value) -> Result<String> {
@@ -193,6 +248,32 @@ mod tests {
         let rendered = render_for_model(&result).unwrap();
         assert!(rendered.contains("ApplyPatch failed"));
         assert!(rendered.contains("patch exploded"));
+    }
+
+    #[test]
+    fn apply_patch_error_omits_large_details_from_model_receipt() {
+        let long_path = format!("src/{}.rs", "nested".repeat(600));
+        let invalid_fragment = format!("{} code to=functions.ApplyPatch", "***".repeat(2000));
+        let result = ToolResult::error(
+            NAME,
+            ToolError::new(
+                "invalid_patch_syntax",
+                format!("invalid patch near {}", "x".repeat(400)),
+            )
+            .with_details(json!({
+                "path": long_path,
+                "fragment": invalid_fragment,
+            }))
+            .with_recovery_hint(format!("inspect {}", "target".repeat(200))),
+        );
+
+        let rendered = render_for_model(&result).unwrap();
+        assert!(rendered.contains("ApplyPatch failed"));
+        assert!(rendered.contains("details: omitted"));
+        assert!(rendered.contains("[long token omitted]"));
+        assert!(!rendered.contains("code to=functions.ApplyPatch"));
+        assert!(!rendered.contains(&"nested".repeat(60)));
+        assert!(rendered.len() < 1_200);
     }
 
     #[test]

@@ -980,6 +980,38 @@ test("summarizeHolonTokenOptimization reports OpenAI remote compaction", () => {
   assert.equal(diagnostics.summary.openai_remote_compaction_items, 2);
 });
 
+test("summarizeHolonTokenOptimization reports truncated mutation call rejections", () => {
+  const diagnostics = summarizeHolonTokenOptimization([
+    {
+      kind: "truncated_mutation_tool_call_rejected",
+      data: {
+        tool_name: "ApplyPatch",
+        tool_call_id: "patch-1",
+        stop_reason: "max_tokens"
+      }
+    },
+    {
+      kind: "provider_round_completed",
+      data: {
+        round: 1,
+        input_tokens: 500,
+        output_tokens: 50,
+        provider_attempt_timeline: {
+          attempts: [
+            {
+              provider: "openai",
+              model_ref: "openai/gpt-5.4",
+              outcome: "succeeded"
+            }
+          ]
+        }
+      }
+    }
+  ]);
+
+  assert.equal(diagnostics.summary.truncated_mutation_tool_call_rejections, 1);
+});
+
 test("summarizeHolonTokenOptimization reports Anthropic context management usage", () => {
   const diagnostics = summarizeHolonTokenOptimization([
     {
