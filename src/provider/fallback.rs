@@ -31,7 +31,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
-    use crate::provider::{ModelBlock, ProviderCacheUsage};
+    use crate::provider::{ModelBlock, ProviderCacheUsage, ProviderPromptFrame};
 
     #[derive(Clone)]
     struct PolicyProvider {
@@ -43,6 +43,7 @@ mod tests {
         name: &'static str,
         fail: bool,
         prompts: Arc<Mutex<Vec<String>>>,
+        system_blocks: Arc<Mutex<Vec<Vec<PromptContentBlock>>>>,
     }
 
     #[async_trait]
@@ -79,6 +80,10 @@ mod tests {
                 "{}:{}",
                 self.name, request.prompt_frame.system_prompt
             ));
+            self.system_blocks
+                .lock()
+                .await
+                .push(request.prompt_frame.system_blocks.clone());
             if self.fail {
                 return Err(anyhow!("forced provider failure"));
             }
@@ -143,6 +148,7 @@ mod tests {
     #[tokio::test]
     async fn model_visible_hint_marks_normal_attempt_with_active_model_only() {
         let prompts = Arc::new(Mutex::new(Vec::new()));
+        let system_blocks = Arc::new(Mutex::new(Vec::new()));
         let provider = FallbackProvider {
             candidates: vec![recording_candidate(
                 "openai/gpt-5.4",
@@ -151,6 +157,7 @@ mod tests {
                     name: "primary",
                     fail: false,
                     prompts: prompts.clone(),
+                    system_blocks: system_blocks.clone(),
                 },
             )],
         };
@@ -168,6 +175,7 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert!(recorded[0].contains("Runtime: active_model=openai/gpt-5.4"));
         assert!(!recorded[0].contains("requested_model="));
+        assert!(system_blocks.lock().await[0].is_empty());
         let timeline = timeline.expect("timeline");
         assert_eq!(timeline.requested_model_ref, "openai/gpt-5.4");
         assert_eq!(timeline.active_model_ref.as_deref(), Some("openai/gpt-5.4"));
@@ -176,6 +184,7 @@ mod tests {
     #[tokio::test]
     async fn model_visible_hint_marks_fallback_attempt_with_requested_model() {
         let prompts = Arc::new(Mutex::new(Vec::new()));
+        let system_blocks = Arc::new(Mutex::new(Vec::new()));
         let provider = FallbackProvider {
             candidates: vec![
                 recording_candidate(
@@ -185,6 +194,7 @@ mod tests {
                         name: "primary",
                         fail: true,
                         prompts: prompts.clone(),
+                        system_blocks: system_blocks.clone(),
                     },
                 ),
                 recording_candidate(
@@ -194,6 +204,7 @@ mod tests {
                         name: "fallback",
                         fail: false,
                         prompts: prompts.clone(),
+                        system_blocks: system_blocks.clone(),
                     },
                 ),
             ],
@@ -215,6 +226,7 @@ mod tests {
         assert!(recorded[1].contains(
             "Runtime: active_model=anthropic/claude-sonnet-4-6 requested_model=openai/gpt-5.4"
         ));
+        assert!(system_blocks.lock().await[0].is_empty());
         let timeline = timeline.expect("timeline");
         assert_eq!(timeline.requested_model_ref, "openai/gpt-5.4");
         assert_eq!(
@@ -225,6 +237,51 @@ mod tests {
             timeline.winning_model_ref.as_deref(),
             Some("anthropic/claude-sonnet-4-6")
         );
+    }
+
+    #[tokio::test]
+    async fn model_visible_hint_preserves_structured_system_shape_and_marks_cache_breakpoint() {
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let system_blocks = Arc::new(Mutex::new(Vec::new()));
+        let provider = FallbackProvider {
+            candidates: vec![recording_candidate(
+                "openai/gpt-5.4",
+                "openai",
+                RecordingProvider {
+                    name: "primary",
+                    fail: false,
+                    prompts: prompts.clone(),
+                    system_blocks: system_blocks.clone(),
+                },
+            )],
+        };
+
+        let request = ProviderTurnRequest {
+            prompt_frame: ProviderPromptFrame::structured(
+                "base",
+                vec![PromptContentBlock {
+                    text: "existing".into(),
+                    stability: PromptStability::Stable,
+                    cache_breakpoint: false,
+                }],
+                Vec::new(),
+                None,
+            ),
+            conversation: Vec::new(),
+            tools: Vec::new(),
+        };
+
+        provider
+            .complete_turn_with_diagnostics(request)
+            .await
+            .expect("provider should succeed");
+
+        let recorded_blocks = system_blocks.lock().await;
+        assert_eq!(recorded_blocks[0].len(), 2);
+        let hint = recorded_blocks[0].last().expect("runtime hint block");
+        assert_eq!(hint.text, "Runtime: active_model=openai/gpt-5.4");
+        assert_eq!(hint.stability, PromptStability::TurnScoped);
+        assert!(hint.cache_breakpoint);
     }
 }
 
@@ -411,11 +468,13 @@ fn request_for_model_attempt(
         request.prompt_frame.system_prompt.push_str("\n\n");
     }
     request.prompt_frame.system_prompt.push_str(&hint);
-    request.prompt_frame.system_blocks.push(PromptContentBlock {
-        text: hint,
-        stability: PromptStability::TurnScoped,
-        cache_breakpoint: false,
-    });
+    if !request.prompt_frame.system_blocks.is_empty() {
+        request.prompt_frame.system_blocks.push(PromptContentBlock {
+            text: hint,
+            stability: PromptStability::TurnScoped,
+            cache_breakpoint: true,
+        });
+    }
     request
 }
 
