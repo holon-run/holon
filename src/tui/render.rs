@@ -124,11 +124,13 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
     let refreshed = app
         .last_refresh_at
         .map(|timestamp| timestamp.format("%H:%M:%S").to_string())
-        .unwrap_or_else(|| "never".into());
-    let last_event = app
-        .last_event_at
+        .unwrap_or_else(|| "unknown".into());
+    // Show refresh time as fallback for event time to avoid misleading "never"
+    // when agent was just bootstrapped and hasn't received events yet
+    let last_event = app.last_event_at
+        .or(app.last_refresh_at)
         .map(|timestamp| timestamp.format("%H:%M:%S").to_string())
-        .unwrap_or_else(|| "never".into());
+        .unwrap_or_else(|| "unknown".into());
     let stale = app
         .stale_slice_summary()
         .map(|summary| format!("  Projection stale: {summary}"))
@@ -315,12 +317,12 @@ fn render_activity_text(app: &TuiApp) -> String {
         });
         text
     } else {
-        app.activity_text_cache
-            .borrow()
+        // Borrow cache once and reuse for both checks to avoid duplication
+        let cached = app.activity_text_cache.borrow();
+        cached
             .as_ref()
-            .filter(|cached| cached.agent_id == agent_id)
-            .filter(|cached| !cached.text.is_empty())
-            .map(|cached| cached.text.clone())
+            .filter(|c| c.agent_id == agent_id && !c.text.is_empty())
+            .map(|c| c.text.clone())
             .unwrap_or_default()
     }
 }
