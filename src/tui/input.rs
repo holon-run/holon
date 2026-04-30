@@ -719,7 +719,10 @@ fn adjust_scroll_for_key(scroll: u16, code: KeyCode) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_composer_submission, slash_prompt_lines, ComposerSubmission, SlashCommand};
+    use super::{
+        parse_composer_submission, slash_menu_specs, slash_prompt_lines, ComposerSubmission,
+        SlashCommand,
+    };
 
     #[test]
     fn parses_plain_chat_submission() {
@@ -797,6 +800,11 @@ mod tests {
     #[test]
     fn slash_prompt_ignores_escaped_slash_chat() {
         assert!(slash_prompt_lines("//hello").is_none());
+    }
+
+    #[test]
+    fn slash_menu_ignores_multiline_input() {
+        assert!(slash_menu_specs("/mo\nextra").is_empty());
     }
 
     #[test]
