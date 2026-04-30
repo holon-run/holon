@@ -710,7 +710,8 @@ fn edit_buffer(key: KeyEvent, composer: &mut ComposerState) -> Option<BufferActi
     match key.code {
         KeyCode::Enter => {
             // Ignore Shift+Enter - it's handled by the outer match to insert newline
-            if !key.modifiers.contains(KeyModifiers::SHIFT) && !composer.as_str().trim().is_empty() {
+            if !key.modifiers.contains(KeyModifiers::SHIFT) && !composer.as_str().trim().is_empty()
+            {
                 return Some(BufferAction::Submit);
             }
         }
