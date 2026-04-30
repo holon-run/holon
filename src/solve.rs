@@ -298,8 +298,18 @@ fn should_include_review_publish_guardrails(
     ) || request
         .goal
         .as_deref()
-        .map(|goal| goal.to_ascii_lowercase().contains("review"))
+        .map(goal_mentions_review)
         .unwrap_or(false)
+}
+
+fn goal_mentions_review(goal: &str) -> bool {
+    goal.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| {
+            matches!(
+                token.to_ascii_lowercase().as_str(),
+                "review" | "reviews" | "reviewing"
+            )
+        })
 }
 
 fn default_goal(target: Option<&GitHubTarget>) -> String {
@@ -445,7 +455,7 @@ mod tests {
 
     #[test]
     fn build_prompt_adds_review_publish_guardrails_for_review_goals() {
-        let mut request = request("https://github.com/holon-run/holon-test/pull/52");
+        let mut request = request("https://github.com/holon-run/holon-test/issues/52");
         request.goal = Some(
             "Review the target pull request only. Publish one concise review or PR comment.".into(),
         );
@@ -457,6 +467,16 @@ mod tests {
         assert!(prompt.contains("one PR review or one PR comment, not both"));
         assert!(prompt.contains("After any review/comment publish command succeeds"));
         assert!(prompt.contains("verify existing reviews/comments for the same head SHA"));
+    }
+
+    #[test]
+    fn review_publish_guardrails_do_not_match_preview_text() {
+        let mut request = request("https://github.com/holon-run/holon-test/issues/52");
+        request.goal = Some("Generate a preview artifact for the target issue.".into());
+        let target = parse_github_target(&request.target_ref, None).unwrap();
+        let prompt = build_solve_prompt(&request, target.as_ref(), Path::new("/tmp/out"));
+
+        assert!(!prompt.contains("Review publishing guardrails"));
     }
 
     #[test]

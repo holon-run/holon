@@ -79,6 +79,9 @@ Generate:
 - `${GITHUB_OUTPUT_DIR}/review.md`
 - `${GITHUB_OUTPUT_DIR}/review.json`
 - `${GITHUB_OUTPUT_DIR}/summary.md`
+- `${GITHUB_OUTPUT_DIR}/review-publish.json` after a successful publish, or when
+  publishing is skipped because an equivalent same-head review/comment already
+  exists
 - Optional `${GITHUB_OUTPUT_DIR}/manifest.json` (execution metadata)
 
 ### 3. Publish review
