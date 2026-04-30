@@ -17,6 +17,7 @@ For a short architecture map and reading path, see
 - [Long-Lived Context Memory](./long-lived-context-memory.md)
 - [Agent and Workspace Memory](./agent-and-workspace-memory.md)
 - [Turn-Local Context Compaction](./turn-local-context-compaction.md)
+- [OpenAI Remote Compaction Boundary](./openai-remote-compaction.md)
 - [Operator Notification and Intervention](./operator-wait-and-intervention.md)
 - [Waiting Plane And Reactivation](./waiting-plane-and-reactivation.md)
 - [External Trigger Capability And Providerless Ingress](./external-trigger-capability.md)
