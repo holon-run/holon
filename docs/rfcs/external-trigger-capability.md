@@ -87,11 +87,10 @@ external trigger, subject to descriptor status and delivery-mode checks.
 
 The waiting intent records what the agent is waiting for:
 
-- summary
+- description
 - source
-- condition
-- optional resource
 - delivery mode
+- scope
 - target agent
 - optional work-item anchor
 
@@ -113,21 +112,39 @@ Phase 1 should expose:
 
 ```json
 {
-  "summary": "wait for CI callback",
+  "description": "Check GitHub PR #123 when CI status changes",
   "source": "github",
-  "condition": "required_checks_passed",
-  "resource": "pull_request:123",
-  "delivery_mode": "wake_only"
+  "scope": "work_item",
+  "delivery_mode": "wake_hint"
 }
 ```
 
 Fields:
 
-- `summary`: required short human/model-readable summary
+- `description`: required human/model-readable description of what the trigger
+  means and what the agent should inspect after activation
 - `source`: required provider or integration source label
-- `condition`: required condition label
-- `resource`: optional provider-specific resource identifier
-- `delivery_mode`: `wake_only` or `enqueue_message`
+- `scope`: `work_item` or `agent`
+- `delivery_mode`: `wake_hint` or `enqueue_message`
+
+`description` intentionally replaces the earlier split between `summary` and
+`condition`. The runtime does not parse a machine condition, so keeping two
+natural-language fields makes the tool harder for agents to use correctly.
+
+`resource` is intentionally not part of the public tool contract. The scoped
+capability URL, trigger id, source, description, and payload provide the stable
+runtime context. If future integrations need structured provider metadata, add a
+typed metadata object instead of a single semi-structured resource string.
+
+`scope` controls cleanup:
+
+- `work_item`: the trigger is tied to the current work item and participates in
+  work-item waiting cleanup. Creating a work-item-scoped trigger without a
+  current work-item anchor should fail rather than silently creating an
+  unanchored waiting intent.
+- `agent`: the trigger belongs to the agent lifecycle. It remains active until
+  explicit cancellation, expiry, or administrative cleanup, and it must not be
+  revoked just because there is no active work item.
 
 The tool creates:
 
@@ -143,7 +160,8 @@ ExternalTriggerCapability {
   external_trigger_id: string
   trigger_url: string
   target_agent_id: string
-  delivery_mode: 'wake_only' | 'enqueue_message'
+  scope: 'work_item' | 'agent'
+  delivery_mode: 'wake_hint' | 'enqueue_message'
 }
 ```
 
@@ -188,30 +206,41 @@ The payload is opaque to Holon:
 
 Holon should not reinterpret provider-specific fields.
 
-### `wake_only`
+### `wake_hint`
 
-`wake_only` means something changed and the agent should reconsider external
+`wake_hint` means something changed and the agent should reconsider external
 state, but the delivery should not become a normal queued external-trigger
-event.
+message.
 
 On valid delivery:
 
 - Holon validates the trigger token
 - Holon checks the descriptor and waiting intent are still active
-- Holon records a wake hint
+- Holon records or updates a pending wake hint
 - Holon preserves activation context for prompt/status/audit surfaces
 
-Activation context may include:
+Activation context should include:
 
+- external trigger id
+- waiting intent id
+- description
 - source
-- resource
-- reason
 - content type
 - callback body or opaque body envelope
 - correlation and causation ids
 
-`wake_only` is not a blind ping. The agent should be able to understand what
-changed well enough to inspect the relevant source through tools.
+`wake_hint` is not a blind ping. The agent should be able to understand which
+trigger fired, why it exists, and which source to inspect. The delivered payload
+is still opaque to Holon core and may be used as a hint, but `wake_hint` is
+level-triggered rather than queue-triggered: if the agent is already busy or has
+queued work, repeated wake hints may be coalesced into the latest pending hint.
+
+This makes `wake_hint` appropriate for integrations that already have their own
+durable queue or query surface. For example, AgentInbox should use an
+agent-scoped `wake_hint` trigger whose description says to read unread inbox
+items. The webhook payload may include counts, latest entry ids, and previews,
+but the agent should call `agentinbox inbox read` after waking instead of
+treating the webhook payload as the only durable source of truth.
 
 ## Ingress Contract
 
@@ -247,7 +276,7 @@ admission_context: 'external_trigger_capability'
 authority_class: 'integration_signal'
 ```
 
-For `wake_only`, the wake hint or resulting runtime-owned system tick should
+For `wake_hint`, the wake hint or resulting runtime-owned system tick should
 preserve equivalent trigger provenance in metadata:
 
 ```ts
@@ -315,12 +344,19 @@ Active waiting intents and external trigger descriptors must survive restart.
 Cancellation must revoke the trigger descriptor and keep an audit trail.
 
 Repeated deliveries may be accepted while the waiting intent remains active.
-The agent or runtime should cancel obsolete triggers when:
+Cleanup depends on trigger scope.
+
+For `work_item` scope, the agent or runtime should cancel obsolete triggers when:
 
 - the relevant external condition is no longer needed
 - the active work item changes
 - the waiting intent becomes stale
 - the user or runtime explicitly cancels it
+
+For `agent` scope, the trigger is a long-running integration entry point. It
+should not be cancelled by work-item cleanup or by the absence of an active work
+item. It should remain active until explicit `CancelExternalTrigger`, configured
+expiry, administrative cleanup, or agent removal.
 
 Time-based expiry remains a future enhancement unless implemented separately.
 
@@ -362,10 +398,11 @@ The phase-1 direction is:
 
 1. rename the public concept to External Trigger Capability
 2. add `CreateExternalTrigger` and `CancelExternalTrigger`
-3. preserve the existing `wake_only` and `enqueue_message` delivery modes
+3. use `wake_hint` and `enqueue_message` as the model-facing delivery modes
 4. project deliveries as `integration_signal`
 5. keep callback payloads opaque to Holon core
 6. preserve current token validation, mode mismatch rejection, stopped-agent
    rejection, cancellation, and restart behavior
+7. add explicit `work_item` and `agent` trigger scopes
 8. align prompt guidance, docs, tests, and event surfaces with the new
    vocabulary
