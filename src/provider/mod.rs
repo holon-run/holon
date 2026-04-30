@@ -121,6 +121,8 @@ pub struct ProviderRequestDiagnostics {
     pub anthropic_context_management: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub incremental_continuation: Option<ProviderIncrementalContinuationDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_remote_compaction: Option<ProviderOpenAiRemoteCompactionDiagnostics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -187,6 +189,31 @@ pub struct ProviderIncrementalContinuationDiagnostics {
     pub current_item_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_shape_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderOpenAiRemoteCompactionDiagnostics {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_compaction_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_content_hashes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_content_bytes: Option<Vec<usize>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_shape_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
