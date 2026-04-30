@@ -114,6 +114,13 @@ struct OpenAiProviderWindow {
     generation: u64,
 }
 
+#[derive(Debug, Clone)]
+struct OpenAiCompactionCandidate {
+    items: Vec<Value>,
+    retained_tail: Vec<Value>,
+    latest_compaction_index: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OpenAiRequestShape {
     wire_shape: Value,
@@ -1209,7 +1216,7 @@ fn update_openai_continuation(
             let mut items = provider_input;
             items.extend(parsed.output_items.clone());
             let mut append_match_items = full_input;
-            append_match_items.extend(parsed.output_items.clone());
+            append_match_items.extend(openai_append_match_output_items(&parsed.output_items));
             Some(OpenAiProviderWindow {
                 response_id: Some(response_id.clone()),
                 request_shape,
@@ -1228,6 +1235,23 @@ fn update_openai_continuation(
     }
 }
 
+fn openai_append_match_output_items(output_items: &[Value]) -> Vec<Value> {
+    output_items
+        .iter()
+        .filter_map(openai_append_match_output_item)
+        .collect()
+}
+
+fn openai_append_match_output_item(item: &Value) -> Option<Value> {
+    match item.get("type").and_then(Value::as_str) {
+        Some("message" | "function_call" | "custom_tool_call") => {
+            Some(openai_without_provider_item_id(item))
+        }
+        Some("reasoning") => None,
+        _ => Some(openai_without_provider_item_id(item)),
+    }
+}
+
 async fn maybe_compact_openai_provider_window(
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
     scope: Option<&OpenAiContinuationScope>,
@@ -1243,54 +1267,74 @@ async fn maybe_compact_openai_provider_window(
         let state = lock_openai_continuation(continuation);
         state.windows.get(scope).cloned()
     }?;
-    if let Some(skip_reason) = openai_provider_window_compaction_skip_reason(&window) {
-        if skip_reason == "below_item_threshold" {
-            return None;
+    let candidate = match openai_provider_window_compaction_candidate(&window) {
+        Ok(candidate) => candidate,
+        Err(skip_reason) => {
+            if skip_reason == "below_item_threshold" {
+                return None;
+            }
+            return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+                status: format!("skipped_{skip_reason}"),
+                trigger_reason: Some("provider_window_item_threshold".into()),
+                endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+                http_status: None,
+                input_items: Some(window.items.len()),
+                output_items: None,
+                compaction_items: None,
+                latest_compaction_index: window.latest_compaction_index,
+                encrypted_content_hashes: None,
+                encrypted_content_bytes: None,
+                request_shape_hash: Some(request_shape_hash(request_shape)),
+                continuation_generation: Some(window.generation),
+                error: None,
+            });
         }
-        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
-            status: format!("skipped_{skip_reason}"),
-            trigger_reason: Some("provider_window_item_threshold".into()),
-            endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
-            http_status: None,
-            input_items: Some(window.items.len()),
-            output_items: None,
-            compaction_items: None,
-            latest_compaction_index: window.latest_compaction_index,
-            encrypted_content_hashes: None,
-            encrypted_content_bytes: None,
-            request_shape_hash: Some(request_shape_hash(request_shape)),
-            continuation_generation: Some(window.generation),
-            error: None,
-        });
-    }
+    };
 
-    let input_items = window.items.len();
+    let input_items = candidate.items.len();
     let request_shape_hash = request_shape_hash(request_shape);
     if let Some(http_status) = compact_endpoint_unsupported_status(continuation, &compact_url) {
         return Some(openai_compact_unsupported_diagnostics(
             "skipped_unsupported_endpoint",
             "provider_window_item_threshold",
             input_items,
-            window.latest_compaction_index,
+            candidate.latest_compaction_index,
             Some(request_shape_hash),
             Some(window.generation),
             http_status,
             None,
         ));
     }
-    let compact_body = build_openai_compact_request_body(request_shape, &window.items);
+    let compact_body = build_openai_compact_request_body(request_shape, &candidate.items);
     let compacted =
         match send_openai_compact_request(client, compact_url.clone(), compact_body, headers).await
         {
             Ok(compacted) => compacted,
             Err(error) => {
+                if is_non_persisted_compact_item_id_error(&error) {
+                    return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+                        status: "invalid_non_persisted_item_id".into(),
+                        trigger_reason: Some("provider_window_item_threshold".into()),
+                        endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+                        http_status: error_status(&error),
+                        input_items: Some(input_items),
+                        output_items: None,
+                        compaction_items: None,
+                        latest_compaction_index: candidate.latest_compaction_index,
+                        encrypted_content_hashes: None,
+                        encrypted_content_bytes: None,
+                        request_shape_hash: Some(request_shape_hash),
+                        continuation_generation: Some(window.generation),
+                        error: Some(error.to_string()),
+                    });
+                }
                 if let Some(http_status) = unsupported_compact_endpoint_status(&error) {
                     mark_compact_endpoint_unsupported(continuation, &compact_url, http_status);
                     return Some(openai_compact_unsupported_diagnostics(
                         "unsupported_endpoint",
                         "provider_window_item_threshold",
                         input_items,
-                        window.latest_compaction_index,
+                        candidate.latest_compaction_index,
                         Some(request_shape_hash),
                         Some(window.generation),
                         http_status,
@@ -1305,7 +1349,7 @@ async fn maybe_compact_openai_provider_window(
                     input_items: Some(input_items),
                     output_items: None,
                     compaction_items: None,
-                    latest_compaction_index: window.latest_compaction_index,
+                    latest_compaction_index: candidate.latest_compaction_index,
                     encrypted_content_hashes: None,
                     encrypted_content_bytes: None,
                     request_shape_hash: Some(request_shape_hash),
@@ -1323,7 +1367,7 @@ async fn maybe_compact_openai_provider_window(
             input_items: Some(input_items),
             output_items: Some(0),
             compaction_items: Some(0),
-            latest_compaction_index: window.latest_compaction_index,
+            latest_compaction_index: candidate.latest_compaction_index,
             encrypted_content_hashes: Some(Vec::new()),
             encrypted_content_bytes: Some(Vec::new()),
             request_shape_hash: Some(request_shape_hash),
@@ -1380,12 +1424,15 @@ async fn maybe_compact_openai_provider_window(
         }
         state.next_generation = state.next_generation.saturating_add(1);
         let generation = state.next_generation;
+        let mut items = compacted;
+        items.extend(candidate.retained_tail.clone());
+        let latest_compaction_index = latest_openai_compaction_index(&items);
         state.windows.insert(
             scope.clone(),
             OpenAiProviderWindow {
                 response_id: None,
                 request_shape: request_shape.clone(),
-                items: compacted,
+                items,
                 append_match_items: window.append_match_items,
                 latest_compaction_index,
                 generation,
@@ -1438,55 +1485,76 @@ async fn maybe_compact_openai_request_plan(
         append_match_items: plan.full_input.clone(),
         generation: previous.generation,
     };
-    if let Some(skip_reason) = openai_provider_window_compaction_skip_reason(&compactable_window) {
-        if skip_reason == "below_item_threshold" {
-            return None;
+    let candidate = match openai_provider_window_compaction_candidate(&compactable_window) {
+        Ok(candidate) => candidate,
+        Err(skip_reason) => {
+            if skip_reason == "below_item_threshold" {
+                return None;
+            }
+            return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+                status: format!("skipped_{skip_reason}"),
+                trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+                endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+                http_status: None,
+                input_items: Some(compactable_window.items.len()),
+                output_items: None,
+                compaction_items: None,
+                latest_compaction_index: compactable_window.latest_compaction_index,
+                encrypted_content_hashes: None,
+                encrypted_content_bytes: None,
+                request_shape_hash: Some(request_shape_hash(&plan.request_shape)),
+                continuation_generation: Some(previous.generation),
+                error: None,
+            });
         }
-        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
-            status: format!("skipped_{skip_reason}"),
-            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
-            endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
-            http_status: None,
-            input_items: Some(compactable_window.items.len()),
-            output_items: None,
-            compaction_items: None,
-            latest_compaction_index: compactable_window.latest_compaction_index,
-            encrypted_content_hashes: None,
-            encrypted_content_bytes: None,
-            request_shape_hash: Some(request_shape_hash(&plan.request_shape)),
-            continuation_generation: Some(previous.generation),
-            error: None,
-        });
-    }
+    };
 
-    let input_items = compactable_window.items.len();
+    let input_items = candidate.items.len();
     let request_shape_hash = request_shape_hash(&plan.request_shape);
     if let Some(http_status) = compact_endpoint_unsupported_status(continuation, &compact_url) {
         return Some(openai_compact_unsupported_diagnostics(
             "skipped_unsupported_endpoint",
             "provider_window_item_threshold_before_request",
             input_items,
-            compactable_window.latest_compaction_index,
+            candidate.latest_compaction_index,
             Some(request_shape_hash),
             Some(previous.generation),
             http_status,
             None,
         ));
     }
-    let compact_body =
-        build_openai_compact_request_body(&plan.request_shape, &compactable_window.items);
+    let compact_body = build_openai_compact_request_body(&plan.request_shape, &candidate.items);
     let compacted =
         match send_openai_compact_request(client, compact_url.clone(), compact_body, headers).await
         {
             Ok(compacted) => compacted,
             Err(error) => {
+                if is_non_persisted_compact_item_id_error(&error) {
+                    return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+                        status: "invalid_non_persisted_item_id".into(),
+                        trigger_reason: Some(
+                            "provider_window_item_threshold_before_request".into(),
+                        ),
+                        endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+                        http_status: error_status(&error),
+                        input_items: Some(input_items),
+                        output_items: None,
+                        compaction_items: None,
+                        latest_compaction_index: candidate.latest_compaction_index,
+                        encrypted_content_hashes: None,
+                        encrypted_content_bytes: None,
+                        request_shape_hash: Some(request_shape_hash),
+                        continuation_generation: Some(previous.generation),
+                        error: Some(error.to_string()),
+                    });
+                }
                 if let Some(http_status) = unsupported_compact_endpoint_status(&error) {
                     mark_compact_endpoint_unsupported(continuation, &compact_url, http_status);
                     return Some(openai_compact_unsupported_diagnostics(
                         "unsupported_endpoint",
                         "provider_window_item_threshold_before_request",
                         input_items,
-                        compactable_window.latest_compaction_index,
+                        candidate.latest_compaction_index,
                         Some(request_shape_hash),
                         Some(previous.generation),
                         http_status,
@@ -1501,7 +1569,7 @@ async fn maybe_compact_openai_request_plan(
                     input_items: Some(input_items),
                     output_items: None,
                     compaction_items: None,
-                    latest_compaction_index: compactable_window.latest_compaction_index,
+                    latest_compaction_index: candidate.latest_compaction_index,
                     encrypted_content_hashes: None,
                     encrypted_content_bytes: None,
                     request_shape_hash: Some(request_shape_hash),
@@ -1519,7 +1587,7 @@ async fn maybe_compact_openai_request_plan(
             input_items: Some(input_items),
             output_items: Some(0),
             compaction_items: Some(0),
-            latest_compaction_index: compactable_window.latest_compaction_index,
+            latest_compaction_index: candidate.latest_compaction_index,
             encrypted_content_hashes: Some(Vec::new()),
             encrypted_content_bytes: Some(Vec::new()),
             request_shape_hash: Some(request_shape_hash),
@@ -1577,7 +1645,7 @@ async fn maybe_compact_openai_request_plan(
 
     let output_items = compacted.len();
     let mut provider_input = compacted;
-    provider_input.extend(plan.provider_input.clone());
+    provider_input.extend(candidate.retained_tail.clone());
     plan.body["input"] = Value::Array(provider_input.clone());
     if let Some(object) = plan.body.as_object_mut() {
         object.remove("previous_response_id");
@@ -1625,11 +1693,21 @@ fn mark_compact_endpoint_unsupported(
 }
 
 fn unsupported_compact_endpoint_status(error: &anyhow::Error) -> Option<u16> {
+    if is_non_persisted_compact_item_id_error(error) {
+        return None;
+    }
     let status = error_status(error)?;
     match status {
         404 | 405 | 410 | 501 => Some(status),
         _ => None,
     }
+}
+
+fn is_non_persisted_compact_item_id_error(error: &anyhow::Error) -> bool {
+    error_status(error) == Some(404)
+        && error
+            .to_string()
+            .contains("Items are not persisted when `store` is set to false")
 }
 
 fn error_status(error: &anyhow::Error) -> Option<u16> {
@@ -1665,20 +1743,94 @@ fn openai_compact_unsupported_diagnostics(
     }
 }
 
-fn openai_provider_window_compaction_skip_reason(
+fn openai_provider_window_compaction_candidate(
     window: &OpenAiProviderWindow,
-) -> Option<&'static str> {
-    let since_latest_compaction = window
-        .latest_compaction_index
-        .map(|index| window.items.len().saturating_sub(index + 1))
-        .unwrap_or(window.items.len());
-    if since_latest_compaction < OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS {
-        return Some("below_item_threshold");
+) -> std::result::Result<OpenAiCompactionCandidate, &'static str> {
+    if items_since_latest_openai_compaction(&window.items) < OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS
+    {
+        return Err("below_item_threshold");
     }
-    if has_unpaired_openai_tool_call(&window.items) {
-        return Some("unpaired_tool_call");
+
+    let boundary =
+        latest_complete_openai_tool_call_boundary(&window.items).ok_or("unpaired_tool_call")?;
+    debug_assert!(boundary > 0);
+
+    let compact_items = window.items[..boundary].to_vec();
+    if items_since_latest_openai_compaction(&compact_items) < OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS
+    {
+        return Err("unpaired_tool_call");
     }
-    None
+    if has_unpaired_openai_tool_call(&compact_items) {
+        return Err("unpaired_tool_call");
+    }
+
+    Ok(OpenAiCompactionCandidate {
+        latest_compaction_index: latest_openai_compaction_index(&compact_items),
+        items: compact_items,
+        retained_tail: window.items[boundary..].to_vec(),
+    })
+}
+
+fn items_since_latest_openai_compaction(items: &[Value]) -> usize {
+    latest_openai_compaction_index(items)
+        .map(|index| items.len().saturating_sub(index + 1))
+        .unwrap_or(items.len())
+}
+
+fn latest_complete_openai_tool_call_boundary(items: &[Value]) -> Option<usize> {
+    let mut function_calls = HashSet::new();
+    let mut custom_tool_calls = HashSet::new();
+    let mut function_outputs = HashSet::new();
+    let mut custom_tool_outputs = HashSet::new();
+    let mut latest_complete_boundary = None;
+
+    for (index, item) in items.iter().enumerate() {
+        let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
+            if openai_tool_call_sets_are_complete(
+                &function_calls,
+                &function_outputs,
+                &custom_tool_calls,
+                &custom_tool_outputs,
+            ) {
+                latest_complete_boundary = Some(index + 1);
+            }
+            continue;
+        };
+        match item.get("type").and_then(Value::as_str) {
+            Some("function_call") => {
+                function_calls.insert(call_id.to_string());
+            }
+            Some("custom_tool_call") => {
+                custom_tool_calls.insert(call_id.to_string());
+            }
+            Some("function_call_output") => {
+                function_outputs.insert(call_id.to_string());
+            }
+            Some("custom_tool_call_output") => {
+                custom_tool_outputs.insert(call_id.to_string());
+            }
+            _ => {}
+        }
+        if openai_tool_call_sets_are_complete(
+            &function_calls,
+            &function_outputs,
+            &custom_tool_calls,
+            &custom_tool_outputs,
+        ) {
+            latest_complete_boundary = Some(index + 1);
+        }
+    }
+
+    latest_complete_boundary
+}
+
+fn openai_tool_call_sets_are_complete(
+    function_calls: &HashSet<String>,
+    function_outputs: &HashSet<String>,
+    custom_tool_calls: &HashSet<String>,
+    custom_tool_outputs: &HashSet<String>,
+) -> bool {
+    function_calls.is_subset(function_outputs) && custom_tool_calls.is_subset(custom_tool_outputs)
 }
 
 fn has_unpaired_openai_tool_call(items: &[Value]) -> bool {
@@ -1708,14 +1860,19 @@ fn has_unpaired_openai_tool_call(items: &[Value]) -> bool {
         }
     }
 
-    !function_calls.is_subset(&function_outputs)
-        || !custom_tool_calls.is_subset(&custom_tool_outputs)
+    !openai_tool_call_sets_are_complete(
+        &function_calls,
+        &function_outputs,
+        &custom_tool_calls,
+        &custom_tool_outputs,
+    )
 }
 
 fn build_openai_compact_request_body(request_shape: &OpenAiRequestShape, items: &[Value]) -> Value {
+    let compact_items = sanitize_openai_store_false_compact_items(items);
     let mut body = json!({
         "model": request_shape.wire_shape.get("model").cloned().unwrap_or(Value::Null),
-        "input": items,
+        "input": compact_items,
         "instructions": request_shape
             .wire_shape
             .get("instructions")
@@ -1741,6 +1898,31 @@ fn build_openai_compact_request_body(request_shape: &OpenAiRequestShape, items: 
         body["text"] = text.clone();
     }
     body
+}
+
+fn sanitize_openai_store_false_compact_items(items: &[Value]) -> Vec<Value> {
+    items.iter().map(openai_without_provider_item_id).collect()
+}
+
+fn openai_without_provider_item_id(item: &Value) -> Value {
+    let mut item = item.clone();
+    let Some(object) = item.as_object_mut() else {
+        return item;
+    };
+    let id = object
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    if let Some(id) = id.as_deref() {
+        match object.get("type").and_then(Value::as_str) {
+            Some("function_call" | "custom_tool_call") if !object.contains_key("call_id") => {
+                object.insert("call_id".into(), Value::String(id.to_string()));
+            }
+            _ => {}
+        }
+    }
+    object.remove("id");
+    item
 }
 
 fn openai_compaction_encrypted_content_hashes(items: &[Value]) -> Vec<String> {

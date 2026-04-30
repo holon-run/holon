@@ -863,9 +863,10 @@ async fn openai_provider_fails_fast_on_contract_errors() {
 }
 
 #[tokio::test]
-async fn openai_provider_preserves_structured_unknown_transport_diagnostics() {
-    let response = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\nconnection: close\r\n\r\n{\"id\":\"resp_partial\"";
-    let base_url = spawn_raw_http_server(response).await;
+async fn openai_provider_retries_response_body_read_interruptions() {
+    let interrupted = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\nconnection: close\r\n\r\n{\"id\":\"resp_partial\"";
+    let complete = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"id\":\"resp_ok\",\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":1},\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"retry ok\"}]}]}";
+    let base_url = spawn_raw_http_server_sequence(vec![interrupted, complete]).await;
 
     let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
     fixture
@@ -874,39 +875,29 @@ async fn openai_provider_preserves_structured_unknown_transport_diagnostics() {
         .get_mut(&ProviderId::openai())
         .unwrap()
         .base_url = base_url;
-    fixture
-        .config
-        .stored_config
-        .runtime
-        .disable_provider_fallback = Some(true);
-    fixture.config.disable_provider_fallback = true;
-
     let provider = build_provider_from_config(&fixture.config).unwrap();
-    let error = provider
-        .complete_turn(provider_turn_request())
+    let (response, diagnostics) = provider
+        .complete_turn_with_diagnostics(provider_turn_request())
         .await
-        .err()
-        .expect("truncated response body should fail");
+        .expect("truncated response body should retry and recover");
 
-    assert!(error.to_string().contains("fail_fast (unknown)"));
-    let diagnostics =
-        provider_transport_diagnostics(&error).expect("missing structured transport diagnostics");
-    assert_eq!(diagnostics.stage, "response_body");
-    assert_eq!(diagnostics.provider.as_deref(), Some("openai"));
-    assert_eq!(diagnostics.model_ref.as_deref(), Some("openai/gpt-5.4"));
-    assert!(diagnostics
-        .url
-        .as_deref()
-        .unwrap_or_default()
-        .ends_with("/responses"));
-    assert!(diagnostics.reqwest.is_some());
-    assert!(!diagnostics.source_chain.is_empty());
-
-    let timeline = provider_attempt_timeline(&error).expect("missing attempt timeline");
-    assert_eq!(timeline.attempts.len(), 1);
+    assert!(matches!(
+        &response.blocks[0],
+        ModelBlock::Text { text } if text == "retry ok"
+    ));
+    let timeline = diagnostics.expect("missing attempt timeline");
+    assert_eq!(timeline.attempts.len(), 2);
     assert_eq!(
         timeline.attempts[0].failure_kind.as_deref(),
-        Some("unknown")
+        Some("connection")
+    );
+    assert_eq!(
+        timeline.attempts[0].disposition.as_deref(),
+        Some("retryable")
+    );
+    assert_eq!(
+        timeline.attempts[0].outcome,
+        ProviderAttemptOutcome::Retrying
     );
     assert_eq!(
         timeline.attempts[0]
@@ -914,6 +905,10 @@ async fn openai_provider_preserves_structured_unknown_transport_diagnostics() {
             .as_ref()
             .map(|diag| diag.stage.as_str()),
         Some("response_body")
+    );
+    assert_eq!(
+        timeline.attempts[1].outcome,
+        ProviderAttemptOutcome::Succeeded
     );
 }
 

@@ -135,12 +135,18 @@ pub(crate) fn classify_reqwest_transport_error(
     error: reqwest::Error,
 ) -> anyhow::Error {
     let status = error.status().map(|status| status.as_u16());
+    let source_chain = error_chain_messages(&error);
     let classification = if error.is_timeout() {
         ProviderFailureClassification {
             kind: ProviderFailureKind::Timeout,
             disposition: RetryDisposition::Retryable,
         }
     } else if error.is_connect() {
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::Connection,
+            disposition: RetryDisposition::Retryable,
+        }
+    } else if is_retryable_response_body_read_interruption(stage, &error, &source_chain) {
         ProviderFailureClassification {
             kind: ProviderFailureKind::Connection,
             disposition: RetryDisposition::Retryable,
@@ -155,10 +161,42 @@ pub(crate) fn classify_reqwest_transport_error(
         classification,
         status,
         Some(reqwest_transport_diagnostics(
-            stage, provider, model_ref, url, &error,
+            stage,
+            provider,
+            model_ref,
+            url,
+            &error,
+            source_chain,
         )),
         format!("{context}: {error}"),
     )
+}
+
+fn is_retryable_response_body_read_interruption(
+    stage: &str,
+    error: &reqwest::Error,
+    source_chain: &[String],
+) -> bool {
+    if !matches!(stage, "response_body" | "streaming_response_body") {
+        return false;
+    }
+    if !(error.is_body() || error.is_decode()) {
+        return false;
+    }
+
+    source_chain.iter().any(|message| {
+        let message = message.to_ascii_lowercase();
+        message.contains("unexpected eof")
+            || message.contains("end of file")
+            || message.contains("connection reset")
+            || message.contains("connection closed")
+            || message.contains("connection aborted")
+            || message.contains("broken pipe")
+            || message.contains("incomplete message")
+            || message.contains("error reading a body from connection")
+            || message.contains("chunk size")
+            || message.contains("request or response body error")
+    })
 }
 
 pub(crate) fn classify_status_error(
@@ -217,6 +255,7 @@ fn reqwest_transport_diagnostics(
     model_ref: Option<&str>,
     url: Option<&str>,
     error: &reqwest::Error,
+    source_chain: Vec<String>,
 ) -> ProviderTransportDiagnostics {
     ProviderTransportDiagnostics {
         stage: stage.to_string(),
@@ -235,7 +274,7 @@ fn reqwest_transport_diagnostics(
             is_redirect: error.is_redirect(),
             status: error.status().map(|status| status.as_u16()),
         }),
-        source_chain: error_chain_messages(error),
+        source_chain,
     }
 }
 

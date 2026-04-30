@@ -14,10 +14,10 @@ use super::{
     build_candidate, build_openai_input, build_openai_responses_request,
     build_provider_from_config, emitted_tool_json_schema, parse_openai_response,
     provider_attempt_timeline, provider_doctor, provider_max_attempts,
-    provider_transport_diagnostics, validate_emitted_tool_schema, AgentProvider, AnthropicProvider,
-    ConversationMessage, ModelBlock, OpenAiCodexProvider, OpenAiProvider, PromptContentBlock,
-    ProviderAttemptOutcome, ProviderPromptCache, ProviderPromptCapability, ProviderPromptFrame,
-    ProviderTurnRequest, ToolResultBlock, ToolSchemaContract,
+    validate_emitted_tool_schema, AgentProvider, AnthropicProvider, ConversationMessage,
+    ModelBlock, OpenAiCodexProvider, OpenAiProvider, PromptContentBlock, ProviderAttemptOutcome,
+    ProviderPromptCache, ProviderPromptCapability, ProviderPromptFrame, ProviderTurnRequest,
+    ToolResultBlock, ToolSchemaContract,
 };
 
 mod anthropic_messages;

@@ -30,13 +30,30 @@ pub async fn spawn_test_server(router: Router) -> String {
     format!("http://{}", addr)
 }
 
+#[allow(dead_code)]
 pub async fn spawn_raw_http_server(response: &'static [u8]) -> String {
+    spawn_raw_http_server_sequence(vec![response]).await
+}
+
+pub async fn spawn_raw_http_server_sequence(responses: Vec<&'static [u8]>) -> String {
+    spawn_raw_http_server_bytes_sequence(
+        responses
+            .into_iter()
+            .map(|response| response.to_vec())
+            .collect(),
+    )
+    .await
+}
+
+pub async fn spawn_raw_http_server_bytes_sequence(responses: Vec<Vec<u8>>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        drain_http_request(&mut stream).await;
-        stream.write_all(response).await.unwrap();
+        for response in responses {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            drain_http_request(&mut stream).await;
+            stream.write_all(&response).await.unwrap();
+        }
     });
     format!("http://{}", addr)
 }

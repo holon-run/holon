@@ -147,6 +147,12 @@ provider session. Later rounds should emit `skipped_unsupported_endpoint`
 diagnostics instead of repeating the same known-bad compact request. Transient
 transport, rate-limit, and server failures should not populate this cache.
 
+Not every 404 from the compact route is an endpoint capability failure. When
+OpenAI reports that request items are not persisted, Holon should classify the
+compact request as invalid provider input instead of negative-caching the
+endpoint. This is especially important for `store=false` usage, where response
+output item ids can be provider-local and unavailable to a later compact call.
+
 ## 6. Multiple Compaction Items
 
 Holon must not assume there is only one encrypted compaction item.
@@ -247,6 +253,18 @@ Suggested non-triggers:
 - after every local semantic compaction
 - while a tool call and its output are not paired yet
 - when request shape changed for unrelated reasons
+
+The "tool call and its output are not paired yet" rule applies to the compacted
+span, not necessarily to the whole provider window. If the latest provider
+window has a complete prefix followed by an unpaired tool call, Holon may compact
+the complete prefix and retain the unpaired tail verbatim for the next request.
+Holon must not compact across an unpaired `function_call` or `custom_tool_call`.
+
+When building compact input for stateless `store=false` sessions, Holon should
+strip provider-generated top-level item ids from compact input. Stable tool
+pairing identity must be preserved through `call_id`; if a provider emits a tool
+call item with only `id`, Holon may copy that value into `call_id` before
+removing the top-level `id`.
 
 ## 9. Benchmark Expectations
 

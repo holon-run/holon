@@ -48,11 +48,50 @@ fn openai_text_sse_response(response_id: &str, text: &str) -> String {
     )
 }
 
+fn openai_reasoning_and_tool_call_sse_response(response_id: &str) -> String {
+    format!(
+        concat!(
+            "event: response.completed\n",
+            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":10,\"output_tokens\":4}},\"output\":[",
+            "{{\"type\":\"reasoning\",\"id\":\"rs_non_persisted\",\"encrypted_content\":\"opaque-reasoning\"}},",
+            "{{\"type\":\"function_call\",\"id\":\"fc_non_persisted\",\"call_id\":\"exec-1\",\"name\":\"ExecCommand\",\"arguments\":\"{{\\\"cmd\\\":\\\"printf ok\\\"}}\"}}",
+            "]}}}}\n\n"
+        ),
+        response_id
+    )
+}
+
 fn provider_large_window_request_with_prompt_frame() -> ProviderTurnRequest {
     let mut request = provider_turn_request_with_prompt_frame();
     request.conversation = (0..8)
         .map(|index| ConversationMessage::UserText(format!("message {index}")))
         .collect();
+    request
+}
+
+fn provider_nearly_large_window_request_with_prompt_frame() -> ProviderTurnRequest {
+    let mut request = provider_turn_request_with_prompt_frame();
+    request.conversation = (0..7)
+        .map(|index| ConversationMessage::UserText(format!("message {index}")))
+        .collect();
+    request
+}
+
+fn provider_nearly_large_window_continuation_with_prompt_frame() -> ProviderTurnRequest {
+    let mut request = provider_nearly_large_window_request_with_prompt_frame();
+    request.conversation.extend([
+        ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+            id: "exec-1".into(),
+            name: "ExecCommand".into(),
+            input: json!({ "cmd": "printf ok" }),
+        }]),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "exec-1".into(),
+            content: "ok".into(),
+            is_error: false,
+            error: None,
+        }]),
+    ]);
     request
 }
 
@@ -357,6 +396,94 @@ async fn openai_codex_remote_compact_does_not_double_codex_path_for_new_base_url
 }
 
 #[tokio::test]
+async fn openai_codex_remote_compact_sanitizes_ids_and_retains_unpaired_tail() {
+    let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let response_bodies_for_server = response_bodies.clone();
+    let compact_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let compact_bodies_for_server = compact_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/codex/responses",
+                post(move |Json(body): Json<Value>| {
+                    let captured = response_bodies_for_server.clone();
+                    let attempts = attempts_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        let response = if attempt == 0 {
+                            openai_reasoning_and_tool_call_sse_response("resp_1")
+                        } else {
+                            openai_text_sse_response("resp_2", "done")
+                        };
+                        ([("content-type", "text/event-stream")], response)
+                    }
+                }),
+            )
+            .route(
+                "/codex/responses/compact",
+                post(move |Json(body): Json<Value>| {
+                    let captured = compact_bodies_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        Json(json!({
+                            "output": [
+                                { "type": "compaction", "encrypted_content": "opaque-compact" }
+                            ]
+                        }))
+                    }
+                }),
+            ),
+    )
+    .await;
+    let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai_codex())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let first = provider
+        .complete_turn(provider_large_window_request_with_prompt_frame())
+        .await
+        .unwrap();
+    provider
+        .complete_turn(provider_large_window_continuation_with_prompt_frame())
+        .await
+        .unwrap();
+
+    let remote_compaction = first
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+        .expect("remote compaction diagnostics");
+    assert_eq!(remote_compaction.status, "compacted");
+    assert_eq!(remote_compaction.input_items, Some(9));
+
+    let compact_bodies = compact_bodies.lock().unwrap();
+    assert_eq!(compact_bodies.len(), 1);
+    let compact_input = compact_bodies[0]["input"].as_array().unwrap();
+    assert_eq!(compact_input.len(), 9);
+    assert!(compact_bodies[0].to_string().contains("opaque-reasoning"));
+    assert!(!compact_bodies[0].to_string().contains("rs_non_persisted"));
+    assert!(!compact_bodies[0].to_string().contains("fc_non_persisted"));
+    assert!(!compact_bodies[0].to_string().contains("exec-1"));
+
+    let response_bodies = response_bodies.lock().unwrap();
+    assert_eq!(response_bodies.len(), 2);
+    let second_input = response_bodies[1]["input"].as_array().unwrap();
+    assert_eq!(second_input[0]["type"], json!("compaction"));
+    assert_eq!(second_input[1]["type"], json!("function_call"));
+    assert_eq!(second_input[2]["type"], json!("function_call_output"));
+    assert_eq!(second_input[1]["call_id"], json!("exec-1"));
+    assert_eq!(second_input[2]["call_id"], json!("exec-1"));
+}
+
+#[tokio::test]
 async fn openai_responses_caches_unsupported_remote_compact_endpoint() {
     let compact_attempts = Arc::new(AtomicUsize::new(0));
     let compact_attempts_for_server = compact_attempts.clone();
@@ -430,6 +557,80 @@ async fn openai_responses_caches_unsupported_remote_compact_endpoint() {
 }
 
 #[tokio::test]
+async fn openai_responses_reports_non_persisted_compact_item_ids_without_endpoint_cache() {
+    let compact_attempts = Arc::new(AtomicUsize::new(0));
+    let compact_attempts_for_server = compact_attempts.clone();
+    let response_attempts = Arc::new(AtomicUsize::new(0));
+    let response_attempts_for_server = response_attempts.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/responses",
+                post(move |Json(_body): Json<Value>| {
+                    let attempts = response_attempts_for_server.clone();
+                    async move {
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        if attempt == 0 {
+                            Json(openai_text_response("resp_1", "ready"))
+                        } else {
+                            Json(openai_text_response("resp_2", "done"))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/responses/compact",
+                post(move |Json(_body): Json<Value>| {
+                    let attempts = compact_attempts_for_server.clone();
+                    async move {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::NOT_FOUND,
+                            Json(json!({
+                                "error": {
+                                    "message": "Item with id 'rs_missing' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+                                    "type": "invalid_request_error",
+                                    "param": "input",
+                                    "code": null
+                                }
+                            })),
+                        )
+                    }
+                }),
+            ),
+    )
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let first = provider
+        .complete_turn(provider_large_window_paired_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let second = provider
+        .complete_turn(provider_large_window_paired_followup_with_prompt_frame())
+        .await
+        .unwrap();
+
+    for response in [first, second] {
+        let compaction = response
+            .request_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+            .expect("remote compaction diagnostics");
+        assert_eq!(compaction.status, "invalid_non_persisted_item_id");
+        assert_eq!(compaction.http_status, Some(404));
+    }
+    assert_eq!(compact_attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn openai_codex_streaming_incomplete_max_output_tokens_returns_recoverable_response() {
     let base_url = spawn_test_server(Router::new().route(
         "/codex/responses",
@@ -470,7 +671,59 @@ async fn openai_codex_streaming_incomplete_max_output_tokens_returns_recoverable
 }
 
 #[tokio::test]
-async fn openai_responses_skips_remote_compaction_for_unpaired_tool_call() {
+async fn openai_codex_retries_streaming_body_read_interruptions() {
+    let interrupted = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n20\r\nevent: response.created\n".to_vec();
+    let body = openai_text_sse_response("resp_ok", "retry ok");
+    let complete = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .into_bytes();
+    let base_url = spawn_raw_http_server_bytes_sequence(vec![interrupted, complete]).await;
+    let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai_codex())
+        .unwrap()
+        .base_url = base_url;
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+
+    let (response, diagnostics) = provider
+        .complete_turn_with_diagnostics(provider_turn_request())
+        .await
+        .expect("stream body interruption should retry and recover");
+
+    assert!(matches!(
+        &response.blocks[0],
+        ModelBlock::Text { text } if text == "retry ok"
+    ));
+    let timeline = diagnostics.expect("missing attempt timeline");
+    assert_eq!(timeline.attempts.len(), 2);
+    assert_eq!(
+        timeline.attempts[0].failure_kind.as_deref(),
+        Some("connection")
+    );
+    assert_eq!(
+        timeline.attempts[0].disposition.as_deref(),
+        Some("retryable")
+    );
+    assert_eq!(
+        timeline.attempts[0]
+            .transport_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.stage.as_str()),
+        Some("streaming_response_body")
+    );
+    assert_eq!(
+        timeline.attempts[1].outcome,
+        ProviderAttemptOutcome::Succeeded
+    );
+}
+
+#[tokio::test]
+async fn openai_responses_compacts_safe_prefix_before_unpaired_tool_call() {
     let compact_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let compact_bodies_for_server = compact_bodies.clone();
     let base_url = spawn_test_server(
@@ -515,14 +768,115 @@ async fn openai_responses_skips_remote_compaction_for_unpaired_tool_call() {
         .request_diagnostics
         .as_ref()
         .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
-        .expect("remote compaction skip diagnostics");
-    assert_eq!(remote_compaction.status, "skipped_unpaired_tool_call");
-    assert_eq!(remote_compaction.input_items, Some(9));
-    assert!(compact_bodies.lock().unwrap().is_empty());
+        .expect("remote compaction diagnostics");
+    assert_eq!(remote_compaction.status, "compacted");
+    assert_eq!(remote_compaction.input_items, Some(8));
+    let compact_bodies = compact_bodies.lock().unwrap();
+    assert_eq!(compact_bodies.len(), 1);
+    assert_eq!(compact_bodies[0]["input"].as_array().unwrap().len(), 8);
+    assert!(compact_bodies[0].to_string().contains("message 7"));
+    assert!(!compact_bodies[0].to_string().contains("exec-1"));
 }
 
 #[tokio::test]
-async fn openai_responses_remote_compacts_before_request_after_tool_output_pairs_call() {
+async fn openai_responses_skips_remote_compaction_when_safe_prefix_is_below_threshold() {
+    let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let response_bodies_for_server = response_bodies.clone();
+    let compact_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let compact_bodies_for_server = compact_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/responses",
+                post(move |Json(body): Json<Value>| {
+                    let captured = response_bodies_for_server.clone();
+                    let attempts = attempts_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        let response = match attempt {
+                            0 => openai_tool_call_response("resp_1"),
+                            _ => openai_text_response("resp_2", "done"),
+                        };
+                        Json(response)
+                    }
+                }),
+            )
+            .route(
+                "/responses/compact",
+                post(move |Json(body): Json<Value>| {
+                    let captured = compact_bodies_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        Json(json!({
+                            "output": [
+                                { "type": "compaction", "encrypted_content": "opaque" }
+                            ]
+                        }))
+                    }
+                }),
+            ),
+    )
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let response = provider
+        .complete_turn(provider_nearly_large_window_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let second = provider
+        .complete_turn(provider_nearly_large_window_continuation_with_prompt_frame())
+        .await
+        .unwrap();
+
+    let remote_compaction = response
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+        .expect("remote compaction skip diagnostics");
+    assert_eq!(remote_compaction.status, "skipped_unpaired_tool_call");
+    assert_eq!(remote_compaction.input_items, Some(8));
+
+    let second_compaction = second
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+        .expect("pre-request remote compaction diagnostics");
+    assert_eq!(second_compaction.status, "compacted");
+    assert_eq!(
+        second_compaction.trigger_reason.as_deref(),
+        Some("provider_window_item_threshold_before_request")
+    );
+    assert_eq!(second_compaction.input_items, Some(9));
+
+    let response_bodies = response_bodies.lock().unwrap();
+    assert_eq!(response_bodies.len(), 2);
+    assert!(response_bodies[1].get("previous_response_id").is_none());
+    let second_input = response_bodies[1]["input"].as_array().unwrap();
+    assert_eq!(second_input.len(), 1);
+    assert_eq!(second_input[0]["type"], json!("compaction"));
+
+    let compact_bodies = compact_bodies.lock().unwrap();
+    assert_eq!(compact_bodies.len(), 1);
+    let compact_input = compact_bodies[0]["input"].as_array().unwrap();
+    assert_eq!(compact_input.len(), 9);
+    assert_eq!(
+        compact_input.last().unwrap()["type"],
+        json!("function_call_output")
+    );
+}
+
+#[tokio::test]
+async fn openai_responses_replays_compacted_prefix_with_retained_tool_tail() {
     let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let response_bodies_for_server = response_bodies.clone();
     let compact_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -582,39 +936,48 @@ async fn openai_responses_remote_compacts_before_request_after_tool_output_pairs
         .await
         .unwrap();
 
-    assert_eq!(
-        first
-            .request_diagnostics
-            .as_ref()
-            .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
-            .map(|diagnostics| diagnostics.status.as_str()),
-        Some("skipped_unpaired_tool_call")
-    );
-    let remote_compaction = second
+    let first_compaction = first
         .request_diagnostics
         .as_ref()
         .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
-        .expect("pre-request remote compaction diagnostics");
-    assert_eq!(remote_compaction.status, "compacted");
+        .expect("post-response remote compaction diagnostics");
+    assert_eq!(first_compaction.status, "compacted");
     assert_eq!(
-        remote_compaction.trigger_reason.as_deref(),
-        Some("provider_window_item_threshold_before_request")
+        first_compaction.trigger_reason.as_deref(),
+        Some("provider_window_item_threshold")
     );
-    assert_eq!(remote_compaction.input_items, Some(10));
+    assert_eq!(first_compaction.input_items, Some(8));
+
+    assert!(
+        second
+            .request_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+            .is_none(),
+        "the second request should replay the compacted prefix and retained tool tail without another compact pass"
+    );
 
     let response_bodies = response_bodies.lock().unwrap();
     assert_eq!(response_bodies.len(), 2);
     assert!(response_bodies[1].get("previous_response_id").is_none());
     let replayed_input = response_bodies[1]["input"].as_array().unwrap();
     assert_eq!(replayed_input[0]["type"], json!("compaction"));
-    assert_eq!(
-        replayed_input.last().unwrap()["type"],
-        json!("function_call_output")
-    );
+    assert!(!response_bodies[1].to_string().contains("message 0"));
+    let tool_pair_index = replayed_input
+        .windows(2)
+        .position(|items| {
+            items[0]["type"] == json!("function_call")
+                && items[1]["type"] == json!("function_call_output")
+                && items[0]["call_id"] == json!("exec-1")
+                && items[1]["call_id"] == json!("exec-1")
+        })
+        .expect("retained tool call should be followed by its tool output");
+    assert!(tool_pair_index > 0);
 
     let compact_bodies = compact_bodies.lock().unwrap();
     assert_eq!(compact_bodies.len(), 1);
-    assert_eq!(compact_bodies[0]["input"].as_array().unwrap().len(), 10);
+    assert_eq!(compact_bodies[0]["input"].as_array().unwrap().len(), 8);
+    assert!(!compact_bodies[0].to_string().contains("exec-1"));
 }
 
 #[tokio::test]
