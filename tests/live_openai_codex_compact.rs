@@ -1,7 +1,10 @@
 use anyhow::{anyhow, Result};
 use holon::{
     config::{AppConfig, ProviderId},
-    provider::{AgentProvider, ConversationMessage, OpenAiCodexProvider, ProviderTurnRequest},
+    provider::{
+        AgentProvider, ConversationMessage, OpenAiCodexProvider, ProviderPromptCache,
+        ProviderPromptFrame, ProviderTurnRequest,
+    },
 };
 
 fn live_config() -> Result<AppConfig> {
@@ -33,13 +36,23 @@ async fn live_openai_codex_remote_compact_route_probe() -> Result<()> {
     let route = codex_compact_route(&provider_config.base_url);
     let provider = OpenAiCodexProvider::from_config(&config, &live_openai_codex_model())?;
     let output = provider
-        .complete_turn(ProviderTurnRequest::plain(
-            "Reply briefly. Do not include private information.",
-            (0..8)
+        .complete_turn(ProviderTurnRequest {
+            prompt_frame: ProviderPromptFrame::structured(
+                "Reply briefly. Do not include private information.",
+                Vec::new(),
+                Vec::new(),
+                Some(ProviderPromptCache {
+                    agent_id: "live-openai-codex-compact-probe".into(),
+                    prompt_cache_key: "live-openai-codex-compact-probe".into(),
+                    working_memory_revision: 0,
+                    compression_epoch: 0,
+                }),
+            ),
+            conversation: (0..8)
                 .map(|index| ConversationMessage::UserText(format!("compact probe item {index}")))
                 .collect(),
-            vec![],
-        ))
+            tools: vec![],
+        })
         .await?;
 
     let diagnostics = output
