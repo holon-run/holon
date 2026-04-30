@@ -203,7 +203,7 @@ jobs:
             exit 0
           fi
 
-          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] && [ -n "$HOLONBOT_BROKER_URL" ]; then
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "$HOLONBOT_BROKER_URL" ]; then
             echo "Fetching GitHub Actions OIDC token for Holonbot broker exchange."
             oidc_url="$ACTIONS_ID_TOKEN_REQUEST_URL"
             if [ -n "$HOLONBOT_OIDC_AUDIENCE" ]; then
