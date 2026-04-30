@@ -409,7 +409,6 @@ impl TuiApp {
         self.projection = Some(projection);
         self.apply_projection_view();
         self.last_refresh_at = Some(Local::now());
-        self.last_event_at = None;
         self.reconnect_attempt = 0;
         self.reconnect_deadline = None;
         self.status_line = format!("Bootstrapped agent {agent_id} from /state");

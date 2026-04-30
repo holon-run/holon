@@ -266,32 +266,34 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
 
 fn render_activity_text(app: &TuiApp) -> String {
     let Some(projection) = app.projection.as_ref() else {
-        return "Bootstrapping snapshot and stream...".into();
+        return render_status_line_or_default(app, "Bootstrapping snapshot and stream...");
     };
     let agent_id = projection.agent.identity.agent_id.as_str();
     let events = projection.recent_log_events(4);
-    if events.is_empty() && projection.session.current_run_id.is_none() {
-        return match &app.connection_state {
-            TuiConnectionState::Streaming => "No in-flight activity.".into(),
-            _ => app.status_line.clone(),
-        };
-    }
     if events.is_empty() {
         if let Some(cached) = app.activity_text_cache.borrow().as_ref() {
             if cached.agent_id == agent_id {
                 return cached.text.clone();
             }
         }
-        return if app.status_line.is_empty() {
-            "Waiting for events...".into()
-        } else {
-            app.status_line.clone()
-        };
+        // Show "No in-flight activity" only when turn has ended, otherwise show cached text
+        if projection.session.current_run_id.is_none() {
+            return "No in-flight activity.".into();
+        }
+        // During active turn, show the last cached text for this agent or empty
+        return app.activity_text_cache
+            .borrow()
+            .as_ref()
+            .filter(|c| c.agent_id == agent_id)
+            .map(|c| c.text.clone())
+            .unwrap_or_default();
     }
 
     let text = events
         .into_iter()
-        .map(|event| format_activity_event(&event))
+        .map(|event| {
+            format_activity_event(event)
+        })
         .collect::<Vec<_>>()
         .join("\n");
     if !text.is_empty() {
@@ -305,8 +307,17 @@ fn render_activity_text(app: &TuiApp) -> String {
             .borrow()
             .as_ref()
             .filter(|cached| cached.agent_id == agent_id)
+            .filter(|cached| !cached.text.is_empty())
             .map(|cached| cached.text.clone())
             .unwrap_or_default()
+    }
+}
+
+fn render_status_line_or_default(app: &TuiApp, default: &str) -> String {
+    if app.status_line.is_empty() {
+        default.to_string()
+    } else {
+        app.status_line.clone()
     }
 }
 
