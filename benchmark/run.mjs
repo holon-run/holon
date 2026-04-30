@@ -2876,6 +2876,8 @@ function openaiRemoteCompactionDiagnostic(provider, requestDiagnostics) {
   return {
     status: compaction.status ?? "unknown",
     trigger_reason: compaction.trigger_reason ?? null,
+    endpoint_kind: compaction.endpoint_kind ?? null,
+    http_status: compaction.http_status == null ? null : numberOrNull(compaction.http_status),
     input_items: numberOrNull(compaction.input_items),
     output_items: numberOrNull(compaction.output_items),
     compaction_items: numberOrNull(compaction.compaction_items),

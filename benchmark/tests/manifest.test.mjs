@@ -937,6 +937,8 @@ test("summarizeHolonTokenOptimization reports OpenAI remote compaction", () => {
             openai_remote_compaction: {
               status: "compacted",
               trigger_reason: "provider_window_item_threshold",
+              endpoint_kind: "responses_compact",
+              http_status: null,
               input_items: 12,
               output_items: 3,
               compaction_items: 2,
@@ -967,6 +969,8 @@ test("summarizeHolonTokenOptimization reports OpenAI remote compaction", () => {
 
   assert.equal(diagnostics.rounds[0].request_lowering_mode, "provider_window_compacted");
   assert.equal(diagnostics.rounds[0].openai_remote_compaction.status, "compacted");
+  assert.equal(diagnostics.rounds[0].openai_remote_compaction.endpoint_kind, "responses_compact");
+  assert.equal(diagnostics.rounds[0].openai_remote_compaction.http_status, null);
   assert.equal(diagnostics.rounds[0].openai_remote_compaction.input_items, 12);
   assert.equal(diagnostics.summary.request_lowering_modes.provider_window_compacted, 1);
   assert.equal(diagnostics.summary.openai_remote_compaction_rounds, 1);
