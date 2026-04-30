@@ -5,8 +5,9 @@ on:
     inputs:
       ref:
         description: GitHub issue or PR reference, such as owner/repo#123.
-        required: true
+        required: false
         type: string
+        default: ''
       repo:
         description: GitHub repository hint for shorthand refs such as #123.
         required: false
@@ -112,8 +113,168 @@ jobs:
             echo "home=$RUNNER_TEMP/holon/home"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Resolve Holon context
+        id: context
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_REPO: ${{ inputs.repo }}
+          INPUT_BASE: ${{ inputs.base }}
+          INPUT_GOAL: ${{ inputs.goal }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action || '' }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          ISSUE_IS_PR: ${{ github.event.issue.pull_request.url || '' }}
+          COMMENT_BODY: ${{ github.event.comment.body || '' }}
+          LABEL_NAME: ${{ github.event.label.name || '' }}
+          ASSIGNEE_LOGIN: ${{ github.event.assignee.login || '' }}
+          AUTO_REVIEW: ${{ vars.HOLON_AUTO_REVIEW || 'false' }}
+          AUTO_REVIEW_ON_PUSH: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
+        run: |
+          set -euo pipefail
+
+          should_run=false
+          reason="event not eligible"
+          ref=""
+          repo="$INPUT_REPO"
+          base="$INPUT_BASE"
+          goal="$INPUT_GOAL"
+
+          write_outputs() {
+            {
+              echo "should_run=$should_run"
+              echo "ref=$ref"
+              echo "repo=$repo"
+              echo "base=$base"
+              echo "reason=$reason"
+              echo "goal<<__HOLON_GOAL__"
+              if [ -n "$goal" ]; then
+                printf '%s\n' "$goal"
+              fi
+              echo "__HOLON_GOAL__"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          if [ -n "$INPUT_REF" ]; then
+            should_run=true
+            reason="explicit ref input"
+            ref="$INPUT_REF"
+            if [[ "$ref" =~ ^#[0-9]+$ ]] && [ -z "$repo" ]; then
+              repo="$REPO"
+            fi
+            write_outputs
+            exit 0
+          fi
+
+          if [ "$ACTOR" = "holonbot[bot]" ] || [ "$ACTOR" = "github-actions[bot]" ]; then
+            reason="skip bot actor: $ACTOR"
+            write_outputs
+            exit 0
+          fi
+
+          case "$EVENT_NAME:$EVENT_ACTION" in
+            issue_comment:created)
+              first_line="$(printf '%s\n' "$COMMENT_BODY" | sed -n '1s/^[[:space:]]*//;1s/[[:space:]]*$//;1p')"
+              permission="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || true)"
+              if [ "$permission" != "admin" ] && [ "$permission" != "maintain" ] && [ "$permission" != "write" ]; then
+                reason="insufficient permission for $ACTOR: ${permission:-none}"
+                write_outputs
+                exit 0
+              fi
+
+              if [ -n "$ISSUE_IS_PR" ]; then
+                ref="https://github.com/$REPO/pull/$ISSUE_NUMBER"
+                case "$first_line" in
+                  "@holonbot fix"|"@holonbot pr-fix")
+                    should_run=true
+                    reason="PR fix command"
+                    goal="${goal:-Fix the target pull request according to the latest requester comment. Push commits to the PR branch when changes are needed. Do not open another PR. Publish a concise completion summary and stop.}"
+                    ;;
+                  "@holonbot review")
+                    should_run=true
+                    reason="PR review command"
+                    goal="${goal:-Review the target pull request only. Publish exactly one structured review or PR comment. Do not edit files, push commits, open PRs, or close issues.}"
+                    ;;
+                  *)
+                    reason="unrecognized PR command: $first_line"
+                    ;;
+                esac
+              else
+                ref="https://github.com/$REPO/issues/$ISSUE_NUMBER"
+                case "$first_line" in
+                  "@holonbot fix"|"@holonbot solve")
+                    should_run=true
+                    reason="issue solve command"
+                    goal="${goal:-Solve the target issue end to end. Make the required changes, commit on a branch, push it, and open a pull request. Include the PR URL in summary.md and manifest.json when possible.}"
+                    ;;
+                  *)
+                    reason="unrecognized issue command: $first_line"
+                    ;;
+                esac
+              fi
+              ;;
+            issues:labeled)
+              if [ "$LABEL_NAME" = "holon" ]; then
+                should_run=true
+                reason="issue labeled holon"
+                ref="https://github.com/$REPO/issues/$ISSUE_NUMBER"
+                goal="${goal:-Solve the target issue end to end. Make the required changes, commit on a branch, push it, and open a pull request. Include the PR URL in summary.md and manifest.json when possible.}"
+              fi
+              ;;
+            issues:assigned)
+              if [ "$ASSIGNEE_LOGIN" = "holonbot" ] || [ "$ASSIGNEE_LOGIN" = "holonbot[bot]" ]; then
+                should_run=true
+                reason="issue assigned to holonbot"
+                ref="https://github.com/$REPO/issues/$ISSUE_NUMBER"
+                goal="${goal:-Solve the target issue end to end. Make the required changes, commit on a branch, push it, and open a pull request. Include the PR URL in summary.md and manifest.json when possible.}"
+              fi
+              ;;
+            pull_request:labeled)
+              if [ "$LABEL_NAME" = "holon" ]; then
+                should_run=true
+                reason="PR labeled holon"
+              fi
+              ;;
+            pull_request:opened|pull_request:reopened|pull_request:ready_for_review)
+              if [ "$AUTO_REVIEW" = "true" ]; then
+                should_run=true
+                reason="auto review enabled"
+              fi
+              ;;
+            pull_request:synchronize)
+              if [ "$AUTO_REVIEW_ON_PUSH" = "true" ]; then
+                should_run=true
+                reason="auto review on push enabled"
+              fi
+              ;;
+          esac
+
+          if [ "$should_run" = "true" ] && [ -n "$PR_NUMBER" ]; then
+            ref="https://github.com/$REPO/pull/$PR_NUMBER"
+            is_cross_repo="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo "true")"
+            if [ "$is_cross_repo" = "true" ]; then
+              should_run=false
+              reason="skip cross-repo PR"
+              goal=""
+            else
+              goal="${goal:-Review the target pull request only. Publish exactly one structured review or PR comment. Do not edit files, push commits, open PRs, or close issues.}"
+            fi
+          fi
+
+          write_outputs
+
+      - name: Report skipped Holon run
+        if: steps.context.outputs.should_run != 'true'
+        shell: bash
+        run: |
+          echo "Holon skipped: ${{ steps.context.outputs.reason }}"
+
       - name: Checkout Holon source
-        if: inputs.build_from_source
+        if: inputs.build_from_source && steps.context.outputs.should_run == 'true'
         shell: bash
         env:
           HOLON_REPOSITORY: ${{ inputs.holon_repository }}
@@ -130,11 +291,11 @@ jobs:
           echo "HOLON_SOURCE_DIR=$src_dir" >> "$GITHUB_ENV"
 
       - name: Set up Rust
-        if: inputs.build_from_source
+        if: inputs.build_from_source && steps.context.outputs.should_run == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build Holon from source
-        if: inputs.build_from_source
+        if: inputs.build_from_source && steps.context.outputs.should_run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -144,7 +305,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/holon/bin/holon"
 
       - name: Download Holon binary
-        if: ${{ !inputs.build_from_source }}
+        if: ${{ !inputs.build_from_source && steps.context.outputs.should_run == 'true' }}
         shell: bash
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -184,6 +345,7 @@ jobs:
 
       - name: Resolve GitHub token
         id: github-token
+        if: steps.context.outputs.should_run == 'true'
         shell: bash
         env:
           HOLON_GITHUB_TOKEN_INPUT: ${{ secrets.holon_github_token }}
@@ -255,13 +417,14 @@ jobs:
 
       - name: Run Holon solve
         id: run
+        if: steps.context.outputs.should_run == 'true'
         shell: bash
         env:
-          INPUT_REF: ${{ inputs.ref }}
-          INPUT_REPO: ${{ inputs.repo }}
-          INPUT_BASE: ${{ inputs.base }}
-          INPUT_GOAL: ${{ inputs.goal }}
-          INPUT_MODEL: ${{ inputs.model }}
+          INPUT_REF: ${{ steps.context.outputs.ref }}
+          INPUT_REPO: ${{ steps.context.outputs.repo }}
+          INPUT_BASE: ${{ steps.context.outputs.base }}
+          INPUT_GOAL: ${{ steps.context.outputs.goal }}
+          INPUT_MODEL: ${{ inputs.model || vars.HOLON_MODEL || '' }}
           ANTHROPIC_AUTH_TOKEN_INPUT: ${{ secrets.anthropic_auth_token || secrets.anthropic_api_key }}
           ANTHROPIC_BASE_URL_INPUT: ${{ secrets.anthropic_base_url || 'https://api.anthropic.com' }}
           OPENAI_API_KEY_INPUT: ${{ secrets.openai_api_key }}
@@ -319,6 +482,100 @@ jobs:
             echo "summary=" >> "$GITHUB_OUTPUT"
           fi
           echo "result=${{ steps.run.outcome }}" >> "$GITHUB_OUTPUT"
+
+      - name: Post Holon run report
+        if: always() && steps.run.outcome != 'skipped'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
+          HOLON_OUTPUT_DIR: ${{ steps.dirs.outputs.output }}
+          HOLON_TARGET_REF: ${{ steps.context.outputs.ref }}
+          HOLON_REPOSITORY: ${{ steps.context.outputs.repo || github.repository }}
+        run: |
+          set -euo pipefail
+
+          script="$RUNNER_TEMP/holon-post-run-report.sh"
+          cat >"$script" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          output_dir="${HOLON_OUTPUT_DIR:?HOLON_OUTPUT_DIR is required}"
+          target_ref="${HOLON_TARGET_REF:-}"
+          repo_hint="${HOLON_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+          run_json="$output_dir/run.json"
+          summary_md="$output_dir/summary.md"
+          manifest_json="$output_dir/manifest.json"
+
+          if [ ! -f "$run_json" ]; then
+            echo "Skipping Holon run report: missing $run_json"
+            exit 0
+          fi
+
+          pr_url=""
+          if [[ "$target_ref" =~ ^https://github.com/([^/]+/[^/]+)/pull/([0-9]+) ]]; then
+            pr_url="https://github.com/${BASH_REMATCH[1]}/pull/${BASH_REMATCH[2]}"
+          elif [[ "$target_ref" =~ ^([^#[:space:]]+/[^#[:space:]]+)#([0-9]+)$ ]]; then
+            candidate_repo="${BASH_REMATCH[1]}"
+            candidate_number="${BASH_REMATCH[2]}"
+            if gh pr view "$candidate_number" --repo "$candidate_repo" --json url >/tmp/holon-pr-view.json 2>/dev/null; then
+              pr_url="$(jq -r '.url // empty' /tmp/holon-pr-view.json)"
+            fi
+          elif [[ "$target_ref" =~ ^#([0-9]+)$ ]] && [ -n "$repo_hint" ]; then
+            candidate_number="${BASH_REMATCH[1]}"
+            if gh pr view "$candidate_number" --repo "$repo_hint" --json url >/tmp/holon-pr-view.json 2>/dev/null; then
+              pr_url="$(jq -r '.url // empty' /tmp/holon-pr-view.json)"
+            fi
+          fi
+
+          if [ -z "$pr_url" ]; then
+            pr_url="$(
+              {
+                [ -f "$summary_md" ] && grep -Eo 'https://github.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+' "$summary_md" || true
+                [ -f "$manifest_json" ] && grep -Eo 'https://github.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+' "$manifest_json" || true
+                grep -Eo 'https://github.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+' "$run_json" || true
+              } | head -n1
+            )"
+          fi
+
+          if [[ ! "$pr_url" =~ ^https://github.com/([^/]+/[^/]+)/pull/([0-9]+) ]]; then
+            echo "Skipping Holon run report: no PR URL found."
+            exit 0
+          fi
+
+          target_repo="${BASH_REMATCH[1]}"
+          target_pr="${BASH_REMATCH[2]}"
+
+          input_tokens="$(jq -r '.token_usage.input_tokens // .input_tokens // 0' "$run_json")"
+          output_tokens="$(jq -r '.token_usage.output_tokens // .output_tokens // 0' "$run_json")"
+          total_tokens="$(jq -r '.token_usage.total_tokens // ((.input_tokens // 0) + (.output_tokens // 0))' "$run_json")"
+          model_rounds="$(jq -r '.model_rounds // 0' "$run_json")"
+          tool_calls="$(jq -r '.tool_calls // 0' "$run_json")"
+          cache_read="$(jq -r '.provider_cache_usage.read_input_tokens // 0' "$run_json")"
+          cache_created="$(jq -r '.provider_cache_usage.creation_input_tokens // 0' "$run_json")"
+          cacheable="$(jq -r '.provider_cache_usage.cacheable_input_tokens // 0' "$run_json")"
+          hit_rate="$(jq -r 'if (.provider_cache_usage.hit_rate // null) == null then "n/a" else ((.provider_cache_usage.hit_rate * 10000 | round) / 100 | tostring) + "%" end' "$run_json")"
+          final_status="$(jq -r '.final_status // "unknown"' "$run_json")"
+          report_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$repo_hint}/actions/runs/${GITHUB_RUN_ID:-}"
+
+          report_file="$(mktemp)"
+          cat >"$report_file" <<EOF
+          ## Holon Run Report
+
+          - Result: \`$final_status\`
+          - Target: $target_ref
+          - Workflow run: $report_url
+          - Token usage: input $input_tokens, output $output_tokens, total $total_tokens
+          - Provider cache: read $cache_read, created $cache_created, cacheable $cacheable, hit rate $hit_rate
+          - Model rounds: $model_rounds
+          - Tool calls: $tool_calls
+          EOF
+
+          gh api "repos/$target_repo/issues/$target_pr/comments" -X POST -F body=@"$report_file" >/dev/null
+          rm -f "$report_file"
+          echo "Posted Holon run report to $pr_url"
+          SCRIPT
+
+          bash "$script"
 
       - name: Upload Holon artifact
         if: always()
