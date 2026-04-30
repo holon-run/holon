@@ -14,6 +14,7 @@ mod task_state_reducer;
 mod tasks;
 #[cfg(test)]
 mod test_util;
+mod workspace;
 mod turn;
 mod worktree;
 
@@ -161,30 +162,6 @@ struct ProviderReconfigurator {
 }
 
 impl RuntimeHandle {
-    fn build_execution_root_id(
-        workspace_id: &str,
-        projection_kind: WorkspaceProjectionKind,
-        execution_root: &Path,
-    ) -> Result<String> {
-        Ok(match projection_kind {
-            WorkspaceProjectionKind::CanonicalRoot => {
-                format!("canonical_root:{workspace_id}")
-            }
-            WorkspaceProjectionKind::GitWorktreeRoot => format!(
-                "git_worktree_root:{workspace_id}:{}",
-                crate::system::workspace::normalize_path(execution_root)?.display()
-            ),
-        })
-    }
-
-    fn agent_home_workspace_entry(data_dir: &Path) -> WorkspaceEntry {
-        WorkspaceEntry::new(
-            AGENT_HOME_WORKSPACE_ID,
-            data_dir.to_path_buf(),
-            Some("AgentHome".into()),
-        )
-    }
-
     pub fn new(
         agent_id: impl Into<String>,
         data_dir: PathBuf,
