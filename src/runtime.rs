@@ -1430,7 +1430,7 @@ fn combine_text_history(history: &[String], text_blocks: &[String]) -> Vec<Strin
 fn is_max_output_stop_reason(stop_reason: Option<&str>) -> bool {
     matches!(
         stop_reason,
-        Some("max_tokens") | Some("model_context_window_exceeded")
+        Some("max_tokens") | Some("max_output_tokens") | Some("model_context_window_exceeded")
     )
 }
 
@@ -1468,6 +1468,11 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn openai_max_output_tokens_stop_reason_triggers_recovery() {
+        assert!(is_max_output_stop_reason(Some("max_output_tokens")));
+    }
 
     fn context_config() -> ContextConfig {
         ContextConfig {

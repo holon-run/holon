@@ -22,7 +22,8 @@ use crate::{
 use super::build_http_client;
 use crate::provider::retry::{
     classify_reqwest_transport_error, classify_status_error, invalid_response_error,
-    provider_transport_error, ProviderFailureClassification, ProviderFailureKind, RetryDisposition,
+    provider_transport_error, ProviderFailureClassification, ProviderFailureKind,
+    ProviderTransportError, RetryDisposition,
 };
 
 #[derive(Clone)]
@@ -63,11 +64,38 @@ pub(crate) enum OpenAiResponsesTransportContract {
 }
 
 const OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS: usize = 8;
+const OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND: &str = "responses_compact";
 
 #[derive(Debug, Default)]
 struct OpenAiContinuationState {
     windows: HashMap<OpenAiContinuationScope, OpenAiProviderWindow>,
+    unsupported_compact_endpoints: HashMap<String, u16>,
     next_generation: u64,
+}
+
+fn openai_responses_url(base_url: &str) -> String {
+    format!("{}/responses", base_url.trim_end_matches('/'))
+}
+
+fn openai_responses_compact_url(base_url: &str) -> String {
+    format!("{}/responses/compact", base_url.trim_end_matches('/'))
+}
+
+fn openai_codex_api_base_url(base_url: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
+    if base_url.ends_with("/codex") {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/codex")
+    }
+}
+
+fn openai_codex_responses_url(base_url: &str) -> String {
+    format!("{}/responses", openai_codex_api_base_url(base_url))
+}
+
+fn openai_codex_responses_compact_url(base_url: &str) -> String {
+    format!("{}/responses/compact", openai_codex_api_base_url(base_url))
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -270,7 +298,7 @@ impl AgentProvider for OpenAiProvider {
             &self.continuation,
             &mut plan,
             &self.client,
-            format!("{}/responses/compact", self.base_url),
+            openai_responses_compact_url(&self.base_url),
             headers.clone(),
         )
         .await
@@ -280,7 +308,7 @@ impl AgentProvider for OpenAiProvider {
         }
         let parsed = match send_openai_responses_request(
             &self.client,
-            format!("{}/responses", self.base_url),
+            openai_responses_url(&self.base_url),
             plan.body,
             headers.clone(),
         )
@@ -306,7 +334,7 @@ impl AgentProvider for OpenAiProvider {
                 plan_scope.as_ref(),
                 &plan_request_shape,
                 &self.client,
-                format!("{}/responses/compact", self.base_url),
+                openai_responses_compact_url(&self.base_url),
                 headers,
             )
             .await;
@@ -356,7 +384,7 @@ impl AgentProvider for OpenAiCodexProvider {
             &self.continuation,
             &mut plan,
             &self.client,
-            format!("{}/responses/compact", self.base_url),
+            openai_codex_responses_compact_url(&self.base_url),
             headers.clone(),
         )
         .await
@@ -366,7 +394,7 @@ impl AgentProvider for OpenAiCodexProvider {
         }
         let parsed = match send_openai_responses_streaming_request(
             &self.client,
-            format!("{}/codex/responses", self.base_url),
+            openai_codex_responses_url(&self.base_url),
             plan.body,
             headers.clone(),
         )
@@ -392,7 +420,7 @@ impl AgentProvider for OpenAiCodexProvider {
                 plan_scope.as_ref(),
                 &plan_request_shape,
                 &self.client,
-                format!("{}/responses/compact", self.base_url),
+                openai_codex_responses_compact_url(&self.base_url),
                 headers,
             )
             .await;
@@ -1222,6 +1250,8 @@ async fn maybe_compact_openai_provider_window(
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: format!("skipped_{skip_reason}"),
             trigger_reason: Some("provider_window_item_threshold".into()),
+            endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+            http_status: None,
             input_items: Some(window.items.len()),
             output_items: None,
             compaction_items: None,
@@ -1236,14 +1266,42 @@ async fn maybe_compact_openai_provider_window(
 
     let input_items = window.items.len();
     let request_shape_hash = request_shape_hash(request_shape);
+    if let Some(http_status) = compact_endpoint_unsupported_status(continuation, &compact_url) {
+        return Some(openai_compact_unsupported_diagnostics(
+            "skipped_unsupported_endpoint",
+            "provider_window_item_threshold",
+            input_items,
+            window.latest_compaction_index,
+            Some(request_shape_hash),
+            Some(window.generation),
+            http_status,
+            None,
+        ));
+    }
     let compact_body = build_openai_compact_request_body(request_shape, &window.items);
     let compacted =
-        match send_openai_compact_request(client, compact_url, compact_body, headers).await {
+        match send_openai_compact_request(client, compact_url.clone(), compact_body, headers).await
+        {
             Ok(compacted) => compacted,
             Err(error) => {
+                if let Some(http_status) = unsupported_compact_endpoint_status(&error) {
+                    mark_compact_endpoint_unsupported(continuation, &compact_url, http_status);
+                    return Some(openai_compact_unsupported_diagnostics(
+                        "unsupported_endpoint",
+                        "provider_window_item_threshold",
+                        input_items,
+                        window.latest_compaction_index,
+                        Some(request_shape_hash),
+                        Some(window.generation),
+                        http_status,
+                        Some(error.to_string()),
+                    ));
+                }
                 return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                     status: "failed".into(),
                     trigger_reason: Some("provider_window_item_threshold".into()),
+                    endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+                    http_status: error_status(&error),
                     input_items: Some(input_items),
                     output_items: None,
                     compaction_items: None,
@@ -1260,6 +1318,8 @@ async fn maybe_compact_openai_provider_window(
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "rejected_empty_output".into(),
             trigger_reason: Some("provider_window_item_threshold".into()),
+            endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+            http_status: None,
             input_items: Some(input_items),
             output_items: Some(0),
             compaction_items: Some(0),
@@ -1280,6 +1340,8 @@ async fn maybe_compact_openai_provider_window(
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "rejected_missing_compaction_item".into(),
             trigger_reason: Some("provider_window_item_threshold".into()),
+            endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+            http_status: None,
             input_items: Some(input_items),
             output_items: Some(compacted.len()),
             compaction_items: Some(0),
@@ -1300,6 +1362,8 @@ async fn maybe_compact_openai_provider_window(
             return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                 status: "stale_generation".into(),
                 trigger_reason: Some("provider_window_item_threshold".into()),
+                endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+                http_status: None,
                 input_items: Some(input_items),
                 output_items: Some(output_items),
                 compaction_items: Some(compaction_items),
@@ -1333,6 +1397,8 @@ async fn maybe_compact_openai_provider_window(
     Some(ProviderOpenAiRemoteCompactionDiagnostics {
         status: "compacted".into(),
         trigger_reason: Some("provider_window_item_threshold".into()),
+        endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+        http_status: None,
         input_items: Some(input_items),
         output_items: Some(output_items),
         compaction_items: Some(compaction_items),
@@ -1379,6 +1445,8 @@ async fn maybe_compact_openai_request_plan(
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: format!("skipped_{skip_reason}"),
             trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+            http_status: None,
             input_items: Some(compactable_window.items.len()),
             output_items: None,
             compaction_items: None,
@@ -1393,15 +1461,43 @@ async fn maybe_compact_openai_request_plan(
 
     let input_items = compactable_window.items.len();
     let request_shape_hash = request_shape_hash(&plan.request_shape);
+    if let Some(http_status) = compact_endpoint_unsupported_status(continuation, &compact_url) {
+        return Some(openai_compact_unsupported_diagnostics(
+            "skipped_unsupported_endpoint",
+            "provider_window_item_threshold_before_request",
+            input_items,
+            compactable_window.latest_compaction_index,
+            Some(request_shape_hash),
+            Some(previous.generation),
+            http_status,
+            None,
+        ));
+    }
     let compact_body =
         build_openai_compact_request_body(&plan.request_shape, &compactable_window.items);
     let compacted =
-        match send_openai_compact_request(client, compact_url, compact_body, headers).await {
+        match send_openai_compact_request(client, compact_url.clone(), compact_body, headers).await
+        {
             Ok(compacted) => compacted,
             Err(error) => {
+                if let Some(http_status) = unsupported_compact_endpoint_status(&error) {
+                    mark_compact_endpoint_unsupported(continuation, &compact_url, http_status);
+                    return Some(openai_compact_unsupported_diagnostics(
+                        "unsupported_endpoint",
+                        "provider_window_item_threshold_before_request",
+                        input_items,
+                        compactable_window.latest_compaction_index,
+                        Some(request_shape_hash),
+                        Some(previous.generation),
+                        http_status,
+                        Some(error.to_string()),
+                    ));
+                }
                 return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                     status: "failed".into(),
                     trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+                    endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+                    http_status: error_status(&error),
                     input_items: Some(input_items),
                     output_items: None,
                     compaction_items: None,
@@ -1418,6 +1514,8 @@ async fn maybe_compact_openai_request_plan(
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "rejected_empty_output".into(),
             trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+            http_status: None,
             input_items: Some(input_items),
             output_items: Some(0),
             compaction_items: Some(0),
@@ -1438,6 +1536,8 @@ async fn maybe_compact_openai_request_plan(
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "rejected_missing_compaction_item".into(),
             trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+            http_status: None,
             input_items: Some(input_items),
             output_items: Some(compacted.len()),
             compaction_items: Some(0),
@@ -1458,6 +1558,8 @@ async fn maybe_compact_openai_request_plan(
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "stale_generation".into(),
             trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+            http_status: None,
             input_items: Some(input_items),
             output_items: Some(compacted.len()),
             compaction_items: Some(compaction_items),
@@ -1486,6 +1588,8 @@ async fn maybe_compact_openai_request_plan(
     Some(ProviderOpenAiRemoteCompactionDiagnostics {
         status: "compacted".into(),
         trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+        endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+        http_status: None,
         input_items: Some(input_items),
         output_items: Some(output_items),
         compaction_items: Some(compaction_items),
@@ -1496,6 +1600,69 @@ async fn maybe_compact_openai_request_plan(
         continuation_generation: Some(previous.generation),
         error: None,
     })
+}
+
+fn compact_endpoint_unsupported_status(
+    continuation: &Arc<Mutex<OpenAiContinuationState>>,
+    compact_url: &str,
+) -> Option<u16> {
+    let state = lock_openai_continuation(continuation);
+    state
+        .unsupported_compact_endpoints
+        .get(compact_url)
+        .copied()
+}
+
+fn mark_compact_endpoint_unsupported(
+    continuation: &Arc<Mutex<OpenAiContinuationState>>,
+    compact_url: &str,
+    http_status: u16,
+) {
+    let mut state = lock_openai_continuation(continuation);
+    state
+        .unsupported_compact_endpoints
+        .insert(compact_url.to_string(), http_status);
+}
+
+fn unsupported_compact_endpoint_status(error: &anyhow::Error) -> Option<u16> {
+    let status = error_status(error)?;
+    match status {
+        404 | 405 | 410 | 501 => Some(status),
+        _ => None,
+    }
+}
+
+fn error_status(error: &anyhow::Error) -> Option<u16> {
+    error
+        .downcast_ref::<ProviderTransportError>()
+        .and_then(|error| error.status)
+}
+
+fn openai_compact_unsupported_diagnostics(
+    status: &str,
+    trigger_reason: &str,
+    input_items: usize,
+    latest_compaction_index: Option<usize>,
+    request_shape_hash: Option<String>,
+    continuation_generation: Option<u64>,
+    http_status: u16,
+    error: Option<String>,
+) -> ProviderOpenAiRemoteCompactionDiagnostics {
+    ProviderOpenAiRemoteCompactionDiagnostics {
+        status: status.into(),
+        trigger_reason: Some(trigger_reason.into()),
+        endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
+        http_status: Some(http_status),
+        input_items: Some(input_items),
+        output_items: None,
+        compaction_items: None,
+        latest_compaction_index,
+        encrypted_content_hashes: None,
+        encrypted_content_bytes: None,
+        request_shape_hash,
+        continuation_generation,
+        error,
+    }
 }
 
 fn openai_provider_window_compaction_skip_reason(
@@ -2510,6 +2677,9 @@ async fn read_openai_streaming_response(response: Response) -> Result<Value> {
                         item,
                         MAX_STREAMED_OUTPUT_ITEMS,
                     )?,
+                    StreamingSseEvent::Incomplete(response) => {
+                        return recover_openai_incomplete_response(response, &streamed_output_items)
+                    }
                     StreamingSseEvent::Done => return Err(early_done_protocol_violation_error()),
                     StreamingSseEvent::Terminal(response) => {
                         return Ok(finalize_openai_terminal_response(
@@ -2536,6 +2706,9 @@ async fn read_openai_streaming_response(response: Response) -> Result<Value> {
         StreamingSseEvent::Continue => {}
         StreamingSseEvent::OutputItem(item) => {
             push_streamed_output_item(&mut streamed_output_items, item, MAX_STREAMED_OUTPUT_ITEMS)?
+        }
+        StreamingSseEvent::Incomplete(response) => {
+            return recover_openai_incomplete_response(response, &streamed_output_items)
         }
         StreamingSseEvent::Done => return Err(early_done_protocol_violation_error()),
         StreamingSseEvent::Terminal(response) => {
@@ -2572,6 +2745,7 @@ fn early_done_protocol_violation_error() -> anyhow::Error {
 enum StreamingSseEvent {
     Continue,
     OutputItem(Value),
+    Incomplete(Value),
     Done,
     Terminal(Value),
 }
@@ -2642,13 +2816,34 @@ fn consume_openai_sse_event(data_lines: &mut Vec<String>) -> Result<StreamingSse
                 Some(response),
             ));
         }
-        if event_type == "response.incomplete" || matches!(status, Some("incomplete" | "cancelled"))
-        {
+        if event_type == "response.incomplete" || status == Some("incomplete") {
+            if openai_incomplete_reason(response) == Some("max_output_tokens") {
+                return Ok(StreamingSseEvent::Incomplete(response.clone()));
+            }
+            return Err(classify_openai_incomplete_response(response));
+        }
+        if status == Some("cancelled") {
             return Err(classify_openai_incomplete_response(response));
         }
     }
 
     Ok(StreamingSseEvent::Continue)
+}
+
+fn recover_openai_incomplete_response(
+    response: Value,
+    streamed_output_items: &[Value],
+) -> Result<Value> {
+    let response = finalize_openai_terminal_response(response, streamed_output_items);
+    let has_output = response
+        .get("output")
+        .and_then(Value::as_array)
+        .is_some_and(|output| !output.is_empty());
+    if has_output {
+        Ok(response)
+    } else {
+        Err(classify_openai_incomplete_response(&response))
+    }
 }
 
 fn finalize_openai_terminal_response(
@@ -2718,10 +2913,7 @@ fn classify_openai_streaming_error(
 }
 
 fn classify_openai_incomplete_response(response: &Value) -> anyhow::Error {
-    let reason = response
-        .get("incomplete_details")
-        .and_then(|details| details.get("reason"))
-        .and_then(Value::as_str)
+    let reason = openai_incomplete_reason(response)
         .or_else(|| response.get("status").and_then(Value::as_str))
         .unwrap_or("unknown");
     provider_transport_error(
@@ -2733,6 +2925,13 @@ fn classify_openai_incomplete_response(response: &Value) -> anyhow::Error {
         None,
         format!("OpenAI-style streaming response did not complete successfully: {reason}"),
     )
+}
+
+fn openai_incomplete_reason(response: &Value) -> Option<&str> {
+    response
+        .get("incomplete_details")
+        .and_then(|details| details.get("reason"))
+        .and_then(Value::as_str)
 }
 
 #[allow(dead_code)]
@@ -2869,9 +3068,16 @@ fn parse_openai_response_with_transport_state(response: Value) -> Result<ParsedO
         response: ProviderTurnResponse {
             blocks,
             stop_reason: response
-                .get("status")
+                .get("incomplete_details")
+                .and_then(|details| details.get("reason"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
+                .or_else(|| {
+                    response
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .or_else(|| {
                     response
                         .get("stop_reason")

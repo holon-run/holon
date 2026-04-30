@@ -38,6 +38,16 @@ fn openai_text_response(response_id: &str, text: &str) -> Value {
     })
 }
 
+fn openai_text_sse_response(response_id: &str, text: &str) -> String {
+    format!(
+        concat!(
+            "event: response.completed\n",
+            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":1}},\"output\":[{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{}\"}}]}}]}}}}\n\n"
+        ),
+        response_id, text
+    )
+}
+
 fn provider_large_window_request_with_prompt_frame() -> ProviderTurnRequest {
     let mut request = provider_turn_request_with_prompt_frame();
     request.conversation = (0..8)
@@ -231,6 +241,232 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
     assert_eq!(compact_bodies[0]["input"].as_array().unwrap().len(), 11);
     assert_eq!(compact_bodies[0]["tools"], json!([]));
     assert_eq!(compact_bodies[0]["parallel_tool_calls"], json!(false));
+}
+
+#[tokio::test]
+async fn openai_codex_remote_compact_uses_codex_backend_route_for_legacy_base_url() {
+    let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let response_bodies_for_server = response_bodies.clone();
+    let compact_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let compact_bodies_for_server = compact_bodies.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/codex/responses",
+                post(move |Json(body): Json<Value>| {
+                    let captured = response_bodies_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        (
+                            [("content-type", "text/event-stream")],
+                            openai_text_sse_response("resp_1", "ready"),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/codex/responses/compact",
+                post(move |Json(body): Json<Value>| {
+                    let captured = compact_bodies_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        Json(json!({
+                            "output": [
+                                { "type": "compaction", "encrypted_content": "opaque" }
+                            ]
+                        }))
+                    }
+                }),
+            ),
+    )
+    .await;
+    let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai_codex())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let response = provider
+        .complete_turn(provider_large_window_paired_request_with_prompt_frame())
+        .await
+        .unwrap();
+
+    assert_eq!(response_bodies.lock().unwrap().len(), 1);
+    assert_eq!(compact_bodies.lock().unwrap().len(), 1);
+    let remote_compaction = response
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+        .expect("remote compaction diagnostics");
+    assert_eq!(remote_compaction.status, "compacted");
+    assert_eq!(
+        remote_compaction.endpoint_kind.as_deref(),
+        Some("responses_compact")
+    );
+}
+
+#[tokio::test]
+async fn openai_codex_remote_compact_does_not_double_codex_path_for_new_base_url() {
+    let compact_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let compact_bodies_for_server = compact_bodies.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/codex/responses",
+                post(|Json(_body): Json<Value>| async {
+                    (
+                        [("content-type", "text/event-stream")],
+                        openai_text_sse_response("resp_1", "ready"),
+                    )
+                }),
+            )
+            .route(
+                "/codex/responses/compact",
+                post(move |Json(body): Json<Value>| {
+                    let captured = compact_bodies_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        Json(json!({
+                            "output": [
+                                { "type": "compaction", "encrypted_content": "opaque" }
+                            ]
+                        }))
+                    }
+                }),
+            ),
+    )
+    .await;
+    let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai_codex())
+        .unwrap()
+        .base_url = format!("{base_url}/codex");
+    let provider = OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    provider
+        .complete_turn(provider_large_window_paired_request_with_prompt_frame())
+        .await
+        .unwrap();
+
+    assert_eq!(compact_bodies.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn openai_responses_caches_unsupported_remote_compact_endpoint() {
+    let compact_attempts = Arc::new(AtomicUsize::new(0));
+    let compact_attempts_for_server = compact_attempts.clone();
+    let response_attempts = Arc::new(AtomicUsize::new(0));
+    let response_attempts_for_server = response_attempts.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/responses",
+                post(move |Json(_body): Json<Value>| {
+                    let attempts = response_attempts_for_server.clone();
+                    async move {
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        if attempt == 0 {
+                            Json(openai_text_response("resp_1", "ready"))
+                        } else {
+                            Json(openai_text_response("resp_2", "done"))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/responses/compact",
+                post(move |Json(_body): Json<Value>| {
+                    let attempts = compact_attempts_for_server.clone();
+                    async move {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::NOT_FOUND,
+                            Json(json!({ "detail": "Not Found" })),
+                        )
+                    }
+                }),
+            ),
+    )
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let first = provider
+        .complete_turn(provider_large_window_paired_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let second = provider
+        .complete_turn(provider_large_window_paired_followup_with_prompt_frame())
+        .await
+        .unwrap();
+
+    let first_compaction = first
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+        .expect("first remote compaction diagnostics");
+    assert_eq!(first_compaction.status, "unsupported_endpoint");
+    assert_eq!(first_compaction.http_status, Some(404));
+
+    let second_compaction = second
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+        .expect("second remote compaction diagnostics");
+    assert_eq!(second_compaction.status, "skipped_unsupported_endpoint");
+    assert_eq!(second_compaction.http_status, Some(404));
+    assert_eq!(compact_attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn openai_codex_streaming_incomplete_max_output_tokens_returns_recoverable_response() {
+    let base_url = spawn_test_server(Router::new().route(
+        "/codex/responses",
+        post(|Json(_body): Json<Value>| async {
+            (
+                [("content-type", "text/event-stream")],
+                concat!(
+                    "event: response.output_item.done\n",
+                    "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"partial report\"}]}}\n\n",
+                    "event: response.incomplete\n",
+                    "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_1\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}}\n\n"
+                ),
+            )
+        }),
+    ))
+    .await;
+    let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai_codex())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let response = provider
+        .complete_turn(provider_turn_request())
+        .await
+        .unwrap();
+
+    assert_eq!(response.stop_reason.as_deref(), Some("max_output_tokens"));
+    assert_eq!(response.input_tokens, 5);
+    assert_eq!(response.output_tokens, 3);
+    assert!(matches!(
+        &response.blocks[0],
+        ModelBlock::Text { text } if text == "partial report"
+    ));
 }
 
 #[tokio::test]

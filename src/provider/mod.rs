@@ -197,6 +197,10 @@ pub struct ProviderOpenAiRemoteCompactionDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_items: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_items: Option<usize>,

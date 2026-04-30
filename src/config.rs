@@ -1427,7 +1427,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
             id: openai_codex,
             transport: ProviderTransportKind::OpenAiCodexResponses,
             base_url: env::var("HOLON_OPENAI_CODEX_BASE_URL")
-                .unwrap_or_else(|_| "https://chatgpt.com/backend-api".to_string()),
+                .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex".to_string()),
             auth: ProviderAuthConfig {
                 source: CredentialSource::ExternalCli,
                 kind: CredentialKind::SessionToken,
@@ -1962,7 +1962,7 @@ pub fn provider_registry_for_tests(
         ProviderRuntimeConfig {
             id: openai_codex,
             transport: ProviderTransportKind::OpenAiCodexResponses,
-            base_url: "https://chatgpt.com/backend-api".into(),
+            base_url: "https://chatgpt.com/backend-api/codex".into(),
             auth: ProviderAuthConfig {
                 source: CredentialSource::ExternalCli,
                 kind: CredentialKind::SessionToken,
