@@ -9,13 +9,13 @@ mod message_dispatch;
 mod operator;
 mod operator_dispatch;
 mod provider_turn;
-mod workspace;
 mod subagent;
 mod task_state_reducer;
 mod tasks;
 #[cfg(test)]
 mod test_util;
 mod turn;
+mod workspace;
 mod worktree;
 
 use std::{
@@ -648,10 +648,7 @@ impl RuntimeHandle {
     }
 
     fn workspace_view_from_state(&self, state: &AgentState) -> Result<WorkspaceView> {
-        workspace::workspace_view_from_state(
-            state,
-            self.inner.storage.data_dir().to_path_buf(),
-        )
+        workspace::workspace_view_from_state(state, self.inner.storage.data_dir().to_path_buf())
     }
 
     fn execution_snapshot_for_view(
@@ -660,7 +657,12 @@ impl RuntimeHandle {
         workspace: &WorkspaceView,
         attached_workspace_ids: &[String],
     ) -> ExecutionSnapshot {
-        workspace::execution_snapshot_for_view(profile, workspace, attached_workspace_ids, &self.inner.storage)
+        workspace::execution_snapshot_for_view(
+            profile,
+            workspace,
+            attached_workspace_ids,
+            &self.inner.storage,
+        )
     }
 
     fn workspace_anchor_for_state_ref<'a>(&self, state: &'a AgentState) -> Option<&'a Path> {
