@@ -19,22 +19,22 @@ pub(super) fn model_picker_rows(agent: Option<&AgentSummary>, filter: &str) -> V
     let Some(agent) = agent else {
         return Vec::new();
     };
-    let mut rows = vec![inherit_default_row(agent)];
-    rows.extend(
-        agent
-            .model
-            .model_availability
-            .iter()
-            .map(model_availability_row),
-    );
-
+    let inherit_row = inherit_default_row(agent);
     let query = filter.trim().to_ascii_lowercase();
+    let model_rows = agent
+        .model
+        .model_availability
+        .iter()
+        .map(model_availability_row);
     if query.is_empty() {
+        let mut rows = vec![inherit_row];
+        rows.extend(model_rows);
         return rows;
     }
-    rows.into_iter()
-        .filter(|row| row.searchable.contains(&query))
-        .collect()
+
+    let mut rows = vec![inherit_row];
+    rows.extend(model_rows.filter(|row| row.searchable.contains(&query)));
+    rows
 }
 
 pub(super) fn selected_model_choice(
@@ -255,8 +255,9 @@ mod tests {
     fn picker_rows_filter_by_model_and_label() {
         let agent = summary();
         let rows = model_picker_rows(Some(&agent), "sonnet");
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].title.contains("claude-sonnet-4-6"));
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].title.contains("inherit runtime default"));
+        assert!(rows[1].title.contains("claude-sonnet-4-6"));
     }
 
     #[test]

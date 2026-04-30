@@ -179,7 +179,7 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
             "Closure: {:?} / {:?}",
             agent.closure.outcome, agent.closure.runtime_posture
         ),
-        format!("Model: {}", render_model_status(agent)),
+        render_model_status(agent),
     ];
 
     lines.push(String::new());
