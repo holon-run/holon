@@ -36,6 +36,7 @@ mod chat;
 mod composer;
 mod input;
 mod logging;
+mod model_picker;
 mod overlay;
 mod projection;
 mod render;
@@ -925,6 +926,7 @@ mod tests {
                     source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
                 },
                 available_models: Vec::new(),
+                model_availability: Vec::new(),
             },
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),

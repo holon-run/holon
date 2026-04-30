@@ -64,9 +64,9 @@ use crate::{
         ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerStatus,
         ExternalTriggerSummary, LoadedAgentsMd, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord,
-        QueueEntryStatus, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
-        SkillActivationSource, SkillActivationState, SkillsRuntimeView, TaskKind, TaskRecord,
-        TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
+        QueueEntryStatus, ResolvedModelAvailability, RuntimeFailurePhase, RuntimeFailureSummary,
+        RuntimePosture, SkillActivationSource, SkillActivationState, SkillsRuntimeView, TaskKind,
+        TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
         TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
         WaitingIntentSummary, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
@@ -134,6 +134,7 @@ struct RuntimeInner {
     provider: RwLock<Arc<dyn AgentProvider>>,
     provider_reconfig: Option<ProviderReconfigurator>,
     model_catalog: RuntimeModelCatalog,
+    model_availability: Vec<ResolvedModelAvailability>,
     base_context_config: ContextConfig,
     context_config: RwLock<ContextConfig>,
     callback_base_url: String,
@@ -204,6 +205,7 @@ impl RuntimeHandle {
             base_context_config,
             context_config,
             RuntimeModelCatalog::default(),
+            Vec::new(),
             None,
             None,
         )
@@ -231,6 +233,7 @@ impl RuntimeHandle {
             base_context_config,
             context_config,
             model_catalog,
+            Vec::new(),
             None,
             Some(host_bridge),
         )
@@ -247,6 +250,7 @@ impl RuntimeHandle {
         host_bridge: RuntimeHostBridge,
     ) -> Result<Self> {
         let model_catalog = RuntimeModelCatalog::from_config(&config);
+        let model_availability = crate::provider::resolved_model_availability(&config);
         let base_context_config = context_config.clone();
         let mut provider_config = config.clone();
         provider_config.runtime_max_output_tokens = model_catalog
@@ -266,6 +270,7 @@ impl RuntimeHandle {
             base_context_config,
             resolved_context_config,
             model_catalog,
+            model_availability,
             Some(ProviderReconfigurator { config }),
             Some(host_bridge),
         )
@@ -281,6 +286,7 @@ impl RuntimeHandle {
         base_context_config: ContextConfig,
         context_config: ContextConfig,
         model_catalog: RuntimeModelCatalog,
+        model_availability: Vec<ResolvedModelAvailability>,
         provider_reconfig: Option<ProviderReconfigurator>,
         host_bridge: Option<RuntimeHostBridge>,
     ) -> Result<Self> {
@@ -442,6 +448,7 @@ impl RuntimeHandle {
                 provider: RwLock::new(provider),
                 provider_reconfig,
                 model_catalog,
+                model_availability,
                 base_context_config,
                 context_config: RwLock::new(resolved_context_config),
                 callback_base_url,
@@ -523,6 +530,7 @@ impl RuntimeHandle {
             override_model: state.model_override.clone(),
             resolved_policy,
             available_models: self.inner.model_catalog.available_models(),
+            model_availability: self.inner.model_availability.clone(),
         }
     }
 

@@ -2579,6 +2579,30 @@ pub struct AgentModelState {
     pub resolved_policy: ResolvedRuntimeModelPolicy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub available_models: Vec<BuiltInModelMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_availability: Vec<ResolvedModelAvailability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedModelAvailability {
+    pub model: String,
+    pub provider: String,
+    pub display_name: String,
+    pub metadata_source: String,
+    pub provider_configured: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_kind: Option<String>,
+    pub credential_configured: bool,
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+    pub policy: ResolvedRuntimeModelPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

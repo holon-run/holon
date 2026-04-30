@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
     auth::load_codex_cli_credential,
     config::{AppConfig, CredentialSource, ModelRef, RuntimeModelCatalog},
     context::ContextConfig,
-    model_catalog::ResolvedRuntimeModelPolicy,
+    types::ResolvedModelAvailability,
 };
 
 use super::{build_candidate, classify_provider_error, retry::provider_retry_policy_json};
@@ -59,28 +58,6 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
         "model_availability": model_availability,
         "providers": providers,
     })
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResolvedModelAvailability {
-    pub model: String,
-    pub provider: String,
-    pub display_name: String,
-    pub metadata_source: String,
-    pub provider_configured: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transport: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_kind: Option<String>,
-    pub credential_configured: bool,
-    pub available: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unavailable_reason: Option<String>,
-    pub policy: ResolvedRuntimeModelPolicy,
 }
 
 pub fn resolved_model_availability(config: &AppConfig) -> Vec<ResolvedModelAvailability> {

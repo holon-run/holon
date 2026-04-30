@@ -17,6 +17,10 @@ pub(super) enum OverlayState {
         selected: usize,
         detail_scroll: u16,
     },
+    ModelPicker {
+        filter: String,
+        selected: usize,
+    },
     DebugPromptInput {
         composer: ComposerState,
     },
@@ -43,6 +47,9 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
             selected,
             detail_scroll,
         } => draw_tasks_overlay(frame, app, *selected, *detail_scroll),
+        OverlayState::ModelPicker { filter, selected } => {
+            draw_model_picker_overlay(frame, app, filter, *selected)
+        }
         OverlayState::DebugPromptInput { composer } => draw_input_modal(
             frame,
             "Debug Prompt",
@@ -258,6 +265,62 @@ fn draw_tasks_overlay(frame: &mut Frame<'_>, app: &TuiApp, selected: usize, deta
     frame.render_widget(detail, layout[1]);
 }
 
+fn draw_model_picker_overlay(frame: &mut Frame<'_>, app: &TuiApp, filter: &str, selected: usize) {
+    let popup = centered_rect(92, 80, frame.area());
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(4),
+        ])
+        .split(popup);
+    frame.render_widget(Clear, popup);
+
+    let filter_text = if filter.is_empty() {
+        "Filter: ".to_string()
+    } else {
+        format!("Filter: {filter}")
+    };
+    let filter_widget =
+        Paragraph::new(filter_text).block(Block::default().title("Model").borders(Borders::ALL));
+    frame.render_widget(filter_widget, layout[0]);
+
+    let rows = crate::tui::model_picker::model_picker_rows(app.selected_agent_summary(), filter);
+    let items = if rows.is_empty() {
+        vec![ListItem::new(
+            "No runtime-provided model availability matches the filter",
+        )]
+    } else {
+        rows.iter()
+            .map(|row| {
+                let status = if row.available { " " } else { "!" };
+                ListItem::new(format!("{status} {}\n  {}", row.title, row.detail))
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut state = ListState::default();
+    if !rows.is_empty() {
+        state.select(Some(selected.min(rows.len().saturating_sub(1))));
+    }
+    let list = List::new(items)
+        .block(Block::default().title("Models").borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, layout[1], &mut state);
+
+    let current = app
+        .selected_agent_summary()
+        .map(render::render_model_status)
+        .unwrap_or_else(|| "model: <no agent selected>".into());
+    let help = Paragraph::new(format!(
+        "{current}\nType to filter, Backspace edits, Up/Down moves, Enter selects, Esc cancels"
+    ))
+    .block(Block::default().borders(Borders::ALL))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(help, layout[2]);
+}
+
 fn draw_large_text_overlay(frame: &mut Frame<'_>, title: &str, text: &str, scroll: u16) {
     let popup = centered_rect(90, 80, frame.area());
     frame.render_widget(Clear, popup);
@@ -283,6 +346,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
         "  /help show this help",
         "  /agents open agent picker/detail",
         "  /events open raw event inspector",
+        "  /model open model picker for the selected agent",
         "  /tasks open task overlay",
         "  /transcript open transcript overlay",
         "  /refresh re-bootstrap the selected agent from /state",

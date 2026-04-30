@@ -5,6 +5,7 @@ enum SlashCommand {
     Help,
     Agents,
     Events,
+    Model,
     Tasks,
     Transcript,
     Refresh,
@@ -25,7 +26,7 @@ struct SlashCommandSpec {
     command: SlashCommand,
 }
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 8] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 9] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -40,6 +41,11 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 8] = [
         name: "/events",
         description: "open raw events overlay",
         command: SlashCommand::Events,
+    },
+    SlashCommandSpec {
+        name: "/model",
+        description: "open selected agent model picker",
+        command: SlashCommand::Model,
     },
     SlashCommandSpec {
         name: "/tasks",
@@ -208,6 +214,13 @@ impl TuiApp {
                 };
                 self.status_line = "Opened raw events overlay".into();
             }
+            SlashCommand::Model => {
+                self.overlay = OverlayState::ModelPicker {
+                    filter: String::new(),
+                    selected: 0,
+                };
+                self.status_line = "Opened model picker".into();
+            }
             SlashCommand::Tasks => {
                 self.overlay = OverlayState::Tasks {
                     selected: 0,
@@ -320,6 +333,53 @@ impl TuiApp {
                             selected,
                             detail_scroll,
                         };
+                    }
+                }
+                Ok(())
+            }
+            OverlayState::ModelPicker {
+                mut filter,
+                mut selected,
+            } => {
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        self.apply_model_picker_selection(&filter, selected).await?;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        selected = selected.saturating_sub(1);
+                        self.overlay = OverlayState::ModelPicker { filter, selected };
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let max = crate::tui::model_picker::model_picker_rows(
+                            self.selected_agent_summary(),
+                            &filter,
+                        )
+                        .len()
+                        .saturating_sub(1);
+                        selected = (selected + 1).min(max);
+                        self.overlay = OverlayState::ModelPicker { filter, selected };
+                    }
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        selected = crate::tui::model_picker::clamp_model_picker_selection(
+                            self.selected_agent_summary(),
+                            &filter,
+                            selected,
+                        );
+                        self.overlay = OverlayState::ModelPicker { filter, selected };
+                    }
+                    KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        filter.push(ch);
+                        selected = crate::tui::model_picker::clamp_model_picker_selection(
+                            self.selected_agent_summary(),
+                            &filter,
+                            selected,
+                        );
+                        self.overlay = OverlayState::ModelPicker { filter, selected };
+                    }
+                    _ => {
+                        self.overlay = OverlayState::ModelPicker { filter, selected };
                     }
                 }
                 Ok(())
@@ -455,6 +515,36 @@ impl TuiApp {
         }
     }
 
+    async fn apply_model_picker_selection(&mut self, filter: &str, selected: usize) -> Result<()> {
+        let agent_id = self
+            .selected_agent_id()
+            .ok_or_else(|| anyhow!("no agent selected"))?
+            .to_string();
+        let choice = crate::tui::model_picker::selected_model_choice(
+            self.selected_agent_summary(),
+            filter,
+            selected,
+        )
+        .ok_or_else(|| anyhow!("no model selection available"))?;
+
+        match choice {
+            crate::tui::model_picker::ModelPickerChoice::InheritDefault => {
+                self.client.clear_agent_model_override(&agent_id).await?;
+                self.status_line =
+                    format!("Cleared model override for {agent_id}; inheriting runtime default");
+            }
+            crate::tui::model_picker::ModelPickerChoice::Model { model } => {
+                self.client
+                    .set_agent_model_override(&agent_id, model.clone())
+                    .await?;
+                self.status_line = format!("Set model override for {agent_id} to {model}");
+            }
+        }
+        self.overlay = OverlayState::None;
+        self.bootstrap_selected_agent().await?;
+        Ok(())
+    }
+
     fn selected_event_reverse_index(&self, selected_event_id: Option<&str>) -> Option<usize> {
         let projection = self.projection.as_ref()?;
         selected_event_id
@@ -557,6 +647,10 @@ mod tests {
         assert_eq!(
             parse_composer_submission("/refresh").unwrap(),
             Some(ComposerSubmission::Slash(SlashCommand::Refresh))
+        );
+        assert_eq!(
+            parse_composer_submission("/model").unwrap(),
+            Some(ComposerSubmission::Slash(SlashCommand::Model))
         );
         assert_eq!(
             parse_composer_submission("/clear-status").unwrap(),
