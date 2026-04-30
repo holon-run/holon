@@ -69,3 +69,4 @@ Current decision notes:
 - [049 Anthropic Cache Break Classification](./049-anthropic-cache-break-classification.md)
 - [050 Anthropic Claude CLI-Like Cache Lowering](./050-anthropic-claude-cli-like-cache-lowering.md)
 - [051 Runtime Config Provider Credentials](./051-runtime-config-provider-credentials.md)
+- [052 Turn-Local Compaction Remains Request Projection](./052-turn-local-compaction-remains-request-projection.md)

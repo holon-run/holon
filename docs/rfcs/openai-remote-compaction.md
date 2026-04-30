@@ -22,6 +22,13 @@ OpenAI Responses exposes remote compaction through:
 - standalone `POST /v1/responses/compact`
 - server-side compaction through `/v1/responses` `context_management`
 
+For ChatGPT/Codex-authenticated backend routes, Holon treats
+`https://chatgpt.com/backend-api/codex` as the provider API base. The
+corresponding standalone compact route is therefore
+`/backend-api/codex/responses/compact`. Older Holon configs that use
+`/backend-api` remain accepted by normalizing the API base before endpoint
+construction.
+
 The compacted item returned by OpenAI includes encrypted provider state. Holon
 can store and replay that item, but cannot inspect its semantic contents.
 
@@ -133,6 +140,12 @@ Holon should avoid compaction churn by following these rules:
 
 Remote compaction should therefore be a threshold crossing event, not a routine
 per-round rewrite.
+
+If the compact route returns a permanent endpoint capability failure such as
+404, 405, 410, or 501, Holon should negative-cache that endpoint for the current
+provider session. Later rounds should emit `skipped_unsupported_endpoint`
+diagnostics instead of repeating the same known-bad compact request. Transient
+transport, rate-limit, and server failures should not populate this cache.
 
 ## 6. Multiple Compaction Items
 

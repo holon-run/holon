@@ -109,7 +109,7 @@ The persisted runtime config should evolve toward this shape:
   "providers": {
     "openai-codex": {
       "transport": "openai_codex_responses",
-      "base_url": "https://chatgpt.com/backend-api",
+      "base_url": "https://chatgpt.com/backend-api/codex",
       "auth": {
         "source": "external_cli",
         "kind": "session_token",
