@@ -79,6 +79,9 @@ Generate:
 - `${GITHUB_OUTPUT_DIR}/review.md`
 - `${GITHUB_OUTPUT_DIR}/review.json`
 - `${GITHUB_OUTPUT_DIR}/summary.md`
+- `${GITHUB_OUTPUT_DIR}/review-publish.json` after a successful publish, or when
+  publishing is skipped because an equivalent same-head review/comment already
+  exists
 - Optional `${GITHUB_OUTPUT_DIR}/manifest.json` (execution metadata)
 
 ### 3. Publish review
@@ -165,8 +168,21 @@ Short execution summary:
 ## Publishing Guardrails
 
 - Publish at most one review per execution round.
-- A successful primary publish is terminal; do not run alternate publish paths.
-- Before fallback publish, check whether an equivalent Holon review already exists for the same head SHA and skip if present.
+- Treat review/comment publishing as a single-shot external side effect: choose
+  one publish surface, either one PR review or one PR comment, not both.
+- Capture the target PR `headRefOid` before publishing and use it as the
+  deduplication key.
+- Before any publish or retry, check existing reviews/comments by Holon or the
+  current GitHub actor for the same head SHA. If an equivalent review/comment
+  already exists, skip publishing and record the existing URL/status.
+- A successful primary publish is terminal; immediately write the publish result
+  to `${GITHUB_OUTPUT_DIR}/review-publish.json` and do not run alternate publish
+  paths.
+- Before fallback publish, require both conditions: no local
+  `review-publish.json` success marker exists, and no equivalent Holon review or
+  comment exists for the same head SHA.
+- If a publish command result is ambiguous, verify existing reviews/comments for
+  the same head SHA before retrying. Do not retry blindly.
 
 ## Configuration
 
