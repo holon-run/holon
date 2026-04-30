@@ -1255,6 +1255,10 @@ pub struct AgentState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<ModelRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_requested_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_turn_terminal: Option<TurnTerminalRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_runtime_failure: Option<RuntimeFailureSummary>,
@@ -1321,6 +1325,8 @@ impl AgentState {
             active_skills: Vec::new(),
             last_continuation: None,
             model_override: None,
+            last_requested_model: None,
+            last_active_model: None,
             last_turn_terminal: None,
             last_runtime_failure: None,
         }
@@ -2559,6 +2565,12 @@ pub struct AgentModelState {
     pub source: AgentModelSource,
     pub runtime_default_model: ModelRef,
     pub effective_model: ModelRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<ModelRef>,
+    #[serde(default)]
+    pub fallback_active: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effective_fallback_models: Vec<ModelRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

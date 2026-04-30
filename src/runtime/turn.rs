@@ -4,11 +4,12 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::{
+    config::ModelRef,
     prompt::EffectivePrompt,
     provider::{
         provider_attempt_timeline, provider_error_is_context_length_exceeded, AgentProvider,
-        ConversationMessage, ModelBlock, PromptContentBlock, ProviderPromptFrame,
-        ProviderTurnRequest, ToolResultBlock,
+        ConversationMessage, ModelBlock, PromptContentBlock, ProviderAttemptTimeline,
+        ProviderPromptFrame, ProviderTurnRequest, ToolResultBlock,
     },
     runtime::provider_turn::{
         build_continuation_request, build_provider_prompt_frame, build_provider_turn_request,
@@ -255,6 +256,39 @@ fn estimate_prompt_frame_tokens(prompt_frame: &ProviderPromptFrame) -> usize {
         estimate_text_tokens(&prompt_frame.system_prompt)
     } else {
         structured_tokens
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProviderAttemptModelState {
+    requested_model: Option<ModelRef>,
+    active_model: Option<ModelRef>,
+    fallback_active: bool,
+}
+
+fn provider_attempt_model_state(
+    timeline: Option<&ProviderAttemptTimeline>,
+) -> ProviderAttemptModelState {
+    let Some(timeline) = timeline else {
+        return ProviderAttemptModelState::default();
+    };
+    let requested_model = (!timeline.requested_model_ref.is_empty())
+        .then(|| ModelRef::parse(&timeline.requested_model_ref).ok())
+        .flatten();
+    let active_model = timeline
+        .active_model_ref
+        .as_deref()
+        .or(timeline.winning_model_ref.as_deref())
+        .and_then(|model| ModelRef::parse(model).ok());
+    let fallback_active = requested_model
+        .as_ref()
+        .zip(active_model.as_ref())
+        .is_some_and(|(requested, active)| requested != active);
+
+    ProviderAttemptModelState {
+        requested_model,
+        active_model,
+        fallback_active,
     }
 }
 
@@ -1190,6 +1224,7 @@ impl RuntimeHandle {
             let stop_reason = response.stop_reason.clone();
             let cache_usage = response.cache_usage.clone();
             let request_diagnostics = response.request_diagnostics.clone();
+            let model_attempt_state = provider_attempt_model_state(attempt_timeline.as_ref());
 
             {
                 let mut guard = self.inner.agent.lock().await;
@@ -1200,6 +1235,8 @@ impl RuntimeHandle {
                     response.input_tokens,
                     response.output_tokens,
                 ));
+                guard.state.last_requested_model = model_attempt_state.requested_model.clone();
+                guard.state.last_active_model = model_attempt_state.active_model.clone();
                 self.inner.storage.write_agent(&guard.state)?;
             }
 
@@ -1279,6 +1316,9 @@ impl RuntimeHandle {
                     "prompt_cache_key": effective_prompt.cache_identity.prompt_cache_key.clone(),
                     "working_memory_revision": effective_prompt.cache_identity.working_memory_revision,
                     "compression_epoch": effective_prompt.cache_identity.compression_epoch,
+                    "requested_model": model_attempt_state.requested_model.clone(),
+                    "active_model": model_attempt_state.active_model.clone(),
+                    "fallback_active": model_attempt_state.fallback_active,
                     "context_management": context_management,
                     "provider_request_diagnostics": request_diagnostics.clone(),
                     "provider_attempt_timeline": attempt_timeline,
@@ -1370,6 +1410,9 @@ impl RuntimeHandle {
                             "prompt_cache_key": effective_prompt.cache_identity.prompt_cache_key.clone(),
                             "working_memory_revision": effective_prompt.cache_identity.working_memory_revision,
                             "compression_epoch": effective_prompt.cache_identity.compression_epoch,
+                            "requested_model": model_attempt_state.requested_model,
+                            "active_model": model_attempt_state.active_model,
+                            "fallback_active": model_attempt_state.fallback_active,
                             "context_management": context_management,
                             "provider_request_diagnostics": request_diagnostics,
                             "provider_attempt_timeline": attempt_timeline,
