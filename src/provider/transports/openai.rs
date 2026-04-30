@@ -4,7 +4,7 @@ use reqwest::{Client, Response};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -1234,8 +1234,23 @@ async fn maybe_compact_openai_provider_window(
         let state = lock_openai_continuation(continuation);
         state.windows.get(scope).cloned()
     }?;
-    if !should_compact_openai_provider_window(&window) {
-        return None;
+    if let Some(skip_reason) = openai_provider_window_compaction_skip_reason(&window) {
+        if skip_reason == "below_item_threshold" {
+            return None;
+        }
+        return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+            status: format!("skipped_{skip_reason}"),
+            trigger_reason: Some("provider_window_item_threshold".into()),
+            input_items: Some(window.items.len()),
+            output_items: None,
+            compaction_items: None,
+            latest_compaction_index: window.latest_compaction_index,
+            encrypted_content_hashes: None,
+            encrypted_content_bytes: None,
+            request_shape_hash: Some(request_shape_hash(request_shape)),
+            continuation_generation: Some(window.generation),
+            error: None,
+        });
     }
 
     let input_items = window.items.len();
@@ -1299,6 +1314,25 @@ async fn maybe_compact_openai_provider_window(
     let output_items = compacted.len();
     let generation = {
         let mut state = lock_openai_continuation(continuation);
+        let current_generation = state.windows.get(scope).map(|current| current.generation);
+        if current_generation != Some(window.generation) {
+            return Some(ProviderOpenAiRemoteCompactionDiagnostics {
+                status: "stale_generation".into(),
+                trigger_reason: Some("provider_window_item_threshold".into()),
+                input_items: Some(input_items),
+                output_items: Some(output_items),
+                compaction_items: Some(compaction_items),
+                latest_compaction_index,
+                encrypted_content_hashes: Some(encrypted_content_hashes),
+                encrypted_content_bytes: Some(encrypted_content_bytes),
+                request_shape_hash: Some(request_shape_hash),
+                continuation_generation: current_generation,
+                error: Some(format!(
+                    "OpenAI provider window advanced while compact request was in flight; captured generation {}",
+                    window.generation
+                )),
+            });
+        }
         state.next_generation = state.next_generation.saturating_add(1);
         let generation = state.next_generation;
         state.windows.insert(
@@ -1330,12 +1364,51 @@ async fn maybe_compact_openai_provider_window(
     })
 }
 
-fn should_compact_openai_provider_window(window: &OpenAiProviderWindow) -> bool {
+fn openai_provider_window_compaction_skip_reason(
+    window: &OpenAiProviderWindow,
+) -> Option<&'static str> {
     let since_latest_compaction = window
         .latest_compaction_index
         .map(|index| window.items.len().saturating_sub(index + 1))
         .unwrap_or(window.items.len());
-    since_latest_compaction >= OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS
+    if since_latest_compaction < OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS {
+        return Some("below_item_threshold");
+    }
+    if has_unpaired_openai_tool_call(&window.items) {
+        return Some("unpaired_tool_call");
+    }
+    None
+}
+
+fn has_unpaired_openai_tool_call(items: &[Value]) -> bool {
+    let mut function_calls = HashSet::new();
+    let mut custom_tool_calls = HashSet::new();
+    let mut function_outputs = HashSet::new();
+    let mut custom_tool_outputs = HashSet::new();
+
+    for item in items {
+        let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
+            continue;
+        };
+        match item.get("type").and_then(Value::as_str) {
+            Some("function_call") => {
+                function_calls.insert(call_id.to_string());
+            }
+            Some("custom_tool_call") => {
+                custom_tool_calls.insert(call_id.to_string());
+            }
+            Some("function_call_output") => {
+                function_outputs.insert(call_id.to_string());
+            }
+            Some("custom_tool_call_output") => {
+                custom_tool_outputs.insert(call_id.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    !function_calls.is_subset(&function_outputs)
+        || !custom_tool_calls.is_subset(&custom_tool_outputs)
 }
 
 fn build_openai_compact_request_body(request_shape: &OpenAiRequestShape, items: &[Value]) -> Value {

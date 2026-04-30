@@ -32,6 +32,7 @@ fn openai_text_response(response_id: &str, text: &str) -> Value {
         "usage": { "input_tokens": 2, "output_tokens": 1 },
         "output": [{
             "type": "message",
+            "role": "assistant",
             "content": [{ "type": "output_text", "text": text }]
         }]
     })
@@ -59,6 +60,21 @@ fn provider_large_window_continuation_with_prompt_frame() -> ProviderTurnRequest
             is_error: false,
             error: None,
         }]),
+    ]);
+    request
+}
+
+fn provider_large_window_paired_request_with_prompt_frame() -> ProviderTurnRequest {
+    provider_large_window_continuation_with_prompt_frame()
+}
+
+fn provider_large_window_paired_followup_with_prompt_frame() -> ProviderTurnRequest {
+    let mut request = provider_large_window_paired_request_with_prompt_frame();
+    request.conversation.extend([
+        ConversationMessage::AssistantBlocks(vec![ModelBlock::Text {
+            text: "ready".into(),
+        }]),
+        ConversationMessage::UserText("continue".into()),
     ]);
     request
 }
@@ -136,11 +152,11 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
                     async move {
                         captured.lock().unwrap().push(body);
                         let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                        if attempt == 0 {
-                            Json(openai_tool_call_response("resp_1"))
-                        } else {
-                            Json(openai_text_response("resp_2", "done"))
-                        }
+                        let response = match attempt {
+                            0 => openai_text_response("resp_1", "ready"),
+                            _ => openai_text_response("resp_2", "done"),
+                        };
+                        Json(response)
                     }
                 }),
             )
@@ -172,11 +188,11 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let first = provider
-        .complete_turn(provider_large_window_request_with_prompt_frame())
+        .complete_turn(provider_large_window_paired_request_with_prompt_frame())
         .await
         .unwrap();
     let second = provider
-        .complete_turn(provider_large_window_continuation_with_prompt_frame())
+        .complete_turn(provider_large_window_paired_followup_with_prompt_frame())
         .await
         .unwrap();
 
@@ -186,7 +202,7 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
         .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
         .expect("remote compaction diagnostics");
     assert_eq!(remote_compaction.status, "compacted");
-    assert_eq!(remote_compaction.input_items, Some(9));
+    assert_eq!(remote_compaction.input_items, Some(11));
     assert_eq!(remote_compaction.output_items, Some(3));
     assert_eq!(remote_compaction.compaction_items, Some(2));
     assert_eq!(remote_compaction.latest_compaction_index, Some(2));
@@ -208,16 +224,65 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
     let replayed_input = response_bodies[1]["input"].as_array().unwrap();
     assert_eq!(replayed_input[0]["type"], json!("compaction"));
     assert_eq!(replayed_input[2]["type"], json!("compaction"));
-    assert_eq!(
-        replayed_input.last().unwrap()["type"],
-        json!("function_call_output")
-    );
+    assert_eq!(replayed_input.last().unwrap()["type"], json!("message"));
 
     let compact_bodies = compact_bodies.lock().unwrap();
     assert_eq!(compact_bodies.len(), 1);
-    assert_eq!(compact_bodies[0]["input"].as_array().unwrap().len(), 9);
+    assert_eq!(compact_bodies[0]["input"].as_array().unwrap().len(), 11);
     assert_eq!(compact_bodies[0]["tools"], json!([]));
     assert_eq!(compact_bodies[0]["parallel_tool_calls"], json!(false));
+}
+
+#[tokio::test]
+async fn openai_responses_skips_remote_compaction_for_unpaired_tool_call() {
+    let compact_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let compact_bodies_for_server = compact_bodies.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/responses",
+                post(|Json(_body): Json<Value>| async {
+                    Json(openai_tool_call_response("resp_1"))
+                }),
+            )
+            .route(
+                "/responses/compact",
+                post(move |Json(body): Json<Value>| {
+                    let captured = compact_bodies_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        Json(json!({
+                            "output": [
+                                { "type": "compaction", "encrypted_content": "opaque" }
+                            ]
+                        }))
+                    }
+                }),
+            ),
+    )
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let response = provider
+        .complete_turn(provider_large_window_request_with_prompt_frame())
+        .await
+        .unwrap();
+
+    let remote_compaction = response
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+        .expect("remote compaction skip diagnostics");
+    assert_eq!(remote_compaction.status, "skipped_unpaired_tool_call");
+    assert_eq!(remote_compaction.input_items, Some(9));
+    assert!(compact_bodies.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -236,11 +301,11 @@ async fn openai_responses_local_shape_change_does_not_rewrite_compacted_provider
                     async move {
                         captured.lock().unwrap().push(body);
                         let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                        if attempt == 0 {
-                            Json(openai_tool_call_response("resp_1"))
-                        } else {
-                            Json(openai_text_response("resp_2", "done"))
-                        }
+                        let response = match attempt {
+                            0 => openai_text_response("resp_1", "ready"),
+                            _ => openai_text_response("resp_2", "done"),
+                        };
+                        Json(response)
                     }
                 }),
             )
@@ -266,10 +331,10 @@ async fn openai_responses_local_shape_change_does_not_rewrite_compacted_provider
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     provider
-        .complete_turn(provider_large_window_request_with_prompt_frame())
+        .complete_turn(provider_large_window_paired_request_with_prompt_frame())
         .await
         .unwrap();
-    let mut changed = provider_large_window_continuation_with_prompt_frame();
+    let mut changed = provider_large_window_paired_followup_with_prompt_frame();
     changed
         .prompt_frame
         .cache
