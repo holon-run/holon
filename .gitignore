@@ -16,6 +16,7 @@ node_modules/
 holon-output/
 holon-output-*/
 .gocache/
+e2e-manual/**/artifacts/
 
 # Local tool state
 .claude/
