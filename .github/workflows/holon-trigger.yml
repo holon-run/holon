@@ -1,0 +1,31 @@
+name: Holon Trigger
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [labeled, assigned]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: read
+  id-token: write
+
+concurrency:
+  group: holon-${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  holon:
+    name: Run Holon
+    uses: ./.github/workflows/holon-solve.yml
+    secrets:
+      anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+      anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL }}
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      openai_base_url: ${{ secrets.OPENAI_BASE_URL }}
+      holon_github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}

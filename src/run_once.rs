@@ -12,12 +12,13 @@ use crate::{
     config::AppConfig,
     host::RuntimeHost,
     ingress::InboundRequest,
+    provider::ProviderCacheUsage,
     runtime::RuntimeHandle,
     storage::PollActivityMarker,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AdmissionContext, AgentStatus, ClosureOutcome, ControlAction, FailureArtifact, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        AdmissionContext, AgentStatus, AuditEvent, ClosureOutcome, ControlAction, FailureArtifact,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
         TaskOutputSnapshot, TaskRecord, TaskStatus, TokenUsage, ToolExecutionRecord,
         ToolExecutionStatus, TrustLevel, WaitingReason,
     },
@@ -69,6 +70,15 @@ pub struct RunWorktreeSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct RunProviderCacheUsage {
+    pub read_input_tokens: u64,
+    pub creation_input_tokens: u64,
+    pub cacheable_input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit_rate: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RunOnceResponse {
     pub agent_id: String,
     pub final_status: RunFinalStatus,
@@ -87,6 +97,8 @@ pub struct RunOnceResponse {
     pub token_usage: TokenUsage,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_cache_usage: Option<RunProviderCacheUsage>,
     pub model_rounds: u64,
     pub tool_calls: usize,
     pub shell_commands: usize,
@@ -136,6 +148,17 @@ impl RunOnceResponse {
                 self.token_usage.input_tokens,
                 self.token_usage.output_tokens,
                 self.token_usage.total_tokens
+            ));
+        }
+
+        if let Some(cache_usage) = self.provider_cache_usage.as_ref() {
+            let hit_rate = cache_usage
+                .hit_rate
+                .map(|value| format!("{:.1}%", value * 100.0))
+                .unwrap_or_else(|| "n/a".to_string());
+            sections.push(format!(
+                "Provider cache: read {}, created {}, hit rate {}",
+                cache_usage.read_input_tokens, cache_usage.creation_input_tokens, hit_rate
             ));
         }
 
@@ -457,6 +480,7 @@ struct RunView {
     new_tasks: Vec<TaskRecord>,
     new_tools: Vec<ToolExecutionRecord>,
     new_messages: Vec<MessageEnvelope>,
+    new_events: Vec<AuditEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -566,10 +590,16 @@ fn collect_run_view(runtime: &RuntimeHandle, baseline: &RunBaseline) -> Result<R
         .into_iter()
         .filter(|message| !baseline.message_ids.contains(&message.id))
         .collect::<Vec<_>>();
+    let new_events = runtime
+        .all_events()?
+        .into_iter()
+        .filter(|event| !baseline.event_ids.contains(&event.id))
+        .collect::<Vec<_>>();
     Ok(RunView {
         new_tasks,
         new_tools,
         new_messages,
+        new_events,
     })
 }
 
@@ -689,6 +719,7 @@ async fn build_response(
             .total_output_tokens
             .saturating_sub(baseline.total_output_tokens),
     );
+    let provider_cache_usage = aggregate_provider_cache_usage(&view.new_events);
     let failure_artifact = if final_status == RunFinalStatus::Failed {
         final_state
             .last_runtime_failure
@@ -736,6 +767,7 @@ async fn build_response(
         changed_files,
         input_tokens: token_usage.input_tokens,
         output_tokens: token_usage.output_tokens,
+        provider_cache_usage,
         token_usage,
         model_rounds: final_state
             .total_model_rounds
@@ -754,6 +786,59 @@ async fn build_response(
             .count()
             + batched_exec_command_items(&view.new_tools),
         batched_exec_command_items: batched_exec_command_items(&view.new_tools),
+    })
+}
+
+fn aggregate_provider_cache_usage(events: &[AuditEvent]) -> Option<RunProviderCacheUsage> {
+    let mut usage = ProviderCacheUsage {
+        read_input_tokens: 0,
+        creation_input_tokens: 0,
+    };
+    let mut saw_usage = false;
+
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "provider_round_completed")
+    {
+        let Some(cache_usage) = event.data.get("provider_cache_usage") else {
+            continue;
+        };
+        if cache_usage.is_null() {
+            continue;
+        }
+        let read_input_tokens = cache_usage
+            .get("read_input_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let creation_input_tokens = cache_usage
+            .get("creation_input_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        saw_usage = true;
+        usage.read_input_tokens = usage.read_input_tokens.saturating_add(read_input_tokens);
+        usage.creation_input_tokens = usage
+            .creation_input_tokens
+            .saturating_add(creation_input_tokens);
+    }
+
+    if !saw_usage {
+        return None;
+    }
+
+    let cacheable_input_tokens = usage
+        .read_input_tokens
+        .saturating_add(usage.creation_input_tokens);
+    let hit_rate = if cacheable_input_tokens == 0 {
+        None
+    } else {
+        Some(usage.read_input_tokens as f64 / cacheable_input_tokens as f64)
+    };
+
+    Some(RunProviderCacheUsage {
+        read_input_tokens: usage.read_input_tokens,
+        creation_input_tokens: usage.creation_input_tokens,
+        cacheable_input_tokens,
+        hit_rate,
     })
 }
 
@@ -1151,5 +1236,37 @@ mod tests {
         };
 
         assert_eq!(batched_exec_command_items(&[tool]), 3);
+    }
+
+    #[test]
+    fn aggregate_provider_cache_usage_sums_round_cache_tokens() {
+        let events = vec![
+            AuditEvent::new(
+                "provider_round_completed",
+                json!({
+                    "provider_cache_usage": {
+                        "read_input_tokens": 300,
+                        "creation_input_tokens": 100
+                    }
+                }),
+            ),
+            AuditEvent::new(
+                "provider_round_completed",
+                json!({
+                    "provider_cache_usage": {
+                        "read_input_tokens": 200,
+                        "creation_input_tokens": 400
+                    }
+                }),
+            ),
+            AuditEvent::new("state_changed", json!({})),
+        ];
+
+        let usage = aggregate_provider_cache_usage(&events).expect("cache usage");
+
+        assert_eq!(usage.read_input_tokens, 500);
+        assert_eq!(usage.creation_input_tokens, 500);
+        assert_eq!(usage.cacheable_input_tokens, 1000);
+        assert_eq!(usage.hit_rate, Some(0.5));
     }
 }
