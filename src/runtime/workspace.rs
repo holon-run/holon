@@ -1,12 +1,15 @@
-use std::{collections::HashMap, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{anyhow, Result};
 
 use crate::{
     storage::AppStorage,
     system::{
-        EffectiveExecution, ExecutionProfile, ExecutionScopeKind, ExecutionSnapshot, WorkspaceAccessMode,
-        WorkspaceProjectionKind, WorkspaceView,
+        EffectiveExecution, ExecutionProfile, ExecutionScopeKind, ExecutionSnapshot,
+        WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
     },
     types::{AgentState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID},
 };
@@ -159,14 +162,15 @@ pub(crate) fn execution_snapshot_for_view(
     attached_workspace_ids: &[String],
     storage: &AppStorage,
 ) -> ExecutionSnapshot {
-    let attached_workspaces = load_attached_workspace_entries_for(storage, attached_workspace_ids, workspace)
-        .unwrap_or_else(|_| {
-            workspace
-                .workspace_id()
-                .map(|id| (id.to_string(), workspace.workspace_anchor().to_path_buf()))
-                .into_iter()
-                .collect()
-        });
+    let attached_workspaces =
+        load_attached_workspace_entries_for(storage, attached_workspace_ids, workspace)
+            .unwrap_or_else(|_| {
+                workspace
+                    .workspace_id()
+                    .map(|id| (id.to_string(), workspace.workspace_anchor().to_path_buf()))
+                    .into_iter()
+                    .collect()
+            });
 
     ExecutionSnapshot {
         policy: profile.policy_snapshot(),
@@ -194,14 +198,15 @@ pub(crate) fn build_effective_execution(
     workspace: WorkspaceView,
     attached_workspace_ids: &[String],
 ) -> EffectiveExecution {
-    let attached_workspaces = load_attached_workspace_entries_for(storage, attached_workspace_ids, &workspace)
-        .unwrap_or_else(|_| {
-            workspace
-                .workspace_id()
-                .map(|id| (id.to_string(), workspace.workspace_anchor().to_path_buf()))
-                .into_iter()
-                .collect()
-        });
+    let attached_workspaces =
+        load_attached_workspace_entries_for(storage, attached_workspace_ids, &workspace)
+            .unwrap_or_else(|_| {
+                workspace
+                    .workspace_id()
+                    .map(|id| (id.to_string(), workspace.workspace_anchor().to_path_buf()))
+                    .into_iter()
+                    .collect()
+            });
 
     EffectiveExecution {
         profile,
