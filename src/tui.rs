@@ -61,7 +61,7 @@ const TRANSCRIPT_LIMIT: usize = 40;
 const TASK_LIMIT: usize = 40;
 
 #[derive(Debug, Clone)]
-struct CachedActivityText {
+pub(crate) struct CachedActivityText {
     agent_id: String,
     text: String,
 }
@@ -161,10 +161,10 @@ struct TuiApp {
     overlay: OverlayState,
     last_refresh_at: Option<DateTime<Local>>,
     last_event_at: Option<DateTime<Local>>,
-    status_line: String,
+    pub(crate) status_line: String,
     should_quit: bool,
     chat_text_cache: RefCell<Option<CachedChatText>>,
-    activity_text_cache: RefCell<Option<CachedActivityText>>,
+    pub(crate) activity_text_cache: RefCell<Option<CachedActivityText>>,
     log_writer: TuiLogWriter,
 }
 
@@ -199,7 +199,7 @@ struct TuiRuntimeCheckpoint {
 }
 
 impl TuiApp {
-    fn new(client: LocalClient, log_writer: TuiLogWriter) -> Self {
+    pub(crate) fn new(client: LocalClient, log_writer: TuiLogWriter) -> Self {
         Self {
             client,
             agents: Vec::new(),
@@ -409,6 +409,7 @@ impl TuiApp {
         self.projection = Some(projection);
         self.apply_projection_view();
         self.last_refresh_at = Some(Local::now());
+        self.last_event_at = None;
         self.reconnect_attempt = 0;
         self.reconnect_deadline = None;
         self.status_line = format!("Bootstrapped agent {agent_id} from /state");

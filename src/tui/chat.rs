@@ -234,6 +234,11 @@ fn append_chat_item(target: &mut Text<'static>, item: &CachedChatItem) {
             Span::styled(item.speaker.clone(), chat_speaker_style(item.role)),
         ]));
     }
+
+    // Add extra spacing between messages for better readability.
+    // Two blank lines makes message separation more visually distinct.
+    target.lines.push(Line::from(""));
+    target.lines.push(Line::from(""));
 }
 
 fn chat_prefix_text(item: &CachedChatItem) -> String {
