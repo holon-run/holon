@@ -578,7 +578,7 @@ jobs:
           bash "$script"
 
       - name: Upload Holon artifact
-        if: always()
+        if: always() && steps.dirs.outputs.output != ''
         uses: actions/upload-artifact@v4
         with:
           name: holon-solve-output
