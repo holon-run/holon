@@ -355,7 +355,7 @@ impl RuntimeHandle {
             return Ok(());
         }
 
-        let current_current_work_item_id = self
+        let current_work_item_id = self
             .inner
             .storage
             .work_queue_prompt_projection()?
@@ -372,7 +372,7 @@ impl RuntimeHandle {
                 .clone()
         };
 
-        if current_current_work_item_id.is_none() {
+        if current_work_item_id.is_none() {
             let cancelled_ids = self
                 .cancel_waiting_intents(
                     active_waiting
@@ -396,7 +396,7 @@ impl RuntimeHandle {
 
         let mut stale_ids = Vec::new();
         let anchor_switched = prior_anchor_id.is_some()
-            && prior_anchor_id.as_deref() != current_current_work_item_id.as_deref();
+            && prior_anchor_id.as_deref() != current_work_item_id.as_deref();
         if anchor_switched {
             stale_ids.extend(
                 active_waiting
@@ -432,7 +432,7 @@ impl RuntimeHandle {
                 "reason": reason,
                 "waiting_intent_ids": cancelled_ids,
                 "prior_current_work_item_id": prior_anchor_id,
-                "current_current_work_item_id": current_current_work_item_id,
+                "current_work_item_id": current_work_item_id,
                 "closure": pre_cleanup_closure,
             }),
         ))?;

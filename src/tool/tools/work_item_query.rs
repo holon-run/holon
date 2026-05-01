@@ -57,7 +57,14 @@ pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQue
             }
         }
     }
-    let current_work_item_id = state.current_work_item_id;
+    let current_work_item_id = match state.current_work_item_id.as_deref() {
+        Some(current_id) => runtime
+            .latest_work_item(current_id)
+            .await?
+            .filter(|record| record.state == WorkItemState::Open)
+            .map(|record| record.id),
+        None => None,
+    };
     Ok(WorkItemQueryContext {
         current_work_item_id,
     })

@@ -400,7 +400,9 @@ impl RuntimeHandle {
         let mut guard = self.inner.agent.lock().await;
         guard.state.turn_index += 1;
         guard.state.last_turn_terminal = None;
-        guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
+        if guard.state.current_turn_work_item_id.is_none() {
+            guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
+        }
         guard.state.current_turn_operator_binding_id = operator_binding_id.and_then(|binding_id| {
             let binding_id = binding_id.trim();
             if binding_id.is_empty() {

@@ -584,10 +584,7 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
         .latest_work_item(&work_item.id)
         .await?
         .expect("current work item should still exist");
-    assert!(matches!(
-        latest.state,
-        WorkItemState::Open | WorkItemState::Open
-    ));
+    assert_eq!(latest.state, WorkItemState::Open);
     assert_eq!(latest.delivery_target, work_item.delivery_target);
 
     Ok(())
