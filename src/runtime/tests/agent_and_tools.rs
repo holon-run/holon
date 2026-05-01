@@ -1,5 +1,5 @@
-use super::support::*;
 use super::super::*;
+use super::support::*;
 
 #[tokio::test]
 async fn agent_summary_reports_agents_md_sources_without_content() {
@@ -846,12 +846,11 @@ async fn interactive_turn_keeps_pending_working_memory_delta_when_prompt_omits_i
 
     {
         let mut guard = runtime.inner.agent.lock().await;
-        guard.state.working_memory.current_working_memory =
-            crate::types::WorkingMemorySnapshot {
-                delivery_target: Some("ship the prompt delta gating fix".into()),
-                current_plan: vec!["[InProgress] wire prompt render acknowledgement".into()],
-                ..crate::types::WorkingMemorySnapshot::default()
-            };
+        guard.state.working_memory.current_working_memory = crate::types::WorkingMemorySnapshot {
+            delivery_target: Some("ship the prompt delta gating fix".into()),
+            current_plan: vec!["[InProgress] wire prompt render acknowledgement".into()],
+            ..crate::types::WorkingMemorySnapshot::default()
+        };
         guard.state.working_memory.working_memory_revision = 5;
         guard.state.working_memory.pending_working_memory_delta =
             Some(crate::types::WorkingMemoryDelta {

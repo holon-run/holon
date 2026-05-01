@@ -1,5 +1,5 @@
-use super::support::*;
 use super::super::*;
+use super::support::*;
 
 #[tokio::test]
 async fn runtime_recovers_from_max_token_truncation() {
@@ -520,9 +520,7 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
     let transcript = runtime.storage().read_recent_transcript(20).unwrap();
     let round_four_assistant = transcript
         .iter()
-        .find(|entry| {
-            entry.kind == TranscriptEntryKind::AssistantRound && entry.round == Some(4)
-        })
+        .find(|entry| entry.kind == TranscriptEntryKind::AssistantRound && entry.round == Some(4))
         .expect("missing round 4 assistant transcript");
     assert_eq!(
         round_four_assistant.data["prompt_cache_key"].as_str(),
@@ -570,16 +568,14 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
             .iter()
             .find(|event| {
                 event.kind == "turn_local_checkpoint_requested"
-                    && event.data["checkpoint_request_id"].as_str()
-                        == Some(checkpoint_request_id)
+                    && event.data["checkpoint_request_id"].as_str() == Some(checkpoint_request_id)
             })
             .expect("missing structured checkpoint request event");
         let checkpoint_recorded = events
             .iter()
             .find(|event| {
                 event.kind == "turn_local_checkpoint_recorded"
-                    && event.data["checkpoint_request_id"].as_str()
-                        == Some(checkpoint_request_id)
+                    && event.data["checkpoint_request_id"].as_str() == Some(checkpoint_request_id)
             })
             .expect("missing structured checkpoint recorded event");
         assert_eq!(
@@ -606,9 +602,7 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         .conversation
         .iter()
         .find_map(|message| match message {
-            ConversationMessage::UserText(text)
-                if text.contains("progress checkpoint request") =>
-            {
+            ConversationMessage::UserText(text) if text.contains("progress checkpoint request") => {
                 Some(text.clone())
             }
             _ => None,
@@ -914,8 +908,7 @@ async fn runtime_failure_artifacts_preserve_provider_attempt_timeline() {
         "openai"
     );
     assert_eq!(
-        failure.data["provider_attempt_timeline"]["attempts"][0]["transport_diagnostics"]
-            ["stage"],
+        failure.data["provider_attempt_timeline"]["attempts"][0]["transport_diagnostics"]["stage"],
         "request_send"
     );
     assert_eq!(

@@ -1,5 +1,5 @@
-pub(crate) use chrono::Utc;
 pub(crate) use async_trait::async_trait;
+pub(crate) use chrono::Utc;
 pub(crate) use std::path::PathBuf;
 pub(crate) use std::sync::Arc;
 pub(crate) use tempfile::{tempdir, TempDir};
@@ -10,28 +10,28 @@ pub(crate) use crate::{
     config::AppConfig,
     context::ContextConfig,
     host::RuntimeHost,
-    prompt::{PromptSection, PromptStability, render_section},
+    prompt::{render_section, PromptSection, PromptStability},
     provider::{
-        provider_turn_error, ConversationMessage, ModelBlock, ProviderAttemptOutcome,
-        ProviderAttemptRecord, ProviderAttemptTimeline, ProviderTurnRequest, ProviderTransportDiagnostics,
-        ProviderTurnResponse, ReqwestTransportDiagnostics, StubProvider, AgentProvider,
+        provider_turn_error, AgentProvider, ConversationMessage, ModelBlock,
+        ProviderAttemptOutcome, ProviderAttemptRecord, ProviderAttemptTimeline,
+        ProviderTransportDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
+        ReqwestTransportDiagnostics, StubProvider,
     },
     storage::AppStorage,
     system::{ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-        AgentState, AgentStatus, AgentVisibility, AuthorityClass, BriefKind, BriefRecord,
-        CallbackDeliveryMode, ClosureDecision, ClosureOutcome, ContinuationClass, ContinuationTriggerKind,
-        LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        PendingWakeHint, Priority, TaskOutputRetrievalStatus, TaskRecord, TaskRecoverySpec, TaskStatus,
-        TimerRecord, TimerStatus, TokenUsage, TrustLevel, TurnTerminalKind, TurnTerminalRecord,
-        WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemState, WorkReactivationMode,
-        WorkspaceEntry, TaskKind, WorkPlanItem, WorkPlanStepStatus, ActiveWorkspaceEntry,
+        ActiveWorkspaceEntry, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
+        AgentRegistryStatus, AgentState, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
+        BriefRecord, CallbackDeliveryMode, ClosureDecision, ClosureOutcome, ContinuationClass,
+        ContinuationTriggerKind, LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageKind,
+        MessageOrigin, PendingWakeHint, Priority, TaskKind, TaskOutputRetrievalStatus, TaskRecord,
+        TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TokenUsage, TrustLevel,
+        TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord,
+        WorkItemState, WorkPlanItem, WorkPlanStepStatus, WorkReactivationMode, WorkspaceEntry,
     },
 };
 
 use super::super::*;
-
 
 pub(crate) fn context_config() -> ContextConfig {
     ContextConfig {
@@ -45,10 +45,8 @@ pub(crate) fn context_config() -> ContextConfig {
 
 pub(crate) async fn host_backed_test_runtime() -> (TempDir, RuntimeHost, RuntimeHandle) {
     let home = tempdir().unwrap();
-    let config =
-        crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-    let host =
-        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+    let config = crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
     let runtime = host.default_runtime().await.unwrap();
     (home, host, runtime)
 }
@@ -216,10 +214,7 @@ impl OneToolThenTextProvider {
 
 #[async_trait]
 impl AgentProvider for OneToolThenTextProvider {
-    async fn complete_turn(
-        &self,
-        _request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         let blocks = if *calls == 1 {
@@ -319,10 +314,7 @@ impl MaxOutputMutationToolProvider {
 
 #[async_trait]
 impl AgentProvider for TruncatingProvider {
-    async fn complete_turn(
-        &self,
-        request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         if *calls == 1 {
@@ -361,10 +353,7 @@ impl AgentProvider for TruncatingProvider {
 
 #[async_trait]
 impl AgentProvider for TimelineProvider {
-    async fn complete_turn(
-        &self,
-        _request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
             blocks: vec![ModelBlock::Text {
                 text: "done with fallback history".into(),
@@ -424,10 +413,7 @@ impl AgentProvider for TimelineProvider {
 
 #[async_trait]
 impl AgentProvider for ToolCaptureProvider {
-    async fn complete_turn(
-        &self,
-        request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         self.requests.lock().await.push(
             request
                 .tools
@@ -450,10 +436,7 @@ impl AgentProvider for ToolCaptureProvider {
 
 #[async_trait]
 impl AgentProvider for TurnLocalCompactionProbeProvider {
-    async fn complete_turn(
-        &self,
-        request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         self.requests.lock().await.push(request);
         let mut calls = self.calls.lock().await;
         *calls += 1;
@@ -461,10 +444,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
             1 => ProviderTurnResponse {
                 blocks: vec![
                     ModelBlock::Text {
-                        text: format!(
-                            "Round 1 planning {}",
-                            "very detailed preamble ".repeat(120)
-                        ),
+                        text: format!("Round 1 planning {}", "very detailed preamble ".repeat(120)),
                     },
                     ModelBlock::ToolUse {
                         id: "exec-round-1".into(),
@@ -535,10 +515,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
 
 #[async_trait]
 impl AgentProvider for BaselineOverBudgetProbeProvider {
-    async fn complete_turn(
-        &self,
-        _request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         match *calls {
@@ -563,10 +540,7 @@ impl AgentProvider for BaselineOverBudgetProbeProvider {
 
 #[async_trait]
 impl AgentProvider for SleepOnlyToolProvider {
-    async fn complete_turn(
-        &self,
-        request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         if *calls > 1 {
@@ -597,10 +571,7 @@ impl AgentProvider for SleepOnlyToolProvider {
 
 #[async_trait]
 impl AgentProvider for DisallowedToolThenTextProvider {
-    async fn complete_turn(
-        &self,
-        request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         match *calls {
@@ -652,10 +623,7 @@ impl AgentProvider for DisallowedToolThenTextProvider {
 
 #[async_trait]
 impl AgentProvider for MaxOutputMutationToolProvider {
-    async fn complete_turn(
-        &self,
-        request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         match *calls {
@@ -707,10 +675,7 @@ impl AgentProvider for MaxOutputMutationToolProvider {
 
 #[async_trait]
 impl AgentProvider for FailingTimelineProvider {
-    async fn complete_turn(
-        &self,
-        _request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Err(provider_turn_error(
             "all configured providers failed for this turn: openai/gpt-5.4: fail_fast (contract_error): bad request",
             ProviderAttemptTimeline {
@@ -758,10 +723,7 @@ impl AgentProvider for FailingTimelineProvider {
 
 #[async_trait]
 impl AgentProvider for ContextLengthExceededProvider {
-    async fn complete_turn(
-        &self,
-        _request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Err(provider_turn_error(
             "all configured providers failed for this turn: openai-codex/gpt-5.3-codex-spark: fail_fast (contract_error): context_length_exceeded",
             ProviderAttemptTimeline {
@@ -803,13 +765,17 @@ pub(crate) struct CountingProvider {
 
 impl StagnatingAfterVerificationProvider {
     pub(crate) fn new() -> Self {
-        Self { calls: Mutex::new(0) }
+        Self {
+            calls: Mutex::new(0),
+        }
     }
 }
 
 impl SkillReadProvider {
     pub(crate) fn new() -> Self {
-        Self { calls: Mutex::new(0) }
+        Self {
+            calls: Mutex::new(0),
+        }
     }
 }
 
@@ -821,10 +787,7 @@ impl CountingProvider {
 
 #[async_trait]
 impl AgentProvider for StagnatingAfterVerificationProvider {
-    async fn complete_turn(
-        &self,
-        request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if request.tools.is_empty() {
             return Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::Text {
@@ -887,10 +850,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
 
 #[async_trait]
 impl AgentProvider for SkillReadProvider {
-    async fn complete_turn(
-        &self,
-        _request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
 
@@ -921,10 +881,7 @@ impl AgentProvider for SkillReadProvider {
 
 #[async_trait]
 impl AgentProvider for CountingProvider {
-    async fn complete_turn(
-        &self,
-        _request: ProviderTurnRequest,
-    ) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         Ok(ProviderTurnResponse {
@@ -939,4 +896,3 @@ impl AgentProvider for CountingProvider {
         })
     }
 }
-

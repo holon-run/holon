@@ -1,5 +1,5 @@
-use super::support::*;
 use super::super::*;
+use super::support::*;
 
 #[tokio::test]
 async fn non_model_visible_external_events_do_not_run_interactive_turn() {
@@ -606,8 +606,7 @@ fn sanitize_subagent_result_preserves_english_result_prefixes() {
 
 #[test]
 fn sanitize_subagent_result_preserves_chinese_final_report() {
-    let input =
-        "结论：已经定位到问题。\n相关文件：src/runtime/subagent.rs\n验证：cargo test -q";
+    let input = "结论：已经定位到问题。\n相关文件：src/runtime/subagent.rs\n验证：cargo test -q";
     let cleaned = sanitize_subagent_result(input);
     assert_eq!(cleaned, input);
 }
@@ -656,6 +655,15 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
 
     // Enable checkpoint mechanism for this test
     crate::runtime::test_util::enable_checkpoint();
+
+    // RAII guard to ensure checkpoint is disabled even on panic
+    struct CheckpointGuard;
+    impl Drop for CheckpointGuard {
+        fn drop(&mut self) {
+            crate::runtime::test_util::disable_checkpoint();
+        }
+    }
+    let _guard = CheckpointGuard;
 
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -758,7 +766,4 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
     // Verify the SystemTick event was emitted
     let events = runtime.storage().read_recent_events(10).unwrap();
     assert!(events.iter().any(|e| e.kind == "system_tick_emitted"));
-
-    // Disable checkpoint mechanism
-    crate::runtime::test_util::disable_checkpoint();
 }
