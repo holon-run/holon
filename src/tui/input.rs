@@ -627,7 +627,8 @@ impl TuiApp {
                     }
                     Err(err) => {
                         if !agent_id.is_empty() {
-                            self.status_line = format!("Failed to switch to agent {agent_id}: {err}");
+                            self.status_line =
+                                format!("Failed to switch to agent {agent_id}: {err}");
                         }
                         self.overlay = OverlayState::Agents;
                         Err(err)
