@@ -1,10 +1,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{
-        atomic::AtomicBool,
-        Arc,
-    },
+    sync::{atomic::AtomicBool, Arc},
 };
 
 use anyhow::{anyhow, Result};
@@ -14,14 +11,10 @@ use crate::{
     config::{AppConfig, RuntimeModelCatalog},
     context::ContextConfig,
     host::RuntimeHostBridge,
-    provider::{
-        build_provider_from_model_chain, resolved_model_availability, AgentProvider,
-    },
+    provider::{build_provider_from_model_chain, resolved_model_availability, AgentProvider},
     queue::RuntimeQueue,
     storage::AppStorage,
-    system::{
-        LocalSystem, WorkspaceAccessMode, WorkspaceProjectionKind,
-    },
+    system::{LocalSystem, WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::ToolRegistry,
     types::{
         ActiveWorkspaceEntry, AgentState, AgentStatus, AuditEvent, ResolvedModelAvailability,
@@ -29,13 +22,7 @@ use crate::{
     },
 };
 
-use super::{
-    workspace,
-    InitialWorkspaceBinding,
-    RuntimeAgent,
-    RuntimeHandle,
-    RuntimeInner,
-};
+use super::{workspace, InitialWorkspaceBinding, RuntimeAgent, RuntimeHandle, RuntimeInner};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -117,7 +104,8 @@ impl RuntimeHandle {
             .runtime_max_output_tokens;
         let provider =
             build_provider_from_model_chain(&provider_config, &model_catalog.provider_chain(None))?;
-        let resolved_context_config = model_catalog.resolved_context_config(&base_context_config, None);
+        let resolved_context_config =
+            model_catalog.resolved_context_config(&base_context_config, None);
         Self::new_internal(
             agent_id,
             data_dir,
@@ -162,7 +150,9 @@ impl RuntimeHandle {
                     .and_then(|name| name.to_str())
                     .map(ToString::to_string),
             )),
-            InitialWorkspaceBinding::Detached => Some(workspace::agent_home_workspace_entry(storage.data_dir())),
+            InitialWorkspaceBinding::Detached => {
+                Some(workspace::agent_home_workspace_entry(storage.data_dir()))
+            }
         };
 
         if let Some(workspace) = initial_workspace_entry.as_ref() {
@@ -192,7 +182,9 @@ impl RuntimeHandle {
                         .as_ref()
                         .is_some_and(|entry| entry.workspace_id == workspace.workspace_id);
                 if should_seed_initial_binding {
-                    state.attached_workspaces.push(workspace.workspace_id.clone());
+                    state
+                        .attached_workspaces
+                        .push(workspace.workspace_id.clone());
                 }
             }
         }
@@ -234,11 +226,9 @@ impl RuntimeHandle {
                 }),
             ))?;
             state.worktree_session = None;
-            if state
-                .active_workspace_entry
-                .as_ref()
-                .is_some_and(|entry| entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot)
-            {
+            if state.active_workspace_entry.as_ref().is_some_and(|entry| {
+                entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot
+            }) {
                 let agent_home = storage.data_dir();
                 let agent_home_id = format!("agent_home-{}", agent_id);
                 let kind = WorkspaceProjectionKind::CanonicalRoot;
@@ -299,7 +289,8 @@ impl RuntimeHandle {
         storage.write_agent(&state)?;
 
         let resolved_context_config = if provider_reconfig.is_some() {
-            model_catalog.resolved_context_config(&base_context_config, state.model_override.as_ref())
+            model_catalog
+                .resolved_context_config(&base_context_config, state.model_override.as_ref())
         } else {
             context_config.clone()
         };
@@ -349,10 +340,10 @@ impl RuntimeHandle {
             .inner
             .model_catalog
             .provider_chain(state.model_override.as_ref());
-        let resolved_policy = self
-            .inner
-            .model_catalog
-            .resolved_model_policy(&self.inner.base_context_config, state.model_override.as_ref());
+        let resolved_policy = self.inner.model_catalog.resolved_model_policy(
+            &self.inner.base_context_config,
+            state.model_override.as_ref(),
+        );
         crate::types::AgentModelState {
             source: if state.model_override.is_some() {
                 crate::types::AgentModelSource::AgentOverride
@@ -382,10 +373,10 @@ impl RuntimeHandle {
             .inner
             .model_catalog
             .provider_chain(state.model_override.as_ref());
-        let resolved_context_config = self
-            .inner
-            .model_catalog
-            .resolved_context_config(&self.inner.base_context_config, state.model_override.as_ref());
+        let resolved_context_config = self.inner.model_catalog.resolved_context_config(
+            &self.inner.base_context_config,
+            state.model_override.as_ref(),
+        );
         let mut provider_config = reconfig.config.clone();
         provider_config.runtime_max_output_tokens = self
             .inner

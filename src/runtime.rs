@@ -1,9 +1,9 @@
+mod bootstrap;
 mod callback;
 mod closure;
 mod command_task;
 mod continuation;
 mod failure;
-mod bootstrap;
 mod lifecycle;
 mod memory_refresh;
 mod message_dispatch;
@@ -30,12 +30,12 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use bootstrap::ProviderReconfigurator;
 use chrono::Utc;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tracing::{error, info};
 use uuid::Uuid;
-use bootstrap::ProviderReconfigurator;
 
 #[cfg(test)]
 use crate::provider::{ConversationMessage, ProviderTurnRequest};
@@ -48,9 +48,7 @@ use crate::{
     ingress::{WakeDisposition, WakeHint},
     memory::{mark_working_memory_prompted, refresh_episode_memory, refresh_working_memory},
     prompt::{build_effective_prompt, EffectivePrompt},
-    provider::{
-        provider_attempt_timeline, AgentProvider, ModelBlock,
-    },
+    provider::{provider_attempt_timeline, AgentProvider, ModelBlock},
     queue::RuntimeQueue,
     skills::{find_skill_by_entrypoint, load_skills_runtime_view, SkillVisibility},
     storage::{to_json_value, AppStorage, PollActivityMarker},
