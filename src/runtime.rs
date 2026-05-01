@@ -2540,6 +2540,9 @@ mod tests {
             WorkItemState::Open,
         );
         storage.append_work_item(&active).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(active.id.clone());
+        storage.write_agent(&agent).unwrap();
 
         let runtime = RuntimeHandle::new(
             "default",
@@ -2817,6 +2820,9 @@ mod tests {
             WorkItemState::Open,
         );
         storage.append_work_item(&active).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(active.id.clone());
+        storage.write_agent(&agent).unwrap();
 
         let runtime = RuntimeHandle::new(
             "default",

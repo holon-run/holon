@@ -534,7 +534,19 @@ impl AppStorage {
     }
 
     pub fn waiting_contract_anchor(&self) -> Result<Option<WorkItemRecord>> {
-        Ok(self.work_queue_prompt_projection()?.current)
+        let projection = self.work_queue_prompt_projection()?;
+        Ok(projection.current.or_else(|| {
+            projection
+                .queued_blocked
+                .into_iter()
+                .filter(|item| item.blocked_by.is_some())
+                .max_by(|left, right| {
+                    left.updated_at
+                        .cmp(&right.updated_at)
+                        .then_with(|| left.created_at.cmp(&right.created_at))
+                        .then_with(|| left.id.cmp(&right.id))
+                })
+        }))
     }
 
     pub fn latest_work_item(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
@@ -1155,17 +1167,15 @@ mod tests {
     }
 
     #[test]
-    fn storage_work_queue_prompt_projection_prefers_latest_active_and_orders_queue() {
+    fn storage_work_queue_prompt_projection_uses_current_and_orders_queue() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
-        let mut older_active = WorkItemRecord::new("default", "older active", WorkItemState::Open);
-        older_active.updated_at = Utc::now() - chrono::Duration::minutes(2);
-
-        let mut newer_active = WorkItemRecord::new("default", "newer active", WorkItemState::Open);
-        newer_active.updated_at = Utc::now();
+        let mut current = WorkItemRecord::new("default", "current item", WorkItemState::Open);
+        current.updated_at = Utc::now();
 
         let mut waiting = WorkItemRecord::new("default", "waiting item", WorkItemState::Open);
+        waiting.blocked_by = Some("external review".into());
         waiting.created_at = Utc::now() + chrono::Duration::minutes(2);
         waiting.updated_at = waiting.created_at;
 
@@ -1179,12 +1189,14 @@ mod tests {
 
         let completed = WorkItemRecord::new("default", "completed", WorkItemState::Done);
 
-        storage.append_work_item(&older_active).unwrap();
-        storage.append_work_item(&newer_active).unwrap();
+        storage.append_work_item(&current).unwrap();
         storage.append_work_item(&waiting).unwrap();
         storage.append_work_item(&queued_late).unwrap();
         storage.append_work_item(&queued_early).unwrap();
         storage.append_work_item(&completed).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(current.id.clone());
+        storage.write_agent(&agent).unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
         assert_eq!(
@@ -1192,7 +1204,7 @@ mod tests {
                 .current
                 .as_ref()
                 .map(|item| item.delivery_target.as_str()),
-            Some("newer active")
+            Some("current item")
         );
         let rendered = projection
             .queued_blocked
@@ -1212,10 +1224,12 @@ mod tests {
 
         let mut waiting_old =
             WorkItemRecord::new("default", "older waiting anchor", WorkItemState::Open);
+        waiting_old.blocked_by = Some("old wait".into());
         waiting_old.updated_at = Utc::now() - chrono::Duration::minutes(2);
 
         let mut waiting_new =
             WorkItemRecord::new("default", "newer waiting anchor", WorkItemState::Open);
+        waiting_new.blocked_by = Some("new wait".into());
         waiting_new.updated_at = Utc::now();
 
         let mut queued = WorkItemRecord::new("default", "queued follow-up", WorkItemState::Open);

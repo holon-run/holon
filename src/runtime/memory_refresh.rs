@@ -635,14 +635,6 @@ mod tests {
             .storage
             .append_work_item(&record)
             .unwrap();
-        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-        guard.state.current_work_item_id = Some(record.id.clone());
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .write_agent(&guard.state)
-            .unwrap();
         record
     }
 
@@ -662,6 +654,14 @@ mod tests {
             .inner
             .storage
             .append_work_item(&record)
+            .unwrap();
+        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
+        guard.state.current_work_item_id = Some(record.id.clone());
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .write_agent(&guard.state)
             .unwrap();
         record
     }
@@ -875,9 +875,9 @@ mod tests {
             .storage
             .read_recent_events(100)
             .unwrap();
-        let written_events: Vec<_> = events
+        let picked_events: Vec<_> = events
             .iter()
-            .filter(|e| e.kind == "work_item_written")
+            .filter(|e| e.kind == "work_item_picked")
             .filter(|e| {
                 e.data
                     .get("action")
@@ -888,8 +888,8 @@ mod tests {
             .collect();
 
         assert!(
-            !written_events.is_empty(),
-            "work_item_written event should be emitted"
+            !picked_events.is_empty(),
+            "work_item_picked event should be emitted"
         );
 
         let activated_events: Vec<_> = events

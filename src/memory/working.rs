@@ -753,6 +753,12 @@ mod tests {
         }
     }
 
+    fn set_current_work_item(storage: &AppStorage, work_item_id: &str) {
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(work_item_id.to_string());
+        storage.write_agent(&agent).unwrap();
+    }
+
     #[test]
     fn derive_working_memory_snapshot_projects_work_state_and_tool_evidence() {
         let dir = tempdir().unwrap();
@@ -764,6 +770,7 @@ mod tests {
             WorkItemState::Open,
         );
         storage.append_work_item(&active).unwrap();
+        set_current_work_item(&storage, &active.id);
         storage
             .append_work_plan(&WorkPlanSnapshot::new(
                 "default",
@@ -878,8 +885,9 @@ mod tests {
             "queue follow-up verification",
             WorkItemState::Open,
         );
-        let waiting =
+        let mut waiting =
             WorkItemRecord::new("default", "wait for operator approval", WorkItemState::Open);
+        waiting.blocked_by = Some("operator approval".into());
         storage.append_work_item(&queued).unwrap();
         storage.append_work_item(&waiting).unwrap();
 
@@ -914,6 +922,7 @@ mod tests {
 
         let active = WorkItemRecord::new("default", "current active summary", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
+        set_current_work_item(&storage, &active.id);
         let other = WorkItemRecord::new("default", "other target", WorkItemState::Open);
         storage.append_work_item(&other).unwrap();
 
@@ -1042,6 +1051,7 @@ mod tests {
         let active = WorkItemRecord::new("default", "current target", WorkItemState::Open);
         let other = WorkItemRecord::new("default", "other target", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
+        set_current_work_item(&storage, &active.id);
         storage.append_work_item(&other).unwrap();
 
         storage
@@ -1127,6 +1137,7 @@ mod tests {
         let active = WorkItemRecord::new("default", "current waiting target", WorkItemState::Open);
         let other = WorkItemRecord::new("default", "other waiting target", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
+        set_current_work_item(&storage, &active.id);
         storage.append_work_item(&other).unwrap();
 
         for waiting in [
@@ -1250,6 +1261,7 @@ mod tests {
             WorkItemState::Open,
         );
         storage.append_work_item(&active).unwrap();
+        set_current_work_item(&storage, &active.id);
         let trigger = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -1375,11 +1387,13 @@ mod tests {
             WorkItemState::Open,
         );
         storage.append_work_item(&active).unwrap();
+        set_current_work_item(&storage, &active.id);
 
         agent.working_memory.current_working_memory = WorkingMemorySnapshot {
             current_work_item_id: Some(active.id.clone()),
             delivery_target: Some(active.delivery_target.clone()),
             work_summary: Some(active.delivery_target.clone()),
+            pending_followups: vec![format!("current: {}", active.delivery_target)],
             scope_hints: vec!["legacy brief text".into()],
             recent_decisions: vec!["legacy final answer prose".into()],
             ..WorkingMemorySnapshot::default()
@@ -1432,6 +1446,7 @@ mod tests {
 
         let active = WorkItemRecord::new("default", "ship memory cleanup", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
+        set_current_work_item(&storage, &active.id);
         let trigger = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,

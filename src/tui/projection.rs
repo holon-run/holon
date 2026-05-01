@@ -1143,7 +1143,7 @@ mod tests {
                 .durable_conversation_events()
                 .last()
                 .map(|event| event.summary.as_str()),
-            Some("durable card [Queued]")
+            Some("operator [Open]")
         );
         assert!(projection
             .event_log()
