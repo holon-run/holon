@@ -19,11 +19,13 @@ pub(super) fn work_queue_reactivation_signal(
     projection: &WorkQueuePromptProjection,
 ) -> Option<WorkReactivationSignal> {
     if let Some(current) = projection.current.as_ref() {
-        return Some(WorkReactivationSignal {
-            work_item_id: current.id.clone(),
-            state: current.state.clone(),
-            reactivation_mode: WorkReactivationMode::ContinueActive,
-        });
+        if current.blocked_by.is_none() {
+            return Some(WorkReactivationSignal {
+                work_item_id: current.id.clone(),
+                state: current.state.clone(),
+                reactivation_mode: WorkReactivationMode::ContinueActive,
+            });
+        }
     }
     projection
         .queued_blocked
@@ -42,9 +44,12 @@ fn idle_tick_trigger_from_state(
 ) -> Option<IdleTickTrigger> {
     if let Some(pending) = pending_wake_hint {
         Some(IdleTickTrigger::WakeHint(pending))
-    } else if let Some(current) = projection.current {
-        Some(IdleTickTrigger::WorkQueueActive(current))
     } else {
+        if let Some(current) = projection.current {
+            if current.blocked_by.is_none() {
+                return Some(IdleTickTrigger::WorkQueueActive(current));
+            }
+        }
         projection
             .queued_blocked
             .into_iter()
@@ -427,7 +432,11 @@ impl RuntimeHandle {
         work_item_id: &str,
     ) -> Result<Option<crate::types::WorkItemRecord>> {
         let projection = self.inner.storage.work_queue_prompt_projection()?;
-        if projection.current.is_some() {
+        if projection
+            .current
+            .as_ref()
+            .is_some_and(|current| current.blocked_by.is_none())
+        {
             return Ok(None);
         }
 
@@ -670,6 +679,23 @@ mod tests {
         record
     }
 
+    fn block_work_item(
+        test_runtime: &TestRuntime,
+        record: &WorkItemRecord,
+        blocked_by: &str,
+    ) -> WorkItemRecord {
+        let mut updated = record.clone();
+        updated.blocked_by = Some(blocked_by.to_string());
+        updated.updated_at = chrono::Utc::now();
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_work_item(&updated)
+            .unwrap();
+        updated
+    }
+
     fn append_result_brief_for_work_item(
         test_runtime: &TestRuntime,
         work_item_id: &str,
@@ -820,6 +846,61 @@ mod tests {
             metadata["reason"].as_str().unwrap(),
             "continue_active",
             "Active item should be continued, not queued item activated"
+        );
+    }
+
+    #[test]
+    fn blocked_current_work_item_does_not_emit_continue_active_tick() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let active = add_current_work_item(&test_runtime, "wi-active", "active-target");
+        block_work_item(&test_runtime, &active, "Waiting for external PR metadata.");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(
+            !emitted,
+            "blocked current work must not idle-spin through continue_active"
+        );
+        assert!(
+            get_emitted_system_ticks(&test_runtime).is_empty(),
+            "blocked current work should wait for an external signal"
+        );
+    }
+
+    #[test]
+    fn blocked_current_work_item_allows_queued_activation() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let active = add_current_work_item(&test_runtime, "wi-active", "active-target");
+        block_work_item(&test_runtime, &active, "Waiting for external PR metadata.");
+        add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(
+            emitted,
+            "unblocked queued work should be eligible while current work is blocked"
+        );
+
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].0, "work_queue");
+        assert_eq!(ticks[0].1["reason"].as_str(), Some("activate_queued"));
+        assert_eq!(ticks[0].1["work_item_id"].as_str(), Some("wi-queued"));
+
+        let guard = test_runtime.runtime.inner.agent.blocking_lock();
+        assert_eq!(
+            guard.state.current_work_item_id.as_deref(),
+            Some("wi-queued")
         );
     }
 
