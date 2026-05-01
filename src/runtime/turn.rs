@@ -2015,15 +2015,12 @@ mod tests {
         };
         assert!(projection.compaction.is_none());
         assert!(
-            !projection
-                .conversation
-                .iter()
-                .any(|message| match message {
-                    ConversationMessage::UserText(text) => {
-                        text.contains("progress checkpoint request")
-                    }
-                    _ => false,
-                })
+            !projection.conversation.iter().any(|message| match message {
+                ConversationMessage::UserText(text) => {
+                    text.contains("progress checkpoint request")
+                }
+                _ => false,
+            })
         );
     }
 
@@ -2072,7 +2069,10 @@ mod tests {
             .as_ref()
             .expect("expected compaction stats");
         assert_eq!(compaction.exact_tail_rounds, 1);
-        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+        assert_eq!(
+            compaction.compacted_rounds + compaction.exact_tail_rounds,
+            rounds.len()
+        );
         assert_eq!(
             compaction.projected_estimated_tokens,
             minimum_projection_estimated_tokens
@@ -2114,15 +2114,15 @@ mod tests {
             .as_ref()
             .expect("expected compaction stats");
         assert_eq!(compaction.exact_tail_rounds, 2);
-        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+        assert_eq!(
+            compaction.compacted_rounds + compaction.exact_tail_rounds,
+            rounds.len()
+        );
         assert!(
-            projection
-                .conversation
-                .iter()
-                .all(|message| match message {
-                    ConversationMessage::UserText(text) => !text.contains("Turn-local recap for older"),
-                    _ => true,
-                }),
+            projection.conversation.iter().all(|message| match message {
+                ConversationMessage::UserText(text) => !text.contains("Turn-local recap for older"),
+                _ => true,
+            }),
             "projection should not include an empty recap when recap budget is zero"
         );
     }
@@ -2157,8 +2157,7 @@ mod tests {
         match tight_projection {
             TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
                 assert_eq!(
-                    diagnostics.reason,
-                    "minimum_exact_round_unfit",
+                    diagnostics.reason, "minimum_exact_round_unfit",
                     "tight budget should fail minimum projection"
                 );
             }
@@ -2181,8 +2180,10 @@ mod tests {
         for round in &rounds {
             exact_conversation.extend(exact_round_messages(round));
         }
-        let exact_projection_estimated_tokens = estimate_projection_tokens(&prompt_frame, &exact_conversation);
-        let prompt_budget = exact_projection_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+        let exact_projection_estimated_tokens =
+            estimate_projection_tokens(&prompt_frame, &exact_conversation);
+        let prompt_budget =
+            exact_projection_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
 
         let projection_without_tools = build_turn_local_projection(
             &prompt_frame,
@@ -2239,8 +2240,9 @@ mod tests {
         minimum_viable_conversation.extend(exact_round_messages(&rounds[2]));
         let minimum_projection_estimated_tokens =
             estimate_projection_tokens(&prompt_frame, &minimum_viable_conversation);
-        let prompt_budget =
-            minimum_projection_estimated_tokens + tool_overhead_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+        let prompt_budget = minimum_projection_estimated_tokens
+            + tool_overhead_estimated_tokens
+            + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
 
         let projection = build_turn_local_projection(
             &prompt_frame,
@@ -2260,7 +2262,10 @@ mod tests {
             .as_ref()
             .expect("expected compaction stats");
         assert!(compaction.exact_tail_rounds > 0);
-        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+        assert_eq!(
+            compaction.compacted_rounds + compaction.exact_tail_rounds,
+            rounds.len()
+        );
     }
 
     #[test]
@@ -2282,18 +2287,17 @@ mod tests {
         )];
         exact_tail_conversation.extend(exact_round_messages(&rounds[1]));
         exact_tail_conversation.extend(exact_round_messages(&rounds[2]));
-        let checkpointed_tail_projection_tokens = estimate_projection_tokens(
-            &prompt_frame,
-            &exact_tail_conversation,
-        ) + checkpoint_prompt_tokens;
+        let checkpointed_tail_projection_tokens =
+            estimate_projection_tokens(&prompt_frame, &exact_tail_conversation)
+                + checkpoint_prompt_tokens;
         let minimum_projection_tokens =
             estimate_projection_tokens(&prompt_frame, &exact_tail_single_round_conversation);
-        let minimum_prompt_budget = minimum_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
-        let tight_prompt_budget = checkpointed_tail_projection_tokens
-            + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
-            - 1;
-        let relaxed_prompt_budget = checkpointed_tail_projection_tokens
-            + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+        let minimum_prompt_budget =
+            minimum_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+        let tight_prompt_budget =
+            checkpointed_tail_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS - 1;
+        let relaxed_prompt_budget =
+            checkpointed_tail_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
 
         assert!(minimum_prompt_budget < tight_prompt_budget);
         assert!(relaxed_prompt_budget > tight_prompt_budget);
@@ -2311,11 +2315,13 @@ mod tests {
             panic!("expected minimum baseline projection");
         };
         assert!(minimum_projection.compaction.is_some());
-        assert!(minimum_projection
-            .compaction
-            .as_ref()
-            .expect("minimum compaction")
-            .strict_fallback_applied);
+        assert!(
+            minimum_projection
+                .compaction
+                .as_ref()
+                .expect("minimum compaction")
+                .strict_fallback_applied
+        );
 
         let strict_projection = build_turn_local_projection(
             &prompt_frame,
@@ -2333,7 +2339,14 @@ mod tests {
             .compaction
             .as_ref()
             .expect("strict projection compaction");
-        assert_eq!(strict_projection.compaction.as_ref().expect("compaction stats").exact_tail_rounds, 1);
+        assert_eq!(
+            strict_projection
+                .compaction
+                .as_ref()
+                .expect("compaction stats")
+                .exact_tail_rounds,
+            1
+        );
         assert!(strict_compaction.strict_fallback_applied);
 
         let relaxed_projection = build_turn_local_projection(
@@ -2369,11 +2382,10 @@ mod tests {
         )];
         exact_tail_conversation.extend(exact_round_messages(&rounds[1]));
         exact_tail_conversation.extend(exact_round_messages(&rounds[2]));
-        let prompt_budget =
-            estimate_projection_tokens(&prompt_frame, &exact_tail_conversation)
-                + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT)
-                + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
-                - 1;
+        let prompt_budget = estimate_projection_tokens(&prompt_frame, &exact_tail_conversation)
+            + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT)
+            + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+            - 1;
         let projection = build_turn_local_projection(
             &prompt_frame,
             &rounds,
@@ -2387,8 +2399,14 @@ mod tests {
             panic!("expected projection outcome");
         };
         let compaction = projection.compaction.expect("expected compaction stats");
-        assert_eq!(compaction.checkpoint_mode, Some(TurnLocalCheckpointMode::Full));
-        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+        assert_eq!(
+            compaction.checkpoint_mode,
+            Some(TurnLocalCheckpointMode::Full)
+        );
+        assert_eq!(
+            compaction.compacted_rounds + compaction.exact_tail_rounds,
+            rounds.len()
+        );
     }
 
     #[test]
@@ -2405,11 +2423,10 @@ mod tests {
         )];
         exact_tail_conversation.extend(exact_round_messages(&rounds[1]));
         exact_tail_conversation.extend(exact_round_messages(&rounds[2]));
-        let prompt_budget =
-            estimate_projection_tokens(&prompt_frame, &exact_tail_conversation)
-                + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT)
-                + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
-                - 1;
+        let prompt_budget = estimate_projection_tokens(&prompt_frame, &exact_tail_conversation)
+            + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT)
+            + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+            - 1;
         let projection = build_turn_local_projection(
             &prompt_frame,
             &rounds,
@@ -2423,9 +2440,15 @@ mod tests {
             panic!("expected projection outcome");
         };
         let compaction = projection.compaction.expect("expected compaction stats");
-        assert_eq!(compaction.checkpoint_mode, Some(TurnLocalCheckpointMode::Delta));
+        assert_eq!(
+            compaction.checkpoint_mode,
+            Some(TurnLocalCheckpointMode::Delta)
+        );
         assert_eq!(compaction.previous_checkpoint_round, Some(1));
-        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+        assert_eq!(
+            compaction.compacted_rounds + compaction.exact_tail_rounds,
+            rounds.len()
+        );
     }
 
     #[test]
