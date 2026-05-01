@@ -419,6 +419,23 @@ fn openai_request_payload_validates_full_tool_matrix_in_strict_mode() {
         .collect::<Vec<_>>();
     assert!(duration_types.contains(&"integer"));
     assert!(duration_types.contains(&"null"));
+    assert_eq!(
+        sleep["parameters"]["properties"]["duration_ms"]["minimum"],
+        Value::from(1.0)
+    );
+
+    let memory_get = emitted_tools
+        .iter()
+        .find(|tool| tool["name"] == "MemoryGet")
+        .expect("MemoryGet tool should be present");
+    assert_eq!(
+        memory_get["parameters"]["properties"]["max_chars"]["minimum"],
+        Value::from(1.0)
+    );
+    assert_eq!(
+        memory_get["parameters"]["properties"]["max_chars"]["maximum"],
+        Value::from(50000.0)
+    );
 }
 
 #[test]

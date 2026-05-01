@@ -18,6 +18,7 @@ pub(crate) const NAME: &str = "Sleep";
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub(crate) struct SleepArgs {
     pub(crate) reason: Option<String>,
+    #[schemars(range(min = 1))]
     pub(crate) duration_ms: Option<u64>,
 }
 
@@ -26,7 +27,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<SleepArgs>(
             NAME,
-            "Mark the current loop as done so the agent can sleep when no other work remains, or wake again after a short session-local `duration_ms` delay.",
+            "Mark the current loop as done so the agent can sleep when no other work remains. Omit `duration_ms` for ordinary rest, or provide a positive short session-local delay to wake again.",
         )?,
     })
 }

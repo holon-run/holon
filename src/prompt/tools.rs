@@ -22,7 +22,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_sleep",
             PromptStability::Stable,
-            "Use Sleep when the current task is complete and no immediate follow-up remains. Do not idle-spin by avoiding Sleep once the agent can safely rest. Emit a delivery-ready completion summary in a text block before calling Sleep. The Sleep reason should be a concise label referencing the preceding summary. When calling Sleep, always provide `reason`. Optionally add a short positive `duration_ms` only when you intentionally want a session-local wake after a bounded delay. Do not use `duration_ms` as a durable timer or scheduling substitute, and do not expect a task handle from Sleep. Never use Sleep with a vague reason like 'done' or 'completed'.".to_string(),
+            "Use Sleep when the current task is complete and no immediate follow-up remains. Do not idle-spin by avoiding Sleep once the agent can safely rest. Emit a delivery-ready completion summary in a text block before calling Sleep. The Sleep reason should be a concise label referencing the preceding summary. When calling Sleep, always provide `reason`. Omit `duration_ms` for ordinary indefinite rest. Optionally add a short positive `duration_ms` only when you intentionally want a session-local wake after a bounded delay; never set it to 0. Do not use `duration_ms` as a durable timer or scheduling substitute, and do not expect a task handle from Sleep. Never use Sleep with a vague reason like 'done' or 'completed'.".to_string(),
         ));
     }
     if names.contains(&"SpawnAgent") {
