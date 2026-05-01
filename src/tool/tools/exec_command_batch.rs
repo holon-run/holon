@@ -364,8 +364,8 @@ mod tests {
     #[test]
     fn render_for_model_uses_command_preview_for_batch_items() {
         let cmd = format!(
-            "node - <<'JS'\n{}TAIL_MARKER\nJS",
-            "console.log('x')\n".repeat(80)
+            "API_TOKEN=secret_value {}",
+            "printf safe_preview ".repeat(40)
         );
         let result = serialize_success(
             NAME,
@@ -391,7 +391,8 @@ mod tests {
         .unwrap();
 
         let rendered = render_for_model(&result).unwrap();
-        assert!(rendered.contains("node - <<'JS'"));
-        assert!(!rendered.contains("TAIL_MARKER"));
+        assert!(rendered.contains("API_TOKEN=[redacted]"));
+        assert!(rendered.contains("..."));
+        assert!(!rendered.contains("secret_value"));
     }
 }

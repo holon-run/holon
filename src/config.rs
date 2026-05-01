@@ -431,13 +431,15 @@ impl AppConfig {
             .and_then(|value| value.parse::<u32>().ok())
             .or(stored_config.runtime.default_tool_output_tokens)
             .filter(|value| *value > 0)
-            .unwrap_or(crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32);
+            .unwrap_or(crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32)
+            .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32);
         let max_tool_output_tokens = env::var("HOLON_MAX_TOOL_OUTPUT_TOKENS")
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
             .or(stored_config.runtime.max_tool_output_tokens)
             .filter(|value| *value > 0)
             .unwrap_or(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32)
+            .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32)
             .max(default_tool_output_tokens);
 
         let anthropic_default_model = "claude-sonnet-4-6".to_string();
@@ -1364,11 +1366,16 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             config.runtime.max_output_tokens = Some(value);
         }
         "runtime.default_tool_output_tokens" => {
-            config.runtime.default_tool_output_tokens =
-                Some(parse_positive_u32_key(key, raw_value)?);
+            config.runtime.default_tool_output_tokens = Some(
+                parse_positive_u32_key(key, raw_value)?
+                    .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32),
+            );
         }
         "runtime.max_tool_output_tokens" => {
-            config.runtime.max_tool_output_tokens = Some(parse_positive_u32_key(key, raw_value)?);
+            config.runtime.max_tool_output_tokens = Some(
+                parse_positive_u32_key(key, raw_value)?
+                    .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32),
+            );
         }
         "runtime.disable_provider_fallback" => {
             config.runtime.disable_provider_fallback = Some(
@@ -2778,6 +2785,17 @@ mod tests {
         assert_eq!(
             get_config_key(&config, "runtime.max_tool_output_tokens").unwrap(),
             json!(6_000)
+        );
+
+        set_config_key(&mut config, "runtime.default_tool_output_tokens", "50000").unwrap();
+        set_config_key(&mut config, "runtime.max_tool_output_tokens", "50000").unwrap();
+        assert_eq!(
+            get_config_key(&config, "runtime.default_tool_output_tokens").unwrap(),
+            json!(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS)
+        );
+        assert_eq!(
+            get_config_key(&config, "runtime.max_tool_output_tokens").unwrap(),
+            json!(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS)
         );
 
         unset_config_key(&mut config, "runtime.default_tool_output_tokens").unwrap();

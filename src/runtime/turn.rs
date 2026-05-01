@@ -15,7 +15,7 @@ use crate::{
         build_continuation_request, build_provider_prompt_frame, build_provider_turn_request,
     },
     tool::{
-        helpers::{command_cost_diagnostics, command_preview, DEFAULT_TOOL_OUTPUT_TOKENS},
+        helpers::{command_cost_diagnostics, command_preview, effective_tool_output_tokens},
         spec::{ToolResultEnvelope, ToolResultStatus},
         ToolCall, ToolError, ToolSpec,
     },
@@ -1527,7 +1527,11 @@ impl RuntimeHandle {
                             "tool_call_id": tool_call_id,
                             "tool_name": tool_name,
                             "exec_command_cmd": command_preview_field(&call),
-                            "exec_command_cost": command_cost_field(&call),
+                            "exec_command_cost": command_cost_field(
+                                &call,
+                                self.inner.default_tool_output_tokens,
+                                self.inner.max_tool_output_tokens
+                            ),
                             "error": message,
                             "error_kind": error.kind.clone(),
                             "tool_error": error.clone(),
@@ -1622,7 +1626,11 @@ impl RuntimeHandle {
                                 "tool_call_id": tool_call_id,
                                 "tool_name": tool_name,
                                 "exec_command_cmd": command_preview_field(&call),
-                                "exec_command_cost": command_cost_field(&call),
+                                "exec_command_cost": command_cost_field(
+                                    &call,
+                                    self.inner.default_tool_output_tokens,
+                                    self.inner.max_tool_output_tokens
+                                ),
                                 "status": record.status,
                                 "duration_ms": duration_ms,
                                 "summary": record.summary,
@@ -1648,7 +1656,11 @@ impl RuntimeHandle {
                                 "tool_call_id": tool_call_id,
                                 "tool_name": tool_name,
                                 "exec_command_cmd": command_preview_field(&call),
-                                "exec_command_cost": command_cost_field(&call),
+                                "exec_command_cost": command_cost_field(
+                                    &call,
+                                    self.inner.default_tool_output_tokens,
+                                    self.inner.max_tool_output_tokens
+                                ),
                                 "error": message,
                                 "error_kind": error.kind.clone(),
                                 "tool_error": error.clone(),
@@ -1721,14 +1733,30 @@ fn command_preview_field(call: &ToolCall) -> Option<String> {
         .map(command_preview)
 }
 
-fn command_cost_field(call: &ToolCall) -> Option<serde_json::Value> {
-    (call.name == "ExecCommand")
-        .then(|| call.input.get("cmd").and_then(Value::as_str))
-        .flatten()
-        .map(|cmd| serde_json::to_value(command_cost_diagnostics(cmd, DEFAULT_TOOL_OUTPUT_TOKENS)))
-        .transpose()
-        .ok()
-        .flatten()
+fn command_cost_field(
+    call: &ToolCall,
+    default_tool_output_tokens: u64,
+    max_tool_output_tokens: u64,
+) -> Option<serde_json::Value> {
+    if call.name != "ExecCommand" {
+        return None;
+    }
+    let cmd = call.input.get("cmd").and_then(Value::as_str)?;
+    let requested = call.input.get("max_output_tokens").and_then(Value::as_u64);
+    let effective = effective_tool_output_tokens(
+        requested,
+        default_tool_output_tokens,
+        max_tool_output_tokens,
+    );
+    match serde_json::to_value(command_cost_diagnostics(cmd, effective)) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            eprintln!(
+                "failed to serialize command cost diagnostics for ExecCommand audit event: {error}"
+            );
+            None
+        }
+    }
 }
 
 fn rejects_truncated_mutation_tool_call(tool_name: &str) -> bool {
