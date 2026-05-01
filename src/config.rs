@@ -1877,7 +1877,7 @@ fn validate_openai_reasoning_effort(value: &str) -> Result<()> {
     match value {
         "low" | "medium" | "high" | "xhigh" => Ok(()),
         _ => Err(anyhow!(
-            "OpenAI Codex reasoning_effort must be one of low, medium, high, xhigh"
+            "invalid OpenAI Codex reasoning_effort '{value}'; must be one of low, medium, high, xhigh"
         )),
     }
 }

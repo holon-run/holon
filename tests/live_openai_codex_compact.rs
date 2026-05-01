@@ -1,4 +1,4 @@
-use std::{fs, path::Path, process::Command};
+use std::{fs, path::Path, process::Command, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
@@ -113,7 +113,10 @@ async fn live_openai_codex_request_control_probe() -> Result<()> {
         .ok_or_else(|| anyhow!("missing openai-codex provider config"))?;
     let credential = load_live_codex_credential(provider_config)?;
     let route = codex_responses_route(&provider_config.base_url);
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("failed to build Codex probe HTTP client")?;
 
     let default =
         post_codex_probe(&client, &route, &credential, codex_probe_body(None, false)).await?;

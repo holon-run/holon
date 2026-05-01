@@ -1978,6 +1978,9 @@ fn sanitize_openai_store_false_compact_items(items: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+// Provider windows are replayed into future OpenAI requests and compared
+// against locally rebuilt input for append-only continuation. Normalize
+// provider-only transport fields so equivalent conversation items stay stable.
 fn canonicalize_openai_provider_item(item: &Value) -> Value {
     let mut item = openai_without_provider_item_id(item);
     let Some(object) = item.as_object_mut() else {
