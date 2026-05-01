@@ -10,6 +10,10 @@ async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
     agent.status = AgentStatus::Asleep;
     agent.pending_wake_hint = Some(PendingWakeHint {
         reason: "restart wake".into(),
+        description: None,
+        scope: None,
+        waiting_intent_id: None,
+        external_trigger_id: None,
         source: Some("test".into()),
         resource: None,
         body: None,
@@ -212,6 +216,10 @@ async fn idle_tick_prefers_pending_wake_hint_over_work_queue_tick() {
     agent.status = AgentStatus::Asleep;
     agent.pending_wake_hint = Some(PendingWakeHint {
         reason: "resume from callback".into(),
+        description: None,
+        scope: None,
+        waiting_intent_id: None,
+        external_trigger_id: None,
         source: Some("test".into()),
         resource: None,
         body: None,

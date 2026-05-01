@@ -126,7 +126,7 @@ Examples:
 
 - `sleep_job`
 - `child_agent_task`
-- `wake_only`
+- `wake_hint`
 
 ### Field suffix conventions
 

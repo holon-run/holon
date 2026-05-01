@@ -197,7 +197,7 @@ async fn create_callback_binds_current_turn_work_item() {
             "github".into(),
             "review_submitted".into(),
             Some("pull_request:302".into()),
-            CallbackDeliveryMode::WakeOnly,
+            CallbackDeliveryMode::WakeHint,
         )
         .await
         .unwrap();
@@ -510,7 +510,40 @@ async fn turn_end_work_item_commit_preserves_explicit_queued_claim() {
 }
 
 #[tokio::test]
-async fn reconcile_waiting_contract_cancels_wait_without_anchor_and_emits_audit() {
+async fn work_item_scoped_external_trigger_requires_current_work_item_anchor() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let result = runtime
+        .create_external_trigger(
+            "wait for external review".into(),
+            "github".into(),
+            ExternalTriggerScope::WorkItem,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("requires a current work item"));
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn agent_scoped_external_trigger_survives_missing_work_item_cleanup() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -525,12 +558,13 @@ async fn reconcile_waiting_contract_cancels_wait_without_anchor_and_emits_audit(
     .unwrap();
 
     let capability = runtime
-        .create_callback(
-            "wait for external review".into(),
-            "github".into(),
-            "review_submitted".into(),
-            Some("pull_request:305".into()),
-            CallbackDeliveryMode::WakeOnly,
+        .create_external_trigger(
+            "Check durable inbox for unread entries".into(),
+            "agentinbox".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -556,11 +590,100 @@ async fn reconcile_waiting_contract_cancels_wait_without_anchor_and_emits_audit(
     let waiting = runtime.latest_waiting_intents().await.unwrap();
     assert_eq!(waiting.len(), 1);
     assert_eq!(waiting[0].id, capability.waiting_intent_id);
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Cancelled);
+    assert_eq!(waiting[0].scope, ExternalTriggerScope::Agent);
+    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
+    let closure = runtime.current_closure_decision().await.unwrap();
+    assert_ne!(
+        closure.waiting_reason,
+        Some(WaitingReason::AwaitingExternalChange)
+    );
     let events = runtime.storage().read_recent_events(16).unwrap();
-    assert!(events
+    assert!(!events
         .iter()
         .any(|event| event.kind == "missing_current_work_item_before_wait"));
+}
+
+#[tokio::test]
+async fn agent_scoped_wake_hint_preserves_external_trigger_provenance() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::Asleep;
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+    let capability = runtime
+        .create_external_trigger(
+            "Check AgentInbox for unread items".into(),
+            "agentinbox".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let result = runtime
+        .deliver_callback(
+            &capability.external_trigger_id,
+            CallbackDeliveryPayload {
+                body: Some(MessageBody::Json {
+                    value: serde_json::json!({
+                        "latest_entry_id": "ent_123",
+                        "preview": "new inbox item"
+                    }),
+                }),
+                content_type: Some("application/json".into()),
+                correlation_id: Some("corr-inbox".into()),
+                causation_id: Some("cause-webhook".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.disposition, CallbackIngressDisposition::Triggered);
+    assert_eq!(result.scope, ExternalTriggerScope::Agent);
+
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    let tick = messages
+        .iter()
+        .find(|message| message.kind == MessageKind::SystemTick)
+        .expect("wake hint should emit a system tick");
+    let wake_hint = tick
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("wake_hint"))
+        .expect("wake hint metadata should exist");
+    assert_eq!(wake_hint["source"].as_str(), Some("agentinbox"));
+    assert_eq!(wake_hint["scope"].as_str(), Some("agent"));
+    assert_eq!(
+        wake_hint["waiting_intent_id"].as_str(),
+        Some(capability.waiting_intent_id.as_str())
+    );
+    assert_eq!(
+        wake_hint["external_trigger_id"].as_str(),
+        Some(capability.external_trigger_id.as_str())
+    );
+    assert_eq!(
+        wake_hint["description"].as_str(),
+        Some("Check AgentInbox for unread items")
+    );
+    assert_eq!(wake_hint["correlation_id"].as_str(), Some("corr-inbox"));
+    assert_eq!(wake_hint["causation_id"].as_str(), Some("cause-webhook"));
+    assert_eq!(
+        wake_hint["body"]["value"]["latest_entry_id"].as_str(),
+        Some("ent_123")
+    );
 }
 
 #[tokio::test]
@@ -597,7 +720,7 @@ async fn reconcile_waiting_contract_cancels_old_waits_after_active_work_switch()
             "github".into(),
             "review_submitted".into(),
             Some("pull_request:123".into()),
-            CallbackDeliveryMode::WakeOnly,
+            CallbackDeliveryMode::WakeHint,
         )
         .await
         .unwrap();
@@ -658,6 +781,84 @@ async fn reconcile_waiting_contract_cancels_old_waits_after_active_work_switch()
 }
 
 #[tokio::test]
+async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_switch() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let (old_work, _) = runtime
+        .create_work_item("old delivery target".into(), None)
+        .await
+        .unwrap();
+    runtime.pick_work_item(old_work.id.clone()).await.unwrap();
+    let capability = runtime
+        .create_external_trigger(
+            "Check durable inbox for unread entries".into(),
+            "agentinbox".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let old_waiting_created_at = runtime
+        .latest_waiting_intents()
+        .await
+        .unwrap()
+        .first()
+        .expect("waiting intent should exist")
+        .created_at;
+
+    runtime
+        .complete_work_item(old_work.id.clone(), Some("old work done".into()))
+        .await
+        .unwrap();
+    let (new_work, _) = runtime
+        .create_work_item("new delivery target".into(), None)
+        .await
+        .unwrap();
+    runtime.pick_work_item(new_work.id.clone()).await.unwrap();
+
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        TrustLevel::TrustedOperator,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "switch to the new target".into(),
+        },
+    );
+    message.created_at = old_waiting_created_at + chrono::Duration::seconds(1);
+    let closure = runtime.current_closure_decision().await.unwrap();
+
+    runtime
+        .reconcile_waiting_contract(&message, &closure)
+        .await
+        .unwrap();
+
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].id, capability.waiting_intent_id);
+    assert_eq!(waiting[0].scope, ExternalTriggerScope::Agent);
+    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == "stale_waiting_intents_cancelled"));
+}
+
+#[tokio::test]
 async fn reconcile_waiting_contract_cancels_waits_when_only_waiting_anchor_exists() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -691,7 +892,7 @@ async fn reconcile_waiting_contract_cancels_waits_when_only_waiting_anchor_exist
             "github".into(),
             "review_submitted".into(),
             Some("pull_request:456".into()),
-            CallbackDeliveryMode::WakeOnly,
+            CallbackDeliveryMode::WakeHint,
         )
         .await
         .unwrap();
@@ -756,7 +957,7 @@ async fn reconcile_waiting_contract_keeps_waits_when_anchor_is_newly_established
             "github".into(),
             "review_submitted".into(),
             Some("pull_request:789".into()),
-            CallbackDeliveryMode::WakeOnly,
+            CallbackDeliveryMode::WakeHint,
         )
         .await
         .unwrap();

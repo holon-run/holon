@@ -6,11 +6,11 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{CallbackDeliveryMode, ToolCapabilityFamily, TrustLevel},
+    types::{CallbackDeliveryMode, ExternalTriggerScope, ToolCapabilityFamily, TrustLevel},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
-use crate::tool::helpers::{normalize_optional_non_empty, parse_tool_args, validate_non_empty};
+use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 
 pub(crate) const NAME: &str = "CreateExternalTrigger";
 
@@ -19,16 +19,24 @@ pub(crate) const NAME: &str = "CreateExternalTrigger";
 #[allow(dead_code)]
 pub(crate) enum CallbackDeliveryModeArgs {
     EnqueueMessage,
-    WakeOnly,
+    #[serde(alias = "wake_only")]
+    WakeHint,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub(crate) enum ExternalTriggerScopeArgs {
+    WorkItem,
+    Agent,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CreateExternalTriggerArgs {
-    pub(crate) summary: String,
+    pub(crate) description: String,
     pub(crate) source: String,
-    pub(crate) condition: String,
-    pub(crate) resource: Option<String>,
+    pub(crate) scope: ExternalTriggerScopeArgs,
     pub(crate) delivery_mode: CallbackDeliveryModeArgs,
 }
 
@@ -49,16 +57,39 @@ pub(crate) async fn execute(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: CreateExternalTriggerArgs = parse_tool_args(NAME, input)?;
-    let summary = validate_non_empty(args.summary, NAME, "summary")?;
+    let description = validate_non_empty(args.description, NAME, "description")?;
     let source = validate_non_empty(args.source, NAME, "source")?;
-    let condition = validate_non_empty(args.condition, NAME, "condition")?;
-    let resource = normalize_optional_non_empty(args.resource);
+    let scope = match args.scope {
+        ExternalTriggerScopeArgs::WorkItem => ExternalTriggerScope::WorkItem,
+        ExternalTriggerScopeArgs::Agent => ExternalTriggerScope::Agent,
+    };
     let delivery_mode = match args.delivery_mode {
         CallbackDeliveryModeArgs::EnqueueMessage => CallbackDeliveryMode::EnqueueMessage,
-        CallbackDeliveryModeArgs::WakeOnly => CallbackDeliveryMode::WakeOnly,
+        CallbackDeliveryModeArgs::WakeHint => CallbackDeliveryMode::WakeHint,
     };
     let capability = runtime
-        .create_callback(summary, source, condition, resource, delivery_mode)
+        .create_external_trigger(description, source, scope, delivery_mode, None, None)
         .await?;
     serialize_success(NAME, &capability)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delivery_mode_accepts_legacy_wake_only_alias() {
+        let args: CreateExternalTriggerArgs = serde_json::from_value(serde_json::json!({
+            "description": "Check external queue",
+            "source": "test",
+            "scope": "agent",
+            "delivery_mode": "wake_only"
+        }))
+        .expect("legacy wake_only alias should deserialize");
+
+        assert!(matches!(
+            args.delivery_mode,
+            CallbackDeliveryModeArgs::WakeHint
+        ));
+    }
 }

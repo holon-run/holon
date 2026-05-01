@@ -457,12 +457,14 @@ fn openai_codex_request_payload_validates_full_tool_matrix_in_strict_mode() {
         .iter()
         .find(|tool| tool["name"] == "CreateExternalTrigger")
         .expect("CreateExternalTrigger tool should be present");
-    let resource_types = external_trigger["parameters"]["properties"]["resource"]["type"]
-        .as_array()
-        .expect("resource type should be an array")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
-    assert!(resource_types.contains(&"string"));
-    assert!(resource_types.contains(&"null"));
+    let properties = external_trigger["parameters"]["properties"]
+        .as_object()
+        .expect("properties should be an object");
+    assert!(properties.contains_key("description"));
+    assert!(properties.contains_key("source"));
+    assert!(properties.contains_key("scope"));
+    assert!(properties.contains_key("delivery_mode"));
+    assert!(!properties.contains_key("summary"));
+    assert!(!properties.contains_key("condition"));
+    assert!(!properties.contains_key("resource"));
 }

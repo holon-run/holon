@@ -61,7 +61,8 @@ ExternalTriggerCapability {
   external_trigger_id: string
   trigger_url: string
   target_agent_id: string
-  delivery_mode: 'wake_only' | 'enqueue_message'
+  scope: 'work_item' | 'agent'
+  delivery_mode: 'wake_hint' | 'enqueue_message'
 }
 ```
 
@@ -228,9 +229,9 @@ No broadcast-by-default behavior.
 The callback capability should specify whether delivery:
 
 - only queues a message (`enqueue_message`)
-- or only wakes the target (`wake_only`)
+- or records a wake hint for the target (`wake_hint`)
 
-**Implementation:** `delivery_mode` is enforced. `wake_only` callbacks create wake hints (may become `SystemTick`), while `enqueue_message` callbacks add structured content to the queue.
+**Implementation:** `delivery_mode` is enforced. `wake_hint` callbacks create wake hints (may become `SystemTick`), while `enqueue_message` callbacks add structured content to the queue.
 
 ### Rule 4: Capabilities should be revocable
 

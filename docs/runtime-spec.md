@@ -1745,7 +1745,7 @@ This is the boundary between:
 The runtime may emit `SystemTick` when:
 
 - a `pendingWakeHint` exists and the agent transitions to an eligible state
-- external wake hints arrive via callback ingress with `wake_only` delivery mode
+- external wake hints arrive via callback ingress with `wake_hint` delivery mode
 - the runtime decides proactive reconsideration is warranted
 
 `SystemTick` does not automatically imply a new model turn. Under the
@@ -1801,7 +1801,9 @@ A wake hint means:
 - "you may want to check again"
 - "consider waking"
 
-It does NOT carry model-visible content by default.
+It does not become a normal queued message, but it may preserve provenance and
+opaque payload context on the pending wake hint so the agent can understand
+which durable external system to inspect after waking.
 
 ### Delivery Modes
 
@@ -1815,7 +1817,7 @@ The external system provides structured content (text or JSON).
 - Origin is preserved as `MessageOrigin::Callback`
 - The message enters model context like any other input
 
-#### `wake_only`
+#### `wake_hint`
 
 The external system only signals that something changed.
 
@@ -1824,6 +1826,8 @@ The external system only signals that something changed.
 - When the agent becomes eligible, the runtime emits a `SystemTick`
 - The runtime may stop there as `liveness_only`, or may continue into a new
   model-visible turn if the wake hint includes contentful body metadata
+- The wake hint preserves trigger id, waiting intent id, description, source,
+  scope, content type, payload body when present, and correlation/causation ids
 
 ### Runtime Behavior
 
@@ -1861,28 +1865,24 @@ type ExternalTriggerCapability = {
   waitingIntentId: string
   externalTriggerId: string
   triggerUrl: string
-  callbackDescriptorId: string
-  callbackUrl: string
   targetAgentId: string
-  delivery_mode: 'wake_only' | 'enqueue_message'
+  scope: 'work_item' | 'agent'
+  delivery_mode: 'wake_hint' | 'enqueue_message'
 }
 ```
-
-`callbackDescriptorId` and `callbackUrl` are compatibility aliases during the
-callback-to-external-trigger migration.
 
 ### CreateExternalTrigger Flow
 
 1. Agent calls `CreateExternalTrigger` with:
-   - `summary`: human-readable description
+   - `description`: human-readable description and follow-up instruction
    - `source`: integration identifier (e.g., "github", "slack")
-   - `condition`: what to wait for
+   - `scope`: `work_item` for a wait tied to the current work item, or `agent`
+     for a long-running integration entry point
    - `delivery_mode`: whether to enqueue content or just wake
-   - `resource`: (optional) watched resource identifier
 
 2. Runtime creates:
-   - A `WaitingIntentRecord` with the condition, metadata, and optional bound
-     active work item id when the wait is created during a bound turn
+   - A `WaitingIntentRecord` with description, source, scope, and optional
+     bound work item id for `work_item` scope
    - A `ExternalTriggerRecord` with a secure token
    - A signed callback URL for external delivery
 
@@ -1898,7 +1898,7 @@ When an external system delivers to the trigger URL:
 2. Checks that the waiting intent is still active
 3. Based on `delivery_mode`:
    - `enqueue_message`: enqueues structured content as a message
-   - `wake_only`: submits a wake hint (may become `SystemTick`)
+   - `wake_hint`: submits a wake hint (may become `SystemTick`)
 4. Updates delivery tracking (trigger count, last triggered at)
 
 ### CancelExternalTrigger

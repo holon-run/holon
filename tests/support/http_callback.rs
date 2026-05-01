@@ -21,9 +21,9 @@ use holon::{
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
-        ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TrustLevel, WaitingIntentStatus, WorkItemState, WorkPlanItem,
-        WorkPlanStepStatus,
+        ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
+        MessageKind, MessageOrigin, OperatorDeliveryStatus, TrustLevel, WaitingIntentStatus,
+        WorkItemState, WorkPlanItem, WorkPlanStepStatus,
     },
 };
 use reqwest::Client;
@@ -54,12 +54,13 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
     );
     runtime.storage().append_work_item(&callback_work)?;
     let capability = runtime
-        .create_callback(
+        .create_external_trigger(
             "wait for CI callback".into(),
             "github".into(),
-            "required_checks_passed".into(),
-            Some("pull_request:123".into()),
+            ExternalTriggerScope::Agent,
             CallbackDeliveryMode::EnqueueMessage,
+            None,
+            None,
         )
         .await?;
     assert!(capability.trigger_url.contains("/callbacks/enqueue/"));
@@ -170,7 +171,7 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
     Ok(())
 }
 
-pub async fn callback_wake_only_routes_through_wake_hint() -> Result<()> {
+pub async fn callback_wake_hint_routes_through_wake_hint() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -185,12 +186,13 @@ pub async fn callback_wake_only_routes_through_wake_hint() -> Result<()> {
     .await?;
 
     let capability = runtime
-        .create_callback(
+        .create_external_trigger(
             "wake when PR changes".into(),
             "github".into(),
-            "pr_state_changed".into(),
-            Some("pull_request:123".into()),
-            CallbackDeliveryMode::WakeOnly,
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
         )
         .await?;
     assert!(capability.trigger_url.contains("/callbacks/wake/"));
@@ -241,18 +243,19 @@ pub async fn callback_wake_only_routes_through_wake_hint() -> Result<()> {
     Ok(())
 }
 
-pub async fn callback_wake_only_rejects_stopped_public_agent_without_side_effects() -> Result<()> {
+pub async fn callback_wake_hint_rejects_stopped_public_agent_without_side_effects() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
     let capability = runtime
-        .create_callback(
+        .create_external_trigger(
             "wake when PR changes".into(),
             "github".into(),
-            "pr_state_changed".into(),
-            Some("pull_request:123".into()),
-            CallbackDeliveryMode::WakeOnly,
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
         )
         .await?;
     let callback_path = callback_path(&capability.trigger_url);
@@ -313,12 +316,13 @@ pub async fn callback_mode_mismatch_is_rejected() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let capability = runtime
-        .create_callback(
+        .create_external_trigger(
             "wait for CI callback".into(),
             "github".into(),
-            "required_checks_passed".into(),
-            Some("pull_request:123".into()),
+            ExternalTriggerScope::Agent,
             CallbackDeliveryMode::EnqueueMessage,
+            None,
+            None,
         )
         .await?;
     let token = callback_token(&capability.trigger_url);
@@ -339,12 +343,13 @@ pub async fn invalid_json_callback_body_returns_bad_request() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let capability = runtime
-        .create_callback(
+        .create_external_trigger(
             "wait for CI callback".into(),
             "github".into(),
-            "required_checks_passed".into(),
-            Some("pull_request:123".into()),
+            ExternalTriggerScope::Agent,
             CallbackDeliveryMode::EnqueueMessage,
+            None,
+            None,
         )
         .await?;
     let callback_path = callback_path(&capability.trigger_url);
@@ -377,12 +382,13 @@ pub async fn wake_callback_without_content_type_accepts_binary_body() -> Result<
     .await?;
 
     let capability = runtime
-        .create_callback(
+        .create_external_trigger(
             "wake when binary payload arrives".into(),
             "agentinbox".into(),
-            "binary_notification".into(),
-            Some("interest/bin".into()),
-            CallbackDeliveryMode::WakeOnly,
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
         )
         .await?;
     let callback_path = callback_path(&capability.trigger_url);
@@ -443,12 +449,13 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     let client = reqwest::Client::new();
 
     let capability = runtime
-        .create_callback(
+        .create_external_trigger(
             "wait for CI callback".into(),
             "github".into(),
-            "required_checks_passed".into(),
-            Some("pull_request:123".into()),
+            ExternalTriggerScope::Agent,
             CallbackDeliveryMode::EnqueueMessage,
+            None,
+            None,
         )
         .await?;
     let callback_path = callback_path(&capability.trigger_url);

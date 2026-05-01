@@ -258,7 +258,7 @@ impl RuntimeHandle {
         state: &AgentState,
         runtime_error_override: Option<bool>,
     ) -> Result<ClosureDecision> {
-        let active_waiting_intents = self.active_waiting_intent_summaries().await?.len();
+        let active_waiting_intents = self.active_work_item_waiting_intent_count().await?;
         let active_timers = self
             .inner
             .storage
@@ -501,7 +501,7 @@ impl RuntimeHandle {
         Ok(build_child_agent_observability(
             &agent,
             closure.waiting_reason,
-            self.active_waiting_intent_summaries().await?.len(),
+            self.active_work_item_waiting_intent_count().await?,
             &latest_tasks,
             &briefs,
         ))
@@ -517,6 +517,7 @@ impl RuntimeHandle {
             .latest_waiting_intents()?
             .into_iter()
             .filter(|record| record.status == WaitingIntentStatus::Active)
+            .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
             .count();
         let active_timers = storage
             .latest_timer_records()?

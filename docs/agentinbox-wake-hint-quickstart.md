@@ -1,10 +1,10 @@
-# AgentInbox Quickstart: Wake-Only Workflow
+# AgentInbox Quickstart: Wake-Hint Workflow
 
-This guide shows how to use AgentInbox callbacks for wake-only notifications in Holon.
+This guide shows how to use AgentInbox callbacks for wake-hint notifications in Holon.
 
-## When to Use Wake-Only
+## When to Use Wake Hint
 
-Use `delivery_mode=wake_only` when:
+Use `delivery_mode=wake_hint` when:
 - An external system only needs to signal that something changed
 - The agent will fetch its own updates via tool calls
 - You want minimal overhead and don't need the full event payload in the queue
@@ -19,16 +19,16 @@ agentinbox source add fixture github --home ~/.agentinbox
 
 This returns a `sourceId` like `src_fixture_github`.
 
-### 2. Create a wake-only callback
+### 2. Create a wake-hint external trigger
 
 Use Holon's `CreateExternalTrigger` tool within your agent:
 
 ```json
 {
-  "summary": "GitHub PR #34 wake",
+  "description": "Check AgentInbox for GitHub PR #34 activity",
   "source": "github",
-  "condition": "activity on PR #34",
-  "delivery_mode": "wake_only"
+  "scope": "agent",
+  "delivery_mode": "wake_hint"
 }
 ```
 
@@ -72,12 +72,12 @@ The agent receives activation context (not a full message):
 
 Use the inbox commands to fetch the actual event content after waking.
 
-## Comparison: Wake Only vs. Enqueue Message
+## Comparison: Wake Hint vs. Enqueue Message
 
-| Aspect | Wake Only | Enqueue Message |
+| Aspect | Wake Hint | Enqueue Message |
 |--------|-----------|-----------------|
 | Payload | Activation context only; fetch from inbox | Full event body queued as message |
 | Use case | Trigger then fetch on demand | Direct processing without extra tool calls |
 | Agent action | Call `agentinbox inbox read` on wake | Process content from message directly |
 
-Choose wake-only when you want the agent to decide when and how to fetch event details, rather than receiving them as a queued message.
+Choose wake hint when you want the agent to decide when and how to fetch event details, rather than receiving them as a queued message.

@@ -16,7 +16,7 @@ The central direction is:
 
 - waiting is a first-class runtime concern
 - waiting should be expressed through explicit waiting-oriented tools
-- callback, timer, and wake-only flows should converge under one waiting plane
+- callback, timer, and wake-hint flows should converge under one waiting plane
 
 Within that plane, callback-backed ingress should be treated as its own public
 sub-family:
@@ -68,7 +68,7 @@ This creates several problems:
 - do not replace the continuation trigger contract
 - do not redefine event-stream payloads
 - do not require one single waiting tool to cover every possible future case
-- do not eliminate Holon's distinction between wake-only and contentful
+- do not eliminate Holon's distinction between wake-hint and contentful
   continuation
 
 ## Core Judgment
@@ -96,7 +96,7 @@ The waiting plane should own:
 - timer-backed reactivation
 - callback-backed reactivation
 - external wake and re-entry channels
-- wake-only vs contentful delivery distinctions
+- wake-hint vs contentful delivery distinctions
 - cancellation of obsolete waits
 - prompt-level guidance for when waiting is appropriate
 
@@ -180,7 +180,7 @@ waiting-plane sub-family with the following role:
 
 - expose a bounded external trigger channel
 - bind that channel to an active waiting intent
-- distinguish wake-only reactivation from contentful re-entry
+- distinguish wake-hint reactivation from contentful re-entry
 - let the agent retire stale or obsolete external wait channels
 
 This family should remain separate from:
@@ -195,14 +195,14 @@ It is also distinct from local waiting posture:
 - external trigger tools mean an outside system may wake or re-enter the agent
   later
 
-## Wake-Only vs Contentful Reactivation
+## Wake Hint vs Contentful Reactivation
 
 The waiting plane should preserve Holon's useful distinction between:
 
-- wake-only reactivation
+- wake-hint reactivation
 - contentful reactivation
 
-Wake-only means:
+Wake hint means:
 
 - something changed
 - the runtime should reconsider
@@ -265,7 +265,7 @@ The waiting plane should unify:
 
 - timer-backed reactivation
 - callback-backed reactivation
-- wake-only vs contentful re-entry
+- wake-hint vs contentful re-entry
 - cancellation of obsolete waits
 
 And within that plane, `CreateExternalTrigger` and `CancelExternalTrigger`
