@@ -1236,6 +1236,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_overlay_enter_keeps_open_on_failed_switch() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.agents = vec![sample_agent_summary("alpha"), sample_agent_summary("beta")];
+        app.selected_agent = 1;
+        app.overlay = OverlayState::Agents;
+        app.connection_state = TuiConnectionState::Streaming;
+
+        let err = app
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap_err();
+
+        assert_eq!(app.overlay, OverlayState::Agents);
+        assert_eq!(
+            app.status_line,
+            format!("Failed to switch to agent beta: {err}")
+        );
+    }
+
+    #[tokio::test]
     async fn esc_closes_active_overlay_before_touching_prompt() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(

@@ -618,6 +618,23 @@ impl TuiApp {
     async fn handle_agents_overlay_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc => Ok(()),
+            KeyCode::Enter => {
+                let agent_id = self.selected_agent_id().unwrap_or("").to_string();
+                match self.bootstrap_agent_index(self.selected_agent).await {
+                    Ok(()) => {
+                        self.overlay = OverlayState::None;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        if !agent_id.is_empty() {
+                            self.status_line =
+                                format!("Failed to switch to agent {agent_id}: {err}");
+                        }
+                        self.overlay = OverlayState::Agents;
+                        Err(err)
+                    }
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_agent_selection(-1).await?;
                 self.overlay = OverlayState::Agents;
