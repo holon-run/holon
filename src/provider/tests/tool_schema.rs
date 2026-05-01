@@ -234,6 +234,7 @@ fn openai_responses_request_sets_store_false() {
         &request,
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Relaxed,
+        None,
     )
     .unwrap();
     assert_eq!(body["store"], Value::Bool(false));
@@ -249,6 +250,7 @@ fn openai_responses_request_lowers_prompt_frame_to_full_request_with_cache_key()
         &request,
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Relaxed,
+        None,
     )
     .unwrap();
 
@@ -269,6 +271,7 @@ fn build_openai_standard_request_includes_max_output_tokens() {
         &request,
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Relaxed,
+        None,
     )
     .unwrap();
 
@@ -285,6 +288,7 @@ fn build_openai_codex_streaming_request_omits_max_output_tokens() {
         &request,
         OpenAiResponsesTransportContract::CodexStreaming,
         ToolSchemaContract::Relaxed,
+        None,
     )
     .unwrap();
 
@@ -293,6 +297,25 @@ fn build_openai_codex_streaming_request_omits_max_output_tokens() {
     assert!(body.get("reasoning").is_some());
     assert_eq!(body["reasoning"], Value::Null);
     assert_eq!(body["include"], json!([]));
+}
+
+#[test]
+fn build_openai_codex_streaming_request_sends_supported_reasoning_effort() {
+    let request = provider_turn_request();
+    let body = build_openai_responses_request(
+        "gpt-5.4",
+        256,
+        &request,
+        OpenAiResponsesTransportContract::CodexStreaming,
+        ToolSchemaContract::Relaxed,
+        Some("low"),
+    )
+    .unwrap();
+
+    assert_eq!(body["stream"], Value::Bool(true));
+    assert!(body.get("max_output_tokens").is_none());
+    assert_eq!(body["reasoning"], json!({ "effort": "low" }));
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
 }
 
 #[test]
@@ -305,6 +328,7 @@ fn openai_request_uses_custom_tool_shape_for_apply_patch() {
         &request,
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Relaxed,
+        None,
     )
     .unwrap();
 
@@ -338,6 +362,7 @@ fn openai_request_payload_validates_full_tool_matrix_in_strict_mode() {
         &request,
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Strict,
+        None,
     )
     .unwrap();
 
@@ -406,6 +431,7 @@ fn openai_codex_request_payload_validates_full_tool_matrix_in_strict_mode() {
         &request,
         OpenAiResponsesTransportContract::CodexStreaming,
         ToolSchemaContract::Strict,
+        Some("low"),
     )
     .unwrap();
 

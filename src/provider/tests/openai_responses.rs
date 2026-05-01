@@ -18,9 +18,11 @@ fn openai_tool_call_response(response_id: &str) -> Value {
         "usage": { "input_tokens": 3, "output_tokens": 2 },
         "output": [{
             "type": "function_call",
+            "id": "fc_non_persisted",
+            "status": "completed",
             "call_id": "exec-1",
             "name": "ExecCommand",
-            "arguments": "{\"cmd\":\"printf ok\"}"
+            "arguments": "{\n  \"cmd\": \"printf ok\"\n}"
         }]
     })
 }
@@ -32,6 +34,8 @@ fn openai_text_response(response_id: &str, text: &str) -> Value {
         "usage": { "input_tokens": 2, "output_tokens": 1 },
         "output": [{
             "type": "message",
+            "id": "msg_non_persisted",
+            "status": "completed",
             "role": "assistant",
             "content": [{ "type": "output_text", "text": text }]
         }]
@@ -42,7 +46,7 @@ fn openai_text_sse_response(response_id: &str, text: &str) -> String {
     format!(
         concat!(
             "event: response.completed\n",
-            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":1}},\"output\":[{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{}\"}}]}}]}}}}\n\n"
+            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":1}},\"output\":[{{\"type\":\"message\",\"id\":\"msg_non_persisted\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{}\"}}]}}]}}}}\n\n"
         ),
         response_id, text
     )
@@ -217,9 +221,8 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
                         captured.lock().unwrap().push(body);
                         Json(json!({
                             "output": [
-                                { "type": "compaction", "encrypted_content": "opaque-1" },
                                 { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "recent" }] },
-                                { "type": "compaction", "encrypted_content": "opaque-2" }
+                                { "type": "compaction_summary", "encrypted_content": "opaque-2", "status": "completed" }
                             ]
                         }))
                     }
@@ -252,12 +255,12 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
         .expect("remote compaction diagnostics");
     assert_eq!(remote_compaction.status, "compacted");
     assert_eq!(remote_compaction.input_items, Some(11));
-    assert_eq!(remote_compaction.output_items, Some(3));
-    assert_eq!(remote_compaction.compaction_items, Some(2));
-    assert_eq!(remote_compaction.latest_compaction_index, Some(2));
+    assert_eq!(remote_compaction.output_items, Some(2));
+    assert_eq!(remote_compaction.compaction_items, Some(1));
+    assert_eq!(remote_compaction.latest_compaction_index, Some(1));
     assert_eq!(
         remote_compaction.encrypted_content_bytes.as_deref(),
-        Some([8usize, 8usize].as_slice())
+        Some([8usize].as_slice())
     );
 
     assert_eq!(
@@ -272,8 +275,8 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
     assert!(response_bodies[1].get("previous_response_id").is_none());
     let replayed_input = response_bodies[1]["input"].as_array().unwrap();
     assert_eq!(replayed_input[0]["type"], json!("compaction"));
-    assert_eq!(replayed_input[2]["type"], json!("compaction"));
     assert_eq!(replayed_input.last().unwrap()["type"], json!("message"));
+    assert!(!response_bodies[1].to_string().contains("recent"));
 
     let compact_bodies = compact_bodies.lock().unwrap();
     assert_eq!(compact_bodies.len(), 1);

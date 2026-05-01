@@ -133,6 +133,7 @@ pub struct ProviderRuntimeConfig {
     pub credential: Option<String>,
     pub codex_home: Option<PathBuf>,
     pub originator: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub context_management: AnthropicContextManagementConfig,
 }
 
@@ -238,6 +239,8 @@ pub struct ProviderConfigFile {
     pub transport: ProviderTransportKind,
     pub base_url: String,
     pub auth: ProviderAuthConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1421,6 +1424,12 @@ fn resolve_provider_registry(
 fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<ProviderRegistry> {
     let mut registry = ProviderRegistry::new();
     let openai_codex = ProviderId::openai_codex();
+    let openai_codex_reasoning_effort = env::var("HOLON_OPENAI_CODEX_REASONING_EFFORT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| Some("low".to_string()))
+        .map(|value| validate_openai_reasoning_effort(&value).map(|_| value))
+        .transpose()?;
     registry.insert(
         openai_codex.clone(),
         ProviderRuntimeConfig {
@@ -1442,6 +1451,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
                     .unwrap_or_else(|_| default_codex_home()),
             ),
             originator: Some("codex_cli_rs".into()),
+            reasoning_effort: openai_codex_reasoning_effort,
             context_management: Default::default(),
         },
     );
@@ -1465,6 +1475,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
             credential: env::var("OPENAI_API_KEY").ok(),
             codex_home: None,
             originator: None,
+            reasoning_effort: None,
             context_management: Default::default(),
         },
     );
@@ -1486,6 +1497,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
             credential: get_config_value("ANTHROPIC_AUTH_TOKEN", None, settings_env),
             codex_home: None,
             originator: None,
+            reasoning_effort: None,
             context_management: resolve_anthropic_context_management_config()?,
         },
     );
@@ -1789,6 +1801,7 @@ fn insert_builtin_http_provider(
             credential: credential.map(|resolution| resolution.value),
             codex_home: None,
             originator: None,
+            reasoning_effort: None,
             context_management: Default::default(),
         },
     );
@@ -1843,14 +1856,30 @@ fn materialize_provider_config(
         credential: None,
         codex_home: None,
         originator: None,
+        reasoning_effort: None,
         context_management: Default::default(),
     });
+    if let Some(reasoning_effort) = provider_config.reasoning_effort.as_deref() {
+        validate_openai_reasoning_effort(reasoning_effort)?;
+    }
     runtime.id = id;
     runtime.transport = provider_config.transport;
     runtime.base_url = provider_config.base_url;
     runtime.auth = provider_config.auth;
     runtime.credential = credential;
+    if provider_config.reasoning_effort.is_some() {
+        runtime.reasoning_effort = provider_config.reasoning_effort;
+    }
     Ok(runtime)
+}
+
+fn validate_openai_reasoning_effort(value: &str) -> Result<()> {
+    match value {
+        "low" | "medium" | "high" | "xhigh" => Ok(()),
+        _ => Err(anyhow!(
+            "OpenAI Codex reasoning_effort must be one of low, medium, high, xhigh"
+        )),
+    }
 }
 
 fn resolve_provider_credential(
@@ -1973,6 +2002,7 @@ pub fn provider_registry_for_tests(
             credential: None,
             codex_home: Some(codex_home),
             originator: Some("codex_cli_rs".into()),
+            reasoning_effort: Some("low".into()),
             context_management: Default::default(),
         },
     );
@@ -1993,6 +2023,7 @@ pub fn provider_registry_for_tests(
             credential: openai_key.map(ToString::to_string),
             codex_home: None,
             originator: None,
+            reasoning_effort: None,
             context_management: Default::default(),
         },
     );
@@ -2013,6 +2044,7 @@ pub fn provider_registry_for_tests(
             credential: anthropic_token.map(ToString::to_string),
             codex_home: None,
             originator: None,
+            reasoning_effort: None,
             context_management: Default::default(),
         },
     );
@@ -2802,6 +2834,7 @@ mod tests {
                     profile: None,
                     external: None,
                 },
+                reasoning_effort: None,
             },
             &settings_env,
             &CredentialStoreFile::default(),
@@ -2888,6 +2921,7 @@ mod tests {
                     profile: Some(" openrouter:default ".into()),
                     external: None,
                 },
+                reasoning_effort: None,
             },
             &settings_env,
             &credential_store,
@@ -2926,6 +2960,7 @@ mod tests {
                     profile: Some("openrouter:default".into()),
                     external: None,
                 },
+                reasoning_effort: None,
             },
         );
         save_persisted_config_at(&config_path, &config).unwrap();
@@ -3017,6 +3052,7 @@ mod tests {
                     profile: None,
                     external: Some("codex_cli".into()),
                 },
+                reasoning_effort: None,
             },
             &settings_env,
             &CredentialStoreFile::default(),
