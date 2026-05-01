@@ -1882,6 +1882,552 @@ mod tests {
         )
     }
 
+    fn fixture_tool_spec(name: &str, payload_size: usize) -> ToolSpec {
+        ToolSpec {
+            name: name.to_string(),
+            description: format!("fixture tool {name}"),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "payload": "x".repeat(payload_size),
+                },
+            }),
+            freeform_grammar: None,
+        }
+    }
+
+    #[test]
+    fn select_exact_tail_start_with_empty_rounds_returns_zero() {
+        let rounds = Vec::new();
+        assert_eq!(select_exact_tail_start(&rounds, 120), 0);
+    }
+
+    #[test]
+    fn select_exact_tail_start_with_zero_keep_recent_budget_keeps_minimum_tail() {
+        let rounds = vec![
+            fixture_round(1, "recent alpha"),
+            fixture_round(2, "recent beta"),
+            fixture_round(3, "recent gamma"),
+            fixture_round(4, "recent delta"),
+        ];
+
+        assert_eq!(
+            select_exact_tail_start(&rounds, 0),
+            rounds.len() - MIN_EXACT_TAIL_ROUNDS
+        );
+    }
+
+    #[test]
+    fn select_exact_tail_start_keeps_boundary_when_budget_equals_newest_round() {
+        let rounds = vec![
+            fixture_round(1, &"older ".repeat(10)),
+            fixture_round(2, &"older ".repeat(11)),
+            fixture_round(3, &"newest ".repeat(12)),
+        ];
+        let keep_recent_budget = estimate_round_tokens(rounds.last().unwrap());
+
+        assert_eq!(
+            select_exact_tail_start(&rounds, keep_recent_budget),
+            rounds.len() - MIN_EXACT_TAIL_ROUNDS
+        );
+    }
+
+    #[test]
+    fn select_exact_tail_start_one_oversized_newest_round_stays_minimum_tail() {
+        let rounds = vec![
+            fixture_round(1, &"alpha ".repeat(20)),
+            fixture_round(2, &"beta ".repeat(20)),
+            fixture_round(3, &"oversized ".repeat(600)),
+        ];
+        let keep_recent_budget = estimate_round_tokens(rounds.last().unwrap()).saturating_sub(1);
+
+        assert_eq!(
+            select_exact_tail_start(&rounds, keep_recent_budget),
+            rounds.len() - MIN_EXACT_TAIL_ROUNDS
+        );
+    }
+
+    #[test]
+    fn select_exact_tail_start_huge_old_round_excluded_before_recent_tail() {
+        let rounds = vec![
+            fixture_round(1, &"huge oldest ".repeat(800)),
+            fixture_round(2, &"recent one ".repeat(6)),
+            fixture_round(3, &"recent two ".repeat(6)),
+            fixture_round(4, &"recent three ".repeat(6)),
+        ];
+        let keep_recent_budget = estimate_round_tokens(&rounds[1])
+            + estimate_round_tokens(&rounds[2])
+            + estimate_round_tokens(&rounds[3]);
+
+        assert_eq!(select_exact_tail_start(&rounds, keep_recent_budget), 1);
+    }
+
+    #[test]
+    fn select_exact_tail_start_respects_single_token_boundary_step() {
+        let rounds = vec![
+            fixture_round(1, &"older ".repeat(4)),
+            fixture_round(2, &"older ".repeat(8)),
+            fixture_round(3, &"boundary ".repeat(16)),
+            fixture_round(4, &"boundary ".repeat(16)),
+            fixture_round(5, &"boundary ".repeat(16)),
+        ];
+        let boundary_keep_recent_budget = estimate_round_tokens(&rounds[2])
+            + estimate_round_tokens(&rounds[3])
+            + estimate_round_tokens(&rounds[4]);
+
+        assert_eq!(
+            select_exact_tail_start(&rounds, boundary_keep_recent_budget.saturating_sub(1)),
+            3
+        );
+        assert_eq!(
+            select_exact_tail_start(&rounds, boundary_keep_recent_budget),
+            2
+        );
+    }
+
+    #[test]
+    fn build_turn_local_projection_exact_projection_meets_effective_budget() {
+        let rounds = vec![
+            fixture_round(1, &"alpha ".repeat(120)),
+            fixture_round(2, &"beta ".repeat(160)),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let mut exact_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        for round in &rounds {
+            exact_conversation.extend(exact_round_messages(round));
+        }
+        let exact_estimated_tokens = estimate_projection_tokens(&prompt_frame, &exact_conversation);
+
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            exact_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS,
+            120,
+        );
+
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected projection outcome");
+        };
+        assert!(projection.compaction.is_none());
+        assert!(
+            !projection
+                .conversation
+                .iter()
+                .any(|message| match message {
+                    ConversationMessage::UserText(text) => {
+                        text.contains("progress checkpoint request")
+                    }
+                    _ => false,
+                })
+        );
+    }
+
+    #[test]
+    fn build_turn_local_projection_minimum_projection_can_hit_exact_budget() {
+        let rounds = vec![
+            fixture_round_with_follow_up(1, &"alpha ".repeat(240), "continue"),
+            fixture_round_with_follow_up(2, &"gamma ".repeat(120), "continue"),
+            fixture_round_with_follow_up(3, &"exact ".repeat(80), "continue"),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let mut minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        minimum_viable_conversation.extend(exact_round_messages(&rounds[2]));
+        let minimum_projection_estimated_tokens =
+            estimate_projection_tokens(&prompt_frame, &minimum_viable_conversation);
+        let mut exact_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        for round in &rounds {
+            exact_conversation.extend(exact_round_messages(round));
+        }
+        let exact_projection_estimated_tokens =
+            estimate_projection_tokens(&prompt_frame, &exact_conversation);
+        assert!(
+            exact_projection_estimated_tokens > minimum_projection_estimated_tokens + 5,
+            "exact projection should exceed minimum test budget"
+        );
+
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            minimum_projection_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS,
+            120,
+        );
+
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected projection outcome");
+        };
+        let compaction = projection
+            .compaction
+            .as_ref()
+            .expect("expected compaction stats");
+        assert_eq!(compaction.exact_tail_rounds, 1);
+        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+        assert_eq!(
+            compaction.projected_estimated_tokens,
+            minimum_projection_estimated_tokens
+        );
+        assert!(compaction.strict_fallback_applied);
+    }
+
+    #[test]
+    fn build_turn_local_projection_zero_recap_budget_keeps_exact_tail() {
+        let rounds = vec![
+            fixture_round(1, &"huge ".repeat(400)),
+            fixture_round_with_follow_up(2, &"compact ".repeat(4), "continue"),
+            fixture_round_with_follow_up(3, &"exact ".repeat(4), "continue"),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let mut exact_tail_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        exact_tail_conversation.extend(exact_round_messages(&rounds[1]));
+        exact_tail_conversation.extend(exact_round_messages(&rounds[2]));
+        let exact_tail_projection_tokens =
+            estimate_projection_tokens(&prompt_frame, &exact_tail_conversation);
+
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            exact_tail_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS,
+            120,
+        );
+
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected projection outcome");
+        };
+        let compaction = projection
+            .compaction
+            .as_ref()
+            .expect("expected compaction stats");
+        assert_eq!(compaction.exact_tail_rounds, 2);
+        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+        assert!(
+            projection
+                .conversation
+                .iter()
+                .all(|message| match message {
+                    ConversationMessage::UserText(text) => !text.contains("Turn-local recap for older"),
+                    _ => true,
+                }),
+            "projection should not include an empty recap when recap budget is zero"
+        );
+    }
+
+    #[test]
+    fn build_turn_local_projection_minimum_projection_falls_off_by_one_on_tight_budget() {
+        let rounds = vec![
+            fixture_round_with_follow_up(1, &"alpha ".repeat(240), "continue"),
+            fixture_round_with_follow_up(2, &"beta ".repeat(200), "continue"),
+            fixture_round_with_follow_up(3, &"gamma ".repeat(120), "continue"),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let mut minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        minimum_viable_conversation.extend(exact_round_messages(&rounds[2]));
+        let minimum_projection_estimated_tokens =
+            estimate_projection_tokens(&prompt_frame, &minimum_viable_conversation);
+        let optimal_prompt_budget =
+            minimum_projection_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+
+        let tight_projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            optimal_prompt_budget - 1,
+            120,
+        );
+
+        match tight_projection {
+            TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
+                assert_eq!(
+                    diagnostics.reason,
+                    "minimum_exact_round_unfit",
+                    "tight budget should fail minimum projection"
+                );
+            }
+            TurnLocalProjectionOutcome::Projection(_) => {
+                panic!("expected baseline over budget at one-token tighter budget");
+            }
+        }
+    }
+
+    #[test]
+    fn build_turn_local_projection_tool_overhead_can_flip_baseline_fit_boundary() {
+        let rounds = vec![
+            fixture_round(1, &"alpha ".repeat(120)),
+            fixture_round(2, &"beta ".repeat(80)),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let mut exact_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        for round in &rounds {
+            exact_conversation.extend(exact_round_messages(round));
+        }
+        let exact_projection_estimated_tokens = estimate_projection_tokens(&prompt_frame, &exact_conversation);
+        let prompt_budget = exact_projection_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+
+        let projection_without_tools = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            prompt_budget,
+            120,
+        );
+
+        assert!(matches!(
+            projection_without_tools,
+            TurnLocalProjectionOutcome::Projection(_)
+        ));
+
+        let heavy_tools = vec![
+            fixture_tool_spec("tool-a", 2_000),
+            fixture_tool_spec("tool-b", 2_000),
+            fixture_tool_spec("tool-c", 2_000),
+        ];
+        let projection_with_tools = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &heavy_tools,
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            prompt_budget,
+            120,
+        );
+
+        assert!(matches!(
+            projection_with_tools,
+            TurnLocalProjectionOutcome::BaselineOverBudget(_)
+        ));
+    }
+
+    #[test]
+    fn build_turn_local_projection_tool_overhead_preserves_exact_tail() {
+        let rounds = vec![
+            fixture_round(1, &"huge ".repeat(360)),
+            fixture_round_with_follow_up(2, &"compact ".repeat(12), "continue"),
+            fixture_round_with_follow_up(3, &"exact ".repeat(6), "continue"),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let heavy_tools = vec![
+            fixture_tool_spec("tool-heavy", 1_200),
+            fixture_tool_spec("tool-heavy-2", 1_200),
+        ];
+        let tool_overhead_estimated_tokens = estimate_tool_specs_tokens(&heavy_tools);
+        let mut minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        minimum_viable_conversation.extend(exact_round_messages(&rounds[2]));
+        let minimum_projection_estimated_tokens =
+            estimate_projection_tokens(&prompt_frame, &minimum_viable_conversation);
+        let prompt_budget =
+            minimum_projection_estimated_tokens + tool_overhead_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &heavy_tools,
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            prompt_budget,
+            120,
+        );
+
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected projection outcome");
+        };
+        let compaction = projection
+            .compaction
+            .as_ref()
+            .expect("expected compaction stats");
+        assert!(compaction.exact_tail_rounds > 0);
+        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+    }
+
+    #[test]
+    fn build_turn_local_projection_checkpoint_overhead_drives_fallback_boundary() {
+        let rounds = vec![
+            fixture_round(1, &"huge ".repeat(2_000)),
+            fixture_round(2, &"compact ".repeat(20)),
+            fixture_round(3, &"compact ".repeat(20)),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let checkpoint_prompt_tokens =
+            estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT);
+        let mut exact_tail_single_round_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        exact_tail_single_round_conversation.extend(exact_round_messages(&rounds[2]));
+        let mut exact_tail_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        exact_tail_conversation.extend(exact_round_messages(&rounds[1]));
+        exact_tail_conversation.extend(exact_round_messages(&rounds[2]));
+        let checkpointed_tail_projection_tokens = estimate_projection_tokens(
+            &prompt_frame,
+            &exact_tail_conversation,
+        ) + checkpoint_prompt_tokens;
+        let minimum_projection_tokens =
+            estimate_projection_tokens(&prompt_frame, &exact_tail_single_round_conversation);
+        let minimum_prompt_budget = minimum_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+        let tight_prompt_budget = checkpointed_tail_projection_tokens
+            + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+            - 1;
+        let relaxed_prompt_budget = checkpointed_tail_projection_tokens
+            + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+
+        assert!(minimum_prompt_budget < tight_prompt_budget);
+        assert!(relaxed_prompt_budget > tight_prompt_budget);
+
+        let minimum_projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-min".into()),
+            minimum_prompt_budget,
+            120,
+        );
+        let TurnLocalProjectionOutcome::Projection(minimum_projection) = minimum_projection else {
+            panic!("expected minimum baseline projection");
+        };
+        assert!(minimum_projection.compaction.is_some());
+        assert!(minimum_projection
+            .compaction
+            .as_ref()
+            .expect("minimum compaction")
+            .strict_fallback_applied);
+
+        let strict_projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            tight_prompt_budget,
+            120,
+        );
+        let TurnLocalProjectionOutcome::Projection(strict_projection) = strict_projection else {
+            panic!("expected projection outcome");
+        };
+        let strict_compaction = strict_projection
+            .compaction
+            .as_ref()
+            .expect("strict projection compaction");
+        assert_eq!(strict_projection.compaction.as_ref().expect("compaction stats").exact_tail_rounds, 1);
+        assert!(strict_compaction.strict_fallback_applied);
+
+        let relaxed_projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-2".into()),
+            relaxed_prompt_budget,
+            120,
+        );
+        let TurnLocalProjectionOutcome::Projection(relaxed_projection) = relaxed_projection else {
+            panic!("expected projection outcome");
+        };
+        let relaxed_compaction = relaxed_projection
+            .compaction
+            .as_ref()
+            .expect("compaction stats");
+        assert!(!relaxed_compaction.strict_fallback_applied);
+        assert!(relaxed_compaction.exact_tail_rounds >= strict_compaction.exact_tail_rounds);
+    }
+
+    #[test]
+    fn build_turn_local_projection_full_checkpoint_preserves_projection_boundaries() {
+        let rounds = vec![
+            fixture_round(1, &"huge ".repeat(300)),
+            fixture_round(2, &"compact ".repeat(30)),
+            fixture_round(3, &"compact ".repeat(30)),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let mut exact_tail_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        exact_tail_conversation.extend(exact_round_messages(&rounds[1]));
+        exact_tail_conversation.extend(exact_round_messages(&rounds[2]));
+        let prompt_budget =
+            estimate_projection_tokens(&prompt_frame, &exact_tail_conversation)
+                + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT)
+                + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+                - 1;
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-full".into()),
+            prompt_budget,
+            120,
+        );
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected projection outcome");
+        };
+        let compaction = projection.compaction.expect("expected compaction stats");
+        assert_eq!(compaction.checkpoint_mode, Some(TurnLocalCheckpointMode::Full));
+        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+    }
+
+    #[test]
+    fn build_turn_local_projection_delta_checkpoint_preserves_projection_boundaries() {
+        let rounds = vec![
+            fixture_round(1, &"huge ".repeat(300)),
+            fixture_round(2, &"compact ".repeat(30)),
+            fixture_round(3, &"compact ".repeat(30)),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let checkpoint_state = checkpoint_state_with_latest("continuation notes", 1, 0);
+        let mut exact_tail_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        exact_tail_conversation.extend(exact_round_messages(&rounds[1]));
+        exact_tail_conversation.extend(exact_round_messages(&rounds[2]));
+        let prompt_budget =
+            estimate_projection_tokens(&prompt_frame, &exact_tail_conversation)
+                + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT)
+                + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+                - 1;
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &checkpoint_state,
+            Some("req-delta".into()),
+            prompt_budget,
+            120,
+        );
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected projection outcome");
+        };
+        let compaction = projection.compaction.expect("expected compaction stats");
+        assert_eq!(compaction.checkpoint_mode, Some(TurnLocalCheckpointMode::Delta));
+        assert_eq!(compaction.previous_checkpoint_round, Some(1));
+        assert_eq!(compaction.compacted_rounds + compaction.exact_tail_rounds, rounds.len());
+    }
+
     #[test]
     fn context_management_eligibility_keeps_recent_and_excludes_risky_results() {
         let tool_names = [
