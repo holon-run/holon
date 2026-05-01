@@ -274,23 +274,15 @@ fn render_activity_text(app: &TuiApp) -> String {
     let agent_id = projection.agent.identity.agent_id.as_str();
     let events = projection.recent_log_events(4);
     if events.is_empty() {
-        if let Some(cached) = app.activity_text_cache.borrow().as_ref() {
-            if cached.agent_id == agent_id {
-                return cached.text.clone();
-            }
+        let cached = app.activity_text_cache.borrow();
+        if let Some(cached) = cached.as_ref().filter(|c| c.agent_id == agent_id) {
+            return cached.text.clone();
         }
-        // Show "No in-flight activity" only when turn has ended, otherwise show cached text
+        // Show "No in-flight activity" only when turn has ended.
         if projection.session.current_run_id.is_none() {
             return "No in-flight activity.".into();
         }
-        // During active turn, show the last cached text for this agent or empty
-        return app
-            .activity_text_cache
-            .borrow()
-            .as_ref()
-            .filter(|c| c.agent_id == agent_id)
-            .map(|c| c.text.clone())
-            .unwrap_or_default();
+        return String::new();
     }
 
     let mut text_parts = Vec::new();
@@ -770,11 +762,17 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_activity_event, prompt_cursor_position, render_header, render_model_status,
-        render_prompt_buffer, render_prompt_text, render_summary, status_bar_height,
+        format_activity_event, prompt_cursor_position, render_activity_text, render_header,
+        render_model_status, render_prompt_buffer, render_prompt_text, render_summary,
+        status_bar_height,
     };
+    use crate::client::{
+        AgentStateSnapshot, LocalClient, StateSessionSnapshot, StateWorkspaceSnapshot,
+    };
+    use crate::config::{AltScreenMode, AppConfig};
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
-    use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
+    use crate::tui::logging::TuiLogWriter;
+    use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord, TuiProjection};
     use crate::types::{
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentSummary,
@@ -785,7 +783,79 @@ mod tests {
     use chrono::Utc;
     use ratatui::prelude::{Line, Rect};
     use serde_json::json;
+    use std::collections::HashMap;
     use std::path::PathBuf;
+
+    use super::super::{CachedActivityText, TuiApp};
+
+    fn test_config() -> AppConfig {
+        let temp = tempfile::tempdir().unwrap().keep();
+        AppConfig {
+            default_agent_id: "default".into(),
+            http_addr: "127.0.0.1:0".into(),
+            callback_base_url: "http://127.0.0.1:0".into(),
+            home_dir: temp.clone(),
+            data_dir: temp.clone(),
+            socket_path: temp.join("run").join("holon.sock"),
+            workspace_dir: temp.join("workspace"),
+            context_window_messages: 8,
+            context_window_briefs: 8,
+            compaction_trigger_messages: 10,
+            compaction_keep_recent_messages: 4,
+            prompt_budget_estimated_tokens: 4096,
+            compaction_trigger_estimated_tokens: 2048,
+            compaction_keep_recent_estimated_tokens: 768,
+            recent_episode_candidates: 12,
+            max_relevant_episodes: 3,
+            control_token: Some("secret".into()),
+            control_auth_mode: crate::config::ControlAuthMode::Auto,
+            config_file_path: temp.join("config.json"),
+            stored_config: Default::default(),
+            default_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            fallback_models: Vec::new(),
+            runtime_max_output_tokens: 8192,
+            disable_provider_fallback: false,
+            tui_alternate_screen: AltScreenMode::Auto,
+            validated_model_overrides: HashMap::new(),
+            validated_unknown_model_fallback: None,
+            providers: crate::config::provider_registry_for_tests(
+                None,
+                Some("dummy"),
+                temp.join(".codex"),
+            ),
+        }
+    }
+
+    fn sample_app() -> TuiApp {
+        TuiApp::new(
+            LocalClient::new(test_config()).unwrap(),
+            TuiLogWriter::new_temp().unwrap(),
+        )
+    }
+
+    fn sample_projection(current_run_id: Option<&str>) -> TuiProjection {
+        TuiProjection::from_snapshot(AgentStateSnapshot {
+            agent: sample_agent_summary(),
+            session: StateSessionSnapshot {
+                current_run_id: current_run_id.map(str::to_string),
+                pending_count: usize::from(current_run_id.is_some()),
+                last_turn: None,
+            },
+            tasks: Vec::new(),
+            transcript_tail: Vec::new(),
+            briefs_tail: Vec::new(),
+            timers: Vec::new(),
+            work_items: Vec::new(),
+            work_plan: None,
+            waiting_intents: Vec::new(),
+            external_triggers: Vec::new(),
+            operator_notifications: Vec::new(),
+            workspace: StateWorkspaceSnapshot::default(),
+            execution: None,
+            brief: None,
+            cursor: Some("cursor-1".into()),
+        })
+    }
 
     fn sample_agent_summary() -> AgentSummary {
         let mut state = AgentState::new("default");
@@ -978,6 +1048,53 @@ mod tests {
             render_model_status(&fallback),
             "model: anthropic/claude-sonnet-4-6 (fallback from openai/gpt-5.4)"
         );
+    }
+
+    #[test]
+    fn activity_empty_projection_uses_status_line() {
+        let mut app = sample_app();
+        app.status_line = "Bootstrapping agent".into();
+
+        assert_eq!(render_activity_text(&app), "Bootstrapping agent");
+    }
+
+    #[test]
+    fn activity_empty_projection_uses_default_when_status_empty() {
+        let mut app = sample_app();
+        app.status_line.clear();
+
+        assert_eq!(
+            render_activity_text(&app),
+            "Bootstrapping snapshot and stream..."
+        );
+    }
+
+    #[test]
+    fn activity_empty_events_active_run_uses_agent_cache() {
+        let mut app = sample_app();
+        app.projection = Some(sample_projection(Some("run-1")));
+        *app.activity_text_cache.borrow_mut() = Some(CachedActivityText {
+            agent_id: "default".into(),
+            text: "tool running".into(),
+        });
+
+        assert_eq!(render_activity_text(&app), "tool running");
+    }
+
+    #[test]
+    fn activity_empty_events_active_run_without_cache_is_empty() {
+        let mut app = sample_app();
+        app.projection = Some(sample_projection(Some("run-1")));
+
+        assert_eq!(render_activity_text(&app), "");
+    }
+
+    #[test]
+    fn activity_empty_events_ended_run_reports_no_inflight_activity() {
+        let mut app = sample_app();
+        app.projection = Some(sample_projection(None));
+
+        assert_eq!(render_activity_text(&app), "No in-flight activity.");
     }
 
     #[test]
