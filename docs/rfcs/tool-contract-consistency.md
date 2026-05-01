@@ -74,8 +74,10 @@ Examples of the intended direction:
 - `CreateExternalTrigger`
 - `UseWorkspace`
 - `ExecCommand`
+- `CreateWorkItem`
+- `PickWorkItem`
 - `UpdateWorkItem`
-- `UpdateWorkPlan`
+- `CompleteWorkItem`
 
 The reason is not style purity by itself. The reason is contract clarity.
 

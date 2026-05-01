@@ -1487,20 +1487,25 @@ target. The minimal shape is:
 
 - `id`
 - `agent_id`
-- `parent_id?`
+- `workspace_id`
 - `delivery_target`
-- `status`
-- `summary?`
-- `progress_note?`
+- `state`
+- `blocked_by?`
 - `created_at`
 - `updated_at`
 
-`status` is one of:
+`state` is one of:
 
-- `active`
-- `queued`
-- `waiting`
-- `completed`
+- `open`
+- `done`
+
+Current focus is not encoded in `WorkItemRecord.state`. The owning
+`AgentState.current_work_item_id` points at the currently selected open work
+item. Queued and blocked are derived views:
+
+- queued: open work that is not current and has no `blocked_by`
+- blocked: open work with `blocked_by`
+- done: work whose state is `done`
 
 `WorkPlanSnapshot` is the latest full checklist snapshot for one work item. The
 minimal shape is:
@@ -1521,12 +1526,9 @@ The initial plan-step status set is:
 - `in_progress`
 - `completed`
 
-The runtime also persists a `DeliverySummaryRecord` when a bound work item
-reaches a completed turn-end boundary. This summary is generated from bounded
-work-item evidence across the whole work item, including work-item snapshots,
-work plans, briefs, relevant tool execution records, and recent transcript
-entries. It is not inferred from command strings such as `git commit`,
-`git push`, or `gh pr create`.
+The runtime persists a `DeliverySummaryRecord` when `CompleteWorkItem` receives
+an explicit `result_summary`. It is associated with the completed work item and
+is separate from raw terminal assistant text.
 
 `run_once.final_text` prefers the newest completed work item's
 `DeliverySummaryRecord.text` over the raw terminal assistant message. The raw
@@ -1548,8 +1550,8 @@ Early rollout projection rules are:
 
 - project the full current snapshot of the active `WorkItemRecord`
 - project the full current `WorkPlanSnapshot` for that active item when present
-- project only compact summary entries for `queued` and `waiting` items
-- exclude `completed` items from the normal prompt projection
+- project only compact entries for queued and blocked open items
+- exclude done items from the normal prompt projection
 - if no work items exist yet, preserve the current message-driven prompt path
   without synthesizing a bootstrap work item
 
@@ -1558,27 +1560,35 @@ derived projection of that state.
 
 ### Work-Item Mutation Tools
 
-Early rollout exposes two explicit trusted mutation tools for work-item state:
+The runtime exposes explicit trusted action tools for work-item state:
 
-- `update_work_item`
-- `update_work_plan`
+- `CreateWorkItem`
+- `PickWorkItem`
+- `UpdateWorkItem`
+- `CompleteWorkItem`
 
-`update_work_item` uses create-or-replace semantics:
+`CreateWorkItem` creates a new open work item:
 
-- omit `id` to create a new `WorkItemRecord`
-- provide `id` to replace the latest snapshot of an existing work item
-- `delivery_target` and `status` are always required
-- `summary`, `progress_note`, and `parent_id` are optional latest-snapshot
-  fields rather than append-only history
+- `delivery_target` is required
+- `plan` is optional
 
-`update_work_plan` uses full-snapshot replacement semantics:
+`PickWorkItem` sets `AgentState.current_work_item_id` to an existing open work
+item owned by the agent.
+
+`UpdateWorkItem` updates mutable fields on an existing work item:
 
 - `work_item_id` is required
-- `plan` is required
-- each plan item contains:
-  - `step`
-  - `status`
-- every update writes the complete latest plan snapshot for that work item
+- `blocked_by` is optional and nullable
+- `plan` is optional and uses full-snapshot replacement semantics
+
+`CompleteWorkItem` marks an existing work item done:
+
+- `work_item_id` is required
+- `result_summary` is optional completion metadata
+
+There is no separate agent-facing `UpdateWorkPlan` tool. Work-plan replacement
+is performed through `UpdateWorkItem.plan`; the storage layer may still persist
+plan snapshots separately.
 
 These tools are part of the explicit adoption path for work items. They do not
 require runtime-side semantic resolution of arbitrary ingress into a work item.
@@ -1589,21 +1599,18 @@ The runtime also exposes a control-plane enqueue path for future work items:
 
 - `POST /control/agents/:agent_id/work-items`
 
-This route creates a new persisted `WorkItemRecord` with status `queued`
+This route creates a new persisted `WorkItemRecord` with state `open`
 without creating a normal transcript message first.
 
 The minimal request shape is:
 
 - `delivery_target` required
-- `summary` optional
-- `progress_note` optional
-- `parent_id` optional
 
 Rules:
 
 - the route must not bootstrap the item through normal message ingress
 - it must not interrupt or replace the current active work item
-- it uses the same persisted work-item store as `update_work_item`
+- it uses the same persisted work-item store as `CreateWorkItem`
 - it is a control-plane mutation, not external ingress
 - if the scheduler is idle with no active work item, later rollout may activate
   this queued item and drive it through a system tick
@@ -1611,7 +1618,7 @@ Rules:
 ### Turn-End Work-Item Transition Commit
 
 When an interactive turn begins, the runtime should bind that turn to the
-currently active work item, if one exists.
+currently selected open work item, if one exists.
 
 At turn end, the controller should resolve a persisted work-item transition for
 that bound item rather than recomputing against whatever happens to be active
@@ -1620,21 +1627,14 @@ later.
 Rules:
 
 - the turn-end commit path only applies when the turn started with a bound
-  active work item
-- if the agent explicitly changed that bound item during the turn, the latest
-  persisted snapshot is treated as the transition claim
-- runtime fact checks remain intentionally minimal:
-  - `completed` is rejected when runtime facts still show obvious unfinished
-    waiting conditions
-  - `waiting` requires an explicit blocker note or a runtime-derived waiting
-    reason
-- if the turn completes without a convincing reason to move the item out of
-  `active`, the controller keeps it `active`
-- if runtime facts show a blocking wait condition, the controller may commit the
-  bound item to `waiting` even when the latest persisted snapshot remained
-  `active`
-- this phase only commits the bound item's turn-end transition; queue activation
-  policy remains part of the later `#226` rollout
+  current work item
+- completing a work item is only done through explicit `CompleteWorkItem`
+- if runtime facts show a blocking wait condition, the controller may set
+  `blocked_by` on the bound open item
+- if the turn completes without an explicit completion or blocker, the item
+  remains open
+- this phase only commits the bound item's blocker state; queue activation
+  policy remains separate
 
 ### Work-Queue Activation And Tick
 
@@ -1644,12 +1644,11 @@ persisted work queue rather than raw message arrival.
 
 Rules:
 
-- if the runtime is idle and an `active` work item exists, emit a system tick to
-  continue that work item
-- if the runtime is idle, no `active` work item exists, and at least one
-  `queued` work item exists, promote one queued item to `active` and emit a
-  system tick for it
-- `waiting` and `completed` items do not participate in activation
+- if the runtime is idle and `current_work_item_id` points to an open,
+  unblocked work item, emit a system tick to continue that work item
+- if the runtime is idle, no current runnable work item exists, and at least one
+  queued open work item exists, wake the agent so it can pick one
+- blocked and done items do not participate in activation
 - if no work items exist, preserve the existing message-driven idle path
 - work-queue ticks are runtime-owned system ticks, not external ingress
 - coalesced wake hints still participate in the idle path and should not be

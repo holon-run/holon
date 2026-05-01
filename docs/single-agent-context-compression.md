@@ -298,8 +298,8 @@ This should include sections such as:
 
 - `current_input`
 - `continuation_context`
-- `active_work_item`
-- `queued_waiting_work_items`
+- `current_work_item`
+- `queued_blocked_work_items`
 - `latest_result`
 - `recent_messages`
 - `recent_tool_executions`
