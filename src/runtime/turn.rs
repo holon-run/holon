@@ -1882,6 +1882,24 @@ mod tests {
         )
     }
 
+    fn fixture_tool_spec(name: &str, payload_size: usize) -> ToolSpec {
+        ToolSpec {
+            name: name.to_string(),
+            description: "x".repeat(payload_size),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "payload": {
+                        "type": "string",
+                        "pattern": "x".repeat(payload_size),
+                    }
+                },
+                "required": ["payload"],
+            }),
+            freeform_grammar: None,
+        }
+    }
+
     #[test]
     fn context_management_eligibility_keeps_recent_and_excludes_risky_results() {
         let tool_names = [
@@ -1924,6 +1942,53 @@ mod tests {
         assert_eq!(stats.eligible_tool_result_bytes, "result-0".len());
         assert_eq!(stats.excluded_tool_result_count, 2);
         assert_eq!(stats.retained_recent_tool_result_count, 3);
+    }
+
+    #[test]
+    fn select_exact_tail_start_has_boundary_behavior() {
+        assert_eq!(select_exact_tail_start(&Vec::<TurnRoundRecord>::new(), 0), 0);
+
+        let rounds = vec![
+            fixture_round(1, "short"),
+            fixture_round(2, "tiny"),
+            fixture_round(3, "tiny"),
+            fixture_round(4, "tiny"),
+            fixture_round(5, "tiny"),
+        ];
+        let newest_round_budget = estimate_round_tokens(rounds.last().unwrap());
+        assert_eq!(select_exact_tail_start(&rounds, 0), 3);
+        assert_eq!(
+            select_exact_tail_start(&rounds, newest_round_budget),
+            1
+        );
+
+        let oversized_newest = vec![
+            fixture_round(1, "short"),
+            fixture_round(2, "short"),
+            fixture_round(3, "short"),
+            fixture_round(4, &"x".repeat(120)),
+        ];
+        let oversized_budget = estimate_round_tokens(&oversized_newest[2]);
+        assert_eq!(
+            select_exact_tail_start(&oversized_newest, oversized_budget),
+            2
+        );
+
+        let one_huge_old = vec![
+            fixture_round(1, &"x".repeat(300)),
+            fixture_round(2, "short"),
+            fixture_round(3, "short"),
+            fixture_round(4, "short"),
+        ];
+        let keep_recent_budget = estimate_round_tokens(&one_huge_old[2])
+            + estimate_round_tokens(&one_huge_old[3]);
+        assert_eq!(select_exact_tail_start(&one_huge_old, keep_recent_budget), 2);
+        assert_eq!(select_exact_tail_start(&one_huge_old, keep_recent_budget + 1), 1);
+
+        let boundary_keep = estimate_round_tokens(&rounds[1])
+            + estimate_round_tokens(&rounds[2])
+            + estimate_round_tokens(&rounds[3]);
+        assert_eq!(select_exact_tail_start(&rounds, boundary_keep), 1);
     }
 
     #[test]
@@ -1993,6 +2058,44 @@ mod tests {
                 panic!("expected baseline-over-budget outcome");
             }
         }
+    }
+
+    #[test]
+    fn build_turn_local_projection_exact_fit_projection_and_near_fit() {
+        let rounds = vec![fixture_round(1, &"alpha ".repeat(120))];
+        let prompt_frame = fixture_prompt_frame();
+        let exact_projection = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )]
+        .into_iter()
+        .chain(exact_round_messages(&rounds[0]))
+        .collect::<Vec<_>>();
+        let exact_estimated_tokens = estimate_projection_tokens(&prompt_frame, &exact_projection);
+
+        let projection_exact = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            exact_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS,
+            120,
+        );
+        assert!(matches!(projection_exact, TurnLocalProjectionOutcome::Projection(_)));
+
+        let projection_near = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            exact_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS - 1,
+            120,
+        );
+        assert!(matches!(
+            projection_near,
+            TurnLocalProjectionOutcome::BaselineOverBudget(_)
+        ));
     }
 
     #[test]
@@ -2311,6 +2414,34 @@ mod tests {
     }
 
     #[test]
+    fn build_turn_local_projection_tool_overhead_pressure_only() {
+        let prompt_frame = fixture_prompt_frame();
+        let rounds = vec![fixture_round(1, "short")];
+        let no_tools = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            500,
+            120,
+        );
+        assert!(matches!(no_tools, TurnLocalProjectionOutcome::Projection(_)));
+
+        let huge_tool = fixture_tool_spec("huge_schema", 4_000);
+        let with_tools = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[huge_tool],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            500,
+            120,
+        );
+        assert!(matches!(with_tools, TurnLocalProjectionOutcome::BaselineOverBudget(_)));
+    }
+
+    #[test]
     fn build_compacted_round_recap_uses_round_position_for_omitted_count() {
         let rounds = vec![
             fixture_round(10, &"very long ".repeat(200)),
@@ -2330,5 +2461,72 @@ mod tests {
         assert!(!recap.contains("Round 11"), "unexpected recap: {recap}");
         assert!(!recap.contains("Round 12"), "unexpected recap: {recap}");
         assert!(recap.contains(omission_line), "unexpected recap: {recap}");
+    }
+
+    #[test]
+    fn build_turn_local_projection_checkpoint_mode_overhead_boundary() {
+        let rounds = vec![
+            fixture_round(1, &"alpha ".repeat(140)),
+            fixture_round(2, &"beta ".repeat(140)),
+            fixture_round(3, &"gamma ".repeat(140)),
+            fixture_round(4, &"delta ".repeat(140)),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let full_state = TurnLocalCheckpointState::default();
+        let delta_state = checkpoint_state_with_latest("checkpoint baseline", 2, 0);
+
+        let baseline_budget = 1_200;
+        let full_projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &full_state,
+            Some("req-full".into()),
+            baseline_budget,
+            120,
+        );
+        let delta_projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &delta_state,
+            Some("req-delta".into()),
+            baseline_budget,
+            120,
+        );
+
+        match full_projection {
+            TurnLocalProjectionOutcome::Projection(full) => {
+                if let Some(full_compaction) = full.compaction.as_ref() {
+                    assert_eq!(
+                        full_compaction.compacted_rounds + full_compaction.exact_tail_rounds,
+                        rounds.len()
+                    );
+                    assert!(!full_compaction.strict_fallback_applied);
+                    assert_eq!(full_compaction.checkpoint_mode, Some(TurnLocalCheckpointMode::Full));
+                    assert_eq!(full_compaction.checkpoint_request_id.as_deref(), Some("req-full"));
+                }
+            }
+            TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
+                assert!(
+                    diagnostics.minimum_projection_estimated_tokens
+                        > diagnostics.effective_budget_estimated_tokens,
+                    "expected full checkpoint mode to fail because minimum projection does not fit"
+                );
+            }
+        }
+
+        let TurnLocalProjectionOutcome::Projection(delta) = delta_projection else {
+            panic!("expected projection under existing delta checkpoint state");
+        };
+        if let Some(delta_compaction) = delta.compaction.as_ref() {
+            assert_eq!(
+                delta_compaction.compacted_rounds + delta_compaction.exact_tail_rounds,
+                rounds.len()
+            );
+            assert!(!delta_compaction.strict_fallback_applied);
+            assert_eq!(delta_compaction.checkpoint_mode, Some(TurnLocalCheckpointMode::Delta));
+            assert_eq!(delta_compaction.checkpoint_request_id.as_deref(), Some("req-delta"));
+        }
     }
 }
