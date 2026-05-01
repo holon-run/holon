@@ -797,7 +797,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                 input_tokens: 25,
                 output_tokens: 25,
                 cache_usage: None,
-        request_diagnostics: None,
+                request_diagnostics: None,
             });
         }
 
