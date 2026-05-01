@@ -11,16 +11,18 @@ use crate::{
 pub(crate) mod agent_get;
 pub(crate) mod apply_patch_tool;
 pub(crate) mod cancel_external_trigger;
+pub(crate) mod complete_work_item;
 pub(crate) mod create_external_trigger;
+pub(crate) mod create_work_item;
 pub(crate) mod enqueue;
 pub(crate) mod exec_command;
 pub(crate) mod exec_command_batch;
-pub(crate) mod get_active_work_item;
 pub(crate) mod get_work_item;
 pub(crate) mod list_work_items;
 pub(crate) mod memory_get;
 pub(crate) mod memory_search;
 pub(crate) mod notify_operator;
+pub(crate) mod pick_work_item;
 pub(crate) mod sleep;
 pub(crate) mod spawn_agent;
 pub(crate) mod task_input;
@@ -29,8 +31,8 @@ pub(crate) mod task_output;
 pub(crate) mod task_status;
 pub(crate) mod task_stop;
 pub(crate) mod update_work_item;
-pub(crate) mod update_work_plan;
 pub(crate) mod use_workspace;
+pub(crate) mod work_item_action;
 pub(crate) mod work_item_query;
 
 pub(crate) struct BuiltinToolDefinition {
@@ -50,13 +52,14 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         task_input::definition()?,
         task_output::definition()?,
         task_stop::definition()?,
-        get_active_work_item::definition()?,
+        create_work_item::definition()?,
+        pick_work_item::definition()?,
         get_work_item::definition()?,
         list_work_items::definition()?,
         update_work_item::definition()?,
+        complete_work_item::definition()?,
         memory_search::definition()?,
         memory_get::definition()?,
-        update_work_plan::definition()?,
         create_external_trigger::definition()?,
         cancel_external_trigger::definition()?,
         apply_patch_tool::definition()?,
@@ -85,8 +88,11 @@ pub(crate) async fn execute_builtin_tool(
         task_input::NAME => task_input::execute(runtime, agent_id, trust, &call.input).await,
         task_output::NAME => task_output::execute(runtime, agent_id, trust, &call.input).await,
         task_stop::NAME => task_stop::execute(runtime, agent_id, trust, &call.input).await,
-        get_active_work_item::NAME => {
-            get_active_work_item::execute(runtime, agent_id, trust, &call.input).await
+        create_work_item::NAME => {
+            create_work_item::execute(runtime, agent_id, trust, &call.input).await
+        }
+        pick_work_item::NAME => {
+            pick_work_item::execute(runtime, agent_id, trust, &call.input).await
         }
         get_work_item::NAME => get_work_item::execute(runtime, agent_id, trust, &call.input).await,
         list_work_items::NAME => {
@@ -95,11 +101,11 @@ pub(crate) async fn execute_builtin_tool(
         update_work_item::NAME => {
             update_work_item::execute(runtime, agent_id, trust, &call.input).await
         }
+        complete_work_item::NAME => {
+            complete_work_item::execute(runtime, agent_id, trust, &call.input).await
+        }
         memory_search::NAME => memory_search::execute(runtime, agent_id, trust, &call.input).await,
         memory_get::NAME => memory_get::execute(runtime, agent_id, trust, &call.input).await,
-        update_work_plan::NAME => {
-            update_work_plan::execute(runtime, agent_id, trust, &call.input).await
-        }
         create_external_trigger::NAME => {
             create_external_trigger::execute(runtime, agent_id, trust, &call.input).await
         }

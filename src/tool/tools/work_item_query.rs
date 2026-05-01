@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     runtime::RuntimeHandle,
-    types::{WorkItemRecord, WorkItemStatus, WorkPlanSnapshot},
+    types::{WorkItemRecord, WorkItemState, WorkPlanSnapshot},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,14 +31,9 @@ pub(crate) struct WorkItemView {
     pub(crate) delivery_target: String,
     pub(crate) state: WorkItemLifecycleView,
     pub(crate) focus: WorkItemFocusView,
-    pub(crate) legacy_status: WorkItemStatus,
     pub(crate) is_current: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) parent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) summary: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) progress_note: Option<String>,
+    pub(crate) blocked_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) plan: Option<WorkPlanSnapshot>,
     pub(crate) created_at: DateTime<Utc>,
@@ -55,20 +50,21 @@ pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQue
     let state = runtime.agent_state().await?;
     if let Some(bound_id) = state.current_turn_work_item_id.as_deref() {
         if let Some(record) = runtime.latest_work_item(bound_id).await? {
-            if record.status != WorkItemStatus::Completed {
+            if record.state == WorkItemState::Open {
                 return Ok(WorkItemQueryContext {
                     current_work_item_id: Some(record.id),
                 });
             }
         }
     }
-    let current_work_item_id = runtime
-        .latest_work_items()
-        .await?
-        .into_iter()
-        .filter(|item| item.status == WorkItemStatus::Active)
-        .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
-        .map(|item| item.id);
+    let current_work_item_id = match state.current_work_item_id.as_deref() {
+        Some(current_id) => runtime
+            .latest_work_item(current_id)
+            .await?
+            .filter(|record| record.state == WorkItemState::Open)
+            .map(|record| record.id),
+        None => None,
+    };
     Ok(WorkItemQueryContext {
         current_work_item_id,
     })
@@ -81,64 +77,46 @@ pub(crate) async fn view_for_record(
     include_plan: bool,
 ) -> Result<WorkItemView> {
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
-        && record.status != WorkItemStatus::Completed;
-    let legacy_status = record.status.clone();
+        && record.state == WorkItemState::Open;
     let plan = if include_plan {
         runtime.latest_work_plan(&record.id).await?
     } else {
         None
     };
+    let state = lifecycle_view(&record.state);
+    let focus = focus_view(&record, is_current);
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
         workspace_id: record.workspace_id,
         delivery_target: record.delivery_target,
-        state: lifecycle_view(&legacy_status),
-        focus: focus_view(&legacy_status, is_current),
-        legacy_status,
+        state,
+        focus,
         is_current,
-        parent_id: record.parent_id,
-        summary: record.summary,
-        progress_note: record.progress_note,
+        blocked_by: record.blocked_by,
         plan,
         created_at: record.created_at,
         updated_at: record.updated_at,
     })
 }
 
-pub(crate) async fn latest_current_record(
-    runtime: &RuntimeHandle,
-    context: &WorkItemQueryContext,
-) -> Result<Option<WorkItemRecord>> {
-    if let Some(current_work_item_id) = context.current_work_item_id.as_deref() {
-        if let Some(record) = runtime.latest_work_item(current_work_item_id).await? {
-            if record.status != WorkItemStatus::Completed {
-                return Ok(Some(record));
-            }
-        }
-    }
-    Ok(None)
-}
-
-pub(crate) fn lifecycle_view(status: &WorkItemStatus) -> WorkItemLifecycleView {
-    match status {
-        &WorkItemStatus::Completed => WorkItemLifecycleView::Done,
-        &WorkItemStatus::Active | &WorkItemStatus::Queued | &WorkItemStatus::Waiting => {
-            WorkItemLifecycleView::Open
-        }
+pub(crate) fn lifecycle_view(state: &WorkItemState) -> WorkItemLifecycleView {
+    match state {
+        WorkItemState::Open => WorkItemLifecycleView::Open,
+        WorkItemState::Done => WorkItemLifecycleView::Done,
     }
 }
 
-pub(crate) fn focus_view(status: &WorkItemStatus, is_current: bool) -> WorkItemFocusView {
-    if *status == WorkItemStatus::Completed {
+pub(crate) fn focus_view(record: &WorkItemRecord, is_current: bool) -> WorkItemFocusView {
+    if record.state == WorkItemState::Done {
         return WorkItemFocusView::Done;
     }
     if is_current {
         return WorkItemFocusView::Current;
     }
-    match status {
-        &WorkItemStatus::Waiting => WorkItemFocusView::Blocked,
-        &WorkItemStatus::Active | &WorkItemStatus::Queued => WorkItemFocusView::Queued,
-        &WorkItemStatus::Completed => WorkItemFocusView::Done,
+    if record.blocked_by.is_some() {
+        WorkItemFocusView::Blocked
+    } else {
+        WorkItemFocusView::Queued
     }
 }

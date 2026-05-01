@@ -11,9 +11,7 @@ use holon::{
     run_once::{run_once_with_host, RunFinalStatus, RunOnceRequest},
     storage::AppStorage,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
-    types::{
-        ControlAction, FailureArtifactCategory, TaskStatus, TokenUsage, TrustLevel, WorkItemStatus,
-    },
+    types::{ControlAction, FailureArtifactCategory, TaskStatus, TokenUsage, TrustLevel},
 };
 use serde_json::json;
 use tempfile::tempdir;
@@ -115,6 +113,8 @@ async fn run_once_surfaces_structured_token_usage_when_provider_reports_it() -> 
 struct WorkItemDeliverySummaryProvider {
     calls: Mutex<usize>,
     work_item_id: Mutex<Option<String>>,
+    complete_next: Mutex<bool>,
+    after_completion: Mutex<bool>,
 }
 
 impl WorkItemDeliverySummaryProvider {
@@ -122,11 +122,17 @@ impl WorkItemDeliverySummaryProvider {
         Self {
             calls: Mutex::new(0),
             work_item_id: Mutex::new(None),
+            complete_next: Mutex::new(false),
+            after_completion: Mutex::new(false),
         }
     }
 
     async fn set_work_item_id(&self, work_item_id: String) {
         *self.work_item_id.lock().await = Some(work_item_id);
+    }
+
+    async fn complete_next_turn(&self) {
+        *self.complete_next.lock().await = true;
     }
 }
 
@@ -134,9 +140,6 @@ impl WorkItemDeliverySummaryProvider {
 impl AgentProvider for WorkItemDeliverySummaryProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if request.tools.is_empty() {
-            let prompt = format!("{:?}", request.conversation);
-            assert!(prompt.contains("Implemented broad prompt/context snapshot coverage"));
-            assert!(prompt.contains("Fixed annotation warnings"));
             return Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::Text {
                     text: "Implemented broad prompt/context snapshot coverage, then fixed annotation warnings in a later continuation. Verification: focused tests passed.".into(),
@@ -155,6 +158,42 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
             .await
             .clone()
             .expect("test should seed a work item id before provider use");
+        if *self.after_completion.lock().await {
+            return Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text {
+                    text: "Fixed two test annotation issues.".into(),
+                }],
+                stop_reason: None,
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_usage: None,
+                request_diagnostics: None,
+            });
+        }
+        if *self.complete_next.lock().await {
+            *self.complete_next.lock().await = false;
+            *self.after_completion.lock().await = true;
+            return Ok(ProviderTurnResponse {
+                blocks: vec![
+                    ModelBlock::Text {
+                        text: "Fixed two test annotation issues.".into(),
+                    },
+                    ModelBlock::ToolUse {
+                        id: "work-fixup".into(),
+                        name: "CompleteWorkItem".into(),
+                        input: json!({
+                            "work_item_id": work_item_id.clone(),
+                            "result_summary": "Implemented broad prompt/context snapshot coverage"
+                        }),
+                    },
+                ],
+                stop_reason: None,
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_usage: None,
+                request_diagnostics: None,
+            });
+        }
         let mut calls = self.calls.lock().await;
         *calls += 1;
         let blocks = match *calls {
@@ -166,40 +205,15 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
                     id: "work-main".into(),
                     name: "UpdateWorkItem".into(),
                     input: json!({
-                        "id": work_item_id.clone(),
-                        "delivery_target": "cover prompt/context snapshots",
-                        "status": "active",
-                        "summary": "Implemented broad prompt/context snapshot coverage",
-                        "progress_note": "Main implementation is in place; annotations still need cleanup.",
-                        "parent_id": null
+                        "work_item_id": work_item_id.clone(),
+                        "blocked_by": "Main implementation is in place; annotations still need cleanup."
                     }),
                 },
             ],
-            2 => vec![ModelBlock::Text {
+            _ => vec![ModelBlock::Text {
                 text: "Main snapshot coverage is implemented; a small annotation cleanup remains."
                     .into(),
             }],
-            3 => vec![
-                ModelBlock::Text {
-                    text: "Fixed two test annotation issues.".into(),
-                },
-                ModelBlock::ToolUse {
-                    id: "work-fixup".into(),
-                    name: "UpdateWorkItem".into(),
-                    input: json!({
-                        "id": work_item_id.clone(),
-                        "delivery_target": "cover prompt/context snapshots",
-                        "status": "completed",
-                        "summary": "Implemented broad prompt/context snapshot coverage",
-                        "progress_note": "Fixed annotation warnings",
-                        "parent_id": null
-                    }),
-                },
-            ],
-            4 => vec![ModelBlock::Text {
-                text: "Fixed two test annotation issues.".into(),
-            }],
-            _ => anyhow::bail!("unexpected provider request after delivery summary"),
         };
 
         Ok(ProviderTurnResponse {
@@ -222,16 +236,10 @@ async fn run_once_prefers_completed_work_item_delivery_summary_over_latest_turn_
     let host =
         RuntimeHost::new_with_provider(test_config(workspace_dir, home_dir), provider.clone())?;
     let runtime = host.default_runtime().await?;
-    let work_item = runtime
-        .update_work_item(
-            None,
-            "cover prompt/context snapshots".into(),
-            WorkItemStatus::Active,
-            Some("Prompt/context snapshot coverage".into()),
-            Some("Starting broader coverage".into()),
-            None,
-        )
+    let (work_item, _) = runtime
+        .create_work_item("cover prompt/context snapshots".into(), None)
         .await?;
+    runtime.pick_work_item(work_item.id.clone()).await?;
     provider.set_work_item_id(work_item.id.clone()).await;
     let mut request = run_request("continue snapshot coverage");
     request.agent_id = Some("default".into());
@@ -240,13 +248,26 @@ async fn run_once_prefers_completed_work_item_delivery_summary_over_latest_turn_
     assert!(first.final_text.contains("Main snapshot coverage"));
 
     request.text = "fix the remaining warning".into();
+    provider.complete_next_turn().await;
     let second = run_once_with_host(host.clone(), request).await?;
 
-    assert_eq!(second.final_status, RunFinalStatus::Completed);
-    assert!(second
-        .final_text
-        .contains("Implemented broad prompt/context snapshot coverage"));
-    assert!(second.final_text.contains("fixed annotation warnings"));
+    assert_eq!(
+        second.final_status,
+        RunFinalStatus::Completed,
+        "unexpected final text: {}",
+        second.final_text
+    );
+    assert!(
+        second
+            .final_text
+            .contains("Implemented broad prompt/context snapshot coverage"),
+        "unexpected final text: {}",
+        second.final_text
+    );
+    assert_eq!(
+        second.final_text,
+        "Implemented broad prompt/context snapshot coverage"
+    );
     assert_eq!(
         second.raw_final_text.as_deref(),
         Some("Fixed two test annotation issues.")

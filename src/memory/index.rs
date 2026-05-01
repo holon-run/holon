@@ -633,7 +633,7 @@ fn episode_document(episode: ContextEpisodeRecord) -> MemoryDocument {
         body,
         metadata: json!({
             "episode_id": episode.id,
-            "active_work_item_id": episode.active_work_item_id,
+            "current_work_item_id": episode.current_work_item_id,
             "boundary_reason": episode.boundary_reason,
             "working_set_files": episode.working_set_files,
         }),
@@ -650,15 +650,7 @@ fn work_item_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
 }
 
 fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
-    let body = [
-        item.delivery_target.clone(),
-        item.summary.clone().unwrap_or_default(),
-        item.progress_note.clone().unwrap_or_default(),
-    ]
-    .into_iter()
-    .filter(|part| !part.trim().is_empty())
-    .collect::<Vec<_>>()
-    .join("\n");
+    let body = item.delivery_target.clone();
     MemoryDocument {
         source_ref: format!("work_item:{}", item.id),
         source_kind: "work_item".into(),
@@ -666,13 +658,13 @@ fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
         workspace_id: Some(item.workspace_id),
         agent_id: item.agent_id,
         source_path: None,
-        title: item.summary.clone().unwrap_or(item.delivery_target.clone()),
+        title: item.delivery_target.clone(),
         sanitized_excerpt: excerpt(&body),
         body,
         metadata: json!({
             "work_item_id": item.id,
-            "status": item.status,
-            "parent_id": item.parent_id,
+            "state": item.state,
+            "blocked_by": item.blocked_by,
         }),
         updated_at: item.updated_at,
     }
@@ -768,7 +760,7 @@ mod tests {
     use crate::{
         agent_template::ensure_agent_home_layout,
         types::{
-            AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, WorkItemStatus,
+            AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, WorkItemState,
         },
     };
 
@@ -786,7 +778,7 @@ mod tests {
     fn work_item_with_workspace(
         agent_id: &str,
         delivery_target: &str,
-        status: WorkItemStatus,
+        status: WorkItemState,
         workspace_id: &str,
     ) -> WorkItemRecord {
         let mut work_item = WorkItemRecord::new(agent_id, delivery_target, status);
@@ -939,10 +931,12 @@ mod tests {
                 "ws-other",
             ))
             .unwrap();
-        let mut work_item =
-            WorkItemRecord::new("default", "ship memory search", WorkItemStatus::Completed);
+        let mut work_item = WorkItemRecord::new(
+            "default",
+            "MemorySearch index implementation",
+            WorkItemState::Done,
+        );
         work_item.workspace_id = "ws-holon".into();
-        work_item.summary = Some("MemorySearch index implementation".into());
         storage.append_work_item(&work_item).unwrap();
         storage
             .append_context_episode(&ContextEpisodeRecord {
@@ -956,7 +950,7 @@ mod tests {
                 start_message_count: 1,
                 end_message_count: 3,
                 boundary_reason: EpisodeBoundaryReason::HardTurnCap,
-                active_work_item_id: Some(work_item.id.clone()),
+                current_work_item_id: Some(work_item.id.clone()),
                 delivery_target: Some("memory search".into()),
                 work_summary: Some("index worker".into()),
                 scope_hints: vec![],
@@ -1031,7 +1025,7 @@ mod tests {
         let work_item = work_item_with_workspace(
             "default",
             "existing work item",
-            WorkItemStatus::Completed,
+            WorkItemState::Done,
             "ws-existing",
         );
         storage.append_work_item(&work_item).unwrap();
@@ -1047,7 +1041,7 @@ mod tests {
                 start_message_count: 1,
                 end_message_count: 2,
                 boundary_reason: EpisodeBoundaryReason::HardTurnCap,
-                active_work_item_id: Some(work_item.id),
+                current_work_item_id: Some(work_item.id),
                 delivery_target: Some("existing episode".into()),
                 work_summary: Some("existing episode summary".into()),
                 scope_hints: vec![],

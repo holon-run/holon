@@ -15,8 +15,9 @@ use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, ContextEpisodeRecord,
     DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope, OperatorDeliveryRecord,
     OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, TaskRecord,
-    TimerRecord, ToolExecutionRecord, TranscriptEntry, WaitingIntentRecord, WorkItemRecord,
-    WorkItemStatus, WorkPlanSnapshot, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
+    TimerRecord, ToolExecutionRecord, TranscriptEntry, WaitingIntentRecord,
+    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkItemState,
+    WorkPlanSnapshot, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -27,8 +28,8 @@ const RUNTIME_CACHE_DIR: &str = "cache";
 
 #[derive(Debug, Clone, Default)]
 pub struct WorkQueuePromptProjection {
-    pub active: Option<WorkItemRecord>,
-    pub queued_waiting: Vec<WorkItemRecord>,
+    pub current: Option<WorkItemRecord>,
+    pub queued_blocked: Vec<WorkItemRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +40,7 @@ pub struct RecoverySnapshot {
     pub active_timers: Vec<TimerRecord>,
     pub work_items: Vec<WorkItemRecord>,
     pub work_plans: Vec<WorkPlanSnapshot>,
+    pub work_item_delegations: Vec<WorkItemDelegationRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +53,7 @@ pub struct AppStorage {
     work_items_path: PathBuf,
     delivery_summaries_path: PathBuf,
     work_plans_path: PathBuf,
+    work_item_delegations_path: PathBuf,
     timers_path: PathBuf,
     tools_path: PathBuf,
     transcript_path: PathBuf,
@@ -110,6 +113,7 @@ impl AppStorage {
             work_items_path: ledger_dir.join("work_items.jsonl"),
             delivery_summaries_path: ledger_dir.join("delivery_summaries.jsonl"),
             work_plans_path: ledger_dir.join("work_plans.jsonl"),
+            work_item_delegations_path: ledger_dir.join("work_item_delegations.jsonl"),
             timers_path: ledger_dir.join("timers.jsonl"),
             tools_path: ledger_dir.join("tools.jsonl"),
             transcript_path: ledger_dir.join("transcript.jsonl"),
@@ -191,6 +195,10 @@ impl AppStorage {
 
     pub fn append_work_plan(&self, snapshot: &WorkPlanSnapshot) -> Result<()> {
         append_jsonl(&self.work_plans_path, snapshot)
+    }
+
+    pub fn append_work_item_delegation(&self, record: &WorkItemDelegationRecord) -> Result<()> {
+        append_jsonl(&self.work_item_delegations_path, record)
     }
 
     pub fn append_timer(&self, timer: &TimerRecord) -> Result<()> {
@@ -329,6 +337,13 @@ impl AppStorage {
 
     pub fn read_recent_work_plans(&self, limit: usize) -> Result<Vec<WorkPlanSnapshot>> {
         read_recent_jsonl(&self.work_plans_path, limit)
+    }
+
+    pub fn read_recent_work_item_delegations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<WorkItemDelegationRecord>> {
+        read_recent_jsonl(&self.work_item_delegations_path, limit)
     }
 
     pub fn read_recent_timers(&self, limit: usize) -> Result<Vec<TimerRecord>> {
@@ -479,6 +494,9 @@ impl AppStorage {
         if !self.work_items_path.exists() {
             return Ok(WorkQueuePromptProjection::default());
         }
+        let current_work_item_id = self
+            .read_agent()?
+            .and_then(|agent| agent.current_work_item_id);
 
         let content = fs::read_to_string(&self.work_items_path)
             .with_context(|| format!("failed to read {}", self.work_items_path.display()))?;
@@ -493,43 +511,42 @@ impl AppStorage {
             latest.entry(record.id.clone()).or_insert(record);
         }
 
-        let active = latest
-            .values()
-            .filter(|item| item.status == WorkItemStatus::Active)
-            .cloned()
-            .max_by(compare_work_item_activity);
+        let current = current_work_item_id
+            .as_deref()
+            .and_then(|id| latest.get(id))
+            .filter(|item| item.state == WorkItemState::Open)
+            .cloned();
 
-        let mut queued_waiting = latest
-            .into_values()
+        let mut queued_blocked = latest
+            .values()
             .filter(|item| {
-                matches!(
-                    item.status,
-                    WorkItemStatus::Queued | WorkItemStatus::Waiting
-                )
+                item.state == WorkItemState::Open
+                    && Some(item.id.as_str()) != current_work_item_id.as_deref()
             })
+            .cloned()
             .collect::<Vec<_>>();
-        queued_waiting.sort_by(compare_queue_display_order);
+        queued_blocked.sort_by(compare_queue_display_order);
 
         Ok(WorkQueuePromptProjection {
-            active,
-            queued_waiting,
+            current,
+            queued_blocked,
         })
     }
 
     pub fn waiting_contract_anchor(&self) -> Result<Option<WorkItemRecord>> {
-        let latest = self.latest_work_items()?;
-        Ok(latest
-            .iter()
-            .filter(|item| item.status == WorkItemStatus::Active)
-            .cloned()
-            .max_by(compare_work_item_activity)
-            .or_else(|| {
-                latest
-                    .iter()
-                    .filter(|item| item.status == WorkItemStatus::Waiting)
-                    .cloned()
-                    .max_by(compare_work_item_activity)
-            }))
+        let projection = self.work_queue_prompt_projection()?;
+        Ok(projection.current.or_else(|| {
+            projection
+                .queued_blocked
+                .into_iter()
+                .filter(|item| item.blocked_by.is_some())
+                .max_by(|left, right| {
+                    left.updated_at
+                        .cmp(&right.updated_at)
+                        .then_with(|| left.created_at.cmp(&right.created_at))
+                        .then_with(|| left.id.cmp(&right.id))
+                })
+        }))
     }
 
     pub fn latest_work_item(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
@@ -609,6 +626,29 @@ impl AppStorage {
         }
 
         Ok(None)
+    }
+
+    pub fn latest_work_item_delegations(&self) -> Result<Vec<WorkItemDelegationRecord>> {
+        let records = self.read_recent_work_item_delegations(usize::MAX)?;
+        let mut latest = std::collections::BTreeMap::new();
+        for record in records {
+            latest.insert(record.delegation_id.clone(), record);
+        }
+        Ok(latest.into_values().collect())
+    }
+
+    pub fn open_work_item_delegation_for_child(
+        &self,
+        child_agent_id: &str,
+    ) -> Result<Option<WorkItemDelegationRecord>> {
+        Ok(self
+            .latest_work_item_delegations()?
+            .into_iter()
+            .filter(|record| {
+                record.child_agent_id == child_agent_id
+                    && record.state == WorkItemDelegationState::Open
+            })
+            .max_by(|left, right| left.updated_at.cmp(&right.updated_at)))
     }
 
     pub fn latest_timer_records(&self) -> Result<Vec<TimerRecord>> {
@@ -732,6 +772,7 @@ impl AppStorage {
             .collect();
         let work_items = self.latest_work_items()?;
         let work_plans = self.latest_work_plans()?;
+        let work_item_delegations = self.latest_work_item_delegations()?;
 
         Ok(RecoverySnapshot {
             agent,
@@ -740,6 +781,7 @@ impl AppStorage {
             active_timers,
             work_items,
             work_plans,
+            work_item_delegations,
         })
     }
 
@@ -829,34 +871,19 @@ fn read_jsonl_from<T: DeserializeOwned>(
     Ok(lines)
 }
 
-fn compare_work_item_activity(left: &WorkItemRecord, right: &WorkItemRecord) -> std::cmp::Ordering {
-    compare_timestamp(left.updated_at, right.updated_at)
-        .then_with(|| compare_timestamp(left.created_at, right.created_at))
-        .then_with(|| left.id.cmp(&right.id))
-}
-
 fn compare_queue_display_order(
     left: &WorkItemRecord,
     right: &WorkItemRecord,
 ) -> std::cmp::Ordering {
-    queue_status_rank(left.status.clone())
-        .cmp(&queue_status_rank(right.status.clone()))
+    blocked_rank(left)
+        .cmp(&blocked_rank(right))
         .then_with(|| compare_timestamp_asc(left.created_at, right.created_at))
         .then_with(|| compare_timestamp_asc(left.updated_at, right.updated_at))
         .then_with(|| left.id.cmp(&right.id))
 }
 
-fn queue_status_rank(status: WorkItemStatus) -> u8 {
-    match status {
-        WorkItemStatus::Queued => 0,
-        WorkItemStatus::Waiting => 1,
-        WorkItemStatus::Active => 2,
-        WorkItemStatus::Completed => 3,
-    }
-}
-
-fn compare_timestamp(left: DateTime<Utc>, right: DateTime<Utc>) -> std::cmp::Ordering {
-    left.cmp(&right)
+fn blocked_rank(record: &WorkItemRecord) -> u8 {
+    u8::from(record.blocked_by.is_some())
 }
 
 fn compare_timestamp_asc(left: DateTime<Utc>, right: DateTime<Utc>) -> std::cmp::Ordering {
@@ -900,7 +927,7 @@ mod tests {
 
     use crate::types::{
         AgentState, AgentStatus, EpisodeBoundaryReason, Priority, QueueEntryRecord,
-        QueueEntryStatus, TranscriptEntry, TranscriptEntryKind, WorkItemRecord, WorkItemStatus,
+        QueueEntryStatus, TranscriptEntry, TranscriptEntryKind, WorkItemRecord, WorkItemState,
         WorkPlanItem, WorkPlanSnapshot, WorkPlanStepStatus,
     };
 
@@ -1040,10 +1067,9 @@ mod tests {
     fn storage_latest_work_items_returns_latest_record_per_id() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
-        let item = WorkItemRecord::new("default", "fix issue #223", WorkItemStatus::Queued);
+        let item = WorkItemRecord::new("default", "fix issue #223", WorkItemState::Open);
         let mut updated = item.clone();
-        updated.status = WorkItemStatus::Active;
-        updated.summary = Some("working".into());
+        updated.blocked_by = Some("working".into());
         updated.updated_at = Utc::now();
 
         storage.append_work_item(&item).unwrap();
@@ -1052,8 +1078,8 @@ mod tests {
         let latest = storage.latest_work_items().unwrap();
         assert_eq!(latest.len(), 1);
         assert_eq!(latest[0].id, item.id);
-        assert_eq!(latest[0].status, WorkItemStatus::Active);
-        assert_eq!(latest[0].summary.as_deref(), Some("working"));
+        assert_eq!(latest[0].state, WorkItemState::Open);
+        assert_eq!(latest[0].blocked_by.as_deref(), Some("working"));
     }
 
     #[test]
@@ -1089,7 +1115,7 @@ mod tests {
     fn storage_recovery_snapshot_includes_work_items_and_plans() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
-        let work_item = WorkItemRecord::new("default", "fix issue #223", WorkItemStatus::Active);
+        let work_item = WorkItemRecord::new("default", "fix issue #223", WorkItemState::Open);
         let work_plan = WorkPlanSnapshot::new(
             "default",
             work_item.id.clone(),
@@ -1141,51 +1167,47 @@ mod tests {
     }
 
     #[test]
-    fn storage_work_queue_prompt_projection_prefers_latest_active_and_orders_queue() {
+    fn storage_work_queue_prompt_projection_uses_current_and_orders_queue() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
-        let mut older_active =
-            WorkItemRecord::new("default", "older active", WorkItemStatus::Active);
-        older_active.updated_at = Utc::now() - chrono::Duration::minutes(2);
+        let mut current = WorkItemRecord::new("default", "current item", WorkItemState::Open);
+        current.updated_at = Utc::now();
 
-        let mut newer_active =
-            WorkItemRecord::new("default", "newer active", WorkItemStatus::Active);
-        newer_active.updated_at = Utc::now();
-
-        let mut waiting = WorkItemRecord::new("default", "waiting item", WorkItemStatus::Waiting);
+        let mut waiting = WorkItemRecord::new("default", "waiting item", WorkItemState::Open);
+        waiting.blocked_by = Some("external review".into());
         waiting.created_at = Utc::now() + chrono::Duration::minutes(2);
         waiting.updated_at = waiting.created_at;
 
-        let mut queued_early =
-            WorkItemRecord::new("default", "queued first", WorkItemStatus::Queued);
+        let mut queued_early = WorkItemRecord::new("default", "queued first", WorkItemState::Open);
         queued_early.created_at = Utc::now();
         queued_early.updated_at = queued_early.created_at;
 
-        let mut queued_late =
-            WorkItemRecord::new("default", "queued second", WorkItemStatus::Queued);
+        let mut queued_late = WorkItemRecord::new("default", "queued second", WorkItemState::Open);
         queued_late.created_at = Utc::now() + chrono::Duration::minutes(1);
         queued_late.updated_at = queued_late.created_at;
 
-        let completed = WorkItemRecord::new("default", "completed", WorkItemStatus::Completed);
+        let completed = WorkItemRecord::new("default", "completed", WorkItemState::Done);
 
-        storage.append_work_item(&older_active).unwrap();
-        storage.append_work_item(&newer_active).unwrap();
+        storage.append_work_item(&current).unwrap();
         storage.append_work_item(&waiting).unwrap();
         storage.append_work_item(&queued_late).unwrap();
         storage.append_work_item(&queued_early).unwrap();
         storage.append_work_item(&completed).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(current.id.clone());
+        storage.write_agent(&agent).unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
         assert_eq!(
             projection
-                .active
+                .current
                 .as_ref()
                 .map(|item| item.delivery_target.as_str()),
-            Some("newer active")
+            Some("current item")
         );
         let rendered = projection
-            .queued_waiting
+            .queued_blocked
             .iter()
             .map(|item| item.delivery_target.as_str())
             .collect::<Vec<_>>();
@@ -1201,14 +1223,16 @@ mod tests {
         let storage = AppStorage::new(dir.path()).unwrap();
 
         let mut waiting_old =
-            WorkItemRecord::new("default", "older waiting anchor", WorkItemStatus::Waiting);
+            WorkItemRecord::new("default", "older waiting anchor", WorkItemState::Open);
+        waiting_old.blocked_by = Some("old wait".into());
         waiting_old.updated_at = Utc::now() - chrono::Duration::minutes(2);
 
         let mut waiting_new =
-            WorkItemRecord::new("default", "newer waiting anchor", WorkItemStatus::Waiting);
+            WorkItemRecord::new("default", "newer waiting anchor", WorkItemState::Open);
+        waiting_new.blocked_by = Some("new wait".into());
         waiting_new.updated_at = Utc::now();
 
-        let mut queued = WorkItemRecord::new("default", "queued follow-up", WorkItemStatus::Queued);
+        let mut queued = WorkItemRecord::new("default", "queued follow-up", WorkItemState::Open);
         queued.created_at = Utc::now() + chrono::Duration::minutes(1);
         queued.updated_at = queued.created_at;
 
@@ -1223,7 +1247,7 @@ mod tests {
         );
         let projection = storage.work_queue_prompt_projection().unwrap();
         let rendered = projection
-            .queued_waiting
+            .queued_blocked
             .iter()
             .map(|item| item.delivery_target.as_str())
             .collect::<Vec<_>>();
@@ -1235,6 +1259,6 @@ mod tests {
                 "newer waiting anchor"
             ]
         );
-        assert!(projection.active.is_none());
+        assert!(projection.current.is_none());
     }
 }

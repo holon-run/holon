@@ -534,7 +534,7 @@ The proposed tool surface is:
 `CompleteWorkItem` marks a work item done and optionally records the completion
 summary.
 
-`GetActiveWorkItem`, `GetWorkItem`, and `ListWorkItems` provide explicit read
+`GetWorkItem` and `ListWorkItems` provide explicit read
 access so the prompt projection does not become a hidden database query surface.
 Agents should prefer these read tools before switching, completing, or expanding
 cross-turn work.
@@ -638,7 +638,6 @@ The initial `CompleteWorkItem` shape should be:
 
 The initial read shapes should be:
 
-- `GetActiveWorkItem(include_plan?)`
 - `GetWorkItem(work_item_id, include_plan?)`
 - `ListWorkItems(filter?, limit?, include_plan?)`
 
@@ -650,13 +649,15 @@ Useful initial filters are:
 - blocked open work items
 - done work items
 
-The first rollout can expose this read surface before replacing the legacy
-write tools. During that transition, read results should translate the existing
-stored statuses into the target model:
+The first rollout removes the old status-writing surface in one pass. Read
+results expose `open` and `done` lifecycle state, plus a derived `focus` view:
 
-- `active`, `queued`, and `waiting` are presented as `open`
-- `completed` is presented as `done`
-- `current_work_item_id` is presented as focus, separate from lifecycle
+- `current`
+- `queued`
+- `blocked`
+- `done`
+
+`current_work_item_id` is presented as focus, separate from lifecycle.
 
 ### Work-plan update semantics
 

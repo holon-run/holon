@@ -34,7 +34,8 @@ use crate::{
         AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentVisibility,
         ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord, ExternalTriggerStatus,
         OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord, TaskStatus, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WorkspaceEntry, WorkspaceOccupancyRecord,
+        TranscriptEntryKind, TrustLevel, WorkItemRecord, WorkPlanItem, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -259,20 +260,10 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
         delivery_target: String,
-        summary: Option<String>,
-        progress_note: Option<String>,
-        parent_id: Option<String>,
     ) -> std::result::Result<(RuntimeHandle, crate::types::WorkItemRecord), PublicAgentError> {
         let runtime = self.get_public_agent(agent_id).await?;
-        let record = runtime
-            .update_work_item(
-                None,
-                delivery_target,
-                crate::types::WorkItemStatus::Queued,
-                summary,
-                progress_note,
-                parent_id,
-            )
+        let (record, _) = runtime
+            .create_work_item(delivery_target, None)
             .await
             .map_err(PublicAgentError::Runtime)?;
         Ok((runtime, record))
@@ -1232,6 +1223,18 @@ impl RuntimeHostBridge {
     pub(crate) async fn child_turn_index(&self, agent_id: &str) -> Result<u64> {
         let runtime = self.host()?.get_or_create_agent(agent_id).await?;
         Ok(runtime.agent_state().await?.turn_index)
+    }
+
+    pub(crate) async fn create_child_work_item(
+        &self,
+        agent_id: &str,
+        delivery_target: String,
+        plan: Option<Vec<WorkPlanItem>>,
+    ) -> Result<WorkItemRecord> {
+        let runtime = self.host()?.get_or_create_agent(agent_id).await?;
+        let (work_item, _) = runtime.create_work_item(delivery_target, plan).await?;
+        let (_, current) = runtime.pick_work_item(work_item.id.clone()).await?;
+        Ok(current)
     }
 
     pub(crate) async fn record_operator_notification(

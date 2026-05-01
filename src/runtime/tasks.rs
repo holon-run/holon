@@ -4,10 +4,11 @@ use crate::runtime::task_state_reducer::has_blocking_active_tasks;
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
-    AgentProfilePreset, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot, FailureArtifact,
-    FailureArtifactCategory, SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind,
-    TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot,
-    TaskStatusSnapshot, ToolArtifactRef, WorkItemRecord, WorkItemStatus, WorkPlanItem,
+    AgentProfilePreset, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot, DeliverySummaryRecord,
+    FailureArtifact, FailureArtifactCategory, SpawnAgentResult, SpawnAgentWorkItemRequest,
+    TaskHandle, TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult,
+    TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, ToolArtifactRef,
+    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkItemState, WorkPlanItem,
     WorkPlanSnapshot, CHILD_AGENT_TASK_KIND,
 };
 use std::collections::BTreeMap;
@@ -222,6 +223,7 @@ impl RuntimeHandle {
         agent_id: Option<String>,
         worktree: bool,
         template: Option<String>,
+        work_item: Option<SpawnAgentWorkItemRequest>,
     ) -> Result<SpawnAgentResult> {
         if !self.supports_child_agent_spawning() {
             return Err(anyhow::Error::from(
@@ -246,6 +248,23 @@ impl RuntimeHandle {
 
         match preset {
             AgentProfilePreset::PrivateChild => {
+                let parent_work_item = match work_item.as_ref() {
+                    Some(request) => {
+                        let parent_agent_id = self.agent_id().await?;
+                        let record = self.validate_owned_work_item(
+                            &parent_agent_id,
+                            &request.parent_work_item_id,
+                        )?;
+                        if record.state == WorkItemState::Done {
+                            return Err(anyhow!(
+                                "cannot delegate from done work item {}",
+                                request.parent_work_item_id
+                            ));
+                        }
+                        Some(record)
+                    }
+                    None => None,
+                };
                 let task = self
                     .create_child_supervision_task(summary, prompt.clone(), trust.clone(), worktree)
                     .await?;
@@ -285,6 +304,31 @@ impl RuntimeHandle {
                     to_json_value(&queued_task),
                 ))?;
 
+                let delegation = if let (Some(request), Some(parent_work_item)) =
+                    (work_item, parent_work_item)
+                {
+                    let child_delivery_target = request
+                        .child_delivery_target
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| {
+                            queued_task
+                                .summary
+                                .clone()
+                                .unwrap_or_else(|| parent_work_item.delivery_target.clone())
+                        });
+                    Some(
+                        self.create_child_work_item_delegation(
+                            parent_work_item,
+                            spawned.child_agent_id.clone(),
+                            child_delivery_target,
+                            request.child_plan,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+
                 let runtime = self.clone();
                 let task_record = queued_task.clone();
                 let task_id = queued_task.id.clone();
@@ -317,9 +361,23 @@ impl RuntimeHandle {
                         "spawned private child agent {} with supervising task handle",
                         spawned.child_agent_id
                     )),
+                    delegation_id: delegation
+                        .as_ref()
+                        .map(|delegation| delegation.delegation_id.clone()),
+                    parent_work_item_id: delegation
+                        .as_ref()
+                        .map(|delegation| delegation.parent_work_item_id.clone()),
+                    child_work_item_id: delegation
+                        .as_ref()
+                        .map(|delegation| delegation.child_work_item_id.clone()),
                 })
             }
             AgentProfilePreset::PublicNamed => {
+                if work_item.is_some() {
+                    return Err(anyhow!(
+                        "SpawnAgent public_named does not support work-item delegation"
+                    ));
+                }
                 let agent_id = agent_id
                     .ok_or_else(|| anyhow!("public_named spawn requires a stable agent id"))?;
                 if worktree {
@@ -339,6 +397,9 @@ impl RuntimeHandle {
                         "spawned public named agent {} without a supervising task handle",
                         spawned_agent_id
                     )),
+                    delegation_id: None,
+                    parent_work_item_id: None,
+                    child_work_item_id: None,
                 })
             }
         }
@@ -876,6 +937,24 @@ impl RuntimeHandle {
             }
         }
 
+        let delegation = self
+            .inner
+            .storage
+            .open_work_item_delegation_for_child(&child_agent_id)?;
+        if let Some(delegation) = delegation.as_ref() {
+            let completed = WorkItemDelegationRecord {
+                state: WorkItemDelegationState::Done,
+                result_summary: Some(text.clone()),
+                updated_at: Utc::now(),
+                ..delegation.clone()
+            };
+            self.inner.storage.append_work_item_delegation(&completed)?;
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_delegation_completed",
+                serde_json::to_value(&completed)?,
+            ))?;
+        }
+
         let mut metadata = serde_json::json!({
             "task_id": task_record.id,
             "task_kind": task_record.kind,
@@ -884,6 +963,12 @@ impl RuntimeHandle {
             "task_recovery": task_record.recovery,
             "task_detail": task_detail,
         });
+        if let Some(delegation) = delegation.as_ref() {
+            metadata["delegation_id"] = serde_json::json!(delegation.delegation_id.clone());
+            metadata["work_item_id"] = serde_json::json!(delegation.parent_work_item_id.clone());
+            metadata["child_work_item_id"] =
+                serde_json::json!(delegation.child_work_item_id.clone());
+        }
         if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
             metadata["worktree"] = worktree;
         }
@@ -1824,61 +1909,155 @@ impl RuntimeHandle {
         Ok(stopped)
     }
 
-    pub async fn update_work_item(
+    pub async fn create_work_item(
         &self,
-        work_item_id: Option<String>,
         delivery_target: String,
-        status: WorkItemStatus,
-        summary: Option<String>,
-        progress_note: Option<String>,
-        parent_id: Option<String>,
-    ) -> Result<WorkItemRecord> {
+        plan: Option<Vec<WorkPlanItem>>,
+    ) -> Result<(WorkItemRecord, Option<WorkPlanSnapshot>)> {
         let agent_id = self.agent_id().await?;
-        let (action, record) = if let Some(work_item_id) = work_item_id {
-            let existing = self
-                .inner
-                .storage
-                .latest_work_item(&work_item_id)?
-                .ok_or_else(|| anyhow!("unknown work item {}", work_item_id))?;
-            if existing.agent_id != agent_id {
-                return Err(anyhow!(
-                    "work item {} belongs to another agent",
-                    work_item_id
-                ));
-            }
-            (
-                "updated",
-                WorkItemRecord {
-                    id: existing.id,
-                    agent_id,
-                    workspace_id: existing.workspace_id,
-                    parent_id,
-                    delivery_target,
-                    status,
-                    summary,
-                    progress_note,
-                    created_at: existing.created_at,
-                    updated_at: Utc::now(),
-                },
-            )
-        } else {
-            let mut record = WorkItemRecord::new(agent_id, delivery_target, status);
-            record.workspace_id = self
-                .agent_state()
-                .await?
-                .active_workspace_entry
-                .map(|entry| entry.workspace_id)
-                .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
-            record.summary = summary;
-            record.progress_note = progress_note;
-            record.parent_id = parent_id;
-            ("created", record)
-        };
+        let mut record =
+            WorkItemRecord::new(agent_id.clone(), delivery_target, WorkItemState::Open);
+        record.workspace_id = self
+            .agent_state()
+            .await?
+            .active_workspace_entry
+            .map(|entry| entry.workspace_id)
+            .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
         self.inner.storage.append_work_item(&record)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_written",
             serde_json::json!({
-                "action": action,
+                "action": "created",
+                "record": record,
+            }),
+        ))?;
+        let plan = match plan {
+            Some(items) => Some(self.update_work_plan(record.id.clone(), items).await?),
+            None => None,
+        };
+        self.inner.notify.notify_one();
+        Ok((record, plan))
+    }
+
+    pub async fn pick_work_item(
+        &self,
+        work_item_id: String,
+    ) -> Result<(Option<WorkItemRecord>, WorkItemRecord)> {
+        let agent_id = self.agent_id().await?;
+        let current_id = self.agent_state().await?.current_work_item_id;
+        let previous = match current_id.as_deref() {
+            Some(id) => self.inner.storage.latest_work_item(id)?,
+            None => None,
+        };
+        let record = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        if record.state == WorkItemState::Done {
+            return Err(anyhow!("cannot pick done work item {}", work_item_id));
+        }
+        {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state.current_work_item_id = Some(record.id.clone());
+            guard.state.current_turn_work_item_id = Some(record.id.clone());
+            self.inner.storage.write_agent(&guard.state)?;
+        }
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_picked",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "previous_work_item_id": current_id,
+                "current_work_item_id": record.id,
+            }),
+        ))?;
+        Ok((previous, record))
+    }
+
+    pub async fn update_work_item_fields(
+        &self,
+        work_item_id: String,
+        blocked_by: Option<Option<String>>,
+        plan: Option<Vec<WorkPlanItem>>,
+    ) -> Result<(WorkItemRecord, Option<WorkPlanSnapshot>)> {
+        let agent_id = self.agent_id().await?;
+        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        if existing.state == WorkItemState::Done {
+            return Err(anyhow!("cannot update done work item {}", work_item_id));
+        }
+        let mut record = existing.clone();
+        let mut wrote_item = false;
+        if let Some(blocked_by) = blocked_by {
+            record.blocked_by = blocked_by;
+            record.updated_at = Utc::now();
+            self.inner.storage.append_work_item(&record)?;
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_written",
+                serde_json::json!({
+                    "action": "updated",
+                    "record": record,
+                }),
+            ))?;
+            wrote_item = true;
+        }
+        let plan = match plan {
+            Some(items) => Some(self.update_work_plan(work_item_id, items).await?),
+            None => None,
+        };
+        if wrote_item || plan.is_some() {
+            self.inner.notify.notify_one();
+        }
+        Ok((record, plan))
+    }
+
+    pub async fn complete_work_item(
+        &self,
+        work_item_id: String,
+        result_summary: Option<String>,
+    ) -> Result<WorkItemRecord> {
+        let agent_id = self.agent_id().await?;
+        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        if existing.state == WorkItemState::Done {
+            return Ok(existing);
+        }
+        let has_blocking_tasks = {
+            let guard = self.inner.agent.lock().await;
+            has_blocking_active_tasks(&self.inner.storage, &guard.state.active_task_ids)?
+        };
+        if has_blocking_tasks {
+            return Err(anyhow!(
+                "cannot complete work item {} while blocking tasks are active",
+                work_item_id
+            ));
+        }
+        let record = WorkItemRecord {
+            state: WorkItemState::Done,
+            blocked_by: None,
+            updated_at: Utc::now(),
+            ..existing
+        };
+        self.inner.storage.append_work_item(&record)?;
+        if let Some(result_summary) = result_summary {
+            self.inner
+                .storage
+                .append_delivery_summary(&DeliverySummaryRecord::new(
+                    agent_id.clone(),
+                    record.id.clone(),
+                    result_summary,
+                    None,
+                    None,
+                ))?;
+        }
+        {
+            let mut guard = self.inner.agent.lock().await;
+            if guard.state.current_work_item_id.as_deref() == Some(record.id.as_str()) {
+                guard.state.current_work_item_id = None;
+            }
+            if guard.state.current_turn_work_item_id.as_deref() == Some(record.id.as_str()) {
+                guard.state.current_turn_work_item_id = None;
+            }
+            self.inner.storage.write_agent(&guard.state)?;
+        }
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_written",
+            serde_json::json!({
+                "action": "completed",
                 "record": record,
             }),
         ))?;
@@ -1911,6 +2090,56 @@ impl RuntimeHandle {
             to_json_value(&snapshot),
         ))?;
         Ok(snapshot)
+    }
+
+    fn validate_owned_work_item(
+        &self,
+        agent_id: &str,
+        work_item_id: &str,
+    ) -> Result<WorkItemRecord> {
+        let record = self
+            .inner
+            .storage
+            .latest_work_item(work_item_id)?
+            .ok_or_else(|| anyhow!("unknown work item {}", work_item_id))?;
+        if record.agent_id != agent_id {
+            return Err(anyhow!(
+                "work item {} belongs to another agent",
+                work_item_id
+            ));
+        }
+        Ok(record)
+    }
+
+    async fn create_child_work_item_delegation(
+        &self,
+        parent_work_item: WorkItemRecord,
+        child_agent_id: String,
+        child_delivery_target: String,
+        child_plan: Option<Vec<WorkPlanItem>>,
+    ) -> Result<WorkItemDelegationRecord> {
+        let bridge = self
+            .inner
+            .host_bridge
+            .clone()
+            .ok_or_else(|| anyhow!("runtime host is required for work-item delegation"))?;
+        let child_work_item = bridge
+            .create_child_work_item(&child_agent_id, child_delivery_target, child_plan)
+            .await?;
+        let delegation = WorkItemDelegationRecord::new(
+            parent_work_item.agent_id,
+            parent_work_item.id,
+            child_agent_id,
+            child_work_item.id,
+        );
+        self.inner
+            .storage
+            .append_work_item_delegation(&delegation)?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_delegation_created",
+            serde_json::to_value(&delegation)?,
+        ))?;
+        Ok(delegation)
     }
 }
 

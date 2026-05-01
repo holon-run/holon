@@ -206,12 +206,11 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
         lines.push("  No work items".into());
     } else {
         for item in projection.work_items.iter().take(3) {
-            let summary = item
-                .summary
-                .as_deref()
-                .or(item.progress_note.as_deref())
-                .unwrap_or(item.id.as_str());
-            lines.push(format!("  - [{:?}] {}", item.status, trim(summary, 40)));
+            lines.push(format!(
+                "  - [{:?}] {}",
+                item.state,
+                trim(&item.delivery_target, 40)
+            ));
         }
     }
     if let Some(plan) = projection.work_plan.as_ref() {
@@ -963,7 +962,7 @@ mod tests {
                     phase: ChildAgentPhase::Running,
                     blocked_reason: None,
                     waiting_reason: None,
-                    active_work_item_id: Some("work-1".into()),
+                    current_work_item_id: Some("work-1".into()),
                     work_summary: Some("child running".into()),
                     last_progress_brief: None,
                     last_result_brief: None,

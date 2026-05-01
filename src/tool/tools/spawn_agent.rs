@@ -7,10 +7,14 @@ use crate::{
     host_registry::validate_agent_id_format,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AgentProfilePreset, ToolCapabilityFamily, TrustLevel},
+    types::{AgentProfilePreset, SpawnAgentWorkItemRequest, ToolCapabilityFamily, TrustLevel},
 };
 
-use super::{serialize_success, BuiltinToolDefinition};
+use super::{
+    serialize_success,
+    work_item_action::{convert_plan, WorkPlanItemArgs},
+    BuiltinToolDefinition,
+};
 use crate::tool::helpers::{
     invalid_tool_input, normalize_optional_non_empty, parse_tool_args, validate_non_empty,
 };
@@ -42,6 +46,18 @@ pub(crate) struct SpawnAgentArgs {
     pub(crate) agent_id: Option<String>,
     pub(crate) template: Option<String>,
     pub(crate) workspace_mode: Option<SpawnAgentWorkspaceMode>,
+    #[serde(default)]
+    pub(crate) work_item: Option<SpawnAgentWorkItemArgs>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SpawnAgentWorkItemArgs {
+    pub(crate) parent_work_item_id: String,
+    #[serde(default)]
+    pub(crate) child_delivery_target: Option<String>,
+    #[serde(default)]
+    pub(crate) child_plan: Option<Vec<WorkPlanItemArgs>>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -74,6 +90,25 @@ pub(crate) async fn execute(
     };
     let agent_id = normalize_optional_non_empty(args.agent_id);
     let template = normalize_optional_non_empty(args.template);
+    let work_item = args
+        .work_item
+        .map(|work_item| {
+            Ok::<_, anyhow::Error>(SpawnAgentWorkItemRequest {
+                parent_work_item_id: validate_non_empty(
+                    work_item.parent_work_item_id,
+                    NAME,
+                    "parent_work_item_id",
+                )?,
+                child_delivery_target: normalize_optional_non_empty(
+                    work_item.child_delivery_target,
+                ),
+                child_plan: work_item
+                    .child_plan
+                    .map(|plan| convert_plan(NAME, plan))
+                    .transpose()?,
+            })
+        })
+        .transpose()?;
 
     match preset {
         AgentProfilePreset::PrivateChild => {
@@ -139,6 +174,7 @@ pub(crate) async fn execute(
             agent_id,
             worktree,
             template,
+            work_item,
         )
         .await?;
     serialize_success(NAME, &result)

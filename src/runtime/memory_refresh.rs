@@ -18,20 +18,20 @@ enum IdleTickTrigger {
 pub(super) fn work_queue_reactivation_signal(
     projection: &WorkQueuePromptProjection,
 ) -> Option<WorkReactivationSignal> {
-    if let Some(active) = projection.active.as_ref() {
+    if let Some(current) = projection.current.as_ref() {
         return Some(WorkReactivationSignal {
-            work_item_id: active.id.clone(),
-            status: active.status.clone(),
+            work_item_id: current.id.clone(),
+            state: current.state.clone(),
             reactivation_mode: WorkReactivationMode::ContinueActive,
         });
     }
     projection
-        .queued_waiting
+        .queued_blocked
         .iter()
-        .find(|item| item.status == crate::types::WorkItemStatus::Queued)
+        .find(|item| item.blocked_by.is_none())
         .map(|queued| WorkReactivationSignal {
             work_item_id: queued.id.clone(),
-            status: queued.status.clone(),
+            state: queued.state.clone(),
             reactivation_mode: WorkReactivationMode::ActivateQueued,
         })
 }
@@ -42,13 +42,13 @@ fn idle_tick_trigger_from_state(
 ) -> Option<IdleTickTrigger> {
     if let Some(pending) = pending_wake_hint {
         Some(IdleTickTrigger::WakeHint(pending))
-    } else if let Some(active) = projection.active {
-        Some(IdleTickTrigger::WorkQueueActive(active))
+    } else if let Some(current) = projection.current {
+        Some(IdleTickTrigger::WorkQueueActive(current))
     } else {
         projection
-            .queued_waiting
+            .queued_blocked
             .into_iter()
-            .find(|item| item.status == crate::types::WorkItemStatus::Queued)
+            .find(|item| item.blocked_by.is_none())
             .map(IdleTickTrigger::WorkQueueQueued)
     }
 }
@@ -386,7 +386,7 @@ impl RuntimeHandle {
                         work_item.delivery_target
                     )
                 } else {
-                    format!("Continue active work item: {}", work_item.delivery_target)
+                    format!("Continue current work item: {}", work_item.delivery_target)
                 },
             },
         )
@@ -399,7 +399,7 @@ impl RuntimeHandle {
                 "reason": reason,
                 "work_item_id": work_item.id,
                 "delivery_target": work_item.delivery_target,
-                "status": work_item.status,
+                "state": work_item.state,
                 "activated_from_queue": activated_from_queue,
             }
         }));
@@ -423,35 +423,27 @@ impl RuntimeHandle {
         work_item_id: &str,
     ) -> Result<Option<crate::types::WorkItemRecord>> {
         let projection = self.inner.storage.work_queue_prompt_projection()?;
-        if projection.active.is_some() {
+        if projection.current.is_some() {
             return Ok(None);
         }
 
         let Some(latest) = self.inner.storage.latest_work_item(work_item_id)? else {
             return Ok(None);
         };
-        if latest.status != crate::types::WorkItemStatus::Queued {
+        if latest.state != crate::types::WorkItemState::Open || latest.blocked_by.is_some() {
             return Ok(None);
         }
-
-        let record = crate::types::WorkItemRecord {
-            id: latest.id.clone(),
-            agent_id: latest.agent_id.clone(),
-            workspace_id: latest.workspace_id.clone(),
-            parent_id: latest.parent_id.clone(),
-            delivery_target: latest.delivery_target.clone(),
-            status: crate::types::WorkItemStatus::Active,
-            summary: latest.summary.clone(),
-            progress_note: latest.progress_note.clone(),
-            created_at: latest.created_at,
-            updated_at: chrono::Utc::now(),
-        };
-        self.inner.storage.append_work_item(&record)?;
+        let record = latest.clone();
+        {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state.current_work_item_id = Some(record.id.clone());
+            self.inner.storage.write_agent(&guard.state)?;
+        }
         self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_written",
+            "work_item_picked",
             serde_json::json!({
                 "action": "queue_activated",
-                "record": record,
+                "current_work_item_id": record.id,
             }),
         ))?;
         self.inner.storage.append_event(&AuditEvent::new(
@@ -574,7 +566,7 @@ mod tests {
     use crate::context::ContextConfig;
     use crate::provider::StubProvider;
     use crate::types::{
-        AgentStatus, WorkItemRecord, WorkItemStatus, WorkPlanItem, WorkPlanSnapshot,
+        AgentStatus, WorkItemRecord, WorkItemState, WorkPlanItem, WorkPlanSnapshot,
     };
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
@@ -631,11 +623,9 @@ mod tests {
             id: id.to_string(),
             agent_id: "default".to_string(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.to_string(),
-            parent_id: None,
             delivery_target: target.to_string(),
-            status: WorkItemStatus::Queued,
-            summary: Some("Test work item".to_string()),
-            progress_note: None,
+            state: WorkItemState::Open,
+            blocked_by: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
@@ -648,16 +638,14 @@ mod tests {
         record
     }
 
-    fn add_active_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
+    fn add_current_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
         let record = WorkItemRecord {
             id: id.to_string(),
             agent_id: "default".to_string(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.to_string(),
-            parent_id: None,
             delivery_target: target.to_string(),
-            status: WorkItemStatus::Active,
-            summary: Some("Test work item".to_string()),
-            progress_note: None,
+            state: WorkItemState::Open,
+            blocked_by: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
@@ -666,6 +654,14 @@ mod tests {
             .inner
             .storage
             .append_work_item(&record)
+            .unwrap();
+        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
+        guard.state.current_work_item_id = Some(record.id.clone());
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .write_agent(&guard.state)
             .unwrap();
         record
     }
@@ -761,13 +757,13 @@ mod tests {
     }
 
     #[test]
-    fn pending_wake_hint_takes_precedence_over_active_work_item() {
+    fn pending_wake_hint_takes_precedence_over_current_work_item() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
-        // Add both a wake hint and an active work item
+        // Add both a wake hint and an current work item
         set_wake_hint(&test_runtime, "wake-test");
-        add_active_work_item(&test_runtime, "wi-active", "active-target");
+        add_current_work_item(&test_runtime, "wi-active", "active-target");
 
         // Emit system tick
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -790,12 +786,12 @@ mod tests {
     }
 
     #[test]
-    fn active_work_item_takes_precedence_over_queued_activation() {
+    fn current_work_item_takes_precedence_over_queued_activation() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
         // Add both active and queued work items
-        add_active_work_item(&test_runtime, "wi-active", "active-target");
+        add_current_work_item(&test_runtime, "wi-active", "active-target");
         add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
 
         // Emit system tick
@@ -824,8 +820,8 @@ mod tests {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
-        // Create an active work item first
-        add_active_work_item(&test_runtime, "wi-active", "active-target");
+        // Create an current work item first
+        add_current_work_item(&test_runtime, "wi-active", "active-target");
 
         // Try to manually activate a queued item - should fail
         let queued_id = "wi-queued";
@@ -849,10 +845,10 @@ mod tests {
             .work_queue_prompt_projection()
             .unwrap();
         assert!(
-            projection.active.is_some(),
+            projection.current.is_some(),
             "Active item should still exist"
         );
-        assert_eq!(projection.active.unwrap().id, "wi-active");
+        assert_eq!(projection.current.unwrap().id, "wi-active");
     }
 
     #[test]
@@ -879,9 +875,9 @@ mod tests {
             .storage
             .read_recent_events(100)
             .unwrap();
-        let written_events: Vec<_> = events
+        let picked_events: Vec<_> = events
             .iter()
-            .filter(|e| e.kind == "work_item_written")
+            .filter(|e| e.kind == "work_item_picked")
             .filter(|e| {
                 e.data
                     .get("action")
@@ -892,8 +888,8 @@ mod tests {
             .collect();
 
         assert!(
-            !written_events.is_empty(),
-            "work_item_written event should be emitted"
+            !picked_events.is_empty(),
+            "work_item_picked event should be emitted"
         );
 
         let activated_events: Vec<_> = events
@@ -908,7 +904,7 @@ mod tests {
 
         // Verify the activated record
         let activated_record = activated.unwrap();
-        assert_eq!(activated_record.status, WorkItemStatus::Active);
+        assert_eq!(activated_record.state, WorkItemState::Open);
         assert_eq!(activated_record.id, queued_id);
     }
 
@@ -1114,7 +1110,7 @@ mod tests {
 
         // Wake hint should be processed before work items
         set_wake_hint(&test_runtime, "wake-first");
-        add_active_work_item(&test_runtime, "wi-active", "active-target");
+        add_current_work_item(&test_runtime, "wi-active", "active-target");
         add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1134,8 +1130,8 @@ mod tests {
         let test_runtime = test_runtime();
         set_agent_status(&test_runtime, AgentStatus::Asleep);
 
-        // Without wake hint, active work item should be prioritized
-        add_active_work_item(&test_runtime, "wi-active", "active-target");
+        // Without wake hint, current work item should be prioritized
+        add_current_work_item(&test_runtime, "wi-active", "active-target");
         add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1158,7 +1154,7 @@ mod tests {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
-        let active = add_active_work_item(&test_runtime, "wi-active", "active-target");
+        let active = add_current_work_item(&test_runtime, "wi-active", "active-target");
         append_result_brief_for_work_item(&test_runtime, &active.id, "Already answered.");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1194,7 +1190,7 @@ mod tests {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
-        let active = add_active_work_item(&test_runtime, "wi-active", "active-target");
+        let active = add_current_work_item(&test_runtime, "wi-active", "active-target");
         append_result_brief_for_work_item(&test_runtime, &active.id, "Initial result.");
 
         let message = MessageEnvelope::new(
@@ -1235,7 +1231,7 @@ mod tests {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
-        let active = add_active_work_item(&test_runtime, "wi-active", "active-target");
+        let active = add_current_work_item(&test_runtime, "wi-active", "active-target");
         test_runtime
             .runtime
             .inner

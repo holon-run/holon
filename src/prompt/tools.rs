@@ -57,24 +57,25 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_external_trigger",
             PromptStability::Stable,
-            "Use CreateExternalTrigger and CancelExternalTrigger as waiting-plane tools for external trigger capabilities. Use CreateExternalTrigger when an external system needs a scoped trigger URL to wake or re-enter the agent later. Before creating an external-trigger wait, make sure the current cross-turn task already has a durable work item anchor via UpdateWorkItem. Prefer delivery_mode=wake_only when the external system only knows that something changed, and delivery_mode=enqueue_message when it can send meaningful content. Use CancelExternalTrigger once that external watch is no longer useful, and proactively cancel stale waiting intents when the active task, tracked target, or waiting condition changes so external triggers do not accumulate forever.".to_string(),
+            "Use CreateExternalTrigger and CancelExternalTrigger as waiting-plane tools for external trigger capabilities. Use CreateExternalTrigger when an external system needs a scoped trigger URL to wake or re-enter the agent later. Before creating an external-trigger wait, make sure the current cross-turn task already has a durable work item anchor via CreateWorkItem or PickWorkItem. Prefer delivery_mode=wake_only when the external system only knows that something changed, and delivery_mode=enqueue_message when it can send meaningful content. Use CancelExternalTrigger once that external watch is no longer useful, and proactively cancel stale waiting intents when the current task, tracked target, or waiting condition changes so external triggers do not accumulate forever.".to_string(),
         ));
     }
-    if names.contains(&"UpdateWorkItem") || names.contains(&"UpdateWorkPlan") {
+    if names.contains(&"CreateWorkItem")
+        || names.contains(&"PickWorkItem")
+        || names.contains(&"UpdateWorkItem")
+        || names.contains(&"CompleteWorkItem")
+    {
         sections.push(section(
             "tool_work_item_write",
             PromptStability::Stable,
-            "Use UpdateWorkItem to explicitly create or refresh the current high-level work container once the message-driven turn has clarified what the delivery target really is. If the current task is not just a brief answer and there is no active work item yet, do not skip straight to execution: first clarify the delivery target with the operator if it is still ambiguous, otherwise create or refresh the active work item before doing commands or edits. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. Omit `id` when creating a new work item; include it when replacing the latest snapshot of an existing one. Prefer refreshing the current active work item instead of creating a new one unless the delivery target has actually changed. Use UpdateWorkPlan only when a work item already exists, and for genuine multi-step work default to updating the plan before execution. Always submit the full current checklist snapshot rather than patching individual steps. When an exploration or inspection step has served its objective, update the work plan before continuing. If the current step remains in_progress, record the specific blocker or missing fact in progress_note instead of silently widening exploration. Keep delivery_target stable, keep summary concise, and use progress_note only for the latest meaningful checkpoint or blocker.".to_string(),
+            "Use CreateWorkItem to create a new open delivery target, PickWorkItem to make an existing open item current, UpdateWorkItem to replace blocked_by and/or the full plan snapshot, and CompleteWorkItem only when the delivery target is actually done. If the current task is not just a brief answer and there is no current work item yet, first clarify the delivery target with the operator if it is still ambiguous; otherwise create and pick the work item before doing commands or edits. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, include or update the plan before execution and always submit the full current checklist snapshot rather than patching individual steps. When an exploration or inspection step has served its objective, update the work plan before continuing. If the current step remains doing, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Keep delivery_target stable and complete explicitly when done.".to_string(),
         ));
     }
-    if names.contains(&"GetActiveWorkItem")
-        || names.contains(&"GetWorkItem")
-        || names.contains(&"ListWorkItems")
-    {
+    if names.contains(&"GetWorkItem") || names.contains(&"ListWorkItems") {
         sections.push(section(
             "tool_work_item_read",
             PromptStability::Stable,
-            "Use GetActiveWorkItem to inspect the current work-item focus before relying on memory briefs. Use GetWorkItem when you already know the id and need its open/done state, focus flag, and optional plan. Use ListWorkItems for queue inspection with filters such as open, done, current, queued, and blocked. Treat current_work_item_id as focus, not lifecycle; open/done describes completion, while current/queued/blocked is the scheduling view. Read the work-item surface before switching, completing, or expanding cross-turn work so the next action is anchored to the right delivery target.".to_string(),
+            "Use ListWorkItems with filter=current to inspect the current work-item focus before relying on memory briefs. Use GetWorkItem when you already know the id and need its open/done state, focus flag, and optional plan. Use ListWorkItems for queue inspection with filters such as open, done, current, queued, and blocked. Treat current_work_item_id as focus, not lifecycle; open/done describes completion, while current/queued/blocked is the scheduling view. Read the work-item surface before switching, completing, or expanding cross-turn work so the next action is anchored to the right delivery target.".to_string(),
         ));
     }
     if names.contains(&"TaskList")
@@ -261,7 +262,7 @@ mod tests {
     #[test]
     fn test_work_item_write_section_emitted_when_available() {
         let tools = vec![ToolSpec {
-            name: "UpdateWorkItem".into(),
+            name: "CreateWorkItem".into(),
             description: String::new(),
             input_schema: json!({}),
             freeform_grammar: None,
@@ -271,13 +272,13 @@ mod tests {
             .iter()
             .find(|s| s.name == "tool_work_item_write")
             .expect("work item write section");
-        assert!(section.content.contains("there is no active work item yet"));
+        assert!(section
+            .content
+            .contains("there is no current work item yet"));
         assert!(section
             .content
             .contains("clarify the delivery target with the operator"));
-        assert!(section
-            .content
-            .contains("updating the plan before execution"));
+        assert!(section.content.contains("update the plan before execution"));
         assert!(section
             .content
             .contains("exploration or inspection step has served its objective"));
@@ -291,7 +292,7 @@ mod tests {
     fn test_work_item_read_section_emitted_when_available() {
         let tools = vec![
             ToolSpec {
-                name: "GetActiveWorkItem".into(),
+                name: "GetWorkItem".into(),
                 description: String::new(),
                 input_schema: json!({}),
                 freeform_grammar: None,

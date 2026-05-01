@@ -60,8 +60,7 @@ use crate::{
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
         TimerRecord, TranscriptEntry, TrustLevel, TurnTerminalRecord, WaitingIntentRecord,
-        WorkItemRecord, WorkItemStatus, WorkPlanSnapshot, WorkspaceOccupancyRecord,
-        WorktreeSession,
+        WorkItemRecord, WorkItemState, WorkPlanSnapshot, WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -385,9 +384,6 @@ pub struct CreateCommandTaskRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateWorkItemRequest {
     pub delivery_target: String,
-    pub summary: Option<String>,
-    pub progress_note: Option<String>,
-    pub parent_id: Option<String>,
     pub trust: Option<TrustLevel>,
 }
 
@@ -786,16 +782,10 @@ pub async fn agent_state(
 
 fn sort_state_work_items(work_items: &mut [WorkItemRecord]) {
     work_items.sort_by(|left, right| {
-        state_work_item_rank(&left.status)
-            .cmp(&state_work_item_rank(&right.status))
+        state_work_item_rank(left)
+            .cmp(&state_work_item_rank(right))
             .then_with(|| {
-                if matches!(
-                    (&left.status, &right.status),
-                    (
-                        WorkItemStatus::Queued | WorkItemStatus::Waiting,
-                        WorkItemStatus::Queued | WorkItemStatus::Waiting
-                    )
-                ) {
+                if left.state == WorkItemState::Open && right.state == WorkItemState::Open {
                     left.created_at
                         .cmp(&right.created_at)
                         .then_with(|| left.updated_at.cmp(&right.updated_at))
@@ -810,12 +800,11 @@ fn sort_state_work_items(work_items: &mut [WorkItemRecord]) {
     });
 }
 
-fn state_work_item_rank(status: &WorkItemStatus) -> u8 {
-    match status {
-        WorkItemStatus::Active => 0,
-        WorkItemStatus::Queued => 1,
-        WorkItemStatus::Waiting => 2,
-        WorkItemStatus::Completed => 3,
+fn state_work_item_rank(item: &WorkItemRecord) -> u8 {
+    match item.state {
+        WorkItemState::Open if item.blocked_by.is_none() => 0,
+        WorkItemState::Open => 1,
+        WorkItemState::Done => 2,
     }
 }
 
@@ -827,20 +816,12 @@ fn select_state_work_plan_target(
         .and_then(|id| {
             work_items
                 .iter()
-                .find(|item| item.id == id && item.status != WorkItemStatus::Completed)
+                .find(|item| item.id == id && item.state != WorkItemState::Done)
         })
         .or_else(|| {
             work_items
                 .iter()
-                .find(|item| item.status == WorkItemStatus::Active)
-        })
-        .or_else(|| {
-            work_items.iter().find(|item| {
-                matches!(
-                    item.status,
-                    WorkItemStatus::Queued | WorkItemStatus::Waiting
-                )
-            })
+                .find(|item| item.state == WorkItemState::Open)
         })?;
     Some(selected.id.clone())
 }
@@ -857,29 +838,27 @@ fn state_workspace_snapshot(agent: &AgentSummary) -> StateWorkspaceSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{select_state_work_plan_target, sort_state_work_items};
-    use crate::types::{WorkItemRecord, WorkItemStatus};
+    use crate::types::{WorkItemRecord, WorkItemState};
     use chrono::{Duration, Utc};
 
     #[test]
     fn state_sort_preserves_queue_display_order() {
-        let mut active = WorkItemRecord::new("default", "active", WorkItemStatus::Active);
+        let mut active = WorkItemRecord::new("default", "active", WorkItemState::Open);
         active.updated_at = Utc::now() + Duration::minutes(5);
 
-        let mut queued_early =
-            WorkItemRecord::new("default", "queued first", WorkItemStatus::Queued);
+        let mut queued_early = WorkItemRecord::new("default", "queued first", WorkItemState::Open);
         queued_early.created_at = Utc::now();
         queued_early.updated_at = queued_early.created_at;
 
-        let mut queued_late =
-            WorkItemRecord::new("default", "queued second", WorkItemStatus::Queued);
+        let mut queued_late = WorkItemRecord::new("default", "queued second", WorkItemState::Open);
         queued_late.created_at = queued_early.created_at + Duration::minutes(1);
         queued_late.updated_at = queued_late.created_at;
 
-        let mut waiting = WorkItemRecord::new("default", "waiting", WorkItemStatus::Waiting);
+        let mut waiting = WorkItemRecord::new("default", "waiting", WorkItemState::Open);
         waiting.created_at = queued_late.created_at + Duration::minutes(1);
         waiting.updated_at = waiting.created_at;
 
-        let completed = WorkItemRecord::new("default", "completed", WorkItemStatus::Completed);
+        let completed = WorkItemRecord::new("default", "completed", WorkItemState::Done);
         let mut work_items = vec![
             waiting.clone(),
             completed,
@@ -912,10 +891,10 @@ mod tests {
         let queued_id = "queued-next".to_string();
 
         let mut completed =
-            WorkItemRecord::new("default", "completed bound item", WorkItemStatus::Completed);
+            WorkItemRecord::new("default", "completed bound item", WorkItemState::Done);
         completed.id = completed_id.clone();
 
-        let mut queued = WorkItemRecord::new("default", "queued next item", WorkItemStatus::Queued);
+        let mut queued = WorkItemRecord::new("default", "queued next item", WorkItemState::Open);
         queued.id = queued_id.clone();
 
         let work_items = vec![completed, queued];
@@ -1280,22 +1259,7 @@ pub async fn create_work_item(
     }
     let (runtime, record) = state
         .host
-        .enqueue_public_work_item(
-            &agent_id,
-            delivery_target,
-            request
-                .summary
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
-            request
-                .progress_note
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
-            request
-                .parent_id
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
-        )
+        .enqueue_public_work_item(&agent_id, delivery_target)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)

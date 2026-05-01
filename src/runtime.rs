@@ -400,12 +400,9 @@ impl RuntimeHandle {
         let mut guard = self.inner.agent.lock().await;
         guard.state.turn_index += 1;
         guard.state.last_turn_terminal = None;
-        guard.state.current_turn_work_item_id = self
-            .inner
-            .storage
-            .work_queue_prompt_projection()?
-            .active
-            .map(|item| item.id);
+        if guard.state.current_turn_work_item_id.is_none() {
+            guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
+        }
         guard.state.current_turn_operator_binding_id = operator_binding_id.and_then(|binding_id| {
             let binding_id = binding_id.trim();
             if binding_id.is_empty() {
@@ -924,7 +921,7 @@ mod tests {
             LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
             PendingWakeHint, Priority, TaskOutputRetrievalStatus, TaskRecord, TaskRecoverySpec,
             TaskStatus, TimerRecord, TimerStatus, TokenUsage, TrustLevel, TurnTerminalKind,
-            TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemStatus,
+            TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemState,
             WorkReactivationMode, WorkspaceEntry,
         },
     };
@@ -1317,34 +1314,37 @@ mod tests {
 
     async fn seed_bound_work_item(
         runtime: &RuntimeHandle,
-        status: WorkItemStatus,
+        state: WorkItemState,
         summary: Option<&str>,
-        progress_note: Option<&str>,
+        blocked_by: Option<&str>,
     ) -> String {
-        let created = runtime
-            .update_work_item(
-                None,
-                "finish the bound delivery target".into(),
-                WorkItemStatus::Active,
-                None,
-                None,
+        let (mut record, _) = runtime
+            .create_work_item(
+                summary
+                    .unwrap_or("finish the bound delivery target")
+                    .to_string(),
                 None,
             )
             .await
             .unwrap();
-        let updated = runtime
-            .update_work_item(
-                Some(created.id.clone()),
-                created.delivery_target.clone(),
-                status,
-                summary.map(str::to_string),
-                progress_note.map(str::to_string),
-                created.parent_id.clone(),
-            )
-            .await
-            .unwrap();
-        bind_turn_to_work_item(runtime, &updated.id).await;
-        updated.id
+        if let Some(blocked_by) = blocked_by {
+            (record, _) = runtime
+                .update_work_item_fields(
+                    record.id.clone(),
+                    Some(Some(blocked_by.to_string())),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        if state == WorkItemState::Done {
+            record = runtime
+                .complete_work_item(record.id.clone(), summary.map(str::to_string))
+                .await
+                .unwrap();
+        }
+        bind_turn_to_work_item(runtime, &record.id).await;
+        record.id
     }
 
     #[tokio::test]
@@ -1362,17 +1362,11 @@ mod tests {
         )
         .unwrap();
 
-        let active = runtime
-            .update_work_item(
-                None,
-                "finish active delivery".into(),
-                WorkItemStatus::Active,
-                Some("active summary".into()),
-                None,
-                None,
-            )
+        let (active, _) = runtime
+            .create_work_item("finish active delivery".into(), None)
             .await
             .unwrap();
+        runtime.pick_work_item(active.id.clone()).await.unwrap();
         runtime
             .update_work_plan(
                 active.id.clone(),
@@ -1383,26 +1377,16 @@ mod tests {
             )
             .await
             .unwrap();
-        let queued = runtime
-            .update_work_item(
-                None,
-                "queued delivery".into(),
-                WorkItemStatus::Queued,
-                None,
-                None,
-                None,
-            )
+        let (queued, _) = runtime
+            .create_work_item("queued delivery".into(), None)
+            .await
+            .unwrap();
+        let (completed, _) = runtime
+            .create_work_item("completed delivery".into(), None)
             .await
             .unwrap();
         let completed = runtime
-            .update_work_item(
-                None,
-                "completed delivery".into(),
-                WorkItemStatus::Completed,
-                None,
-                None,
-                None,
-            )
+            .complete_work_item(completed.id.clone(), None)
             .await
             .unwrap();
         bind_turn_to_work_item(&runtime, &active.id).await;
@@ -1415,33 +1399,22 @@ mod tests {
                 &TrustLevel::TrustedOperator,
                 &crate::tool::ToolCall {
                     id: "active".into(),
-                    name: "GetActiveWorkItem".into(),
-                    input: serde_json::json!({"include_plan": true}),
+                    name: "ListWorkItems".into(),
+                    input: serde_json::json!({"filter": "current", "include_plan": true}),
                 },
             )
             .await
             .unwrap();
         let active_payload = active_result.envelope.result.unwrap();
+        let active_item = &active_payload["work_items"][0];
         assert_eq!(
             active_payload["context"]["current_work_item_id"].as_str(),
             Some(active.id.as_str())
         );
-        assert_eq!(active_payload["work_item"]["state"].as_str(), Some("open"));
-        assert_eq!(
-            active_payload["work_item"]["focus"].as_str(),
-            Some("current")
-        );
-        assert_eq!(
-            active_payload["work_item"]["is_current"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            active_payload["work_item"]["plan"]["items"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
+        assert_eq!(active_item["state"].as_str(), Some("open"));
+        assert_eq!(active_item["focus"].as_str(), Some("current"));
+        assert_eq!(active_item["is_current"].as_bool(), Some(true));
+        assert_eq!(active_item["plan"]["items"].as_array().unwrap().len(), 1);
 
         let (list_result, _) = registry
             .execute(
@@ -1494,8 +1467,8 @@ mod tests {
                 &TrustLevel::TrustedOperator,
                 &crate::tool::ToolCall {
                     id: "fallback-active".into(),
-                    name: "GetActiveWorkItem".into(),
-                    input: serde_json::json!({}),
+                    name: "ListWorkItems".into(),
+                    input: serde_json::json!({"filter": "current"}),
                 },
             )
             .await
@@ -1506,7 +1479,7 @@ mod tests {
             Some(active.id.as_str())
         );
         assert_eq!(
-            fallback_payload["work_item"]["id"].as_str(),
+            fallback_payload["work_items"][0]["id"].as_str(),
             Some(active.id.as_str())
         );
     }
@@ -1550,7 +1523,7 @@ mod tests {
         )
         .unwrap();
 
-        let work_item_id = seed_bound_work_item(&runtime, WorkItemStatus::Active, None, None).await;
+        let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
 
         runtime
             .persist_brief(&BriefRecord::new(
@@ -1586,7 +1559,7 @@ mod tests {
         )
         .unwrap();
 
-        let work_item_id = seed_bound_work_item(&runtime, WorkItemStatus::Active, None, None).await;
+        let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
 
         runtime
             .create_callback(
@@ -1628,17 +1601,11 @@ mod tests {
         )
         .unwrap();
 
-        let work_item = runtime
-            .update_work_item(
-                None,
-                "verify binding".into(),
-                WorkItemStatus::Active,
-                Some("check tool work item binding".into()),
-                None,
-                None,
-            )
+        let (work_item, _) = runtime
+            .create_work_item("verify binding".into(), None)
             .await
             .unwrap();
+        runtime.pick_work_item(work_item.id.clone()).await.unwrap();
         let message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -1719,7 +1686,7 @@ mod tests {
         )
         .unwrap();
 
-        let work_item_id = seed_bound_work_item(&runtime, WorkItemStatus::Active, None, None).await;
+        let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
         let committed = runtime
             .maybe_commit_turn_end_work_item_transition()
             .await
@@ -1727,8 +1694,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(committed.id, work_item_id);
-        assert_eq!(committed.status, WorkItemStatus::Active);
-        assert!(committed.progress_note.is_none());
+        assert_eq!(committed.state, WorkItemState::Open);
+        assert!(committed.blocked_by.is_none());
         assert!(runtime
             .agent_state()
             .await
@@ -1752,7 +1719,7 @@ mod tests {
         )
         .unwrap();
 
-        let work_item_id = seed_bound_work_item(&runtime, WorkItemStatus::Active, None, None).await;
+        let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
         {
             let mut guard = runtime.inner.agent.lock().await;
             guard.state.last_turn_terminal = Some(TurnTerminalRecord {
@@ -1772,9 +1739,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(committed.id, work_item_id);
-        assert_eq!(committed.status, WorkItemStatus::Waiting);
+        assert_eq!(committed.state, WorkItemState::Open);
         assert_eq!(
-            committed.progress_note.as_deref(),
+            committed.blocked_by.as_deref(),
             Some("Turn failed and requires operator intervention before continuing.")
         );
     }
@@ -1794,7 +1761,7 @@ mod tests {
         )
         .unwrap();
 
-        let work_item_id = seed_bound_work_item(&runtime, WorkItemStatus::Active, None, None).await;
+        let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
         mark_blocking_task(&runtime, "blocking-wait").await;
 
         let committed = runtime
@@ -1804,9 +1771,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(committed.id, work_item_id);
-        assert_eq!(committed.status, WorkItemStatus::Waiting);
+        assert_eq!(committed.state, WorkItemState::Open);
         assert_eq!(
-            committed.progress_note.as_deref(),
+            committed.blocked_by.as_deref(),
             Some("Waiting on a task result.")
         );
     }
@@ -1828,7 +1795,7 @@ mod tests {
 
         let work_item_id = seed_bound_work_item(
             &runtime,
-            WorkItemStatus::Completed,
+            WorkItemState::Done,
             Some("finished"),
             Some("all requested changes are done"),
         )
@@ -1840,11 +1807,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(committed.id, work_item_id);
-        assert_eq!(committed.status, WorkItemStatus::Completed);
-        assert_eq!(
-            committed.progress_note.as_deref(),
-            Some("all requested changes are done")
-        );
+        assert_eq!(committed.state, WorkItemState::Done);
+        assert!(committed.blocked_by.is_none());
     }
 
     #[tokio::test]
@@ -1864,7 +1828,7 @@ mod tests {
 
         let work_item_id = seed_bound_work_item(
             &runtime,
-            WorkItemStatus::Completed,
+            WorkItemState::Done,
             Some("finished"),
             Some("marked complete too early"),
         )
@@ -1878,11 +1842,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(committed.id, work_item_id);
-        assert_eq!(committed.status, WorkItemStatus::Waiting);
-        assert_eq!(
-            committed.progress_note.as_deref(),
-            Some("marked complete too early")
-        );
+        assert_eq!(committed.state, WorkItemState::Done);
+        assert!(committed.blocked_by.is_none());
     }
 
     #[tokio::test]
@@ -1902,7 +1863,7 @@ mod tests {
 
         let work_item_id = seed_bound_work_item(
             &runtime,
-            WorkItemStatus::Queued,
+            WorkItemState::Open,
             Some("yield the active slot"),
             Some("requeue after this turn"),
         )
@@ -1914,11 +1875,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(committed.id, work_item_id);
-        assert_eq!(committed.status, WorkItemStatus::Queued);
-        assert_eq!(
-            committed.progress_note.as_deref(),
-            Some("requeue after this turn")
-        );
+        assert_eq!(committed.state, WorkItemState::Open);
+        assert!(committed.blocked_by.is_none());
     }
 
     #[tokio::test]
@@ -1972,7 +1930,7 @@ mod tests {
         let events = runtime.storage().read_recent_events(16).unwrap();
         assert!(events
             .iter()
-            .any(|event| event.kind == "missing_active_work_item_before_wait"));
+            .any(|event| event.kind == "missing_current_work_item_before_wait"));
     }
 
     #[tokio::test]
@@ -1990,15 +1948,8 @@ mod tests {
         )
         .unwrap();
 
-        let old_work = runtime
-            .update_work_item(
-                None,
-                "old delivery target".into(),
-                WorkItemStatus::Active,
-                Some("old work".into()),
-                None,
-                None,
-            )
+        let (old_work, _) = runtime
+            .create_work_item("old delivery target".into(), None)
             .await
             .unwrap();
         {
@@ -2007,7 +1958,7 @@ mod tests {
                 .state
                 .working_memory
                 .current_working_memory
-                .active_work_item_id = Some(old_work.id.clone());
+                .current_work_item_id = Some(old_work.id.clone());
             runtime.inner.storage.write_agent(&guard.state).unwrap();
         }
         let capability = runtime
@@ -2029,27 +1980,14 @@ mod tests {
             .created_at;
 
         runtime
-            .update_work_item(
-                Some(old_work.id.clone()),
-                old_work.delivery_target.clone(),
-                WorkItemStatus::Completed,
-                Some("old work done".into()),
-                None,
-                old_work.parent_id.clone(),
-            )
+            .complete_work_item(old_work.id.clone(), Some("old work done".into()))
             .await
             .unwrap();
-        let new_work = runtime
-            .update_work_item(
-                None,
-                "new delivery target".into(),
-                WorkItemStatus::Active,
-                Some("new work".into()),
-                None,
-                None,
-            )
+        let (new_work, _) = runtime
+            .create_work_item("new delivery target".into(), None)
             .await
             .unwrap();
+        runtime.pick_work_item(new_work.id.clone()).await.unwrap();
 
         let mut message = MessageEnvelope::new(
             "default",
@@ -2078,7 +2016,7 @@ mod tests {
                 .storage()
                 .work_queue_prompt_projection()
                 .unwrap()
-                .active
+                .current
                 .as_ref()
                 .map(|item| item.id.as_str()),
             Some(new_work.id.as_str())
@@ -2104,15 +2042,8 @@ mod tests {
         )
         .unwrap();
 
-        let waiting_work = runtime
-            .update_work_item(
-                None,
-                "waiting-only delivery target".into(),
-                WorkItemStatus::Waiting,
-                Some("waiting work".into()),
-                None,
-                None,
-            )
+        let (waiting_work, _) = runtime
+            .create_work_item("waiting-only delivery target".into(), None)
             .await
             .unwrap();
         {
@@ -2121,7 +2052,7 @@ mod tests {
                 .state
                 .working_memory
                 .current_working_memory
-                .active_work_item_id = Some(waiting_work.id.clone());
+                .current_work_item_id = Some(waiting_work.id.clone());
             runtime.inner.storage.write_agent(&guard.state).unwrap();
         }
         let capability = runtime
@@ -2161,12 +2092,12 @@ mod tests {
             .storage()
             .work_queue_prompt_projection()
             .unwrap()
-            .active
+            .current
             .is_none());
         let events = runtime.storage().read_recent_events(20).unwrap();
         assert!(events
             .iter()
-            .any(|event| event.kind == "missing_active_work_item_before_wait"));
+            .any(|event| event.kind == "missing_current_work_item_before_wait"));
     }
 
     #[tokio::test]
@@ -2184,17 +2115,11 @@ mod tests {
         )
         .unwrap();
 
-        let work = runtime
-            .update_work_item(
-                None,
-                "newly anchored delivery target".into(),
-                WorkItemStatus::Active,
-                Some("new work".into()),
-                None,
-                None,
-            )
+        let (work, _) = runtime
+            .create_work_item("newly anchored delivery target".into(), None)
             .await
             .unwrap();
+        runtime.pick_work_item(work.id.clone()).await.unwrap();
         let capability = runtime
             .create_callback(
                 "wait for fresh review".into(),
@@ -2614,9 +2539,12 @@ mod tests {
         let active = WorkItemRecord::new(
             "default",
             "continue active runtime cleanup",
-            WorkItemStatus::Active,
+            WorkItemState::Open,
         );
         storage.append_work_item(&active).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(active.id.clone());
+        storage.write_agent(&agent).unwrap();
 
         let runtime = RuntimeHandle::new(
             "default",
@@ -2752,17 +2680,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn current_closure_reports_continuable_for_active_work_item() {
+    async fn current_closure_reports_continuable_for_current_work_item() {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         let active = WorkItemRecord::new(
             "default",
             "continue active runtime cleanup",
-            WorkItemStatus::Active,
+            WorkItemState::Open,
         );
         let active_id = active.id.clone();
         storage.append_work_item(&active).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(active_id.clone());
+        storage.write_agent(&agent).unwrap();
 
         let runtime = RuntimeHandle::new(
             "default",
@@ -2780,7 +2711,7 @@ mod tests {
         assert_eq!(closure.waiting_reason, None);
         let signal = closure.work_signal.expect("work signal should exist");
         assert_eq!(signal.work_item_id, active_id);
-        assert_eq!(signal.status, WorkItemStatus::Active);
+        assert_eq!(signal.state, WorkItemState::Open);
         assert_eq!(
             signal.reactivation_mode,
             WorkReactivationMode::ContinueActive
@@ -2795,7 +2726,7 @@ mod tests {
         let queued = WorkItemRecord::new(
             "default",
             "activate queued runtime cleanup",
-            WorkItemStatus::Queued,
+            WorkItemState::Open,
         );
         let queued_id = queued.id.clone();
         storage.append_work_item(&queued).unwrap();
@@ -2816,7 +2747,7 @@ mod tests {
         assert_eq!(closure.waiting_reason, None);
         let signal = closure.work_signal.expect("work signal should exist");
         assert_eq!(signal.work_item_id, queued_id);
-        assert_eq!(signal.status, WorkItemStatus::Queued);
+        assert_eq!(signal.state, WorkItemState::Open);
         assert_eq!(
             signal.reactivation_mode,
             WorkReactivationMode::ActivateQueued
@@ -2824,19 +2755,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idle_tick_prefers_active_work_item_over_queued_work_item() {
+    async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         let active = WorkItemRecord::new(
             "default",
             "continue active runtime cleanup",
-            WorkItemStatus::Active,
+            WorkItemState::Open,
         );
-        let queued =
-            WorkItemRecord::new("default", "queued runtime cleanup", WorkItemStatus::Queued);
+        let queued = WorkItemRecord::new("default", "queued runtime cleanup", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
         storage.append_work_item(&queued).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(active.id.clone());
+        storage.write_agent(&agent).unwrap();
 
         let runtime = RuntimeHandle::new(
             "default",
@@ -2856,7 +2789,7 @@ mod tests {
             .await
             .unwrap()
             .expect("queued item should still exist");
-        assert_eq!(queued_latest.status, WorkItemStatus::Queued);
+        assert_eq!(queued_latest.state, WorkItemState::Open);
 
         let messages = runtime.storage().read_recent_messages(10).unwrap();
         assert!(messages.iter().any(|message| {
@@ -2886,9 +2819,12 @@ mod tests {
         let active = WorkItemRecord::new(
             "default",
             "continue active runtime cleanup",
-            WorkItemStatus::Active,
+            WorkItemState::Open,
         );
         storage.append_work_item(&active).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(active.id.clone());
+        storage.write_agent(&agent).unwrap();
 
         let runtime = RuntimeHandle::new(
             "default",
@@ -2934,8 +2870,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
-        let queued =
-            WorkItemRecord::new("default", "queued runtime cleanup", WorkItemStatus::Queued);
+        let queued = WorkItemRecord::new("default", "queued runtime cleanup", WorkItemState::Open);
         storage.append_work_item(&queued).unwrap();
 
         let runtime = RuntimeHandle::new(
@@ -2971,7 +2906,7 @@ mod tests {
             state
                 .working_memory
                 .current_working_memory
-                .active_work_item_id
+                .current_work_item_id
                 .as_deref(),
             Some(queued.id.as_str())
         );
@@ -2987,7 +2922,7 @@ mod tests {
             delta
                 .changed_fields
                 .iter()
-                .any(|field| field == "active_work_item_id")
+                .any(|field| field == "current_work_item_id")
                 && delta.to_revision == state.working_memory.working_memory_revision
         }));
         assert_eq!(
@@ -2995,7 +2930,7 @@ mod tests {
                 .working_memory
                 .active_episode_builder
                 .as_ref()
-                .and_then(|builder| builder.active_work_item_id.as_deref()),
+                .and_then(|builder| builder.current_work_item_id.as_deref()),
             Some(queued.id.as_str())
         );
 
@@ -3010,7 +2945,7 @@ mod tests {
         let active = WorkItemRecord::new(
             "default",
             "continue active runtime cleanup",
-            WorkItemStatus::Active,
+            WorkItemState::Open,
         );
         storage.append_work_item(&active).unwrap();
 
@@ -3069,7 +3004,7 @@ mod tests {
         let queued = WorkItemRecord::new(
             "default",
             "activate queued runtime cleanup",
-            WorkItemStatus::Queued,
+            WorkItemState::Open,
         );
         let queued_id = queued.id.clone();
         storage.append_work_item(&queued).unwrap();
@@ -3092,7 +3027,7 @@ mod tests {
             .await
             .unwrap()
             .expect("queued item should still exist");
-        assert_eq!(active.status, WorkItemStatus::Active);
+        assert_eq!(active.state, WorkItemState::Open);
 
         let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
         assert!(events.iter().any(|event| {
@@ -3119,15 +3054,8 @@ mod tests {
         let runtime_task = tokio::spawn(runtime.clone().run());
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        let queued = runtime
-            .update_work_item(
-                None,
-                "wake from direct queued work item update".into(),
-                WorkItemStatus::Queued,
-                Some("queued while idle".into()),
-                None,
-                None,
-            )
+        let (queued, _) = runtime
+            .create_work_item("wake from direct queued work item update".into(), None)
             .await
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -3137,7 +3065,7 @@ mod tests {
             .await
             .unwrap()
             .expect("queued item should still exist");
-        assert_eq!(active.status, WorkItemStatus::Active);
+        assert_eq!(active.state, WorkItemState::Open);
 
         let messages = runtime.storage().read_recent_messages(20).unwrap();
         assert!(messages.iter().any(|message| {

@@ -33,7 +33,7 @@ use holon::{
         OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
         OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemStatus,
+        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemState,
         WorkPlanItem, WorkPlanStepStatus,
     },
 };
@@ -59,7 +59,8 @@ use crate::support::runtime_providers::{
     WorktreeLifecycleProvider,
 };
 use support::{
-    attach_default_workspace, eventually, eventually_async, eventually_for, TestConfigBuilder,
+    attach_default_workspace, eventually, eventually_async, eventually_for, test_work_item,
+    TestConfigBuilder,
 };
 
 // ============================================================================
@@ -90,7 +91,7 @@ pub async fn message_processing_creates_briefs_and_sleeps() -> Result<()> {
     assert_eq!(briefs[1].text, "stub result");
 
     let session = runtime.agent_state().await?;
-    assert_eq!(session.status, AgentStatus::Asleep);
+    assert_eq!(session.state, AgentStatus::Asleep);
     Ok(())
 }
 
@@ -264,7 +265,7 @@ pub async fn background_task_rejoins_main_session() -> Result<()> {
             .map(|agent| !agent.active_task_ids.contains(&task.id))
             .unwrap_or(false)
             && tasks.iter().any(|record| {
-                record.id == task.id && record.status == holon::types::TaskStatus::Completed
+                record.id == task.id && record.state == holon::types::TaskStatus::Completed
             }))
     })
     .await?;
@@ -277,7 +278,7 @@ pub async fn background_task_rejoins_main_session() -> Result<()> {
         tasks
             .iter()
             .any(|record| record.id == task.id
-                && record.status == holon::types::TaskStatus::Completed)
+                && record.state == holon::types::TaskStatus::Completed)
     );
     Ok(())
 }
@@ -311,7 +312,7 @@ pub async fn stop_task_cancels_running_background_task() -> Result<()> {
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
-            record.id == task.id && record.status == holon::types::TaskStatus::Cancelled
+            record.id == task.id && record.state == holon::types::TaskStatus::Cancelled
         }))
     })
     .await?;
@@ -326,72 +327,53 @@ pub async fn update_work_item_creates_and_updates_persisted_snapshot() -> Result
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
 
-    let created = runtime
-        .update_work_item(
-            None,
-            "Ship work-item runtime foundation".into(),
-            WorkItemStatus::Active,
-            Some("bootstrapped from tool".into()),
-            Some("persisted state landed".into()),
-            None,
-        )
+    let (created, _) = runtime
+        .create_work_item("Ship work-item runtime foundation".into(), None)
         .await?;
     assert!(created.id.starts_with("work_"));
 
-    let updated = runtime
-        .update_work_item(
-            Some(created.id.clone()),
-            "Ship work-item runtime foundation".into(),
-            WorkItemStatus::Waiting,
-            Some("waiting on review".into()),
-            Some("queued follow-up after CI".into()),
-            Some("parent_1".into()),
+    let (updated, _) = runtime
+        .update_work_item_fields(
+            created.id.clone(),
+            Some(Some("queued follow-up after CI".into())),
+            None,
         )
         .await?;
 
     let latest = runtime.latest_work_item(&created.id).await?.unwrap();
     assert_eq!(latest.id, created.id);
-    assert_eq!(latest.status, WorkItemStatus::Waiting);
-    assert_eq!(latest.summary.as_deref(), Some("waiting on review"));
-    assert_eq!(
-        latest.progress_note.as_deref(),
-        Some("queued follow-up after CI")
-    );
-    assert_eq!(latest.parent_id.as_deref(), Some("parent_1"));
+    assert_eq!(latest.state, WorkItemState::Open);
+    assert_eq!(latest.blocked_by.as_deref(), Some("queued follow-up after CI"));
     assert_eq!(updated.created_at, created.created_at);
     assert!(updated.updated_at >= created.updated_at);
     Ok(())
 }
 
-pub async fn update_work_plan_replaces_latest_snapshot_for_existing_work_item() -> Result<()> {
+pub async fn update_work_item_replaces_latest_plan_snapshot_for_existing_work_item() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
 
-    let work_item = runtime
-        .update_work_item(
-            None,
-            "Stabilize work plan projection".into(),
-            WorkItemStatus::Active,
-            None,
-            None,
-            None,
-        )
+    let (work_item, _) = runtime
+        .create_work_item("Stabilize work plan projection".into(), None)
         .await?;
 
     runtime
-        .update_work_plan(
+        .update_work_item_fields(
             work_item.id.clone(),
-            vec![WorkPlanItem {
+            None,
+            Some(vec![WorkPlanItem {
                 step: "persist work-item store".into(),
                 status: WorkPlanStepStatus::Completed,
-            }],
+            }]),
         )
         .await?;
 
-    let updated_plan = runtime
-        .update_work_plan(
+    let (_, updated_plan) = runtime
+        .update_work_item_fields(
             work_item.id.clone(),
+            None,
+            Some(
             vec![
                 WorkPlanItem {
                     step: "persist work-item store".into(),
@@ -402,8 +384,10 @@ pub async fn update_work_plan_replaces_latest_snapshot_for_existing_work_item() 
                     status: WorkPlanStepStatus::InProgress,
                 },
             ],
+            ),
         )
         .await?;
+    let updated_plan = updated_plan.expect("expected plan snapshot");
 
     let latest = runtime.latest_work_plan(&work_item.id).await?.unwrap();
     assert_eq!(latest.items.len(), 2);
@@ -426,16 +410,7 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
     )?;
     let runtime = host.default_runtime().await?;
 
-    let active = runtime
-        .update_work_item(
-            None,
-            "Stabilize long-running compaction".into(),
-            WorkItemStatus::Active,
-            Some("preserve runtime work truth".into()),
-            Some("survival matrix is in progress".into()),
-            None,
-        )
-        .await?;
+    let active = test_work_item(&runtime, "Stabilize long-running compaction", WorkItemState::Open, true, Some("survival matrix is in progress")).await?;
     runtime
         .update_work_plan(
             active.id.clone(),
@@ -452,36 +427,9 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         )
         .await?;
 
-    let queued = runtime
-        .update_work_item(
-            None,
-            "Queue wake-hint verification".into(),
-            WorkItemStatus::Queued,
-            Some("queued after active survival pass".into()),
-            None,
-            None,
-        )
-        .await?;
-    let waiting = runtime
-        .update_work_item(
-            None,
-            "Wait for CI rerun".into(),
-            WorkItemStatus::Waiting,
-            Some("waiting on external rerun".into()),
-            Some("resume after workflow completes".into()),
-            None,
-        )
-        .await?;
-    let _completed = runtime
-        .update_work_item(
-            None,
-            "Already shipped shadow-state cleanup".into(),
-            WorkItemStatus::Completed,
-            Some("should stay out of prompt".into()),
-            None,
-            None,
-        )
-        .await?;
+    let queued = test_work_item(&runtime, "Queue wake-hint verification", WorkItemState::Open, false, None).await?;
+    let waiting = test_work_item(&runtime, "Wait for CI rerun", WorkItemState::Open, false, Some("resume after workflow completes")).await?;
+    let _completed = test_work_item(&runtime, "Already shipped shadow-state cleanup", WorkItemState::Done, false, None).await?;
 
     for idx in 0..4 {
         runtime.storage().append_message(&MessageEnvelope::new(
@@ -511,8 +459,8 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
     let active_section = prompt
         .context_sections
         .iter()
-        .find(|section| section.name == "active_work_item")
-        .expect("active work item section should be present after compaction");
+        .find(|section| section.name == "current_work_item")
+        .expect("current work item section should be present after compaction");
     assert!(active_section
         .content
         .contains("Stabilize long-running compaction"));
@@ -520,18 +468,18 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         .content
         .contains("cover task rejoin after compaction"));
 
-    let queued_waiting_section = prompt
+    let queued_blocked_section = prompt
         .context_sections
         .iter()
-        .find(|section| section.name == "queued_waiting_work_items")
-        .expect("queued/waiting work section should be present after compaction");
-    assert!(queued_waiting_section
+        .find(|section| section.name == "queued_blocked_work_items")
+        .expect("queued/blocked work section should be present after compaction");
+    assert!(queued_blocked_section
         .content
         .contains(queued.delivery_target.as_str()));
-    assert!(queued_waiting_section
+    assert!(queued_blocked_section
         .content
         .contains(waiting.delivery_target.as_str()));
-    assert!(!queued_waiting_section
+    assert!(!queued_blocked_section
         .content
         .contains("Already shipped shadow-state cleanup"));
 
@@ -546,15 +494,7 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
     let host = RuntimeHost::new_with_provider(aggressive_compaction_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
-    let work_item = runtime
-        .update_work_item(
-            None,
-            "Close the compaction regression gap".into(),
-            WorkItemStatus::Active,
-            Some("task-result continuity remains authoritative".into()),
-            Some("waiting for command task evidence".into()),
-            None,
-        )
+    let work_item = test_work_item(&runtime, "Close the compaction regression gap", WorkItemState::Open, true, Some("waiting for command task evidence"))
         .await?;
     runtime
         .update_work_plan(
@@ -635,7 +575,7 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
     eventually_for(Duration::from_secs(20), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
-            record.id == task.id && record.status == holon::types::TaskStatus::Completed
+            record.id == task.id && record.state == holon::types::TaskStatus::Completed
         }))
     })
     .await?;
@@ -643,11 +583,8 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
     let latest = runtime
         .latest_work_item(&work_item.id)
         .await?
-        .expect("active work item should still exist");
-    assert!(matches!(
-        latest.status,
-        WorkItemStatus::Active | WorkItemStatus::Waiting
-    ));
+        .expect("current work item should still exist");
+    assert_eq!(latest.state, WorkItemState::Open);
     assert_eq!(latest.delivery_target, work_item.delivery_target);
 
     Ok(())
@@ -661,16 +598,7 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
     let host = RuntimeHost::new_with_provider(aggressive_compaction_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
-    let active = runtime
-        .update_work_item(
-            None,
-            "Keep active compaction work in focus".into(),
-            WorkItemStatus::Active,
-            Some("wake hints should not scramble current work".into()),
-            None,
-            None,
-        )
-        .await?;
+    let active = test_work_item(&runtime, "Keep active compaction work in focus", WorkItemState::Open, true, None).await?;
     runtime
         .update_work_plan(
             active.id.clone(),
@@ -680,14 +608,12 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
             }],
         )
         .await?;
-    let queued = runtime
-        .update_work_item(
-            None,
-            "Queued fallback work".into(),
-            WorkItemStatus::Queued,
-            Some("should remain queued while wake hint is handled".into()),
-            None,
-            None,
+    let queued = test_work_item(
+        &runtime,
+        "Queued fallback work",
+        WorkItemState::Open,
+        false,
+        None,
         )
         .await?;
     for idx in 0..3 {
@@ -763,7 +689,7 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
         .latest_work_item(&queued.id)
         .await?
         .expect("queued work item should still exist");
-    assert_eq!(queued_latest.status, WorkItemStatus::Queued);
+    assert_eq!(queued_latest.state, WorkItemState::Open);
 
     Ok(())
 }
@@ -776,15 +702,7 @@ pub async fn queued_activation_after_compaction_promotes_the_correct_next_step()
     let host = RuntimeHost::new_with_provider(aggressive_compaction_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
-    let queued = runtime
-        .update_work_item(
-            None,
-            "Resume queued compaction validation".into(),
-            WorkItemStatus::Queued,
-            Some("should become active on the next idle tick".into()),
-            None,
-            None,
-        )
+    let queued = test_work_item(&runtime, "Resume queued compaction validation", WorkItemState::Open, false, None)
         .await?;
     runtime
         .update_work_plan(
@@ -853,7 +771,7 @@ pub async fn queued_activation_after_compaction_promotes_the_correct_next_step()
         .latest_work_item(&queued.id)
         .await?
         .expect("queued work item should still exist");
-    assert_eq!(latest.status, WorkItemStatus::Active);
+    assert_eq!(latest.state, WorkItemState::Open);
 
     Ok(())
 }
@@ -1231,7 +1149,7 @@ pub async fn paused_agent_ignores_wake_hint() -> Result<()> {
     sleep(Duration::from_millis(150)).await;
     let state = runtime.agent_state().await?;
     let messages = runtime.storage().read_recent_messages(10)?;
-    assert_eq!(state.status, AgentStatus::Paused);
+    assert_eq!(state.state, AgentStatus::Paused);
     assert!(state.pending_wake_hint.is_none());
     assert!(messages
         .iter()
@@ -1433,6 +1351,7 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
             AgentProfilePreset::PrivateChild,
             None,
             false,
+            None,
             None,
         )
         .await?;
@@ -1652,7 +1571,7 @@ pub async fn notify_operator_ignores_reply_route_when_binding_no_longer_matches(
 
     let mut stopped_binding =
         operator_transport_binding("opbind-z-ingress", "route-ingress-default");
-    stopped_binding.status = OperatorTransportBindingStatus::Revoked;
+    stopped_binding.state = OperatorTransportBindingStatus::Revoked;
     runtime
         .storage()
         .append_operator_transport_binding(&stopped_binding)?;
@@ -1813,8 +1732,8 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
     let descriptors = runtime.latest_external_triggers().await?;
     assert_eq!(waiting.len(), 1);
     assert_eq!(descriptors.len(), 1);
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
-    assert_eq!(descriptors[0].status, ExternalTriggerStatus::Active);
+    assert_eq!(waiting[0].state, WaitingIntentStatus::Active);
+    assert_eq!(descriptors[0].state, ExternalTriggerStatus::Active);
 
     let summary = runtime.agent_summary().await?;
     assert_eq!(summary.active_waiting_intents.len(), 1);
@@ -1877,8 +1796,8 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
 
     let waiting = runtime.latest_waiting_intents().await?;
     let descriptors = runtime.latest_external_triggers().await?;
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Cancelled);
-    assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
+    assert_eq!(waiting[0].state, WaitingIntentStatus::Cancelled);
+    assert_eq!(descriptors[0].state, ExternalTriggerStatus::Revoked);
     let summary = runtime.agent_summary().await?;
     assert!(summary.active_waiting_intents.is_empty());
     assert!(summary.active_external_triggers.is_empty());
@@ -2041,7 +1960,7 @@ pub async fn exec_command_reports_nonzero_exit_and_truncates_output() -> Result<
         .await?;
 
     assert!(!result.is_error());
-    assert_eq!(record.status, holon::types::ToolExecutionStatus::Success);
+    assert_eq!(record.state, holon::types::ToolExecutionStatus::Success);
     assert_eq!(record.tool_name, "ExecCommand");
     let envelope: serde_json::Value = parse_tool_result_value(&result)?;
     let value = &envelope["result"];
@@ -2111,7 +2030,7 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
 
     assert!(!result.is_error());
     assert_eq!(record.tool_name, "ExecCommandBatch");
-    assert_eq!(record.status, holon::types::ToolExecutionStatus::Success);
+    assert_eq!(record.state, holon::types::ToolExecutionStatus::Success);
     let envelope = parse_tool_result_value(&result)?;
     let value = &envelope["result"];
     assert_eq!(envelope["tool_name"], "ExecCommandBatch");
@@ -2364,7 +2283,7 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
         .any(|brief| brief.text.contains("tool failures handled")));
 
     let state = runtime.agent_state().await?;
-    assert_eq!(state.status, AgentStatus::Asleep);
+    assert_eq!(state.state, AgentStatus::Asleep);
     assert!(state.active_task_ids.is_empty());
     Ok(())
 }
@@ -2541,7 +2460,7 @@ pub async fn command_task_runs_to_completion_and_persists_detail() -> Result<()>
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
-            record.id == task.id && record.status == holon::types::TaskStatus::Completed
+            record.id == task.id && record.state == holon::types::TaskStatus::Completed
         }))
     })
     .await?;
@@ -2586,7 +2505,7 @@ pub async fn task_output_returns_completed_command_task_output() -> Result<()> {
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
-            record.id == task.id && record.status == holon::types::TaskStatus::Completed
+            record.id == task.id && record.state == holon::types::TaskStatus::Completed
         }))
     })
     .await?;
@@ -2658,7 +2577,7 @@ pub async fn task_output_non_blocking_reports_running_command_task() -> Result<(
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
-            record.id == task.id && record.status == holon::types::TaskStatus::Cancelled
+            record.id == task.id && record.state == holon::types::TaskStatus::Cancelled
         }))
     })
     .await?;
@@ -2825,7 +2744,7 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
         .await?;
 
     let state = runtime.agent_state().await?;
-    assert_eq!(state.status, AgentStatus::AwaitingTask);
+    assert_eq!(state.state, AgentStatus::AwaitingTask);
     assert!(state.active_task_ids.contains(&task.id));
 
     let mut saw_child_summary = false;
@@ -2853,13 +2772,13 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
-            record.id == task.id && record.status == holon::types::TaskStatus::Completed
+            record.id == task.id && record.state == holon::types::TaskStatus::Completed
         }))
     })
     .await?;
 
     let output = runtime.task_output(&task.id, false, 0).await?;
-    assert_eq!(output.task.status, holon::types::TaskStatus::Completed);
+    assert_eq!(output.task.state, holon::types::TaskStatus::Completed);
     assert!(output.task.output_preview.contains("slow child result"));
 
     let final_summary = runtime.agent_summary().await?;
@@ -2904,7 +2823,7 @@ pub async fn subagent_task_status_exposes_live_and_terminal_child_observability(
 
     let running_snapshot = runtime.task_status_snapshot(&task.id).await?;
 
-    assert_eq!(running_snapshot.status, TaskStatus::Running);
+    assert_eq!(running_snapshot.state, TaskStatus::Running);
     let live_child = running_snapshot
         .child_observability
         .as_ref()
@@ -2917,12 +2836,12 @@ pub async fn subagent_task_status_exposes_live_and_terminal_child_observability(
     wait_until_async(|| {
         let runtime = runtime.clone();
         let task_id = task.id.clone();
-        async move { Ok(runtime.task_status_snapshot(&task_id).await?.status == TaskStatus::Completed) }
+        async move { Ok(runtime.task_status_snapshot(&task_id).await?.state == TaskStatus::Completed) }
     })
     .await?;
 
     let terminal_snapshot = runtime.task_status_snapshot(&task.id).await?;
-    assert_eq!(terminal_snapshot.status, TaskStatus::Completed);
+    assert_eq!(terminal_snapshot.state, TaskStatus::Completed);
     assert_eq!(
         terminal_snapshot
             .child_observability
@@ -2955,7 +2874,7 @@ pub async fn blocking_subagent_result_does_not_regress_to_running_task_status() 
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks
             .iter()
-            .any(|record| record.id == task.id && record.status == TaskStatus::Completed))
+            .any(|record| record.id == task.id && record.state == TaskStatus::Completed))
     })
     .await?;
 
@@ -2989,7 +2908,7 @@ pub async fn blocking_subagent_result_does_not_regress_to_running_task_status() 
             .find(|task_record| task_record.id == task.id);
         let is_terminal = latest.is_some_and(|record| {
             matches!(
-                record.status,
+                record.state,
                 TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
             )
         });
@@ -3024,13 +2943,13 @@ pub async fn subagent_task_failure_propagates_failed_output_to_parent() -> Resul
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
-            record.id == task.id && record.status == holon::types::TaskStatus::Failed
+            record.id == task.id && record.state == holon::types::TaskStatus::Failed
         }))
     })
     .await?;
 
     let output = runtime.task_output(&task.id, false, 0).await?;
-    assert_eq!(output.task.status, holon::types::TaskStatus::Failed);
+    assert_eq!(output.task.state, holon::types::TaskStatus::Failed);
     assert!(
         output
             .task
@@ -3074,10 +2993,10 @@ pub async fn multiple_subagent_tasks_do_not_cross_contaminate_outputs() -> Resul
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
         let alpha_done = tasks.iter().any(|record| {
-            record.id == alpha.id && record.status == holon::types::TaskStatus::Completed
+            record.id == alpha.id && record.state == holon::types::TaskStatus::Completed
         });
         let beta_done = tasks.iter().any(|record| {
-            record.id == beta.id && record.status == holon::types::TaskStatus::Completed
+            record.id == beta.id && record.state == holon::types::TaskStatus::Completed
         });
         Ok(alpha_done && beta_done)
     })
@@ -3228,7 +3147,7 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks
             .iter()
-            .any(|record| record.id == seed_task.id && record.status == TaskStatus::Completed))
+            .any(|record| record.id == seed_task.id && record.state == TaskStatus::Completed))
     })
     .await?;
 

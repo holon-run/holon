@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::{
     runtime::RuntimeHandle,
-    tool::helpers::{normalize_optional_non_empty, parse_tool_args, validate_non_empty},
+    tool::helpers::{parse_tool_args, validate_non_empty},
     tool::spec::typed_spec,
     types::{ToolCapabilityFamily, TrustLevel},
 };
@@ -16,14 +16,12 @@ use super::{
     BuiltinToolDefinition,
 };
 
-pub(crate) const NAME: &str = "UpdateWorkItem";
+pub(crate) const NAME: &str = "CreateWorkItem";
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct UpdateWorkItemArgs {
-    pub(crate) work_item_id: String,
-    #[serde(default)]
-    pub(crate) blocked_by: Option<Option<String>>,
+pub(crate) struct CreateWorkItemArgs {
+    pub(crate) delivery_target: String,
     #[serde(default)]
     pub(crate) plan: Option<Vec<WorkPlanItemArgs>>,
 }
@@ -31,9 +29,9 @@ pub(crate) struct UpdateWorkItemArgs {
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::CoreAgent,
-        spec: typed_spec::<UpdateWorkItemArgs>(
+        spec: typed_spec::<CreateWorkItemArgs>(
             NAME,
-            "Update mutable fields for an existing work item. Plan updates replace the full checklist snapshot.",
+            "Create a new open work item for the current agent. Use PickWorkItem separately to make it current.",
         )?,
     })
 }
@@ -44,14 +42,9 @@ pub(crate) async fn execute(
     _trust: &TrustLevel,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
-    let args: UpdateWorkItemArgs = parse_tool_args(NAME, input)?;
-    let work_item_id = validate_non_empty(args.work_item_id, NAME, "work_item_id")?;
-    let blocked_by = args
-        .blocked_by
-        .map(|value| value.and_then(|inner| normalize_optional_non_empty(Some(inner))));
+    let args: CreateWorkItemArgs = parse_tool_args(NAME, input)?;
+    let delivery_target = validate_non_empty(args.delivery_target, NAME, "delivery_target")?;
     let plan = args.plan.map(|plan| convert_plan(NAME, plan)).transpose()?;
-    let (work_item, plan) = runtime
-        .update_work_item_fields(work_item_id, blocked_by, plan)
-        .await?;
+    let (work_item, plan) = runtime.create_work_item(delivery_target, plan).await?;
     serialize_success(NAME, &WorkItemMutationResult { work_item, plan })
 }

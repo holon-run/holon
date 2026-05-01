@@ -17,7 +17,7 @@ use crate::{
     types::{
         ActiveWorkspaceEntry, AgentState, AgentSummary, BriefRecord, ClosureDecision,
         ExternalTriggerStateSnapshot, MessageEnvelope, TaskRecord, TimerRecord, TimerStatus,
-        TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord, WorkItemRecord, WorkItemStatus,
+        TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord, WorkItemRecord, WorkItemState,
         WorkPlanSnapshot, WorktreeSession,
     },
 };
@@ -614,16 +614,10 @@ fn upsert_work_item(items: &mut Vec<WorkItemRecord>, item: WorkItemRecord) {
         items.push(item);
     }
     items.sort_by(|left, right| {
-        work_item_rank(&left.status)
-            .cmp(&work_item_rank(&right.status))
+        work_item_rank(left)
+            .cmp(&work_item_rank(right))
             .then_with(|| {
-                if matches!(
-                    (&left.status, &right.status),
-                    (
-                        WorkItemStatus::Queued | WorkItemStatus::Waiting,
-                        WorkItemStatus::Queued | WorkItemStatus::Waiting
-                    )
-                ) {
+                if left.state == WorkItemState::Open && right.state == WorkItemState::Open {
                     left.created_at
                         .cmp(&right.created_at)
                         .then_with(|| left.updated_at.cmp(&right.updated_at))
@@ -638,12 +632,11 @@ fn upsert_work_item(items: &mut Vec<WorkItemRecord>, item: WorkItemRecord) {
     });
 }
 
-fn work_item_rank(status: &WorkItemStatus) -> u8 {
-    match status {
-        WorkItemStatus::Active => 0,
-        WorkItemStatus::Queued => 1,
-        WorkItemStatus::Waiting => 2,
-        WorkItemStatus::Completed => 3,
+fn work_item_rank(item: &WorkItemRecord) -> u8 {
+    match item.state {
+        WorkItemState::Open if item.blocked_by.is_none() => 0,
+        WorkItemState::Open => 1,
+        WorkItemState::Done => 2,
     }
 }
 
@@ -754,13 +747,7 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
             .get("record")
             .cloned()
             .and_then(decode_value::<WorkItemRecord>)
-            .map(|record| {
-                let summary = record
-                    .summary
-                    .or(record.progress_note)
-                    .unwrap_or_else(|| record.id.clone());
-                format!("{summary} [{:?}]", record.status)
-            })
+            .map(|record| format!("{} [{:?}]", record.delivery_target, record.state))
             .unwrap_or_else(|| event.data.event_type.clone()),
         "waiting_intent_created" => decode_payload::<WaitingIntentRecord>(&event.data.payload)
             .map(|waiting| format!("waiting: {}", trim_summary(&waiting.summary)))
@@ -897,7 +884,7 @@ mod tests {
             SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus, TokenUsage,
             TranscriptEntry, TranscriptEntryKind, TurnTerminalKind, TurnTerminalRecord,
             WaitingIntentRecord, WaitingIntentStatus, WaitingIntentSummary, WorkItemRecord,
-            WorkItemStatus, WorkPlanItem, WorkPlanSnapshot, WorkPlanStepStatus,
+            WorkItemState, WorkPlanItem, WorkPlanSnapshot, WorkPlanStepStatus,
             WorkspaceOccupancyRecord, WorktreeSession,
         },
     };
@@ -1124,9 +1111,7 @@ mod tests {
                         "agent_id": "default",
                         "workspace_id": "agent_home",
                         "delivery_target": "operator",
-                        "status": "queued",
-                        "summary": "durable card",
-                        "progress_note": null,
+                        "state": "open",
                         "created_at": Utc::now(),
                         "updated_at": Utc::now()
                     }
@@ -1158,7 +1143,7 @@ mod tests {
                 .durable_conversation_events()
                 .last()
                 .map(|event| event.summary.as_str()),
-            Some("durable card [Queued]")
+            Some("operator [Open]")
         );
         assert!(projection
             .event_log()
@@ -1225,8 +1210,7 @@ mod tests {
         task.status = TaskStatus::Completed;
         task.updated_at = Utc::now();
 
-        let mut work_item =
-            WorkItemRecord::new("default", "queued delivery", WorkItemStatus::Queued);
+        let mut work_item = WorkItemRecord::new("default", "queued delivery", WorkItemState::Open);
         work_item.id = "work-stream".into();
 
         projection.apply_event(
@@ -1251,7 +1235,7 @@ mod tests {
         assert!(projection
             .work_items
             .iter()
-            .any(|record| record.id == "work-stream" && record.status == WorkItemStatus::Queued));
+            .any(|record| record.id == "work-stream" && record.state == WorkItemState::Open));
     }
 
     #[test]
@@ -1431,7 +1415,7 @@ mod tests {
             work_items: vec![WorkItemRecord::new(
                 "default",
                 "active delivery",
-                WorkItemStatus::Active,
+                WorkItemState::Open,
             )],
             work_plan: Some(WorkPlanSnapshot {
                 agent_id: "default".into(),

@@ -594,7 +594,8 @@ fn exec_command_changes_checkpoint_anchor(command: &str) -> bool {
 
 fn tool_call_changes_checkpoint_anchor(call: &ToolCall) -> bool {
     match call.name.as_str() {
-        "UpdateWorkItem" | "UpdateWorkPlan" | "ApplyPatch" => true,
+        "CreateWorkItem" | "PickWorkItem" | "UpdateWorkItem" | "CompleteWorkItem"
+        | "ApplyPatch" => true,
         "ExecCommand" => call
             .input
             .get("cmd")
@@ -1719,7 +1720,7 @@ fn command_preview_field(call: &ToolCall) -> Option<String> {
 fn rejects_truncated_mutation_tool_call(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "ApplyPatch" | "UpdateWorkItem" | "UpdateWorkPlan"
+        "ApplyPatch" | "CreateWorkItem" | "PickWorkItem" | "UpdateWorkItem" | "CompleteWorkItem"
     )
 }
 
@@ -2169,14 +2170,14 @@ mod tests {
         assert!(round_changes_checkpoint_anchor(&fixture_round_with_tool(
             2,
             "plan",
-            "UpdateWorkPlan",
-            serde_json::json!({ "items": [] }),
+            "UpdateWorkItem",
+            serde_json::json!({ "work_item_id": "item-1", "plan": [] }),
         )));
         assert!(round_changes_checkpoint_anchor(&fixture_round_with_tool(
             3,
-            "work item",
-            "UpdateWorkItem",
-            serde_json::json!({ "id": "item-1" }),
+            "complete work item",
+            "CompleteWorkItem",
+            serde_json::json!({ "work_item_id": "item-1" }),
         )));
         assert!(round_changes_checkpoint_anchor(&fixture_round_with_tool(
             4,
