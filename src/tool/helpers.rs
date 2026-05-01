@@ -20,6 +20,22 @@ pub(crate) fn parse_tool_args<T>(tool_name: &str, input: &Value) -> Result<T>
 where
     T: DeserializeOwned,
 {
+    parse_tool_args_with_recovery_hint(
+        tool_name,
+        input,
+        format!("provide input for {tool_name} that matches the published tool schema"),
+    )
+}
+
+pub(crate) fn parse_tool_args_with_recovery_hint<T>(
+    tool_name: &str,
+    input: &Value,
+    recovery_hint: impl Into<String>,
+) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let recovery_hint = recovery_hint.into();
     serde_json::from_value(input.clone()).map_err(|error| {
         anyhow::Error::from(
             ToolError::new(
@@ -30,9 +46,7 @@ where
                 "tool_name": tool_name,
                 "parse_error": error.to_string(),
             }))
-            .with_recovery_hint(format!(
-                "provide input for {tool_name} that matches the published tool schema"
-            )),
+            .with_recovery_hint(recovery_hint),
         )
     })
 }
