@@ -26,8 +26,8 @@ use super::{workspace, InitialWorkspaceBinding, RuntimeAgent, RuntimeHandle, Run
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
-pub(crate) struct ProviderReconfigurator {
-    pub(crate) config: AppConfig,
+pub(super) struct ProviderReconfigurator {
+    config: AppConfig,
 }
 
 impl RuntimeHandle {
@@ -229,21 +229,21 @@ impl RuntimeHandle {
             if state.active_workspace_entry.as_ref().is_some_and(|entry| {
                 entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot
             }) {
-                let agent_home = storage.data_dir();
-                let agent_home_id = format!("agent_home-{}", agent_id);
+                let data_dir = storage.data_dir();
+                let workspace_entry = workspace::agent_home_workspace_entry(&data_dir);
                 let kind = WorkspaceProjectionKind::CanonicalRoot;
                 state.active_workspace_entry = Some(ActiveWorkspaceEntry {
-                    workspace_id: agent_home_id.clone(),
-                    workspace_anchor: agent_home.to_path_buf(),
+                    workspace_id: workspace_entry.workspace_id.clone(),
+                    workspace_anchor: workspace_entry.workspace_anchor.clone(),
                     execution_root_id: workspace::build_execution_root_id(
-                        &agent_home_id,
+                        &workspace_entry.workspace_id,
                         kind,
-                        &agent_home,
+                        &workspace_entry.workspace_anchor,
                     )?,
-                    execution_root: agent_home.to_path_buf(),
+                    execution_root: workspace_entry.workspace_anchor.clone(),
                     projection_kind: kind,
                     access_mode: WorkspaceAccessMode::ExclusiveWrite,
-                    cwd: agent_home.to_path_buf(),
+                    cwd: workspace_entry.workspace_anchor.clone(),
                     occupancy_id: None,
                     projection_metadata: None,
                 });
