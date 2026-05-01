@@ -127,7 +127,8 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
         .unwrap_or_else(|| "unknown".into());
     // Show refresh time as fallback for event time to avoid misleading "never"
     // when agent was just bootstrapped and hasn't received events yet
-    let last_event = app.last_event_at
+    let last_event = app
+        .last_event_at
         .or(app.last_refresh_at)
         .map(|timestamp| timestamp.format("%H:%M:%S").to_string())
         .unwrap_or_else(|| "unknown".into());
