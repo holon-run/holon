@@ -42,6 +42,27 @@ fn openai_text_response(response_id: &str, text: &str) -> Value {
     })
 }
 
+fn openai_text_response_with_provider_metadata(response_id: &str, text: &str) -> Value {
+    json!({
+        "id": response_id,
+        "status": "completed",
+        "usage": { "input_tokens": 2, "output_tokens": 1 },
+        "output": [{
+            "type": "message",
+            "id": "msg_non_persisted",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": text,
+                "annotations": [{ "type": "file_citation", "index": 0 }],
+                "metadata": { "provider_only": true },
+                "status": "completed"
+            }]
+        }]
+    })
+}
+
 fn openai_text_sse_response(response_id: &str, text: &str) -> String {
     format!(
         concat!(
@@ -132,6 +153,17 @@ fn provider_large_window_paired_followup_with_prompt_frame() -> ProviderTurnRequ
     request
 }
 
+fn provider_text_followup_with_prompt_frame(previous_text: &str) -> ProviderTurnRequest {
+    let mut request = provider_turn_request_with_prompt_frame();
+    request.conversation.extend([
+        ConversationMessage::AssistantBlocks(vec![ModelBlock::Text {
+            text: previous_text.into(),
+        }]),
+        ConversationMessage::UserText("continue".into()),
+    ]);
+    request
+}
+
 #[tokio::test]
 async fn openai_responses_uses_incremental_continuation_for_strict_append() {
     let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -188,6 +220,137 @@ async fn openai_responses_uses_incremental_continuation_for_strict_append() {
 }
 
 #[tokio::test]
+async fn openai_responses_uses_incremental_continuation_when_text_output_has_provider_metadata() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Json(openai_text_response_with_provider_metadata(
+                        "resp_1", "ready",
+                    ))
+                } else {
+                    Json(openai_text_response("resp_2", "done"))
+                }
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let response = provider
+        .complete_turn(provider_text_followup_with_prompt_frame("ready"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response
+            .request_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.request_lowering_mode.as_str()),
+        Some("incremental_continuation")
+    );
+    let diagnostics = response
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.incremental_continuation.as_ref())
+        .expect("incremental diagnostics");
+    assert_eq!(diagnostics.status, "hit");
+    assert_eq!(diagnostics.fallback_reason, None);
+    assert_eq!(diagnostics.incremental_input_items, Some(1));
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[1]["previous_response_id"], json!("resp_1"));
+    assert_eq!(bodies[1]["input"].as_array().unwrap().len(), 1);
+    assert_eq!(bodies[1]["input"][0]["role"], json!("user"));
+}
+
+#[tokio::test]
+async fn openai_codex_append_match_replays_provider_window_without_previous_response_id() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/codex/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                let response = if attempt == 0 {
+                    openai_text_sse_response("resp_1", "ready")
+                } else {
+                    openai_text_sse_response("resp_2", "done")
+                };
+                ([("content-type", "text/event-stream")], response)
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai_codex())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let response = provider
+        .complete_turn(provider_text_followup_with_prompt_frame("ready"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response
+            .request_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.request_lowering_mode.as_str()),
+        Some("provider_window_replay")
+    );
+    let diagnostics = response
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.incremental_continuation.as_ref())
+        .expect("incremental diagnostics");
+    assert_eq!(diagnostics.status, "hit");
+    assert_eq!(diagnostics.fallback_reason, None);
+    assert_eq!(diagnostics.incremental_input_items, Some(1));
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert!(bodies[1].get("previous_response_id").is_none());
+    let input = bodies[1]["input"].as_array().unwrap();
+    assert_eq!(input.len(), 3);
+    assert_eq!(input[1]["role"], json!("assistant"));
+    assert_eq!(input[2]["role"], json!("user"));
+}
+
+#[tokio::test]
 async fn openai_responses_remote_compacts_provider_window_and_replays_compaction_items() {
     let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let response_bodies_for_server = response_bodies.clone();
@@ -206,7 +369,7 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
                         captured.lock().unwrap().push(body);
                         let attempt = attempts.fetch_add(1, Ordering::SeqCst);
                         let response = match attempt {
-                            0 => openai_text_response("resp_1", "ready"),
+                            0 => openai_text_response_with_provider_metadata("resp_1", "ready"),
                             _ => openai_text_response("resp_2", "done"),
                         };
                         Json(response)
@@ -1307,8 +1470,76 @@ async fn openai_responses_falls_back_when_conversation_is_not_append_only() {
     assert!(diagnostics.previous_item_hash.is_some());
     assert!(diagnostics.current_item_hash.is_none());
     assert!(diagnostics.request_shape_hash.is_some());
+    assert_eq!(diagnostics.first_mismatch_path.as_deref(), Some("/1"));
+    assert_eq!(
+        diagnostics.mismatch_kind.as_deref(),
+        Some("length_mismatch")
+    );
     let bodies = captured_bodies.lock().unwrap();
     assert_eq!(bodies.len(), 2);
+    assert!(bodies[1].get("previous_response_id").is_none());
+}
+
+#[tokio::test]
+async fn openai_responses_reports_semantic_mismatch_path_for_changed_assistant_text() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Json(openai_text_response("resp_1", "ready"))
+                } else {
+                    Json(openai_text_response("resp_2", "done"))
+                }
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let response = provider
+        .complete_turn(provider_text_followup_with_prompt_frame("changed"))
+        .await
+        .unwrap();
+
+    let diagnostics = response
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.incremental_continuation.as_ref())
+        .expect("incremental continuation diagnostics");
+    assert_eq!(
+        diagnostics.fallback_reason.as_deref(),
+        Some("conversation_not_strict_append_only")
+    );
+    assert_eq!(diagnostics.first_mismatch_index, Some(1));
+    assert_eq!(
+        diagnostics.first_mismatch_path.as_deref(),
+        Some("/1/content/0/text")
+    );
+    assert_eq!(
+        diagnostics.mismatch_kind.as_deref(),
+        Some("semantic_mismatch")
+    );
+    let bodies = captured_bodies.lock().unwrap();
     assert!(bodies[1].get("previous_response_id").is_none());
 }
 

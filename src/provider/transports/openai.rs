@@ -133,7 +133,7 @@ struct OpenAiRequestShape {
 struct OpenAiRequestPlan {
     body: Value,
     scope: Option<OpenAiContinuationScope>,
-    full_input: Vec<Value>,
+    append_match_input: Vec<Value>,
     provider_input: Vec<Value>,
     request_shape: OpenAiRequestShape,
     diagnostics: ProviderRequestDiagnostics,
@@ -150,6 +150,8 @@ struct OpenAiContinuationMismatchDiagnostics {
     previous_item_hash: Option<String>,
     current_item_hash: Option<String>,
     request_shape_hash: Option<String>,
+    first_mismatch_path: Option<String>,
+    mismatch_kind: Option<String>,
 }
 
 #[derive(Debug)]
@@ -296,7 +298,7 @@ impl AgentProvider for OpenAiProvider {
             ToolSchemaContract::Relaxed,
             None,
         )?;
-        let mut plan = plan_openai_responses_request(body, &request, &self.continuation)?;
+        let mut plan = plan_openai_responses_request(body, &request, &self.continuation, true)?;
         let mut sent_diagnostics = plan.diagnostics.clone();
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
@@ -335,7 +337,7 @@ impl AgentProvider for OpenAiProvider {
             &self.continuation,
             plan_scope.clone(),
             plan_request_shape.clone(),
-            plan.full_input,
+            plan.append_match_input,
             plan.provider_input,
             &parsed,
         );
@@ -379,7 +381,7 @@ impl AgentProvider for OpenAiCodexProvider {
             ToolSchemaContract::Relaxed,
             self.reasoning_effort.as_deref(),
         )?;
-        let mut plan = plan_openai_responses_request(body, &request, &self.continuation)?;
+        let mut plan = plan_openai_responses_request(body, &request, &self.continuation, false)?;
         let mut sent_diagnostics = plan.diagnostics.clone();
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
@@ -422,7 +424,7 @@ impl AgentProvider for OpenAiCodexProvider {
             &self.continuation,
             plan_scope.clone(),
             plan_request_shape.clone(),
-            plan.full_input,
+            plan.append_match_input,
             plan.provider_input,
             &parsed,
         );
@@ -491,7 +493,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             &self.continuation,
             plan.scope,
             plan.request_shape,
-            plan.full_input,
+            plan.append_match_input,
             plan.provider_input,
             &parsed,
         );
@@ -632,7 +634,7 @@ fn plan_chat_completion_request(
             OpenAiRequestPlan {
                 body: full_body,
                 scope,
-                full_input: full_messages.clone(),
+                append_match_input: full_messages.clone(),
                 provider_input: full_messages,
                 request_shape,
                 diagnostics: incremental_diagnostics(
@@ -659,7 +661,7 @@ fn plan_chat_completion_request(
             OpenAiRequestPlan {
                 body: full_body,
                 scope,
-                full_input: full_messages.clone(),
+                append_match_input: full_messages.clone(),
                 provider_input: full_messages,
                 request_shape,
                 diagnostics: incremental_diagnostics(
@@ -683,7 +685,7 @@ fn plan_chat_completion_request(
             OpenAiRequestPlan {
                 body: full_body,
                 scope,
-                full_input: full_messages.clone(),
+                append_match_input: full_messages.clone(),
                 provider_input: full_messages,
                 request_shape,
                 diagnostics: incremental_diagnostics(
@@ -712,7 +714,7 @@ fn plan_chat_completion_request(
         OpenAiRequestPlan {
             body: full_body,
             scope,
-            full_input: full_messages.clone(),
+            append_match_input: full_messages.clone(),
             provider_input: full_messages,
             request_shape,
             diagnostics: incremental_diagnostics(
@@ -934,6 +936,7 @@ fn plan_openai_responses_request(
     mut body: Value,
     request: &ProviderTurnRequest,
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
+    allow_previous_response_id: bool,
 ) -> Result<OpenAiRequestPlan> {
     let full_input = body
         .get("input")
@@ -946,6 +949,7 @@ fn plan_openai_responses_request(
             )
         })?;
     let full_input_items = full_input.len();
+    let append_match_input = openai_append_match_input_items(&full_input);
     let request_shape = request_shape_without_input(&body, request);
     let scope = continuation_scope(request);
     let request_controls = Some(openai_request_controls_diagnostics(&body));
@@ -953,7 +957,7 @@ fn plan_openai_responses_request(
         return Ok(OpenAiRequestPlan {
             body,
             scope,
-            full_input: full_input.clone(),
+            append_match_input,
             provider_input: full_input,
             request_shape,
             diagnostics: incremental_diagnostics(
@@ -974,7 +978,7 @@ fn plan_openai_responses_request(
         return Ok(OpenAiRequestPlan {
             body,
             scope,
-            full_input: full_input.clone(),
+            append_match_input,
             provider_input: full_input,
             request_shape,
             diagnostics: incremental_diagnostics(
@@ -993,7 +997,7 @@ fn plan_openai_responses_request(
         return Ok(OpenAiRequestPlan {
             body,
             scope,
-            full_input: full_input.clone(),
+            append_match_input,
             provider_input: full_input,
             request_shape,
             diagnostics: incremental_diagnostics(
@@ -1011,16 +1015,19 @@ fn plan_openai_responses_request(
     }
 
     let expected_prefix = previous.append_match_items.clone();
-    let mismatch =
-        openai_continuation_mismatch_diagnostics(&expected_prefix, &full_input, &request_shape);
+    let mismatch = openai_continuation_mismatch_diagnostics(
+        &expected_prefix,
+        &append_match_input,
+        &request_shape,
+    );
     if expected_prefix.is_empty()
-        || full_input.len() <= expected_prefix.len()
-        || !full_input.starts_with(&expected_prefix)
+        || append_match_input.len() <= expected_prefix.len()
+        || !append_match_input.starts_with(&expected_prefix)
     {
         return Ok(OpenAiRequestPlan {
             body,
             scope,
-            full_input: full_input.clone(),
+            append_match_input,
             provider_input: full_input,
             request_shape,
             diagnostics: incremental_diagnostics(
@@ -1035,8 +1042,12 @@ fn plan_openai_responses_request(
     }
 
     let incremental_input = full_input[expected_prefix.len()..].to_vec();
-    let has_response_id = previous.response_id.is_some();
-    let provider_input = if let Some(response_id) = previous.response_id {
+    let response_id = allow_previous_response_id
+        .then(|| previous.response_id.clone())
+        .flatten();
+    let has_response_id = response_id.is_some();
+    let replay_is_compacted = previous.latest_compaction_index.is_some();
+    let provider_input = if let Some(response_id) = response_id {
         body["input"] = Value::Array(incremental_input.clone());
         body["previous_response_id"] = Value::String(response_id);
         incremental_input.clone()
@@ -1050,15 +1061,14 @@ fn plan_openai_responses_request(
     Ok(OpenAiRequestPlan {
         body,
         scope,
-        full_input,
+        append_match_input,
         provider_input,
         request_shape,
         diagnostics: ProviderRequestDiagnostics {
-            request_lowering_mode: if has_response_id {
-                "incremental_continuation".into()
-            } else {
-                "provider_window_compacted".into()
-            },
+            request_lowering_mode: openai_append_match_lowering_mode(
+                has_response_id,
+                replay_is_compacted,
+            ),
             anthropic_cache: None,
             anthropic_context_management: None,
             openai_request_controls: request_controls,
@@ -1077,9 +1087,21 @@ fn plan_openai_responses_request(
                 previous_item_hash: None,
                 current_item_hash: None,
                 request_shape_hash: Some(request_shape_hash),
+                first_mismatch_path: None,
+                mismatch_kind: None,
             }),
         },
     })
+}
+
+fn openai_append_match_lowering_mode(has_response_id: bool, replay_is_compacted: bool) -> String {
+    if has_response_id {
+        "incremental_continuation".into()
+    } else if replay_is_compacted {
+        "provider_window_compacted".into()
+    } else {
+        "provider_window_replay".into()
+    }
 }
 
 fn continuation_scope(request: &ProviderTurnRequest) -> Option<OpenAiContinuationScope> {
@@ -1120,6 +1142,14 @@ fn openai_continuation_mismatch_diagnostics(
         });
     let previous = first_mismatch_index.and_then(|index| expected_prefix.get(index));
     let current = first_mismatch_index.and_then(|index| full_input.get(index));
+    let item_path = match (first_mismatch_index, previous, current) {
+        (Some(index), Some(previous), Some(current)) => {
+            let suffix = first_json_mismatch_path(previous, current).unwrap_or_default();
+            Some(format!("/{index}{suffix}"))
+        }
+        (Some(index), _, _) => Some(format!("/{index}")),
+        _ => None,
+    };
     OpenAiContinuationMismatchDiagnostics {
         expected_prefix_items: expected_prefix.len(),
         first_mismatch_index,
@@ -1130,6 +1160,93 @@ fn openai_continuation_mismatch_diagnostics(
         previous_item_hash: previous.map(openai_item_hash),
         current_item_hash: current.map(openai_item_hash),
         request_shape_hash: Some(request_shape_hash(request_shape)),
+        first_mismatch_path: item_path.clone(),
+        mismatch_kind: Some(openai_mismatch_kind(
+            previous,
+            current,
+            item_path.as_deref(),
+        )),
+    }
+}
+
+fn first_json_mismatch_path(previous: &Value, current: &Value) -> Option<String> {
+    if previous == current {
+        return None;
+    }
+    match (previous, current) {
+        (Value::Array(previous), Value::Array(current)) => {
+            let shared = previous.len().min(current.len());
+            for index in 0..shared {
+                if let Some(path) = first_json_mismatch_path(&previous[index], &current[index]) {
+                    return Some(format!("/{index}{path}"));
+                }
+            }
+            Some(format!("/{shared}"))
+        }
+        (Value::Object(previous), Value::Object(current)) => {
+            let keys = previous
+                .keys()
+                .chain(current.keys())
+                .collect::<std::collections::BTreeSet<_>>();
+            for key in keys {
+                match (previous.get(key), current.get(key)) {
+                    (Some(previous), Some(current)) => {
+                        if let Some(path) = first_json_mismatch_path(previous, current) {
+                            return Some(format!("/{}{}", json_pointer_escape(key), path));
+                        }
+                    }
+                    _ => return Some(format!("/{}", json_pointer_escape(key))),
+                }
+            }
+            Some(String::new())
+        }
+        _ => Some(String::new()),
+    }
+}
+
+fn json_pointer_escape(segment: &str) -> String {
+    segment.replace('~', "~0").replace('/', "~1")
+}
+
+fn openai_mismatch_kind(
+    previous: Option<&Value>,
+    current: Option<&Value>,
+    path: Option<&str>,
+) -> String {
+    let Some(previous) = previous else {
+        return "length_mismatch".into();
+    };
+    let Some(current) = current else {
+        return "length_mismatch".into();
+    };
+    let previous_type = openai_item_type(previous);
+    let current_type = openai_item_type(current);
+    if previous_type != current_type {
+        return "semantic_mismatch".into();
+    }
+    let path = path.unwrap_or_default();
+    if path.contains("/id")
+        || path.contains("/status")
+        || path.contains("/metadata")
+        || path.contains("/annotations")
+        || path.contains("/logprobs")
+    {
+        return "provider_metadata_only".into();
+    }
+    match previous_type.as_str() {
+        "message" => {
+            if previous.get("role").and_then(Value::as_str) == Some("assistant")
+                && path.contains("/content")
+                && !path.ends_with("/text")
+            {
+                "assistant_text_shape".into()
+            } else {
+                "semantic_mismatch".into()
+            }
+        }
+        "function_call" | "custom_tool_call" => "tool_call_shape".into(),
+        "function_call_output" | "custom_tool_call_output" => "tool_result_shape".into(),
+        _ => "semantic_mismatch".into(),
     }
 }
 
@@ -1251,6 +1368,8 @@ fn incremental_diagnostics(
             previous_item_hash: mismatch.previous_item_hash,
             current_item_hash: mismatch.current_item_hash,
             request_shape_hash: mismatch.request_shape_hash,
+            first_mismatch_path: mismatch.first_mismatch_path,
+            mismatch_kind: mismatch.mismatch_kind,
         }),
     }
 }
@@ -1259,7 +1378,7 @@ fn update_openai_continuation(
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
     scope: Option<OpenAiContinuationScope>,
     request_shape: OpenAiRequestShape,
-    full_input: Vec<Value>,
+    append_match_input: Vec<Value>,
     provider_input: Vec<Value>,
     parsed: &ParsedOpenAiResponse,
 ) {
@@ -1280,7 +1399,7 @@ fn update_openai_continuation(
                     .iter()
                     .map(canonicalize_openai_provider_item),
             );
-            let mut append_match_items = full_input;
+            let mut append_match_items = append_match_input;
             append_match_items.extend(openai_append_match_output_items(&parsed.output_items));
             Some(OpenAiProviderWindow {
                 response_id: Some(response_id.clone()),
@@ -1310,10 +1429,10 @@ fn openai_append_match_output_items(output_items: &[Value]) -> Vec<Value> {
 fn openai_append_match_output_item(item: &Value) -> Option<Value> {
     match item.get("type").and_then(Value::as_str) {
         Some("message" | "function_call" | "custom_tool_call") => {
-            Some(canonicalize_openai_provider_item(item))
+            Some(canonicalize_openai_append_match_item(item))
         }
         Some("reasoning") => None,
-        _ => Some(canonicalize_openai_provider_item(item)),
+        _ => Some(canonicalize_openai_append_match_item(item)),
     }
 }
 
@@ -1547,7 +1666,7 @@ async fn maybe_compact_openai_request_plan(
         request_shape: plan.request_shape.clone(),
         latest_compaction_index: latest_openai_compaction_index(&compactable_items),
         items: compactable_items,
-        append_match_items: plan.full_input.clone(),
+        append_match_items: plan.append_match_input.clone(),
         generation: previous.generation,
     };
     let candidate = match openai_provider_window_compaction_candidate(&compactable_window) {
@@ -1978,9 +2097,16 @@ fn sanitize_openai_store_false_compact_items(items: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-// Provider windows are replayed into future OpenAI requests and compared
-// against locally rebuilt input for append-only continuation. Normalize
-// provider-only transport fields so equivalent conversation items stay stable.
+fn openai_append_match_input_items(items: &[Value]) -> Vec<Value> {
+    items
+        .iter()
+        .map(canonicalize_openai_append_match_item)
+        .collect()
+}
+
+// Provider windows are replayed into future OpenAI requests and compact calls.
+// Keep their wire shape close to OpenAI's item contract while stripping fields
+// that are not accepted on replay.
 fn canonicalize_openai_provider_item(item: &Value) -> Value {
     let mut item = openai_without_provider_item_id(item);
     let Some(object) = item.as_object_mut() else {
@@ -2006,6 +2132,128 @@ fn canonicalize_openai_provider_item(item: &Value) -> Value {
         }
     }
     item
+}
+
+// Append matching compares provider outputs against Holon-rebuilt input. Use a
+// semantic form that preserves item order and conversational meaning while
+// ignoring provider-only metadata and nested text decorations.
+fn canonicalize_openai_append_match_item(item: &Value) -> Value {
+    let item = openai_without_provider_item_id(item);
+    let Some(object) = item.as_object() else {
+        return item;
+    };
+    match object.get("type").and_then(Value::as_str) {
+        Some("message") => canonicalize_openai_append_match_message(object),
+        Some("function_call") => canonicalize_openai_append_match_function_call(object),
+        Some("custom_tool_call") => canonicalize_openai_append_match_custom_tool_call(object),
+        Some("function_call_output" | "custom_tool_call_output") => json!({
+            "type": object.get("type").cloned().unwrap_or(Value::Null),
+            "call_id": object.get("call_id").cloned().unwrap_or(Value::Null),
+            "output": object.get("output").cloned().unwrap_or(Value::Null),
+        }),
+        Some("compaction_summary") => {
+            let mut canonical = json!({ "type": "compaction" });
+            if let Some(encrypted_content) = object.get("encrypted_content") {
+                canonical["encrypted_content"] = encrypted_content.clone();
+            }
+            canonical
+        }
+        Some("compaction") => {
+            let mut canonical = json!({ "type": "compaction" });
+            if let Some(encrypted_content) = object.get("encrypted_content") {
+                canonical["encrypted_content"] = encrypted_content.clone();
+            }
+            canonical
+        }
+        Some(_) | None => canonicalize_openai_provider_item(&item),
+    }
+}
+
+fn canonicalize_openai_append_match_message(object: &serde_json::Map<String, Value>) -> Value {
+    let role = object
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let content = object
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| canonicalize_openai_append_match_content_item(role, item))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "type": "message",
+        "role": role,
+        "content": content,
+    })
+}
+
+fn canonicalize_openai_append_match_content_item(role: &str, item: &Value) -> Value {
+    let Some(object) = item.as_object() else {
+        return item.clone();
+    };
+    let item_type = object.get("type").and_then(Value::as_str);
+    if matches!(
+        item_type,
+        Some("output_text" | "input_text" | "text" | "message_text")
+    ) {
+        let normalized_type = if role == "assistant" {
+            "output_text"
+        } else {
+            "input_text"
+        };
+        return json!({
+            "type": normalized_type,
+            "text": object.get("text").cloned().unwrap_or(Value::String(String::new())),
+        });
+    }
+    let mut canonical = serde_json::Map::new();
+    if let Some(item_type) = object.get("type") {
+        canonical.insert("type".into(), item_type.clone());
+    }
+    for key in ["text", "image_url", "file_id", "filename"] {
+        if let Some(value) = object.get(key) {
+            canonical.insert(key.into(), value.clone());
+        }
+    }
+    Value::Object(canonical)
+}
+
+fn canonicalize_openai_append_match_function_call(
+    object: &serde_json::Map<String, Value>,
+) -> Value {
+    let arguments = object
+        .get("arguments")
+        .and_then(Value::as_str)
+        .map(canonicalize_openai_arguments_string)
+        .map(Value::String)
+        .unwrap_or_else(|| object.get("arguments").cloned().unwrap_or(Value::Null));
+    json!({
+        "type": "function_call",
+        "call_id": object.get("call_id").cloned().unwrap_or(Value::Null),
+        "name": object.get("name").cloned().unwrap_or(Value::Null),
+        "arguments": arguments,
+    })
+}
+
+fn canonicalize_openai_append_match_custom_tool_call(
+    object: &serde_json::Map<String, Value>,
+) -> Value {
+    json!({
+        "type": "custom_tool_call",
+        "call_id": object.get("call_id").cloned().unwrap_or(Value::Null),
+        "name": object.get("name").cloned().unwrap_or(Value::Null),
+        "input": object.get("input").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn canonicalize_openai_arguments_string(arguments: &str) -> String {
+    serde_json::from_str::<Value>(arguments)
+        .map(|parsed| canonical_json(&parsed))
+        .unwrap_or_else(|_| arguments.to_string())
 }
 
 fn openai_without_provider_item_id(item: &Value) -> Value {

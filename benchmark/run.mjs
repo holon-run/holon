@@ -2985,7 +2985,9 @@ function incrementalContinuationDiagnostic(provider, round, requestLoweringMode,
       incremental_input_items: numberOrNull(
         requestDiagnostics.incremental_continuation.incremental_input_items
       ),
-      full_input_items: numberOrNull(requestDiagnostics.incremental_continuation.full_input_items)
+      full_input_items: numberOrNull(requestDiagnostics.incremental_continuation.full_input_items),
+      first_mismatch_path: requestDiagnostics.incremental_continuation.first_mismatch_path ?? null,
+      mismatch_kind: requestDiagnostics.incremental_continuation.mismatch_kind ?? null
     };
   }
   if (round <= 1) {
@@ -3446,6 +3448,7 @@ function summarizeTokenOptimizationRounds(rounds) {
   let openaiRemoteCompactionInputItems = 0;
   let openaiRemoteCompactionOutputItems = 0;
   let openaiRemoteCompactionItems = 0;
+  const incrementalMismatchKinds = {};
   let cacheMissWithContextManagementAppliedRounds = 0;
   let cacheRecoveredAfterContextManagementAppliedRounds = 0;
   let previousContextManagementAppliedMiss = false;
@@ -3468,6 +3471,10 @@ function summarizeTokenOptimizationRounds(rounds) {
     const reason = round.incremental_continuation?.fallback_reason;
     if (reason) {
       incrementalFallbackReasons[reason] = (incrementalFallbackReasons[reason] ?? 0) + 1;
+    }
+    const mismatchKind = round.incremental_continuation?.mismatch_kind;
+    if (mismatchKind) {
+      incrementalMismatchKinds[mismatchKind] = (incrementalMismatchKinds[mismatchKind] ?? 0) + 1;
     }
     if (round.context_management?.status === "enabled") {
       contextManagementEnabledRounds += 1;
@@ -3547,6 +3554,7 @@ function summarizeTokenOptimizationRounds(rounds) {
     cache_creation_input_tokens: cacheCreationInputTokens,
     high_input_zero_cache_read_rounds: highInputZeroCacheReadRounds,
     incremental_fallback_reasons: incrementalFallbackReasons,
+    incremental_mismatch_kinds: incrementalMismatchKinds,
     context_management_enabled_rounds: contextManagementEnabledRounds,
     context_management_eligible_tool_result_bytes: contextManagementEligibleToolResultBytes,
     context_management_eligible_tool_result_count: contextManagementEligibleToolResultCount,

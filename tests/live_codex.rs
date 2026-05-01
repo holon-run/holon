@@ -1,8 +1,10 @@
 use anyhow::Result;
 use holon::{
     config::AppConfig,
+    prompt::PromptStability,
     provider::{
-        AgentProvider, ConversationMessage, ModelBlock, OpenAiCodexProvider, ProviderTurnRequest,
+        AgentProvider, ConversationMessage, ModelBlock, OpenAiCodexProvider, PromptContentBlock,
+        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest,
     },
     tool::ToolSpec,
 };
@@ -31,6 +33,39 @@ fn probe_tool_spec() -> ToolSpec {
     }
 }
 
+fn live_append_match_prompt_frame() -> ProviderPromptFrame {
+    ProviderPromptFrame::structured(
+        "Reply briefly and follow the user's exact formatting requirements.",
+        vec![PromptContentBlock {
+            text: "stable live append-match probe system block".into(),
+            stability: PromptStability::Stable,
+            cache_breakpoint: true,
+        }],
+        vec![PromptContentBlock {
+            text: "agent-scoped live append-match probe context".into(),
+            stability: PromptStability::AgentScoped,
+            cache_breakpoint: true,
+        }],
+        Some(ProviderPromptCache {
+            agent_id: "live-openai-codex-append-match".into(),
+            prompt_cache_key: "live-openai-codex-append-match".into(),
+            working_memory_revision: 1,
+            compression_epoch: 0,
+        }),
+    )
+}
+
+fn text_response(blocks: &[ModelBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ModelBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
 #[tokio::test]
 #[ignore = "requires real Codex auth state and network access"]
 async fn live_openai_codex_provider_returns_real_response() -> Result<()> {
@@ -46,6 +81,57 @@ async fn live_openai_codex_provider_returns_real_response() -> Result<()> {
         ))
         .await?;
     assert!(!output.blocks.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires real Codex auth state and network access"]
+async fn live_openai_codex_replays_provider_window_after_append_match() -> Result<()> {
+    let config = live_config()?;
+    let provider = OpenAiCodexProvider::from_config(&config, &live_openai_codex_model())?;
+    let frame = live_append_match_prompt_frame();
+    let first = provider
+        .complete_turn(ProviderTurnRequest {
+            prompt_frame: frame.clone(),
+            conversation: vec![ConversationMessage::UserText(
+                "Reply with exactly READY.".into(),
+            )],
+            tools: vec![],
+        })
+        .await?;
+    let first_text = text_response(&first.blocks);
+    assert!(
+        !first_text.trim().is_empty(),
+        "expected text output from first live Codex response"
+    );
+
+    let second = provider
+        .complete_turn(ProviderTurnRequest {
+            prompt_frame: frame,
+            conversation: vec![
+                ConversationMessage::UserText("Reply with exactly READY.".into()),
+                ConversationMessage::AssistantBlocks(vec![ModelBlock::Text { text: first_text }]),
+                ConversationMessage::UserText("Reply with exactly DONE.".into()),
+            ],
+            tools: vec![],
+        })
+        .await?;
+
+    let diagnostics = second
+        .request_diagnostics
+        .as_ref()
+        .expect("request diagnostics");
+    assert_eq!(
+        diagnostics.request_lowering_mode.as_str(),
+        "provider_window_replay"
+    );
+    let incremental = diagnostics
+        .incremental_continuation
+        .as_ref()
+        .expect("incremental continuation diagnostics");
+    assert_eq!(incremental.status, "hit");
+    assert_eq!(incremental.fallback_reason, None);
+    assert_eq!(incremental.incremental_input_items, Some(1));
     Ok(())
 }
 
