@@ -324,6 +324,9 @@ mod tests {
             "SpawnAgent",
             "TaskInput",
             "TaskOutput",
+            "GetActiveWorkItem",
+            "GetWorkItem",
+            "ListWorkItems",
             "UpdateWorkItem",
             "MemorySearch",
             "MemoryGet",
@@ -521,6 +524,9 @@ mod tests {
 
         assert!(names.iter().any(|name| name == "TaskOutput"));
         assert!(names.iter().any(|name| name == "TaskInput"));
+        assert!(names.iter().any(|name| name == "GetActiveWorkItem"));
+        assert!(names.iter().any(|name| name == "GetWorkItem"));
+        assert!(names.iter().any(|name| name == "ListWorkItems"));
         assert!(names.iter().any(|name| name == "UpdateWorkItem"));
         assert!(names.iter().any(|name| name == "MemorySearch"));
         assert!(names.iter().any(|name| name == "MemoryGet"));
@@ -550,6 +556,12 @@ mod tests {
         );
         assert_eq!(family_for("MemorySearch"), ToolCapabilityFamily::CoreAgent);
         assert_eq!(family_for("MemoryGet"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(
+            family_for("GetActiveWorkItem"),
+            ToolCapabilityFamily::CoreAgent
+        );
+        assert_eq!(family_for("GetWorkItem"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(family_for("ListWorkItems"), ToolCapabilityFamily::CoreAgent);
         assert_eq!(
             family_for("SpawnAgent"),
             ToolCapabilityFamily::AgentCreation

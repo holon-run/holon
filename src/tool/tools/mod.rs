@@ -15,6 +15,9 @@ pub(crate) mod create_external_trigger;
 pub(crate) mod enqueue;
 pub(crate) mod exec_command;
 pub(crate) mod exec_command_batch;
+pub(crate) mod get_active_work_item;
+pub(crate) mod get_work_item;
+pub(crate) mod list_work_items;
 pub(crate) mod memory_get;
 pub(crate) mod memory_search;
 pub(crate) mod notify_operator;
@@ -28,6 +31,7 @@ pub(crate) mod task_stop;
 pub(crate) mod update_work_item;
 pub(crate) mod update_work_plan;
 pub(crate) mod use_workspace;
+pub(crate) mod work_item_query;
 
 pub(crate) struct BuiltinToolDefinition {
     pub(crate) family: ToolCapabilityFamily,
@@ -46,6 +50,9 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         task_input::definition()?,
         task_output::definition()?,
         task_stop::definition()?,
+        get_active_work_item::definition()?,
+        get_work_item::definition()?,
+        list_work_items::definition()?,
         update_work_item::definition()?,
         memory_search::definition()?,
         memory_get::definition()?,
@@ -78,6 +85,13 @@ pub(crate) async fn execute_builtin_tool(
         task_input::NAME => task_input::execute(runtime, agent_id, trust, &call.input).await,
         task_output::NAME => task_output::execute(runtime, agent_id, trust, &call.input).await,
         task_stop::NAME => task_stop::execute(runtime, agent_id, trust, &call.input).await,
+        get_active_work_item::NAME => {
+            get_active_work_item::execute(runtime, agent_id, trust, &call.input).await
+        }
+        get_work_item::NAME => get_work_item::execute(runtime, agent_id, trust, &call.input).await,
+        list_work_items::NAME => {
+            list_work_items::execute(runtime, agent_id, trust, &call.input).await
+        }
         update_work_item::NAME => {
             update_work_item::execute(runtime, agent_id, trust, &call.input).await
         }
