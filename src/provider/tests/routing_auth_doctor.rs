@@ -1208,6 +1208,7 @@ fn build_provider_from_config_uses_custom_openai_responses_provider() {
             credential: Some("openrouter-key".into()),
             codex_home: None,
             originator: None,
+            reasoning_effort: None,
             context_management: Default::default(),
         },
     );
@@ -1250,6 +1251,7 @@ fn build_candidate_accepts_openai_responses_without_auth() {
             credential: None,
             codex_home: None,
             originator: None,
+            reasoning_effort: None,
             context_management: Default::default(),
         },
     );

@@ -284,6 +284,7 @@ impl AgentProvider for AnthropicProvider {
                 request_lowering_mode: request_lowering_mode.to_string(),
                 anthropic_cache: Some(cache_diagnostics),
                 anthropic_context_management: parsed.context_management,
+                openai_request_controls: None,
                 incremental_continuation: None,
                 openai_remote_compaction: None,
             }),

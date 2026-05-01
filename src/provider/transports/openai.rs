@@ -14,8 +14,9 @@ use crate::{
     provider::{
         emitted_tool_json_schema, AgentProvider, ConversationMessage, ModelBlock,
         ProviderCacheUsage, ProviderIncrementalContinuationDiagnostics,
-        ProviderOpenAiRemoteCompactionDiagnostics, ProviderPromptFrame, ProviderRequestDiagnostics,
-        ProviderTurnRequest, ProviderTurnResponse, ToolSchemaContract,
+        ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
+        ProviderPromptFrame, ProviderRequestDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
+        ToolSchemaContract,
     },
 };
 
@@ -44,6 +45,7 @@ pub struct OpenAiCodexProvider {
     originator: String,
     model: String,
     max_output_tokens: u32,
+    reasoning_effort: Option<String>,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
 }
 
@@ -232,6 +234,7 @@ impl OpenAiCodexProvider {
                 .unwrap_or_else(|| "codex_cli_rs".into()),
             model: model.to_string(),
             max_output_tokens,
+            reasoning_effort: provider_config.reasoning_effort.clone(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
     }
@@ -291,6 +294,7 @@ impl AgentProvider for OpenAiProvider {
             &request,
             OpenAiResponsesTransportContract::StandardJson,
             ToolSchemaContract::Relaxed,
+            None,
         )?;
         let mut plan = plan_openai_responses_request(body, &request, &self.continuation)?;
         let mut sent_diagnostics = plan.diagnostics.clone();
@@ -373,6 +377,7 @@ impl AgentProvider for OpenAiCodexProvider {
             &request,
             OpenAiResponsesTransportContract::CodexStreaming,
             ToolSchemaContract::Relaxed,
+            self.reasoning_effort.as_deref(),
         )?;
         let mut plan = plan_openai_responses_request(body, &request, &self.continuation)?;
         let mut sent_diagnostics = plan.diagnostics.clone();
@@ -636,6 +641,7 @@ fn plan_chat_completion_request(
                     None,
                     full_message_count,
                     None,
+                    None,
                 ),
             },
         ));
@@ -661,6 +667,7 @@ fn plan_chat_completion_request(
                     "not_applicable_initial_request",
                     None,
                     full_message_count,
+                    None,
                     None,
                 ),
             },
@@ -688,6 +695,7 @@ fn plan_chat_completion_request(
                         request_shape_hash: Some(request_shape_hash),
                         ..OpenAiContinuationMismatchDiagnostics::default()
                     }),
+                    None,
                 ),
             },
         ));
@@ -716,6 +724,7 @@ fn plan_chat_completion_request(
                     request_shape_hash: Some(request_shape_hash),
                     ..OpenAiContinuationMismatchDiagnostics::default()
                 }),
+                None,
             ),
         },
     ));
@@ -837,6 +846,7 @@ pub(crate) fn build_openai_responses_request(
     request: &ProviderTurnRequest,
     contract: OpenAiResponsesTransportContract,
     tool_schema_contract: ToolSchemaContract,
+    reasoning_effort: Option<&str>,
 ) -> Result<Value> {
     let tools = request
         .tools
@@ -883,11 +893,41 @@ pub(crate) fn build_openai_responses_request(
         }
         OpenAiResponsesTransportContract::CodexStreaming => {
             body["stream"] = Value::Bool(true);
-            body["reasoning"] = Value::Null;
-            body["include"] = Value::Array(Vec::new());
+            if let Some(reasoning_effort) = reasoning_effort {
+                body["reasoning"] = json!({ "effort": reasoning_effort });
+                body["include"] = json!(["reasoning.encrypted_content"]);
+            } else {
+                body["reasoning"] = Value::Null;
+                body["include"] = Value::Array(Vec::new());
+            }
         }
     }
     Ok(body)
+}
+
+fn openai_request_controls_diagnostics(body: &Value) -> ProviderOpenAiRequestControlsDiagnostics {
+    let reasoning_effort = body
+        .get("reasoning")
+        .and_then(|reasoning| reasoning.get("effort"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let include_reasoning_encrypted_content = body
+        .get("include")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.as_str() == Some("reasoning.encrypted_content"))
+        });
+    let max_output_tokens_sent = body.get("max_output_tokens").is_some();
+    let codex_streaming = body.get("stream").and_then(Value::as_bool) == Some(true);
+    ProviderOpenAiRequestControlsDiagnostics {
+        reasoning_sent: reasoning_effort.is_some(),
+        reasoning_effort,
+        include_reasoning_encrypted_content,
+        max_output_tokens_sent,
+        max_output_tokens_unsupported: codex_streaming,
+    }
 }
 
 fn plan_openai_responses_request(
@@ -908,6 +948,7 @@ fn plan_openai_responses_request(
     let full_input_items = full_input.len();
     let request_shape = request_shape_without_input(&body, request);
     let scope = continuation_scope(request);
+    let request_controls = Some(openai_request_controls_diagnostics(&body));
     let Some(scope_ref) = scope.as_ref() else {
         return Ok(OpenAiRequestPlan {
             body,
@@ -921,6 +962,7 @@ fn plan_openai_responses_request(
                 None,
                 full_input_items,
                 None,
+                request_controls,
             ),
         });
     };
@@ -941,6 +983,7 @@ fn plan_openai_responses_request(
                 None,
                 full_input_items,
                 None,
+                request_controls,
             ),
         });
     };
@@ -962,6 +1005,7 @@ fn plan_openai_responses_request(
                     request_shape_hash: Some(request_shape_hash),
                     ..OpenAiContinuationMismatchDiagnostics::default()
                 }),
+                request_controls,
             ),
         });
     }
@@ -985,6 +1029,7 @@ fn plan_openai_responses_request(
                 None,
                 full_input_items,
                 Some(mismatch),
+                request_controls,
             ),
         });
     }
@@ -1016,6 +1061,7 @@ fn plan_openai_responses_request(
             },
             anthropic_cache: None,
             anthropic_context_management: None,
+            openai_request_controls: request_controls,
             openai_remote_compaction: None,
             incremental_continuation: Some(ProviderIncrementalContinuationDiagnostics {
                 status: "hit".into(),
@@ -1119,9 +1165,18 @@ fn openai_item_hash(item: &Value) -> String {
 }
 
 fn latest_openai_compaction_index(items: &[Value]) -> Option<usize> {
-    items.iter().enumerate().rev().find_map(|(index, item)| {
-        (item.get("type").and_then(Value::as_str) == Some("compaction")).then_some(index)
-    })
+    items
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, item)| openai_is_compaction_item(item).then_some(index))
+}
+
+fn openai_is_compaction_item(item: &Value) -> bool {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("compaction" | "compaction_summary")
+    )
 }
 
 fn request_shape_hash(request_shape: &OpenAiRequestShape) -> String {
@@ -1173,12 +1228,14 @@ fn incremental_diagnostics(
     incremental_input_items: Option<usize>,
     full_input_items: usize,
     mismatch: Option<OpenAiContinuationMismatchDiagnostics>,
+    openai_request_controls: Option<ProviderOpenAiRequestControlsDiagnostics>,
 ) -> ProviderRequestDiagnostics {
     let mismatch = mismatch.unwrap_or_default();
     ProviderRequestDiagnostics {
         request_lowering_mode: request_lowering_mode.into(),
         anthropic_cache: None,
         anthropic_context_management: None,
+        openai_request_controls,
         openai_remote_compaction: None,
         incremental_continuation: Some(ProviderIncrementalContinuationDiagnostics {
             status: "fallback_full_request".into(),
@@ -1213,8 +1270,16 @@ fn update_openai_continuation(
     let next = match (parsed.response_id.as_ref(), parsed.output_items.is_empty()) {
         (Some(response_id), false) => {
             state.next_generation = state.next_generation.saturating_add(1);
-            let mut items = provider_input;
-            items.extend(parsed.output_items.clone());
+            let mut items = provider_input
+                .into_iter()
+                .map(|item| canonicalize_openai_provider_item(&item))
+                .collect::<Vec<_>>();
+            items.extend(
+                parsed
+                    .output_items
+                    .iter()
+                    .map(canonicalize_openai_provider_item),
+            );
             let mut append_match_items = full_input;
             append_match_items.extend(openai_append_match_output_items(&parsed.output_items));
             Some(OpenAiProviderWindow {
@@ -1245,10 +1310,10 @@ fn openai_append_match_output_items(output_items: &[Value]) -> Vec<Value> {
 fn openai_append_match_output_item(item: &Value) -> Option<Value> {
     match item.get("type").and_then(Value::as_str) {
         Some("message" | "function_call" | "custom_tool_call") => {
-            Some(openai_without_provider_item_id(item))
+            Some(canonicalize_openai_provider_item(item))
         }
         Some("reasoning") => None,
-        _ => Some(openai_without_provider_item_id(item)),
+        _ => Some(canonicalize_openai_provider_item(item)),
     }
 }
 
@@ -1424,7 +1489,7 @@ async fn maybe_compact_openai_provider_window(
         }
         state.next_generation = state.next_generation.saturating_add(1);
         let generation = state.next_generation;
-        let mut items = compacted;
+        let mut items = openai_compacted_replay_items(&compacted);
         items.extend(candidate.retained_tail.clone());
         let latest_compaction_index = latest_openai_compaction_index(&items);
         state.windows.insert(
@@ -1644,7 +1709,7 @@ async fn maybe_compact_openai_request_plan(
     }
 
     let output_items = compacted.len();
-    let mut provider_input = compacted;
+    let mut provider_input = openai_compacted_replay_items(&compacted);
     provider_input.extend(candidate.retained_tail.clone());
     plan.body["input"] = Value::Array(provider_input.clone());
     if let Some(object) = plan.body.as_object_mut() {
@@ -1769,6 +1834,12 @@ fn openai_provider_window_compaction_candidate(
         items: compact_items,
         retained_tail: window.items[boundary..].to_vec(),
     })
+}
+
+fn openai_compacted_replay_items(compacted: &[Value]) -> Vec<Value> {
+    latest_openai_compaction_index(compacted)
+        .map(|index| compacted[index..].to_vec())
+        .unwrap_or_else(|| compacted.to_vec())
 }
 
 fn items_since_latest_openai_compaction(items: &[Value]) -> usize {
@@ -1901,7 +1972,40 @@ fn build_openai_compact_request_body(request_shape: &OpenAiRequestShape, items: 
 }
 
 fn sanitize_openai_store_false_compact_items(items: &[Value]) -> Vec<Value> {
-    items.iter().map(openai_without_provider_item_id).collect()
+    items
+        .iter()
+        .map(canonicalize_openai_provider_item)
+        .collect()
+}
+
+// Provider windows are replayed into future OpenAI requests and compared
+// against locally rebuilt input for append-only continuation. Normalize
+// provider-only transport fields so equivalent conversation items stay stable.
+fn canonicalize_openai_provider_item(item: &Value) -> Value {
+    let mut item = openai_without_provider_item_id(item);
+    let Some(object) = item.as_object_mut() else {
+        return item;
+    };
+    if object.get("type").and_then(Value::as_str) == Some("compaction_summary") {
+        object.insert("type".into(), Value::String("compaction".into()));
+    }
+    if matches!(
+        object.get("type").and_then(Value::as_str),
+        Some("message" | "function_call" | "custom_tool_call" | "reasoning" | "compaction")
+    ) {
+        object.remove("status");
+    }
+    if object.get("type").and_then(Value::as_str) == Some("function_call") {
+        if let Some(arguments) = object.get("arguments").and_then(Value::as_str) {
+            if let Ok(parsed_arguments) = serde_json::from_str::<Value>(arguments) {
+                object.insert(
+                    "arguments".into(),
+                    Value::String(canonical_json(&parsed_arguments)),
+                );
+            }
+        }
+    }
+    item
 }
 
 fn openai_without_provider_item_id(item: &Value) -> Value {
@@ -1928,7 +2032,7 @@ fn openai_without_provider_item_id(item: &Value) -> Value {
 fn openai_compaction_encrypted_content_hashes(items: &[Value]) -> Vec<String> {
     items
         .iter()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("compaction"))
+        .filter(|item| openai_is_compaction_item(item))
         .filter_map(|item| item.get("encrypted_content").and_then(Value::as_str))
         .map(|content| sha256_hex(content.as_bytes()))
         .collect()
@@ -1937,7 +2041,7 @@ fn openai_compaction_encrypted_content_hashes(items: &[Value]) -> Vec<String> {
 fn openai_compaction_encrypted_content_bytes(items: &[Value]) -> Vec<usize> {
     items
         .iter()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("compaction"))
+        .filter(|item| openai_is_compaction_item(item))
         .filter_map(|item| item.get("encrypted_content").and_then(Value::as_str))
         .map(str::len)
         .collect()
@@ -2003,8 +2107,7 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
                                     "type": "function_call",
                                     "call_id": id,
                                     "name": name,
-                                    "arguments": serde_json::to_string(input)
-                                        .context("failed to serialize tool call arguments")?,
+                                    "arguments": canonical_json(input),
                                 }));
                             }
                         }
@@ -2778,7 +2881,7 @@ async fn send_openai_compact_request(
     })?;
     let parsed: Value = serde_json::from_str(&response_body)
         .map_err(|error| invalid_response_error("invalid OpenAI compact JSON", error))?;
-    parsed
+    let output = parsed
         .get("output")
         .and_then(Value::as_array)
         .cloned()
@@ -2787,7 +2890,11 @@ async fn send_openai_compact_request(
                 "OpenAI compact response did not contain output array",
                 "missing output array",
             )
-        })
+        })?;
+    Ok(output
+        .into_iter()
+        .map(|item| canonicalize_openai_provider_item(&item))
+        .collect())
 }
 
 async fn send_openai_responses_streaming_request(
@@ -3135,7 +3242,10 @@ fn parse_openai_response_with_transport_state(response: Value) -> Result<ParsedO
                 "missing output array",
             )
         })?;
-    let output_items = output.clone();
+    let output_items = output
+        .iter()
+        .map(canonicalize_openai_provider_item)
+        .collect::<Vec<_>>();
     let mut blocks = Vec::new();
 
     for item in output {

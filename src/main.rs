@@ -880,6 +880,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
                     profile: credential_profile.map(|value| value.trim().to_string()),
                     external: credential_external,
                 },
+                reasoning_effort: None,
             };
             validate_provider_config(&id, &provider_config)?;
 

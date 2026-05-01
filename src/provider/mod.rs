@@ -120,6 +120,8 @@ pub struct ProviderRequestDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_context_management: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_request_controls: Option<ProviderOpenAiRequestControlsDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub incremental_continuation: Option<ProviderIncrementalContinuationDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_remote_compaction: Option<ProviderOpenAiRemoteCompactionDiagnostics>,
@@ -189,6 +191,16 @@ pub struct ProviderIncrementalContinuationDiagnostics {
     pub current_item_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_shape_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderOpenAiRequestControlsDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    pub reasoning_sent: bool,
+    pub include_reasoning_encrypted_content: bool,
+    pub max_output_tokens_sent: bool,
+    pub max_output_tokens_unsupported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
