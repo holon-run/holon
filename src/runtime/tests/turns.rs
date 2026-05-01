@@ -608,10 +608,15 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
             _ => None,
         })
     {
-        assert!(checkpoint.contains("current user goal"));
-        assert!(checkpoint.contains("what remains unknown"));
-        assert!(checkpoint.contains("next goal-aligned action"));
-        assert!(checkpoint.contains("Do not assume the task requires code changes"));
+        if checkpoint.contains("delta progress checkpoint request") {
+            assert!(checkpoint.contains("Base checkpoint preview"));
+            assert!(checkpoint.contains("whether the next bounded action changed"));
+        } else {
+            assert!(checkpoint.contains("current user goal"));
+            assert!(checkpoint.contains("what remains unknown"));
+            assert!(checkpoint.contains("next goal-aligned action"));
+            assert!(checkpoint.contains("Do not assume the task requires code changes"));
+        }
         assert!(!checkpoint.contains("start editing"));
         assert!(!checkpoint.contains("begin implementation"));
     }
