@@ -10,6 +10,16 @@ impl RuntimeHandle {
             "message_processing_started",
             to_json_value(&message),
         ))?;
+        if let Some(work_item_id) = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("work_item_id"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+        {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
+        }
 
         let task = match message.kind {
             MessageKind::TaskStatus | MessageKind::TaskResult => {

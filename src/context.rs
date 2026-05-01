@@ -61,13 +61,13 @@ pub fn build_context(
     let tools = storage.read_recent_tool_executions(config.recent_messages)?;
     let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
     let work_queue_projection = storage.work_queue_prompt_projection()?;
-    let active_work_item = work_queue_projection.active.as_ref();
-    let active_work_plan = active_work_item
+    let current_work_item = work_queue_projection.current.as_ref();
+    let current_work_plan = current_work_item
         .map(|item| storage.latest_work_plan(&item.id))
         .transpose()?
         .flatten();
-    let queued_waiting_items = work_queue_projection
-        .queued_waiting
+    let queued_blocked_items = work_queue_projection
+        .queued_blocked
         .iter()
         .collect::<Vec<_>>();
 
@@ -121,7 +121,7 @@ pub fn build_context(
     if let Some(section) = build_relevant_episode_memory_section(
         &episodes,
         agent,
-        active_work_item,
+        current_work_item,
         current_message,
         config,
         remaining_budget,
@@ -208,24 +208,24 @@ pub fn build_context(
         }
     }
 
-    if let Some(work_item) = active_work_item {
+    if let Some(work_item) = current_work_item {
         push_budgeted_section(
             &mut sections,
             &mut remaining_budget,
             turn_section(
-                "active_work_item",
-                render_active_work_item(work_item, active_work_plan.as_ref()),
+                "current_work_item",
+                render_current_work_item(work_item, current_work_plan.as_ref()),
             ),
         );
     }
 
-    if !queued_waiting_items.is_empty() {
+    if !queued_blocked_items.is_empty() {
         push_budgeted_section(
             &mut sections,
             &mut remaining_budget,
             turn_section(
-                "queued_waiting_work_items",
-                render_queued_waiting_work_items(&queued_waiting_items),
+                "queued_blocked_work_items",
+                render_queued_blocked_work_items(&queued_blocked_items),
             ),
         );
     }
@@ -235,7 +235,7 @@ pub fn build_context(
         &mut remaining_budget,
         section(
             "context_contract",
-            "Interpret the memory block with this priority: active work item first for the committed delivery target and current runtime task, working memory delta next for the newest updates since the last prompt, and working memory after that for rolling agent context. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as the most reliable continuity evidence across turns. When these sources differ on task scope or delivery target, treat the active work item's `delivery_target` as the ground truth for the current committed task unless the current input explicitly changes it."
+            "Interpret the memory block with this priority: current work item first for the committed delivery target and current runtime task, working memory delta next for the newest updates since the last prompt, and working memory after that for rolling agent context. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as the most reliable continuity evidence across turns. When these sources differ on task scope or delivery target, treat the current work item's `delivery_target` as the ground truth for the current committed task unless the current input explicitly changes it."
                 .to_string(),
         ),
     );
@@ -482,21 +482,15 @@ fn render_brief(brief: &BriefRecord) -> String {
     format!("- [{:?}] {}", brief.kind, brief.text)
 }
 
-fn render_active_work_item(work_item: &WorkItemRecord, plan: Option<&WorkPlanSnapshot>) -> String {
+fn render_current_work_item(work_item: &WorkItemRecord, plan: Option<&WorkPlanSnapshot>) -> String {
     let mut lines = vec![
-        "Active work item:".to_string(),
+        "Current work item:".to_string(),
         format!("- Id: {}", work_item.id),
-        format!("- Status: {:?}", work_item.status),
+        format!("- State: {:?}", work_item.state),
         format!("- Delivery target: {}", work_item.delivery_target),
     ];
-    if let Some(parent_id) = work_item.parent_id.as_deref() {
-        lines.push(format!("- Parent id: {parent_id}"));
-    }
-    if let Some(summary) = work_item.summary.as_deref() {
-        lines.push(format!("- Summary: {summary}"));
-    }
-    if let Some(progress_note) = work_item.progress_note.as_deref() {
-        lines.push(format!("- Progress note: {progress_note}"));
+    if let Some(blocked_by) = work_item.blocked_by.as_deref() {
+        lines.push(format!("- Blocked by: {blocked_by}"));
     }
     if let Some(plan) = plan {
         lines.push("- Current work plan:".to_string());
@@ -509,17 +503,17 @@ fn render_active_work_item(work_item: &WorkItemRecord, plan: Option<&WorkPlanSna
     lines.join("\n")
 }
 
-fn render_queued_waiting_work_items(items: &[&WorkItemRecord]) -> String {
-    let mut lines = vec!["Queued and waiting work items:".to_string()];
+fn render_queued_blocked_work_items(items: &[&WorkItemRecord]) -> String {
+    let mut lines = vec!["Queued and blocked work items:".to_string()];
     lines.extend(items.iter().map(|item| {
-        let mut summary = format!(
-            "- [{:?}] {} :: {}",
-            item.status, item.id, item.delivery_target
-        );
-        if let Some(progress_note) = item.progress_note.as_deref() {
-            summary.push_str(&format!(" :: {progress_note}"));
-        } else if let Some(summary_text) = item.summary.as_deref() {
-            summary.push_str(&format!(" :: {summary_text}"));
+        let view = if item.blocked_by.is_some() {
+            "blocked"
+        } else {
+            "queued"
+        };
+        let mut summary = format!("- [{view}] {} :: {}", item.id, item.delivery_target);
+        if let Some(blocked_by) = item.blocked_by.as_deref() {
+            summary.push_str(&format!(" :: blocked_by={blocked_by}"));
         }
         summary
     }));
@@ -532,8 +526,8 @@ fn working_memory_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
 
 fn render_working_memory(snapshot: &WorkingMemorySnapshot) -> String {
     let mut lines = vec!["Working memory:".to_string()];
-    if let Some(active_work_item_id) = snapshot.active_work_item_id.as_deref() {
-        lines.push(format!("- Active work item id: {active_work_item_id}"));
+    if let Some(current_work_item_id) = snapshot.current_work_item_id.as_deref() {
+        lines.push(format!("- Current work item id: {current_work_item_id}"));
     }
     if let Some(delivery_target) = snapshot.delivery_target.as_deref() {
         lines.push(format!("- Delivery target: {delivery_target}"));
@@ -1001,7 +995,7 @@ fn render_budgeted_lines(heading: &str, lines: Vec<String>, budget: usize) -> Op
 
 #[derive(Debug, Clone)]
 struct EpisodeSelectionAnchor<'a> {
-    active_work_item_id: Option<&'a str>,
+    current_work_item_id: Option<&'a str>,
     delivery_target: Option<&'a str>,
     work_summary: Option<&'a str>,
     working_set_files: &'a [String],
@@ -1013,7 +1007,7 @@ struct EpisodeSelectionAnchor<'a> {
 fn build_relevant_episode_memory_section(
     episodes: &[ContextEpisodeRecord],
     agent: &AgentState,
-    active_work_item: Option<&WorkItemRecord>,
+    current_work_item: Option<&WorkItemRecord>,
     current_message: &MessageEnvelope,
     config: &ContextConfig,
     budget: usize,
@@ -1027,19 +1021,19 @@ fn build_relevant_episode_memory_section(
         "{}\n{}\n{}",
         body_preview(&current_message.body),
         working_memory.work_summary.as_deref().unwrap_or_default(),
-        active_work_item
-            .and_then(|item| item.summary.as_deref())
+        current_work_item
+            .map(|item| item.delivery_target.as_str())
             .unwrap_or_default()
     );
     let anchor = EpisodeSelectionAnchor {
-        active_work_item_id: working_memory
-            .active_work_item_id
+        current_work_item_id: working_memory
+            .current_work_item_id
             .as_deref()
-            .or_else(|| active_work_item.map(|item| item.id.as_str())),
+            .or_else(|| current_work_item.map(|item| item.id.as_str())),
         delivery_target: working_memory
             .delivery_target
             .as_deref()
-            .or_else(|| active_work_item.map(|item| item.delivery_target.as_str())),
+            .or_else(|| current_work_item.map(|item| item.delivery_target.as_str())),
         work_summary: working_memory.work_summary.as_deref(),
         working_set_files: &working_memory.working_set_files,
         pending_followups: &working_memory.pending_followups,
@@ -1164,8 +1158,8 @@ fn episode_relevance_score(
     recency_index: usize,
 ) -> usize {
     let mut score = anchor
-        .active_work_item_id
-        .filter(|id| episode.active_work_item_id.as_deref() == Some(*id))
+        .current_work_item_id
+        .filter(|id| episode.current_work_item_id.as_deref() == Some(*id))
         .map(|_| 120)
         .unwrap_or(0);
 
@@ -1270,7 +1264,7 @@ mod tests {
             AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
             AgentVisibility, BriefKind, BriefRecord, ContextEpisodeRecord, EpisodeBoundaryReason,
             LoadedAgentsMd, MessageKind, MessageOrigin, Priority, ToolExecutionRecord,
-            ToolExecutionStatus, TrustLevel, WorkItemStatus,
+            ToolExecutionStatus, TrustLevel, WorkItemState,
         },
     };
 
@@ -1575,7 +1569,7 @@ mod tests {
             .contains("Use prior briefs and recent tool results"));
         assert!(context_contract
             .content
-            .contains("active work item first for the committed delivery target"));
+            .contains("current work item first for the committed delivery target"));
     }
 
     #[test]
@@ -2147,7 +2141,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_includes_active_work_item_and_plan_sections() {
+    fn build_context_includes_current_work_item_and_plan_sections() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
@@ -2162,13 +2156,11 @@ mod tests {
             },
         );
 
-        let mut active = crate::types::WorkItemRecord::new(
+        let active = crate::types::WorkItemRecord::new(
             "default",
-            "Persist work-item state",
-            crate::types::WorkItemStatus::Active,
+            "storage and recovery foundation",
+            crate::types::WorkItemState::Open,
         );
-        active.summary = Some("storage and recovery foundation".into());
-        active.progress_note = Some("storage API added; prompt projection next".into());
         storage.append_work_item(&active).unwrap();
         storage
             .append_work_plan(&crate::types::WorkPlanSnapshot::new(
@@ -2187,10 +2179,13 @@ mod tests {
             ))
             .unwrap();
 
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(active.id.clone());
+        storage.write_agent(&agent).unwrap();
         let built = build_context(
             &storage,
-            &AgentState::new("default"),
-            &execution_snapshot_for(&AgentState::new("default")),
+            &agent,
+            &execution_snapshot_for(&agent),
             &crate::types::SkillsRuntimeView::default(),
             &current_message,
             None,
@@ -2207,15 +2202,11 @@ mod tests {
         let active_section = built
             .sections
             .iter()
-            .find(|section| section.name == "active_work_item")
-            .expect("active_work_item section should be present");
-        assert!(active_section.content.contains("Persist work-item state"));
+            .find(|section| section.name == "current_work_item")
+            .expect("current_work_item section should be present");
         assert!(active_section
             .content
             .contains("storage and recovery foundation"));
-        assert!(active_section
-            .content
-            .contains("storage API added; prompt projection next"));
         assert!(active_section
             .content
             .contains("Project active item into prompt"));
@@ -2240,18 +2231,18 @@ mod tests {
         let queued = crate::types::WorkItemRecord::new(
             "default",
             "Queue follow-up verification",
-            crate::types::WorkItemStatus::Queued,
+            crate::types::WorkItemState::Open,
         );
         let mut waiting = crate::types::WorkItemRecord::new(
             "default",
             "Wait for operator confirmation",
-            crate::types::WorkItemStatus::Waiting,
+            crate::types::WorkItemState::Open,
         );
-        waiting.progress_note = Some("needs explicit approval before completion".into());
+        waiting.blocked_by = Some("needs explicit approval before completion".into());
         let completed = crate::types::WorkItemRecord::new(
             "default",
             "Already finished item",
-            crate::types::WorkItemStatus::Completed,
+            crate::types::WorkItemState::Done,
         );
         storage.append_work_item(&queued).unwrap();
         storage.append_work_item(&waiting).unwrap();
@@ -2277,8 +2268,8 @@ mod tests {
         let summary = built
             .sections
             .iter()
-            .find(|section| section.name == "queued_waiting_work_items")
-            .expect("queued_waiting_work_items section should be present");
+            .find(|section| section.name == "queued_blocked_work_items")
+            .expect("queued_blocked_work_items section should be present");
         assert!(summary.content.contains("Queue follow-up verification"));
         assert!(summary.content.contains("Wait for operator confirmation"));
         assert!(summary
@@ -2527,7 +2518,7 @@ mod tests {
             TrustLevel::TrustedSystem,
             Priority::Normal,
             MessageBody::Text {
-                text: "Continue active work item: fix stale pid handling".to_string(),
+                text: "Continue current work item: fix stale pid handling".to_string(),
             },
         );
         system_tick.metadata = Some(json!({
@@ -2720,12 +2711,8 @@ mod tests {
         };
         storage.append_tool_execution(&tool_record).unwrap();
 
-        let mut active = crate::types::WorkItemRecord::new(
-            "default",
-            "Fix flaky wake path",
-            WorkItemStatus::Active,
-        );
-        active.summary = Some("wake path patching".into());
+        let active =
+            crate::types::WorkItemRecord::new("default", "wake path patching", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
 
         let current_message = MessageEnvelope::new(
@@ -2741,7 +2728,7 @@ mod tests {
 
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            active_work_item_id: Some(active.id.clone()),
+            current_work_item_id: Some(active.id.clone()),
             delivery_target: Some(active.delivery_target.clone()),
             work_summary: Some("wake path patching".into()),
             current_plan: vec!["finish wake-path regression".into()],
@@ -2796,7 +2783,7 @@ mod tests {
         }
         if let Some(active_work_index) = section_names
             .iter()
-            .position(|name| *name == "active_work_item")
+            .position(|name| *name == "current_work_item")
         {
             assert!(active_work_index < current_input_index);
         }
@@ -2816,7 +2803,7 @@ mod tests {
                 .position(|name| *name == "working_memory_delta"),
             section_names
                 .iter()
-                .position(|name| *name == "active_work_item"),
+                .position(|name| *name == "current_work_item"),
         ) {
             assert!(delta_index < active_work_index);
         }
@@ -2909,7 +2896,7 @@ mod tests {
             start_message_count: 1,
             end_message_count: 6,
             boundary_reason: EpisodeBoundaryReason::HardTurnCap,
-            active_work_item_id: Some("work_old".into()),
+            current_work_item_id: Some("work_old".into()),
             delivery_target: Some("Refactor parser".into()),
             work_summary: Some("parser cleanup".into()),
             scope_hints: vec!["keep unrelated runtime behavior unchanged".into()],
@@ -2934,7 +2921,7 @@ mod tests {
             start_message_count: 7,
             end_message_count: 14,
             boundary_reason: EpisodeBoundaryReason::WaitBoundary,
-            active_work_item_id: Some("work_runtime".into()),
+            current_work_item_id: Some("work_runtime".into()),
             delivery_target: Some("Fix wake path".into()),
             work_summary: Some("wake path patching".into()),
             scope_hints: vec!["keep behavior unchanged outside the wake path".into()],
@@ -2963,7 +2950,7 @@ mod tests {
 
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            active_work_item_id: Some("work_runtime".into()),
+            current_work_item_id: Some("work_runtime".into()),
             delivery_target: Some("Fix wake path".into()),
             work_summary: Some("wake path patching".into()),
             working_set_files: vec!["src/runtime.rs".into()],
@@ -3043,21 +3030,16 @@ mod tests {
             worktree_branch: "feature/issue-264-budget-aware-prompt".into(),
         });
 
-        let mut active_work_item = crate::types::WorkItemRecord::new(
+        let current_work_item = crate::types::WorkItemRecord::new(
             "default",
-            "Stabilize prompt budgeting",
-            WorkItemStatus::Active,
+            "current work item summary repeats to guarantee it needs truncation ".repeat(12),
+            WorkItemState::Open,
         );
-        active_work_item.summary =
-            Some("current work item summary repeats to guarantee it needs truncation ".repeat(12));
-        active_work_item.progress_note = Some(
-            "progress note repeats to guarantee it competes with other large sections ".repeat(12),
-        );
-        storage.append_work_item(&active_work_item).unwrap();
+        storage.append_work_item(&current_work_item).unwrap();
         session
             .working_memory
             .current_working_memory
-            .active_work_item_id = Some(active_work_item.id.clone());
+            .current_work_item_id = Some(current_work_item.id.clone());
 
         let skills = crate::types::SkillsRuntimeView {
             discoverable_skills: vec![crate::types::SkillCatalogEntry {

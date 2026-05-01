@@ -7,8 +7,8 @@ use crate::{
     storage::AppStorage,
     types::{
         AgentState, AuditEvent, ClosureDecision, MessageEnvelope, MessageKind, ToolExecutionRecord,
-        TurnMemoryDelta, WaitingIntentStatus, WorkItemRecord, WorkItemStatus, WorkPlanSnapshot,
-        WorkPlanStepStatus, WorkingMemoryDelta, WorkingMemorySnapshot, WorkingMemoryUpdateReason,
+        TurnMemoryDelta, WaitingIntentStatus, WorkItemRecord, WorkPlanSnapshot, WorkPlanStepStatus,
+        WorkingMemoryDelta, WorkingMemorySnapshot, WorkingMemoryUpdateReason,
     },
 };
 
@@ -129,11 +129,11 @@ pub fn derive_working_memory_snapshot(
     current_closure: &ClosureDecision,
 ) -> Result<WorkingMemorySnapshot> {
     let projection = storage.work_queue_prompt_projection()?;
-    let waiting_anchor = projection.active.as_ref().or_else(|| {
+    let waiting_anchor = projection.current.as_ref().or_else(|| {
         projection
-            .queued_waiting
+            .queued_blocked
             .iter()
-            .filter(|item| item.status == WorkItemStatus::Waiting)
+            .filter(|item| item.blocked_by.is_some())
             .max_by(|left, right| {
                 left.updated_at
                     .cmp(&right.updated_at)
@@ -141,8 +141,8 @@ pub fn derive_working_memory_snapshot(
                     .then_with(|| left.id.cmp(&right.id))
             })
     });
-    let active_work_item = waiting_anchor;
-    let active_work_plan = active_work_item
+    let current_work_item = waiting_anchor;
+    let current_work_plan = current_work_item
         .map(|item| storage.latest_work_plan(&item.id))
         .transpose()?
         .flatten();
@@ -152,32 +152,31 @@ pub fn derive_working_memory_snapshot(
         .into_iter()
         .filter(|record| record.status == WaitingIntentStatus::Active)
         .collect::<Vec<_>>();
-    let active_work_item_id = active_work_item.map(|item| item.id.as_str());
-    let memory_tools = collect_memory_tools(&recent_tools, active_work_item_id);
+    let current_work_item_id = current_work_item.map(|item| item.id.as_str());
+    let memory_tools = collect_memory_tools(&recent_tools, current_work_item_id);
 
-    let work_summary = active_work_item
-        .and_then(|item| item.summary.clone().or_else(|| item.progress_note.clone()));
-    let current_plan = active_work_plan
+    let work_summary = current_work_item.map(|item| item.delivery_target.clone());
+    let current_plan = current_work_plan
         .as_ref()
         .map(render_current_plan)
         .unwrap_or_default();
     let queued_waiting_followups = projection
-        .queued_waiting
+        .queued_blocked
         .iter()
-        .filter(|item| Some(item.id.as_str()) != active_work_item.map(|anchor| anchor.id.as_str()))
+        .filter(|item| Some(item.id.as_str()) != current_work_item.map(|anchor| anchor.id.as_str()))
         .cloned()
         .collect::<Vec<_>>();
     let pending_followups = collect_pending_followups(
-        active_work_item,
-        active_work_plan.as_ref(),
+        current_work_item,
+        current_work_plan.as_ref(),
         &queued_waiting_followups,
     );
-    let waiting_on = collect_waiting_on(&active_waiting, active_work_item_id, current_closure);
+    let waiting_on = collect_waiting_on(&active_waiting, current_work_item_id, current_closure);
     let working_set_files = collect_working_set_files(&memory_tools);
 
     Ok(WorkingMemorySnapshot {
-        active_work_item_id: active_work_item.map(|item| item.id.clone()),
-        delivery_target: active_work_item.map(|item| item.delivery_target.clone()),
+        current_work_item_id: current_work_item.map(|item| item.id.clone()),
+        delivery_target: current_work_item.map(|item| item.delivery_target.clone()),
         work_summary,
         current_plan,
         working_set_files,
@@ -193,7 +192,7 @@ fn derive_update_reason(
     previous: &WorkingMemorySnapshot,
     next: &WorkingMemorySnapshot,
 ) -> WorkingMemoryUpdateReason {
-    if previous.active_work_item_id != next.active_work_item_id
+    if previous.current_work_item_id != next.current_work_item_id
         || previous.delivery_target != next.delivery_target
         || previous.work_summary != next.work_summary
     {
@@ -247,7 +246,7 @@ fn derive_turn_memory_delta(
 
     TurnMemoryDelta {
         turn_index: turn_index.max(1),
-        active_work_changed: previous.active_work_item_id != next.active_work_item_id
+        active_work_changed: previous.current_work_item_id != next.current_work_item_id
             || previous.delivery_target != next.delivery_target
             || previous.work_summary != next.work_summary,
         work_plan_changed: previous.current_plan != next.current_plan,
@@ -274,10 +273,10 @@ fn derive_working_memory_delta(
     push_changed_field(
         &mut changed_fields,
         &mut summary_lines,
-        "active_work_item_id",
-        previous.active_work_item_id.as_deref(),
-        next.active_work_item_id.as_deref(),
-        "active work item",
+        "current_work_item_id",
+        previous.current_work_item_id.as_deref(),
+        next.current_work_item_id.as_deref(),
+        "current work item",
     );
     push_changed_field(
         &mut changed_fields,
@@ -385,18 +384,19 @@ fn render_current_plan(plan: &WorkPlanSnapshot) -> Vec<String> {
 }
 
 fn collect_pending_followups(
-    active_work_item: Option<&WorkItemRecord>,
-    active_work_plan: Option<&WorkPlanSnapshot>,
+    current_work_item: Option<&WorkItemRecord>,
+    current_work_plan: Option<&WorkPlanSnapshot>,
     queued_waiting: &[WorkItemRecord],
 ) -> Vec<String> {
     let mut items = Vec::new();
 
-    if let Some(active) = active_work_item {
-        if let Some(progress) = active.progress_note.as_deref() {
-            items.push(format!("active: {}", truncate_line(progress, 120)));
-        }
+    if let Some(active) = current_work_item {
+        items.push(format!(
+            "current: {}",
+            truncate_line(&active.delivery_target, 120)
+        ));
     }
-    if let Some(plan) = active_work_plan {
+    if let Some(plan) = current_work_plan {
         items.extend(
             plan.items
                 .iter()
@@ -404,26 +404,22 @@ fn collect_pending_followups(
                 .map(|item| format!("plan: {}", truncate_line(&item.step, 120))),
         );
     }
-    items.extend(queued_waiting.iter().map(|item| {
-        format!(
-            "queued: {}",
-            truncate_line(
-                item.summary.as_deref().unwrap_or(&item.delivery_target),
-                120,
-            )
-        )
-    }));
+    items.extend(
+        queued_waiting
+            .iter()
+            .map(|item| format!("queued: {}", truncate_line(&item.delivery_target, 120))),
+    );
 
     dedup_owned(items, MEMORY_FOLLOWUP_LIMIT)
 }
 
 fn collect_memory_tools<'a>(
     recent_tools: &'a [ToolExecutionRecord],
-    active_work_item_id: Option<&str>,
+    current_work_item_id: Option<&str>,
 ) -> Vec<&'a ToolExecutionRecord> {
     collect_work_item_bound_or_legacy(
         recent_tools,
-        active_work_item_id,
+        current_work_item_id,
         MEMORY_TOOL_LIMIT,
         |_| true,
         |record| record.work_item_id.as_deref(),
@@ -432,7 +428,7 @@ fn collect_memory_tools<'a>(
 
 fn collect_work_item_bound_or_legacy<'a, T, P, W>(
     records: &'a [T],
-    active_work_item_id: Option<&str>,
+    current_work_item_id: Option<&str>,
     limit: usize,
     mut predicate: P,
     mut work_item_id: W,
@@ -442,10 +438,10 @@ where
     W: FnMut(&T) -> Option<&str>,
 {
     let mut selected = Vec::new();
-    match active_work_item_id {
-        Some(active_work_item_id) => {
+    match current_work_item_id {
+        Some(current_work_item_id) => {
             for record in records.iter().rev() {
-                if predicate(record) && work_item_id(record) == Some(active_work_item_id) {
+                if predicate(record) && work_item_id(record) == Some(current_work_item_id) {
                     selected.push(record);
                     if selected.len() == limit {
                         return selected;
@@ -477,15 +473,15 @@ where
 
 fn collect_waiting_on(
     active_waiting: &[crate::types::WaitingIntentRecord],
-    active_work_item_id: Option<&str>,
+    current_work_item_id: Option<&str>,
     current_closure: &ClosureDecision,
 ) -> Vec<String> {
     let mut waiting_records = active_waiting.iter().collect::<Vec<_>>();
     waiting_records.sort_by(|left, right| {
-        waiting_relevance_rank(left.work_item_id.as_deref(), active_work_item_id)
+        waiting_relevance_rank(left.work_item_id.as_deref(), current_work_item_id)
             .cmp(&waiting_relevance_rank(
                 right.work_item_id.as_deref(),
-                active_work_item_id,
+                current_work_item_id,
             ))
             .then_with(|| {
                 compare_option_timestamp_desc(left.last_triggered_at, right.last_triggered_at)
@@ -537,11 +533,11 @@ fn collect_working_set_files(recent_tools: &[&ToolExecutionRecord]) -> Vec<Strin
 
 fn waiting_relevance_rank(
     waiting_work_item_id: Option<&str>,
-    active_work_item_id: Option<&str>,
+    current_work_item_id: Option<&str>,
 ) -> u8 {
-    match (active_work_item_id, waiting_work_item_id) {
-        (Some(active_work_item_id), Some(waiting_work_item_id))
-            if waiting_work_item_id == active_work_item_id =>
+    match (current_work_item_id, waiting_work_item_id) {
+        (Some(current_work_item_id), Some(waiting_work_item_id))
+            if waiting_work_item_id == current_work_item_id =>
         {
             0
         }
@@ -736,7 +732,7 @@ mod tests {
             AgentState, BriefKind, BriefRecord, CallbackDeliveryMode, ClosureDecision, MessageBody,
             MessageEnvelope, MessageKind, MessageOrigin, Priority, RuntimePosture,
             ToolExecutionRecord, ToolExecutionStatus, TrustLevel, WaitingIntentRecord,
-            WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemStatus, WorkPlanItem,
+            WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemState, WorkPlanItem,
             WorkPlanSnapshot, WorkPlanStepStatus,
         },
     };
@@ -762,10 +758,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
-        let mut active =
-            WorkItemRecord::new("default", "fix benchmark export", WorkItemStatus::Active);
-        active.summary = Some("repair benchmark export output".into());
-        active.progress_note = Some("keep export format stable".into());
+        let active = WorkItemRecord::new(
+            "default",
+            "repair benchmark export output",
+            WorkItemState::Open,
+        );
         storage.append_work_item(&active).unwrap();
         storage
             .append_work_plan(&WorkPlanSnapshot::new(
@@ -855,7 +852,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            snapshot.active_work_item_id.as_deref(),
+            snapshot.current_work_item_id.as_deref(),
             Some(active.id.as_str())
         );
         assert!(snapshot
@@ -879,14 +876,10 @@ mod tests {
         let queued = WorkItemRecord::new(
             "default",
             "queue follow-up verification",
-            WorkItemStatus::Queued,
+            WorkItemState::Open,
         );
-        let mut waiting = WorkItemRecord::new(
-            "default",
-            "wait for operator approval",
-            WorkItemStatus::Waiting,
-        );
-        waiting.summary = Some("hold completion until operator confirms".into());
+        let waiting =
+            WorkItemRecord::new("default", "wait for operator approval", WorkItemState::Open);
         storage.append_work_item(&queued).unwrap();
         storage.append_work_item(&waiting).unwrap();
 
@@ -897,7 +890,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            snapshot.active_work_item_id.as_deref(),
+            snapshot.current_work_item_id.as_deref(),
             Some(waiting.id.as_str())
         );
         assert_eq!(
@@ -919,11 +912,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
-        let mut active =
-            WorkItemRecord::new("default", "fix active target", WorkItemStatus::Active);
-        active.summary = Some("current active summary".into());
+        let active = WorkItemRecord::new("default", "current active summary", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
-        let other = WorkItemRecord::new("default", "other target", WorkItemStatus::Queued);
+        let other = WorkItemRecord::new("default", "other target", WorkItemState::Open);
         storage.append_work_item(&other).unwrap();
 
         storage
@@ -1048,8 +1039,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
-        let active = WorkItemRecord::new("default", "current target", WorkItemStatus::Active);
-        let other = WorkItemRecord::new("default", "other target", WorkItemStatus::Queued);
+        let active = WorkItemRecord::new("default", "current target", WorkItemState::Open);
+        let other = WorkItemRecord::new("default", "other target", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
         storage.append_work_item(&other).unwrap();
 
@@ -1133,9 +1124,8 @@ mod tests {
         let storage = AppStorage::new(dir.path()).unwrap();
         let base = Utc::now();
 
-        let active =
-            WorkItemRecord::new("default", "current waiting target", WorkItemStatus::Active);
-        let other = WorkItemRecord::new("default", "other waiting target", WorkItemStatus::Queued);
+        let active = WorkItemRecord::new("default", "current waiting target", WorkItemState::Open);
+        let other = WorkItemRecord::new("default", "other waiting target", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
         storage.append_work_item(&other).unwrap();
 
@@ -1254,8 +1244,11 @@ mod tests {
         let mut agent = AgentState::new("default");
         agent.turn_index = 1;
 
-        let mut active = WorkItemRecord::new("default", "ship docs", WorkItemStatus::Active);
-        active.summary = Some("publish working memory docs".into());
+        let mut active = WorkItemRecord::new(
+            "default",
+            "publish working memory docs",
+            WorkItemState::Open,
+        );
         storage.append_work_item(&active).unwrap();
         let trigger = MessageEnvelope::new(
             "default",
@@ -1339,7 +1332,7 @@ mod tests {
             Some(2)
         );
 
-        active.progress_note = Some("review arrived".into());
+        active.blocked_by = Some("review arrived".into());
         storage.append_work_item(&active).unwrap();
         refresh_working_memory(
             &storage,
@@ -1376,14 +1369,17 @@ mod tests {
         let mut agent = AgentState::new("default");
         agent.turn_index = 1;
 
-        let mut active = WorkItemRecord::new("default", "ship docs", WorkItemStatus::Active);
-        active.summary = Some("publish working memory docs".into());
+        let active = WorkItemRecord::new(
+            "default",
+            "publish working memory docs",
+            WorkItemState::Open,
+        );
         storage.append_work_item(&active).unwrap();
 
         agent.working_memory.current_working_memory = WorkingMemorySnapshot {
-            active_work_item_id: Some(active.id.clone()),
+            current_work_item_id: Some(active.id.clone()),
             delivery_target: Some(active.delivery_target.clone()),
-            work_summary: active.summary.clone(),
+            work_summary: Some(active.delivery_target.clone()),
             scope_hints: vec!["legacy brief text".into()],
             recent_decisions: vec!["legacy final answer prose".into()],
             ..WorkingMemorySnapshot::default()
@@ -1434,7 +1430,7 @@ mod tests {
         let mut agent = AgentState::new("default");
         agent.context_summary = Some("stale compacted summary".into());
 
-        let active = WorkItemRecord::new("default", "ship memory cleanup", WorkItemStatus::Active);
+        let active = WorkItemRecord::new("default", "ship memory cleanup", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
         let trigger = MessageEnvelope::new(
             "default",

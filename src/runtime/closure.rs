@@ -46,7 +46,7 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
             "work_reactivation_mode={:?}",
             work_signal.reactivation_mode
         ));
-        evidence.push(format!("work_item_status={:?}", work_signal.status));
+        evidence.push(format!("work_item_state={:?}", work_signal.state));
         evidence.push(format!("work_item_id={}", work_signal.work_item_id));
     }
     if runtime_posture == RuntimePosture::Sleeping {
@@ -189,7 +189,7 @@ pub(super) fn runtime_error_active(events: &[AuditEvent], briefs: &[BriefRecord]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{WorkItemStatus, WorkReactivationMode};
+    use crate::types::{WorkItemState, WorkReactivationMode};
     use chrono::{Duration, Utc};
 
     fn facts() -> ClosureFacts {
@@ -333,7 +333,7 @@ mod tests {
         let decision = derive_closure_decision(&ClosureFacts {
             work_signal: Some(WorkReactivationSignal {
                 work_item_id: "work-1".into(),
-                status: WorkItemStatus::Active,
+                state: WorkItemState::Open,
                 reactivation_mode: WorkReactivationMode::ContinueActive,
             }),
             turn_terminal_kind: Some(TurnTerminalKind::Completed),
@@ -346,7 +346,7 @@ mod tests {
             decision.work_signal,
             Some(WorkReactivationSignal {
                 work_item_id: "work-1".into(),
-                status: WorkItemStatus::Active,
+                state: WorkItemState::Open,
                 reactivation_mode: WorkReactivationMode::ContinueActive,
             })
         );
@@ -358,7 +358,7 @@ mod tests {
             active_blocking_tasks: 1,
             work_signal: Some(WorkReactivationSignal {
                 work_item_id: "work-1".into(),
-                status: WorkItemStatus::Active,
+                state: WorkItemState::Open,
                 reactivation_mode: WorkReactivationMode::ContinueActive,
             }),
             ..facts()

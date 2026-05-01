@@ -6,7 +6,7 @@ use crate::storage::AppStorage;
 use crate::types::{
     AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason, ChildAgentObservabilitySnapshot,
     ChildAgentPhase, DeliverySummaryRecord, TaskRecord, TaskStatus, TokenUsage, WaitingReason,
-    WorkItemStatus, WorktreeSession,
+    WorkItemState, WorktreeSession,
 };
 
 const DELIVERY_SUMMARY_EVIDENCE_LIMIT: usize = 64;
@@ -62,19 +62,25 @@ impl RuntimeHandle {
             return Ok(None);
         };
 
-        let decision = resolve_turn_end_work_item_commit(&latest, &closure);
+        let blocked_by = closure
+            .waiting_reason
+            .map(waiting_reason_blocker)
+            .map(str::to_string)
+            .or_else(|| {
+                (closure.outcome == crate::types::ClosureOutcome::Failed).then(|| {
+                    "Turn failed and requires operator intervention before continuing.".into()
+                })
+            });
         let wrote_new_snapshot =
-            latest.status != decision.status || latest.progress_note != decision.progress_note;
+            latest.state == WorkItemState::Open && latest.blocked_by != blocked_by;
         let committed = if wrote_new_snapshot {
             let record = crate::types::WorkItemRecord {
                 id: latest.id.clone(),
                 agent_id: latest.agent_id.clone(),
                 workspace_id: latest.workspace_id.clone(),
-                parent_id: latest.parent_id.clone(),
                 delivery_target: latest.delivery_target.clone(),
-                status: decision.status,
-                summary: latest.summary.clone(),
-                progress_note: decision.progress_note.clone(),
+                state: latest.state.clone(),
+                blocked_by,
                 created_at: latest.created_at,
                 updated_at: chrono::Utc::now(),
             };
@@ -97,19 +103,11 @@ impl RuntimeHandle {
                 "agent_id": self.agent_id().await?,
                 "turn_index": turn_index,
                 "work_item_id": committed.id,
-                "claimed_status": decision.claimed_status,
-                "committed_status": committed.status,
-                "decision_reason": decision.reason,
+                "committed_state": committed.state,
                 "wrote_new_snapshot": wrote_new_snapshot,
                 "closure": closure,
             }),
         ))?;
-        if committed.status == WorkItemStatus::Completed
-            && closure.outcome == crate::types::ClosureOutcome::Completed
-        {
-            self.maybe_generate_delivery_summary(&committed, turn_index)
-                .await?;
-        }
         Ok(Some(committed))
     }
 
@@ -1274,10 +1272,10 @@ fn build_child_agent_observability_with_active_tasks(
         phase,
         blocked_reason,
         waiting_reason,
-        active_work_item_id: agent
+        current_work_item_id: agent
             .working_memory
             .current_working_memory
-            .active_work_item_id
+            .current_work_item_id
             .clone(),
         work_summary: agent
             .working_memory
@@ -1309,116 +1307,7 @@ fn blocking_task_count(active_tasks: &[&TaskRecord]) -> usize {
     blocking_tasks(active_tasks).len()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TurnEndWorkItemCommitDecision {
-    claimed_status: crate::types::WorkItemStatus,
-    status: crate::types::WorkItemStatus,
-    progress_note: Option<String>,
-    reason: &'static str,
-}
-
-fn resolve_turn_end_work_item_commit(
-    latest: &crate::types::WorkItemRecord,
-    closure: &ClosureDecision,
-) -> TurnEndWorkItemCommitDecision {
-    use crate::types::{ClosureOutcome, WorkItemStatus};
-
-    let waiting_note = closure
-        .waiting_reason
-        .map(waiting_reason_progress_note)
-        .map(str::to_string);
-    let fallback_waiting = || TurnEndWorkItemCommitDecision {
-        claimed_status: latest.status.clone(),
-        status: WorkItemStatus::Waiting,
-        progress_note: latest
-            .progress_note
-            .clone()
-            .or_else(|| waiting_note.clone()),
-        reason: "runtime_waiting_condition",
-    };
-    let failure_waiting = || TurnEndWorkItemCommitDecision {
-        claimed_status: latest.status.clone(),
-        status: WorkItemStatus::Waiting,
-        progress_note: latest.progress_note.clone().or_else(|| {
-            Some("Turn failed and requires operator intervention before continuing.".into())
-        }),
-        reason: "runtime_failed_turn",
-    };
-
-    match latest.status {
-        WorkItemStatus::Active => {
-            if closure.outcome == ClosureOutcome::Failed {
-                failure_waiting()
-            } else if closure.waiting_reason.is_some() {
-                fallback_waiting()
-            } else {
-                TurnEndWorkItemCommitDecision {
-                    claimed_status: WorkItemStatus::Active,
-                    status: WorkItemStatus::Active,
-                    progress_note: latest.progress_note.clone(),
-                    reason: "default_remain_active",
-                }
-            }
-        }
-        WorkItemStatus::Waiting => {
-            if latest
-                .progress_note
-                .as_deref()
-                .map(str::trim)
-                .is_some_and(|value| !value.is_empty())
-                || latest
-                    .summary
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|value| !value.is_empty())
-                || closure.waiting_reason.is_some()
-            {
-                TurnEndWorkItemCommitDecision {
-                    claimed_status: WorkItemStatus::Waiting,
-                    status: WorkItemStatus::Waiting,
-                    progress_note: latest.progress_note.clone().or_else(|| waiting_note),
-                    reason: "accepted_waiting_claim",
-                }
-            } else {
-                TurnEndWorkItemCommitDecision {
-                    claimed_status: WorkItemStatus::Waiting,
-                    status: WorkItemStatus::Active,
-                    progress_note: latest.progress_note.clone(),
-                    reason: "waiting_requires_reason",
-                }
-            }
-        }
-        WorkItemStatus::Queued => TurnEndWorkItemCommitDecision {
-            claimed_status: WorkItemStatus::Queued,
-            status: WorkItemStatus::Queued,
-            progress_note: latest.progress_note.clone(),
-            reason: "accepted_queued_claim",
-        },
-        WorkItemStatus::Completed => {
-            if closure.outcome == ClosureOutcome::Completed {
-                TurnEndWorkItemCommitDecision {
-                    claimed_status: WorkItemStatus::Completed,
-                    status: WorkItemStatus::Completed,
-                    progress_note: latest.progress_note.clone(),
-                    reason: "accepted_completed_claim",
-                }
-            } else if closure.outcome == ClosureOutcome::Failed {
-                failure_waiting()
-            } else if closure.waiting_reason.is_some() {
-                fallback_waiting()
-            } else {
-                TurnEndWorkItemCommitDecision {
-                    claimed_status: WorkItemStatus::Completed,
-                    status: WorkItemStatus::Active,
-                    progress_note: latest.progress_note.clone(),
-                    reason: "completed_rejected_by_runtime_facts",
-                }
-            }
-        }
-    }
-}
-
-fn waiting_reason_progress_note(reason: crate::types::WaitingReason) -> &'static str {
+fn waiting_reason_blocker(reason: crate::types::WaitingReason) -> &'static str {
     match reason {
         crate::types::WaitingReason::AwaitingOperatorInput => "Waiting on operator input.",
         crate::types::WaitingReason::AwaitingExternalChange => "Waiting on an external change.",
@@ -1517,7 +1406,10 @@ fn fallback_delivery_summary_text(evidence: &serde_json::Value) -> String {
         .or_else(|| {
             evidence
                 .get("work_item")
-                .and_then(|item| item.get("progress_note").or_else(|| item.get("summary")))
+                .and_then(|item| {
+                    item.get("blocked_by")
+                        .or_else(|| item.get("delivery_target"))
+                })
                 .and_then(|value| value.as_str())
                 .map(str::trim)
                 .filter(|text| !text.is_empty())

@@ -355,11 +355,11 @@ impl RuntimeHandle {
             return Ok(());
         }
 
-        let current_active_work_item_id = self
+        let current_current_work_item_id = self
             .inner
             .storage
             .work_queue_prompt_projection()?
-            .active
+            .current
             .as_ref()
             .map(|item| item.id.clone());
         let prior_anchor_id = {
@@ -368,11 +368,11 @@ impl RuntimeHandle {
                 .state
                 .working_memory
                 .current_working_memory
-                .active_work_item_id
+                .current_work_item_id
                 .clone()
         };
 
-        if current_active_work_item_id.is_none() {
+        if current_current_work_item_id.is_none() {
             let cancelled_ids = self
                 .cancel_waiting_intents(
                     active_waiting
@@ -382,12 +382,12 @@ impl RuntimeHandle {
                 )
                 .await?;
             self.inner.storage.append_event(&AuditEvent::new(
-                "missing_active_work_item_before_wait",
+                "missing_current_work_item_before_wait",
                 serde_json::json!({
                     "agent_id": self.agent_id().await?,
                     "message_id": message.id,
                     "waiting_intent_ids": cancelled_ids,
-                    "prior_active_work_item_id": prior_anchor_id,
+                    "prior_current_work_item_id": prior_anchor_id,
                     "closure": pre_cleanup_closure,
                 }),
             ))?;
@@ -396,7 +396,7 @@ impl RuntimeHandle {
 
         let mut stale_ids = Vec::new();
         let anchor_switched = prior_anchor_id.is_some()
-            && prior_anchor_id.as_deref() != current_active_work_item_id.as_deref();
+            && prior_anchor_id.as_deref() != current_current_work_item_id.as_deref();
         if anchor_switched {
             stale_ids.extend(
                 active_waiting
@@ -431,8 +431,8 @@ impl RuntimeHandle {
                 "message_id": message.id,
                 "reason": reason,
                 "waiting_intent_ids": cancelled_ids,
-                "prior_active_work_item_id": prior_anchor_id,
-                "current_active_work_item_id": current_active_work_item_id,
+                "prior_current_work_item_id": prior_anchor_id,
+                "current_current_work_item_id": current_current_work_item_id,
                 "closure": pre_cleanup_closure,
             }),
         ))?;

@@ -171,8 +171,8 @@ fn merge_into_active_episode(
         EPISODE_CARRY_FORWARD_LIMIT,
     );
 
-    if builder.active_work_item_id.is_none() {
-        builder.active_work_item_id = current_snapshot.active_work_item_id.clone();
+    if builder.current_work_item_id.is_none() {
+        builder.current_work_item_id = current_snapshot.current_work_item_id.clone();
     }
     if builder.delivery_target.is_none() {
         builder.delivery_target = current_snapshot.delivery_target.clone();
@@ -212,7 +212,7 @@ fn finalize_active_episode_before_merge(
             "episode_id": record.id,
             "boundary_reason": record.boundary_reason,
             "turn_range": [record.start_turn_index, record.end_turn_index],
-            "work_item_id": record.active_work_item_id,
+            "work_item_id": record.current_work_item_id,
         }),
     ))?;
     agent.working_memory.active_episode_id = None;
@@ -244,7 +244,7 @@ fn derive_boundary_reason(
     }
 
     if !working_snapshot_is_empty(previous_snapshot)
-        && (previous_snapshot.active_work_item_id != current_snapshot.active_work_item_id
+        && (previous_snapshot.current_work_item_id != current_snapshot.current_work_item_id
             || previous_snapshot.delivery_target != current_snapshot.delivery_target
             || previous_snapshot.work_summary != current_snapshot.work_summary)
     {
@@ -300,7 +300,7 @@ fn finalize_episode(
         start_message_count: builder.start_message_count,
         end_message_count: builder.latest_message_count,
         boundary_reason,
-        active_work_item_id: builder.active_work_item_id,
+        current_work_item_id: builder.current_work_item_id,
         delivery_target: builder.delivery_target,
         work_summary: builder.work_summary,
         scope_hints: builder.scope_hints,
@@ -431,7 +431,7 @@ mod tests {
 
     fn snapshot(work_id: &str, summary: &str) -> WorkingMemorySnapshot {
         WorkingMemorySnapshot {
-            active_work_item_id: Some(work_id.into()),
+            current_work_item_id: Some(work_id.into()),
             delivery_target: Some(summary.into()),
             work_summary: Some(summary.into()),
             ..WorkingMemorySnapshot::default()
@@ -477,7 +477,7 @@ mod tests {
             episodes[0].boundary_reason,
             EpisodeBoundaryReason::ActiveWorkSwitched
         );
-        assert_eq!(episodes[0].active_work_item_id.as_deref(), Some("work_a"));
+        assert_eq!(episodes[0].current_work_item_id.as_deref(), Some("work_a"));
         assert!(episodes[0].verification.is_empty());
         assert!(episodes[0].scope_hints.is_empty());
         let next_builder = agent
@@ -490,7 +490,7 @@ mod tests {
             .iter()
             .any(|line| line.contains("passed")));
         assert!(next_builder.scope_hints.is_empty());
-        assert_eq!(next_builder.active_work_item_id.as_deref(), Some("work_b"));
+        assert_eq!(next_builder.current_work_item_id.as_deref(), Some("work_b"));
     }
 
     #[test]

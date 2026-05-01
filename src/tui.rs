@@ -1620,9 +1620,7 @@ mod tests {
                             "agent_id": "default",
                             "workspace_id": "agent_home",
                             "delivery_target": "operator",
-                            "status": "queued",
-                            "summary": "prepare rollout plan",
-                            "progress_note": null,
+                            "state": "open",
                             "created_at": Utc::now(),
                             "updated_at": Utc::now()
                         }

@@ -504,7 +504,7 @@ pub enum WorkReactivationMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkReactivationSignal {
     pub work_item_id: String,
-    pub status: WorkItemStatus,
+    pub state: WorkItemState,
     pub reactivation_mode: WorkReactivationMode,
 }
 
@@ -1006,7 +1006,7 @@ pub struct TurnTerminalRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct WorkingMemorySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_work_item_id: Option<String>,
+    pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1090,7 +1090,7 @@ pub struct ActiveEpisodeBuilder {
     pub start_message_count: usize,
     pub latest_message_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_work_item_id: Option<String>,
+    pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1135,7 +1135,7 @@ impl ActiveEpisodeBuilder {
             latest_turn_index: start_turn_index,
             start_message_count: message_count,
             latest_message_count: message_count,
-            active_work_item_id: snapshot.active_work_item_id.clone(),
+            current_work_item_id: snapshot.current_work_item_id.clone(),
             delivery_target: snapshot.delivery_target.clone(),
             work_summary: snapshot.work_summary.clone(),
             scope_hints: Vec::new(),
@@ -1163,7 +1163,7 @@ pub struct ContextEpisodeRecord {
     pub end_message_count: usize,
     pub boundary_reason: EpisodeBoundaryReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_work_item_id: Option<String>,
+    pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1245,6 +1245,8 @@ pub struct AgentState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_turn_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_turn_operator_binding_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_turn_operator_reply_route_id: Option<String>,
@@ -1320,6 +1322,7 @@ impl AgentState {
             worktree_session: None,
             turn_index: 0,
             current_turn_work_item_id: None,
+            current_work_item_id: None,
             current_turn_operator_binding_id: None,
             current_turn_operator_reply_route_id: None,
             active_skills: Vec::new(),
@@ -1697,7 +1700,7 @@ pub struct ChildAgentObservabilitySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_reason: Option<WaitingReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_work_item_id: Option<String>,
+    pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1994,6 +1997,21 @@ pub struct SpawnAgentResult {
     pub task_handle: Option<TaskHandle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_work_item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpawnAgentWorkItemRequest {
+    pub parent_work_item_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_delivery_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_plan: Option<Vec<WorkPlanItem>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2193,11 +2211,9 @@ pub struct CommandTaskSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkItemStatus {
-    Active,
-    Queued,
-    Waiting,
-    Completed,
+pub enum WorkItemState {
+    Open,
+    Done,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2207,14 +2223,10 @@ pub struct WorkItemRecord {
     pub agent_id: String,
     #[serde(default = "default_agent_home_workspace_id")]
     pub workspace_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<String>,
     pub delivery_target: String,
-    pub status: WorkItemStatus,
+    pub state: WorkItemState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress_note: Option<String>,
+    pub blocked_by: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -2223,18 +2235,59 @@ impl WorkItemRecord {
     pub fn new(
         agent_id: impl Into<String>,
         delivery_target: impl Into<String>,
-        status: WorkItemStatus,
+        state: WorkItemState,
     ) -> Self {
         let now = Utc::now();
         Self {
             id: format!("work_{}", Uuid::new_v4().simple()),
             agent_id: agent_id.into(),
             workspace_id: AGENT_HOME_WORKSPACE_ID.to_string(),
-            parent_id: None,
             delivery_target: delivery_target.into(),
-            status,
-            summary: None,
-            progress_note: None,
+            state,
+            blocked_by: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemDelegationState {
+    Open,
+    Done,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkItemDelegationRecord {
+    pub delegation_id: String,
+    pub parent_agent_id: String,
+    pub parent_work_item_id: String,
+    pub child_agent_id: String,
+    pub child_work_item_id: String,
+    pub state: WorkItemDelegationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl WorkItemDelegationRecord {
+    pub fn new(
+        parent_agent_id: impl Into<String>,
+        parent_work_item_id: impl Into<String>,
+        child_agent_id: impl Into<String>,
+        child_work_item_id: impl Into<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            delegation_id: format!("delegation_{}", Uuid::new_v4().simple()),
+            parent_agent_id: parent_agent_id.into(),
+            parent_work_item_id: parent_work_item_id.into(),
+            child_agent_id: child_agent_id.into(),
+            child_work_item_id: child_work_item_id.into(),
+            state: WorkItemDelegationState::Open,
+            result_summary: None,
             created_at: now,
             updated_at: now,
         }
@@ -2820,12 +2873,9 @@ mod tests {
         let brief: BriefRecord = serde_json::from_value(brief).unwrap();
         assert_eq!(brief.workspace_id, AGENT_HOME_WORKSPACE_ID);
 
-        let mut work_item = serde_json::to_value(WorkItemRecord::new(
-            "default",
-            "ship",
-            WorkItemStatus::Queued,
-        ))
-        .unwrap();
+        let mut work_item =
+            serde_json::to_value(WorkItemRecord::new("default", "ship", WorkItemState::Open))
+                .unwrap();
         work_item.as_object_mut().unwrap().remove("workspace_id");
         let work_item: WorkItemRecord = serde_json::from_value(work_item).unwrap();
         assert_eq!(work_item.workspace_id, AGENT_HOME_WORKSPACE_ID);

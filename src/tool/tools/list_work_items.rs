@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{ToolCapabilityFamily, TrustLevel, WorkItemStatus},
+    types::{ToolCapabilityFamily, TrustLevel, WorkItemState},
 };
 
 use super::{
@@ -107,20 +107,20 @@ fn matches_filter(
     filter: &ListWorkItemsFilter,
 ) -> bool {
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
-        && record.status != WorkItemStatus::Completed;
+        && record.state == WorkItemState::Open;
     match filter {
         ListWorkItemsFilter::All => true,
-        ListWorkItemsFilter::Open => lifecycle_view(&record.status) == WorkItemLifecycleView::Open,
-        ListWorkItemsFilter::Done => lifecycle_view(&record.status) == WorkItemLifecycleView::Done,
+        ListWorkItemsFilter::Open => lifecycle_view(&record.state) == WorkItemLifecycleView::Open,
+        ListWorkItemsFilter::Done => lifecycle_view(&record.state) == WorkItemLifecycleView::Done,
         ListWorkItemsFilter::Current => is_current,
         ListWorkItemsFilter::Queued => {
             !is_current
-                && super::work_item_query::focus_view(&record.status, is_current)
+                && super::work_item_query::focus_view(record, is_current)
                     == WorkItemFocusView::Queued
         }
         ListWorkItemsFilter::Blocked => {
             !is_current
-                && super::work_item_query::focus_view(&record.status, is_current)
+                && super::work_item_query::focus_view(record, is_current)
                     == WorkItemFocusView::Blocked
         }
     }
