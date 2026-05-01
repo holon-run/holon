@@ -142,6 +142,8 @@ type ProviderAttemptRecord = {
 
 type ProviderAttemptTimeline = {
   attempts: ProviderAttemptRecord[]
+  requested_model_ref: string
+  active_model_ref?: string
   winning_model_ref?: string
   aggregated_token_usage?: TokenUsage
 }
@@ -162,8 +164,8 @@ Phase-1 visibility rules:
   - `provider_round_completed`
   - `terminal_delivery_round_completed`
   - `runtime_error`
-   - transcript `AssistantRound` entries
-   - transcript `RuntimeFailure` entries
+  - transcript `AssistantRound` entries
+  - transcript `RuntimeFailure` entries
 - this issue does not define any TUI presentation; future surfaces should
   consume the same contract
 
