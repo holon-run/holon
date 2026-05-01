@@ -397,6 +397,16 @@ pub async fn exec_command_reports_nonzero_exit_and_truncates_output() -> Result<
     assert!(value.get("promoted_to_task").is_none());
     assert!(value.get("task_handle").is_none());
     assert_eq!(value["exit_status"], 7);
+    assert_eq!(
+        value["command_diagnostics"]["effective_max_output_tokens"],
+        50
+    );
+    assert!(
+        value["command_diagnostics"]["cmd_char_count"]
+            .as_u64()
+            .expect("command char count should be present")
+            > 0
+    );
     assert!(value["stdout_preview"]
         .as_str()
         .expect("stdout should be present")
@@ -468,6 +478,10 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
     assert_eq!(value["skipped_count"], 0);
     assert_eq!(value["items"][0]["status"], "completed");
     assert_eq!(value["items"][0]["result"]["exit_status"], 0);
+    assert_eq!(
+        value["items"][0]["result"]["command_diagnostics"]["effective_max_output_tokens"],
+        2_000
+    );
     assert_eq!(value["items"][1]["status"], "failed");
     assert_eq!(value["items"][1]["result"]["exit_status"], 7);
     assert_eq!(value["items"][2]["status"], "rejected");
@@ -479,6 +493,10 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
         .as_str()
         .expect("stdout preview")
         .contains("[output truncated"));
+    assert_eq!(
+        value["items"][3]["result"]["command_diagnostics"]["effective_max_output_tokens"],
+        20
+    );
     assert!(
         runtime.latest_task_records_snapshot()?.is_empty(),
         "batch items should not promote into command_task records"

@@ -52,6 +52,8 @@ impl RuntimeHandle {
             context_config,
             RuntimeModelCatalog::default(),
             Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
             None,
             None,
         )
@@ -80,6 +82,8 @@ impl RuntimeHandle {
             context_config,
             model_catalog,
             Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
             None,
             Some(host_bridge),
         )
@@ -117,6 +121,8 @@ impl RuntimeHandle {
             resolved_context_config,
             model_catalog,
             model_availability,
+            config.default_tool_output_tokens as u64,
+            config.max_tool_output_tokens as u64,
             Some(ProviderReconfigurator { config }),
             Some(host_bridge),
         )
@@ -133,6 +139,8 @@ impl RuntimeHandle {
         context_config: ContextConfig,
         model_catalog: RuntimeModelCatalog,
         model_availability: Vec<ResolvedModelAvailability>,
+        default_tool_output_tokens: u64,
+        max_tool_output_tokens: u64,
         provider_reconfig: Option<ProviderReconfigurator>,
         host_bridge: Option<RuntimeHostBridge>,
     ) -> Result<Self> {
@@ -306,6 +314,8 @@ impl RuntimeHandle {
                 model_availability,
                 base_context_config,
                 context_config: RwLock::new(resolved_context_config),
+                default_tool_output_tokens,
+                max_tool_output_tokens,
                 callback_base_url,
                 tools: ToolRegistry::new(PathBuf::new()),
                 system: Arc::new(LocalSystem::new()),

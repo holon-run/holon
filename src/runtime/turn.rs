@@ -15,6 +15,7 @@ use crate::{
         build_continuation_request, build_provider_prompt_frame, build_provider_turn_request,
     },
     tool::{
+        helpers::{command_cost_diagnostics, command_preview, DEFAULT_TOOL_OUTPUT_TOKENS},
         spec::{ToolResultEnvelope, ToolResultStatus},
         ToolCall, ToolError, ToolSpec,
     },
@@ -1526,6 +1527,7 @@ impl RuntimeHandle {
                             "tool_call_id": tool_call_id,
                             "tool_name": tool_name,
                             "exec_command_cmd": command_preview_field(&call),
+                            "exec_command_cost": command_cost_field(&call),
                             "error": message,
                             "error_kind": error.kind.clone(),
                             "tool_error": error.clone(),
@@ -1620,6 +1622,7 @@ impl RuntimeHandle {
                                 "tool_call_id": tool_call_id,
                                 "tool_name": tool_name,
                                 "exec_command_cmd": command_preview_field(&call),
+                                "exec_command_cost": command_cost_field(&call),
                                 "status": record.status,
                                 "duration_ms": duration_ms,
                                 "summary": record.summary,
@@ -1645,6 +1648,7 @@ impl RuntimeHandle {
                                 "tool_call_id": tool_call_id,
                                 "tool_name": tool_name,
                                 "exec_command_cmd": command_preview_field(&call),
+                                "exec_command_cost": command_cost_field(&call),
                                 "error": message,
                                 "error_kind": error.kind.clone(),
                                 "tool_error": error.clone(),
@@ -1714,7 +1718,17 @@ fn command_preview_field(call: &ToolCall) -> Option<String> {
     (call.name == "ExecCommand")
         .then(|| call.input.get("cmd").and_then(Value::as_str))
         .flatten()
-        .map(ToString::to_string)
+        .map(command_preview)
+}
+
+fn command_cost_field(call: &ToolCall) -> Option<serde_json::Value> {
+    (call.name == "ExecCommand")
+        .then(|| call.input.get("cmd").and_then(Value::as_str))
+        .flatten()
+        .map(|cmd| serde_json::to_value(command_cost_diagnostics(cmd, DEFAULT_TOOL_OUTPUT_TOKENS)))
+        .transpose()
+        .ok()
+        .flatten()
 }
 
 fn rejects_truncated_mutation_tool_call(tool_name: &str) -> bool {

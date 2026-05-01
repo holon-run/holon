@@ -138,6 +138,8 @@ struct RuntimeInner {
     model_availability: Vec<ResolvedModelAvailability>,
     base_context_config: ContextConfig,
     context_config: RwLock<ContextConfig>,
+    default_tool_output_tokens: u64,
+    max_tool_output_tokens: u64,
     callback_base_url: String,
     tools: ToolRegistry,
     system: Arc<LocalSystem>,

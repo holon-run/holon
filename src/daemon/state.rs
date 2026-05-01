@@ -158,6 +158,8 @@ pub fn config_fingerprint(config: &AppConfig) -> Result<String> {
         "control_auth_mode": format!("{:?}", config.control_auth_mode),
         "control_token_configured": config.control_token.is_some(),
         "runtime_max_output_tokens": config.runtime_max_output_tokens,
+        "default_tool_output_tokens": config.default_tool_output_tokens,
+        "max_tool_output_tokens": config.max_tool_output_tokens,
         "disable_provider_fallback": config.provider_fallback_disabled(),
         "default_model": {
             "provider": config.default_model.provider.as_str(),
