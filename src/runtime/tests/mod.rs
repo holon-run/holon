@@ -1,6 +1,9 @@
 mod agent_and_tools;
 mod runtime_state;
 mod support;
+mod task_recovery;
+mod timers;
 mod turns;
+mod wake_hints;
 mod work_items;
 mod workspace;
