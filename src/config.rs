@@ -3164,6 +3164,7 @@ mod tests {
         assert_eq!(runtime.base_url, "https://codex.example/backend-api");
         assert!(runtime.codex_home.is_some());
         assert_eq!(runtime.originator.as_deref(), Some("codex_cli_rs"));
+        assert_eq!(runtime.reasoning_effort.as_deref(), Some("low"));
     }
 
     #[test]
