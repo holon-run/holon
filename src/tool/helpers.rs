@@ -382,15 +382,7 @@ pub(crate) fn extract_sleep_duration_ms(input: &Value) -> Result<Option<u64>> {
         ));
     };
     if duration_ms == 0 {
-        return Err(invalid_tool_input(
-            "Sleep",
-            "Sleep `duration_ms` must be greater than zero",
-            json!({
-                "field": "duration_ms",
-                "validation_error": "must be greater than zero",
-            }),
-            "provide a positive integer millisecond delay, or omit `duration_ms` for ordinary terminal rest",
-        ));
+        return Ok(None);
     }
     Ok(Some(duration_ms))
 }
@@ -498,16 +490,12 @@ mod tests {
     }
 
     #[test]
-    fn sleep_duration_rejects_zero_delay() {
-        let err = extract_sleep_duration_ms(&json!({
+    fn sleep_duration_treats_zero_as_omitted() {
+        let duration_ms = extract_sleep_duration_ms(&json!({
             "reason": "pause",
             "duration_ms": 0,
         }))
-        .unwrap_err();
-        let tool_error = err
-            .downcast_ref::<crate::tool::ToolError>()
-            .expect("tool error");
-        assert_eq!(tool_error.kind, "invalid_tool_input");
-        assert!(tool_error.message.contains("greater than zero"));
+        .unwrap();
+        assert_eq!(duration_ms, None);
     }
 }

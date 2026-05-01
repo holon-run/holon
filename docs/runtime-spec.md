@@ -763,7 +763,8 @@ Delegation rules:
 - `public_named` requires an explicit `agent_id` and returns only `agent_id`
 - spawning a new `public_named` agent may record lineage provenance without
   placing that agent under parent supervision
-- `Sleep` is the public primitive for short session-local waiting
+- `Sleep` is the public primitive for resting; optional `duration_ms` is only
+  for positive short session-local wake delays
 - `exec_command` is the only public creation path for managed `command_task`
 - no separate public `CreateTask` tool remains
 - child agents are created with parent provenance
@@ -1428,7 +1429,9 @@ hard safety caps.
 memory. It searches curated memory and runtime evidence, not arbitrary project
 documents. `MemoryGet(source_ref, max_chars?)` is the matching exact expansion
 step: after search returns a provenance-bearing `source_ref`, the agent can
-fetch the bounded original source text without search-token expansion.
+fetch the bounded original source text without search-token expansion. The
+`source_ref` is an opaque handle copied from `MemorySearch` results; it is not a
+file path, skill path, URL, or model-constructible identifier.
 
 The runtime stores its derived memory index at
 `agent_home/.holon/indexes/memory.sqlite3`, with
@@ -1448,7 +1451,8 @@ index is disposable and rebuildable from stronger sources:
 
 `MemoryGet` returns the same provenance plus exact `content` and a `truncated`
 flag. The default content bound is 12,000 characters and the hard maximum is
-50,000 characters.
+50,000 characters. When `max_chars` is provided through the tool surface it
+must be between 1 and 50,000.
 
 Search is scoped to the active workspace by default, while agent-scoped memory
 is always available across workspaces. Callers may explicitly include all
@@ -1708,6 +1712,12 @@ The runtime should record:
 - when it went to sleep
 - why it slept
 - what wake condition is expected, if known
+
+Omitting `duration_ms` means ordinary indefinite rest until another wake signal
+arrives. A positive `duration_ms` requests a short session-local wake after the
+bounded delay. `duration_ms = 0` is tolerated as equivalent to omission for
+model-output compatibility, but the published tool schema and prompt direct
+models to omit it instead.
 
 ### Suggested Lifecycle
 

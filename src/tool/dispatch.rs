@@ -712,5 +712,37 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(duration_types.contains(&"integer"));
         assert!(duration_types.contains(&"null"));
+        assert_eq!(duration_ms["minimum"], Value::from(1.0));
+    }
+
+    #[test]
+    fn memory_get_schema_bounds_max_chars_in_final_emitted_shape() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let memory_get = registry
+            .tool_specs()
+            .unwrap()
+            .into_iter()
+            .find(|spec| spec.name == "MemoryGet")
+            .expect("MemoryGet should be present");
+        let final_schema =
+            emitted_tool_json_schema(&memory_get.input_schema, ToolSchemaContract::Strict)
+                .expect("memory get schema");
+        let max_chars = &final_schema["properties"]["max_chars"];
+
+        assert!(final_schema["required"]
+            .as_array()
+            .expect("required should be an array")
+            .iter()
+            .any(|value| value == "max_chars"));
+        let max_chars_types = max_chars["type"]
+            .as_array()
+            .expect("max_chars type should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(max_chars_types.contains(&"integer"));
+        assert!(max_chars_types.contains(&"null"));
+        assert_eq!(max_chars["minimum"], Value::from(1.0));
+        assert_eq!(max_chars["maximum"], Value::from(50000.0));
     }
 }

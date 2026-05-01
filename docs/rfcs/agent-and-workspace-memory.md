@@ -287,7 +287,9 @@ Phase 1 exposes this as `MemorySearch` and `MemoryGet`. `MemorySearch` returns
 enough provenance for follow-up (`kind`, `source_ref`, scope, workspace, source
 path, title, snippet, score, timestamp, and metadata). `MemoryGet(source_ref,
 max_chars?)` returns the same provenance plus bounded exact source text and a
-`truncated` flag.
+`truncated` flag. The `source_ref` is an opaque handle copied from
+`MemorySearch` results, not a file path, skill path, URL, or identifier the
+model should construct.
 
 ## Indexing Model
 
