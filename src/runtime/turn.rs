@@ -2452,6 +2452,85 @@ mod tests {
     }
 
     #[test]
+    fn build_turn_local_projection_checkpoint_mode_overhead_boundary() {
+        let rounds = vec![
+            fixture_round(1, &"alpha ".repeat(140)),
+            fixture_round(2, &"beta ".repeat(140)),
+            fixture_round(3, &"gamma ".repeat(140)),
+            fixture_round(4, &"delta ".repeat(140)),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let full_state = TurnLocalCheckpointState::default();
+        let delta_state = checkpoint_state_with_latest("checkpoint baseline", 2, 0);
+
+        let baseline_budget = 1_200;
+        let full_projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &full_state,
+            Some("req-full".into()),
+            baseline_budget,
+            120,
+        );
+        let delta_projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &delta_state,
+            Some("req-delta".into()),
+            baseline_budget,
+            120,
+        );
+
+        match full_projection {
+            TurnLocalProjectionOutcome::Projection(full) => {
+                if let Some(full_compaction) = full.compaction.as_ref() {
+                    assert_eq!(
+                        full_compaction.compacted_rounds + full_compaction.exact_tail_rounds,
+                        rounds.len()
+                    );
+                    assert!(!full_compaction.strict_fallback_applied);
+                    assert_eq!(
+                        full_compaction.checkpoint_mode,
+                        Some(TurnLocalCheckpointMode::Full)
+                    );
+                    assert_eq!(
+                        full_compaction.checkpoint_request_id.as_deref(),
+                        Some("req-full")
+                    );
+                }
+            }
+            TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
+                assert!(
+                    diagnostics.minimum_projection_estimated_tokens
+                        > diagnostics.effective_budget_estimated_tokens,
+                    "expected full checkpoint mode to fail because minimum projection does not fit"
+                );
+            }
+        }
+
+        let TurnLocalProjectionOutcome::Projection(delta) = delta_projection else {
+            panic!("expected projection under existing delta checkpoint state");
+        };
+        if let Some(delta_compaction) = delta.compaction.as_ref() {
+            assert_eq!(
+                delta_compaction.compacted_rounds + delta_compaction.exact_tail_rounds,
+                rounds.len()
+            );
+            assert!(!delta_compaction.strict_fallback_applied);
+            assert_eq!(
+                delta_compaction.checkpoint_mode,
+                Some(TurnLocalCheckpointMode::Delta)
+            );
+            assert_eq!(
+                delta_compaction.checkpoint_request_id.as_deref(),
+                Some("req-delta")
+            );
+        }
+    }
+
+    #[test]
     fn context_management_eligibility_keeps_recent_and_excludes_risky_results() {
         let tool_names = [
             "ExecCommand",
