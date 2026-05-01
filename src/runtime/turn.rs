@@ -1540,6 +1540,47 @@ impl RuntimeHandle {
                     tool_result_envelopes.push(tool_result_error_envelope(&tool_name, error));
                     continue;
                 }
+                if is_max_output_stop_reason(stop_reason.as_deref())
+                    && rejects_truncated_mutation_tool_call(&call.name)
+                {
+                    let stop_reason_label = stop_reason.as_deref().unwrap_or("an output limit");
+                    let error = ToolError::new(
+                        "truncated_mutation_tool_call",
+                        format!(
+                            "{tool_name} was not executed because the provider stopped with {stop_reason_label}; mutation tool arguments may be incomplete"
+                        ),
+                    )
+                    .with_details(serde_json::json!({
+                        "tool_name": tool_name.clone(),
+                        "stop_reason": stop_reason.clone(),
+                        "round": round,
+                    }))
+                    .with_recovery_hint(
+                        "retry the mutation as a complete, smaller tool call after inspecting any needed context",
+                    )
+                    .with_retryable(true);
+                    let result = crate::tool::ToolResult::error(&tool_name, error.clone());
+                    let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
+                    self.inner.storage.append_event(&AuditEvent::new(
+                        "truncated_mutation_tool_call_rejected",
+                        serde_json::json!({
+                            "tool_call_id": tool_call_id.clone(),
+                            "tool_name": tool_name.clone(),
+                            "stop_reason": stop_reason.clone(),
+                            "round": round,
+                            "error_kind": error.kind.clone(),
+                            "tool_error": error.clone(),
+                        }),
+                    ))?;
+                    tool_results.push(ToolResultBlock {
+                        tool_use_id: tool_call_id.clone(),
+                        content: result_content,
+                        is_error: true,
+                        error: Some(error.clone()),
+                    });
+                    tool_result_envelopes.push(result.envelope);
+                    continue;
+                }
                 match self
                     .inner
                     .tools
@@ -1673,6 +1714,13 @@ fn command_preview_field(call: &ToolCall) -> Option<String> {
         .then(|| call.input.get("cmd").and_then(Value::as_str))
         .flatten()
         .map(ToString::to_string)
+}
+
+fn rejects_truncated_mutation_tool_call(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "ApplyPatch" | "UpdateWorkItem" | "UpdateWorkPlan"
+    )
 }
 
 #[cfg(test)]

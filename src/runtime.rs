@@ -4331,6 +4331,10 @@ mod tests {
         calls: Mutex<usize>,
     }
 
+    struct MaxOutputMutationToolProvider {
+        calls: Mutex<usize>,
+    }
+
     #[async_trait]
     impl AgentProvider for TruncatingProvider {
         async fn complete_turn(
@@ -4660,6 +4664,61 @@ mod tests {
                     })
                 }
                 _ => anyhow::bail!("unexpected provider call after recovery text"),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AgentProvider for MaxOutputMutationToolProvider {
+        async fn complete_turn(
+            &self,
+            request: ProviderTurnRequest,
+        ) -> Result<ProviderTurnResponse> {
+            let mut calls = self.calls.lock().await;
+            *calls += 1;
+            match *calls {
+                1 => Ok(ProviderTurnResponse {
+                    blocks: vec![ModelBlock::ToolUse {
+                        id: "truncated-patch".into(),
+                        name: "ApplyPatch".into(),
+                        input: serde_json::json!({
+                            "patch": "--- /dev/null\n+++ b/app.txt\n@@ -0,0 +1 @@\n+should-not-be-written\n",
+                        }),
+                    }],
+                    stop_reason: Some("max_tokens".into()),
+                    input_tokens: 20,
+                    output_tokens: 10,
+                    cache_usage: None,
+                    request_diagnostics: None,
+                }),
+                2 => {
+                    assert!(
+                        request.conversation.iter().any(|message| matches!(
+                            message,
+                            ConversationMessage::UserToolResults(results)
+                                if results.iter().any(|result|
+                                    result.tool_use_id == "truncated-patch"
+                                        && result.is_error
+                                        && result
+                                            .error
+                                            .as_ref()
+                                            .is_some_and(|error| error.kind == "truncated_mutation_tool_call")
+                                )
+                        )),
+                        "continuation should receive a structured truncation error"
+                    );
+                    Ok(ProviderTurnResponse {
+                        blocks: vec![ModelBlock::Text {
+                            text: "Recovered after rejected truncated mutation.".into(),
+                        }],
+                        stop_reason: None,
+                        input_tokens: 15,
+                        output_tokens: 8,
+                        cache_usage: None,
+                        request_diagnostics: None,
+                    })
+                }
+                _ => panic!("provider should stop after recovery"),
             }
         }
     }
@@ -5032,6 +5091,88 @@ mod tests {
             tool_results.data["results"][0]["is_error"].as_bool(),
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn max_output_mutation_tool_call_is_rejected_without_side_effects() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let provider = Arc::new(MaxOutputMutationToolProvider {
+            calls: Mutex::new(0),
+        });
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            provider.clone(),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+
+        let outcome = runtime
+            .run_agent_loop(
+                "default",
+                TrustLevel::TrustedOperator,
+                test_effective_prompt(),
+                LoopControlOptions {
+                    max_tool_rounds: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
+        assert_eq!(
+            outcome.final_text,
+            "Recovered after rejected truncated mutation."
+        );
+        assert_eq!(*provider.calls.lock().await, 2);
+        assert!(
+            !workspace.path().join("app.txt").exists(),
+            "ApplyPatch must not execute when the provider stopped at max_output_tokens"
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_tool_executions(10)
+                .unwrap()
+                .len(),
+            0
+        );
+
+        let events = runtime.storage().read_recent_events(20).unwrap();
+        let rejection_event = events
+            .iter()
+            .find(|event| event.kind == "truncated_mutation_tool_call_rejected")
+            .expect("missing truncated_mutation_tool_call_rejected event");
+        assert_eq!(
+            rejection_event.data["tool_call_id"].as_str(),
+            Some("truncated-patch")
+        );
+        assert_eq!(
+            rejection_event.data["tool_name"].as_str(),
+            Some("ApplyPatch")
+        );
+        assert_eq!(
+            rejection_event.data["error_kind"].as_str(),
+            Some("truncated_mutation_tool_call")
+        );
+
+        let transcript = runtime.storage().read_recent_transcript(10).unwrap();
+        let tool_results = transcript
+            .iter()
+            .find(|entry| entry.kind == TranscriptEntryKind::ToolResults)
+            .expect("missing tool results transcript");
+        let content = tool_results.data["results"][0]["content"]
+            .as_str()
+            .expect("tool result content");
+        assert!(content.contains("ApplyPatch failed"));
+        assert!(content.contains("truncated_mutation_tool_call"));
+        assert!(content.contains("max_tokens"));
+        assert!(content.contains("retryable: true"));
+        assert!(content.len() < 800);
     }
 
     #[tokio::test]
