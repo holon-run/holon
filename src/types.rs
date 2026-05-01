@@ -1339,7 +1339,16 @@ impl AgentState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PendingWakeHint {
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ExternalTriggerScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_intent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_trigger_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
     pub body: Option<MessageBody>,
     pub content_type: Option<String>,
@@ -1352,7 +1361,19 @@ pub struct PendingWakeHint {
 #[serde(rename_all = "snake_case")]
 pub enum CallbackDeliveryMode {
     EnqueueMessage,
-    WakeOnly,
+    #[serde(alias = "wake_only")]
+    WakeHint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalTriggerScope {
+    WorkItem,
+    Agent,
+}
+
+fn default_external_trigger_scope() -> ExternalTriggerScope {
+    ExternalTriggerScope::WorkItem
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1366,12 +1387,17 @@ pub enum WaitingIntentStatus {
 pub struct WaitingIntentRecord {
     pub id: String,
     pub agent_id: String,
+    #[serde(default = "default_external_trigger_scope")]
+    pub scope: ExternalTriggerScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item_id: Option<String>,
-    pub summary: String,
+    #[serde(alias = "summary")]
+    pub description: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
-    pub condition: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: WaitingIntentStatus,
     pub external_trigger_id: String,
@@ -1395,6 +1421,8 @@ pub struct ExternalTriggerRecord {
     pub external_trigger_id: String,
     pub target_agent_id: String,
     pub waiting_intent_id: String,
+    #[serde(default = "default_external_trigger_scope")]
+    pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub token_hash: String,
     pub status: ExternalTriggerStatus,
@@ -1409,6 +1437,7 @@ pub struct ExternalTriggerStateSnapshot {
     pub external_trigger_id: String,
     pub target_agent_id: String,
     pub waiting_intent_id: String,
+    pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: ExternalTriggerStatus,
     pub delivery_count: u64,
@@ -1423,6 +1452,7 @@ impl From<ExternalTriggerRecord> for ExternalTriggerStateSnapshot {
             external_trigger_id: record.external_trigger_id,
             target_agent_id: record.target_agent_id,
             waiting_intent_id: record.waiting_intent_id,
+            scope: record.scope,
             delivery_mode: record.delivery_mode,
             status: record.status,
             delivery_count: record.delivery_count,
@@ -1436,9 +1466,13 @@ impl From<ExternalTriggerRecord> for ExternalTriggerStateSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WaitingIntentSummary {
     pub id: String,
+    pub scope: ExternalTriggerScope,
+    pub description: String,
     pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
-    pub condition: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: WaitingIntentStatus,
     pub trigger_count: u64,
@@ -1452,6 +1486,7 @@ pub struct ExternalTriggerSummary {
     pub external_trigger_id: String,
     pub target_agent_id: String,
     pub waiting_intent_id: String,
+    pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: ExternalTriggerStatus,
     pub delivery_count: u64,
@@ -1466,6 +1501,7 @@ pub struct ExternalTriggerCapability {
     pub external_trigger_id: String,
     pub trigger_url: String,
     pub target_agent_id: String,
+    pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
 }
 
@@ -1490,6 +1526,7 @@ pub struct CallbackDeliveryResult {
     pub agent_id: String,
     pub waiting_intent_id: String,
     pub external_trigger_id: String,
+    pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub disposition: CallbackIngressDisposition,
 }

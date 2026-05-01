@@ -53,17 +53,16 @@ This returns a `sourceId` like `src_github_REAL`.
 
 **Note**: If you've previously added only the fixture source, you'll need to add the real GitHub source separately.
 
-### 2. Create a Wake-Only Callback
+### 2. Create a Wake-Hint External Trigger
 
 Use Holon's `CreateExternalTrigger` tool within your agent to create a callback for the specific PR:
 
 ```json
 {
-  "summary": "GitHub PR #33 review wake",
+  "description": "Check AgentInbox for GitHub PR #33 review or comment activity",
   "source": "github",
-  "resource": "33",
-  "condition": "review or comment activity on PR #33",
-  "delivery_mode": "wake_only"
+  "scope": "agent",
+  "delivery_mode": "wake_hint"
 }
 ```
 
@@ -90,7 +89,7 @@ Replace:
 
 **Important Parameters:**
 - `--match-json`: Filters events to only the specified PR number
-- `--activation-target`: Your agent's wake-only trigger URL
+- `--activation-target`: Your agent's wake-hint trigger URL
 - `--activation-mode activation_only`: Wakes the agent without queuing the full payload
 
 ### 4. Sleep and Wait for GitHub Events
@@ -218,10 +217,10 @@ Here's a complete example of using this runbook:
 2. **Create callback** (in agent):
    ```json
    {
-     "summary": "PR #33 review wake",
+     "description": "Check AgentInbox for GitHub PR #33 review or comment activity",
      "source": "github",
-     "condition": "activity on PR #33",
-     "delivery_mode": "wake_only"
+     "scope": "agent",
+     "delivery_mode": "wake_hint"
    }
    ```
 
@@ -276,5 +275,5 @@ When the dogfood session is complete:
 ## Related Documentation
 
 - [AgentInbox Callback Integration](./agentinbox-callback-integration.md)
-- [AgentInbox Wake-Only Quickstart](./agentinbox-wake-only-quickstart.md)
+- [AgentInbox Wake-Hint Quickstart](./agentinbox-wake-hint-quickstart.md)
 - [Callback Capability and Providerless Ingress](./callback-capability-and-providerless-ingress.md)

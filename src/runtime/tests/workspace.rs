@@ -214,6 +214,10 @@ async fn current_closure_returns_none_while_pending_wake_hint_remains() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.pending_wake_hint = Some(PendingWakeHint {
             reason: "wake".into(),
+            description: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
             source: None,
             resource: None,
             body: None,

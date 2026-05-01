@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn wake_only_system_tick_is_liveness_only() {
+    fn wake_hint_system_tick_is_liveness_only() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingExternalChange),
             &ContinuationTrigger {

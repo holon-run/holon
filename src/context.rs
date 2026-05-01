@@ -801,6 +801,22 @@ fn render_wake_hint_context(message: &MessageEnvelope) -> Option<String> {
         .get("source")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
+    let scope = wake_hint
+        .get("scope")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let description = wake_hint
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(reason);
+    let waiting_intent_id = wake_hint
+        .get("waiting_intent_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("none");
+    let external_trigger_id = wake_hint
+        .get("external_trigger_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("none");
     let resource = wake_hint
         .get("resource")
         .and_then(serde_json::Value::as_str)
@@ -817,6 +833,10 @@ fn render_wake_hint_context(message: &MessageEnvelope) -> Option<String> {
     Some(format!(
         " - Wake hint:\n\
          - Source: {source}\n\
+         - Scope: {scope}\n\
+         - External trigger id: {external_trigger_id}\n\
+         - Waiting intent id: {waiting_intent_id}\n\
+         - Description: {description}\n\
          - Resource: {resource}\n\
          - Reason: {reason}\n\
          - Content-Type: {content_type}\n\

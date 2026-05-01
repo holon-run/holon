@@ -23,7 +23,7 @@ pub(crate) fn build_callback_url(
 ) -> String {
     let mode = match delivery_mode {
         CallbackDeliveryMode::EnqueueMessage => "enqueue",
-        CallbackDeliveryMode::WakeOnly => "wake",
+        CallbackDeliveryMode::WakeHint => "wake",
     };
     format!(
         "{}/callbacks/{}/{}",

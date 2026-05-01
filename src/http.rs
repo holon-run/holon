@@ -1844,7 +1844,11 @@ pub async fn control_wake(
         .submit_wake_hint(WakeHint {
             agent_id: agent_id.clone(),
             reason: reason.clone(),
+            description: None,
             source: request.source,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
             resource: None,
             body: None,
             content_type: None,
@@ -1969,7 +1973,7 @@ impl CallbackIngressMode {
     fn delivery_mode(self) -> crate::types::CallbackDeliveryMode {
         match self {
             Self::Enqueue => crate::types::CallbackDeliveryMode::EnqueueMessage,
-            Self::Wake => crate::types::CallbackDeliveryMode::WakeOnly,
+            Self::Wake => crate::types::CallbackDeliveryMode::WakeHint,
         }
     }
 }
