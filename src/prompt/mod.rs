@@ -260,7 +260,7 @@ fn build_system_sections(
         section(
             "work_item_first_execution",
             PromptStability::Stable,
-            "Treat task-like work as WorkItem-first by default. If the turn is more than a brief status answer, casual chat, or a narrow one-shot explanation, do not jump straight into execution when there is no current active work item anchor. First decide whether the delivery target is already clear enough to stabilize as a work item. If it is still ambiguous, proactively communicate with the operator to clarify the real delivery target, acceptance boundary, or priority before making high-commitment edits. Once the target is clear, create or refresh the active work item first, then record a work plan for genuine multi-step work, and only then begin commands, edits, waits, or task coordination. Prefer refreshing the current active work item over creating a new one unless the delivery target has actually changed.".to_string(),
+            "Treat task-like work as WorkItem-first by default. If the turn is more than a brief status answer, casual chat, or a narrow one-shot explanation, do not ignore the absence of a current active work item anchor. First decide whether the delivery target is already clear enough to stabilize as a work item. If it is still ambiguous, proactively communicate with the operator to clarify the real delivery target, acceptance boundary, or priority before making high-commitment edits. If a little local inspection is needed to make the target concrete, do that bounded inspection first, then create or refresh the active work item once the target is stable enough to name. Prefer refreshing the current active work item over creating a new one unless the delivery target has actually changed.".to_string(),
         ),
         section(
             "trust_boundary",
@@ -778,11 +778,14 @@ mod tests {
         assert!(section.content.contains("WorkItem-first"));
         assert!(section
             .content
-            .contains("no current active work item anchor"));
+            .contains("absence of a current active work item anchor"));
         assert!(section.content.contains("clarify the real delivery target"));
         assert!(section
             .content
-            .contains("create or refresh the active work item first"));
+            .contains("local inspection is needed to make the target concrete"));
+        assert!(section
+            .content
+            .contains("once the target is stable enough to name"));
         assert!(section.content.contains("brief status answer"));
     }
 

@@ -1616,6 +1616,14 @@ plan snapshots separately.
 These tools are part of the explicit adoption path for work items. They do not
 require runtime-side semantic resolution of arbitrary ingress into a work item.
 
+Work-plan updates are coordination state, not the artifact progress ledger.
+Prompt guidance should frame `UpdateWorkItem.plan` as bookkeeping after
+material progress such as a file mutation, verification result, blocker
+discovery, or completed inspection objective. A successful work-item mutation
+may invalidate turn-local checkpoint state because the runtime focus changed,
+but failed tool inputs and `ExecCommand` calls do not invalidate checkpoint
+anchors by command-name heuristics.
+
 ### Control-Plane Work-Item Enqueue
 
 The runtime also exposes a control-plane enqueue path for future work items:

@@ -68,7 +68,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_work_item_write",
             PromptStability::Stable,
-            "Use CreateWorkItem to create a new open delivery target, PickWorkItem to make an existing open item current, UpdateWorkItem to replace blocked_by and/or the full plan snapshot, and CompleteWorkItem only when the delivery target is actually done. If the current task is not just a brief answer and there is no current work item yet, first clarify the delivery target with the operator if it is still ambiguous; otherwise create and pick the work item before doing commands or edits. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, include or update the plan before execution and always submit the full current checklist snapshot rather than patching individual steps. When an exploration or inspection step has served its objective, update the work plan before continuing. If the current step remains doing, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Keep delivery_target stable and complete explicitly when done.".to_string(),
+            "Use CreateWorkItem to create a new open delivery target, PickWorkItem to make an existing open item current, UpdateWorkItem to replace blocked_by and/or the full plan snapshot, and CompleteWorkItem only when the delivery target is actually done. If the current task is not just a brief answer and there is no current work item yet, clarify the delivery target with the operator if it is still ambiguous; if bounded inspection is needed to make the target concrete, do that inspection before creating the work item. Once a delivery target is stable enough to name, create or pick the work item and keep that delivery_target stable instead of recreating work items to refine wording. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, maintain the full current checklist snapshot rather than patching individual steps. Update plan state after material progress such as a code change, verification result, blocker discovery, or completed inspection objective; if the next known action is a file mutation, use ApplyPatch first and update the plan afterward. Plan updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current step remains doing, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Complete explicitly when done.".to_string(),
         ));
     }
     if names.contains(&"GetWorkItem") || names.contains(&"ListWorkItems") {
@@ -278,10 +278,17 @@ mod tests {
         assert!(section
             .content
             .contains("clarify the delivery target with the operator"));
-        assert!(section.content.contains("update the plan before execution"));
         assert!(section
             .content
-            .contains("exploration or inspection step has served its objective"));
+            .contains("bounded inspection is needed to make the target concrete"));
+        assert!(section.content.contains("keep that delivery_target stable"));
+        assert!(section
+            .content
+            .contains("Update plan state after material progress"));
+        assert!(section
+            .content
+            .contains("use ApplyPatch first and update the plan afterward"));
+        assert!(section.content.contains("coordination/bookkeeping"));
         assert!(section.content.contains("specific blocker or missing fact"));
         assert!(section
             .content
