@@ -1427,12 +1427,10 @@ fn openai_append_match_output_items(output_items: &[Value]) -> Vec<Value> {
 }
 
 fn openai_append_match_output_item(item: &Value) -> Option<Value> {
-    match item.get("type").and_then(Value::as_str) {
-        Some("message" | "function_call" | "custom_tool_call") => {
-            Some(canonicalize_openai_append_match_item(item))
-        }
-        Some("reasoning") => None,
-        _ => Some(canonicalize_openai_append_match_item(item)),
+    if matches!(item.get("type").and_then(Value::as_str), Some("reasoning")) {
+        None
+    } else {
+        Some(canonicalize_openai_append_match_item(item))
     }
 }
 

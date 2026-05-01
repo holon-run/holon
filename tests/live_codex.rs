@@ -55,7 +55,19 @@ fn live_append_match_prompt_frame() -> ProviderPromptFrame {
     )
 }
 
-fn text_response(blocks: &[ModelBlock]) -> String {
+fn assistant_text_blocks(blocks: &[ModelBlock]) -> Vec<ModelBlock> {
+    blocks
+        .iter()
+        .filter(|block| matches!(block, ModelBlock::Text { .. }))
+        .cloned()
+        .collect()
+}
+
+fn assistant_response(blocks: &[ModelBlock]) -> ConversationMessage {
+    ConversationMessage::AssistantBlocks(assistant_text_blocks(blocks))
+}
+
+fn response_text(blocks: &[ModelBlock]) -> String {
     blocks
         .iter()
         .filter_map(|block| match block {
@@ -99,7 +111,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
             tools: vec![],
         })
         .await?;
-    let first_text = text_response(&first.blocks);
+    let first_text = response_text(&first.blocks);
     assert!(
         !first_text.trim().is_empty(),
         "expected text output from first live Codex response"
@@ -110,7 +122,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
             prompt_frame: frame,
             conversation: vec![
                 ConversationMessage::UserText("Reply with exactly READY.".into()),
-                ConversationMessage::AssistantBlocks(vec![ModelBlock::Text { text: first_text }]),
+                assistant_response(&first.blocks),
                 ConversationMessage::UserText("Reply with exactly DONE.".into()),
             ],
             tools: vec![],
