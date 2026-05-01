@@ -1543,10 +1543,11 @@ impl RuntimeHandle {
                 if is_max_output_stop_reason(stop_reason.as_deref())
                     && rejects_truncated_mutation_tool_call(&call.name)
                 {
+                    let stop_reason_label = stop_reason.as_deref().unwrap_or("an output limit");
                     let error = ToolError::new(
                         "truncated_mutation_tool_call",
                         format!(
-                            "{tool_name} was not executed because the provider stopped with max_output_tokens; mutation tool arguments may be incomplete"
+                            "{tool_name} was not executed because the provider stopped with {stop_reason_label}; mutation tool arguments may be incomplete"
                         ),
                     )
                     .with_details(serde_json::json!({

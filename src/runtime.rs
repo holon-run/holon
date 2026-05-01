@@ -5170,6 +5170,7 @@ mod tests {
             .expect("tool result content");
         assert!(content.contains("ApplyPatch failed"));
         assert!(content.contains("truncated_mutation_tool_call"));
+        assert!(content.contains("max_tokens"));
         assert!(content.contains("retryable: true"));
         assert!(content.len() < 800);
     }
