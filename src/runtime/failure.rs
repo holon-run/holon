@@ -1,19 +1,8 @@
 use super::*;
-use crate::provider::ProviderAttemptTimeline;
+use crate::provider::{sanitize_diagnostic_url, ProviderAttemptTimeline};
 use crate::types::{FailureArtifact, FailureArtifactCategory};
 
 impl RuntimeHandle {
-    fn sanitize_failure_artifact_url(raw: &str) -> String {
-        let Ok(mut url) = reqwest::Url::parse(raw) else {
-            return raw.to_string();
-        };
-        let _ = url.set_username("");
-        let _ = url.set_password(None);
-        url.set_query(None);
-        url.set_fragment(None);
-        url.to_string()
-    }
-
     fn metadata_enum_value<T: serde::Serialize>(value: &T) -> String {
         let json = to_json_value(value);
         json.as_str()
@@ -64,7 +53,7 @@ impl RuntimeHandle {
             }
             metadata.insert("transport_stage".into(), diag.stage.clone());
             if let Some(url) = diag.url.clone() {
-                metadata.insert("url".into(), Self::sanitize_failure_artifact_url(&url));
+                metadata.insert("url".into(), sanitize_diagnostic_url(&url));
             }
             metadata.insert(
                 "reqwest_is_timeout".into(),

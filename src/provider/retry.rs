@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::time::Duration;
 
-use super::{ProviderTransportDiagnostics, ReqwestTransportDiagnostics};
+use super::{sanitize_diagnostic_url, ProviderTransportDiagnostics, ReqwestTransportDiagnostics};
 
 pub(crate) const PROVIDER_MAX_RETRIES: usize = 2;
 const PROVIDER_RETRY_BASE_BACKOFF_MS: u64 = 200;
@@ -249,19 +249,6 @@ pub(crate) fn invalid_response_error(
     )
 }
 
-fn sanitize_transport_url(raw: &str) -> String {
-    let Ok(mut url) = reqwest::Url::parse(raw) else {
-        return raw.to_string();
-    };
-
-    let _ = url.set_username("");
-    let _ = url.set_password(None);
-    url.set_query(None);
-    url.set_fragment(None);
-
-    url.to_string()
-}
-
 fn reqwest_transport_diagnostics(
     stage: &str,
     provider: &str,
@@ -276,7 +263,7 @@ fn reqwest_transport_diagnostics(
         model_ref: model_ref.map(ToString::to_string),
         url: url
             .or_else(|| error.url().map(reqwest::Url::as_str))
-            .map(sanitize_transport_url),
+            .map(sanitize_diagnostic_url),
         status: error.status().map(|status| status.as_u16()),
         reqwest: Some(ReqwestTransportDiagnostics {
             is_timeout: error.is_timeout(),
@@ -332,10 +319,16 @@ mod tests {
     #[test]
     fn transport_url_sanitizer_removes_credentials_query_and_fragment() {
         assert_eq!(
-            super::sanitize_transport_url(
+            super::sanitize_diagnostic_url(
                 "https://user:secret@example.com/v1/responses?api_key=token#frag"
             ),
             "https://example.com/v1/responses"
+        );
+        assert_eq!(
+            super::sanitize_diagnostic_url(
+                "user:secret@example.com/v1/responses?api_key=token#frag"
+            ),
+            "example.com/v1/responses"
         );
     }
 }

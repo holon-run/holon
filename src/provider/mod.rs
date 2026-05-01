@@ -20,6 +20,37 @@ pub use transports::{
     AnthropicProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiProvider,
 };
 
+pub(crate) fn sanitize_diagnostic_url(raw: &str) -> String {
+    if !raw.contains("://") {
+        return best_effort_sanitize_diagnostic_url(raw);
+    }
+
+    let Ok(mut url) = reqwest::Url::parse(raw) else {
+        return best_effort_sanitize_diagnostic_url(raw);
+    };
+
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+
+    url.to_string()
+}
+
+fn best_effort_sanitize_diagnostic_url(raw: &str) -> String {
+    let without_fragment = raw.split_once('#').map_or(raw, |(prefix, _)| prefix);
+    let without_query = without_fragment
+        .split_once('?')
+        .map_or(without_fragment, |(prefix, _)| prefix);
+    let authority_end = without_query.find('/').unwrap_or(without_query.len());
+    let (authority, remainder) = without_query.split_at(authority_end);
+    let sanitized_authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host_part)| host_part);
+
+    format!("{sanitized_authority}{remainder}")
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderTurnRequest {
     pub prompt_frame: ProviderPromptFrame,
