@@ -249,6 +249,19 @@ pub(crate) fn invalid_response_error(
     )
 }
 
+fn sanitize_transport_url(raw: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(raw) else {
+        return raw.to_string();
+    };
+
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+
+    url.to_string()
+}
+
 fn reqwest_transport_diagnostics(
     stage: &str,
     provider: &str,
@@ -262,8 +275,8 @@ fn reqwest_transport_diagnostics(
         provider: Some(provider.to_string()),
         model_ref: model_ref.map(ToString::to_string),
         url: url
-            .map(ToString::to_string)
-            .or_else(|| error.url().map(|url| url.to_string())),
+            .or_else(|| error.url().map(reqwest::Url::as_str))
+            .map(sanitize_transport_url),
         status: error.status().map(|status| status.as_u16()),
         reqwest: Some(ReqwestTransportDiagnostics {
             is_timeout: error.is_timeout(),
@@ -311,5 +324,18 @@ pub(crate) fn format_provider_failure(
             "{model_ref}: fail_fast ({kind}{status}): {error}",
             kind = classification.kind.as_str()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn transport_url_sanitizer_removes_credentials_query_and_fragment() {
+        assert_eq!(
+            super::sanitize_transport_url(
+                "https://user:secret@example.com/v1/responses?api_key=token#frag"
+            ),
+            "https://example.com/v1/responses"
+        );
     }
 }

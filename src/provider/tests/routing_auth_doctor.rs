@@ -1019,6 +1019,103 @@ async fn provider_fallback_continues_after_retry_exhaustion() {
 }
 
 #[tokio::test]
+async fn provider_fallback_continues_immediately_after_fail_fast_error() {
+    let openai_attempts = Arc::new(AtomicUsize::new(0));
+    let openai_server_attempts = openai_attempts.clone();
+    let openai_base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move || {
+            let attempts = openai_server_attempts.clone();
+            async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                (axum::http::StatusCode::BAD_REQUEST, "bad request").into_response()
+            }
+        }),
+    ))
+    .await;
+
+    let anthropic_attempts = Arc::new(AtomicUsize::new(0));
+    let anthropic_server_attempts = anthropic_attempts.clone();
+    let anthropic_base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/v1/messages",
+                post(move |State(attempts): State<Arc<AtomicUsize>>| async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({
+                        "content": [{ "type": "text", "text": "anthropic fallback" }],
+                        "stop_reason": "end_turn",
+                        "usage": { "input_tokens": 4, "output_tokens": 2 }
+                    }))
+                }),
+            )
+            .with_state(anthropic_server_attempts),
+    )
+    .await;
+
+    let mut fixture = test_config(
+        "openai/gpt-5.4",
+        &["anthropic/claude-sonnet-4-6"],
+        Some("openai-key"),
+        Some("anthropic-token"),
+        false,
+    );
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = openai_base_url;
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap()
+        .base_url = anthropic_base_url;
+
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+    let (response, diagnostics) = provider
+        .complete_turn_with_diagnostics(provider_turn_request())
+        .await
+        .unwrap();
+
+    assert_eq!(openai_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(anthropic_attempts.load(Ordering::SeqCst), 1);
+    let timeline = diagnostics.expect("missing attempt timeline");
+    assert_eq!(timeline.attempts.len(), 2);
+    assert_eq!(timeline.requested_model_ref, "openai/gpt-5.4");
+    assert_eq!(
+        timeline.active_model_ref.as_deref(),
+        Some("anthropic/claude-sonnet-4-6")
+    );
+    assert_eq!(
+        timeline.winning_model_ref.as_deref(),
+        Some("anthropic/claude-sonnet-4-6")
+    );
+    assert_eq!(
+        timeline.attempts[0].outcome,
+        ProviderAttemptOutcome::FailFastAborted
+    );
+    assert_eq!(
+        timeline.attempts[0].failure_kind.as_deref(),
+        Some("contract_error")
+    );
+    assert_eq!(
+        timeline.attempts[0].disposition.as_deref(),
+        Some("fail_fast")
+    );
+    assert!(timeline.attempts[0].advanced_to_fallback);
+    assert_eq!(timeline.attempts[0].attempt, 1);
+    assert_eq!(
+        timeline.attempts[1].outcome,
+        ProviderAttemptOutcome::Succeeded
+    );
+    assert!(
+        matches!(&response.blocks[0], ModelBlock::Text { text } if text == "anthropic fallback")
+    );
+}
+
+#[tokio::test]
 async fn provider_fallback_can_be_disabled_for_retry_exhaustion() {
     let openai_attempts = Arc::new(AtomicUsize::new(0));
     let openai_server_attempts = openai_attempts.clone();
