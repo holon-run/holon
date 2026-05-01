@@ -345,6 +345,10 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
         .submit_wake_hint(WakeHint {
             agent_id: "default".into(),
             reason: "pr changed".into(),
+            description: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
             source: Some("github".into()),
             resource: None,
             body: None,
@@ -357,6 +361,10 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
         .submit_wake_hint(WakeHint {
             agent_id: "default".into(),
             reason: "ci changed".into(),
+            description: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
             source: Some("ci".into()),
             resource: None,
             body: None,
@@ -402,6 +410,10 @@ pub async fn paused_agent_ignores_wake_hint() -> Result<()> {
         .submit_wake_hint(WakeHint {
             agent_id: "default".into(),
             reason: "something changed".into(),
+            description: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
             source: Some("watcher".into()),
             resource: None,
             body: None,
@@ -865,6 +877,10 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
+    let (work_item, _) = runtime
+        .create_work_item("wait for CI callback".into(), None)
+        .await?;
+    runtime.pick_work_item(work_item.id).await?;
 
     let (created, _) = registry
         .execute(
@@ -875,10 +891,9 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
                 id: "tool-create-callback".into(),
                 name: "CreateExternalTrigger".into(),
                 input: json!({
-                    "summary": "wait for CI callback",
+                    "description": "wait for CI callback",
                     "source": "github",
-                    "condition": "required_checks_passed",
-                    "resource": "pull_request:123",
+                    "scope": "work_item",
                     "delivery_mode": "enqueue_message"
                 }),
             },

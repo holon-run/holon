@@ -675,6 +675,10 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
     agent.status = AgentStatus::AwakeIdle;
     agent.pending_wake_hint = Some(PendingWakeHint {
         reason: "original-hint".into(),
+        description: None,
+        scope: None,
+        waiting_intent_id: None,
+        external_trigger_id: None,
         source: Some("test".into()),
         resource: None,
         body: None,
@@ -738,6 +742,10 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.pending_wake_hint = Some(PendingWakeHint {
             reason: "new-hint".into(),
+            description: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
             source: Some("test".into()),
             resource: None,
             body: None,

@@ -62,21 +62,26 @@ For `enqueue_message`:
 This means `AgentInbox` can keep its own notification schema and `Holon` simply turns
 it into a trusted agent-visible event.
 
-## Wake Only
+## Wake Hint
 
-`wake_only` should not be a blind trigger.
+`wake_hint` should not be a blind trigger.
 
 If a callback wakes an agent, the agent still needs to know:
 
 - what source woke it
+- which trigger and waiting intent fired
 - what resource or interest it should inspect
 - what payload caused the activation
 
-So `wake_only` does not enqueue a normal `CallbackEvent`, but it does preserve an
+So `wake_hint` does not enqueue a normal `CallbackEvent`, but it does preserve an
 activation context:
 
 - source
+- scope
+- waiting intent id
+- external trigger id
 - resource
+- description
 - reason
 - content type
 - callback body

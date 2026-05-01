@@ -62,7 +62,7 @@ implementation specs, comparison references, or review artifacts.
 | `docs/runtime-spec.md` | Active implementation-facing spec. It should be updated to align with `authority_class`, `NotifyOperator`, and External Trigger wording. |
 | `docs/local-operator-troubleshooting.md` | Operational guide, not architecture. |
 | `docs/agentinbox-dogfood-runbook.md` | Operational runbook for real integration dogfooding. |
-| `docs/agentinbox-wake-only-quickstart.md` | Operational quickstart. Keep, but ensure External Trigger naming remains current. |
+| `docs/agentinbox-wake-hint-quickstart.md` | Operational quickstart. Keep, but ensure External Trigger naming remains current. |
 | `docs/test-coverage-review.md` | Test planning/review artifact. Keep if actively used. |
 | `docs/benchmark-guardrails.md` | Benchmark policy. Keep. |
 | `docs/benchmark-plan.md` | Keep if still driving benchmark work; otherwise archive after current benchmark cycle. |
@@ -186,5 +186,5 @@ Do not archive these until replacement content is verified:
 - `docs/next-phase-direction.md`
 - `docs/local-operator-troubleshooting.md`
 - `docs/agentinbox-dogfood-runbook.md`
-- `docs/agentinbox-wake-only-quickstart.md`
+- `docs/agentinbox-wake-hint-quickstart.md`
 - `docs/implementation-decisions/`

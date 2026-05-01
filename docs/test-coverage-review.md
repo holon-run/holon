@@ -324,7 +324,7 @@ Required cases:
 Add tests covering:
 
 - repeated callback delivery with cancellation race
-- wake-only versus enqueue-message behavior on restart
+- wake-hint versus enqueue-message behavior on restart
 - external trigger revocation and stale token handling
 - waiting-intent and closure-decision interaction after delivery
 

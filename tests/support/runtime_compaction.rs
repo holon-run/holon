@@ -355,6 +355,10 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
         .submit_wake_hint(WakeHint {
             agent_id: "default".into(),
             reason: "pr review requested".into(),
+            description: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
             source: Some("github".into()),
             resource: Some("pr/273".into()),
             body: Some(MessageBody::Json {

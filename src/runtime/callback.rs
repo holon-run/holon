@@ -38,23 +38,47 @@ impl RuntimeHandle {
         resource: Option<String>,
         delivery_mode: CallbackDeliveryMode,
     ) -> Result<ExternalTriggerCapability> {
+        self.create_external_trigger(
+            summary,
+            source,
+            ExternalTriggerScope::WorkItem,
+            delivery_mode,
+            Some(condition),
+            resource,
+        )
+        .await
+    }
+
+    pub async fn create_external_trigger(
+        &self,
+        description: String,
+        source: String,
+        scope: ExternalTriggerScope,
+        delivery_mode: CallbackDeliveryMode,
+        condition: Option<String>,
+        resource: Option<String>,
+    ) -> Result<ExternalTriggerCapability> {
         let agent_id = self.agent_id().await?;
         let now = Utc::now();
         let waiting_intent_id = Uuid::new_v4().to_string();
         let external_trigger_id = Uuid::new_v4().to_string();
         let token = generate_callback_token();
+        let work_item_id = match scope {
+            ExternalTriggerScope::WorkItem => Some(
+                self.current_waiting_work_item_anchor(&agent_id)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow!("work_item scoped external trigger requires a current work item")
+                    })?,
+            ),
+            ExternalTriggerScope::Agent => None,
+        };
         let waiting = WaitingIntentRecord {
             id: waiting_intent_id.clone(),
             agent_id: agent_id.clone(),
-            work_item_id: self
-                .inner
-                .agent
-                .lock()
-                .await
-                .state
-                .current_turn_work_item_id
-                .clone(),
-            summary,
+            scope: scope.clone(),
+            work_item_id,
+            description,
             source: source.clone(),
             resource,
             condition,
@@ -72,6 +96,7 @@ impl RuntimeHandle {
             external_trigger_id: external_trigger_id.clone(),
             target_agent_id: agent_id.clone(),
             waiting_intent_id: waiting_intent_id.clone(),
+            scope: scope.clone(),
             delivery_mode: delivery_mode.clone(),
             token_hash: crate::callbacks::hash_callback_token(&token),
             status: ExternalTriggerStatus::Active,
@@ -90,6 +115,7 @@ impl RuntimeHandle {
                 "external_trigger_id": descriptor.external_trigger_id,
                 "agent_id": agent_id,
                 "source": source,
+                "scope": descriptor.scope,
                 "delivery_mode": descriptor.delivery_mode,
             }),
         ))?;
@@ -100,8 +126,36 @@ impl RuntimeHandle {
             external_trigger_id,
             trigger_url,
             target_agent_id: self.agent_id().await?,
+            scope,
             delivery_mode,
         })
+    }
+
+    async fn current_waiting_work_item_anchor(&self, agent_id: &str) -> Result<Option<String>> {
+        let state = self.agent_state().await?;
+        let mut candidates = Vec::new();
+        candidates.extend(state.current_turn_work_item_id);
+        candidates.extend(state.current_work_item_id);
+        candidates.extend(
+            state
+                .working_memory
+                .current_working_memory
+                .current_work_item_id,
+        );
+        if let Some(current) = self.inner.storage.work_queue_prompt_projection()?.current {
+            candidates.push(current.id);
+        }
+
+        for candidate in candidates {
+            let Some(record) = self.inner.storage.latest_work_item(&candidate)? else {
+                continue;
+            };
+            if record.agent_id != agent_id || record.state == WorkItemState::Done {
+                continue;
+            }
+            return Ok(Some(record.id));
+        }
+        Ok(None)
     }
 
     pub async fn cancel_waiting(&self, waiting_intent_id: &str) -> Result<CancelWaitingResult> {
@@ -214,7 +268,9 @@ impl RuntimeHandle {
                 message.metadata = Some(serde_json::json!({
                     "waiting_intent_id": waiting.id,
                     "external_trigger_id": external_trigger_id,
+                    "description": waiting.description,
                     "source": waiting.source,
+                    "scope": waiting.scope,
                     "resource": waiting.resource,
                     "content_type": payload.content_type,
                 }));
@@ -223,12 +279,16 @@ impl RuntimeHandle {
                 self.enqueue(message).await?;
                 CallbackIngressDisposition::Enqueued
             }
-            CallbackDeliveryMode::WakeOnly => {
+            CallbackDeliveryMode::WakeHint => {
                 let disposition = self
                     .submit_wake_hint(WakeHint {
                         agent_id: agent_id.clone(),
                         reason: callback_wake_reason(&waiting, payload.body.as_ref()),
+                        description: Some(waiting.description.clone()),
                         source: Some(waiting.source.clone()),
+                        scope: Some(waiting.scope.clone()),
+                        waiting_intent_id: Some(waiting.id.clone()),
+                        external_trigger_id: Some(descriptor.external_trigger_id.clone()),
                         resource: waiting.resource.clone(),
                         body: payload.body.clone(),
                         content_type: payload.content_type.clone(),
@@ -267,7 +327,7 @@ impl RuntimeHandle {
             CallbackDeliveryMode::EnqueueMessage => {
                 crate::types::MessageDeliverySurface::HttpCallbackEnqueue
             }
-            CallbackDeliveryMode::WakeOnly => {
+            CallbackDeliveryMode::WakeHint => {
                 crate::types::MessageDeliverySurface::HttpCallbackWake
             }
         };
@@ -277,6 +337,7 @@ impl RuntimeHandle {
                 "agent_id": agent_id,
                 "waiting_intent_id": updated_waiting.id,
                 "external_trigger_id": updated_descriptor_id,
+                "scope": updated_descriptor.scope,
                 "delivery_mode": updated_descriptor.delivery_mode,
                 "origin": "callback",
                 "delivery_surface": delivery_surface,
@@ -290,6 +351,7 @@ impl RuntimeHandle {
             agent_id,
             waiting_intent_id: updated_waiting.id,
             external_trigger_id: updated_descriptor.external_trigger_id,
+            scope: updated_descriptor.scope,
             delivery_mode: updated_descriptor.delivery_mode,
             disposition,
         })
@@ -305,6 +367,8 @@ impl RuntimeHandle {
             .filter(|record| record.status == WaitingIntentStatus::Active)
             .map(|record| WaitingIntentSummary {
                 id: record.id,
+                scope: record.scope,
+                description: record.description,
                 source: record.source,
                 resource: record.resource,
                 condition: record.condition,
@@ -316,6 +380,16 @@ impl RuntimeHandle {
                 last_triggered_at: record.last_triggered_at,
             })
             .collect())
+    }
+
+    pub(super) async fn active_work_item_waiting_intent_count(&self) -> Result<usize> {
+        Ok(self
+            .latest_waiting_intents()
+            .await?
+            .into_iter()
+            .filter(|record| record.status == WaitingIntentStatus::Active)
+            .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
+            .count())
     }
 
     pub(super) async fn active_external_trigger_summaries(
@@ -330,6 +404,7 @@ impl RuntimeHandle {
                 external_trigger_id: record.external_trigger_id,
                 target_agent_id: record.target_agent_id,
                 waiting_intent_id: record.waiting_intent_id,
+                scope: record.scope,
                 delivery_mode: record.delivery_mode,
                 status: record.status,
                 delivery_count: record.delivery_count,
@@ -350,6 +425,7 @@ impl RuntimeHandle {
             .await?
             .into_iter()
             .filter(|record| record.status == WaitingIntentStatus::Active)
+            .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
             .collect::<Vec<_>>();
         if active_waiting.is_empty() {
             return Ok(());
@@ -457,7 +533,7 @@ fn callback_wake_reason(waiting: &WaitingIntentRecord, body: Option<&MessageBody
             truncate_activation_text(&rendered)
         }
         Some(MessageBody::Brief { text, .. }) if !text.trim().is_empty() => text.trim().to_string(),
-        _ => format!("callback triggered: {}", waiting.summary),
+        _ => format!("external trigger fired: {}", waiting.description),
     }
 }
 

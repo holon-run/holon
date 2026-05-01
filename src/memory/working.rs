@@ -6,9 +6,10 @@ use serde_json::Value;
 use crate::{
     storage::AppStorage,
     types::{
-        AgentState, AuditEvent, ClosureDecision, MessageEnvelope, MessageKind, ToolExecutionRecord,
-        TurnMemoryDelta, WaitingIntentStatus, WorkItemRecord, WorkPlanSnapshot, WorkPlanStepStatus,
-        WorkingMemoryDelta, WorkingMemorySnapshot, WorkingMemoryUpdateReason,
+        AgentState, AuditEvent, ClosureDecision, ExternalTriggerScope, MessageEnvelope,
+        MessageKind, ToolExecutionRecord, TurnMemoryDelta, WaitingIntentStatus, WorkItemRecord,
+        WorkPlanSnapshot, WorkPlanStepStatus, WorkingMemoryDelta, WorkingMemorySnapshot,
+        WorkingMemoryUpdateReason,
     },
 };
 
@@ -151,6 +152,7 @@ pub fn derive_working_memory_snapshot(
         .latest_waiting_intents()?
         .into_iter()
         .filter(|record| record.status == WaitingIntentStatus::Active)
+        .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
         .collect::<Vec<_>>();
     let current_work_item_id = current_work_item.map(|item| item.id.as_str());
     let memory_tools = collect_memory_tools(&recent_tools, current_work_item_id);
@@ -495,11 +497,11 @@ fn collect_waiting_on(
             if let Some(resource) = record.resource.as_deref() {
                 format!(
                     "{} on {}",
-                    truncate_line(&record.summary, 100),
+                    truncate_line(&record.description, 100),
                     truncate_line(resource, 80)
                 )
             } else {
-                truncate_line(&record.summary, 120)
+                truncate_line(&record.description, 120)
             }
         })
         .take(MEMORY_WAITING_LIMIT)
@@ -836,11 +838,12 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait_1".into(),
                 agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
-                summary: "wait for CI webhook".into(),
+                description: "wait for CI webhook".into(),
                 source: "github".into(),
                 resource: Some("pull/1".into()),
-                condition: "ci completed".into(),
+                condition: Some("ci completed".into()),
                 delivery_mode: CallbackDeliveryMode::EnqueueMessage,
                 status: WaitingIntentStatus::Active,
                 external_trigger_id: "cb_1".into(),
@@ -1144,12 +1147,13 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-current-old".into(),
                 agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
-                summary: "current old".into(),
+                description: "current old".into(),
                 source: "github".into(),
                 resource: None,
-                condition: "old".into(),
-                delivery_mode: CallbackDeliveryMode::WakeOnly,
+                condition: Some("old".into()),
+                delivery_mode: CallbackDeliveryMode::WakeHint,
                 status: WaitingIntentStatus::Active,
                 external_trigger_id: "cb-current-old".into(),
                 created_at: base,
@@ -1162,12 +1166,13 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-current-new".into(),
                 agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
-                summary: "current new".into(),
+                description: "current new".into(),
                 source: "github".into(),
                 resource: None,
-                condition: "new".into(),
-                delivery_mode: CallbackDeliveryMode::WakeOnly,
+                condition: Some("new".into()),
+                delivery_mode: CallbackDeliveryMode::WakeHint,
                 status: WaitingIntentStatus::Active,
                 external_trigger_id: "cb-current-new".into(),
                 created_at: base + chrono::Duration::seconds(2),
@@ -1180,12 +1185,13 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-legacy-new".into(),
                 agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
                 work_item_id: None,
-                summary: "legacy new".into(),
+                description: "legacy new".into(),
                 source: "github".into(),
                 resource: None,
-                condition: "legacy new".into(),
-                delivery_mode: CallbackDeliveryMode::WakeOnly,
+                condition: Some("legacy new".into()),
+                delivery_mode: CallbackDeliveryMode::WakeHint,
                 status: WaitingIntentStatus::Active,
                 external_trigger_id: "cb-legacy-new".into(),
                 created_at: base + chrono::Duration::seconds(3),
@@ -1198,12 +1204,13 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-legacy-old".into(),
                 agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
                 work_item_id: None,
-                summary: "legacy old".into(),
+                description: "legacy old".into(),
                 source: "github".into(),
                 resource: None,
-                condition: "legacy old".into(),
-                delivery_mode: CallbackDeliveryMode::WakeOnly,
+                condition: Some("legacy old".into()),
+                delivery_mode: CallbackDeliveryMode::WakeHint,
                 status: WaitingIntentStatus::Active,
                 external_trigger_id: "cb-legacy-old".into(),
                 created_at: base + chrono::Duration::seconds(4),
@@ -1216,12 +1223,13 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-other-newest".into(),
                 agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
                 work_item_id: Some(other.id.clone()),
-                summary: "other newest".into(),
+                description: "other newest".into(),
                 source: "github".into(),
                 resource: None,
-                condition: "other".into(),
-                delivery_mode: CallbackDeliveryMode::WakeOnly,
+                condition: Some("other".into()),
+                delivery_mode: CallbackDeliveryMode::WakeHint,
                 status: WaitingIntentStatus::Active,
                 external_trigger_id: "cb-other-newest".into(),
                 created_at: base + chrono::Duration::seconds(5),
@@ -1293,11 +1301,12 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait_2".into(),
                 agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
-                summary: "wait for reviewer".into(),
+                description: "wait for reviewer".into(),
                 source: "github".into(),
                 resource: None,
-                condition: "review requested".into(),
+                condition: Some("review requested".into()),
                 delivery_mode: CallbackDeliveryMode::EnqueueMessage,
                 status: WaitingIntentStatus::Active,
                 external_trigger_id: "cb_2".into(),

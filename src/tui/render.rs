@@ -233,7 +233,7 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
         lines.push("  No active waiting intents".into());
     } else {
         for waiting in projection.waiting_intents.iter().take(2) {
-            lines.push(format!("  - {}", trim(&waiting.summary, 44)));
+            lines.push(format!("  - {}", trim(&waiting.description, 44)));
         }
     }
     if !projection.external_triggers.is_empty() {

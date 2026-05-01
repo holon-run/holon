@@ -259,7 +259,11 @@ fn system_tick_context_snapshot_renders_wake_continuation() -> Result<()> {
     system_tick.metadata = Some(json!({
         "wake_hint": {
             "reason": "github inbox updated",
+            "description": "Check AgentInbox for unread GitHub review notifications",
             "source": "agentinbox",
+            "scope": "agent",
+            "external_trigger_id": "trig_agentinbox_reviews",
+            "waiting_intent_id": "wait_agentinbox_reviews",
             "resource": "interest/pr-reviews",
             "content_type": "application/json",
             "body": {
@@ -307,6 +311,10 @@ Continuation context:
  - Waiting reason matched: true
  - Wake hint:
 - Source: agentinbox
+- Scope: agent
+- External trigger id: trig_agentinbox_reviews
+- Waiting intent id: wait_agentinbox_reviews
+- Description: Check AgentInbox for unread GitHub review notifications
 - Resource: interest/pr-reviews
 - Reason: github inbox updated
 - Content-Type: application/json

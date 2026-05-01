@@ -50,7 +50,11 @@ pub enum WakeDisposition {
 pub struct WakeHint {
     pub agent_id: String,
     pub reason: String,
+    pub description: Option<String>,
     pub source: Option<String>,
+    pub scope: Option<crate::types::ExternalTriggerScope>,
+    pub waiting_intent_id: Option<String>,
+    pub external_trigger_id: Option<String>,
     pub resource: Option<String>,
     pub body: Option<MessageBody>,
     pub content_type: Option<String>,

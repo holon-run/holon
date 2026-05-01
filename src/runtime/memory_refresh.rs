@@ -339,7 +339,11 @@ impl RuntimeHandle {
         message.metadata = Some(serde_json::json!({
             "wake_hint": {
                 "reason": pending.reason,
+                "description": pending.description,
                 "source": pending.source,
+                "scope": pending.scope,
+                "waiting_intent_id": pending.waiting_intent_id,
+                "external_trigger_id": pending.external_trigger_id,
                 "resource": pending.resource,
                 "body": pending.body,
                 "content_type": pending.content_type,
@@ -686,6 +690,10 @@ mod tests {
     fn set_wake_hint(test_runtime: &TestRuntime, reason: &str) -> PendingWakeHint {
         let hint = PendingWakeHint {
             reason: reason.to_string(),
+            description: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
             source: Some("test".to_string()),
             resource: None,
             body: None,
@@ -916,6 +924,10 @@ mod tests {
         // Set wake hint with full metadata
         let hint = PendingWakeHint {
             reason: "test-wake".to_string(),
+            description: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
             source: Some("test-source".to_string()),
             resource: Some("test-resource".to_string()),
             body: Some(MessageBody::Json {

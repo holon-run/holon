@@ -750,7 +750,7 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
             .map(|record| format!("{} [{:?}]", record.delivery_target, record.state))
             .unwrap_or_else(|| event.data.event_type.clone()),
         "waiting_intent_created" => decode_payload::<WaitingIntentRecord>(&event.data.payload)
-            .map(|waiting| format!("waiting: {}", trim_summary(&waiting.summary)))
+            .map(|waiting| format!("waiting: {}", trim_summary(&waiting.description)))
             .unwrap_or_else(|| event.data.event_type.clone()),
         "waiting_intent_cancelled" => event
             .data
@@ -878,11 +878,11 @@ mod tests {
             AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
             AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentSummary,
             AgentTokenUsageSummary, AgentVisibility, BriefKind, BriefRecord, CallbackDeliveryMode,
-            ChildAgentSummary, ClosureDecision, ClosureOutcome, ExternalTriggerStateSnapshot,
-            ExternalTriggerStatus, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
-            MessageEnvelope, MessageKind, MessageOrigin, Priority, RuntimePosture,
-            SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus, TokenUsage,
-            TranscriptEntry, TranscriptEntryKind, TurnTerminalKind, TurnTerminalRecord,
+            ChildAgentSummary, ClosureDecision, ClosureOutcome, ExternalTriggerScope,
+            ExternalTriggerStateSnapshot, ExternalTriggerStatus, LoadedAgentsMdView, MessageBody,
+            MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+            RuntimePosture, SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus,
+            TokenUsage, TranscriptEntry, TranscriptEntryKind, TurnTerminalKind, TurnTerminalRecord,
             WaitingIntentRecord, WaitingIntentStatus, WaitingIntentSummary, WorkItemRecord,
             WorkItemState, WorkPlanItem, WorkPlanSnapshot, WorkPlanStepStatus,
             WorkspaceOccupancyRecord, WorktreeSession,
@@ -1429,11 +1429,12 @@ mod tests {
             waiting_intents: vec![WaitingIntentRecord {
                 id: "wait-1".into(),
                 agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
                 work_item_id: None,
-                summary: "wait".into(),
+                description: "wait".into(),
                 source: "github".into(),
                 resource: Some("pull_request:251".into()),
-                condition: "review".into(),
+                condition: Some("review".into()),
                 delivery_mode: CallbackDeliveryMode::EnqueueMessage,
                 status: WaitingIntentStatus::Active,
                 external_trigger_id: "cb-1".into(),
@@ -1448,6 +1449,7 @@ mod tests {
                 external_trigger_id: "cb-1".into(),
                 target_agent_id: "default".into(),
                 waiting_intent_id: "wait-1".into(),
+                scope: ExternalTriggerScope::WorkItem,
                 delivery_mode: CallbackDeliveryMode::EnqueueMessage,
                 status: ExternalTriggerStatus::Active,
                 created_at: Utc::now(),

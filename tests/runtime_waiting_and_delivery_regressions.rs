@@ -51,8 +51,8 @@ runtime_async_tests!(
 
 http_async_tests!(
     callback_enqueue_message_repeats_until_cancelled,
-    callback_wake_only_routes_through_wake_hint,
-    callback_wake_only_rejects_stopped_public_agent_without_side_effects,
+    callback_wake_hint_routes_through_wake_hint,
+    callback_wake_hint_rejects_stopped_public_agent_without_side_effects,
     unknown_callback_token_is_rejected,
     callback_mode_mismatch_is_rejected,
     invalid_json_callback_body_returns_bad_request,
