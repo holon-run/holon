@@ -53,17 +53,22 @@ pub(crate) struct WorkItemQueryContext {
 
 pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQueryContext> {
     let state = runtime.agent_state().await?;
-    let current_work_item_id = if state.current_turn_work_item_id.is_some() {
-        state.current_turn_work_item_id
-    } else {
-        runtime
-            .latest_work_items()
-            .await?
-            .into_iter()
-            .filter(|item| item.status == WorkItemStatus::Active)
-            .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
-            .map(|item| item.id)
-    };
+    if let Some(bound_id) = state.current_turn_work_item_id.as_deref() {
+        if let Some(record) = runtime.latest_work_item(bound_id).await? {
+            if record.status != WorkItemStatus::Completed {
+                return Ok(WorkItemQueryContext {
+                    current_work_item_id: Some(record.id),
+                });
+            }
+        }
+    }
+    let current_work_item_id = runtime
+        .latest_work_items()
+        .await?
+        .into_iter()
+        .filter(|item| item.status == WorkItemStatus::Active)
+        .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+        .map(|item| item.id);
     Ok(WorkItemQueryContext {
         current_work_item_id,
     })

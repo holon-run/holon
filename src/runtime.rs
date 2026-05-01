@@ -1845,6 +1845,30 @@ mod tests {
         let done_payload = done_result.envelope.result.unwrap();
         assert_eq!(done_payload["work_item"]["state"].as_str(), Some("done"));
         assert_eq!(done_payload["work_item"]["focus"].as_str(), Some("done"));
+
+        bind_turn_to_work_item(&runtime, completed.id.as_str()).await;
+        let (fallback_result, _) = registry
+            .execute(
+                &runtime,
+                "default",
+                &TrustLevel::TrustedOperator,
+                &crate::tool::ToolCall {
+                    id: "fallback-active".into(),
+                    name: "GetActiveWorkItem".into(),
+                    input: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let fallback_payload = fallback_result.envelope.result.unwrap();
+        assert_eq!(
+            fallback_payload["context"]["current_work_item_id"].as_str(),
+            Some(active.id.as_str())
+        );
+        assert_eq!(
+            fallback_payload["work_item"]["id"].as_str(),
+            Some(active.id.as_str())
+        );
     }
 
     async fn mark_blocking_task(runtime: &RuntimeHandle, task_id: &str) {

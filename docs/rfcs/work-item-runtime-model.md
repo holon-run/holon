@@ -639,8 +639,8 @@ The initial `CompleteWorkItem` shape should be:
 The initial read shapes should be:
 
 - `GetActiveWorkItem(include_plan?)`
-- `GetWorkItem(work_item_id)`
-- `ListWorkItems(filter?, limit?)`
+- `GetWorkItem(work_item_id, include_plan?)`
+- `ListWorkItems(filter?, limit?, include_plan?)`
 
 Useful initial filters are:
 
