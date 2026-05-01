@@ -22,7 +22,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TrustLevel, WaitingIntentStatus, WorkItemStatus, WorkPlanItem,
+        OperatorDeliveryStatus, TrustLevel, WaitingIntentStatus, WorkItemState, WorkPlanItem,
         WorkPlanStepStatus,
     },
 };
@@ -39,7 +39,7 @@ use tokio::{
 use super::{
     attach_default_workspace, connect_addr, git, init_git_repo, read_next_sse_event, spawn_server,
     spawn_server_for_host, spawn_server_with_config, spawn_server_with_runtime_config, tempdir,
-    test_config, test_config_with_paths, wait_until, ParsedSseEvent,
+    test_config, test_config_with_paths, test_work_item, wait_until, ParsedSseEvent,
 };
 
 pub async fn create_command_task_route_rejects_legacy_kind_field() -> Result<()> {
@@ -163,17 +163,14 @@ pub async fn create_work_item_route_persists_queued_item_without_message_ingress
     let response = client
         .post(format!("{base}/control/agents/default/work-items"))
         .json(&serde_json::json!({
-            "delivery_target": "follow up on queued runtime cleanup",
-            "summary": "queued from control plane",
-            "progress_note": "do not interrupt current work",
-            "parent_id": "parent_work"
+            "delivery_target": "follow up on queued runtime cleanup"
         }))
         .send()
         .await?;
     assert!(response.status().is_success());
 
     let body: serde_json::Value = response.json().await?;
-    assert_eq!(body["status"], "queued");
+    assert_eq!(body["state"], "open");
     assert_eq!(
         body["delivery_target"],
         "follow up on queued runtime cleanup"
@@ -189,7 +186,7 @@ pub async fn create_work_item_route_persists_queued_item_without_message_ingress
         let events = runtime.storage().read_recent_events(200)?;
         Ok(item.is_some_and(|item| {
             item.delivery_target == "follow up on queued runtime cleanup"
-                && matches!(item.status, WorkItemStatus::Queued | WorkItemStatus::Active)
+                && item.state == WorkItemState::Open
         }) && events.iter().any(|event| {
             event.kind == "work_item_enqueue_requested"
                 && event.data["work_item_id"] == work_item_id
@@ -212,16 +209,14 @@ pub async fn create_work_item_route_does_not_replace_existing_active_item() -> R
     let client = reqwest::Client::new();
     let runtime = host.default_runtime().await?;
 
-    let active = runtime
-        .update_work_item(
-            None,
-            "finish current active work".into(),
-            WorkItemStatus::Active,
-            Some("already in progress".into()),
-            None,
-            None,
-        )
-        .await?;
+    let active = test_work_item(
+        &runtime,
+        "finish current active work",
+        WorkItemState::Open,
+        true,
+        None,
+    )
+    .await?;
 
     let response = client
         .post(format!("{base}/control/agents/default/work-items"))
@@ -237,10 +232,10 @@ pub async fn create_work_item_route_does_not_replace_existing_active_item() -> R
         let work_items = runtime.storage().latest_work_items()?;
         Ok(work_items
             .iter()
-            .any(|item| item.id == active.id && item.status == WorkItemStatus::Active)
+            .any(|item| item.id == active.id && item.state == WorkItemState::Open)
             && work_items.iter().any(|item| {
                 item.delivery_target == "queued follow-up after active work"
-                    && item.status == WorkItemStatus::Queued
+                    && item.state == WorkItemState::Open
             }))
     })
     .await?;

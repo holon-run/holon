@@ -22,7 +22,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TrustLevel, WaitingIntentStatus, WorkItemStatus, WorkPlanItem,
+        OperatorDeliveryStatus, TrustLevel, WaitingIntentStatus, WorkItemState, WorkPlanItem,
         WorkPlanStepStatus,
     },
 };
@@ -47,12 +47,11 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     runtime.control(ControlAction::Pause).await?;
-    let mut callback_work = holon::types::WorkItemRecord::new(
+    let callback_work = holon::types::WorkItemRecord::new(
         "default",
-        "track CI callback delivery",
-        WorkItemStatus::Active,
+        "keep callback watch anchored",
+        WorkItemState::Open,
     );
-    callback_work.summary = Some("keep callback watch anchored".into());
     runtime.storage().append_work_item(&callback_work)?;
     let capability = runtime
         .create_callback(
@@ -434,12 +433,11 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     )?;
     let runtime = host.default_runtime().await?;
     runtime.control(ControlAction::Pause).await?;
-    let mut callback_work = holon::types::WorkItemRecord::new(
+    let callback_work = holon::types::WorkItemRecord::new(
         "default",
-        "track public callback delivery",
-        WorkItemStatus::Active,
+        "keep public callback watch anchored",
+        WorkItemState::Open,
     );
-    callback_work.summary = Some("keep public callback watch anchored".into());
     runtime.storage().append_work_item(&callback_work)?;
     let (base, server) = spawn_server_for_host(host.clone()).await?;
     let client = reqwest::Client::new();

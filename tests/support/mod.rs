@@ -23,7 +23,8 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         OperatorTransportBinding, OperatorTransportBindingStatus, OperatorTransportCapabilities,
-        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, WorkItemRecord,
+        WorkItemState,
     },
 };
 pub use tempfile::tempdir;
@@ -44,6 +45,30 @@ pub struct TestConfigBuilder {
     prompt_budget_estimated_tokens: usize,
     compaction_trigger_estimated_tokens: usize,
     compaction_keep_recent_estimated_tokens: usize,
+}
+
+pub async fn test_work_item(
+    runtime: &RuntimeHandle,
+    delivery_target: &str,
+    state: WorkItemState,
+    current: bool,
+    blocked_by: Option<&str>,
+) -> Result<WorkItemRecord> {
+    let (mut record, _) = runtime
+        .create_work_item(delivery_target.to_string(), None)
+        .await?;
+    if let Some(blocked_by) = blocked_by {
+        (record, _) = runtime
+            .update_work_item_fields(record.id.clone(), Some(Some(blocked_by.to_string())), None)
+            .await?;
+    }
+    if current {
+        runtime.pick_work_item(record.id.clone()).await?;
+    }
+    if state == WorkItemState::Done {
+        record = runtime.complete_work_item(record.id.clone(), None).await?;
+    }
+    Ok(record)
 }
 
 impl TestConfigBuilder {

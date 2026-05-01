@@ -33,7 +33,7 @@ use holon::{
         OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
         OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemStatus,
+        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemState,
         WorkPlanItem, WorkPlanStepStatus,
     },
 };
@@ -58,7 +58,8 @@ use crate::support::runtime_providers::{
     WorktreeLifecycleProvider,
 };
 use crate::support::{
-    attach_default_workspace, eventually, eventually_async, eventually_for, TestConfigBuilder,
+    attach_default_workspace, eventually, eventually_async, eventually_for, test_work_item,
+    TestConfigBuilder,
 };
 
 // ============================================================================
@@ -71,16 +72,14 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
     )?;
     let runtime = host.default_runtime().await?;
 
-    let active = runtime
-        .update_work_item(
-            None,
-            "Stabilize long-running compaction".into(),
-            WorkItemStatus::Active,
-            Some("preserve runtime work truth".into()),
-            Some("survival matrix is in progress".into()),
-            None,
-        )
-        .await?;
+    let active = test_work_item(
+        &runtime,
+        "Stabilize long-running compaction",
+        WorkItemState::Open,
+        true,
+        Some("survival matrix is in progress"),
+    )
+    .await?;
     runtime
         .update_work_plan(
             active.id.clone(),
@@ -97,36 +96,30 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         )
         .await?;
 
-    let queued = runtime
-        .update_work_item(
-            None,
-            "Queue wake-hint verification".into(),
-            WorkItemStatus::Queued,
-            Some("queued after active survival pass".into()),
-            None,
-            None,
-        )
-        .await?;
-    let waiting = runtime
-        .update_work_item(
-            None,
-            "Wait for CI rerun".into(),
-            WorkItemStatus::Waiting,
-            Some("waiting on external rerun".into()),
-            Some("resume after workflow completes".into()),
-            None,
-        )
-        .await?;
-    let _completed = runtime
-        .update_work_item(
-            None,
-            "Already shipped shadow-state cleanup".into(),
-            WorkItemStatus::Completed,
-            Some("should stay out of prompt".into()),
-            None,
-            None,
-        )
-        .await?;
+    let queued = test_work_item(
+        &runtime,
+        "Queue wake-hint verification",
+        WorkItemState::Open,
+        false,
+        None,
+    )
+    .await?;
+    let waiting = test_work_item(
+        &runtime,
+        "Wait for CI rerun",
+        WorkItemState::Open,
+        false,
+        Some("resume after workflow completes"),
+    )
+    .await?;
+    let _completed = test_work_item(
+        &runtime,
+        "Already shipped shadow-state cleanup",
+        WorkItemState::Done,
+        false,
+        None,
+    )
+    .await?;
 
     for idx in 0..4 {
         runtime.storage().append_message(&MessageEnvelope::new(
@@ -156,8 +149,8 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
     let active_section = prompt
         .context_sections
         .iter()
-        .find(|section| section.name == "active_work_item")
-        .expect("active work item section should be present after compaction");
+        .find(|section| section.name == "current_work_item")
+        .expect("current work item section should be present after compaction");
     assert!(active_section
         .content
         .contains("Stabilize long-running compaction"));
@@ -165,18 +158,18 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         .content
         .contains("cover task rejoin after compaction"));
 
-    let queued_waiting_section = prompt
+    let queued_blocked_section = prompt
         .context_sections
         .iter()
-        .find(|section| section.name == "queued_waiting_work_items")
-        .expect("queued/waiting work section should be present after compaction");
-    assert!(queued_waiting_section
+        .find(|section| section.name == "queued_blocked_work_items")
+        .expect("queued/blocked work section should be present after compaction");
+    assert!(queued_blocked_section
         .content
         .contains(queued.delivery_target.as_str()));
-    assert!(queued_waiting_section
+    assert!(queued_blocked_section
         .content
         .contains(waiting.delivery_target.as_str()));
-    assert!(!queued_waiting_section
+    assert!(!queued_blocked_section
         .content
         .contains("Already shipped shadow-state cleanup"));
 
@@ -191,16 +184,14 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
     let host = RuntimeHost::new_with_provider(aggressive_compaction_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
-    let work_item = runtime
-        .update_work_item(
-            None,
-            "Close the compaction regression gap".into(),
-            WorkItemStatus::Active,
-            Some("task-result continuity remains authoritative".into()),
-            Some("waiting for command task evidence".into()),
-            None,
-        )
-        .await?;
+    let work_item = test_work_item(
+        &runtime,
+        "Close the compaction regression gap",
+        WorkItemState::Open,
+        true,
+        Some("waiting for command task evidence"),
+    )
+    .await?;
     runtime
         .update_work_plan(
             work_item.id.clone(),
@@ -288,11 +279,8 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
     let latest = runtime
         .latest_work_item(&work_item.id)
         .await?
-        .expect("active work item should still exist");
-    assert!(matches!(
-        latest.status,
-        WorkItemStatus::Active | WorkItemStatus::Waiting
-    ));
+        .expect("current work item should still exist");
+    assert_eq!(latest.state, WorkItemState::Open);
     assert_eq!(latest.delivery_target, work_item.delivery_target);
 
     Ok(())
@@ -306,16 +294,14 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
     let host = RuntimeHost::new_with_provider(aggressive_compaction_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
-    let active = runtime
-        .update_work_item(
-            None,
-            "Keep active compaction work in focus".into(),
-            WorkItemStatus::Active,
-            Some("wake hints should not scramble current work".into()),
-            None,
-            None,
-        )
-        .await?;
+    let active = test_work_item(
+        &runtime,
+        "Keep active compaction work in focus",
+        WorkItemState::Open,
+        true,
+        None,
+    )
+    .await?;
     runtime
         .update_work_plan(
             active.id.clone(),
@@ -325,16 +311,14 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
             }],
         )
         .await?;
-    let queued = runtime
-        .update_work_item(
-            None,
-            "Queued fallback work".into(),
-            WorkItemStatus::Queued,
-            Some("should remain queued while wake hint is handled".into()),
-            None,
-            None,
-        )
-        .await?;
+    let queued = test_work_item(
+        &runtime,
+        "Queued fallback work",
+        WorkItemState::Open,
+        false,
+        None,
+    )
+    .await?;
     for idx in 0..3 {
         runtime.storage().append_message(&MessageEnvelope::new(
             "default",
@@ -408,7 +392,7 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
         .latest_work_item(&queued.id)
         .await?
         .expect("queued work item should still exist");
-    assert_eq!(queued_latest.status, WorkItemStatus::Queued);
+    assert_eq!(queued_latest.state, WorkItemState::Open);
 
     Ok(())
 }
@@ -421,16 +405,14 @@ pub async fn queued_activation_after_compaction_promotes_the_correct_next_step()
     let host = RuntimeHost::new_with_provider(aggressive_compaction_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
-    let queued = runtime
-        .update_work_item(
-            None,
-            "Resume queued compaction validation".into(),
-            WorkItemStatus::Queued,
-            Some("should become active on the next idle tick".into()),
-            None,
-            None,
-        )
-        .await?;
+    let queued = test_work_item(
+        &runtime,
+        "Resume queued compaction validation",
+        WorkItemState::Open,
+        false,
+        None,
+    )
+    .await?;
     runtime
         .update_work_plan(
             queued.id.clone(),
@@ -498,7 +480,7 @@ pub async fn queued_activation_after_compaction_promotes_the_correct_next_step()
         .latest_work_item(&queued.id)
         .await?
         .expect("queued work item should still exist");
-    assert_eq!(latest.status, WorkItemStatus::Active);
+    assert_eq!(latest.state, WorkItemState::Open);
 
     Ok(())
 }

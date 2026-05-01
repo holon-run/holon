@@ -33,7 +33,7 @@ use holon::{
         OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
         OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemStatus,
+        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemState,
         WorkPlanItem, WorkPlanStepStatus,
     },
 };

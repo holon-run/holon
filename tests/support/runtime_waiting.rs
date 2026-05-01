@@ -33,7 +33,7 @@ use holon::{
         OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
         OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemStatus,
+        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemState,
         WorkPlanItem, WorkPlanStepStatus,
     },
 };
@@ -231,73 +231,56 @@ pub async fn update_work_item_creates_and_updates_persisted_snapshot() -> Result
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
 
-    let created = runtime
-        .update_work_item(
-            None,
-            "Ship work-item runtime foundation".into(),
-            WorkItemStatus::Active,
-            Some("bootstrapped from tool".into()),
-            Some("persisted state landed".into()),
-            None,
-        )
+    let (created, _) = runtime
+        .create_work_item("Ship work-item runtime foundation".into(), None)
         .await?;
     assert!(created.id.starts_with("work_"));
 
-    let updated = runtime
-        .update_work_item(
-            Some(created.id.clone()),
-            "Ship work-item runtime foundation".into(),
-            WorkItemStatus::Waiting,
-            Some("waiting on review".into()),
-            Some("queued follow-up after CI".into()),
-            Some("parent_1".into()),
+    let (updated, _) = runtime
+        .update_work_item_fields(
+            created.id.clone(),
+            Some(Some("queued follow-up after CI".into())),
+            None,
         )
         .await?;
 
     let latest = runtime.latest_work_item(&created.id).await?.unwrap();
     assert_eq!(latest.id, created.id);
-    assert_eq!(latest.status, WorkItemStatus::Waiting);
-    assert_eq!(latest.summary.as_deref(), Some("waiting on review"));
+    assert_eq!(latest.state, WorkItemState::Open);
     assert_eq!(
-        latest.progress_note.as_deref(),
+        latest.blocked_by.as_deref(),
         Some("queued follow-up after CI")
     );
-    assert_eq!(latest.parent_id.as_deref(), Some("parent_1"));
     assert_eq!(updated.created_at, created.created_at);
     assert!(updated.updated_at >= created.updated_at);
     Ok(())
 }
 
-pub async fn update_work_plan_replaces_latest_snapshot_for_existing_work_item() -> Result<()> {
+pub async fn update_work_item_replaces_latest_plan_snapshot_for_existing_work_item() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
 
-    let work_item = runtime
-        .update_work_item(
-            None,
-            "Stabilize work plan projection".into(),
-            WorkItemStatus::Active,
-            None,
-            None,
-            None,
-        )
+    let (work_item, _) = runtime
+        .create_work_item("Stabilize work plan projection".into(), None)
         .await?;
 
     runtime
-        .update_work_plan(
+        .update_work_item_fields(
             work_item.id.clone(),
-            vec![WorkPlanItem {
+            None,
+            Some(vec![WorkPlanItem {
                 step: "persist work-item store".into(),
                 status: WorkPlanStepStatus::Completed,
-            }],
+            }]),
         )
         .await?;
 
-    let updated_plan = runtime
-        .update_work_plan(
+    let (_, updated_plan) = runtime
+        .update_work_item_fields(
             work_item.id.clone(),
-            vec![
+            None,
+            Some(vec![
                 WorkPlanItem {
                     step: "persist work-item store".into(),
                     status: WorkPlanStepStatus::Completed,
@@ -306,9 +289,10 @@ pub async fn update_work_plan_replaces_latest_snapshot_for_existing_work_item() 
                     step: "project work queue into prompt".into(),
                     status: WorkPlanStepStatus::InProgress,
                 },
-            ],
+            ]),
         )
         .await?;
+    let updated_plan = updated_plan.expect("expected plan snapshot");
 
     let latest = runtime.latest_work_plan(&work_item.id).await?.unwrap();
     assert_eq!(latest.items.len(), 2);
@@ -537,6 +521,7 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
             AgentProfilePreset::PrivateChild,
             None,
             false,
+            None,
             None,
         )
         .await?;

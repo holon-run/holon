@@ -11,7 +11,7 @@ use holon::{
         AgentRegistryStatus, AgentState, AgentVisibility, ContinuationClass,
         ContinuationResolution, ContinuationTriggerKind, LoadedAgentsMd, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        SkillsRuntimeView, TrustLevel, WaitingReason, WorkItemRecord, WorkItemStatus, WorkPlanItem,
+        SkillsRuntimeView, TrustLevel, WaitingReason, WorkItemRecord, WorkItemState, WorkPlanItem,
         WorkPlanSnapshot, WorkPlanStepStatus, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
@@ -45,7 +45,7 @@ Process execution guarantees:
   - secret_isolation: not_enforced
   - child_process_containment: not_enforced"#;
 
-const CONTEXT_CONTRACT: &str = r#"Interpret the memory block with this priority: active work item first for the committed delivery target and current runtime task, working memory delta next for the newest updates since the last prompt, and working memory after that for rolling agent context. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as the most reliable continuity evidence across turns. When these sources differ on task scope or delivery target, treat the active work item's `delivery_target` as the ground truth for the current committed task unless the current input explicitly changes it."#;
+const CONTEXT_CONTRACT: &str = r#"Interpret the memory block with this priority: current work item first for the committed delivery target and current runtime task, working memory delta next for the newest updates since the last prompt, and working memory after that for rolling agent context. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as the most reliable continuity evidence across turns. When these sources differ on task scope or delivery target, treat the current work item's `delivery_target` as the ground truth for the current committed task unless the current input explicitly changes it."#;
 
 fn sample_identity() -> AgentIdentityView {
     AgentIdentityView {
@@ -99,6 +99,7 @@ fn render_context_snapshot(
     current_message: &MessageEnvelope,
     continuation: Option<&ContinuationResolution>,
 ) -> Result<String> {
+    storage.write_agent(session)?;
     let prompt = build_effective_prompt(
         storage,
         session,
@@ -128,11 +129,10 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
     let mut work_item = WorkItemRecord::new(
         "default",
         "Ship prompt snapshot coverage",
-        WorkItemStatus::Active,
+        WorkItemState::Open,
     );
     work_item.id = "work_prompt".into();
-    work_item.summary = Some("prompt snapshot coverage".into());
-    work_item.progress_note = Some("baseline operator snapshot first".into());
+    work_item.blocked_by = Some("baseline operator snapshot first".into());
     storage.append_work_item(&work_item)?;
     storage.append_work_plan(&WorkPlanSnapshot::new(
         "default",
@@ -167,8 +167,9 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
     );
 
     let mut session = AgentState::new("default");
+    session.current_work_item_id = Some(work_item.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
-        active_work_item_id: Some(work_item.id.clone()),
+        current_work_item_id: Some(work_item.id.clone()),
         delivery_target: Some(work_item.delivery_target.clone()),
         work_summary: Some("prompt snapshot coverage".into()),
         current_plan: vec!["capture operator surface snapshot".into()],
@@ -196,7 +197,7 @@ Agent id: default
 
 ## working_memory
 Working memory:
-- Active work item id: work_prompt
+- Current work item id: work_prompt
 - Delivery target: Ship prompt snapshot coverage
 - Work summary: prompt snapshot coverage
 - Current plan:
@@ -212,13 +213,12 @@ Working memory updated since the last prompt:
   - captured the baseline operator turn layout
   - queued callback and task-result follow-up snapshots
 
-## active_work_item
-Active work item:
+## current_work_item
+Current work item:
 - Id: work_prompt
-- Status: Active
+- State: Open
 - Delivery target: Ship prompt snapshot coverage
-- Summary: prompt snapshot coverage
-- Progress note: baseline operator snapshot first
+- Blocked by: baseline operator snapshot first
 - Current work plan:
   - [InProgress] Capture baseline operator layout
   - [Pending] Cover callback and task result surfaces
@@ -443,15 +443,14 @@ fn active_work_with_queued_work_shows_both_items() -> Result<()> {
     let dir = tempdir()?;
     let storage = AppStorage::new(dir.path())?;
 
-    // Create an active work item
+    // Create an current work item
     let mut active_work = WorkItemRecord::new(
         "default",
         "Complete snapshot coverage expansion",
-        WorkItemStatus::Active,
+        WorkItemState::Open,
     );
     active_work.id = "work_active".into();
-    active_work.summary = Some("expand prompt context snapshot coverage".into());
-    active_work.progress_note = Some("currently adding queued work interaction tests".into());
+    active_work.blocked_by = Some("currently adding queued work interaction tests".into());
     storage.append_work_item(&active_work)?;
     storage.append_work_plan(&WorkPlanSnapshot::new(
         "default",
@@ -469,14 +468,10 @@ fn active_work_with_queued_work_shows_both_items() -> Result<()> {
     ))?;
 
     // Create a queued work item
-    let mut queued_work = WorkItemRecord::new(
-        "default",
-        "Review and merge PR #485",
-        WorkItemStatus::Queued,
-    );
+    let mut queued_work =
+        WorkItemRecord::new("default", "Review and merge PR #485", WorkItemState::Open);
     queued_work.id = "work_queued".into();
-    queued_work.summary = Some("review expanded snapshot coverage".into());
-    queued_work.progress_note = Some("blocked on active work completion".into());
+    queued_work.blocked_by = Some("blocked on active work completion".into());
     storage.append_work_item(&queued_work)?;
     storage.append_work_plan(&WorkPlanSnapshot::new(
         "default",
@@ -511,8 +506,9 @@ fn active_work_with_queued_work_shows_both_items() -> Result<()> {
     );
 
     let mut session = AgentState::new("default");
+    session.current_work_item_id = Some(active_work.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
-        active_work_item_id: Some(active_work.id.clone()),
+        current_work_item_id: Some(active_work.id.clone()),
         delivery_target: Some(active_work.delivery_target.clone()),
         work_summary: Some("expand prompt context snapshot coverage".into()),
         current_plan: vec!["add active work with queued work test".into()],
@@ -529,26 +525,25 @@ Agent id: default
 
 ## working_memory
 Working memory:
-- Active work item id: work_active
+- Current work item id: work_active
 - Delivery target: Complete snapshot coverage expansion
 - Work summary: expand prompt context snapshot coverage
 - Current plan:
   - add active work with queued work test
 
-## active_work_item
-Active work item:
+## current_work_item
+Current work item:
 - Id: work_active
-- Status: Active
+- State: Open
 - Delivery target: Complete snapshot coverage expansion
-- Summary: expand prompt context snapshot coverage
-- Progress note: currently adding queued work interaction tests
+- Blocked by: currently adding queued work interaction tests
 - Current work plan:
   - [InProgress] Add active work with queued work test
   - [Pending] Add post-compaction snapshot tests
 
-## queued_waiting_work_items
-Queued and waiting work items:
-- [Queued] work_queued :: Review and merge PR #485 :: blocked on active work completion
+## queued_blocked_work_items
+Queued and blocked work items:
+- [blocked] work_queued :: Review and merge PR #485 :: blocked_by=blocked on active work completion
 
 ## context_contract
 {CONTEXT_CONTRACT}
@@ -567,11 +562,9 @@ fn operator_turn_without_working_memory_delta() -> Result<()> {
     let dir = tempdir()?;
     let storage = AppStorage::new(dir.path())?;
 
-    let mut work_item =
-        WorkItemRecord::new("default", "Test delta absence", WorkItemStatus::Active);
+    let mut work_item = WorkItemRecord::new("default", "Test delta absence", WorkItemState::Open);
     work_item.id = "work_no_delta".into();
-    work_item.summary = Some("test working memory delta absence".into());
-    work_item.progress_note = Some("verifying snapshot without delta".into());
+    work_item.blocked_by = Some("verifying snapshot without delta".into());
     storage.append_work_item(&work_item)?;
     storage.append_work_plan(&WorkPlanSnapshot::new(
         "default",
@@ -600,8 +593,9 @@ fn operator_turn_without_working_memory_delta() -> Result<()> {
     );
 
     let mut session = AgentState::new("default");
+    session.current_work_item_id = Some(work_item.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
-        active_work_item_id: Some(work_item.id.clone()),
+        current_work_item_id: Some(work_item.id.clone()),
         delivery_target: Some(work_item.delivery_target.clone()),
         work_summary: Some("test working memory delta absence".into()),
         current_plan: vec!["verify delta absence".into()],
@@ -619,19 +613,18 @@ Agent id: default
 
 ## working_memory
 Working memory:
-- Active work item id: work_no_delta
+- Current work item id: work_no_delta
 - Delivery target: Test delta absence
 - Work summary: test working memory delta absence
 - Current plan:
   - verify delta absence
 
-## active_work_item
-Active work item:
+## current_work_item
+Current work item:
 - Id: work_no_delta
-- Status: Active
+- State: Open
 - Delivery target: Test delta absence
-- Summary: test working memory delta absence
-- Progress note: verifying snapshot without delta
+- Blocked by: verifying snapshot without delta
 - Current work plan:
   - [InProgress] Verify delta absence
 
@@ -652,11 +645,9 @@ fn callback_with_active_work_and_delta() -> Result<()> {
     let dir = tempdir()?;
     let storage = AppStorage::new(dir.path())?;
 
-    let mut work_item =
-        WorkItemRecord::new("default", "Handle CI callback", WorkItemStatus::Active);
+    let mut work_item = WorkItemRecord::new("default", "Handle CI callback", WorkItemState::Open);
     work_item.id = "work_ci".into();
-    work_item.summary = Some("process CI completion callback".into());
-    work_item.progress_note = Some("awaiting CI result".into());
+    work_item.blocked_by = Some("awaiting CI result".into());
     storage.append_work_item(&work_item)?;
     storage.append_work_plan(&WorkPlanSnapshot::new(
         "default",
@@ -696,8 +687,9 @@ fn callback_with_active_work_and_delta() -> Result<()> {
     );
 
     let mut session = AgentState::new("default");
+    session.current_work_item_id = Some(work_item.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
-        active_work_item_id: Some(work_item.id.clone()),
+        current_work_item_id: Some(work_item.id.clone()),
         delivery_target: Some(work_item.delivery_target.clone()),
         work_summary: Some("process CI completion callback".into()),
         current_plan: vec![
@@ -729,7 +721,7 @@ Agent id: default
 
 ## working_memory
 Working memory:
-- Active work item id: work_ci
+- Current work item id: work_ci
 - Delivery target: Handle CI callback
 - Work summary: process CI completion callback
 - Current plan:
@@ -748,13 +740,12 @@ Working memory updated since the last prompt:
   - CI pipeline completed successfully
   - ready to proceed with next work item
 
-## active_work_item
-Active work item:
+## current_work_item
+Current work item:
 - Id: work_ci
-- Status: Active
+- State: Open
 - Delivery target: Handle CI callback
-- Summary: process CI completion callback
-- Progress note: awaiting CI result
+- Blocked by: awaiting CI result
 - Current work plan:
   - [Completed] Wait for CI callback
   - [InProgress] Process CI result
@@ -780,11 +771,10 @@ fn system_tick_with_waiting_work_item() -> Result<()> {
     let mut waiting_work = WorkItemRecord::new(
         "default",
         "External service integration",
-        WorkItemStatus::Waiting,
+        WorkItemState::Open,
     );
     waiting_work.id = "work_waiting".into();
-    waiting_work.summary = Some("waiting for external service response".into());
-    waiting_work.progress_note = Some("blocked on API rate limit".into());
+    waiting_work.blocked_by = Some("blocked on API rate limit".into());
     storage.append_work_item(&waiting_work)?;
     storage.append_work_plan(&WorkPlanSnapshot::new(
         "default",
@@ -841,8 +831,9 @@ fn system_tick_with_waiting_work_item() -> Result<()> {
     };
 
     let mut session = AgentState::new("default");
+    session.current_work_item_id = Some(waiting_work.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
-        active_work_item_id: Some(waiting_work.id.clone()),
+        current_work_item_id: Some(waiting_work.id.clone()),
         delivery_target: Some(waiting_work.delivery_target.clone()),
         work_summary: Some("waiting for external service response".into()),
         current_plan: vec![
@@ -862,16 +853,22 @@ Agent id: default
 
 ## working_memory
 Working memory:
-- Active work item id: work_waiting
+- Current work item id: work_waiting
 - Delivery target: External service integration
 - Work summary: waiting for external service response
 - Current plan:
   - wait for rate limit reset
   - retry API request
 
-## queued_waiting_work_items
-Queued and waiting work items:
-- [Waiting] work_waiting :: External service integration :: blocked on API rate limit
+## current_work_item
+Current work item:
+- Id: work_waiting
+- State: Open
+- Delivery target: External service integration
+- Blocked by: blocked on API rate limit
+- Current work plan:
+  - [InProgress] Wait for rate limit reset
+  - [Pending] Retry API request
 
 ## context_contract
 {CONTEXT_CONTRACT}
@@ -908,11 +905,10 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
     let mut work_item = WorkItemRecord::new(
         "default",
         "Long-running task with compaction",
-        WorkItemStatus::Active,
+        WorkItemState::Open,
     );
     work_item.id = "work_compaction".into();
-    work_item.summary = Some("task spanning multiple compaction points".into());
-    work_item.progress_note = Some("continuing after compaction".into());
+    work_item.blocked_by = Some("continuing after compaction".into());
     storage.append_work_item(&work_item)?;
     storage.append_work_plan(&WorkPlanSnapshot::new(
         "default",
@@ -953,8 +949,9 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
     let mut session = AgentState::new("default");
     // Simulate post-compaction state with higher revision numbers
     session.working_memory.working_memory_revision = 8;
+    session.current_work_item_id = Some(work_item.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
-        active_work_item_id: Some(work_item.id.clone()),
+        current_work_item_id: Some(work_item.id.clone()),
         delivery_target: Some(work_item.delivery_target.clone()),
         work_summary: Some("task spanning multiple compaction points".into()),
         current_plan: vec![
@@ -986,7 +983,7 @@ Agent id: default
 
 ## working_memory
 Working memory:
-- Active work item id: work_compaction
+- Current work item id: work_compaction
 - Delivery target: Long-running task with compaction
 - Work summary: task spanning multiple compaction points
 - Current plan:
@@ -1004,13 +1001,12 @@ Working memory updated since the last prompt:
   - compaction applied, context compressed
   - continuity preserved through working memory snapshot
 
-## active_work_item
-Active work item:
+## current_work_item
+Current work item:
 - Id: work_compaction
-- Status: Active
+- State: Open
 - Delivery target: Long-running task with compaction
-- Summary: task spanning multiple compaction points
-- Progress note: continuing after compaction
+- Blocked by: continuing after compaction
 - Current work plan:
   - [Completed] Complete initial phase
   - [InProgress] Work on expanded coverage
@@ -1035,20 +1031,18 @@ fn task_result_with_multiple_work_items() -> Result<()> {
 
     // Create completed work item
     let mut completed_work =
-        WorkItemRecord::new("default", "Build task execution", WorkItemStatus::Completed);
+        WorkItemRecord::new("default", "Build task execution", WorkItemState::Done);
     completed_work.id = "work_build".into();
-    completed_work.summary = Some("execute cargo build".into());
     storage.append_work_item(&completed_work)?;
 
-    // Create active work item
+    // Create current work item
     let mut active_work = WorkItemRecord::new(
         "default",
         "Test execution and verification",
-        WorkItemStatus::Active,
+        WorkItemState::Open,
     );
     active_work.id = "work_test".into();
-    active_work.summary = Some("run cargo test and verify results".into());
-    active_work.progress_note = Some("awaiting test completion".into());
+    active_work.blocked_by = Some("awaiting test completion".into());
     storage.append_work_item(&active_work)?;
     storage.append_work_plan(&WorkPlanSnapshot::new(
         "default",
@@ -1097,8 +1091,9 @@ fn task_result_with_multiple_work_items() -> Result<()> {
     };
 
     let mut session = AgentState::new("default");
+    session.current_work_item_id = Some(active_work.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
-        active_work_item_id: Some(active_work.id.clone()),
+        current_work_item_id: Some(active_work.id.clone()),
         delivery_target: Some(active_work.delivery_target.clone()),
         work_summary: Some("run cargo test and verify results".into()),
         current_plan: vec![
@@ -1131,7 +1126,7 @@ Agent id: default
 
 ## working_memory
 Working memory:
-- Active work item id: work_test
+- Current work item id: work_test
 - Delivery target: Test execution and verification
 - Work summary: run cargo test and verify results
 - Current plan:
@@ -1150,13 +1145,12 @@ Working memory updated since the last prompt:
   - 120 tests passed, 0 failed
   - ready to proceed with verification
 
-## active_work_item
-Active work item:
+## current_work_item
+Current work item:
 - Id: work_test
-- Status: Active
+- State: Open
 - Delivery target: Test execution and verification
-- Summary: run cargo test and verify results
-- Progress note: awaiting test completion
+- Blocked by: awaiting test completion
 - Current work plan:
   - [Completed] Execute cargo test
   - [InProgress] Verify test results

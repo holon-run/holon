@@ -25,7 +25,7 @@ runtime_async_tests!(
     sleep_only_completion_keeps_last_assistant_message_from_previous_round,
     sleep_only_completion_preserves_brief_after_max_output_recovery,
     update_work_item_creates_and_updates_persisted_snapshot,
-    update_work_plan_replaces_latest_snapshot_for_existing_work_item,
+    update_work_item_replaces_latest_plan_snapshot_for_existing_work_item,
     multi_session_state_is_isolated,
     agent_summary_last_turn_token_usage_survives_transcript_windowing,
 );
