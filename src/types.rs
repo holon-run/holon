@@ -1896,6 +1896,18 @@ pub struct TaskOutputResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CommandCostDiagnostics {
+    pub cmd_preview: String,
+    pub cmd_char_count: usize,
+    pub cmd_estimated_tokens: usize,
+    pub contains_heredoc: bool,
+    pub contains_inline_script: bool,
+    pub exceeds_soft_threshold: bool,
+    pub effective_max_output_tokens: u64,
+    pub output_char_budget: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "disposition", rename_all = "snake_case")]
 pub enum ExecCommandOutcome {
     Completed {
@@ -1922,6 +1934,8 @@ pub enum ExecCommandOutcome {
 pub struct ExecCommandResult {
     #[serde(flatten)]
     pub outcome: ExecCommandOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_diagnostics: Option<CommandCostDiagnostics>,
     pub summary_text: Option<String>,
 }
 

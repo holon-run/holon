@@ -80,6 +80,8 @@ pub struct RuntimeConfigSurface {
     pub model_catalog: Vec<String>,
     pub unknown_model_fallback_configured: bool,
     pub runtime_max_output_tokens: u32,
+    pub default_tool_output_tokens: u32,
+    pub max_tool_output_tokens: u32,
     pub disable_provider_fallback: bool,
     pub providers: Vec<RuntimeProviderSummary>,
 }
@@ -112,6 +114,8 @@ impl RuntimeConfigSurface {
             model_catalog,
             unknown_model_fallback_configured: config.validated_unknown_model_fallback.is_some(),
             runtime_max_output_tokens: config.runtime_max_output_tokens,
+            default_tool_output_tokens: config.default_tool_output_tokens,
+            max_tool_output_tokens: config.max_tool_output_tokens,
             disable_provider_fallback: config.disable_provider_fallback,
             providers: config
                 .providers

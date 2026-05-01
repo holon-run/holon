@@ -9,6 +9,12 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use crate::tool::ToolError;
+use crate::types::CommandCostDiagnostics;
+
+pub(crate) const DEFAULT_TOOL_OUTPUT_TOKENS: u64 = 2_000;
+pub(crate) const MAX_TOOL_OUTPUT_TOKENS: u64 = 10_000;
+pub(crate) const COMMAND_COST_SOFT_THRESHOLD_CHARS: usize = 4_000;
+pub(crate) const COMMAND_PREVIEW_CHARS: usize = 240;
 
 pub(crate) fn parse_tool_args<T>(tool_name: &str, input: &Value) -> Result<T>
 where
@@ -129,7 +135,162 @@ pub(crate) fn truncate_text(text: &str, max: usize) -> String {
 pub(crate) fn output_char_budget(max_output_tokens: Option<usize>) -> usize {
     max_output_tokens
         .and_then(|tokens| tokens.checked_mul(4))
-        .unwrap_or(12_000)
+        .unwrap_or((DEFAULT_TOOL_OUTPUT_TOKENS as usize).saturating_mul(4))
+}
+
+pub(crate) fn effective_tool_output_tokens(
+    requested: Option<u64>,
+    default_tokens: u64,
+    max_tokens: u64,
+) -> u64 {
+    let default_tokens = default_tokens.max(1);
+    let max_tokens = max_tokens.max(1);
+    requested
+        .filter(|value| *value > 0)
+        .unwrap_or(default_tokens)
+        .min(max_tokens)
+}
+
+pub(crate) fn command_preview(cmd: &str) -> String {
+    if command_contains_heredoc(cmd) || command_contains_inline_script(cmd) {
+        return "[omitted: command contains heredoc or inline script]".to_string();
+    }
+    truncate_text(&redact_command_secrets(cmd), COMMAND_PREVIEW_CHARS)
+}
+
+pub(crate) fn command_cost_diagnostics(
+    cmd: &str,
+    effective_max_output_tokens: u64,
+) -> CommandCostDiagnostics {
+    let cmd_char_count = cmd.chars().count();
+    let contains_heredoc = command_contains_heredoc(cmd);
+    let contains_inline_script = command_contains_inline_script(cmd);
+    CommandCostDiagnostics {
+        cmd_preview: command_preview(cmd),
+        cmd_char_count,
+        cmd_estimated_tokens: (cmd_char_count + 3) / 4,
+        contains_heredoc,
+        contains_inline_script,
+        exceeds_soft_threshold: cmd_char_count > COMMAND_COST_SOFT_THRESHOLD_CHARS,
+        effective_max_output_tokens,
+        output_char_budget: output_char_budget(Some(effective_max_output_tokens as usize)),
+    }
+}
+
+fn command_contains_heredoc(cmd: &str) -> bool {
+    cmd.contains("<<")
+}
+
+fn command_contains_inline_script(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    lower.contains("python -")
+        || lower.contains("python3 -")
+        || lower.contains("node -")
+        || lower.contains("ruby -")
+        || lower.contains("perl -")
+        || lower.contains("bash -c")
+        || lower.contains("sh -c")
+        || lower.contains("zsh -c")
+}
+
+fn redact_command_secrets(cmd: &str) -> String {
+    let mut changed = false;
+    let mut redact_next = false;
+    let mut parts = Vec::new();
+
+    for token in cmd.split_whitespace() {
+        if redact_next {
+            parts.push("[redacted]".to_string());
+            redact_next = false;
+            changed = true;
+            continue;
+        }
+
+        let (redacted, should_redact_next) = redact_command_token(token);
+        if redacted != token {
+            changed = true;
+        }
+        redact_next = should_redact_next;
+        parts.push(redacted);
+    }
+
+    if changed {
+        parts.join(" ")
+    } else {
+        cmd.to_string()
+    }
+}
+
+fn redact_command_token(token: &str) -> (String, bool) {
+    let token = redact_url_credentials(token);
+
+    if let Some((key, _value)) = token.split_once('=') {
+        if is_sensitive_command_key(key) {
+            return (format!("{key}=[redacted]"), false);
+        }
+    }
+
+    if is_sensitive_command_flag(&token) {
+        return (token, true);
+    }
+
+    (token, false)
+}
+
+fn redact_url_credentials(token: &str) -> String {
+    let Some(scheme_index) = token.find("://") else {
+        return token.to_string();
+    };
+    let authority_start = scheme_index + 3;
+    let Some(at_relative) = token[authority_start..].find('@') else {
+        return token.to_string();
+    };
+    let at_index = authority_start + at_relative;
+    let authority = &token[authority_start..at_index];
+    if !authority.contains(':') {
+        return token.to_string();
+    }
+    format!(
+        "{}[redacted]{}",
+        &token[..authority_start],
+        &token[at_index..]
+    )
+}
+
+fn is_sensitive_command_flag(token: &str) -> bool {
+    let normalized = token
+        .trim_start_matches('-')
+        .replace('-', "_")
+        .to_ascii_uppercase();
+    matches!(
+        normalized.as_str(),
+        "TOKEN"
+            | "ACCESS_TOKEN"
+            | "AUTH_TOKEN"
+            | "PASSWORD"
+            | "PASS"
+            | "SECRET"
+            | "API_KEY"
+            | "ACCESS_KEY"
+            | "PRIVATE_KEY"
+            | "CREDENTIAL"
+            | "CREDENTIALS"
+    )
+}
+
+fn is_sensitive_command_key(key: &str) -> bool {
+    let normalized = key
+        .trim_start_matches('-')
+        .replace('-', "_")
+        .to_ascii_uppercase();
+    normalized.contains("TOKEN")
+        || normalized.contains("SECRET")
+        || normalized.contains("PASSWORD")
+        || normalized == "PASS"
+        || normalized.contains("API_KEY")
+        || normalized.contains("ACCESS_KEY")
+        || normalized.contains("PRIVATE_KEY")
+        || normalized.contains("CREDENTIAL")
 }
 
 pub(crate) fn truncate_output_to_char_budget(text: &str, char_budget: usize) -> (String, bool) {
@@ -238,6 +399,55 @@ pub(crate) fn extract_sleep_duration_ms(input: &Value) -> Result<Option<u64>> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn output_budget_defaults_to_command_tool_default() {
+        assert_eq!(output_char_budget(None), 8_000);
+    }
+
+    #[test]
+    fn effective_tool_output_tokens_defaults_and_clamps() {
+        assert_eq!(effective_tool_output_tokens(None, 2_000, 10_000), 2_000);
+        assert_eq!(effective_tool_output_tokens(Some(0), 2_000, 10_000), 2_000);
+        assert_eq!(
+            effective_tool_output_tokens(Some(50_000), 2_000, 10_000),
+            10_000
+        );
+    }
+
+    #[test]
+    fn command_cost_diagnostics_reports_long_inline_commands_without_full_echo() {
+        let cmd = format!(
+            "python - <<'PY'\n{}FINAL_SECRET_MARKER\nPY",
+            "print('secret')\n".repeat(400)
+        );
+        let diagnostics = command_cost_diagnostics(&cmd, 2_000);
+
+        assert!(diagnostics.contains_heredoc);
+        assert!(diagnostics.contains_inline_script);
+        assert!(diagnostics.exceeds_soft_threshold);
+        assert_eq!(diagnostics.effective_max_output_tokens, 2_000);
+        assert_eq!(diagnostics.output_char_budget, 8_000);
+        assert_eq!(
+            diagnostics.cmd_preview,
+            "[omitted: command contains heredoc or inline script]"
+        );
+        assert!(!diagnostics.cmd_preview.contains("FINAL_SECRET_MARKER"));
+    }
+
+    #[test]
+    fn command_preview_redacts_common_secret_shapes() {
+        let preview = command_preview(
+            "TOKEN=abc123 curl --password hunter2 https://user:pass@example.com/path",
+        );
+
+        assert!(preview.contains("TOKEN=[redacted]"));
+        assert!(preview.contains("--password [redacted]"));
+        assert!(preview.contains("https://[redacted]@example.com/path"));
+        assert!(!preview.contains("abc123"));
+        assert!(!preview.contains("hunter2"));
+        assert!(!preview.contains("user:pass"));
+    }
 
     #[test]
     fn sleep_reason_uses_plain_reason_when_input_is_simple() {

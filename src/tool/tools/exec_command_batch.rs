@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::{
     runtime::RuntimeHandle,
     tool::{
-        helpers::{invalid_tool_input, parse_tool_args},
+        helpers::{command_preview, invalid_tool_input, parse_tool_args},
         spec::ToolResultStatus,
         ToolError, ToolResult,
     },
@@ -270,7 +270,7 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
     )];
     for item in result.items {
         lines.push(String::new());
-        lines.push(format!("[{}] {}", item.index, item.cmd));
+        lines.push(format!("[{}] {}", item.index, command_preview(&item.cmd)));
         match item.status {
             ExecCommandBatchItemStatus::Completed | ExecCommandBatchItemStatus::Failed => {
                 render_exec_item(&mut lines, item.result.as_ref());
@@ -359,5 +359,40 @@ mod tests {
         let error = rejected_item_error(&item).expect("tty should be rejected");
         assert_eq!(error.kind, "unsupported_batch_command_field");
         assert!(error.message.contains("tty"));
+    }
+
+    #[test]
+    fn render_for_model_uses_command_preview_for_batch_items() {
+        let cmd = format!(
+            "API_TOKEN=secret_value {}",
+            "printf safe_preview ".repeat(40)
+        );
+        let result = serialize_success(
+            NAME,
+            &ExecCommandBatchResult {
+                item_count: 1,
+                completed_count: 0,
+                failed_count: 0,
+                rejected_count: 0,
+                skipped_count: 1,
+                stop_on_error: false,
+                items: vec![ExecCommandBatchItemResult {
+                    index: 1,
+                    cmd,
+                    status: ExecCommandBatchItemStatus::Skipped,
+                    result: None,
+                    error_kind: None,
+                    error_message: None,
+                    duration_ms: None,
+                }],
+                summary_text: Some("batch".into()),
+            },
+        )
+        .unwrap();
+
+        let rendered = render_for_model(&result).unwrap();
+        assert!(rendered.contains("API_TOKEN=[redacted]"));
+        assert!(rendered.contains("..."));
+        assert!(!rendered.contains("secret_value"));
     }
 }

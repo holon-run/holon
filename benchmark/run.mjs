@@ -2562,7 +2562,8 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
 
   const summary = {
     ...summarizeTokenOptimizationRounds(rounds),
-    truncated_mutation_tool_call_rejections: truncatedMutationToolCallRejections
+    truncated_mutation_tool_call_rejections: truncatedMutationToolCallRejections,
+    exec_command_cost: summarizeExecCommandCost(toolSummaries)
   };
   return {
     schema_version: 1,
@@ -2575,12 +2576,145 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
 }
 
 function summarizeToolPayloadSize(entry) {
-  return {
+  const summary = {
     name: entry?.tool_name ?? "unknown",
     input_bytes: approximateJsonBytes(entry?.input),
     output_bytes: approximateJsonBytes(entry?.output),
     status: entry?.status ?? "unknown"
   };
+  const execCost = summarizeExecToolCost(entry);
+  if (execCost) {
+    summary.exec_command_cost = execCost;
+  }
+  return summary;
+}
+
+function summarizeExecToolCost(entry) {
+  const name = entry?.tool_name ?? "unknown";
+  if (name === "ExecCommand" || name === "exec_command") {
+    return summarizeSingleExecCommandCost(entry);
+  }
+  if (name !== "ExecCommandBatch") {
+    return null;
+  }
+  const items = Array.isArray(entry?.output?.envelope?.result?.items)
+    ? entry.output.envelope.result.items
+    : [];
+  return {
+    item_count: items.length,
+    items: items.map((item) =>
+      summarizeExecCommandCostEnvelope({
+        input: { cmd: item?.cmd },
+        output: { envelope: { result: item?.result } }
+      })
+    )
+  };
+}
+
+function summarizeSingleExecCommandCost(entry) {
+  return summarizeExecCommandCostEnvelope(entry);
+}
+
+function summarizeExecCommandCostEnvelope(entry) {
+  const diagnostics = entry?.output?.envelope?.result?.command_diagnostics ?? {};
+  const cmd = typeof entry?.input?.cmd === "string" ? entry.input.cmd : "";
+  const result = entry?.output?.envelope?.result ?? {};
+  const indexedArtifactCount =
+    (result?.stdout_artifact == null ? 0 : 1) + (result?.stderr_artifact == null ? 0 : 1);
+  const artifactsCount = Array.isArray(result?.artifacts) ? result.artifacts.length : 0;
+  return {
+    cmd_char_count: numberOrNull(diagnostics.cmd_char_count) ?? countChars(cmd),
+    cmd_estimated_tokens: numberOrNull(diagnostics.cmd_estimated_tokens) ?? Math.ceil(countChars(cmd) / 4),
+    contains_heredoc: Boolean(diagnostics.contains_heredoc ?? cmd.includes("<<")),
+    contains_inline_script: Boolean(diagnostics.contains_inline_script ?? commandContainsInlineScript(cmd)),
+    exceeds_soft_threshold: Boolean(diagnostics.exceeds_soft_threshold ?? countChars(cmd) > 4000),
+    effective_max_output_tokens: numberOrNull(diagnostics.effective_max_output_tokens),
+    output_char_budget: numberOrNull(diagnostics.output_char_budget),
+    output_truncated: Boolean(result?.truncated),
+    artifact_count: artifactsCount || indexedArtifactCount
+  };
+}
+
+function summarizeExecCommandCost(toolSummaries) {
+  const stats = {
+    command_count: 0,
+    batch_item_count: 0,
+    heredoc_count: 0,
+    inline_script_count: 0,
+    soft_threshold_exceeded_count: 0,
+    output_truncated_count: 0,
+    artifact_count: 0,
+    max_cmd_char_count: 0,
+    total_cmd_char_count: 0,
+    command_length_buckets: {
+      le_500: 0,
+      le_2000: 0,
+      le_4000: 0,
+      gt_4000: 0
+    }
+  };
+  for (const summary of toolSummaries) {
+    const cost = summary.exec_command_cost;
+    if (!cost) {
+      continue;
+    }
+    if (Array.isArray(cost.items)) {
+      stats.batch_item_count += cost.items.length;
+      for (const item of cost.items) {
+        addExecCost(stats, item);
+      }
+      continue;
+    }
+    addExecCost(stats, cost);
+  }
+  return stats;
+}
+
+function addExecCost(stats, cost) {
+  stats.command_count += 1;
+  const cmdChars = Number(cost.cmd_char_count ?? 0);
+  stats.total_cmd_char_count += cmdChars;
+  stats.max_cmd_char_count = Math.max(stats.max_cmd_char_count, cmdChars);
+  if (cmdChars <= 500) {
+    stats.command_length_buckets.le_500 += 1;
+  } else if (cmdChars <= 2000) {
+    stats.command_length_buckets.le_2000 += 1;
+  } else if (cmdChars <= 4000) {
+    stats.command_length_buckets.le_4000 += 1;
+  } else {
+    stats.command_length_buckets.gt_4000 += 1;
+  }
+  if (cost.contains_heredoc) {
+    stats.heredoc_count += 1;
+  }
+  if (cost.contains_inline_script) {
+    stats.inline_script_count += 1;
+  }
+  if (cost.exceeds_soft_threshold) {
+    stats.soft_threshold_exceeded_count += 1;
+  }
+  if (cost.output_truncated) {
+    stats.output_truncated_count += 1;
+  }
+  stats.artifact_count += Number(cost.artifact_count ?? 0);
+}
+
+function countChars(value) {
+  return Array.from(String(value ?? "")).length;
+}
+
+function commandContainsInlineScript(cmd) {
+  const lower = String(cmd ?? "").toLowerCase();
+  return [
+    "python -",
+    "python3 -",
+    "node -",
+    "ruby -",
+    "perl -",
+    "bash -c",
+    "sh -c",
+    "zsh -c"
+  ].some((needle) => lower.includes(needle));
 }
 
 function approximateEscapedJsonStringBytes(value) {

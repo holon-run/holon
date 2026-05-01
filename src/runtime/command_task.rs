@@ -17,14 +17,16 @@ use crate::{
         RunningProcessExitStatus, StdioSpec, StopSignal,
     },
     tool::helpers::{
+        command_cost_diagnostics, command_preview, effective_tool_output_tokens,
         output_char_budget, truncate_output_to_char_budget, truncate_output_with_flag,
         truncate_text,
     },
     tool::ToolError,
     types::{
-        AgentStatus, CommandTaskSpec, ExecCommandOutcome, ExecCommandResult, MessageBody,
-        MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskHandle, TaskKind, TaskRecord,
-        TaskRecoverySpec, TaskStatus, ToolArtifactRef, TrustLevel,
+        AgentStatus, CommandCostDiagnostics, CommandTaskSpec, ExecCommandOutcome,
+        ExecCommandResult, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef,
+        TrustLevel,
     },
 };
 
@@ -190,16 +192,20 @@ impl RuntimeHandle {
 
     pub(crate) async fn execute_exec_command(
         &self,
-        spec: CommandTaskSpec,
+        mut spec: CommandTaskSpec,
         trust: &TrustLevel,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed("ExecCommand").await?;
+        self.apply_command_output_policy(&mut spec);
+        let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
         self.append_audit_event(
             "process_execution_requested",
             serde_json::json!({
                 "surface": "ExecCommand",
                 "trust": trust,
+                "cmd_preview": diagnostics.cmd_preview.clone(),
+                "command_cost": diagnostics.clone(),
                 "execution": resolved.execution.clone(),
                 "boundary": crate::system::HostLocalBoundary::from_snapshot(&resolved.execution).audit_metadata(),
                 "workdir": resolved.workdir.clone(),
@@ -232,6 +238,7 @@ impl RuntimeHandle {
                                 &captured,
                                 &status,
                                 spec.max_output_tokens,
+                                Some(diagnostics.clone()),
                             )
                             .await;
                     }
@@ -251,6 +258,7 @@ impl RuntimeHandle {
                                 &captured,
                                 &status,
                                 spec.max_output_tokens,
+                                Some(diagnostics.clone()),
                             )
                             .await;
                     }
@@ -266,6 +274,7 @@ impl RuntimeHandle {
                                 &captured,
                                 &status,
                                 spec.max_output_tokens,
+                                Some(diagnostics.clone()),
                             )
                             .await;
                     }
@@ -288,6 +297,7 @@ impl RuntimeHandle {
                             initial_output_truncated,
                         },
                         summary_text: Some("command promoted to a managed task".to_string()),
+                        command_diagnostics: Some(diagnostics),
                     });
                 }
             }
@@ -296,17 +306,21 @@ impl RuntimeHandle {
 
     pub(crate) async fn execute_exec_command_once(
         &self,
-        spec: CommandTaskSpec,
+        mut spec: CommandTaskSpec,
         trust: &TrustLevel,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed("ExecCommandBatch")
             .await?;
+        self.apply_command_output_policy(&mut spec);
+        let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
         self.append_audit_event(
             "process_execution_requested",
             serde_json::json!({
                 "surface": "ExecCommandBatch",
                 "trust": trust,
+                "cmd_preview": diagnostics.cmd_preview.clone(),
+                "command_cost": diagnostics.clone(),
                 "execution": resolved.execution.clone(),
                 "boundary": crate::system::HostLocalBoundary::from_snapshot(&resolved.execution).audit_metadata(),
                 "workdir": resolved.workdir.clone(),
@@ -339,6 +353,7 @@ impl RuntimeHandle {
                                 &captured,
                                 &status,
                                 resolved.spec.max_output_tokens,
+                                Some(diagnostics.clone()),
                             )
                             .await;
                     }
@@ -354,7 +369,8 @@ impl RuntimeHandle {
                         ),
                     )
                     .with_details(json!({
-                        "cmd": resolved.spec.cmd.clone(),
+                        "cmd_preview": command_preview(&resolved.spec.cmd),
+                        "command_cost": self.command_cost_diagnostics_for(&resolved.spec),
                         "workdir": resolved.workdir.clone(),
                         "yield_time_ms": resolved.spec.yield_time_ms,
                     }))
@@ -364,6 +380,28 @@ impl RuntimeHandle {
                 }
             }
         }
+    }
+
+    fn apply_command_output_policy(&self, spec: &mut CommandTaskSpec) {
+        let effective = effective_tool_output_tokens(
+            spec.max_output_tokens,
+            self.inner.default_tool_output_tokens,
+            self.inner.max_tool_output_tokens,
+        );
+        spec.max_output_tokens = Some(effective);
+    }
+
+    fn command_cost_diagnostics_for(&self, spec: &CommandTaskSpec) -> CommandCostDiagnostics {
+        command_cost_diagnostics(
+            &spec.cmd,
+            spec.max_output_tokens.unwrap_or_else(|| {
+                effective_tool_output_tokens(
+                    None,
+                    self.inner.default_tool_output_tokens,
+                    self.inner.max_tool_output_tokens,
+                )
+            }),
+        )
     }
 
     pub(super) async fn resolve_command_task(
@@ -941,6 +979,7 @@ impl RuntimeHandle {
         captured: &CapturedOutput,
         status: &RunningProcessExitStatus,
         max_output_tokens: Option<u64>,
+        command_diagnostics: Option<CommandCostDiagnostics>,
     ) -> Result<ExecCommandResult> {
         let stdout_raw = captured.stdout.as_str();
         let stderr_raw = captured.stderr.as_str();
@@ -994,6 +1033,7 @@ impl RuntimeHandle {
                 stdout_artifact,
                 stderr_artifact,
             },
+            command_diagnostics,
             summary_text: Some(match exit_status {
                 Some(code) => format!("command exited with status {code}"),
                 None => format!("command exited with status {status}"),

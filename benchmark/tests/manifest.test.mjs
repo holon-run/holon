@@ -725,7 +725,67 @@ test("summarizeHolonTokenOptimization reports Anthropic cache miss rounds safely
   assert.equal(diagnostics.rounds[0].request_lowering_mode, "prompt_cache_blocks");
   assert.equal(diagnostics.rounds[0].previous_tool.name, "ExecCommand");
   assert.equal(typeof diagnostics.rounds[0].previous_tool.input_bytes, "number");
+  assert.equal(diagnostics.rounds[0].previous_tool.exec_command_cost.contains_heredoc, true);
+  assert.equal(diagnostics.summary.exec_command_cost.heredoc_count, 1);
   assert.equal(JSON.stringify(diagnostics).includes("secret-ish payload omitted"), false);
+});
+
+test("summarizeHolonTokenOptimization reports exec command cost without raw command text", () => {
+  const largeCommand = `python3 - <<'PY'\n${"print('secret payload')\n".repeat(300)}PY`;
+  const diagnostics = summarizeHolonTokenOptimization(
+    [
+      {
+        kind: "tool_executed",
+        data: {
+          tool_name: "ExecCommand"
+        }
+      },
+      {
+        kind: "provider_round_completed",
+        data: {
+          round: 1,
+          input_tokens: 100,
+          output_tokens: 20,
+          provider_attempt_timeline: {
+            attempts: [{ provider: "openai", model_ref: "openai/gpt-5.4", outcome: "succeeded" }]
+          }
+        }
+      }
+    ],
+    [
+      {
+        tool_name: "ExecCommand",
+        status: "success",
+        input: { cmd: largeCommand },
+        output: {
+          envelope: {
+            result: {
+              truncated: true,
+              stdout_artifact: 0,
+              artifacts: [{ path: "/tmp/stdout.log" }],
+              command_diagnostics: {
+                cmd_preview: "python3 - <<'PY'...",
+                cmd_char_count: Array.from(largeCommand).length,
+                cmd_estimated_tokens: 1600,
+                contains_heredoc: true,
+                contains_inline_script: true,
+                exceeds_soft_threshold: true,
+                effective_max_output_tokens: 2000,
+                output_char_budget: 8000
+              }
+            }
+          }
+        }
+      }
+    ]
+  );
+
+  assert.equal(diagnostics.summary.exec_command_cost.command_count, 1);
+  assert.equal(diagnostics.summary.exec_command_cost.inline_script_count, 1);
+  assert.equal(diagnostics.summary.exec_command_cost.soft_threshold_exceeded_count, 1);
+  assert.equal(diagnostics.summary.exec_command_cost.output_truncated_count, 1);
+  assert.equal(diagnostics.summary.exec_command_cost.artifact_count, 1);
+  assert.equal(JSON.stringify(diagnostics).includes("secret payload"), false);
 });
 
 test("summarizeHolonTokenOptimization reads assistant_round ledger diagnostics", () => {

@@ -149,6 +149,7 @@ mod tests {
                     stdout_artifact: None,
                     stderr_artifact: None,
                 },
+                command_diagnostics: None,
                 summary_text: Some("command exited with status 0".into()),
             },
         )
@@ -175,6 +176,7 @@ mod tests {
                     initial_output_preview: Some("booting".into()),
                     initial_output_truncated: false,
                 },
+                command_diagnostics: None,
                 summary_text: Some("command promoted to a managed task".into()),
             },
         )
@@ -201,6 +203,7 @@ mod tests {
                     initial_output_preview: None,
                     initial_output_truncated: false,
                 },
+                command_diagnostics: None,
                 summary_text: Some("command promoted to a managed task".into()),
             },
         )

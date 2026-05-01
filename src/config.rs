@@ -115,6 +115,8 @@ pub struct AppConfig {
     pub default_model: ModelRef,
     pub fallback_models: Vec<ModelRef>,
     pub runtime_max_output_tokens: u32,
+    pub default_tool_output_tokens: u32,
+    pub max_tool_output_tokens: u32,
     pub disable_provider_fallback: bool,
     pub tui_alternate_screen: AltScreenMode,
     pub validated_model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
@@ -301,6 +303,10 @@ pub struct RuntimeConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tool_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_provider_fallback: Option<bool>,
 }
 
@@ -420,6 +426,21 @@ impl AppConfig {
             .or(stored_config.runtime.max_output_tokens)
             .filter(|value| *value > 0)
             .unwrap_or(8192);
+        let default_tool_output_tokens = env::var("HOLON_DEFAULT_TOOL_OUTPUT_TOKENS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .or(stored_config.runtime.default_tool_output_tokens)
+            .filter(|value| *value > 0)
+            .unwrap_or(crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32)
+            .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32);
+        let max_tool_output_tokens = env::var("HOLON_MAX_TOOL_OUTPUT_TOKENS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .or(stored_config.runtime.max_tool_output_tokens)
+            .filter(|value| *value > 0)
+            .unwrap_or(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32)
+            .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32)
+            .max(default_tool_output_tokens);
 
         let anthropic_default_model = "claude-sonnet-4-6".to_string();
         let default_model = resolve_default_model(&stored_config)?;
@@ -462,6 +483,8 @@ impl AppConfig {
             default_model,
             fallback_models,
             runtime_max_output_tokens,
+            default_tool_output_tokens,
+            max_tool_output_tokens,
             disable_provider_fallback,
             tui_alternate_screen,
             validated_model_overrides,
@@ -1135,6 +1158,20 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "runtime.default_tool_output_tokens",
+            kind: "positive_integer",
+            description: "Default model-visible output token budget for local command tools.",
+            default: json!(crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.max_tool_output_tokens",
+            kind: "positive_integer",
+            description: "Upper model-visible output token budget for local command tools.",
+            default: json!(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "runtime.prompt_budget_estimated_tokens",
             kind: "positive_integer",
             description: "Estimated token budget for one assembled context projection.",
@@ -1258,6 +1295,16 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .max_output_tokens
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "runtime.default_tool_output_tokens" => Ok(config
+            .runtime
+            .default_tool_output_tokens
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.max_tool_output_tokens" => Ok(config
+            .runtime
+            .max_tool_output_tokens
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "runtime.disable_provider_fallback" => Ok(config
             .runtime
             .disable_provider_fallback
@@ -1318,6 +1365,18 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             let value = parse_positive_u32_key(key, raw_value)?;
             config.runtime.max_output_tokens = Some(value);
         }
+        "runtime.default_tool_output_tokens" => {
+            config.runtime.default_tool_output_tokens = Some(
+                parse_positive_u32_key(key, raw_value)?
+                    .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32),
+            );
+        }
+        "runtime.max_tool_output_tokens" => {
+            config.runtime.max_tool_output_tokens = Some(
+                parse_positive_u32_key(key, raw_value)?
+                    .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32),
+            );
+        }
         "runtime.disable_provider_fallback" => {
             config.runtime.disable_provider_fallback = Some(
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
@@ -1366,6 +1425,8 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             });
         }
         "runtime.max_output_tokens" => config.runtime.max_output_tokens = None,
+        "runtime.default_tool_output_tokens" => config.runtime.default_tool_output_tokens = None,
+        "runtime.max_tool_output_tokens" => config.runtime.max_tool_output_tokens = None,
         "runtime.disable_provider_fallback" => config.runtime.disable_provider_fallback = None,
         "tui.alternate_screen" => config.tui.alternate_screen = None,
         _ => return Err(unknown_config_key(key)),
@@ -2542,6 +2603,8 @@ mod tests {
                 .map(|value| ModelRef::parse(value).unwrap())
                 .collect(),
             runtime_max_output_tokens: 8192,
+            default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,
+            max_tool_output_tokens: crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32,
             disable_provider_fallback: false,
             tui_alternate_screen: crate::config::AltScreenMode::Auto,
             validated_model_overrides: HashMap::new(),
@@ -2705,6 +2768,44 @@ mod tests {
         unset_config_key(&mut config, "runtime.disable_provider_fallback").unwrap();
         assert_eq!(
             get_config_key(&config, "runtime.disable_provider_fallback").unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn set_get_and_unset_round_trip_tool_output_budgets() {
+        let mut config = HolonConfigFile::default();
+        set_config_key(&mut config, "runtime.default_tool_output_tokens", "1500").unwrap();
+        set_config_key(&mut config, "runtime.max_tool_output_tokens", "6000").unwrap();
+
+        assert_eq!(
+            get_config_key(&config, "runtime.default_tool_output_tokens").unwrap(),
+            json!(1_500)
+        );
+        assert_eq!(
+            get_config_key(&config, "runtime.max_tool_output_tokens").unwrap(),
+            json!(6_000)
+        );
+
+        set_config_key(&mut config, "runtime.default_tool_output_tokens", "50000").unwrap();
+        set_config_key(&mut config, "runtime.max_tool_output_tokens", "50000").unwrap();
+        assert_eq!(
+            get_config_key(&config, "runtime.default_tool_output_tokens").unwrap(),
+            json!(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS)
+        );
+        assert_eq!(
+            get_config_key(&config, "runtime.max_tool_output_tokens").unwrap(),
+            json!(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS)
+        );
+
+        unset_config_key(&mut config, "runtime.default_tool_output_tokens").unwrap();
+        unset_config_key(&mut config, "runtime.max_tool_output_tokens").unwrap();
+        assert_eq!(
+            get_config_key(&config, "runtime.default_tool_output_tokens").unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            get_config_key(&config, "runtime.max_tool_output_tokens").unwrap(),
             Value::Null
         );
     }
@@ -3235,6 +3336,8 @@ mod tests {
         assert!(keys.contains(&"model.unknown_fallback"));
         assert!(!keys.contains(&"providers.openai-codex.auth_source"));
         assert!(keys.contains(&"runtime.max_output_tokens"));
+        assert!(keys.contains(&"runtime.default_tool_output_tokens"));
+        assert!(keys.contains(&"runtime.max_tool_output_tokens"));
         assert!(keys.contains(&"runtime.disable_provider_fallback"));
         assert!(keys.contains(&"tui.alternate_screen"));
     }

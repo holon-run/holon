@@ -40,6 +40,8 @@ fn test_config() -> AppConfig {
         default_model: holon::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
         fallback_models: Vec::new(),
         runtime_max_output_tokens: 8192,
+        default_tool_output_tokens: 2_000,
+        max_tool_output_tokens: 10_000,
         disable_provider_fallback: false,
         tui_alternate_screen: holon::config::AltScreenMode::Auto,
         validated_model_overrides: std::collections::HashMap::new(),
