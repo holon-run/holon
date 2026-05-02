@@ -33,7 +33,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<CreateWorkItemArgs>(
             NAME,
-            "Create a new open work item for the current agent. Use PickWorkItem separately to make it current.",
+            "Create a new open work item for a genuinely separate delivery target. Do not create a new work item just to refine the current task; use UpdateWorkItem.delivery_target for that. Use PickWorkItem separately to make a different existing item current.",
         )?,
     })
 }

@@ -25,6 +25,8 @@ pub(crate) const NAME: &str = "UpdateWorkItem";
 pub(crate) struct UpdateWorkItemArgs {
     pub(crate) work_item_id: String,
     #[serde(default)]
+    pub(crate) delivery_target: Option<String>,
+    #[serde(default)]
     pub(crate) blocked_by: Option<Option<String>>,
     #[serde(default)]
     pub(crate) plan: Option<Vec<WorkPlanItemArgs>>,
@@ -35,7 +37,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<UpdateWorkItemArgs>(
             NAME,
-            "Update mutable fields for an existing work item. Plan updates replace the full checklist snapshot.",
+            "Update mutable fields for an existing work item. Use delivery_target to refine the same underlying task instead of creating a duplicate work item. Plan updates replace the full checklist snapshot.",
         )?,
     })
 }
@@ -48,12 +50,16 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: UpdateWorkItemArgs = parse_work_item_action_args(NAME, input)?;
     let work_item_id = validate_non_empty(args.work_item_id, NAME, "work_item_id")?;
+    let delivery_target = args
+        .delivery_target
+        .map(|value| validate_non_empty(value, NAME, "delivery_target"))
+        .transpose()?;
     let blocked_by = args
         .blocked_by
         .map(|value| value.and_then(|inner| normalize_optional_non_empty(Some(inner))));
     let plan = args.plan.map(|plan| convert_plan(NAME, plan)).transpose()?;
     let (work_item, plan) = runtime
-        .update_work_item_fields(work_item_id, blocked_by, plan)
+        .update_work_item_fields(work_item_id, delivery_target, blocked_by, plan)
         .await?;
     serialize_success(NAME, &WorkItemMutationResult::new(work_item, plan))
 }

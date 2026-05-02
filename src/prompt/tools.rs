@@ -71,7 +71,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_work_item_write",
             PromptStability::Stable,
-            "Use CreateWorkItem to create a new open delivery target, PickWorkItem to make an existing open item current, UpdateWorkItem to replace blocked_by and/or the full plan snapshot, and CompleteWorkItem only when the delivery target is actually done. If the current task is not just a brief answer and there is no current work item yet, clarify the delivery target with the operator if it is still ambiguous; if bounded inspection is needed to make the target concrete, do that inspection before creating the work item. Once a delivery target is stable enough to name, create or pick the work item and keep that delivery_target stable instead of recreating work items to refine wording. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, maintain the full current checklist snapshot rather than patching individual steps. Update plan state after material progress such as a code change, verification result, blocker discovery, or completed inspection objective; if the next known action is a file mutation, use ApplyPatch first and update the plan afterward. Plan updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current step remains doing, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Complete explicitly when done.".to_string(),
+            "Use CreateWorkItem to create a new open delivery target only for genuinely separate work, PickWorkItem to make an existing open item current, UpdateWorkItem to refine delivery_target, replace blocked_by, and/or replace the full plan snapshot, and CompleteWorkItem only when the delivery target is actually done. If the current task is not just a brief answer and there is no current work item yet, clarify the delivery target with the operator if it is still ambiguous; if bounded inspection is needed to make the target concrete, do that inspection before creating the work item. Do not create a new WorkItem just to refine or narrow the current delivery target; if the current WorkItem is still the same underlying task, update its delivery_target and plan with UpdateWorkItem. If an old WorkItem should be replaced, complete it first or explicitly PickWorkItem for the intended item before creating genuinely independent work. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, maintain the full current checklist snapshot rather than patching individual steps. Update plan state after material progress such as a code change, verification result, blocker discovery, or completed inspection objective; if the next known action is a file mutation, use ApplyPatch first and update the plan afterward. Plan updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current step remains doing, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Complete explicitly when done.".to_string(),
         ));
     }
     if names.contains(&"GetWorkItem") || names.contains(&"ListWorkItems") {
@@ -289,7 +289,13 @@ mod tests {
         assert!(section
             .content
             .contains("bounded inspection is needed to make the target concrete"));
-        assert!(section.content.contains("keep that delivery_target stable"));
+        assert!(section.content.contains("genuinely separate work"));
+        assert!(section
+            .content
+            .contains("Do not create a new WorkItem just to refine or narrow"));
+        assert!(section
+            .content
+            .contains("update its delivery_target and plan"));
         assert!(section
             .content
             .contains("Update plan state after material progress"));

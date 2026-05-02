@@ -1973,6 +1973,7 @@ impl RuntimeHandle {
     pub async fn update_work_item_fields(
         &self,
         work_item_id: String,
+        delivery_target: Option<String>,
         blocked_by: Option<Option<String>>,
         plan: Option<Vec<WorkPlanItem>>,
     ) -> Result<(WorkItemRecord, Option<WorkPlanSnapshot>)> {
@@ -1983,18 +1984,28 @@ impl RuntimeHandle {
         }
         let mut record = existing.clone();
         let mut wrote_item = false;
+        let previous_delivery_target = record.delivery_target.clone();
+        if let Some(delivery_target) = delivery_target {
+            record.delivery_target = delivery_target;
+            record.updated_at = Utc::now();
+            wrote_item = true;
+        }
         if let Some(blocked_by) = blocked_by {
             record.blocked_by = blocked_by;
             record.updated_at = Utc::now();
+            wrote_item = true;
+        }
+        if wrote_item {
             self.inner.storage.append_work_item(&record)?;
             self.inner.storage.append_event(&AuditEvent::new(
                 "work_item_written",
                 serde_json::json!({
                     "action": "updated",
                     "record": record,
+                    "previous_delivery_target": previous_delivery_target,
+                    "delivery_target_changed": previous_delivery_target != record.delivery_target,
                 }),
             ))?;
-            wrote_item = true;
         }
         let plan = match plan {
             Some(items) => Some(self.update_work_plan(work_item_id, items).await?),
