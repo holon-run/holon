@@ -22,14 +22,14 @@ struct LinkContext {
 }
 
 pub(crate) fn render_markdown_text(input: &str) -> Text<'static> {
-    render_markdown_text_with_spacing(input, false)
+    render_markdown_text_inner(input, false)
 }
 
 pub(crate) fn render_markdown_text_spaced(input: &str) -> Text<'static> {
-    render_markdown_text_with_spacing(input, true)
+    render_markdown_text_inner(input, true)
 }
 
-fn render_markdown_text_with_spacing(input: &str, block_spacing: bool) -> Text<'static> {
+fn render_markdown_text_inner(input: &str, block_spacing: bool) -> Text<'static> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
 
@@ -442,8 +442,14 @@ mod tests {
     }
 
     #[test]
-    fn spaced_renderer_adds_blank_lines_between_top_level_blocks() {
+    fn spaced_renderer_keeps_one_blank_line_between_top_level_blocks() {
         let lines = flatten_spaced_lines("First\n\nSecond\n\n- one\n- two");
         assert_eq!(lines, vec!["First", "", "Second", "", "- one", "- two"]);
+    }
+
+    #[test]
+    fn spaced_renderer_keeps_one_blank_line_between_heading_and_body() {
+        let lines = flatten_spaced_lines("### Title\n\nBody");
+        assert_eq!(lines, vec!["### Title", "", "Body"]);
     }
 }
