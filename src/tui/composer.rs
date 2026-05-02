@@ -67,6 +67,43 @@ impl ComposerState {
             self.text.drain(self.cursor..end);
         }
     }
+    pub(super) fn move_to_start(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub(super) fn move_to_end(&mut self) {
+        self.cursor = self.text.len();
+    }
+
+    pub(super) fn delete_to_end(&mut self) {
+        self.text.truncate(self.cursor);
+    }
+
+    pub(super) fn delete_to_start(&mut self) {
+        self.text.drain(0..self.cursor);
+        self.cursor = 0;
+    }
+
+    pub(super) fn delete_word(&mut self) {
+        let start = self.find_word_start();
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    fn find_word_start(&self) -> usize {
+        let before = &self.text[..self.cursor];
+        let trimmed_end = before.trim_end().len();
+        let word_end = if trimmed_end == 0 {
+            before.len()
+        } else {
+            trimmed_end
+        };
+        before[..word_end]
+            .rfind(' ')
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    }
+
 
     fn previous_boundary(&self, from: usize) -> Option<usize> {
         self.text[..from]

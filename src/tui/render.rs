@@ -99,7 +99,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
             "Slash: Up/Down select  Tab complete  Enter run  Esc close"
         }
         OverlayState::None => {
-            "/help commands  Left/Right/Home/End edit  Up/Down scroll  Ctrl+A agents  Ctrl+E events  Ctrl+J tasks  Ctrl+C quit"
+            "/help commands  Up/Down history (empty)  PgUp/PgDn scroll  Ctrl+A/E edit  ? help  Ctrl+C quit"
         }
         OverlayState::Agents => "Agents: Up/Down, Esc",
         OverlayState::Events { .. } => "Events: Up/Down, PgUp/PgDn, Home/End, Esc",
