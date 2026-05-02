@@ -122,7 +122,8 @@ struct PendingCheckpointRequest {
 struct TurnLocalCheckpointRecord {
     request_id: String,
     requested_at_round: usize,
-    response_round: usize,
+    response_round: Option<usize>,
+    source_turn_index: Option<u64>,
     mode: TurnLocalCheckpointMode,
     text: String,
     anchor_generation: u64,
@@ -154,7 +155,8 @@ fn checkpoint_state_from_last_terminal(
         latest: Some(TurnLocalCheckpointRecord {
             request_id: format!("previous-turn-{}-checkpoint", terminal.turn_index),
             requested_at_round: 0,
-            response_round: terminal.turn_index as usize,
+            response_round: None,
+            source_turn_index: Some(terminal.turn_index),
             mode: TurnLocalCheckpointMode::Full,
             text: text.to_string(),
             anchor_generation: 0,
@@ -646,14 +648,23 @@ fn round_invalidates_checkpoint_anchor(round: &TurnRoundRecord) -> bool {
         .any(tool_result_invalidates_checkpoint_anchor)
 }
 
-fn build_delta_checkpoint_prompt(previous_round: usize, previous_checkpoint: &str) -> String {
+fn build_delta_checkpoint_prompt(
+    previous_round: Option<usize>,
+    source_turn_index: Option<u64>,
+    previous_checkpoint: &str,
+) -> String {
     let previous = truncate_preview(previous_checkpoint, DELTA_CHECKPOINT_PREVIEW_LIMIT);
+    let base_source = match (previous_round, source_turn_index) {
+        (Some(round), _) => format!("Base checkpoint round: {round}"),
+        (None, Some(turn_index)) => format!("Base checkpoint source: previous turn {turn_index}"),
+        (None, None) => "Base checkpoint source: previous turn".to_string(),
+    };
     format!(
         "\
 [Runtime-generated delta progress checkpoint request]
 You are crossing another context compaction boundary. A previous checkpoint is still the active base.
 
-Base checkpoint round: {previous_round}
+{base_source}
 Base checkpoint preview:
 {previous}
 
@@ -685,7 +696,7 @@ fn build_turn_local_checkpoint_request(
         };
     };
 
-    let base_round = Some(latest.response_round);
+    let base_round = latest.response_round;
     let anchor_changed_since_checkpoint =
         latest.anchor_generation != checkpoint_state.anchor_generation;
     if anchor_changed_since_checkpoint {
@@ -702,7 +713,11 @@ fn build_turn_local_checkpoint_request(
         TurnLocalCheckpointRequest {
             request_id,
             mode: TurnLocalCheckpointMode::Delta,
-            prompt: build_delta_checkpoint_prompt(latest.response_round, &latest.text),
+            prompt: build_delta_checkpoint_prompt(
+                latest.response_round,
+                latest.source_turn_index,
+                &latest.text,
+            ),
             previous_checkpoint_round: base_round,
             anchor_changed_since_checkpoint,
             anchor_generation: checkpoint_state.anchor_generation,
@@ -1392,13 +1407,13 @@ impl RuntimeHandle {
                     .collect::<Vec<_>>()
                     .join("\n\n");
                 let checkpoint_recorded = !checkpoint_text.is_empty();
-                checkpoint_recorded_this_round =
-                    checkpoint_recorded && text_looks_like_turn_local_checkpoint(&checkpoint_text);
+                checkpoint_recorded_this_round = checkpoint_recorded;
                 if checkpoint_recorded {
                     checkpoint_state.latest = Some(TurnLocalCheckpointRecord {
                         request_id: pending_checkpoint.request_id.clone(),
                         requested_at_round: pending_checkpoint.requested_at_round,
-                        response_round: round,
+                        response_round: Some(round),
+                        source_turn_index: None,
                         mode: pending_checkpoint.mode,
                         text: checkpoint_text.clone(),
                         anchor_generation: pending_checkpoint.anchor_generation,
@@ -1940,7 +1955,8 @@ mod tests {
             latest: Some(TurnLocalCheckpointRecord {
                 request_id: format!("req-{response_round}"),
                 requested_at_round: response_round,
-                response_round,
+                response_round: Some(response_round),
+                source_turn_index: None,
                 mode: TurnLocalCheckpointMode::Full,
                 text: text.to_string(),
                 anchor_generation,
@@ -2950,7 +2966,8 @@ mod tests {
         let state = checkpoint_state_from_last_terminal(Some(&terminal));
 
         let latest = state.latest.expect("checkpoint should seed latest state");
-        assert_eq!(latest.response_round, 7);
+        assert_eq!(latest.response_round, None);
+        assert_eq!(latest.source_turn_index, Some(7));
         assert_eq!(latest.anchor_generation, 0);
         assert!(latest.text.contains("current user goal"));
     }

@@ -470,10 +470,11 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         .unwrap();
 
     assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
-    assert_eq!(*provider.calls.lock().await, 4);
+    assert_eq!(*provider.calls.lock().await, 5);
 
     let requests = provider.requests.lock().await;
     let continuation_request = requests.get(3).expect("missing round 4 request");
+    let checkpoint_resume_request = requests.get(4).expect("missing round 5 request");
     let cache = continuation_request
         .prompt_frame
         .cache
@@ -526,10 +527,10 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         round_four_assistant.data["prompt_cache_key"].as_str(),
         Some("default")
     );
-    let compaction_event = events
-        .iter()
-        .rev()
-        .find(|event| event.kind == "turn_local_compaction_applied");
+    let compaction_event = events.iter().find(|event| {
+        event.kind == "turn_local_compaction_applied"
+            && event.data["checkpoint_request_id"].as_str().is_some()
+    });
     if let Some(compaction_event) = compaction_event {
         assert!(
             !serialized_conversation.contains("first-round-output-should-not-stay-exact"),
@@ -590,9 +591,15 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
             checkpoint_recorded.data["checkpoint_recorded"].as_bool(),
             Some(true)
         );
-        assert!(checkpoint_recorded.data["text_preview"]
-            .as_str()
-            .is_some_and(|preview| preview.contains("Finished after compacted continuation")));
+        assert!(checkpoint_recorded.data["text_preview"].as_str().is_some());
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "turn_local_checkpoint_resume_requested"));
+        assert!(
+            format!("{:?}", checkpoint_resume_request.conversation)
+                .contains("Continue from the checkpoint's next goal-aligned action now"),
+            "checkpoint-only compaction response should continue inside the same turn"
+        );
     } else {
         assert!(serialized_conversation.contains("first-round-output-should-not-stay-exact"));
         assert!(serialized_conversation.contains("second-round-output-should-remain-exact"));
