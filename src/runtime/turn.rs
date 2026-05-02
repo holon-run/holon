@@ -158,14 +158,14 @@ fn checkpoint_state_from_last_terminal(
 
 fn terminal_checkpoint_from_state(
     checkpoint_state: &TurnLocalCheckpointState,
-    source_turn_index: u64,
+    terminal_turn_index: u64,
 ) -> Option<TurnTerminalCheckpointRecord> {
     let latest = checkpoint_state.latest.as_ref()?;
     Some(TurnTerminalCheckpointRecord {
         request_id: latest.request_id.clone(),
         requested_at_round: latest.requested_at_round,
         response_round: latest.response_round,
-        source_turn_index: Some(source_turn_index),
+        source_turn_index: latest.source_turn_index.or(Some(terminal_turn_index)),
         text: latest.text.clone(),
         checkpoint_anchor_generation: latest.anchor_generation,
         current_anchor_generation: checkpoint_state.anchor_generation,
@@ -3034,6 +3034,17 @@ mod tests {
         assert_eq!(checkpoint.text, "结构化 checkpoint");
         assert_eq!(checkpoint.checkpoint_anchor_generation, 2);
         assert_eq!(checkpoint.current_anchor_generation, 5);
+    }
+
+    #[test]
+    fn terminal_checkpoint_from_state_preserves_existing_source_turn() {
+        let mut state = checkpoint_state_with_latest("结构化 checkpoint", 4, 2);
+        let latest = state.latest.as_mut().expect("latest checkpoint");
+        latest.source_turn_index = Some(7);
+
+        let checkpoint = terminal_checkpoint_from_state(&state, 9).expect("terminal checkpoint");
+
+        assert_eq!(checkpoint.source_turn_index, Some(7));
     }
 
     #[test]
