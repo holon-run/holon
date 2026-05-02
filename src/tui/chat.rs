@@ -319,6 +319,11 @@ fn render_prefixed_markdown_lines(
         lines.push(Line::from(spans).style(first.style));
 
         for line in rest {
+            if line.spans.iter().all(|span| span.content.is_empty()) {
+                lines.push(Line::default());
+                continue;
+            }
+
             let mut spans = Vec::with_capacity(line.spans.len() + 1);
             spans.push(Span::raw(continuation_indent.clone()));
             spans.extend(line.spans.clone());

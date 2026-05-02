@@ -1623,6 +1623,54 @@ mod tests {
     }
 
     #[test]
+    fn chat_text_keeps_markdown_block_separator_unindented() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.briefs = vec![BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: Utc::now(),
+            text: "### Title\n\nBody".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        }];
+
+        let lines = build_chat_text(&collect_chat_items(&app)).lines;
+        let title_index = lines
+            .iter()
+            .position(|line| {
+                let rendered_line: String = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect();
+                rendered_line.contains("### Title")
+            })
+            .expect("heading should render");
+        let blank_line = lines
+            .get(title_index + 1)
+            .expect("markdown block separator should render");
+        assert!(blank_line.spans.is_empty());
+
+        let body_line = lines
+            .get(title_index + 2)
+            .expect("heading body should render");
+        let rendered_body: String = body_line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(rendered_body.ends_with("Body"));
+    }
+
+    #[test]
     fn chat_text_skips_ack_briefs() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
