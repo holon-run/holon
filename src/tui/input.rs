@@ -11,66 +11,100 @@ enum SlashCommand {
     Refresh,
     ClearStatus,
     DebugPrompt,
+    Agent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ComposerSubmission {
     Chat(String),
-    Slash(SlashCommand),
+    Slash(SlashCommand, Vec<String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlashArgRule {
+    None,
+    ExactlyOne,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SlashCommandSpec {
     pub(super) name: &'static str,
     pub(super) description: &'static str,
+    usage: &'static str,
+    arg_rule: SlashArgRule,
     command: SlashCommand,
 }
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 9] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 10] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
+        usage: "/help",
+        arg_rule: SlashArgRule::None,
         command: SlashCommand::Help,
     },
     SlashCommandSpec {
         name: "/agents",
         description: "open agent picker",
+        usage: "/agents",
+        arg_rule: SlashArgRule::None,
         command: SlashCommand::Agents,
     },
     SlashCommandSpec {
         name: "/events",
         description: "open raw events overlay",
+        usage: "/events",
+        arg_rule: SlashArgRule::None,
         command: SlashCommand::Events,
     },
     SlashCommandSpec {
         name: "/model",
         description: "open selected agent model picker",
+        usage: "/model",
+        arg_rule: SlashArgRule::None,
         command: SlashCommand::Model,
     },
     SlashCommandSpec {
         name: "/tasks",
         description: "open task overlay",
+        usage: "/tasks",
+        arg_rule: SlashArgRule::None,
         command: SlashCommand::Tasks,
     },
     SlashCommandSpec {
         name: "/transcript",
         description: "open transcript overlay",
+        usage: "/transcript",
+        arg_rule: SlashArgRule::None,
         command: SlashCommand::Transcript,
     },
     SlashCommandSpec {
         name: "/refresh",
         description: "refresh selected agent",
+        usage: "/refresh",
+        arg_rule: SlashArgRule::None,
         command: SlashCommand::Refresh,
     },
     SlashCommandSpec {
         name: "/clear-status",
         description: "clear local status line",
+        usage: "/clear-status",
+        arg_rule: SlashArgRule::None,
         command: SlashCommand::ClearStatus,
     },
     SlashCommandSpec {
         name: "/debug-prompt",
         description: "open debug prompt dialog",
+        usage: "/debug-prompt",
+        arg_rule: SlashArgRule::None,
         command: SlashCommand::DebugPrompt,
+    },
+    SlashCommandSpec {
+        name: "/agent",
+        description: "switch to agent by id",
+        usage: "/agent <agent-id>",
+        arg_rule: SlashArgRule::ExactlyOne,
+        command: SlashCommand::Agent,
     },
 ];
 
@@ -79,6 +113,30 @@ fn slash_command_spec(command: &str) -> Option<SlashCommandSpec> {
         .iter()
         .copied()
         .find(|spec| spec.name == command)
+}
+
+fn slash_command_argument_error(spec: SlashCommandSpec, args: usize) -> anyhow::Error {
+    match spec.arg_rule {
+        SlashArgRule::None => anyhow!(
+            "{0} does not accept arguments; usage: {1}",
+            spec.name,
+            spec.usage
+        ),
+        SlashArgRule::ExactlyOne if args == 0 => {
+            anyhow!(
+                "{0} requires one argument; usage: {1}",
+                spec.name,
+                spec.usage
+            )
+        }
+        SlashArgRule::ExactlyOne => {
+            anyhow!(
+                "{0} expects exactly one argument; usage: {1}",
+                spec.name,
+                spec.usage
+            )
+        }
+    }
 }
 
 pub(super) fn slash_menu_specs(buffer: &str) -> Vec<SlashCommandSpec> {
@@ -118,17 +176,24 @@ fn parse_composer_submission(buffer: &str) -> Result<Option<ComposerSubmission>>
     let command = parts
         .next()
         .expect("non-empty slash command must have a token");
-    let args = parts.collect::<Vec<_>>();
+    let args: Vec<String> = parts.map(ToString::to_string).collect();
+    let slash_command_spec = slash_command_spec(command)
+        .ok_or_else(|| anyhow!("unknown slash command {}; use /help", command))?;
 
-    let slash_command = match slash_command_spec(command) {
-        Some(spec) if args.is_empty() => spec.command,
-        Some(_) => {
-            return Err(anyhow!("{} does not accept arguments", command));
+    match slash_command_spec.arg_rule {
+        SlashArgRule::None if !args.is_empty() => {
+            return Err(slash_command_argument_error(slash_command_spec, args.len()));
         }
-        None => return Err(anyhow!("unknown slash command {}; use /help", command)),
-    };
+        SlashArgRule::ExactlyOne if args.len() != 1 => {
+            return Err(slash_command_argument_error(slash_command_spec, args.len()));
+        }
+        SlashArgRule::None | SlashArgRule::ExactlyOne => {}
+    }
 
-    Ok(Some(ComposerSubmission::Slash(slash_command)))
+    Ok(Some(ComposerSubmission::Slash(
+        slash_command_spec.command,
+        args,
+    )))
 }
 
 #[cfg(test)]
@@ -202,15 +267,19 @@ impl TuiApp {
                 self.status_line.clear();
                 Ok(())
             }
-            Some(ComposerSubmission::Slash(command)) => {
-                self.execute_slash_command(command).await?;
+            Some(ComposerSubmission::Slash(command, args)) => {
+                self.execute_slash_command(command, args).await?;
                 self.composer.clear();
                 Ok(())
             }
         }
     }
 
-    async fn execute_slash_command(&mut self, command: SlashCommand) -> Result<()> {
+    async fn execute_slash_command(
+        &mut self,
+        command: SlashCommand,
+        args: Vec<String>,
+    ) -> Result<()> {
         match command {
             SlashCommand::Help => {
                 self.overlay = OverlayState::HelpView { scroll: 0 };
@@ -259,6 +328,24 @@ impl TuiApp {
                     composer: ComposerState::new(),
                 };
                 self.status_line = "Opened debug prompt dialog".into();
+            }
+            SlashCommand::Agent => {
+                let requested_agent_id = args
+                    .into_iter()
+                    .next()
+                    .expect("slash command /agent requires one argument");
+                let target_index = self
+                    .agents
+                    .iter()
+                    .position(|agent| agent.identity.agent_id == requested_agent_id)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "unknown agent '{requested_agent_id}'; use /agents to inspect valid ids"
+                        )
+                    })?;
+                self.overlay = OverlayState::None;
+                self.bootstrap_agent_index(target_index).await?;
+                self.status_line = format!("Switched to agent {requested_agent_id}");
             }
         }
         Ok(())
@@ -578,8 +665,20 @@ impl TuiApp {
             }
             KeyCode::Enter => {
                 let selected = self.slash_menu_selected.min(specs.len().saturating_sub(1));
-                let command = specs[selected].command;
-                self.execute_slash_command(command).await?;
+                let command = specs[selected].name;
+                let selection = if self.composer.as_str().trim() == command {
+                    command.to_string()
+                } else {
+                    self.composer.as_str().to_string()
+                };
+                let selection = parse_composer_submission(&selection)?;
+                match selection {
+                    Some(ComposerSubmission::Slash(command, args)) => {
+                        self.execute_slash_command(command, args).await?
+                    }
+                    Some(ComposerSubmission::Chat(_)) => {}
+                    None => {}
+                }
                 self.composer.clear();
                 self.slash_menu_selected = 0;
                 self.slash_menu_dismissed_for = None;
@@ -842,23 +941,30 @@ mod tests {
     fn parses_safe_slash_commands() {
         assert_eq!(
             parse_composer_submission("/help").unwrap(),
-            Some(ComposerSubmission::Slash(SlashCommand::Help))
+            Some(ComposerSubmission::Slash(SlashCommand::Help, vec![]))
         );
         assert_eq!(
             parse_composer_submission("/refresh").unwrap(),
-            Some(ComposerSubmission::Slash(SlashCommand::Refresh))
+            Some(ComposerSubmission::Slash(SlashCommand::Refresh, vec![]))
         );
         assert_eq!(
             parse_composer_submission("/model").unwrap(),
-            Some(ComposerSubmission::Slash(SlashCommand::Model))
+            Some(ComposerSubmission::Slash(SlashCommand::Model, vec![]))
         );
         assert_eq!(
             parse_composer_submission("/clear-status").unwrap(),
-            Some(ComposerSubmission::Slash(SlashCommand::ClearStatus))
+            Some(ComposerSubmission::Slash(SlashCommand::ClearStatus, vec![]))
         );
         assert_eq!(
             parse_composer_submission("/debug-prompt").unwrap(),
-            Some(ComposerSubmission::Slash(SlashCommand::DebugPrompt))
+            Some(ComposerSubmission::Slash(SlashCommand::DebugPrompt, vec![]))
+        );
+        assert_eq!(
+            parse_composer_submission("/agent default").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::Agent,
+                vec!["default".into()]
+            ))
         );
     }
 
@@ -872,6 +978,18 @@ mod tests {
     fn slash_commands_reject_arguments() {
         let err = parse_composer_submission("/help extra").unwrap_err();
         assert!(err.to_string().contains("does not accept arguments"));
+    }
+
+    #[test]
+    fn slash_commands_require_arguments_for_agent() {
+        let err = parse_composer_submission("/agent").unwrap_err();
+        assert!(err.to_string().contains("requires one argument"));
+    }
+
+    #[test]
+    fn slash_commands_reject_too_many_arguments() {
+        let err = parse_composer_submission("/agent default extra").unwrap_err();
+        assert!(err.to_string().contains("expects exactly one argument"));
     }
 
     #[test]
