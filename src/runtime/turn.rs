@@ -20,8 +20,8 @@ use crate::{
         ToolCall, ToolError, ToolSpec,
     },
     types::{
-        AuditEvent, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, TurnTerminalKind,
-        TurnTerminalRecord,
+        AuditEvent, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        TurnTerminalCheckpointRecord, TurnTerminalKind, TurnTerminalRecord,
     },
 };
 
@@ -129,13 +129,6 @@ struct TurnLocalCheckpointRecord {
     anchor_generation: u64,
 }
 
-fn text_looks_like_turn_local_checkpoint(text: &str) -> bool {
-    let normalized = text.to_ascii_lowercase();
-    normalized.contains("progress checkpoint")
-        && normalized.contains("current user goal")
-        && normalized.contains("next goal-aligned action")
-}
-
 fn checkpoint_state_from_last_terminal(
     terminal: Option<&TurnTerminalRecord>,
 ) -> TurnLocalCheckpointState {
@@ -145,25 +138,38 @@ fn checkpoint_state_from_last_terminal(
     if terminal.kind != TurnTerminalKind::Completed {
         return TurnLocalCheckpointState::default();
     }
-    let Some(text) = terminal.last_assistant_message.as_deref() else {
+    let Some(checkpoint) = terminal.checkpoint.as_ref() else {
         return TurnLocalCheckpointState::default();
     };
-    if !text_looks_like_turn_local_checkpoint(text) {
-        return TurnLocalCheckpointState::default();
-    }
     TurnLocalCheckpointState {
         latest: Some(TurnLocalCheckpointRecord {
-            request_id: format!("previous-turn-{}-checkpoint", terminal.turn_index),
-            requested_at_round: 0,
+            request_id: checkpoint.request_id.clone(),
+            requested_at_round: checkpoint.requested_at_round,
             response_round: None,
-            source_turn_index: Some(terminal.turn_index),
+            source_turn_index: checkpoint.source_turn_index.or(Some(terminal.turn_index)),
             mode: TurnLocalCheckpointMode::Full,
-            text: text.to_string(),
-            anchor_generation: 0,
+            text: checkpoint.text.clone(),
+            anchor_generation: checkpoint.checkpoint_anchor_generation,
         }),
         pending: None,
-        anchor_generation: 0,
+        anchor_generation: checkpoint.current_anchor_generation,
     }
+}
+
+fn terminal_checkpoint_from_state(
+    checkpoint_state: &TurnLocalCheckpointState,
+    terminal_turn_index: u64,
+) -> Option<TurnTerminalCheckpointRecord> {
+    let latest = checkpoint_state.latest.as_ref()?;
+    Some(TurnTerminalCheckpointRecord {
+        request_id: latest.request_id.clone(),
+        requested_at_round: latest.requested_at_round,
+        response_round: latest.response_round,
+        source_turn_index: latest.source_turn_index.or(Some(terminal_turn_index)),
+        text: latest.text.clone(),
+        checkpoint_anchor_generation: latest.anchor_generation,
+        current_anchor_generation: checkpoint_state.anchor_generation,
+    })
 }
 
 fn build_checkpoint_resume_round(
@@ -1024,6 +1030,7 @@ impl RuntimeHandle {
             TurnTerminalKind::Aborted,
             Some(final_text.clone()),
             duration_ms,
+            None,
         )
         .await?;
         Ok(Some(AgentLoopOutcome {
@@ -1039,13 +1046,21 @@ impl RuntimeHandle {
         kind: TurnTerminalKind,
         last_assistant_message: Option<String>,
         duration_ms: u64,
+        checkpoint_state: Option<&TurnLocalCheckpointState>,
     ) -> Result<TurnTerminalRecord> {
         let record = {
             let mut guard = self.inner.agent.lock().await;
+            let checkpoint = if kind == TurnTerminalKind::Completed {
+                checkpoint_state
+                    .and_then(|state| terminal_checkpoint_from_state(state, guard.state.turn_index))
+            } else {
+                None
+            };
             let record = TurnTerminalRecord {
                 turn_index: guard.state.turn_index,
                 kind,
                 last_assistant_message,
+                checkpoint,
                 completed_at: chrono::Utc::now(),
                 duration_ms,
             };
@@ -1091,6 +1106,7 @@ impl RuntimeHandle {
                         TurnTerminalKind::Aborted,
                         Some(final_text.clone()),
                         turn_started_at.elapsed().as_millis() as u64,
+                        None,
                     )
                     .await?;
                     return Ok(AgentLoopOutcome {
@@ -1133,6 +1149,7 @@ impl RuntimeHandle {
                             TurnTerminalKind::Aborted,
                             last_assistant_message.clone(),
                             turn_started_at.elapsed().as_millis() as u64,
+                            None,
                         )
                         .await?;
                         return Err(err);
@@ -1185,6 +1202,7 @@ impl RuntimeHandle {
                             TurnTerminalKind::BaselineOverBudget,
                             Some(final_text.clone()),
                             turn_started_at.elapsed().as_millis() as u64,
+                            None,
                         )
                         .await?;
                         return Ok(AgentLoopOutcome {
@@ -1268,6 +1286,7 @@ impl RuntimeHandle {
                             TurnTerminalKind::Aborted,
                             last_assistant_message.clone(),
                             turn_started_at.elapsed().as_millis() as u64,
+                            None,
                         )
                         .await?;
                         return Err(err);
@@ -1574,6 +1593,7 @@ impl RuntimeHandle {
                     TurnTerminalKind::Completed,
                     last_assistant_message.clone(),
                     turn_started_at.elapsed().as_millis() as u64,
+                    Some(&checkpoint_state),
                 )
                 .await?;
                 return Ok(AgentLoopOutcome {
@@ -1795,6 +1815,7 @@ impl RuntimeHandle {
                     TurnTerminalKind::Completed,
                     last_assistant_message.clone(),
                     turn_started_at.elapsed().as_millis() as u64,
+                    Some(&checkpoint_state),
                 )
                 .await?;
                 return Ok(AgentLoopOutcome {
@@ -2951,14 +2972,20 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_state_can_resume_from_previous_terminal_checkpoint() {
+    fn checkpoint_state_can_resume_from_structured_terminal_checkpoint() {
         let terminal = TurnTerminalRecord {
             turn_index: 7,
             kind: TurnTerminalKind::Completed,
-            last_assistant_message: Some(
-                "Progress checkpoint:\n\n- current user goal: fix issue\n- next goal-aligned action: apply patch"
-                    .into(),
-            ),
+            last_assistant_message: Some("ordinary final text without checkpoint keywords".into()),
+            checkpoint: Some(TurnTerminalCheckpointRecord {
+                request_id: "checkpoint-7".into(),
+                requested_at_round: 3,
+                response_round: Some(4),
+                source_turn_index: Some(7),
+                text: "结构化 checkpoint：继续修复 issue。".into(),
+                checkpoint_anchor_generation: 2,
+                current_anchor_generation: 5,
+            }),
             completed_at: chrono::Utc::now(),
             duration_ms: 10,
         };
@@ -2966,18 +2993,25 @@ mod tests {
         let state = checkpoint_state_from_last_terminal(Some(&terminal));
 
         let latest = state.latest.expect("checkpoint should seed latest state");
+        assert_eq!(latest.request_id, "checkpoint-7");
+        assert_eq!(latest.requested_at_round, 3);
         assert_eq!(latest.response_round, None);
         assert_eq!(latest.source_turn_index, Some(7));
-        assert_eq!(latest.anchor_generation, 0);
-        assert!(latest.text.contains("current user goal"));
+        assert_eq!(latest.anchor_generation, 2);
+        assert_eq!(state.anchor_generation, 5);
+        assert!(latest.text.contains("结构化 checkpoint"));
     }
 
     #[test]
-    fn checkpoint_state_ignores_non_checkpoint_terminal_text() {
+    fn checkpoint_state_ignores_terminal_text_without_structured_checkpoint() {
         let terminal = TurnTerminalRecord {
             turn_index: 7,
             kind: TurnTerminalKind::Completed,
-            last_assistant_message: Some("Finished normal final answer.".into()),
+            last_assistant_message: Some(
+                "Progress checkpoint:\n\n- current user goal: fix issue\n- next goal-aligned action: apply patch"
+                    .into(),
+            ),
+            checkpoint: None,
             completed_at: chrono::Utc::now(),
             duration_ms: 10,
         };
@@ -2985,6 +3019,32 @@ mod tests {
         let state = checkpoint_state_from_last_terminal(Some(&terminal));
 
         assert!(state.latest.is_none());
+    }
+
+    #[test]
+    fn terminal_checkpoint_from_state_preserves_anchor_generations() {
+        let mut state = checkpoint_state_with_latest("结构化 checkpoint", 4, 2);
+        state.anchor_generation = 5;
+
+        let checkpoint = terminal_checkpoint_from_state(&state, 9).expect("terminal checkpoint");
+
+        assert_eq!(checkpoint.request_id, "req-4");
+        assert_eq!(checkpoint.response_round, Some(4));
+        assert_eq!(checkpoint.source_turn_index, Some(9));
+        assert_eq!(checkpoint.text, "结构化 checkpoint");
+        assert_eq!(checkpoint.checkpoint_anchor_generation, 2);
+        assert_eq!(checkpoint.current_anchor_generation, 5);
+    }
+
+    #[test]
+    fn terminal_checkpoint_from_state_preserves_existing_source_turn() {
+        let mut state = checkpoint_state_with_latest("结构化 checkpoint", 4, 2);
+        let latest = state.latest.as_mut().expect("latest checkpoint");
+        latest.source_turn_index = Some(7);
+
+        let checkpoint = terminal_checkpoint_from_state(&state, 9).expect("terminal checkpoint");
+
+        assert_eq!(checkpoint.source_turn_index, Some(7));
     }
 
     #[test]

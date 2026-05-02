@@ -1998,6 +1998,7 @@ mod tests {
             turn_index: 1,
             kind: crate::types::TurnTerminalKind::Completed,
             last_assistant_message: Some("child finished after restart".into()),
+            checkpoint: None,
             completed_at: chrono::Utc::now(),
             duration_ms: 1,
         });
