@@ -283,7 +283,6 @@ Important first-party event families currently include:
 - `work_item_written`
 - `work_item_turn_end_committed`
 - `work_item_turn_end_commit_skipped`
-- `work_item_queue_activated`
 - `work_plan_snapshot_written`
 
 ### Workspace and worktree state

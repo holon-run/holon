@@ -239,6 +239,7 @@ pub async fn update_work_item_creates_and_updates_persisted_snapshot() -> Result
     let (updated, _) = runtime
         .update_work_item_fields(
             created.id.clone(),
+            None,
             Some(Some("queued follow-up after CI".into())),
             None,
         )
@@ -269,6 +270,7 @@ pub async fn update_work_item_replaces_latest_plan_snapshot_for_existing_work_it
         .update_work_item_fields(
             work_item.id.clone(),
             None,
+            None,
             Some(vec![WorkPlanItem {
                 step: "persist work-item store".into(),
                 status: WorkPlanStepStatus::Completed,
@@ -279,6 +281,7 @@ pub async fn update_work_item_replaces_latest_plan_snapshot_for_existing_work_it
     let (_, updated_plan) = runtime
         .update_work_item_fields(
             work_item.id.clone(),
+            None,
             None,
             Some(vec![
                 WorkPlanItem {

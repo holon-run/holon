@@ -385,6 +385,14 @@ mod tests {
             .get("commentary")
             .is_none());
 
+        let update_work_item = specs
+            .iter()
+            .find(|spec| spec.name == "UpdateWorkItem")
+            .expect("UpdateWorkItem should be present");
+        assert!(update_work_item.input_schema["properties"]
+            .get("delivery_target")
+            .is_some());
+
         let spawn_agent = specs
             .iter()
             .find(|spec| spec.name == "SpawnAgent")

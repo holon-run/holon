@@ -153,7 +153,12 @@ pub(crate) async fn seed_bound_work_item(
         .unwrap();
     if let Some(blocked_by) = blocked_by {
         (record, _) = runtime
-            .update_work_item_fields(record.id.clone(), Some(Some(blocked_by.to_string())), None)
+            .update_work_item_fields(
+                record.id.clone(),
+                None,
+                Some(Some(blocked_by.to_string())),
+                None,
+            )
             .await
             .unwrap();
     }

@@ -862,8 +862,8 @@ fn render_work_queue_tick_context(message: &MessageEnvelope) -> Option<String> {
         .get("delivery_target")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
-    let activated_from_queue = work_queue
-        .get("activated_from_queue")
+    let runtime_switched_current = work_queue
+        .get("runtime_switched_current_item")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     Some(format!(
@@ -871,7 +871,7 @@ fn render_work_queue_tick_context(message: &MessageEnvelope) -> Option<String> {
          - Reason: {reason}\n\
          - Work item id: {work_item_id}\n\
          - Delivery target: {delivery_target}\n\
-         - Activated from queue: {activated_from_queue}"
+         - Runtime switched current item: {runtime_switched_current}"
     ))
 }
 
@@ -2547,7 +2547,7 @@ mod tests {
                 "reason": "continue_active",
                 "work_item_id": "work_123",
                 "delivery_target": "fix stale pid handling",
-                "activated_from_queue": false
+                "runtime_switched_current_item": false
             }
         }));
 

@@ -163,18 +163,26 @@ impl RuntimeHandle {
                     ))?;
                     return Ok(false);
                 }
-                self.emit_system_tick_from_work_queue(&active, "continue_active", false)
+                self.emit_system_tick_from_work_queue(&active, "continue_active")
                     .await?;
                 Ok(true)
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued)) => {
-                if let Some(active) = self.activate_queued_work_item(&queued.id).await? {
-                    self.emit_system_tick_from_work_queue(&active, "activate_queued", true)
-                        .await?;
-                    Ok(true)
-                } else {
-                    Ok(false)
+                if let Some(message_id) = self.duplicate_queued_available_message_id(&queued)? {
+                    self.inner.storage.append_event(&AuditEvent::new(
+                        "system_tick_suppressed",
+                        serde_json::json!({
+                            "subsystem": "work_queue",
+                            "reason": "no_new_signal_after_queued_available",
+                            "work_item_id": queued.id,
+                            "message_id": message_id,
+                        }),
+                    ))?;
+                    return Ok(false);
                 }
+                self.emit_system_tick_from_work_queue(&queued, "queued_available")
+                    .await?;
+                Ok(true)
             }
             Some(IdleTickTrigger::WakeHint(pending)) => {
                 self.emit_system_tick_from_wake_hint(&pending).await?;
@@ -193,6 +201,35 @@ impl RuntimeHandle {
         }
     }
 
+    fn duplicate_queued_available_message_id(
+        &self,
+        work_item: &crate::types::WorkItemRecord,
+    ) -> Result<Option<String>> {
+        let recent_messages = self
+            .inner
+            .storage
+            .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?;
+        let Some(message) = recent_messages
+            .iter()
+            .filter(|message| {
+                is_runtime_work_queue_message_for_work_item(
+                    message,
+                    &work_item.id,
+                    "queued_available",
+                )
+            })
+            .max_by_key(|message| message.created_at)
+        else {
+            return Ok(None);
+        };
+
+        if self.has_work_signal_after(work_item, message.created_at, "queued_available")? {
+            return Ok(None);
+        }
+
+        Ok(Some(message.id.clone()))
+    }
+
     fn duplicate_continue_active_result_brief_id(
         &self,
         work_item: &crate::types::WorkItemRecord,
@@ -207,21 +244,22 @@ impl RuntimeHandle {
             return Ok(None);
         };
 
-        if self.has_work_signal_after_result(work_item, &result_brief)? {
+        if self.has_work_signal_after(work_item, result_brief.created_at, "continue_active")? {
             return Ok(None);
         }
 
         Ok(Some(result_brief.id.clone()))
     }
 
-    fn has_work_signal_after_result(
+    fn has_work_signal_after(
         &self,
         work_item: &crate::types::WorkItemRecord,
-        result_brief: &BriefRecord,
+        anchor: chrono::DateTime<chrono::Utc>,
+        ignored_runtime_reason: &str,
     ) -> Result<bool> {
         let work_item_id = work_item.id.as_str();
 
-        if work_item.updated_at > result_brief.created_at {
+        if work_item.updated_at > anchor {
             return Ok(true);
         }
 
@@ -230,7 +268,7 @@ impl RuntimeHandle {
             .storage
             .latest_work_plan(&work_item.id)?
             .is_some_and(|plan| {
-                plan.created_at > result_brief.created_at
+                plan.created_at > anchor
                     || plan
                         .items
                         .iter()
@@ -246,8 +284,12 @@ impl RuntimeHandle {
             .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
             .iter()
             .any(|message| {
-                message.created_at > result_brief.created_at
-                    && !is_runtime_continue_active_message_for_work_item(message, work_item_id)
+                message.created_at > anchor
+                    && !is_runtime_work_queue_message_for_work_item(
+                        message,
+                        work_item_id,
+                        ignored_runtime_reason,
+                    )
             })
         {
             return Ok(true);
@@ -259,7 +301,7 @@ impl RuntimeHandle {
             .read_recent_tool_executions(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
             .iter()
             .any(|tool| {
-                tool.created_at > result_brief.created_at
+                tool.created_at > anchor
                     && tool
                         .work_item_id
                         .as_deref()
@@ -275,7 +317,7 @@ impl RuntimeHandle {
             .latest_task_records()?
             .iter()
             .any(|task| {
-                task.updated_at > result_brief.created_at
+                task.updated_at > anchor
                     && matches!(
                         task.status,
                         TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
@@ -295,10 +337,10 @@ impl RuntimeHandle {
                     .work_item_id
                     .as_deref()
                     .is_none_or(|id| id == work_item_id)
-                    && (waiting.created_at > result_brief.created_at
+                    && (waiting.created_at > anchor
                         || waiting
                             .last_triggered_at
-                            .is_some_and(|triggered_at| triggered_at > result_brief.created_at))
+                            .is_some_and(|triggered_at| triggered_at > anchor))
             })
         {
             return Ok(true);
@@ -309,9 +351,7 @@ impl RuntimeHandle {
             .storage
             .read_recent_events(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
             .iter()
-            .any(|event| {
-                event.kind == "runtime_error" && event.created_at > result_brief.created_at
-            })
+            .any(|event| event.kind == "runtime_error" && event.created_at > anchor)
         {
             return Ok(true);
         }
@@ -378,7 +418,6 @@ impl RuntimeHandle {
         &self,
         work_item: &crate::types::WorkItemRecord,
         reason: &str,
-        activated_from_queue: bool,
     ) -> Result<()> {
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
@@ -389,9 +428,9 @@ impl RuntimeHandle {
             TrustLevel::TrustedSystem,
             Priority::Normal,
             MessageBody::Text {
-                text: if activated_from_queue {
+                text: if reason == "queued_available" {
                     format!(
-                        "Activate and continue queued work item: {}",
+                        "Queued work item is available: {}",
                         work_item.delivery_target
                     )
                 } else {
@@ -409,7 +448,7 @@ impl RuntimeHandle {
                 "work_item_id": work_item.id,
                 "delivery_target": work_item.delivery_target,
                 "state": work_item.state,
-                "activated_from_queue": activated_from_queue,
+                "runtime_switched_current_item": false,
             }
         }));
         self.inner.storage.append_event(&AuditEvent::new(
@@ -425,48 +464,6 @@ impl RuntimeHandle {
         ))?;
         let _ = self.enqueue(message).await?;
         Ok(())
-    }
-
-    pub(super) async fn activate_queued_work_item(
-        &self,
-        work_item_id: &str,
-    ) -> Result<Option<crate::types::WorkItemRecord>> {
-        let projection = self.inner.storage.work_queue_prompt_projection()?;
-        if projection
-            .current
-            .as_ref()
-            .is_some_and(|current| current.blocked_by.is_none())
-        {
-            return Ok(None);
-        }
-
-        let Some(latest) = self.inner.storage.latest_work_item(work_item_id)? else {
-            return Ok(None);
-        };
-        if latest.state != crate::types::WorkItemState::Open || latest.blocked_by.is_some() {
-            return Ok(None);
-        }
-        let record = latest.clone();
-        {
-            let mut guard = self.inner.agent.lock().await;
-            guard.state.current_work_item_id = Some(record.id.clone());
-            self.inner.storage.write_agent(&guard.state)?;
-        }
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_picked",
-            serde_json::json!({
-                "action": "queue_activated",
-                "current_work_item_id": record.id,
-            }),
-        ))?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_queue_activated",
-            serde_json::json!({
-                "work_item_id": record.id,
-                "delivery_target": record.delivery_target,
-            }),
-        ))?;
-        Ok(Some(record))
     }
 
     pub(super) fn current_work_reactivation_signal(
@@ -553,9 +550,10 @@ fn latest_nonempty_result_brief_for_work_item<'a>(
         .max_by_key(|brief| brief.created_at)
 }
 
-fn is_runtime_continue_active_message_for_work_item(
+fn is_runtime_work_queue_message_for_work_item(
     message: &MessageEnvelope,
     work_item_id: &str,
+    reason: &str,
 ) -> bool {
     matches!(
         (&message.kind, &message.origin),
@@ -565,7 +563,7 @@ fn is_runtime_continue_active_message_for_work_item(
         .as_ref()
         .and_then(|metadata| metadata.get("work_queue"))
         .is_some_and(|metadata| {
-            metadata.get("reason").and_then(|value| value.as_str()) == Some("continue_active")
+            metadata.get("reason").and_then(|value| value.as_str()) == Some(reason)
                 && metadata
                     .get("work_item_id")
                     .and_then(|value| value.as_str())
@@ -820,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn current_work_item_takes_precedence_over_queued_activation() {
+    fn current_work_item_takes_precedence_over_queued_notification() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
@@ -873,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn blocked_current_work_item_allows_queued_activation() {
+    fn blocked_current_work_item_notifies_queued_without_switching_current() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
@@ -894,70 +892,95 @@ mod tests {
         let ticks = get_emitted_system_ticks(&test_runtime);
         assert_eq!(ticks.len(), 1);
         assert_eq!(ticks[0].0, "work_queue");
-        assert_eq!(ticks[0].1["reason"].as_str(), Some("activate_queued"));
+        assert_eq!(ticks[0].1["reason"].as_str(), Some("queued_available"));
         assert_eq!(ticks[0].1["work_item_id"].as_str(), Some("wi-queued"));
 
         let guard = test_runtime.runtime.inner.agent.blocking_lock();
         assert_eq!(
             guard.state.current_work_item_id.as_deref(),
-            Some("wi-queued")
+            Some("wi-active")
         );
     }
 
     #[test]
-    fn queued_item_activation_skipped_when_active_exists() {
+    fn queued_system_tick_does_not_mutate_current_work_item_id() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
-        // Create an current work item first
-        add_current_work_item(&test_runtime, "wi-active", "active-target");
-
-        // Try to manually activate a queued item - should fail
         let queued_id = "wi-queued";
         add_queued_work_item(&test_runtime, queued_id, "queued-target");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt
-            .block_on(test_runtime.runtime.activate_queued_work_item(queued_id))
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
             .unwrap();
 
-        assert!(
-            result.is_none(),
-            "Activation should be skipped when active item exists"
-        );
+        assert!(emitted, "queued work should emit a visible system tick");
 
-        // Verify queued item wasn't activated
-        let projection = test_runtime
-            .runtime
-            .inner
-            .storage
-            .work_queue_prompt_projection()
-            .unwrap();
-        assert!(
-            projection.current.is_some(),
-            "Active item should still exist"
-        );
-        assert_eq!(projection.current.unwrap().id, "wi-active");
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].1["reason"].as_str(), Some("queued_available"));
+        assert_eq!(ticks[0].1["work_item_id"].as_str(), Some(queued_id));
+
+        let guard = test_runtime.runtime.inner.agent.blocking_lock();
+        assert!(guard.state.current_work_item_id.is_none());
     }
 
     #[test]
-    fn queued_item_activation_emits_audit_events() {
+    fn queued_system_tick_is_suppressed_without_new_signal() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
-        // Add only a queued work item
         let queued_id = "wi-queued";
-        let _queued_item = add_queued_work_item(&test_runtime, queued_id, "queued-target");
+        add_queued_work_item(&test_runtime, queued_id, "queued-target");
 
-        // Activate it
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let activated = rt
-            .block_on(test_runtime.runtime.activate_queued_work_item(queued_id))
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+        assert!(emitted, "first queued notification should be emitted");
+
+        clear_queue(&test_runtime);
+
+        let emitted_again = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+        assert!(
+            !emitted_again,
+            "queued notification should not repeat without a new signal"
+        );
+
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+
+        let events = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_events(20)
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "system_tick_suppressed"
+                && event.data["reason"] == "no_new_signal_after_queued_available"
+                && event.data["work_item_id"] == queued_id
+        }));
+    }
+
+    #[test]
+    fn queued_system_tick_emits_no_pick_or_activation_events() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let queued_id = "wi-queued";
+        add_queued_work_item(&test_runtime, queued_id, "queued-target");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
             .unwrap();
 
-        assert!(activated.is_some(), "Queued item should be activated");
+        assert!(emitted, "queued item should emit a system tick");
 
-        // Check audit events
         let events = test_runtime
             .runtime
             .inner
@@ -977,8 +1000,8 @@ mod tests {
             .collect();
 
         assert!(
-            !picked_events.is_empty(),
-            "work_item_picked event should be emitted"
+            picked_events.is_empty(),
+            "queued notification must not emit work_item_picked"
         );
 
         let activated_events: Vec<_> = events
@@ -987,14 +1010,9 @@ mod tests {
             .collect();
 
         assert!(
-            !activated_events.is_empty(),
-            "work_item_queue_activated event should be emitted"
+            activated_events.is_empty(),
+            "queued notification must not emit activation events"
         );
-
-        // Verify the activated record
-        let activated_record = activated.unwrap();
-        assert_eq!(activated_record.state, WorkItemState::Open);
-        assert_eq!(activated_record.id, queued_id);
     }
 
     #[test]
@@ -1352,11 +1370,12 @@ mod tests {
     }
 
     #[test]
-    fn restart_ordering_activates_queued_when_no_active() {
+    fn restart_ordering_notifies_queued_when_no_active() {
         let test_runtime = test_runtime();
         set_agent_status(&test_runtime, AgentStatus::Asleep);
 
-        // Without wake hint or active item, queued item should be activated
+        // Without wake hint or active item, queued item should be surfaced
+        // without mutating current_work_item_id.
         add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1371,8 +1390,11 @@ mod tests {
         assert_eq!(ticks[0].0, "work_queue");
 
         let metadata = &ticks[0].1;
-        assert_eq!(metadata["reason"].as_str().unwrap(), "activate_queued");
-        assert!(metadata["activated_from_queue"].as_bool().unwrap());
+        assert_eq!(metadata["reason"].as_str().unwrap(), "queued_available");
+        assert!(!metadata["runtime_switched_current_item"].as_bool().unwrap());
+
+        let guard = test_runtime.runtime.inner.agent.blocking_lock();
+        assert!(guard.state.current_work_item_id.is_none());
     }
 
     #[test]

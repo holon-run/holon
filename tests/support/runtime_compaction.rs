@@ -401,7 +401,7 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
     Ok(())
 }
 
-pub async fn queued_activation_after_compaction_promotes_the_correct_next_step() -> Result<()> {
+pub async fn queued_notification_after_compaction_keeps_queued_work_visible() -> Result<()> {
     let provider = Arc::new(RecordingPromptProvider::new(&[
         "first turn complete",
         "queued follow-up complete",
@@ -421,7 +421,7 @@ pub async fn queued_activation_after_compaction_promotes_the_correct_next_step()
         .update_work_plan(
             queued.id.clone(),
             vec![WorkPlanItem {
-                step: "activate queued work after compaction".into(),
+                step: "surface queued work after compaction".into(),
                 status: WorkPlanStepStatus::InProgress,
             }],
         )
@@ -466,7 +466,7 @@ pub async fn queued_activation_after_compaction_promotes_the_correct_next_step()
         .contains("Resume queued compaction validation"));
     assert!(queued_follow_up
         .prompt_text
-        .contains("activate queued work after compaction"));
+        .contains("Queued work item is available"));
 
     wait_until(|| {
         let agent = runtime.storage().read_agent()?.expect("agent should exist");
@@ -485,6 +485,8 @@ pub async fn queued_activation_after_compaction_promotes_the_correct_next_step()
         .await?
         .expect("queued work item should still exist");
     assert_eq!(latest.state, WorkItemState::Open);
+    let agent = runtime.storage().read_agent()?.expect("agent should exist");
+    assert!(agent.current_work_item_id.is_none());
 
     Ok(())
 }

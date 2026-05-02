@@ -424,7 +424,7 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         provider.clone(),
         "default".into(),
         ContextConfig {
-            prompt_budget_estimated_tokens: 3600,
+            prompt_budget_estimated_tokens: 3700,
             compaction_keep_recent_estimated_tokens: 180,
             ..context_config()
         },
