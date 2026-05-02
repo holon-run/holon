@@ -1686,7 +1686,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_text_excludes_internal_projection_events_and_provider_text() {
+    fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
             client,
@@ -1742,8 +1742,8 @@ mod tests {
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
         assert!(!rendered.contains("System (work)"));
-        assert!(!rendered.contains("prepare rollout plan"));
-        assert!(!rendered.contains("hidden provider partial"));
+        assert!(rendered.contains("Assistant hidden provider partial"));
+        assert!(rendered.contains("Action    prepare rollout plan [Open]"));
     }
 
     #[test]
@@ -1856,9 +1856,10 @@ mod tests {
             .into_iter()
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
-        assert!(rendered.contains("Holon (working)"));
-        assert!(rendered.contains("Improve the Conversation working indicator"));
-        assert!(rendered.contains("Now: ExecCommand: cargo test tui"));
+        assert!(rendered.contains("Holon (working"));
+        assert!(rendered.contains("Current   Improve the Conversation working indicator"));
+        assert!(rendered.contains("Assistant ..."));
+        assert!(rendered.contains("Action    Still working"));
     }
 
     #[test]
@@ -1919,9 +1920,11 @@ mod tests {
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
 
-        assert!(rendered.contains("Holon (queued)"));
-        assert!(rendered.contains("Queued work is waiting to run"));
-        assert!(rendered.contains("Queue: pending 1, active tasks 0"));
+        assert!(rendered.contains("Holon (queued"));
+        assert!(rendered.contains("Current   Queued work is waiting to run"));
+        assert!(rendered.contains("Assistant ..."));
+        assert!(rendered.contains("Action    Waiting for activity"));
+        assert!(!rendered.contains("Queue: pending 1, active tasks 0"));
     }
 
     #[test]
@@ -1973,7 +1976,7 @@ mod tests {
             .get(items.len().saturating_sub(2))
             .expect("durable item before active activity");
 
-        assert_eq!(active_item.speaker, "Holon (working)");
+        assert!(active_item.speaker.starts_with("Holon (working)"));
         assert!(active_item.created_at >= previous_item.created_at);
     }
 

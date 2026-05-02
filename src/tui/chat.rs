@@ -280,7 +280,8 @@ fn active_activity_item(
         return None;
     }
 
-    let latest_activity = projection.and_then(latest_activity_event);
+    let latest_action = projection.and_then(latest_action_event);
+    let latest_assistant = latest_assistant_message(app, projection);
     let latest_event_ts =
         projection.and_then(|projection| projection.event_log().last().map(|event| event.ts));
     let created_at = [
@@ -306,7 +307,8 @@ fn active_activity_item(
         body: active_activity_body(
             agent,
             projection.map(|projection| projection.tasks.as_slice()),
-            latest_activity,
+            latest_assistant.as_deref(),
+            latest_action,
         ),
     })
 }
@@ -333,46 +335,148 @@ fn agent_has_active_activity(agent: &AgentSummary) -> bool {
         || active_child
 }
 
-fn latest_activity_event(
+fn latest_action_event(
     projection: &crate::tui::projection::TuiProjection,
 ) -> Option<&crate::tui::projection::ProjectionEventRecord> {
     projection
         .event_log()
         .iter()
         .rev()
-        .find(|event| crate::tui::projection::is_ephemeral_activity_kind(&event.kind))
+        .find(|event| is_active_action_event_kind(&event.kind))
+}
+
+fn is_active_action_event_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "tool_executed"
+            | "tool_execution_failed"
+            | "task_created"
+            | "task_status_updated"
+            | "task_result_received"
+            | "work_item_written"
+            | "waiting_intent_created"
+            | "waiting_intent_cancelled"
+            | "callback_delivered"
+            | "operator_notification_requested"
+            | "workspace_entered"
+            | "workspace_exited"
+            | "workspace_detached"
+            | "worktree_entered"
+            | "worktree_exited"
+            | "worktree_auto_cleaned_up"
+            | "worktree_auto_cleanup_failed"
+            | "task_worktree_branch_cleanup_retained"
+            | "skill_activated"
+            | "system_tick_emitted"
+            | "message_admitted"
+            | "message_processing_started"
+            | "control_applied"
+            | "brief_created"
+            | "turn_terminal"
+            | "runtime_error"
+            | "max_output_tokens_recovery"
+            | "turn_local_checkpoint_recorded"
+    )
+}
+
+fn latest_assistant_message(
+    app: &TuiApp,
+    projection: Option<&crate::tui::projection::TuiProjection>,
+) -> Option<String> {
+    projection
+        .and_then(|projection| {
+            projection
+                .event_log()
+                .iter()
+                .rev()
+                .find_map(assistant_message_from_event)
+        })
+        .or_else(|| {
+            app.transcript
+                .iter()
+                .rev()
+                .find_map(assistant_message_from_transcript)
+        })
+}
+
+fn assistant_message_from_event(
+    event: &crate::tui::projection::ProjectionEventRecord,
+) -> Option<String> {
+    if event.kind != "provider_round_completed" && event.kind != "text_only_round_observed" {
+        return None;
+    }
+    event.payload.get("text_preview").and_then(non_empty_value)
+}
+
+fn assistant_message_from_transcript(entry: &TranscriptEntry) -> Option<String> {
+    if !matches!(
+        entry.kind,
+        TranscriptEntryKind::AssistantRound | TranscriptEntryKind::SubagentAssistantRound
+    ) {
+        return None;
+    }
+    let blocks = entry.data.get("blocks")?.as_array()?;
+    let text = blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .filter_map(|text| non_empty(Some(text)).map(ToString::to_string))
+        .collect::<Vec<_>>()
+        .join(" ");
+    non_empty(Some(&text)).map(ToString::to_string)
 }
 
 fn active_activity_speaker(agent: &AgentSummary) -> String {
-    match agent.agent.status {
+    let state: String = match agent.agent.status {
         crate::types::AgentStatus::Booting => "Holon (starting)".into(),
         crate::types::AgentStatus::AwaitingTask => "Holon (waiting)".into(),
         crate::types::AgentStatus::AwakeRunning => "Holon (working)".into(),
         crate::types::AgentStatus::AwakeIdle if agent.agent.pending > 0 => "Holon (queued)".into(),
         _ if !agent.active_children.is_empty() => "Holon (delegating)".into(),
         _ => "Holon (working)".into(),
+    };
+    format!("{state} {}", active_activity_spinner())
+}
+
+fn active_activity_spinner() -> &'static str {
+    match (Local::now().timestamp_millis() / 250).rem_euclid(4) {
+        0 => "-",
+        1 => "\\",
+        2 => "|",
+        _ => "/",
     }
 }
 
 fn active_activity_body(
     agent: &AgentSummary,
     tasks: Option<&[TaskRecord]>,
-    latest_activity: Option<&crate::tui::projection::ProjectionEventRecord>,
+    latest_assistant: Option<&str>,
+    latest_action: Option<&crate::tui::projection::ProjectionEventRecord>,
 ) -> String {
-    let mut lines = Vec::new();
+    let current = current_activity_summary(agent, tasks);
+    let assistant = latest_assistant
+        .map(|text| trim_activity_line(text, 120))
+        .unwrap_or_else(|| "...".into());
+    let action = latest_action
+        .map(|event| trim_activity_line(&action_event_body(event), 120))
+        .unwrap_or_else(|| "Waiting for activity".into());
+
+    [
+        format!("Current   {}", trim_activity_line(&current, 120)),
+        format!("Assistant {}", assistant),
+        format!("Action    {}", action),
+    ]
+    .join("\n")
+}
+
+fn current_activity_summary(agent: &AgentSummary, tasks: Option<&[TaskRecord]>) -> String {
     let memory = &agent.agent.working_memory.current_working_memory;
 
-    if let Some(summary) = non_empty(memory.work_summary.as_deref()) {
-        lines.push(format!("Working: {}", trim_activity_line(summary, 180)));
-    } else if let Some(task_summary) = active_task_summary(agent, tasks) {
-        lines.push(format!("Task: {}", trim_activity_line(&task_summary, 180)));
-    } else if let Some(child_summary) = active_child_summary(agent) {
-        lines.push(format!(
-            "Delegated: {}",
-            trim_activity_line(&child_summary, 180)
-        ));
-    } else {
-        lines.push(match agent.agent.status {
+    non_empty(memory.work_summary.as_deref())
+        .map(ToString::to_string)
+        .or_else(|| active_task_summary(agent, tasks))
+        .or_else(|| active_child_summary(agent))
+        .unwrap_or_else(|| match agent.agent.status {
             crate::types::AgentStatus::Booting => "Starting runtime".into(),
             crate::types::AgentStatus::AwaitingTask => "Waiting for active task progress".into(),
             crate::types::AgentStatus::AwakeRunning => "Working on the current turn".into(),
@@ -380,78 +484,15 @@ fn active_activity_body(
                 "Queued work is waiting to run".into()
             }
             _ => "Work is still active".into(),
-        });
-    }
+        })
+}
 
-    if let Some(target) = non_empty(memory.delivery_target.as_deref()) {
-        lines.push(format!("Target: {}", trim_activity_line(target, 160)));
+fn action_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
+    if event.kind == "tool_executed" || event.kind == "tool_execution_failed" {
+        progress_event_body(event)
+    } else {
+        event.summary.clone()
     }
-
-    if let Some(work_item_id) = non_empty(
-        memory
-            .current_work_item_id
-            .as_deref()
-            .or(agent.agent.current_work_item_id.as_deref())
-            .or(agent.agent.current_turn_work_item_id.as_deref()),
-    ) {
-        lines.push(format!("Work item: {work_item_id}"));
-    }
-
-    if let Some(event) = latest_activity {
-        lines.push(format!(
-            "Now: {}",
-            trim_activity_line(&progress_event_body(event), 180)
-        ));
-    }
-
-    if !agent.agent.active_task_ids.is_empty() || agent.agent.pending > 0 {
-        lines.push(format!(
-            "Queue: pending {}, active tasks {}",
-            agent.agent.pending,
-            agent.agent.active_task_ids.len()
-        ));
-    }
-
-    if !agent.active_children.is_empty() {
-        let children = agent
-            .active_children
-            .iter()
-            .take(2)
-            .map(|child| {
-                let mut description = format!(
-                    "{} {:?}",
-                    child.identity.agent_id, child.observability.phase
-                );
-                if let Some(summary) = child
-                    .observability
-                    .work_summary
-                    .as_deref()
-                    .or(child.observability.last_progress_brief.as_deref())
-                {
-                    description.push_str(": ");
-                    description.push_str(&trim_activity_line(summary, 100));
-                }
-                description
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        lines.push(format!("Children: {children}"));
-    }
-
-    if !memory.waiting_on.is_empty() {
-        lines.push(format!(
-            "Waiting on: {}",
-            memory
-                .waiting_on
-                .iter()
-                .take(2)
-                .map(|item| trim_activity_line(item, 80))
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    lines.join("\n")
 }
 
 fn active_task_summary(agent: &AgentSummary, tasks: Option<&[TaskRecord]>) -> Option<String> {
@@ -487,6 +528,13 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
             Some(trimmed)
         }
     })
+}
+
+fn non_empty_value(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .and_then(|text| non_empty(Some(text)))
+        .map(ToString::to_string)
 }
 
 pub(super) fn paragraph_max_scroll(text: &Text<'_>, area: Rect) -> u16 {
