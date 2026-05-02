@@ -1902,6 +1902,82 @@ mod tests {
     }
 
     #[test]
+    fn chat_text_shows_pending_queue_as_active_activity() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeIdle;
+        snapshot.agent.agent.pending = 1;
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let rendered: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+
+        assert!(rendered.contains("Holon (queued)"));
+        assert!(rendered.contains("Queued work is waiting to run"));
+        assert!(rendered.contains("Queue: pending 1, active tasks 0"));
+    }
+
+    #[test]
+    fn active_activity_timestamp_does_not_sort_before_tail_history() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let ts = Utc::now();
+        app.briefs = vec![BriefRecord {
+            id: "brief-latest".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: ts + chrono::Duration::seconds(10),
+            text: "Latest durable response".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        }];
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-tool".into(),
+                event: "tool_executed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-tool".into(),
+                    seq: 2,
+                    ts,
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    payload: json!({
+                        "tool_name": "ExecCommand",
+                        "exec_command_cmd": "cargo test tui"
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.projection = Some(projection);
+
+        let items = collect_chat_items(&app);
+        let active_item = items.last().expect("active activity item");
+        let previous_item = items
+            .get(items.len().saturating_sub(2))
+            .expect("durable item before active activity");
+
+        assert_eq!(active_item.speaker, "Holon (working)");
+        assert!(active_item.created_at >= previous_item.created_at);
+    }
+
+    #[test]
     fn collect_chat_items_orders_equal_timestamps_deterministically() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(

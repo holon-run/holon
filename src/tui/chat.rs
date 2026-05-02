@@ -283,18 +283,21 @@ fn active_activity_item(
     let latest_activity = projection.and_then(latest_activity_event);
     let latest_event_ts =
         projection.and_then(|projection| projection.event_log().last().map(|event| event.ts));
-    let created_at = latest_event_ts
-        .or(agent.agent.last_brief_at)
-        .or_else(|| {
-            agent
-                .agent
-                .last_turn_terminal
-                .as_ref()
-                .map(|terminal| terminal.completed_at)
-        })
-        .or(fallback_ts)
-        .or_else(|| app.last_event_at.map(|ts| ts.with_timezone(&chrono::Utc)))
-        .unwrap_or_else(chrono::Utc::now);
+    let created_at = [
+        latest_event_ts,
+        agent.agent.last_brief_at,
+        agent
+            .agent
+            .last_turn_terminal
+            .as_ref()
+            .map(|terminal| terminal.completed_at),
+        fallback_ts,
+        app.last_event_at.map(|ts| ts.with_timezone(&chrono::Utc)),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .unwrap_or_else(chrono::Utc::now);
 
     Some(CachedChatItem {
         created_at,
@@ -324,7 +327,10 @@ fn agent_has_active_activity(agent: &AgentSummary) -> bool {
         ) || child.pending > 0
             || child.active_task_count > 0
     });
-    active_parent || !agent.agent.active_task_ids.is_empty() || active_child
+    active_parent
+        || agent.agent.pending > 0
+        || !agent.agent.active_task_ids.is_empty()
+        || active_child
 }
 
 fn latest_activity_event(
@@ -342,6 +348,7 @@ fn active_activity_speaker(agent: &AgentSummary) -> String {
         crate::types::AgentStatus::Booting => "Holon (starting)".into(),
         crate::types::AgentStatus::AwaitingTask => "Holon (waiting)".into(),
         crate::types::AgentStatus::AwakeRunning => "Holon (working)".into(),
+        crate::types::AgentStatus::AwakeIdle if agent.agent.pending > 0 => "Holon (queued)".into(),
         _ if !agent.active_children.is_empty() => "Holon (delegating)".into(),
         _ => "Holon (working)".into(),
     }
@@ -369,6 +376,9 @@ fn active_activity_body(
             crate::types::AgentStatus::Booting => "Starting runtime".into(),
             crate::types::AgentStatus::AwaitingTask => "Waiting for active task progress".into(),
             crate::types::AgentStatus::AwakeRunning => "Working on the current turn".into(),
+            crate::types::AgentStatus::AwakeIdle if agent.agent.pending > 0 => {
+                "Queued work is waiting to run".into()
+            }
             _ => "Work is still active".into(),
         });
     }
