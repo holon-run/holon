@@ -98,12 +98,8 @@ impl ComposerState {
         } else {
             trimmed_end
         };
-        before[..word_end]
-            .rfind(' ')
-            .map(|i| i + 1)
-            .unwrap_or(0)
+        before[..word_end].rfind(' ').map(|i| i + 1).unwrap_or(0)
     }
-
 
     fn previous_boundary(&self, from: usize) -> Option<usize> {
         self.text[..from]

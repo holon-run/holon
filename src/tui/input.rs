@@ -324,7 +324,11 @@ impl TuiApp {
         }
     }
 
-    async fn execute_slash_command(&mut self, command: SlashCommand, args: Vec<String>) -> Result<()> {
+    async fn execute_slash_command(
+        &mut self,
+        command: SlashCommand,
+        args: Vec<String>,
+    ) -> Result<()> {
         match command {
             SlashCommand::Help => {
                 self.overlay = OverlayState::HelpView { scroll: 0 };
@@ -608,7 +612,7 @@ impl TuiApp {
             return Ok(());
         }
 
-match key.code {
+        match key.code {
             KeyCode::Char('?') if self.composer.is_empty() => {
                 self.overlay = OverlayState::HelpView { scroll: 0 };
             }
