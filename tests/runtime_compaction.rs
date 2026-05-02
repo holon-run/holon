@@ -18,7 +18,7 @@ runtime_async_tests!(
     preview_prompt_after_compaction_keeps_work_item_plan_and_pending_work_visible,
     task_result_rejoin_after_compaction_preserves_current_work_truth,
     contentful_wake_hint_after_compaction_keeps_active_work_truth,
-    queued_activation_after_compaction_promotes_the_correct_next_step,
+    queued_notification_after_compaction_keeps_queued_work_visible,
     runtime_compaction_multi_pass_recovery_preserves_progress_and_artifacts,
 );
 

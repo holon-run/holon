@@ -264,13 +264,13 @@ async fn idle_tick_prefers_pending_wake_hint_over_work_queue_tick() {
 }
 
 #[tokio::test]
-async fn runtime_activates_queued_work_item_and_emits_work_queue_system_tick_on_restart() {
+async fn runtime_surfaces_queued_work_item_with_work_queue_system_tick_on_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
     let queued = WorkItemRecord::new(
         "default",
-        "activate queued runtime cleanup",
+        "surface queued runtime cleanup",
         WorkItemState::Open,
     );
     let queued_id = queued.id.clone();
@@ -305,7 +305,7 @@ async fn runtime_activates_queued_work_item_and_emits_work_queue_system_tick_on_
 }
 
 #[tokio::test]
-async fn queued_work_item_update_wakes_sleeping_runtime_and_activates_it() {
+async fn queued_work_item_update_wakes_sleeping_runtime_and_surfaces_it() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(

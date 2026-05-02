@@ -244,6 +244,149 @@ async fn work_item_plan_tools_use_state_vocabulary_for_model_visible_shape() {
 }
 
 #[tokio::test]
+async fn update_work_item_can_refine_delivery_target() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (work_item, _) = runtime
+        .create_work_item("Fix issue #869".into(), None)
+        .await
+        .unwrap();
+
+    let (update_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "refine-target".into(),
+                name: "UpdateWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": work_item.id.clone(),
+                    "delivery_target": "Fix issue #869 by allowing delivery_target refinement"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let payload = update_result.envelope.result.unwrap();
+    assert_eq!(
+        payload["work_item"]["delivery_target"].as_str(),
+        Some("Fix issue #869 by allowing delivery_target refinement")
+    );
+
+    let latest = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        latest.delivery_target,
+        "Fix issue #869 by allowing delivery_target refinement"
+    );
+}
+
+#[tokio::test]
+async fn update_work_item_can_refine_delivery_target_and_plan_together() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (work_item, _) = runtime
+        .create_work_item("Fix issue #869".into(), None)
+        .await
+        .unwrap();
+
+    let (update_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "refine-target-and-plan".into(),
+                name: "UpdateWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": work_item.id.clone(),
+                    "delivery_target": "Fix issue #869 by allowing delivery_target refinement",
+                    "plan": [
+                        { "step": "extend UpdateWorkItem schema", "state": "done" },
+                        { "step": "verify target update persistence", "state": "doing" }
+                    ]
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let payload = update_result.envelope.result.unwrap();
+    assert_eq!(
+        payload["work_item"]["delivery_target"].as_str(),
+        Some("Fix issue #869 by allowing delivery_target refinement")
+    );
+    assert_eq!(payload["plan"]["items"][0]["state"].as_str(), Some("done"));
+    assert_eq!(payload["plan"]["items"][1]["state"].as_str(), Some("doing"));
+}
+
+#[tokio::test]
+async fn update_work_item_rejects_empty_delivery_target() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (work_item, _) = runtime
+        .create_work_item("Fix issue #869".into(), None)
+        .await
+        .unwrap();
+
+    let error = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "empty-target".into(),
+                name: "UpdateWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": work_item.id.clone(),
+                    "delivery_target": "   "
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+    let tool_error = crate::tool::ToolError::from_anyhow(&error);
+    assert_eq!(tool_error.kind, "invalid_tool_input");
+    assert!(tool_error.message.contains("delivery_target"));
+}
+
+#[tokio::test]
 async fn update_work_item_old_plan_shape_returns_state_example_hint() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -531,7 +674,7 @@ async fn turn_end_work_item_commit_defaults_completed_turn_to_active() {
 }
 
 #[tokio::test]
-async fn turn_end_work_item_commit_moves_failed_turn_to_waiting() {
+async fn turn_end_work_item_commit_keeps_failed_turn_open_without_blocker() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -567,10 +710,7 @@ async fn turn_end_work_item_commit_moves_failed_turn_to_waiting() {
 
     assert_eq!(committed.id, work_item_id);
     assert_eq!(committed.state, WorkItemState::Open);
-    assert_eq!(
-        committed.blocked_by.as_deref(),
-        Some("Turn failed and requires operator intervention before continuing.")
-    );
+    assert!(committed.blocked_by.is_none());
 }
 
 #[tokio::test]
@@ -1251,7 +1391,7 @@ async fn current_closure_reports_continuable_for_queued_work_item_without_active
     let storage = AppStorage::new(dir.path()).unwrap();
     let queued = WorkItemRecord::new(
         "default",
-        "activate queued runtime cleanup",
+        "surface queued runtime cleanup",
         WorkItemState::Open,
     );
     let queued_id = queued.id.clone();
@@ -1281,7 +1421,7 @@ async fn current_closure_reports_continuable_for_queued_work_item_without_active
 }
 
 #[tokio::test]
-async fn queued_activation_updates_working_memory_before_follow_up_turn() {
+async fn queued_notification_keeps_working_memory_unfocused_before_pick() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
@@ -1317,37 +1457,30 @@ async fn queued_activation_updates_working_memory_before_follow_up_turn() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let state = runtime.agent_state().await.unwrap();
-    assert_eq!(
-        state
-            .working_memory
-            .current_working_memory
-            .current_work_item_id
-            .as_deref(),
-        Some(queued.id.as_str())
-    );
+    assert!(state.current_work_item_id.is_none());
+    assert!(state
+        .working_memory
+        .current_working_memory
+        .current_work_item_id
+        .is_none());
     assert!(
         state.working_memory.working_memory_revision > 0,
-        "working memory should refresh after queued activation"
+        "working memory should refresh after queued notification"
     );
     let deltas = runtime
         .storage()
         .read_recent_working_memory_deltas(10)
         .unwrap();
-    assert!(deltas.iter().any(|delta| {
-        delta
-            .changed_fields
-            .iter()
-            .any(|field| field == "current_work_item_id")
-            && delta.to_revision == state.working_memory.working_memory_revision
-    }));
-    assert_eq!(
-        state
-            .working_memory
-            .active_episode_builder
-            .as_ref()
-            .and_then(|builder| builder.current_work_item_id.as_deref()),
-        Some(queued.id.as_str())
-    );
+    assert!(!deltas.iter().any(|delta| delta
+        .changed_fields
+        .iter()
+        .any(|field| field == "current_work_item_id")));
+    assert!(state
+        .working_memory
+        .active_episode_builder
+        .as_ref()
+        .and_then(|builder| builder.current_work_item_id.as_deref())
+        .is_none());
 
     runtime_task.abort();
 }

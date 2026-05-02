@@ -65,12 +65,7 @@ impl RuntimeHandle {
         let blocked_by = closure
             .waiting_reason
             .map(waiting_reason_blocker)
-            .map(str::to_string)
-            .or_else(|| {
-                (closure.outcome == crate::types::ClosureOutcome::Failed).then(|| {
-                    "Turn failed and requires operator intervention before continuing.".into()
-                })
-            });
+            .map(str::to_string);
         let wrote_new_snapshot =
             latest.state == WorkItemState::Open && latest.blocked_by != blocked_by;
         let committed = if wrote_new_snapshot {

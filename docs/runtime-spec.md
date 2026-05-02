@@ -1318,6 +1318,10 @@ type ClosureDecision = {
 
 Rules:
 
+- `activate_queued` means runnable queued work is visible to the model; the
+  runtime does not mutate `current_work_item_id` for that queued item. The
+  agent must call `PickWorkItem` to switch focus.
+
 - `closure.outcome` is the semantic source of truth for completion vs continuable vs waiting vs failure.
 - `waitingReason` is present only when `outcome = waiting`.
 - `workSignal` is present only when `outcome = continuable`.
