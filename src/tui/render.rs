@@ -1,6 +1,7 @@
 use super::overlay::draw_overlay;
 use super::*;
 use crate::tui::input::slash_menu_specs;
+use crate::types::{TaskKind, TaskStatus};
 use unicode_width::UnicodeWidthStr;
 
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
@@ -103,7 +104,9 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
         OverlayState::Agents => "Agents: Up/Down, Esc",
         OverlayState::Events { .. } => "Events: Up/Down, PgUp/PgDn, Home/End, Esc",
         OverlayState::Transcript { .. } => "Transcript: Up/Down, PgUp/PgDn, Home/End, Esc",
-        OverlayState::Tasks { .. } => "Tasks: Up/Down, PgUp/PgDn, Home/End, Esc",
+        OverlayState::Tasks { .. } => {
+            "Tasks: Up/Down, PgUp/PgDn, Home/End, f full, l follow, x stop, i input, Esc"
+        }
         OverlayState::ModelPicker { .. } => {
             "Model: type filter, Backspace edit, Up/Down move, Enter select, Esc cancel"
         }
@@ -489,6 +492,141 @@ pub(super) fn render_task(task: &TaskRecord) -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TaskOverlayAction {
+    FullOutput,
+    FollowOutput,
+    Stop,
+    Input,
+}
+
+impl TaskOverlayAction {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::FullOutput => "full output",
+            Self::FollowOutput => "follow/live output",
+            Self::Stop => "stop/cancel",
+            Self::Input => "input/continue",
+        }
+    }
+
+    pub(super) fn tool_name(self) -> &'static str {
+        match self {
+            Self::FullOutput | Self::FollowOutput => "TaskOutput",
+            Self::Stop => "TaskStop",
+            Self::Input => "TaskInput",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TaskActionAvailability {
+    pub(super) action: TaskOverlayAction,
+    pub(super) enabled: bool,
+    pub(super) reason: &'static str,
+}
+
+impl TaskActionAvailability {
+    fn available(action: TaskOverlayAction) -> Self {
+        Self {
+            action,
+            enabled: true,
+            reason: "available",
+        }
+    }
+
+    fn unavailable(action: TaskOverlayAction, reason: &'static str) -> Self {
+        Self {
+            action,
+            enabled: false,
+            reason,
+        }
+    }
+
+    fn render(self) -> String {
+        if self.enabled {
+            format!(
+                "[{}] {}: available ({})",
+                self.key(),
+                self.action.label(),
+                self.action.tool_name()
+            )
+        } else {
+            format!(
+                "[{}] {}: unavailable — {}",
+                self.key(),
+                self.action.label(),
+                self.reason
+            )
+        }
+    }
+
+    fn key(self) -> char {
+        match self.action {
+            TaskOverlayAction::FullOutput => 'f',
+            TaskOverlayAction::FollowOutput => 'l',
+            TaskOverlayAction::Stop => 'x',
+            TaskOverlayAction::Input => 'i',
+        }
+    }
+}
+
+pub(super) fn task_action_availability(
+    task: &TaskRecord,
+    action: TaskOverlayAction,
+) -> TaskActionAvailability {
+    let has_output_path = task
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("output_path"))
+        .and_then(Value::as_str)
+        .is_some_and(|path| !path.is_empty());
+    let has_input_target = task
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("input_target"))
+        .and_then(Value::as_str)
+        .is_some_and(|target| !target.is_empty());
+    let accepts_input = task
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("accepts_input"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || has_input_target;
+    let is_active = matches!(task.status, TaskStatus::Queued | TaskStatus::Running);
+
+    match action {
+        TaskOverlayAction::FullOutput if task.kind != TaskKind::CommandTask => {
+            TaskActionAvailability::unavailable(action, "only command tasks expose full output")
+        }
+        TaskOverlayAction::FullOutput if !has_output_path => {
+            TaskActionAvailability::unavailable(action, "no full output artifact is available yet")
+        }
+        TaskOverlayAction::FullOutput => TaskActionAvailability::available(action),
+        TaskOverlayAction::FollowOutput
+            if task.kind != TaskKind::CommandTask || task.status != TaskStatus::Running =>
+        {
+            TaskActionAvailability::unavailable(
+                action,
+                "only running command tasks can be followed",
+            )
+        }
+        TaskOverlayAction::FollowOutput if !has_output_path => {
+            TaskActionAvailability::unavailable(action, "no live output artifact is available yet")
+        }
+        TaskOverlayAction::FollowOutput => TaskActionAvailability::available(action),
+        TaskOverlayAction::Stop if !is_active => {
+            TaskActionAvailability::unavailable(action, "task is not queued or running")
+        }
+        TaskOverlayAction::Stop => TaskActionAvailability::available(action),
+        TaskOverlayAction::Input if !accepts_input || task.status != TaskStatus::Running => {
+            TaskActionAvailability::unavailable(action, "task is not currently accepting input")
+        }
+        TaskOverlayAction::Input => TaskActionAvailability::available(action),
+    }
+}
+
 pub(super) fn render_task_detail(task: &TaskRecord) -> String {
     let mut lines = vec![
         format!(
@@ -504,6 +642,20 @@ pub(super) fn render_task_detail(task: &TaskRecord) -> String {
                 .format("%Y-%m-%d %H:%M:%S")
         ),
     ];
+    let actions = [
+        TaskOverlayAction::FullOutput,
+        TaskOverlayAction::FollowOutput,
+        TaskOverlayAction::Stop,
+        TaskOverlayAction::Input,
+    ];
+    lines.push(String::new());
+    lines.push("Actions:".into());
+    for action in actions {
+        lines.push(format!(
+            "  {}",
+            task_action_availability(task, action).render()
+        ));
+    }
 
     if let Some(detail) = &task.detail {
         lines.push(String::new());
@@ -662,7 +814,7 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
 mod tests {
     use super::{
         prompt_cursor_position, render_header, render_model_status, render_prompt_buffer,
-        render_prompt_text, render_summary, status_bar_height,
+        render_prompt_text, render_summary, render_task_detail, status_bar_height,
     };
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::types::{
@@ -670,9 +822,11 @@ mod tests {
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentSummary,
         AgentTokenUsageSummary, AgentVisibility, ChildAgentObservabilitySnapshot, ChildAgentPhase,
         ChildAgentSummary, ClosureDecision, ClosureOutcome, LoadedAgentsMdView, RuntimePosture,
-        SkillsRuntimeView, TokenUsage,
+        SkillsRuntimeView, TaskKind, TaskRecord, TaskStatus, TokenUsage,
     };
+    use chrono::{TimeZone, Utc};
     use ratatui::prelude::{Line, Rect};
+    use serde_json::{json, Value};
     use std::path::PathBuf;
 
     fn sample_agent_summary() -> AgentSummary {
@@ -944,6 +1098,57 @@ mod tests {
     fn empty_status_line_uses_compact_status_bar_height() {
         assert_eq!(status_bar_height(""), 3);
         assert_eq!(status_bar_height("Action failed"), 4);
+    }
+
+    fn task(status: TaskStatus, kind: TaskKind, detail: Option<Value>) -> TaskRecord {
+        let now = Utc.with_ymd_and_hms(2025, 1, 2, 3, 4, 5).unwrap();
+        TaskRecord {
+            id: "task-1".into(),
+            agent_id: "agent-1".into(),
+            kind,
+            status,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            summary: Some("sample task".into()),
+            detail,
+            recovery: None,
+        }
+    }
+
+    #[test]
+    fn render_task_detail_marks_available_task_actions() {
+        let task = task(
+            TaskStatus::Running,
+            TaskKind::CommandTask,
+            Some(json!({
+                "output_path": "target/task-output.log",
+                "accepts_input": true
+            })),
+        );
+
+        let detail = render_task_detail(&task);
+
+        assert!(detail.contains("[f] full output: available (TaskOutput)"));
+        assert!(detail.contains("[l] follow/live output: available (TaskOutput)"));
+        assert!(detail.contains("[x] stop/cancel: available (TaskStop)"));
+        assert!(detail.contains("[i] input/continue: available (TaskInput)"));
+    }
+
+    #[test]
+    fn render_task_detail_marks_unavailable_task_actions() {
+        let task = task(
+            TaskStatus::Completed,
+            TaskKind::SleepJob,
+            Some(json!({ "accepts_input": false })),
+        );
+
+        let detail = render_task_detail(&task);
+
+        assert!(detail.contains("[f] full output: unavailable"));
+        assert!(detail.contains("[l] follow/live output: unavailable"));
+        assert!(detail.contains("[x] stop/cancel: unavailable"));
+        assert!(detail.contains("[i] input/continue: unavailable"));
     }
 }
 

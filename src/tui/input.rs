@@ -320,6 +320,25 @@ impl TuiApp {
                 Ok(())
             }
             OverlayState::Tasks {
+                selected,
+                detail_scroll,
+            } if matches!(
+                key.code,
+                KeyCode::Char('f')
+                    | KeyCode::Char('F')
+                    | KeyCode::Char('l')
+                    | KeyCode::Char('L')
+                    | KeyCode::Char('x')
+                    | KeyCode::Char('X')
+                    | KeyCode::Char('i')
+                    | KeyCode::Char('I')
+            ) =>
+            {
+                let action = task_overlay_action_for_key(key.code);
+                self.handle_task_overlay_action(selected, detail_scroll, action);
+                Ok(())
+            }
+            OverlayState::Tasks {
                 mut selected,
                 mut detail_scroll,
             } => {
@@ -749,12 +768,59 @@ fn adjust_scroll_for_key(scroll: u16, code: KeyCode) -> u16 {
     }
 }
 
+fn task_overlay_action_for_key(key: KeyCode) -> render::TaskOverlayAction {
+    match key {
+        KeyCode::Char('f') | KeyCode::Char('F') => render::TaskOverlayAction::FullOutput,
+        KeyCode::Char('l') | KeyCode::Char('L') => render::TaskOverlayAction::FollowOutput,
+        KeyCode::Char('x') | KeyCode::Char('X') => render::TaskOverlayAction::Stop,
+        KeyCode::Char('i') | KeyCode::Char('I') => render::TaskOverlayAction::Input,
+        _ => unreachable!("caller filters task overlay action keys"),
+    }
+}
+
+impl TuiApp {
+    fn handle_task_overlay_action(
+        &mut self,
+        selected: usize,
+        detail_scroll: u16,
+        action: render::TaskOverlayAction,
+    ) {
+        self.overlay = OverlayState::Tasks {
+            selected,
+            detail_scroll,
+        };
+
+        let Some(task) = self.tasks.iter().rev().nth(selected) else {
+            self.status_line = "No task selected".into();
+            return;
+        };
+
+        let availability = render::task_action_availability(task, action);
+        if availability.enabled {
+            self.status_line = format!(
+                "{} entry point: {} is available for task {}",
+                action.label(),
+                action.tool_name(),
+                task.id
+            );
+        } else {
+            self.status_line = format!(
+                "{} unavailable for task {}: {}",
+                action.label(),
+                task.id,
+                availability.reason
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         parse_composer_submission, slash_menu_specs, slash_prompt_lines, ComposerSubmission,
         SlashCommand,
     };
+    use crossterm::event::KeyCode;
 
     #[test]
     fn parses_plain_chat_submission() {
@@ -843,5 +909,17 @@ mod tests {
     fn slash_prompt_matches_submit_semantics_for_leading_whitespace() {
         let lines = slash_prompt_lines("   /help").expect("slash prompt should be active");
         assert!(lines[0].contains(">/help"));
+    }
+
+    #[test]
+    fn task_overlay_action_keys_map_to_actions() {
+        assert_eq!(
+            super::task_overlay_action_for_key(KeyCode::Char('f')),
+            crate::tui::render::TaskOverlayAction::FullOutput
+        );
+        assert_eq!(
+            super::task_overlay_action_for_key(KeyCode::Char('X')),
+            crate::tui::render::TaskOverlayAction::Stop
+        );
     }
 }
