@@ -118,7 +118,9 @@ impl RepeatedCompactionProvider {
         }
     }
 
-    pub async fn captured_requests(&self) -> Vec<super::runtime_helpers::CompactionRequestSnapshot> {
+    pub async fn captured_requests(
+        &self,
+    ) -> Vec<super::runtime_helpers::CompactionRequestSnapshot> {
         self.requests.lock().await.clone()
     }
 }
@@ -234,7 +236,9 @@ impl MaxOutputThenCompactionProvider {
         }
     }
 
-    pub async fn captured_requests(&self) -> Vec<super::runtime_helpers::CompactionRequestSnapshot> {
+    pub async fn captured_requests(
+        &self,
+    ) -> Vec<super::runtime_helpers::CompactionRequestSnapshot> {
         self.requests.lock().await.clone()
     }
 }

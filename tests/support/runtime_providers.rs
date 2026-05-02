@@ -1068,4 +1068,3 @@ impl AgentProvider for DelayedTextProvider {
         })
     }
 }
-
