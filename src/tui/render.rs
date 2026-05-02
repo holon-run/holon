@@ -54,7 +54,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
 }
 
 fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
-    let body = chat_text(app);
+    let body = chat_text_for_width(app, area.width.saturating_sub(2).max(1));
     let max_scroll = paragraph_max_scroll(&body, area);
     app.chat_max_scroll = max_scroll;
     let scroll = app.chat_scroll.effective_scroll(max_scroll);

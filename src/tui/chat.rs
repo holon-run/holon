@@ -75,21 +75,40 @@ pub(super) enum CachedChatRole {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CachedChatItem {
-    pub(super) created_at: DateTime<chrono::Utc>,
-    pub(super) role: CachedChatRole,
-    pub(super) speaker: String,
-    pub(super) body: String,
+pub(super) struct AssistantMarkdownCell {
+    created_at: DateTime<chrono::Utc>,
+    agent_id: String,
+    markdown: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ConversationCell {
+    UserMessage {
+        created_at: DateTime<chrono::Utc>,
+        body: String,
+    },
+    AssistantMarkdown(AssistantMarkdownCell),
+    ActiveActivity {
+        created_at: DateTime<chrono::Utc>,
+        speaker: String,
+        body: String,
+    },
+    SystemNotice {
+        created_at: DateTime<chrono::Utc>,
+        speaker: String,
+        body: String,
+    },
 }
 
 #[derive(Clone)]
 pub(super) struct CachedChatText {
-    pub(super) items: Vec<CachedChatItem>,
+    pub(super) cells: Vec<ConversationCell>,
+    pub(super) width: u16,
     pub(super) text: Text<'static>,
 }
 
-pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
-    let mut items = Vec::new();
+pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
+    let mut cells = Vec::new();
 
     for entry in &app.transcript {
         if entry.kind != TranscriptEntryKind::IncomingMessage {
@@ -107,10 +126,8 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
             .get("body")
             .and_then(render_message_body_value)
             .unwrap_or_else(|| compact_json(&entry.data));
-        items.push(CachedChatItem {
+        cells.push(ConversationCell::UserMessage {
             created_at: entry.created_at,
-            role: CachedChatRole::Operator,
-            speaker: "You".to_string(),
             body,
         });
     }
@@ -119,16 +136,15 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
         if matches!(brief.kind, crate::types::BriefKind::Ack) {
             continue;
         }
-        items.push(CachedChatItem {
+        cells.push(ConversationCell::AssistantMarkdown(AssistantMarkdownCell {
             created_at: brief.created_at,
-            role: CachedChatRole::Agent,
-            speaker: match brief.kind {
+            agent_id: match brief.kind {
                 crate::types::BriefKind::Result => "Holon".to_string(),
                 crate::types::BriefKind::Failure => "Holon (failed)".to_string(),
                 crate::types::BriefKind::Ack => unreachable!("ack briefs are filtered above"),
             },
-            body: render_brief_body(brief),
-        });
+            markdown: render_brief_body(brief),
+        }));
     }
 
     if let Some(projection) = app.projection.as_ref() {
@@ -136,37 +152,114 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
             if !is_chat_visible_conversation_event(&event.kind) {
                 continue;
             }
-            items.push(CachedChatItem {
+            cells.push(ConversationCell::SystemNotice {
                 created_at: event.ts,
-                role: CachedChatRole::System,
                 speaker: conversation_event_speaker(&event.kind),
                 body: conversation_event_body(event),
             });
         }
     }
 
-    items.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| chat_role_rank(left.role).cmp(&chat_role_rank(right.role)))
-            .then_with(|| left.speaker.cmp(&right.speaker))
-            .then_with(|| left.body.cmp(&right.body))
+    cells.sort_by(|left, right| {
+        left.created_at()
+            .cmp(&right.created_at())
+            .then_with(|| chat_role_rank(left.role()).cmp(&chat_role_rank(right.role())))
+            .then_with(|| left.sort_speaker().cmp(right.sort_speaker()))
+            .then_with(|| left.sort_body().cmp(right.sort_body()))
     });
-    let fallback_ts = items.last().map(|item| item.created_at);
+    let fallback_ts = cells.last().map(ConversationCell::created_at);
     if let Some(active_item) = active_activity_item(app, fallback_ts) {
-        items.push(active_item);
+        cells.push(active_item);
     }
-    items
+    cells
 }
 
 pub(super) fn is_chat_visible_conversation_event(kind: &str) -> bool {
     matches!(kind, "operator_notification_requested" | "runtime_error")
 }
 
-pub(super) fn build_chat_text(items: &[CachedChatItem]) -> Text<'static> {
+impl ConversationCell {
+    pub(super) fn created_at(&self) -> DateTime<chrono::Utc> {
+        match self {
+            Self::UserMessage { created_at, .. }
+            | Self::ActiveActivity { created_at, .. }
+            | Self::SystemNotice { created_at, .. } => *created_at,
+            Self::AssistantMarkdown(cell) => cell.created_at,
+        }
+    }
+
+    fn role(&self) -> CachedChatRole {
+        match self {
+            Self::UserMessage { .. } => CachedChatRole::Operator,
+            Self::AssistantMarkdown(_) => CachedChatRole::Agent,
+            Self::ActiveActivity { .. } | Self::SystemNotice { .. } => CachedChatRole::System,
+        }
+    }
+
+    fn sort_speaker(&self) -> &str {
+        match self {
+            Self::UserMessage { .. } => "You",
+            Self::AssistantMarkdown(cell) => &cell.agent_id,
+            Self::ActiveActivity { speaker, .. } | Self::SystemNotice { speaker, .. } => speaker,
+        }
+    }
+
+    fn sort_body(&self) -> &str {
+        match self {
+            Self::UserMessage { body, .. }
+            | Self::ActiveActivity { body, .. }
+            | Self::SystemNotice { body, .. } => body,
+            Self::AssistantMarkdown(cell) => &cell.markdown,
+        }
+    }
+
+    fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
+        match self {
+            Self::UserMessage { created_at, body } => render_prefixed_markdown_lines(
+                *created_at,
+                body,
+                CachedChatRole::Operator,
+                width,
+                false,
+            ),
+            Self::AssistantMarkdown(cell) => cell.render_lines(width),
+            Self::ActiveActivity { speaker, body, .. } => {
+                render_active_activity_lines(speaker, body)
+            }
+            Self::SystemNotice {
+                created_at, body, ..
+            } => render_prefixed_markdown_lines(
+                *created_at,
+                body,
+                CachedChatRole::System,
+                width,
+                false,
+            ),
+        }
+    }
+}
+
+impl AssistantMarkdownCell {
+    fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
+        render_prefixed_markdown_lines(
+            self.created_at,
+            &self.markdown,
+            CachedChatRole::Agent,
+            width,
+            true,
+        )
+    }
+}
+
+#[cfg(test)]
+pub(super) fn build_chat_text(items: &[ConversationCell]) -> Text<'static> {
+    build_chat_text_for_width(items, u16::MAX)
+}
+
+pub(super) fn build_chat_text_for_width(items: &[ConversationCell], width: u16) -> Text<'static> {
     let mut text = Text::default();
     for (index, item) in items.iter().enumerate() {
-        append_chat_item(&mut text, item);
+        text.lines.extend(item.render_lines(width));
         if index + 1 < items.len() {
             text.lines.push(Line::default());
         }
@@ -175,7 +268,12 @@ pub(super) fn build_chat_text(items: &[CachedChatItem]) -> Text<'static> {
     text
 }
 
+#[cfg(test)]
 pub(super) fn chat_text(app: &TuiApp) -> Text<'static> {
+    chat_text_for_width(app, u16::MAX)
+}
+
+pub(super) fn chat_text_for_width(app: &TuiApp, width: u16) -> Text<'static> {
     let items = collect_chat_items(app);
     if items.is_empty() {
         *app.chat_text_cache.borrow_mut() = None;
@@ -183,67 +281,79 @@ pub(super) fn chat_text(app: &TuiApp) -> Text<'static> {
     }
 
     if let Some(cached) = app.chat_text_cache.borrow().as_ref() {
-        if cached.items == items {
+        if cached.cells == items && cached.width == width {
             return cached.text.clone();
         }
     }
 
-    let text = build_chat_text(&items);
+    let text = build_chat_text_for_width(&items, width);
     *app.chat_text_cache.borrow_mut() = Some(CachedChatText {
-        items,
+        cells: items,
+        width,
         text: text.clone(),
     });
     text
 }
 
-fn append_chat_item(target: &mut Text<'static>, item: &CachedChatItem) {
-    if active_activity_status_label(&item.speaker).is_some() {
-        append_active_activity_item(target, item);
-        return;
-    }
-
-    let body = render_markdown_text(&item.body);
+fn render_prefixed_markdown_lines(
+    created_at: DateTime<chrono::Utc>,
+    body: &str,
+    role: CachedChatRole,
+    width: u16,
+    spaced_markdown: bool,
+) -> Vec<Line<'static>> {
+    let body = if spaced_markdown && width >= 48 {
+        render_markdown_text_spaced(body)
+    } else {
+        render_markdown_text(body)
+    };
     let body_lines = body.lines;
-    let prefix = chat_prefix_spans(item);
-    let continuation_indent = chat_continuation_indent(item);
+    let prefix = chat_prefix_spans(created_at, role);
+    let continuation_indent = chat_continuation_indent(created_at);
+    let mut lines = Vec::new();
 
     if let Some((first, rest)) = body_lines.split_first() {
         let mut spans = Vec::with_capacity(prefix.len() + first.spans.len());
         spans.extend(prefix);
         spans.extend(first.spans.clone());
-        target.lines.push(Line::from(spans).style(first.style));
+        lines.push(Line::from(spans).style(first.style));
 
         for line in rest {
             let mut spans = Vec::with_capacity(line.spans.len() + 1);
             spans.push(Span::raw(continuation_indent.clone()));
             spans.extend(line.spans.clone());
-            target.lines.push(Line::from(spans).style(line.style));
+            lines.push(Line::from(spans).style(line.style));
         }
     } else {
-        target.lines.push(Line::from(prefix));
+        lines.push(Line::from(prefix));
     }
+    lines
 }
 
-fn append_active_activity_item(target: &mut Text<'static>, item: &CachedChatItem) {
-    let status = active_activity_status_label(&item.speaker).unwrap_or("Working");
-    let marker = active_activity_display_marker(&item.speaker);
-    target.lines.push(Line::from(vec![
+fn render_active_activity_lines(speaker: &str, body: &str) -> Vec<Line<'static>> {
+    let status = active_activity_status_label(speaker).unwrap_or("Working");
+    let marker = active_activity_display_marker(speaker);
+    let mut lines = vec![Line::from(vec![
         Span::styled(marker, Style::default().add_modifier(Modifier::DIM)),
         Span::raw(" "),
         Span::styled(status, Style::default().add_modifier(Modifier::BOLD)),
-    ]));
+    ])];
 
-    let body = render_markdown_text(&item.body);
+    let body = render_markdown_text(body);
     for line in body.lines {
         let mut spans = Vec::with_capacity(line.spans.len() + 1);
         spans.push(Span::raw("  "));
         spans.extend(line.spans);
-        target.lines.push(Line::from(spans).style(line.style));
+        lines.push(Line::from(spans).style(line.style));
     }
+    lines
 }
 
-fn chat_prefix_spans(item: &CachedChatItem) -> Vec<Span<'static>> {
-    let (marker, marker_style) = match item.role {
+fn chat_prefix_spans(
+    created_at: DateTime<chrono::Utc>,
+    role: CachedChatRole,
+) -> Vec<Span<'static>> {
+    let (marker, marker_style) = match role {
         CachedChatRole::Operator => ("› ", Style::default().add_modifier(Modifier::BOLD)),
         CachedChatRole::Agent => ("• ", Style::default().add_modifier(Modifier::DIM)),
         CachedChatRole::System => (
@@ -257,23 +367,20 @@ fn chat_prefix_spans(item: &CachedChatItem) -> Vec<Span<'static>> {
     vec![
         Span::styled(marker, marker_style),
         Span::styled(
-            chat_timestamp(item),
+            chat_timestamp(created_at),
             Style::default().add_modifier(Modifier::DIM),
         ),
         Span::raw(" "),
     ]
 }
 
-fn chat_continuation_indent(item: &CachedChatItem) -> String {
-    let prefix_width = 2 + chat_timestamp(item).chars().count() + 1;
+fn chat_continuation_indent(created_at: DateTime<chrono::Utc>) -> String {
+    let prefix_width = 2 + chat_timestamp(created_at).chars().count() + 1;
     " ".repeat(prefix_width)
 }
 
-fn chat_timestamp(item: &CachedChatItem) -> String {
-    item.created_at
-        .with_timezone(&Local)
-        .format("%H:%M")
-        .to_string()
+fn chat_timestamp(created_at: DateTime<chrono::Utc>) -> String {
+    created_at.with_timezone(&Local).format("%H:%M").to_string()
 }
 
 fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
@@ -313,7 +420,7 @@ fn chat_role_rank(role: CachedChatRole) -> u8 {
 fn active_activity_item(
     app: &TuiApp,
     fallback_ts: Option<DateTime<chrono::Utc>>,
-) -> Option<CachedChatItem> {
+) -> Option<ConversationCell> {
     let projection = app.projection.as_ref();
     let agent = projection
         .map(|projection| &projection.agent)
@@ -342,9 +449,8 @@ fn active_activity_item(
     .max()
     .unwrap_or_else(chrono::Utc::now);
 
-    Some(CachedChatItem {
+    Some(ConversationCell::ActiveActivity {
         created_at,
-        role: CachedChatRole::System,
         speaker: active_activity_speaker(agent),
         body: active_activity_body(
             agent,

@@ -9,7 +9,7 @@ use crate::{
     client::{AgentStreamEvent, EventStreamRequest, LocalClient, LocalEventStream, LocalHttpError},
     config::{AltScreenMode, AppConfig},
     system::{workspace_access_mode_label, workspace_projection_label},
-    tui_markdown::render_markdown_text,
+    tui_markdown::{render_markdown_text, render_markdown_text_spaced},
     types::{
         AgentSummary, BriefRecord, TaskRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
     },
@@ -45,8 +45,10 @@ mod projection;
 mod render;
 
 #[cfg(test)]
-use chat::{build_chat_text, collect_chat_items, is_operator_origin_value};
-use chat::{chat_text, paragraph_max_scroll, CachedChatText, ChatScrollState};
+use chat::{
+    build_chat_text, chat_text, collect_chat_items, is_operator_origin_value, ConversationCell,
+};
+use chat::{chat_text_for_width, paragraph_max_scroll, CachedChatText, ChatScrollState};
 use composer::ComposerState;
 use logging::TuiLogWriter;
 #[cfg(test)]
@@ -827,7 +829,8 @@ mod tests {
         build_chat_text, centered_rect_rows, chat_text, collect_chat_items,
         determine_alt_screen_mode_for_terminal, is_cursor_too_old_error, is_operator_origin_value,
         paragraph_max_scroll, projection::TuiProjection, AgentListChange, ChatScrollState,
-        ComposerState, OverlayState, TuiApp, TuiConnectionState, TuiRuntimeMessage,
+        ComposerState, ConversationCell, OverlayState, TuiApp, TuiConnectionState,
+        TuiRuntimeMessage,
     };
     use crate::{
         client::{
@@ -2030,8 +2033,17 @@ mod tests {
             .get(items.len().saturating_sub(2))
             .expect("durable item before active activity");
 
-        assert!(active_item.speaker.starts_with("Holon (working)"));
-        assert!(active_item.created_at >= previous_item.created_at);
+        match active_item {
+            ConversationCell::ActiveActivity {
+                speaker,
+                created_at,
+                ..
+            } => {
+                assert!(speaker.starts_with("Holon (working)"));
+                assert!(*created_at >= previous_item.created_at());
+            }
+            other => panic!("expected active activity item, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2071,8 +2083,8 @@ mod tests {
         }];
 
         let items = collect_chat_items(&app);
-        assert_eq!(items[0].speaker, "You");
-        assert_eq!(items[1].speaker, "Holon");
+        assert!(matches!(items[0], ConversationCell::UserMessage { .. }));
+        assert!(matches!(items[1], ConversationCell::AssistantMarkdown(_)));
     }
 
     #[test]
@@ -2238,7 +2250,7 @@ mod tests {
         {
             let cache_ref = app.chat_text_cache.borrow();
             let cached = cache_ref.as_ref().expect("chat text should be cached");
-            assert_eq!(cached.items, collect_chat_items(&app));
+            assert_eq!(cached.cells, collect_chat_items(&app));
         }
 
         app.briefs = vec![BriefRecord {
@@ -2264,7 +2276,7 @@ mod tests {
 
         let cache_ref = app.chat_text_cache.borrow();
         let cached = cache_ref.as_ref().expect("chat text should be recached");
-        assert_eq!(cached.items, collect_chat_items(&app));
+        assert_eq!(cached.cells, collect_chat_items(&app));
 
         drop(cache_ref);
         app.briefs.clear();
