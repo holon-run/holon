@@ -55,12 +55,15 @@ Include:
 - what remains unknown
 - the next goal-aligned action
 
-If continuing exploration, name the specific missing information and the next bounded command/query.
+If continuing exploration, name the specific missing information and the next bounded command/query. If enough evidence already exists to act, make the next action the concrete mutation, verification, or delivery step instead of another read.
 If the current plan step became complete through material progress, update the work plan after that progress is recorded.
 This is not a request to finish the task; after the checkpoint, continue with the next goal-aligned action when useful.
 Do not assume the task requires code changes unless the user goal does.";
 
 const DELTA_CHECKPOINT_PREVIEW_LIMIT: usize = 1_200;
+const CHECKPOINT_RESUME_PROMPT: &str = "\
+[Runtime-generated checkpoint continuation]
+Continue from the checkpoint's next goal-aligned action now. Do not restate the checkpoint. If the checkpoint says enough evidence exists to act, call the concrete mutation, verification, or delivery tool next; otherwise run only the named bounded command/query.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TurnLocalCheckpointMode {
@@ -119,10 +122,70 @@ struct PendingCheckpointRequest {
 struct TurnLocalCheckpointRecord {
     request_id: String,
     requested_at_round: usize,
-    response_round: usize,
+    response_round: Option<usize>,
+    source_turn_index: Option<u64>,
     mode: TurnLocalCheckpointMode,
     text: String,
     anchor_generation: u64,
+}
+
+fn text_looks_like_turn_local_checkpoint(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    normalized.contains("progress checkpoint")
+        && normalized.contains("current user goal")
+        && normalized.contains("next goal-aligned action")
+}
+
+fn checkpoint_state_from_last_terminal(
+    terminal: Option<&TurnTerminalRecord>,
+) -> TurnLocalCheckpointState {
+    let Some(terminal) = terminal else {
+        return TurnLocalCheckpointState::default();
+    };
+    if terminal.kind != TurnTerminalKind::Completed {
+        return TurnLocalCheckpointState::default();
+    }
+    let Some(text) = terminal.last_assistant_message.as_deref() else {
+        return TurnLocalCheckpointState::default();
+    };
+    if !text_looks_like_turn_local_checkpoint(text) {
+        return TurnLocalCheckpointState::default();
+    }
+    TurnLocalCheckpointState {
+        latest: Some(TurnLocalCheckpointRecord {
+            request_id: format!("previous-turn-{}-checkpoint", terminal.turn_index),
+            requested_at_round: 0,
+            response_round: None,
+            source_turn_index: Some(terminal.turn_index),
+            mode: TurnLocalCheckpointMode::Full,
+            text: text.to_string(),
+            anchor_generation: 0,
+        }),
+        pending: None,
+        anchor_generation: 0,
+    }
+}
+
+fn build_checkpoint_resume_round(
+    round: usize,
+    assistant_blocks: Vec<ModelBlock>,
+    text_blocks: Vec<String>,
+) -> TurnRoundRecord {
+    let continuation_text = CHECKPOINT_RESUME_PROMPT.to_string();
+    TurnRoundRecord {
+        round,
+        estimated_tokens: build_round_estimated_tokens(
+            &assistant_blocks,
+            &[],
+            std::slice::from_ref(&continuation_text),
+        ),
+        assistant_blocks,
+        text_blocks,
+        tool_calls: Vec::new(),
+        tool_results: Vec::new(),
+        tool_result_envelopes: Vec::new(),
+        follow_up_user_texts: vec![continuation_text],
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -585,14 +648,23 @@ fn round_invalidates_checkpoint_anchor(round: &TurnRoundRecord) -> bool {
         .any(tool_result_invalidates_checkpoint_anchor)
 }
 
-fn build_delta_checkpoint_prompt(previous_round: usize, previous_checkpoint: &str) -> String {
+fn build_delta_checkpoint_prompt(
+    previous_round: Option<usize>,
+    source_turn_index: Option<u64>,
+    previous_checkpoint: &str,
+) -> String {
     let previous = truncate_preview(previous_checkpoint, DELTA_CHECKPOINT_PREVIEW_LIMIT);
+    let base_source = match (previous_round, source_turn_index) {
+        (Some(round), _) => format!("Base checkpoint round: {round}"),
+        (None, Some(turn_index)) => format!("Base checkpoint source: previous turn {turn_index}"),
+        (None, None) => "Base checkpoint source: previous turn".to_string(),
+    };
     format!(
         "\
 [Runtime-generated delta progress checkpoint request]
 You are crossing another context compaction boundary. A previous checkpoint is still the active base.
 
-Base checkpoint round: {previous_round}
+{base_source}
 Base checkpoint preview:
 {previous}
 
@@ -624,7 +696,7 @@ fn build_turn_local_checkpoint_request(
         };
     };
 
-    let base_round = Some(latest.response_round);
+    let base_round = latest.response_round;
     let anchor_changed_since_checkpoint =
         latest.anchor_generation != checkpoint_state.anchor_generation;
     if anchor_changed_since_checkpoint {
@@ -641,7 +713,11 @@ fn build_turn_local_checkpoint_request(
         TurnLocalCheckpointRequest {
             request_id,
             mode: TurnLocalCheckpointMode::Delta,
-            prompt: build_delta_checkpoint_prompt(latest.response_round, &latest.text),
+            prompt: build_delta_checkpoint_prompt(
+                latest.response_round,
+                latest.source_turn_index,
+                &latest.text,
+            ),
             previous_checkpoint_round: base_round,
             anchor_changed_since_checkpoint,
             anchor_generation: checkpoint_state.anchor_generation,
@@ -999,7 +1075,10 @@ impl RuntimeHandle {
         let mut truncated_text_history = Vec::new();
         let mut last_assistant_message: Option<String> = None;
         let mut max_output_recovery_count = 0usize;
-        let mut checkpoint_state = TurnLocalCheckpointState::default();
+        let mut checkpoint_state = {
+            let guard = self.inner.agent.lock().await;
+            checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
+        };
 
         loop {
             round += 1;
@@ -1314,6 +1393,7 @@ impl RuntimeHandle {
                         !max_output_recovery_pending
                             && (!combined_text.trim().is_empty() || tool_calls.is_empty())
                     });
+            let mut checkpoint_recorded_this_round = false;
             if should_record_pending_checkpoint {
                 let pending_checkpoint = checkpoint_state
                     .pending
@@ -1327,11 +1407,13 @@ impl RuntimeHandle {
                     .collect::<Vec<_>>()
                     .join("\n\n");
                 let checkpoint_recorded = !checkpoint_text.is_empty();
+                checkpoint_recorded_this_round = checkpoint_recorded;
                 if checkpoint_recorded {
                     checkpoint_state.latest = Some(TurnLocalCheckpointRecord {
                         request_id: pending_checkpoint.request_id.clone(),
                         requested_at_round: pending_checkpoint.requested_at_round,
-                        response_round: round,
+                        response_round: Some(round),
+                        source_turn_index: None,
                         mode: pending_checkpoint.mode,
                         text: checkpoint_text.clone(),
                         anchor_generation: pending_checkpoint.anchor_generation,
@@ -1456,6 +1538,34 @@ impl RuntimeHandle {
                     ))?;
                     continue;
                 }
+            }
+
+            if tool_calls.is_empty() && checkpoint_recorded_this_round {
+                completed_rounds.push(build_checkpoint_resume_round(
+                    round,
+                    completed_round_assistant_blocks,
+                    text_blocks,
+                ));
+                self.inner
+                    .storage
+                    .append_transcript_entry(&TranscriptEntry::new(
+                        agent_id.to_string(),
+                        TranscriptEntryKind::ContinuationPrompt,
+                        Some(round),
+                        None,
+                        serde_json::json!({
+                            "text": CHECKPOINT_RESUME_PROMPT,
+                            "reason": "turn_local_checkpoint",
+                        }),
+                    ))?;
+                self.inner.storage.append_event(&AuditEvent::new(
+                    "turn_local_checkpoint_resume_requested",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "round": round,
+                    }),
+                ))?;
+                continue;
             }
 
             if tool_calls.is_empty() {
@@ -1845,7 +1955,8 @@ mod tests {
             latest: Some(TurnLocalCheckpointRecord {
                 request_id: format!("req-{response_round}"),
                 requested_at_round: response_round,
-                response_round,
+                response_round: Some(response_round),
+                source_turn_index: None,
                 mode: TurnLocalCheckpointMode::Full,
                 text: text.to_string(),
                 anchor_generation,
@@ -2837,6 +2948,64 @@ mod tests {
         assert_eq!(checkpoint.base_round, Some(2));
         assert_eq!(checkpoint.anchor_generation, 4);
         assert!(checkpoint.anchor_changed_since_checkpoint);
+    }
+
+    #[test]
+    fn checkpoint_state_can_resume_from_previous_terminal_checkpoint() {
+        let terminal = TurnTerminalRecord {
+            turn_index: 7,
+            kind: TurnTerminalKind::Completed,
+            last_assistant_message: Some(
+                "Progress checkpoint:\n\n- current user goal: fix issue\n- next goal-aligned action: apply patch"
+                    .into(),
+            ),
+            completed_at: chrono::Utc::now(),
+            duration_ms: 10,
+        };
+
+        let state = checkpoint_state_from_last_terminal(Some(&terminal));
+
+        let latest = state.latest.expect("checkpoint should seed latest state");
+        assert_eq!(latest.response_round, None);
+        assert_eq!(latest.source_turn_index, Some(7));
+        assert_eq!(latest.anchor_generation, 0);
+        assert!(latest.text.contains("current user goal"));
+    }
+
+    #[test]
+    fn checkpoint_state_ignores_non_checkpoint_terminal_text() {
+        let terminal = TurnTerminalRecord {
+            turn_index: 7,
+            kind: TurnTerminalKind::Completed,
+            last_assistant_message: Some("Finished normal final answer.".into()),
+            completed_at: chrono::Utc::now(),
+            duration_ms: 10,
+        };
+
+        let state = checkpoint_state_from_last_terminal(Some(&terminal));
+
+        assert!(state.latest.is_none());
+    }
+
+    #[test]
+    fn checkpoint_resume_round_carries_runtime_follow_up_prompt() {
+        let round = build_checkpoint_resume_round(
+            3,
+            vec![ModelBlock::Text {
+                text: "Progress checkpoint:\n- current user goal: fix issue\n- next goal-aligned action: apply patch".into(),
+            }],
+            vec![
+                "Progress checkpoint:\n- current user goal: fix issue\n- next goal-aligned action: apply patch"
+                    .into(),
+            ],
+        );
+
+        assert_eq!(round.round, 3);
+        assert_eq!(round.tool_calls.len(), 0);
+        assert_eq!(round.follow_up_user_texts.len(), 1);
+        assert!(round.follow_up_user_texts[0]
+            .contains("Continue from the checkpoint's next goal-aligned action now"));
+        assert!(round.estimated_tokens > 0);
     }
 
     #[test]
