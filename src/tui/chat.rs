@@ -132,8 +132,6 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
     }
 
     if let Some(projection) = app.projection.as_ref() {
-        let mut visible_event_ids = std::collections::HashSet::new();
-
         for event in projection.durable_conversation_events() {
             if !is_chat_visible_conversation_event(&event.kind) {
                 continue;
@@ -143,19 +141,6 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
                 role: CachedChatRole::System,
                 speaker: conversation_event_speaker(&event.kind),
                 body: conversation_event_body(event),
-            });
-            visible_event_ids.insert(event.id.as_str());
-        }
-
-        for event in projection.recent_activity_events() {
-            if visible_event_ids.contains(event.id.as_str()) {
-                continue;
-            }
-            items.push(CachedChatItem {
-                created_at: event.ts,
-                role: CachedChatRole::System,
-                speaker: conversation_event_speaker(&event.kind),
-                body: progress_event_body(event),
             });
         }
     }
@@ -167,6 +152,10 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
             .then_with(|| left.speaker.cmp(&right.speaker))
             .then_with(|| left.body.cmp(&right.body))
     });
+    let fallback_ts = items.last().map(|item| item.created_at);
+    if let Some(active_item) = active_activity_item(app, fallback_ts) {
+        items.push(active_item);
+    }
     items
 }
 
@@ -277,6 +266,217 @@ fn chat_role_rank(role: CachedChatRole) -> u8 {
         CachedChatRole::Agent => 1,
         CachedChatRole::System => 2,
     }
+}
+
+fn active_activity_item(
+    app: &TuiApp,
+    fallback_ts: Option<DateTime<chrono::Utc>>,
+) -> Option<CachedChatItem> {
+    let projection = app.projection.as_ref();
+    let agent = projection
+        .map(|projection| &projection.agent)
+        .or_else(|| app.selected_agent_summary())?;
+    if !agent_has_active_activity(agent) {
+        return None;
+    }
+
+    let latest_activity = projection.and_then(latest_activity_event);
+    let latest_event_ts =
+        projection.and_then(|projection| projection.event_log().last().map(|event| event.ts));
+    let created_at = latest_event_ts
+        .or(agent.agent.last_brief_at)
+        .or_else(|| {
+            agent
+                .agent
+                .last_turn_terminal
+                .as_ref()
+                .map(|terminal| terminal.completed_at)
+        })
+        .or(fallback_ts)
+        .or_else(|| app.last_event_at.map(|ts| ts.with_timezone(&chrono::Utc)))
+        .unwrap_or_else(chrono::Utc::now);
+
+    Some(CachedChatItem {
+        created_at,
+        role: CachedChatRole::System,
+        speaker: active_activity_speaker(agent),
+        body: active_activity_body(
+            agent,
+            projection.map(|projection| projection.tasks.as_slice()),
+            latest_activity,
+        ),
+    })
+}
+
+fn agent_has_active_activity(agent: &AgentSummary) -> bool {
+    let active_parent = matches!(
+        agent.agent.status,
+        crate::types::AgentStatus::Booting
+            | crate::types::AgentStatus::AwakeRunning
+            | crate::types::AgentStatus::AwaitingTask
+    );
+    let active_child = agent.active_children.iter().any(|child| {
+        matches!(
+            child.status,
+            crate::types::AgentStatus::Booting
+                | crate::types::AgentStatus::AwakeRunning
+                | crate::types::AgentStatus::AwaitingTask
+        ) || child.pending > 0
+            || child.active_task_count > 0
+    });
+    active_parent || !agent.agent.active_task_ids.is_empty() || active_child
+}
+
+fn latest_activity_event(
+    projection: &crate::tui::projection::TuiProjection,
+) -> Option<&crate::tui::projection::ProjectionEventRecord> {
+    projection
+        .event_log()
+        .iter()
+        .rev()
+        .find(|event| crate::tui::projection::is_ephemeral_activity_kind(&event.kind))
+}
+
+fn active_activity_speaker(agent: &AgentSummary) -> String {
+    match agent.agent.status {
+        crate::types::AgentStatus::Booting => "Holon (starting)".into(),
+        crate::types::AgentStatus::AwaitingTask => "Holon (waiting)".into(),
+        crate::types::AgentStatus::AwakeRunning => "Holon (working)".into(),
+        _ if !agent.active_children.is_empty() => "Holon (delegating)".into(),
+        _ => "Holon (working)".into(),
+    }
+}
+
+fn active_activity_body(
+    agent: &AgentSummary,
+    tasks: Option<&[TaskRecord]>,
+    latest_activity: Option<&crate::tui::projection::ProjectionEventRecord>,
+) -> String {
+    let mut lines = Vec::new();
+    let memory = &agent.agent.working_memory.current_working_memory;
+
+    if let Some(summary) = non_empty(memory.work_summary.as_deref()) {
+        lines.push(format!("Working: {}", trim_activity_line(summary, 180)));
+    } else if let Some(task_summary) = active_task_summary(agent, tasks) {
+        lines.push(format!("Task: {}", trim_activity_line(&task_summary, 180)));
+    } else if let Some(child_summary) = active_child_summary(agent) {
+        lines.push(format!(
+            "Delegated: {}",
+            trim_activity_line(&child_summary, 180)
+        ));
+    } else {
+        lines.push(match agent.agent.status {
+            crate::types::AgentStatus::Booting => "Starting runtime".into(),
+            crate::types::AgentStatus::AwaitingTask => "Waiting for active task progress".into(),
+            crate::types::AgentStatus::AwakeRunning => "Working on the current turn".into(),
+            _ => "Work is still active".into(),
+        });
+    }
+
+    if let Some(target) = non_empty(memory.delivery_target.as_deref()) {
+        lines.push(format!("Target: {}", trim_activity_line(target, 160)));
+    }
+
+    if let Some(work_item_id) = non_empty(
+        memory
+            .current_work_item_id
+            .as_deref()
+            .or(agent.agent.current_work_item_id.as_deref())
+            .or(agent.agent.current_turn_work_item_id.as_deref()),
+    ) {
+        lines.push(format!("Work item: {work_item_id}"));
+    }
+
+    if let Some(event) = latest_activity {
+        lines.push(format!(
+            "Now: {}",
+            trim_activity_line(&progress_event_body(event), 180)
+        ));
+    }
+
+    if !agent.agent.active_task_ids.is_empty() || agent.agent.pending > 0 {
+        lines.push(format!(
+            "Queue: pending {}, active tasks {}",
+            agent.agent.pending,
+            agent.agent.active_task_ids.len()
+        ));
+    }
+
+    if !agent.active_children.is_empty() {
+        let children = agent
+            .active_children
+            .iter()
+            .take(2)
+            .map(|child| {
+                let mut description = format!(
+                    "{} {:?}",
+                    child.identity.agent_id, child.observability.phase
+                );
+                if let Some(summary) = child
+                    .observability
+                    .work_summary
+                    .as_deref()
+                    .or(child.observability.last_progress_brief.as_deref())
+                {
+                    description.push_str(": ");
+                    description.push_str(&trim_activity_line(summary, 100));
+                }
+                description
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        lines.push(format!("Children: {children}"));
+    }
+
+    if !memory.waiting_on.is_empty() {
+        lines.push(format!(
+            "Waiting on: {}",
+            memory
+                .waiting_on
+                .iter()
+                .take(2)
+                .map(|item| trim_activity_line(item, 80))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn active_task_summary(agent: &AgentSummary, tasks: Option<&[TaskRecord]>) -> Option<String> {
+    let tasks = tasks?;
+    agent.agent.active_task_ids.iter().find_map(|task_id| {
+        tasks
+            .iter()
+            .find(|task| task.id == *task_id)
+            .and_then(|task| task.summary.clone())
+    })
+}
+
+fn active_child_summary(agent: &AgentSummary) -> Option<String> {
+    agent.active_children.iter().find_map(|child| {
+        child
+            .observability
+            .work_summary
+            .clone()
+            .or_else(|| child.observability.last_progress_brief.clone())
+    })
+}
+
+fn trim_activity_line(input: &str, max_chars: usize) -> String {
+    trim_preview(&collapse_whitespace(input), max_chars)
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
 }
 
 pub(super) fn paragraph_max_scroll(text: &Text<'_>, area: Rect) -> u16 {

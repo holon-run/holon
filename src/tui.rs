@@ -1789,6 +1789,119 @@ mod tests {
     }
 
     #[test]
+    fn chat_text_keeps_active_activity_after_brief_event() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        snapshot.agent.agent.working_memory.current_working_memory =
+            crate::types::WorkingMemorySnapshot {
+                current_work_item_id: Some("work-1".into()),
+                delivery_target: Some("fix TUI active activity".into()),
+                work_summary: Some("Improve the Conversation working indicator".into()),
+                ..Default::default()
+            };
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-tool".into(),
+                event: "tool_executed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-tool".into(),
+                    seq: 2,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    payload: json!({
+                        "tool_name": "ExecCommand",
+                        "exec_command_cmd": "cargo test tui"
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-brief".into(),
+                event: "brief_created".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-brief".into(),
+                    seq: 3,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "brief_created".into(),
+                    payload: json!({
+                        "id": "brief-1",
+                        "agent_id": "default",
+                        "workspace_id": crate::types::AGENT_HOME_WORKSPACE_ID,
+                        "work_item_id": null,
+                        "kind": "result",
+                        "created_at": Utc::now(),
+                        "text": "Still working",
+                        "attachments": null,
+                        "related_message_id": null,
+                        "related_task_id": null
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.projection = Some(projection);
+
+        let rendered: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(rendered.contains("Holon (working)"));
+        assert!(rendered.contains("Improve the Conversation working indicator"));
+        assert!(rendered.contains("Now: ExecCommand: cargo test tui"));
+    }
+
+    #[test]
+    fn chat_text_does_not_show_stale_activity_when_agent_is_idle() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeIdle;
+        snapshot.agent.agent.pending = 0;
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-tool".into(),
+                event: "tool_executed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-tool".into(),
+                    seq: 2,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    payload: json!({
+                        "tool_name": "ExecCommand",
+                        "exec_command_cmd": "cargo test stale"
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.projection = Some(projection);
+
+        let rendered: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(!rendered.contains("Holon (working)"));
+        assert!(!rendered.contains("cargo test stale"));
+    }
+
+    #[test]
     fn collect_chat_items_orders_equal_timestamps_deterministically() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
