@@ -406,7 +406,7 @@ impl TuiApp {
         };
         let mut projection = TuiProjection::from_snapshot(snapshot);
         if !switching_agents {
-            if let Some(previous) = self.projection.as_ref() {
+            if let Some(previous) = self.projection.as_mut() {
                 projection.inherit_recent_event_logs_from(previous);
             }
         }
@@ -1955,7 +1955,7 @@ mod tests {
             &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
         let mut refreshed_projection = TuiProjection::from_snapshot(snapshot);
-        refreshed_projection.inherit_recent_event_logs_from(&previous_projection);
+        refreshed_projection.inherit_recent_event_logs_from(&mut previous_projection);
         app.projection = Some(refreshed_projection);
 
         let rendered: String = build_chat_text(&collect_chat_items(&app))
@@ -2092,6 +2092,45 @@ mod tests {
             }
             other => panic!("expected active activity item, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn active_activity_cells_stay_stable_without_new_events() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        snapshot.agent.agent.working_memory.current_working_memory =
+            crate::types::WorkingMemorySnapshot {
+                work_summary: Some("Keep cache stable while working".into()),
+                ..Default::default()
+            };
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let first_items = collect_chat_items(&app);
+        let second_items = collect_chat_items(&app);
+        assert_eq!(first_items, second_items);
+
+        let _ = chat_text(&app);
+        let cached_cells = app
+            .chat_text_cache
+            .borrow()
+            .as_ref()
+            .expect("active activity should be cached")
+            .cells
+            .clone();
+        let _ = chat_text(&app);
+        assert_eq!(
+            cached_cells,
+            app.chat_text_cache
+                .borrow()
+                .as_ref()
+                .expect("active activity should remain cached")
+                .cells
+        );
     }
 
     #[test]

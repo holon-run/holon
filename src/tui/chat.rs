@@ -282,7 +282,7 @@ pub(super) fn chat_text_for_width(app: &TuiApp, width: u16) -> Text<'static> {
 
     if let Some(cached) = app.chat_text_cache.borrow().as_ref() {
         if cached.cells == items && cached.width == width {
-            return cached.text.clone();
+            return refresh_active_activity_marker(cached.text.clone());
         }
     }
 
@@ -337,9 +337,11 @@ fn render_prefixed_markdown_lines(
 
 fn render_active_activity_lines(speaker: &str, body: &str) -> Vec<Line<'static>> {
     let status = active_activity_status_label(speaker).unwrap_or("Working");
-    let marker = active_activity_display_marker(speaker);
     let mut lines = vec![Line::from(vec![
-        Span::styled(marker, Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(
+            active_activity_spinner(),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
         Span::raw(" "),
         Span::styled(status, Style::default().add_modifier(Modifier::BOLD)),
     ])];
@@ -352,6 +354,27 @@ fn render_active_activity_lines(speaker: &str, body: &str) -> Vec<Line<'static>>
         lines.push(Line::from(spans).style(line.style));
     }
     lines
+}
+
+fn refresh_active_activity_marker(mut text: Text<'static>) -> Text<'static> {
+    for line in &mut text.lines {
+        let is_active_activity_header = line.spans.len() >= 3
+            && line.spans.get(1).is_some_and(|span| span.content == " ")
+            && line.spans.get(2).is_some_and(|span| {
+                matches!(
+                    span.content.as_ref(),
+                    "Working" | "Queued" | "Starting" | "Waiting" | "Delegating"
+                )
+            });
+        if is_active_activity_header {
+            line.spans[0] = Span::styled(
+                active_activity_spinner(),
+                Style::default().add_modifier(Modifier::DIM),
+            );
+            break;
+        }
+    }
+    text
 }
 
 fn chat_prefix_spans(
@@ -404,16 +427,6 @@ fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
     }
 }
 
-fn active_activity_display_marker(speaker: &str) -> &'static str {
-    match speaker.rsplit_once(' ').map(|(_, marker)| marker) {
-        Some("-") => "-",
-        Some("\\") => "\\",
-        Some("|") => "|",
-        Some("/") => "/",
-        _ => "◦",
-    }
-}
-
 fn chat_role_rank(role: CachedChatRole) -> u8 {
     match role {
         CachedChatRole::Operator => 0,
@@ -452,7 +465,7 @@ fn active_activity_item(
     .into_iter()
     .flatten()
     .max()
-    .unwrap_or_else(chrono::Utc::now);
+    .unwrap_or_else(stable_active_activity_timestamp);
 
     Some(ConversationCell::ActiveActivity {
         created_at,
@@ -464,6 +477,10 @@ fn active_activity_item(
             latest_action,
         ),
     })
+}
+
+fn stable_active_activity_timestamp() -> DateTime<chrono::Utc> {
+    DateTime::<chrono::Utc>::from(std::time::SystemTime::UNIX_EPOCH)
 }
 
 fn agent_has_active_activity(agent: &AgentSummary) -> bool {
@@ -580,15 +597,14 @@ fn assistant_message_from_transcript(entry: &TranscriptEntry) -> Option<String> 
 }
 
 fn active_activity_speaker(agent: &AgentSummary) -> String {
-    let state: String = match agent.agent.status {
+    match agent.agent.status {
         crate::types::AgentStatus::Booting => "Holon (starting)".into(),
         crate::types::AgentStatus::AwaitingTask => "Holon (waiting)".into(),
         crate::types::AgentStatus::AwakeRunning => "Holon (working)".into(),
         crate::types::AgentStatus::AwakeIdle if agent.agent.pending > 0 => "Holon (queued)".into(),
         _ if !agent.active_children.is_empty() => "Holon (delegating)".into(),
         _ => "Holon (working)".into(),
-    };
-    format!("{state} {}", active_activity_spinner())
+    }
 }
 
 fn active_activity_spinner() -> &'static str {
