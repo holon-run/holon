@@ -62,10 +62,13 @@ impl RuntimeHandle {
             return Ok(None);
         };
 
-        let blocked_by = closure
-            .waiting_reason
-            .map(waiting_reason_blocker)
-            .map(str::to_string);
+        let blocked_by = match closure.waiting_reason {
+            Some(waiting_reason) => Some(waiting_reason_blocker(waiting_reason).to_string()),
+            None if closure.outcome == crate::types::ClosureOutcome::Failed => {
+                latest.blocked_by.clone()
+            }
+            None => None,
+        };
         let wrote_new_snapshot =
             latest.state == WorkItemState::Open && latest.blocked_by != blocked_by;
         let committed = if wrote_new_snapshot {

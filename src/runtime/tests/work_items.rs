@@ -714,6 +714,55 @@ async fn turn_end_work_item_commit_keeps_failed_turn_open_without_blocker() {
 }
 
 #[tokio::test]
+async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work_item_id = seed_bound_work_item(
+        &runtime,
+        WorkItemState::Open,
+        None,
+        Some("Waiting for reviewer response."),
+    )
+    .await;
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_index: guard.state.turn_index,
+            kind: TurnTerminalKind::Aborted,
+            last_assistant_message: Some("provider timeout".into()),
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 42,
+        });
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let committed = runtime
+        .maybe_commit_turn_end_work_item_transition()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(committed.id, work_item_id);
+    assert_eq!(committed.state, WorkItemState::Open);
+    assert_eq!(
+        committed.blocked_by.as_deref(),
+        Some("Waiting for reviewer response.")
+    );
+}
+
+#[tokio::test]
 async fn turn_end_work_item_commit_moves_bound_item_to_waiting_when_runtime_is_waiting() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

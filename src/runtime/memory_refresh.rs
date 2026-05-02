@@ -168,6 +168,18 @@ impl RuntimeHandle {
                 Ok(true)
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued)) => {
+                if let Some(message_id) = self.duplicate_queued_available_message_id(&queued)? {
+                    self.inner.storage.append_event(&AuditEvent::new(
+                        "system_tick_suppressed",
+                        serde_json::json!({
+                            "subsystem": "work_queue",
+                            "reason": "no_new_signal_after_queued_available",
+                            "work_item_id": queued.id,
+                            "message_id": message_id,
+                        }),
+                    ))?;
+                    return Ok(false);
+                }
                 self.emit_system_tick_from_work_queue(&queued, "queued_available")
                     .await?;
                 Ok(true)
@@ -189,6 +201,35 @@ impl RuntimeHandle {
         }
     }
 
+    fn duplicate_queued_available_message_id(
+        &self,
+        work_item: &crate::types::WorkItemRecord,
+    ) -> Result<Option<String>> {
+        let recent_messages = self
+            .inner
+            .storage
+            .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?;
+        let Some(message) = recent_messages
+            .iter()
+            .filter(|message| {
+                is_runtime_work_queue_message_for_work_item(
+                    message,
+                    &work_item.id,
+                    "queued_available",
+                )
+            })
+            .max_by_key(|message| message.created_at)
+        else {
+            return Ok(None);
+        };
+
+        if self.has_work_signal_after(work_item, message.created_at, "queued_available")? {
+            return Ok(None);
+        }
+
+        Ok(Some(message.id.clone()))
+    }
+
     fn duplicate_continue_active_result_brief_id(
         &self,
         work_item: &crate::types::WorkItemRecord,
@@ -203,21 +244,22 @@ impl RuntimeHandle {
             return Ok(None);
         };
 
-        if self.has_work_signal_after_result(work_item, &result_brief)? {
+        if self.has_work_signal_after(work_item, result_brief.created_at, "continue_active")? {
             return Ok(None);
         }
 
         Ok(Some(result_brief.id.clone()))
     }
 
-    fn has_work_signal_after_result(
+    fn has_work_signal_after(
         &self,
         work_item: &crate::types::WorkItemRecord,
-        result_brief: &BriefRecord,
+        anchor: chrono::DateTime<chrono::Utc>,
+        ignored_runtime_reason: &str,
     ) -> Result<bool> {
         let work_item_id = work_item.id.as_str();
 
-        if work_item.updated_at > result_brief.created_at {
+        if work_item.updated_at > anchor {
             return Ok(true);
         }
 
@@ -226,7 +268,7 @@ impl RuntimeHandle {
             .storage
             .latest_work_plan(&work_item.id)?
             .is_some_and(|plan| {
-                plan.created_at > result_brief.created_at
+                plan.created_at > anchor
                     || plan
                         .items
                         .iter()
@@ -242,8 +284,12 @@ impl RuntimeHandle {
             .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
             .iter()
             .any(|message| {
-                message.created_at > result_brief.created_at
-                    && !is_runtime_continue_active_message_for_work_item(message, work_item_id)
+                message.created_at > anchor
+                    && !is_runtime_work_queue_message_for_work_item(
+                        message,
+                        work_item_id,
+                        ignored_runtime_reason,
+                    )
             })
         {
             return Ok(true);
@@ -255,7 +301,7 @@ impl RuntimeHandle {
             .read_recent_tool_executions(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
             .iter()
             .any(|tool| {
-                tool.created_at > result_brief.created_at
+                tool.created_at > anchor
                     && tool
                         .work_item_id
                         .as_deref()
@@ -271,7 +317,7 @@ impl RuntimeHandle {
             .latest_task_records()?
             .iter()
             .any(|task| {
-                task.updated_at > result_brief.created_at
+                task.updated_at > anchor
                     && matches!(
                         task.status,
                         TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
@@ -291,10 +337,10 @@ impl RuntimeHandle {
                     .work_item_id
                     .as_deref()
                     .is_none_or(|id| id == work_item_id)
-                    && (waiting.created_at > result_brief.created_at
+                    && (waiting.created_at > anchor
                         || waiting
                             .last_triggered_at
-                            .is_some_and(|triggered_at| triggered_at > result_brief.created_at))
+                            .is_some_and(|triggered_at| triggered_at > anchor))
             })
         {
             return Ok(true);
@@ -305,9 +351,7 @@ impl RuntimeHandle {
             .storage
             .read_recent_events(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
             .iter()
-            .any(|event| {
-                event.kind == "runtime_error" && event.created_at > result_brief.created_at
-            })
+            .any(|event| event.kind == "runtime_error" && event.created_at > anchor)
         {
             return Ok(true);
         }
@@ -506,9 +550,10 @@ fn latest_nonempty_result_brief_for_work_item<'a>(
         .max_by_key(|brief| brief.created_at)
 }
 
-fn is_runtime_continue_active_message_for_work_item(
+fn is_runtime_work_queue_message_for_work_item(
     message: &MessageEnvelope,
     work_item_id: &str,
+    reason: &str,
 ) -> bool {
     matches!(
         (&message.kind, &message.origin),
@@ -518,7 +563,7 @@ fn is_runtime_continue_active_message_for_work_item(
         .as_ref()
         .and_then(|metadata| metadata.get("work_queue"))
         .is_some_and(|metadata| {
-            metadata.get("reason").and_then(|value| value.as_str()) == Some("continue_active")
+            metadata.get("reason").and_then(|value| value.as_str()) == Some(reason)
                 && metadata
                     .get("work_item_id")
                     .and_then(|value| value.as_str())
@@ -879,6 +924,46 @@ mod tests {
 
         let guard = test_runtime.runtime.inner.agent.blocking_lock();
         assert!(guard.state.current_work_item_id.is_none());
+    }
+
+    #[test]
+    fn queued_system_tick_is_suppressed_without_new_signal() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let queued_id = "wi-queued";
+        add_queued_work_item(&test_runtime, queued_id, "queued-target");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+        assert!(emitted, "first queued notification should be emitted");
+
+        clear_queue(&test_runtime);
+
+        let emitted_again = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+        assert!(
+            !emitted_again,
+            "queued notification should not repeat without a new signal"
+        );
+
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+
+        let events = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_events(20)
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "system_tick_suppressed"
+                && event.data["reason"] == "no_new_signal_after_queued_available"
+                && event.data["work_item_id"] == queued_id
+        }));
     }
 
     #[test]
