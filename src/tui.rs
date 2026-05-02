@@ -169,6 +169,8 @@ struct TuiApp {
     pub(crate) status_line: String,
     should_quit: bool,
     chat_text_cache: RefCell<Option<CachedChatText>>,
+    input_history: Vec<String>,
+    history_index: Option<usize>,
     log_writer: TuiLogWriter,
 }
 
@@ -230,6 +232,8 @@ impl TuiApp {
             status_line: "Connecting to local Holon runtime...".into(),
             should_quit: false,
             chat_text_cache: RefCell::new(None),
+            input_history: Vec::new(),
+            history_index: None,
             log_writer,
         }
     }
@@ -1193,55 +1197,6 @@ mod tests {
 
         assert!(err.to_string().contains("no agent selected"));
         assert_eq!(app.composer.as_str(), "hi");
-    }
-
-    #[tokio::test]
-    async fn ctrl_a_opens_agents_overlay() {
-        let client = LocalClient::new(test_config()).unwrap();
-        let mut app = TuiApp::new(
-            client,
-            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        );
-        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL))
-            .await
-            .unwrap();
-        assert_eq!(app.overlay, OverlayState::Agents);
-    }
-
-    #[tokio::test]
-    async fn ctrl_e_opens_events_overlay() {
-        let client = LocalClient::new(test_config()).unwrap();
-        let mut app = TuiApp::new(
-            client,
-            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        );
-        let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
-        projection.apply_event(
-            AgentStreamEvent {
-                id: "evt-1".into(),
-                event: "provider_round_completed".into(),
-                data: StreamEventEnvelope {
-                    id: "evt-1".into(),
-                    seq: 1,
-                    ts: Utc::now(),
-                    agent_id: "default".into(),
-                    event_type: "provider_round_completed".into(),
-                    payload: json!({"text_preview":"partial"}),
-                },
-            },
-            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        );
-        app.projection = Some(projection);
-        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL))
-            .await
-            .unwrap();
-        assert_eq!(
-            app.overlay,
-            OverlayState::Events {
-                selected_event_id: Some("evt-1".into()),
-                detail_scroll: 0
-            }
-        );
     }
 
     #[tokio::test]

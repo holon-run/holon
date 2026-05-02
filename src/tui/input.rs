@@ -257,6 +257,11 @@ impl TuiApp {
         match parse_composer_submission(self.composer.as_str())? {
             None => Ok(()),
             Some(ComposerSubmission::Chat(text)) => {
+                // Save to input history before sending
+                if !text.is_empty() {
+                    self.input_history.push(text.clone());
+                    self.history_index = None;
+                }
                 let agent_id = self
                     .selected_agent_id()
                     .ok_or_else(|| anyhow!("no agent selected"))?
@@ -272,6 +277,50 @@ impl TuiApp {
                 self.composer.clear();
                 Ok(())
             }
+        }
+    }
+
+    fn navigate_history(&mut self, direction: i32) {
+        if self.input_history.is_empty() {
+            return;
+        }
+
+        // If we're not currently browsing history, start from the most recent
+        let current_index = match self.history_index {
+            None => {
+                // Save current draft if not empty
+                if !self.composer.is_empty() {
+                    // Starting history navigation - we'll come back to this draft
+                    // Store it implicitly by just setting index
+                }
+                if direction < 0 {
+                    Some(self.input_history.len().saturating_sub(1))
+                } else {
+                    // Can't go forward from the beginning
+                    return;
+                }
+            }
+            Some(idx) => {
+                let new_idx = if direction < 0 {
+                    idx.saturating_sub(1)
+                } else {
+                    (idx + 1).min(self.input_history.len())
+                };
+                Some(new_idx)
+            }
+        };
+
+        match current_index {
+            Some(idx) if idx == self.input_history.len() => {
+                // Past the end - clear the composer
+                self.composer.clear();
+                self.history_index = None;
+            }
+            Some(idx) => {
+                self.composer = ComposerState::from(self.input_history[idx].clone());
+                self.history_index = Some(idx);
+            }
+            None => {}
         }
     }
 
@@ -422,7 +471,8 @@ impl TuiApp {
             ) =>
             {
                 let action = task_overlay_action_for_key(key.code);
-                self.handle_task_overlay_action(selected, detail_scroll, action);
+                self.handle_task_overlay_action(selected, detail_scroll, action)
+                    .await?;
                 Ok(())
             }
             OverlayState::Tasks {
@@ -562,43 +612,23 @@ impl TuiApp {
             return Ok(());
         }
 
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('a') => {
-                    self.overlay = OverlayState::Agents;
-                    return Ok(());
-                }
-                KeyCode::Char('e') => {
-                    self.overlay = OverlayState::Events {
-                        selected_event_id: self.event_id_for_reverse_index(0),
-                        detail_scroll: 0,
-                    };
-                    return Ok(());
-                }
-                KeyCode::Char('t') => {
-                    self.overlay = OverlayState::Transcript { scroll: 0 };
-                    return Ok(());
-                }
-                KeyCode::Char('j') => {
-                    self.overlay = OverlayState::Tasks {
-                        selected: 0,
-                        detail_scroll: 0,
-                    };
-                    return Ok(());
-                }
-                KeyCode::Char('s') => {
-                    self.submit_prompt_buffer().await?;
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-
         match key.code {
             KeyCode::Char('?') if self.composer.is_empty() => {
                 self.overlay = OverlayState::HelpView { scroll: 0 };
             }
-            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+            KeyCode::Up if self.composer.is_empty() => {
+                self.navigate_history(-1);
+            }
+            KeyCode::Down if self.composer.is_empty() => {
+                self.navigate_history(1);
+            }
+            // PageUp/PageDown always scroll chat
+            KeyCode::PageUp | KeyCode::PageDown => {
+                self.chat_scroll
+                    .scroll_with_key(key.code, self.chat_max_scroll);
+            }
+            // Up/Down when composer has content: scroll chat (no history)
+            KeyCode::Up | KeyCode::Down => {
                 self.chat_scroll
                     .scroll_with_key(key.code, self.chat_max_scroll);
             }
@@ -607,6 +637,7 @@ impl TuiApp {
             }
             KeyCode::Esc => {
                 self.composer.clear();
+                self.history_index = None;
                 self.slash_menu_selected = 0;
                 self.slash_menu_dismissed_for = None;
             }
@@ -836,6 +867,51 @@ enum BufferAction {
 }
 
 fn edit_buffer(key: KeyEvent, composer: &mut ComposerState) -> Option<BufferAction> {
+    // Standard editing shortcuts with Ctrl modifier
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if matches!(key.code, KeyCode::Char(_)) {
+            return match key.code {
+                KeyCode::Char('a') => {
+                    composer.move_to_start();
+                    None
+                }
+                KeyCode::Char('e') => {
+                    composer.move_to_end();
+                    None
+                }
+                KeyCode::Char('b') => {
+                    composer.move_left();
+                    None
+                }
+                KeyCode::Char('f') => {
+                    composer.move_right();
+                    None
+                }
+                KeyCode::Char('k') => {
+                    composer.delete_to_end();
+                    None
+                }
+                KeyCode::Char('u') => {
+                    composer.delete_to_start();
+                    None
+                }
+                KeyCode::Char('w') => {
+                    composer.delete_word();
+                    None
+                }
+                KeyCode::Char('h') => {
+                    composer.backspace();
+                    None
+                }
+                KeyCode::Char('d') => {
+                    composer.delete();
+                    None
+                }
+                _ => None,
+            };
+        }
+    }
+
     match key.code {
         KeyCode::Enter => {
             // Ignore Shift+Enter - it's handled by the outer match to insert newline
@@ -895,12 +971,12 @@ fn task_overlay_action_for_key(key: KeyCode) -> render::TaskOverlayAction {
 }
 
 impl TuiApp {
-    fn handle_task_overlay_action(
+    async fn handle_task_overlay_action(
         &mut self,
         selected: usize,
         detail_scroll: u16,
         action: render::TaskOverlayAction,
-    ) {
+    ) -> Result<()> {
         self.overlay = OverlayState::Tasks {
             selected,
             detail_scroll,
@@ -908,7 +984,7 @@ impl TuiApp {
 
         let Some(task) = self.tasks.iter().rev().nth(selected) else {
             self.status_line = "No task selected".into();
-            return;
+            return Ok(());
         };
 
         let availability = render::task_action_availability(task, action);
@@ -927,6 +1003,7 @@ impl TuiApp {
                 availability.reason
             );
         }
+        Ok(())
     }
 }
 
