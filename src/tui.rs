@@ -402,7 +402,12 @@ impl TuiApp {
                 return Err(err);
             }
         };
-        let projection = TuiProjection::from_snapshot(snapshot);
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        if !switching_agents {
+            if let Some(previous) = self.projection.as_ref() {
+                projection.inherit_recent_event_logs_from(previous);
+            }
+        }
         let cursor = projection.cursor.clone();
 
         self.stop_stream_task();
@@ -1862,6 +1867,53 @@ mod tests {
         assert!(rendered.contains("Current   Improve the Conversation working indicator"));
         assert!(rendered.contains("Assistant ..."));
         assert!(rendered.contains("Action    Still working"));
+    }
+
+    #[test]
+    fn chat_text_keeps_active_action_after_snapshot_refresh() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-refresh");
+        snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        snapshot.agent.agent.working_memory.current_working_memory =
+            crate::types::WorkingMemorySnapshot {
+                work_summary: Some("Keep the active action stable".into()),
+                ..Default::default()
+            };
+        let mut previous_projection =
+            TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+        previous_projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-tool".into(),
+                event: "tool_executed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-tool".into(),
+                    seq: 2,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    payload: json!({
+                        "tool_name": "ExecCommand",
+                        "exec_command_cmd": "cargo test tui"
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut refreshed_projection = TuiProjection::from_snapshot(snapshot);
+        refreshed_projection.inherit_recent_event_logs_from(&previous_projection);
+        app.projection = Some(refreshed_projection);
+
+        let rendered: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(rendered.contains("Action    ExecCommand: cargo test tui"));
+        assert!(!rendered.contains("Action    Waiting for activity"));
     }
 
     #[test]

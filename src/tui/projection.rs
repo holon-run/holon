@@ -113,6 +113,11 @@ impl TuiProjection {
         *self = Self::from_snapshot(snapshot);
     }
 
+    pub(crate) fn inherit_recent_event_logs_from(&mut self, previous: &Self) {
+        self.event_log = previous.event_log.clone();
+        self.durable_conversation_log = previous.durable_conversation_log.clone();
+    }
+
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
         let record = ProjectionEventRecord {
             id: event.id.clone(),
