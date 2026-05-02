@@ -51,11 +51,23 @@ pub(crate) fn parse_work_item_action_args<T>(
 where
     T: serde::de::DeserializeOwned,
 {
-    parse_tool_args_with_recovery_hint(tool_name, input, work_plan_recovery_hint())
+    parse_tool_args_with_recovery_hint(tool_name, input, || {
+        work_item_action_recovery_hint(tool_name).to_string()
+    })
 }
 
-fn work_plan_recovery_hint() -> &'static str {
-    "use plan items like {\"step\":\"inspect current handler\",\"state\":\"done\"}; state must be pending, doing, or done"
+fn work_item_action_recovery_hint(tool_name: &str) -> &'static str {
+    match tool_name {
+        "CreateWorkItem" => {
+            "ensure the JSON matches the CreateWorkItem schema, including required top-level field \"delivery_target\"; use plan items like {\"step\":\"inspect current handler\",\"state\":\"done\"}; state must be pending, doing, or done"
+        }
+        "UpdateWorkItem" => {
+            "ensure the JSON matches the UpdateWorkItem schema, including required top-level field \"work_item_id\"; use plan items like {\"step\":\"inspect current handler\",\"state\":\"done\"}; state must be pending, doing, or done"
+        }
+        _ => {
+            "ensure the JSON matches the tool schema exactly; use plan items like {\"step\":\"inspect current handler\",\"state\":\"done\"}; state must be pending, doing, or done"
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

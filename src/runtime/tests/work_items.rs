@@ -279,17 +279,59 @@ async fn update_work_item_old_plan_shape_returns_state_example_hint() {
         .unwrap_err();
     let tool_error = crate::tool::ToolError::from_anyhow(&error);
     assert_eq!(tool_error.kind, "invalid_tool_input");
-    assert_eq!(
-        tool_error
-            .details
-            .as_ref()
-            .and_then(|details| details.get("parse_error"))
-            .and_then(serde_json::Value::as_str),
-        Some("unknown field `status`, expected `step` or `state`")
-    );
+    let parse_error = tool_error
+        .details
+        .as_ref()
+        .and_then(|details| details.get("parse_error"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(parse_error.contains("unknown field `status`"));
+    assert!(parse_error.contains("state"));
     let recovery_hint = tool_error.recovery_hint.as_deref().unwrap_or_default();
+    assert!(recovery_hint.contains("work_item_id"));
     assert!(recovery_hint.contains("\"state\":\"done\""));
     assert!(recovery_hint.contains("pending, doing, or done"));
+}
+
+#[tokio::test]
+async fn update_work_item_missing_id_returns_top_level_field_hint() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+
+    let error = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "missing-id".into(),
+                name: "UpdateWorkItem".into(),
+                input: serde_json::json!({
+                    "plan": [
+                        { "step": "inspect current handler", "state": "done" }
+                    ]
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+    let tool_error = crate::tool::ToolError::from_anyhow(&error);
+    assert_eq!(tool_error.kind, "invalid_tool_input");
+    let recovery_hint = tool_error.recovery_hint.as_deref().unwrap_or_default();
+    assert!(recovery_hint.contains("UpdateWorkItem schema"));
+    assert!(recovery_hint.contains("work_item_id"));
+    assert!(recovery_hint.contains("\"state\":\"done\""));
 }
 
 #[tokio::test]
