@@ -696,6 +696,7 @@ pub mod http_workspace;
 
 // Runtime flow support modules
 pub mod runtime_compaction;
+pub mod runtime_compaction_providers;
 pub mod runtime_helpers;
 pub mod runtime_providers;
 pub mod runtime_subagents;
