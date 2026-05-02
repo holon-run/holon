@@ -108,6 +108,9 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 10] = [
     },
 ];
 
+/// Maximum number of entries to keep in input history
+const MAX_INPUT_HISTORY: usize = 100;
+
 fn slash_command_spec(command: &str) -> Option<SlashCommandSpec> {
     SLASH_COMMAND_SPECS
         .iter()
@@ -259,7 +262,15 @@ impl TuiApp {
             Some(ComposerSubmission::Chat(text)) => {
                 // Save to input history before sending
                 if !text.is_empty() {
+                    // Add to history, trimming if we exceed the cap
                     self.input_history.push(text.clone());
+                    if self.input_history.len() > MAX_INPUT_HISTORY {
+                        // Remove oldest entries (from the front)
+                        let excess = self.input_history.len() - MAX_INPUT_HISTORY;
+                        for _ in 0..excess {
+                            self.input_history.remove(0);
+                        }
+                    }
                     self.history_index = None;
                 }
                 let agent_id = self
@@ -280,19 +291,13 @@ impl TuiApp {
         }
     }
 
-    fn navigate_history(&mut self, direction: i32) {
+pub(super) fn navigate_history(&mut self, direction: i32) {
         if self.input_history.is_empty() {
             return;
         }
 
-        // If we're not currently browsing history, start from the most recent
         let current_index = match self.history_index {
             None => {
-                // Save current draft if not empty
-                if !self.composer.is_empty() {
-                    // Starting history navigation - we'll come back to this draft
-                    // Store it implicitly by just setting index
-                }
                 if direction < 0 {
                     Some(self.input_history.len().saturating_sub(1))
                 } else {
@@ -612,10 +617,10 @@ match key.code {
             KeyCode::Char('?') if self.composer.is_empty() => {
                 self.overlay = OverlayState::HelpView { scroll: 0 };
             }
-            KeyCode::Up if self.composer.is_empty() => {
+            KeyCode::Up if self.history_index.is_some() || self.composer.is_empty() => {
                 self.navigate_history(-1);
             }
-            KeyCode::Down if self.composer.is_empty() => {
+            KeyCode::Down if self.history_index.is_some() || self.composer.is_empty() => {
                 self.navigate_history(1);
             }
             // PageUp/PageDown always scroll chat

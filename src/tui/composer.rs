@@ -74,14 +74,19 @@ impl ComposerState {
     pub(super) fn move_to_end(&mut self) {
         self.cursor = self.text.len();
     }
-
+    
     pub(super) fn delete_to_end(&mut self) {
-        self.text.truncate(self.cursor);
+        let end = self.current_line_end();
+        self.text.truncate(end);
+        if self.cursor > end {
+            self.cursor = end;
+        }
     }
-
+    
     pub(super) fn delete_to_start(&mut self) {
-        self.text.drain(0..self.cursor);
-        self.cursor = 0;
+        let start = self.current_line_start();
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
     }
 
     pub(super) fn delete_word(&mut self) {
@@ -98,10 +103,10 @@ impl ComposerState {
         } else {
             trimmed_end
         };
-        before[..word_end]
-            .rfind(' ')
-            .map(|i| i + 1)
-            .unwrap_or(0)
+        before[..word_end].rfind(|c: char| c.is_whitespace()).map(|i| {
+            // Find the byte after the whitespace character
+            i + before[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1)
+        }).unwrap_or(0)
     }
 
 
@@ -194,3 +199,85 @@ mod tests {
         assert_eq!(composer.cursor(), "first\nsecond".len());
     }
 }
+
+    #[test]
+    fn move_to_start_moves_cursor_to_beginning() {
+        let mut composer = ComposerState::from("some text");
+        composer.move_to_start();
+        assert_eq!(composer.cursor(), 0);
+    }
+
+    #[test]
+    fn move_to_end_moves_cursor_to_end() {
+        let mut composer = ComposerState::from("some text");
+        composer.move_to_start();
+        composer.move_to_end();
+        assert_eq!(composer.cursor(), 9);
+    }
+
+    #[test]
+    fn delete_to_end_deletes_from_cursor_to_line_end() {
+        let mut composer = ComposerState::from("first line\nsecond line");
+        // Move to start of "first line"
+        composer.move_to_start();
+        // Move to position after "first"
+        for _ in 0..5 {
+            composer.move_right();
+        }
+        composer.delete_to_end();
+        assert_eq!(composer.as_str(), "first line");
+        assert_eq!(composer.cursor(), 5);
+    }
+
+    #[test]
+    fn delete_to_start_deletes_from_line_start_to_cursor() {
+        let mut composer = ComposerState::from("first line\nsecond line");
+        // Move to start of "first line"
+        composer.move_to_start();
+        // Move to position after "first "
+        for _ in 0..6 {
+            composer.move_right();
+        }
+        composer.delete_to_start();
+        assert_eq!(composer.as_str(), "line\nsecond line");
+        assert_eq!(composer.cursor(), 0);
+    }
+
+    #[test]
+    fn delete_to_end_on_last_line_deletes_to_end_of_buffer() {
+        let mut composer = ComposerState::from("first\nsecond");
+        // Move to start of "second"
+        composer.move_to_start();
+        for _ in 0..7 {
+            composer.move_right();
+        }
+        composer.delete_to_end();
+        assert_eq!(composer.as_str(), "first\nsecond");
+        // Cursor should be at end since there's no newline after
+        assert_eq!(composer.cursor(), 7);
+    }
+
+    #[test]
+    fn delete_word_deletes_previous_word() {
+        let mut composer = ComposerState::from("hello world test");
+        composer.delete_word();
+        assert_eq!(composer.as_str(), "hello world ");
+        assert_eq!(composer.cursor(), 12);
+    }
+
+    #[test]
+    fn delete_word_handles_multiple_spaces() {
+        let mut composer = ComposerState::from("hello   world");
+        composer.delete_word();
+        assert_eq!(composer.as_str(), "hello   ");
+        assert_eq!(composer.cursor(), 8);
+    }
+
+    #[test]
+    fn delete_word_handles_tabs_and_newlines() {
+        let mut composer = ComposerState::from("hello\tworld\nthere");
+        composer.delete_word();
+        // Should delete "there" and stop at whitespace
+        assert_eq!(composer.as_str(), "hello\tworld\n");
+        assert_eq!(composer.cursor(), 12);
+    }

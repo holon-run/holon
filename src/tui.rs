@@ -2361,5 +2361,41 @@ mod tests {
             app.status_line,
             format!("Failed to switch to agent beta: {err}")
         );
+}
+
+    fn test_app() -> TuiApp {
+        let client = LocalClient::new(test_config()).unwrap();
+        TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        )
+    }
+
+    #[test]
+    fn history_navigation_browses_multiple_entries() {
+        let mut app = test_app();
+        app.input_history = vec!["cmd1".into(), "cmd2".into(), "cmd3".into()];
+        app.history_index = None;
+        app.composer.clear();
+
+        // Navigate up: should go to cmd3 (most recent)
+        app.navigate_history(-1);
+        assert_eq!(app.history_index, Some(2));
+        assert_eq!(app.composer.as_str(), "cmd3");
+
+        // Navigate up again: should go to cmd2
+        app.navigate_history(-1);
+        assert_eq!(app.history_index, Some(1));
+        assert_eq!(app.composer.as_str(), "cmd2");
+
+        // Navigate down: should go back to cmd3
+        app.navigate_history(1);
+        assert_eq!(app.history_index, Some(2));
+        assert_eq!(app.composer.as_str(), "cmd3");
+
+        // Navigate down past the end: should clear composer
+        app.navigate_history(1);
+        assert_eq!(app.history_index, None);
+        assert!(app.composer.is_empty());
     }
 }
