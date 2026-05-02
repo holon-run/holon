@@ -17,7 +17,10 @@ use crate::{
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Local};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -75,6 +78,14 @@ pub async fn run_tui(config: AppConfig, no_alt_screen: bool) -> Result<()> {
     if alt_screen_enabled {
         execute!(stdout, EnterAlternateScreen)?;
         terminal_guard.alternate_screen_enabled = true;
+    }
+    if execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
+    {
+        terminal_guard.keyboard_enhancement_enabled = true;
     }
 
     let backend = CrosstermBackend::new(stdout);
@@ -771,6 +782,7 @@ fn is_cursor_too_old_error(err: &anyhow::Error) -> bool {
 struct TerminalCleanupGuard {
     raw_mode_enabled: bool,
     alternate_screen_enabled: bool,
+    keyboard_enhancement_enabled: bool,
 }
 
 impl TerminalCleanupGuard {
@@ -778,12 +790,17 @@ impl TerminalCleanupGuard {
         Self {
             raw_mode_enabled: false,
             alternate_screen_enabled: false,
+            keyboard_enhancement_enabled: false,
         }
     }
 }
 
 impl Drop for TerminalCleanupGuard {
     fn drop(&mut self) {
+        if self.keyboard_enhancement_enabled {
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+        }
         if self.raw_mode_enabled {
             let _ = disable_raw_mode();
         }
@@ -1145,6 +1162,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shift_enter_adds_new_line_when_slash_menu_is_visible() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/de");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+
+        assert_eq!(app.composer.as_str(), "/de\n");
+    }
+
+    #[tokio::test]
     async fn enter_submits_instead_of_inserting_new_line() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
@@ -1406,6 +1439,47 @@ mod tests {
                 selected: 0
             }
         );
+        assert_eq!(app.composer.as_str(), "");
+    }
+
+    #[tokio::test]
+    async fn slash_menu_enter_runs_selected_prefix_command() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/mo");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.overlay,
+            OverlayState::ModelPicker {
+                filter: String::new(),
+                selected: 0
+            }
+        );
+        assert_eq!(app.composer.as_str(), "");
+    }
+
+    #[tokio::test]
+    async fn slash_menu_enter_runs_selected_command_from_root_menu() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/");
+        app.slash_menu_selected = 1;
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.overlay, OverlayState::Agents);
         assert_eq!(app.composer.as_str(), "");
     }
 
@@ -1712,6 +1786,119 @@ mod tests {
             .collect();
         assert!(!rendered.contains("Run command: cargo test"));
         assert!(!rendered.contains("System (work)"));
+    }
+
+    #[test]
+    fn chat_text_keeps_active_activity_after_brief_event() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        snapshot.agent.agent.working_memory.current_working_memory =
+            crate::types::WorkingMemorySnapshot {
+                current_work_item_id: Some("work-1".into()),
+                delivery_target: Some("fix TUI active activity".into()),
+                work_summary: Some("Improve the Conversation working indicator".into()),
+                ..Default::default()
+            };
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-tool".into(),
+                event: "tool_executed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-tool".into(),
+                    seq: 2,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    payload: json!({
+                        "tool_name": "ExecCommand",
+                        "exec_command_cmd": "cargo test tui"
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-brief".into(),
+                event: "brief_created".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-brief".into(),
+                    seq: 3,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "brief_created".into(),
+                    payload: json!({
+                        "id": "brief-1",
+                        "agent_id": "default",
+                        "workspace_id": crate::types::AGENT_HOME_WORKSPACE_ID,
+                        "work_item_id": null,
+                        "kind": "result",
+                        "created_at": Utc::now(),
+                        "text": "Still working",
+                        "attachments": null,
+                        "related_message_id": null,
+                        "related_task_id": null
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.projection = Some(projection);
+
+        let rendered: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(rendered.contains("Holon (working)"));
+        assert!(rendered.contains("Improve the Conversation working indicator"));
+        assert!(rendered.contains("Now: ExecCommand: cargo test tui"));
+    }
+
+    #[test]
+    fn chat_text_does_not_show_stale_activity_when_agent_is_idle() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeIdle;
+        snapshot.agent.agent.pending = 0;
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-tool".into(),
+                event: "tool_executed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-tool".into(),
+                    seq: 2,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    payload: json!({
+                        "tool_name": "ExecCommand",
+                        "exec_command_cmd": "cargo test stale"
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.projection = Some(projection);
+
+        let rendered: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(!rendered.contains("Holon (working)"));
+        assert!(!rendered.contains("cargo test stale"));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use unicode_width::UnicodeWidthStr;
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
     let area = frame.area();
     let slash_menu = slash_menu_lines(app);
-    let prompt_height = prompt_pane_height(app.composer.as_str(), slash_menu.len());
+    let prompt_height = prompt_pane_height(app.composer.as_str(), slash_menu.len(), area.width);
     let status_height = status_bar_height(&app.status_line);
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -260,13 +260,14 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
     lines.join("\n")
 }
 
-fn prompt_pane_height(buffer: &str, slash_menu_rows: usize) -> u16 {
-    let mut prompt_lines = buffer.lines().count();
-    if buffer.is_empty() || buffer.ends_with('\n') {
-        prompt_lines += 1;
-    }
-    let prompt_lines = prompt_lines.max(1) as u16;
-    (prompt_lines + slash_menu_rows as u16 + 2).clamp(3, 12)
+fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> u16 {
+    let input_width = pane_width.saturating_sub(2).max(1);
+    let prompt_rows = render_prompt_buffer(buffer)
+        .split('\n')
+        .map(|line| wrapped_prompt_rows(line, input_width))
+        .sum::<u16>()
+        .max(1);
+    (prompt_rows + slash_menu_rows as u16 + 2).clamp(3, 12)
 }
 
 fn status_bar_height(status_line: &str) -> u16 {
@@ -308,7 +309,11 @@ fn render_prompt_buffer(buffer: &str) -> String {
 fn render_prompt_text(buffer: &str, slash_menu: &[Line<'static>]) -> Text<'static> {
     if !slash_menu.is_empty() {
         let mut lines = slash_menu.to_vec();
-        lines.push(Line::from(render_prompt_buffer(buffer)));
+        lines.extend(
+            render_prompt_buffer(buffer)
+                .lines()
+                .map(|line| Line::from(line.to_string())),
+        );
         return Text::from(lines);
     }
 
@@ -813,8 +818,9 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        prompt_cursor_position, render_header, render_model_status, render_prompt_buffer,
-        render_prompt_text, render_summary, render_task_detail, status_bar_height,
+        prompt_cursor_position, prompt_pane_height, render_header, render_model_status,
+        render_prompt_buffer, render_prompt_text, render_summary, render_task_detail,
+        status_bar_height,
     };
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::types::{
@@ -962,6 +968,12 @@ mod tests {
     }
 
     #[test]
+    fn prompt_pane_height_accounts_for_soft_wrapped_lines() {
+        assert_eq!(prompt_pane_height("abcdefgh", 0, 10), 4);
+        assert_eq!(prompt_pane_height("abcdefghabcdefgh", 0, 10), 5);
+    }
+
+    #[test]
     fn empty_prompt_renders_dim_placeholder() {
         let rendered = render_prompt_text("", &[]);
         let line = rendered.lines.first().expect("placeholder line");
@@ -1086,6 +1098,32 @@ mod tests {
             .join("\n");
         assert!(joined.contains("/debug-prompt open debug prompt dialog"));
         assert!(joined.contains("> /de"));
+    }
+
+    #[test]
+    fn slash_menu_prompt_buffer_uses_real_text_lines() {
+        let rendered = render_prompt_text(
+            "/debug\nsecond",
+            &[Line::from("  /debug-prompt open debug prompt dialog")],
+        );
+        let joined = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            joined,
+            vec![
+                "  /debug-prompt open debug prompt dialog",
+                "> /debug",
+                "  second"
+            ]
+        );
     }
 
     #[test]
