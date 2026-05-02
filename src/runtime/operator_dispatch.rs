@@ -30,6 +30,8 @@ impl RuntimeHandle {
             let state = guard.state.clone();
             drop(guard);
             let available_tools = self.filtered_tool_specs(&identity)?;
+            let provider = self.current_provider().await;
+            let prompt_tools = provider.prompt_tool_specs(&available_tools);
             let workspace = self.workspace_view_from_state(&state)?;
             let execution = self.execution_snapshot_for_view(
                 state.execution_profile.clone(),
@@ -49,7 +51,7 @@ impl RuntimeHandle {
                 &identity,
                 loaded_agents_md,
                 &skills,
-                &available_tools,
+                &prompt_tools,
                 continuation_resolution,
             )?
         };
@@ -131,6 +133,8 @@ impl RuntimeHandle {
             .map(|trigger| resolve_continuation(&prior_closure, &trigger));
         let identity = self.agent_identity_view().await?;
         let available_tools = self.filtered_tool_specs(&identity)?;
+        let provider = self.current_provider().await;
+        let prompt_tools = provider.prompt_tool_specs(&available_tools);
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
         let skills = self.skills_runtime_view_for_state(&agent, &identity)?;
@@ -145,7 +149,7 @@ impl RuntimeHandle {
             &identity,
             loaded_agents_md,
             &skills,
-            &available_tools,
+            &prompt_tools,
             continuation.as_ref(),
         )
     }

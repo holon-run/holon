@@ -1,6 +1,28 @@
 use super::super::*;
 use super::support::*;
 
+struct FreeformPromptProvider;
+
+#[async_trait]
+impl AgentProvider for FreeformPromptProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: "done".into(),
+            }],
+            stop_reason: Some("stop".into()),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_usage: None,
+            request_diagnostics: None,
+        })
+    }
+
+    fn supports_freeform_grammar_tools(&self) -> bool {
+        true
+    }
+}
+
 #[tokio::test]
 async fn agent_summary_reports_agents_md_sources_without_content() {
     let dir = tempdir().unwrap();
@@ -123,6 +145,62 @@ async fn detached_agent_does_not_load_workspace_agents_md() {
 
     let loaded = runtime.loaded_agents_md().await.unwrap();
     assert!(loaded.workspace_source.is_none());
+}
+
+#[tokio::test]
+async fn preview_prompt_lowers_apply_patch_contract_for_json_tool_providers() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let preview = runtime
+        .preview_prompt("edit a file".into(), TrustLevel::TrustedOperator)
+        .await
+        .unwrap();
+
+    assert!(preview
+        .rendered_system_prompt
+        .contains("Current ApplyPatch surface is a JSON/function tool"));
+    assert!(!preview
+        .rendered_system_prompt
+        .contains("Current ApplyPatch surface is a freeform grammar tool"));
+}
+
+#[tokio::test]
+async fn preview_prompt_keeps_apply_patch_contract_for_freeform_tool_providers() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(FreeformPromptProvider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let preview = runtime
+        .preview_prompt("edit a file".into(), TrustLevel::TrustedOperator)
+        .await
+        .unwrap();
+
+    assert!(preview
+        .rendered_system_prompt
+        .contains("Current ApplyPatch surface is a freeform grammar tool"));
+    assert!(!preview
+        .rendered_system_prompt
+        .contains("Current ApplyPatch surface is a JSON/function tool"));
 }
 
 #[tokio::test]

@@ -12,7 +12,9 @@ use crate::{
         spec::{ToolFreeformGrammar, ToolResultStatus},
         ToolError, ToolResult,
     },
-    types::{ApplyPatchAction, ApplyPatchResult, ToolCapabilityFamily, TrustLevel},
+    types::{
+        ApplyPatchAction, ApplyPatchDiagnostic, ApplyPatchResult, ToolCapabilityFamily, TrustLevel,
+    },
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -22,6 +24,8 @@ pub(crate) const NAME: &str = "ApplyPatch";
 const APPLY_PATCH_LARK_GRAMMAR: &str = include_str!("apply_patch_tool.lark");
 const MODEL_ERROR_TEXT_LIMIT: usize = 700;
 const MODEL_ERROR_TOKEN_LIMIT: usize = 96;
+const MODEL_DIAGNOSTIC_LIMIT: usize = 8;
+const SUMMARY_DIAGNOSTIC_LIMIT: usize = 3;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -34,7 +38,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: crate::tool::ToolSpec {
             name: NAME.to_string(),
-            description: "Apply a unified diff patch across one or more files. On providers that expose custom/freeform tools, send the unified diff body directly rather than wrapping it in JSON. On JSON fallback providers, ApplyPatch expects exactly {\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}. Do not use \"input\" or the old *** Begin Patch format.".to_string(),
+            description: "Apply a unified diff patch across one or more files. Follow the invocation shape exposed by the current tool surface, and do not use the old *** Begin Patch format.".to_string(),
             input_schema: tool_input_schema::<ApplyPatchArgs>()?,
             freeform_grammar: Some(ToolFreeformGrammar {
                 syntax: "lark".to_string(),
@@ -56,7 +60,7 @@ pub(crate) async fn execute(
         .await?;
     let outcome =
         apply_patch::apply_patch(execution.workspace.execution_root(), &patch_input).await?;
-    let summary_text = if outcome.changed_files.is_empty() {
+    let mut summary_text = if outcome.changed_files.is_empty() {
         "patched no files".to_string()
     } else {
         format!(
@@ -69,6 +73,9 @@ pub(crate) async fn execute(
                 .join(", ")
         )
     };
+    if !outcome.diagnostics.is_empty() {
+        summary_text.push_str(&render_diagnostics_summary(&outcome.diagnostics));
+    }
     serialize_success(
         NAME,
         &ApplyPatchResult {
@@ -97,11 +104,36 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
         .ok_or_else(|| anyhow!("ApplyPatch result missing payload"))?;
     let result: ApplyPatchResult = serde_json::from_value(value)?;
 
-    let mut lines = vec!["Success. Updated the following files:".to_string()];
+    let mut lines = if result.diagnostics.is_empty() {
+        vec!["Success. Updated the following files:".to_string()]
+    } else {
+        vec!["Success with diagnostics. Updated the following files:".to_string()]
+    };
     if result.changed_files.is_empty() {
         lines.push("(no file changes recorded)".to_string());
     } else {
         lines.extend(result.changed_files.iter().map(render_changed_file_receipt));
+    }
+    if !result.diagnostics.is_empty() {
+        lines.push(String::new());
+        lines.push("Diagnostics:".to_string());
+        lines.extend(
+            result
+                .diagnostics
+                .iter()
+                .take(MODEL_DIAGNOSTIC_LIMIT)
+                .map(render_diagnostic_for_model),
+        );
+        if result.diagnostics.len() > MODEL_DIAGNOSTIC_LIMIT {
+            lines.push(format!(
+                "- omitted {} additional diagnostics",
+                result.diagnostics.len() - MODEL_DIAGNOSTIC_LIMIT
+            ));
+        }
+        lines.push(
+            "Inspect the affected target region before applying another patch to the same file."
+                .to_string(),
+        );
     }
     Ok(lines.join("\n"))
 }
@@ -192,6 +224,44 @@ fn render_changed_file_receipt(file: &crate::types::ApplyPatchChangedFile) -> St
     }
 }
 
+fn render_diagnostic_for_model(diagnostic: &ApplyPatchDiagnostic) -> String {
+    let path = if diagnostic.path.trim().is_empty() {
+        "unknown path".to_string()
+    } else {
+        sanitize_model_visible_error_text(&diagnostic.path)
+    };
+    format!(
+        "- {} on {}: {}",
+        diagnostic.kind,
+        path,
+        sanitize_model_visible_error_text(&diagnostic.message)
+    )
+}
+
+fn render_diagnostics_summary(diagnostics: &[ApplyPatchDiagnostic]) -> String {
+    let mut parts = diagnostics
+        .iter()
+        .take(SUMMARY_DIAGNOSTIC_LIMIT)
+        .map(render_diagnostic_summary)
+        .collect::<Vec<_>>();
+    if diagnostics.len() > SUMMARY_DIAGNOSTIC_LIMIT {
+        parts.push(format!(
+            "+{} more",
+            diagnostics.len() - SUMMARY_DIAGNOSTIC_LIMIT
+        ));
+    }
+    format!(" (diagnostics: {})", parts.join(", "))
+}
+
+fn render_diagnostic_summary(diagnostic: &ApplyPatchDiagnostic) -> String {
+    let path = if diagnostic.path.trim().is_empty() {
+        "unknown path".to_string()
+    } else {
+        diagnostic.path.clone()
+    };
+    sanitize_model_visible_error_text(&format!("{} on {}", diagnostic.kind, path))
+}
+
 fn render_changed_file_summary(file: &crate::types::ApplyPatchChangedFile) -> String {
     match file.action {
         ApplyPatchAction::Move => format!(
@@ -240,6 +310,85 @@ mod tests {
         assert!(rendered.contains("Success. Updated the following files:"));
         assert!(rendered.contains("M src/lib.rs"));
         assert!(rendered.contains("A README.md"));
+    }
+
+    #[test]
+    fn apply_patch_renders_diagnostics_in_model_receipt() {
+        let result = serialize_success(
+            NAME,
+            &ApplyPatchResult {
+                changed_files: vec![crate::types::ApplyPatchChangedFile {
+                    action: ApplyPatchAction::Modify,
+                    path: "src/lib.rs".into(),
+                    from_path: None,
+                }],
+                changed_file_count: 1,
+                changed_paths: vec!["src/lib.rs".into()],
+                ignored_metadata: Vec::new(),
+                diagnostics: vec![ApplyPatchDiagnostic {
+                    path: "src/lib.rs".into(),
+                    kind: "hunk_count_mismatch".into(),
+                    message: "hunk header declared -1,1 +1,1 but body counted -1,20 +1,30".into(),
+                }],
+                summary_text: Some("patched M:src/lib.rs".into()),
+            },
+        )
+        .unwrap();
+
+        let rendered = render_for_model(&result).unwrap();
+        assert!(rendered.contains("Success with diagnostics"));
+        assert!(rendered.contains("M src/lib.rs"));
+        assert!(rendered.contains("Diagnostics:"));
+        assert!(rendered.contains("hunk_count_mismatch"));
+        assert!(rendered.contains("Inspect the affected target region"));
+    }
+
+    #[test]
+    fn apply_patch_renders_bounded_diagnostics_in_model_receipt() {
+        let diagnostics = (0..(MODEL_DIAGNOSTIC_LIMIT + 2))
+            .map(|idx| ApplyPatchDiagnostic {
+                path: format!("src/lib{idx}.rs"),
+                kind: "hunk_count_mismatch".into(),
+                message: format!("diagnostic {idx}"),
+            })
+            .collect::<Vec<_>>();
+        let result = serialize_success(
+            NAME,
+            &ApplyPatchResult {
+                changed_files: vec![crate::types::ApplyPatchChangedFile {
+                    action: ApplyPatchAction::Modify,
+                    path: "src/lib.rs".into(),
+                    from_path: None,
+                }],
+                changed_file_count: 1,
+                changed_paths: vec!["src/lib.rs".into()],
+                ignored_metadata: Vec::new(),
+                diagnostics,
+                summary_text: Some("patched M:src/lib.rs".into()),
+            },
+        )
+        .unwrap();
+
+        let rendered = render_for_model(&result).unwrap();
+        assert!(rendered.contains("diagnostic 7"));
+        assert!(!rendered.contains("diagnostic 8"));
+        assert!(rendered.contains("- omitted 2 additional diagnostics"));
+    }
+
+    #[test]
+    fn apply_patch_diagnostics_summary_is_bounded() {
+        let diagnostics = (0..(SUMMARY_DIAGNOSTIC_LIMIT + 2))
+            .map(|idx| ApplyPatchDiagnostic {
+                path: format!("src/lib{idx}.rs"),
+                kind: "hunk_count_mismatch".into(),
+                message: format!("diagnostic {idx}"),
+            })
+            .collect::<Vec<_>>();
+
+        let summary = render_diagnostics_summary(&diagnostics);
+        assert!(summary.contains("diagnostics: hunk_count_mismatch on src/lib0.rs"));
+        assert!(summary.contains("+2 more"));
+        assert!(!summary.contains("src/lib3.rs"));
     }
 
     #[test]

@@ -294,6 +294,25 @@ pub trait AgentProvider: Send + Sync {
         vec![ProviderPromptCapability::FullRequestOnly]
     }
 
+    fn supports_freeform_grammar_tools(&self) -> bool {
+        false
+    }
+
+    fn prompt_tool_specs(&self, tools: &[ToolSpec]) -> Vec<ToolSpec> {
+        if self.supports_freeform_grammar_tools() {
+            return tools.to_vec();
+        }
+
+        tools
+            .iter()
+            .cloned()
+            .map(|mut tool| {
+                tool.freeform_grammar = None;
+                tool
+            })
+            .collect()
+    }
+
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {
         None
     }
