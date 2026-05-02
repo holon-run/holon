@@ -628,6 +628,9 @@ impl TuiApp {
     }
 
     async fn handle_slash_menu_key(&mut self, key: KeyEvent) -> Result<bool> {
+        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {
+            return Ok(false);
+        }
         if !self.is_slash_menu_visible() {
             return Ok(false);
         }

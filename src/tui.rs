@@ -17,7 +17,10 @@ use crate::{
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Local};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -75,6 +78,14 @@ pub async fn run_tui(config: AppConfig, no_alt_screen: bool) -> Result<()> {
     if alt_screen_enabled {
         execute!(stdout, EnterAlternateScreen)?;
         terminal_guard.alternate_screen_enabled = true;
+    }
+    if execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
+    {
+        terminal_guard.keyboard_enhancement_enabled = true;
     }
 
     let backend = CrosstermBackend::new(stdout);
@@ -771,6 +782,7 @@ fn is_cursor_too_old_error(err: &anyhow::Error) -> bool {
 struct TerminalCleanupGuard {
     raw_mode_enabled: bool,
     alternate_screen_enabled: bool,
+    keyboard_enhancement_enabled: bool,
 }
 
 impl TerminalCleanupGuard {
@@ -778,12 +790,17 @@ impl TerminalCleanupGuard {
         Self {
             raw_mode_enabled: false,
             alternate_screen_enabled: false,
+            keyboard_enhancement_enabled: false,
         }
     }
 }
 
 impl Drop for TerminalCleanupGuard {
     fn drop(&mut self) {
+        if self.keyboard_enhancement_enabled {
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+        }
         if self.raw_mode_enabled {
             let _ = disable_raw_mode();
         }
@@ -1142,6 +1159,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.composer.as_str(), "h\ni");
+    }
+
+    #[tokio::test]
+    async fn shift_enter_adds_new_line_when_slash_menu_is_visible() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/de");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+
+        assert_eq!(app.composer.as_str(), "/de\n");
     }
 
     #[tokio::test]
