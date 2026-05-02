@@ -367,6 +367,10 @@ impl AgentProvider for OpenAiProvider {
             crate::provider::ProviderPromptCapability::IncrementalResponses,
         ]
     }
+
+    fn supports_freeform_grammar_tools(&self) -> bool {
+        true
+    }
 }
 
 #[async_trait]
@@ -453,6 +457,10 @@ impl AgentProvider for OpenAiCodexProvider {
             crate::provider::ProviderPromptCapability::PromptCacheKey,
             crate::provider::ProviderPromptCapability::IncrementalResponses,
         ]
+    }
+
+    fn supports_freeform_grammar_tools(&self) -> bool {
+        true
     }
 }
 

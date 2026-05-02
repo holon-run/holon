@@ -17,6 +17,9 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         .iter()
         .map(|tool| tool.name.as_str())
         .collect::<Vec<_>>();
+    let apply_patch_tool = available_tools
+        .iter()
+        .find(|tool| tool.name == "ApplyPatch");
 
     if names.contains(&"Sleep") {
         sections.push(section(
@@ -104,18 +107,23 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
             "Use ExecCommandBatch when several bounded shell commands should run before the next decision and do not require interactive input, background task management, or command-task continuation. Each item uses restricted ExecCommand startup fields: `cmd`, optional `workdir`, `shell`, `login`, `yield_time_ms`, and `max_output_tokens`. Do not pass `tty`, `accepts_input`, or `continue_on_result`; call ExecCommand directly for interactive, tty, or long-running supervised commands. ExecCommandBatch runs items sequentially and returns one grouped receipt with per-item status, output previews, truncation flags, command previews, and errors. Use it instead of unstructured shell separator scripts when item boundaries matter, but keep each item command compact and artifact-oriented. Do not use it for edits, arbitrary nested tools, installs, or commands whose later items depend on earlier output unless you intentionally set `stop_on_error` for a bounded sequence.".to_string(),
         ));
     }
-    if names.contains(&"ApplyPatch") {
+    if let Some(apply_patch_tool) = apply_patch_tool {
+        let invocation_contract = if apply_patch_tool.freeform_grammar.is_some() {
+            "Current ApplyPatch surface is a freeform grammar tool: send the unified diff body directly. Do not wrap it in JSON, and do not use `patch` or `input` fields."
+        } else {
+            "Current ApplyPatch surface is a JSON/function tool: call it with exactly `{\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}`. Do not use `input`, and do not send a raw freeform diff body."
+        };
         sections.push(section(
             "tool_apply_patch",
             PromptStability::Stable,
-            "Use ApplyPatch as the primary precise file-mutation tool. Use it for focused new files, small local edits, multi-hunk single-file changes, structural edits, and bounded refactors. For very large new files, generated files, whole-file rewrites, bulk deletes, or broad mechanical refactors, choose the lower-context path: split the change into smaller ApplyPatch calls, or use a carefully bounded ExecCommand/scripted rewrite when that avoids emitting a huge diff and is easier to verify. Do not expect separate Write or Edit tools; express ordinary file mutation as unified diff text. On providers that expose ApplyPatch as a freeform grammar tool, send the unified diff body directly and do not wrap it in JSON. On JSON/function fallback providers, ApplyPatch expects exactly `{\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}`; do not use `input`. The model-visible ApplyPatch receipt is concise text with action markers like `A`, `M`, `D`, or `R`, while the canonical result still records structured changed-file metadata, `changed_paths`, `changed_file_count`, ignored metadata, diagnostics, and `summary_text`.".to_string(),
+            format!("Use ApplyPatch as the primary precise file-mutation tool. Use it for focused new files, small local edits, multi-hunk single-file changes, structural edits, and bounded refactors. For very large new files, generated files, whole-file rewrites, bulk deletes, or broad mechanical refactors, choose the lower-context path: split the change into smaller ApplyPatch calls, or use a carefully bounded ExecCommand/scripted rewrite when that avoids emitting a huge diff and is easier to verify. Do not expect separate Write or Edit tools; express ordinary file mutation as unified diff text. {invocation_contract} The model-visible ApplyPatch receipt is concise text with action markers like `A`, `M`, `D`, or `R`; if it says success with diagnostics, treat the target file as potentially different from your intended mental model. The canonical result still records structured changed-file metadata, `changed_paths`, `changed_file_count`, ignored metadata, diagnostics, and `summary_text`."),
         ));
     }
     if names.contains(&"ApplyPatch") {
         sections.push(section(
             "tool_file_mutation",
             PromptStability::Stable,
-            "File mutation is workspace-scoped and centered on ApplyPatch. Use unified diff `---`/`+++` file headers and `@@` hunks for deletes, precise edits, and renames. Prefer focused hunks with enough surrounding context to stay unambiguous. Include at least 3 context lines before and after each changed line, and expand to 5–10 lines when the file contains repeated structures or similar patterns. Blank lines within hunks must have a space prefix to be valid context lines. Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After any file mutation, rely on the ApplyPatch receipt first, then run focused verification with ExecCommand when correctness matters. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead.".to_string(),
+            "File mutation is workspace-scoped and centered on ApplyPatch. Use unified diff `---`/`+++` file headers and `@@` hunks for deletes, precise edits, and renames. Prefer focused hunks with enough surrounding context to stay unambiguous. Include at least 3 context lines before and after each changed line, and expand to 5–10 lines when the file contains repeated structures or similar patterns. Blank lines within hunks must have a space prefix to be valid context lines. Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After a clean file mutation, rely on the ApplyPatch receipt first, then run focused verification with ExecCommand when correctness matters. If ApplyPatch reports diagnostics, warnings, partial application, context mismatch, or any non-clean receipt, inspect the exact affected region before continuing edits to that file and do not retry the same diagnostic-producing patch unchanged. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead.".to_string(),
         ));
     }
     if names.contains(&"UseWorkspace") {
@@ -451,6 +459,16 @@ mod tests {
             .contains("Do not expect separate Write or Edit tools"));
         assert!(apply_patch.content.contains("lower-context path"));
         assert!(apply_patch.content.contains("very large new files"));
+        assert!(apply_patch.content.contains("success with diagnostics"));
+        assert!(apply_patch
+            .content
+            .contains("Current ApplyPatch surface is a JSON/function tool"));
+        assert!(apply_patch
+            .content
+            .contains("do not send a raw freeform diff body"));
+        assert!(!apply_patch
+            .content
+            .contains("Current ApplyPatch surface is a freeform grammar tool"));
         let section = sections
             .iter()
             .find(|s| s.name == "tool_file_mutation")
@@ -461,6 +479,41 @@ mod tests {
             .content
             .contains("do not retry the same large failed patch unchanged"));
         assert!(section.content.contains("bounded script or heredoc"));
+        assert!(section.content.contains("non-clean receipt"));
+        assert!(section
+            .content
+            .contains("inspect the exact affected region"));
+    }
+
+    #[test]
+    fn test_apply_patch_section_uses_freeform_invocation_when_grammar_is_available() {
+        let tools = vec![ToolSpec {
+            name: "ApplyPatch".into(),
+            description: String::new(),
+            input_schema: json!({}),
+            freeform_grammar: Some(crate::tool::spec::ToolFreeformGrammar {
+                syntax: "lark".into(),
+                definition: "start: /.+/".into(),
+            }),
+        }];
+        let sections = tool_sections(&tools);
+        let apply_patch = sections
+            .iter()
+            .find(|s| s.name == "tool_apply_patch")
+            .expect("apply patch section");
+
+        assert!(apply_patch
+            .content
+            .contains("Current ApplyPatch surface is a freeform grammar tool"));
+        assert!(apply_patch
+            .content
+            .contains("send the unified diff body directly"));
+        assert!(apply_patch
+            .content
+            .contains("do not use `patch` or `input` fields"));
+        assert!(!apply_patch
+            .content
+            .contains("Current ApplyPatch surface is a JSON/function tool"));
     }
 
     #[test]

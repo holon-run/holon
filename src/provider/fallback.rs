@@ -443,6 +443,14 @@ impl AgentProvider for FallbackProvider {
         capabilities
     }
 
+    fn supports_freeform_grammar_tools(&self) -> bool {
+        !self.candidates.is_empty()
+            && self
+                .candidates
+                .iter()
+                .all(|candidate| candidate.provider.supports_freeform_grammar_tools())
+    }
+
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {
         let mut candidates = self.candidates.iter();
         let first = candidates.next()?.provider.context_management_policy()?;
