@@ -552,6 +552,7 @@ async fn turn_end_work_item_commit_moves_failed_turn_to_waiting() {
             turn_index: guard.state.turn_index,
             kind: TurnTerminalKind::Aborted,
             last_assistant_message: Some("provider context_length_exceeded".into()),
+            checkpoint: None,
             completed_at: Utc::now(),
             duration_ms: 42,
         });

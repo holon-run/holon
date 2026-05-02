@@ -129,6 +129,7 @@ pub(crate) async fn bind_turn_to_work_item(runtime: &RuntimeHandle, work_item_id
         turn_index: 1,
         kind: TurnTerminalKind::Completed,
         last_assistant_message: Some("done".into()),
+        checkpoint: None,
         completed_at: Utc::now(),
         duration_ms: 10,
     });

@@ -999,8 +999,23 @@ pub struct TurnTerminalRecord {
     pub kind: TurnTerminalKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_assistant_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<TurnTerminalCheckpointRecord>,
     pub completed_at: DateTime<Utc>,
     pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnTerminalCheckpointRecord {
+    pub request_id: String,
+    pub requested_at_round: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_round: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn_index: Option<u64>,
+    pub text: String,
+    pub checkpoint_anchor_generation: u64,
+    pub current_anchor_generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

@@ -1373,6 +1373,7 @@ mod tests {
                     turn_index: 1,
                     kind: TurnTerminalKind::Completed,
                     last_assistant_message: Some("done".into()),
+                    checkpoint: None,
                     completed_at: Utc::now(),
                     duration_ms: 12,
                 }),
