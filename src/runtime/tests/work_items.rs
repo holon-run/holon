@@ -69,6 +69,11 @@ async fn work_item_query_tools_return_current_open_done_views() {
     assert_eq!(active_item["focus"].as_str(), Some("current"));
     assert_eq!(active_item["is_current"].as_bool(), Some(true));
     assert_eq!(active_item["plan"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        active_item["plan"]["items"][0]["state"].as_str(),
+        Some("doing")
+    );
+    assert!(active_item["plan"]["items"][0]["status"].is_null());
 
     let (list_result, _) = registry
         .execute(
@@ -136,6 +141,155 @@ async fn work_item_query_tools_return_current_open_done_views() {
         fallback_payload["work_items"][0]["id"].as_str(),
         Some(active.id.as_str())
     );
+}
+
+#[tokio::test]
+async fn work_item_plan_tools_use_state_vocabulary_for_model_visible_shape() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+
+    let (create_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "create".into(),
+                name: "CreateWorkItem".into(),
+                input: serde_json::json!({
+                    "delivery_target": "ship work item plan contract",
+                    "plan": [
+                        { "step": "inspect current contract", "state": "done" },
+                        { "step": "update tool shape", "state": "doing" },
+                        { "step": "verify regression", "state": "pending" }
+                    ]
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let create_payload = create_result.envelope.result.unwrap();
+    let work_item_id = create_payload["work_item"]["id"].as_str().unwrap();
+    assert_eq!(
+        create_payload["plan"]["items"][0]["state"].as_str(),
+        Some("done")
+    );
+    assert_eq!(
+        create_payload["plan"]["items"][1]["state"].as_str(),
+        Some("doing")
+    );
+    assert_eq!(
+        create_payload["plan"]["items"][2]["state"].as_str(),
+        Some("pending")
+    );
+    assert!(create_payload["plan"]["items"][0]["status"].is_null());
+
+    let (get_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "get".into(),
+                name: "GetWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": work_item_id,
+                    "include_plan": true
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let get_payload = get_result.envelope.result.unwrap();
+    assert_eq!(
+        get_payload["work_item"]["plan"]["items"][1]["state"].as_str(),
+        Some("doing")
+    );
+    assert!(get_payload["work_item"]["plan"]["items"][1]["status"].is_null());
+
+    let returned_items = get_payload["work_item"]["plan"]["items"].clone();
+    let (update_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "update".into(),
+                name: "UpdateWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": work_item_id,
+                    "plan": returned_items
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let update_payload = update_result.envelope.result.unwrap();
+    assert_eq!(
+        update_payload["plan"]["items"][1]["state"].as_str(),
+        Some("doing")
+    );
+    assert!(update_payload["plan"]["items"][1]["status"].is_null());
+}
+
+#[tokio::test]
+async fn update_work_item_old_plan_shape_returns_state_example_hint() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+
+    let error = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "bad-update".into(),
+                name: "UpdateWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": "item-1",
+                    "plan": [
+                        { "step": "inspect current handler", "status": "completed" }
+                    ]
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+    let tool_error = crate::tool::ToolError::from_anyhow(&error);
+    assert_eq!(tool_error.kind, "invalid_tool_input");
+    assert_eq!(
+        tool_error
+            .details
+            .as_ref()
+            .and_then(|details| details.get("parse_error"))
+            .and_then(serde_json::Value::as_str),
+        Some("unknown field `status`, expected `step` or `state`")
+    );
+    let recovery_hint = tool_error.recovery_hint.as_deref().unwrap_or_default();
+    assert!(recovery_hint.contains("\"state\":\"done\""));
+    assert!(recovery_hint.contains("pending, doing, or done"));
 }
 
 #[tokio::test]

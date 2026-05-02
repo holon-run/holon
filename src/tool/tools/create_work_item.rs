@@ -5,14 +5,16 @@ use serde_json::Value;
 
 use crate::{
     runtime::RuntimeHandle,
-    tool::helpers::{parse_tool_args, validate_non_empty},
+    tool::helpers::validate_non_empty,
     tool::spec::typed_spec,
     types::{ToolCapabilityFamily, TrustLevel},
 };
 
 use super::{
     serialize_success,
-    work_item_action::{convert_plan, WorkItemMutationResult, WorkPlanItemArgs},
+    work_item_action::{
+        convert_plan, parse_work_item_action_args, WorkItemMutationResult, WorkPlanItemArgs,
+    },
     BuiltinToolDefinition,
 };
 
@@ -42,9 +44,9 @@ pub(crate) async fn execute(
     _trust: &TrustLevel,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
-    let args: CreateWorkItemArgs = parse_tool_args(NAME, input)?;
+    let args: CreateWorkItemArgs = parse_work_item_action_args(NAME, input)?;
     let delivery_target = validate_non_empty(args.delivery_target, NAME, "delivery_target")?;
     let plan = args.plan.map(|plan| convert_plan(NAME, plan)).transpose()?;
     let (work_item, plan) = runtime.create_work_item(delivery_target, plan).await?;
-    serialize_success(NAME, &WorkItemMutationResult { work_item, plan })
+    serialize_success(NAME, &WorkItemMutationResult::new(work_item, plan))
 }

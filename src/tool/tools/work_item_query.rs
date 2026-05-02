@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     runtime::RuntimeHandle,
-    types::{WorkItemRecord, WorkItemState, WorkPlanSnapshot},
+    types::{WorkItemRecord, WorkItemState},
 };
+
+use super::work_item_action::WorkPlanView;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -35,7 +37,7 @@ pub(crate) struct WorkItemView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) blocked_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) plan: Option<WorkPlanSnapshot>,
+    pub(crate) plan: Option<WorkPlanView>,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) updated_at: DateTime<Utc>,
 }
@@ -79,7 +81,7 @@ pub(crate) async fn view_for_record(
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
         && record.state == WorkItemState::Open;
     let plan = if include_plan {
-        runtime.latest_work_plan(&record.id).await?
+        runtime.latest_work_plan(&record.id).await?.map(Into::into)
     } else {
         None
     };

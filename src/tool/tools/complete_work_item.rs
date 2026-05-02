@@ -46,11 +46,5 @@ pub(crate) async fn execute(
             normalize_optional_non_empty(args.result_summary),
         )
         .await?;
-    serialize_success(
-        NAME,
-        &WorkItemMutationResult {
-            work_item,
-            plan: None,
-        },
-    )
+    serialize_success(NAME, &WorkItemMutationResult::new(work_item, None))
 }

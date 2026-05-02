@@ -56,7 +56,7 @@ Include:
 - the next goal-aligned action
 
 If continuing exploration, name the specific missing information and the next bounded command/query.
-If the current plan step is complete, update the work plan before proceeding.
+If the current plan step became complete through material progress, update the work plan after that progress is recorded.
 This is not a request to finish the task; after the checkpoint, continue with the next goal-aligned action when useful.
 Do not assume the task requires code changes unless the user goal does.";
 
@@ -566,51 +566,23 @@ fn build_compacted_round_recap(rounds: &[TurnRoundRecord], recap_budget: usize) 
     recap
 }
 
-fn exec_command_changes_checkpoint_anchor(command: &str) -> bool {
-    let command = command.trim_start();
-    let lower = command.to_ascii_lowercase();
-    let mut segments = lower
-        .split(['&', ';', '\n'])
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty());
-    segments.any(|segment| {
-        segment.starts_with("cargo test")
-            || segment.starts_with("cargo nextest")
-            || segment.starts_with("cargo fmt")
-            || segment.starts_with("cargo clippy")
-            || segment.starts_with("make test")
-            || segment.starts_with("make check")
-            || segment.starts_with("npm test")
-            || segment.starts_with("npm run test")
-            || segment.starts_with("npm run lint")
-            || segment.starts_with("npm run format")
-            || segment.starts_with("pnpm test")
-            || segment.starts_with("yarn test")
-            || segment.starts_with("pytest")
-            || segment.starts_with("uv run pytest")
-            || segment.starts_with("go test")
-            || segment.starts_with("git commit")
-    })
+fn tool_result_invalidates_checkpoint_anchor(envelope: &ToolResultEnvelope) -> bool {
+    envelope.status == ToolResultStatus::Success
+        && matches!(
+            envelope.tool_name.as_str(),
+            "CreateWorkItem"
+                | "PickWorkItem"
+                | "UpdateWorkItem"
+                | "CompleteWorkItem"
+                | "ApplyPatch"
+        )
 }
 
-fn tool_call_changes_checkpoint_anchor(call: &ToolCall) -> bool {
-    match call.name.as_str() {
-        "CreateWorkItem" | "PickWorkItem" | "UpdateWorkItem" | "CompleteWorkItem"
-        | "ApplyPatch" => true,
-        "ExecCommand" => call
-            .input
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(exec_command_changes_checkpoint_anchor),
-        _ => false,
-    }
-}
-
-fn round_changes_checkpoint_anchor(round: &TurnRoundRecord) -> bool {
+fn round_invalidates_checkpoint_anchor(round: &TurnRoundRecord) -> bool {
     round
-        .tool_calls
+        .tool_result_envelopes
         .iter()
-        .any(tool_call_changes_checkpoint_anchor)
+        .any(tool_result_invalidates_checkpoint_anchor)
 }
 
 fn build_delta_checkpoint_prompt(previous_round: usize, previous_checkpoint: &str) -> String {
@@ -1701,7 +1673,7 @@ impl RuntimeHandle {
                 tool_result_envelopes,
                 follow_up_user_texts: Vec::new(),
             };
-            if round_changes_checkpoint_anchor(&round_record) {
+            if round_invalidates_checkpoint_anchor(&round_record) {
                 checkpoint_state.anchor_generation =
                     checkpoint_state.anchor_generation.saturating_add(1);
             }
@@ -1844,6 +1816,24 @@ mod tests {
             tool_result_envelopes: Vec::new(),
             follow_up_user_texts: Vec::new(),
         }
+    }
+
+    fn fixture_round_with_tool_result(
+        round: usize,
+        text: &str,
+        tool_name: &str,
+        input: Value,
+        status: ToolResultStatus,
+    ) -> TurnRoundRecord {
+        let mut record = fixture_round_with_tool(round, text, tool_name, input);
+        record.tool_result_envelopes = vec![ToolResultEnvelope {
+            tool_name: tool_name.to_string(),
+            status,
+            summary_text: None,
+            result: None,
+            error: None,
+        }];
+        record
     }
 
     fn checkpoint_state_with_latest(
@@ -2850,37 +2840,60 @@ mod tests {
     }
 
     #[test]
-    fn round_changes_checkpoint_anchor_for_mutation_and_verifier_tools_only() {
-        assert!(round_changes_checkpoint_anchor(&fixture_round_with_tool(
-            1,
-            "patch",
-            "ApplyPatch",
-            serde_json::json!({ "patch": "--- a/app.txt\n+++ b/app.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n" }),
-        )));
-        assert!(round_changes_checkpoint_anchor(&fixture_round_with_tool(
-            2,
-            "plan",
-            "UpdateWorkItem",
-            serde_json::json!({ "work_item_id": "item-1", "plan": [] }),
-        )));
-        assert!(round_changes_checkpoint_anchor(&fixture_round_with_tool(
-            3,
-            "complete work item",
-            "CompleteWorkItem",
-            serde_json::json!({ "work_item_id": "item-1" }),
-        )));
-        assert!(round_changes_checkpoint_anchor(&fixture_round_with_tool(
-            4,
-            "verify",
-            "ExecCommand",
-            serde_json::json!({ "cmd": "cargo test --test runtime_compaction" }),
-        )));
-        assert!(!round_changes_checkpoint_anchor(&fixture_round_with_tool(
-            5,
-            "read",
-            "ExecCommand",
-            serde_json::json!({ "cmd": "sed -n '1,40p' src/runtime/turn.rs" }),
-        )));
+    fn round_invalidates_checkpoint_anchor_for_successful_state_mutation_tools_only() {
+        assert!(round_invalidates_checkpoint_anchor(
+            &fixture_round_with_tool_result(
+                1,
+                "patch",
+                "ApplyPatch",
+                serde_json::json!({ "patch": "--- a/app.txt\n+++ b/app.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n" }),
+                ToolResultStatus::Success,
+            )
+        ));
+        assert!(round_invalidates_checkpoint_anchor(
+            &fixture_round_with_tool_result(
+                2,
+                "plan",
+                "UpdateWorkItem",
+                serde_json::json!({ "work_item_id": "item-1", "plan": [] }),
+                ToolResultStatus::Success,
+            )
+        ));
+        assert!(round_invalidates_checkpoint_anchor(
+            &fixture_round_with_tool_result(
+                3,
+                "complete work item",
+                "CompleteWorkItem",
+                serde_json::json!({ "work_item_id": "item-1" }),
+                ToolResultStatus::Success,
+            )
+        ));
+        assert!(!round_invalidates_checkpoint_anchor(
+            &fixture_round_with_tool_result(
+                4,
+                "verify",
+                "ExecCommand",
+                serde_json::json!({ "cmd": "cargo test --test runtime_compaction" }),
+                ToolResultStatus::Success,
+            )
+        ));
+        assert!(!round_invalidates_checkpoint_anchor(
+            &fixture_round_with_tool_result(
+                5,
+                "failed plan",
+                "UpdateWorkItem",
+                serde_json::json!({ "work_item_id": "item-1", "plan": [] }),
+                ToolResultStatus::Error,
+            )
+        ));
+        assert!(!round_invalidates_checkpoint_anchor(
+            &fixture_round_with_tool(
+                6,
+                "call without result",
+                "ApplyPatch",
+                serde_json::json!({})
+            )
+        ));
     }
 
     #[test]
