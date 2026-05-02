@@ -668,12 +668,8 @@ impl TuiApp {
             }
             KeyCode::Enter => {
                 let selected = self.slash_menu_selected.min(specs.len().saturating_sub(1));
-                let command = specs[selected].name;
-                let selection = if self.composer.as_str().trim() == command {
-                    command.to_string()
-                } else {
-                    self.composer.as_str().to_string()
-                };
+                let selection =
+                    slash_menu_enter_submission(self.composer.as_str(), specs[selected]);
                 let selection = parse_composer_submission(&selection)?;
                 match selection {
                     Some(ComposerSubmission::Slash(command, args)) => {
@@ -816,6 +812,24 @@ impl TuiApp {
     }
 }
 
+fn slash_menu_enter_submission(buffer: &str, selected: SlashCommandSpec) -> String {
+    let trimmed = buffer.trim();
+    let Some((token, rest)) = trimmed.split_once(char::is_whitespace) else {
+        return selected.name.to_string();
+    };
+
+    if token == selected.name || slash_command_spec(token).is_none() {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            selected.name.to_string()
+        } else {
+            format!("{} {rest}", selected.name)
+        }
+    } else {
+        trimmed.to_string()
+    }
+}
+
 enum BufferAction {
     Submit,
     Cancel,
@@ -919,8 +933,8 @@ impl TuiApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_composer_submission, slash_menu_specs, slash_prompt_lines, ComposerSubmission,
-        SlashCommand,
+        parse_composer_submission, slash_command_spec, slash_menu_enter_submission,
+        slash_menu_specs, slash_prompt_lines, ComposerSubmission, SlashCommand,
     };
     use crossterm::event::KeyCode;
 
@@ -1024,6 +1038,27 @@ mod tests {
     #[test]
     fn slash_menu_ignores_multiline_input() {
         assert!(slash_menu_specs("/mo\nextra").is_empty());
+    }
+
+    #[test]
+    fn slash_menu_enter_submission_uses_selected_command_for_prefix() {
+        let model = slash_command_spec("/model").expect("model command");
+        assert_eq!(slash_menu_enter_submission("/", model), "/model");
+        assert_eq!(slash_menu_enter_submission("/mo", model), "/model");
+        assert_eq!(slash_menu_enter_submission("   /mo  ", model), "/model");
+    }
+
+    #[test]
+    fn slash_menu_enter_submission_preserves_arguments_with_selected_command() {
+        let agent = slash_command_spec("/agent").expect("agent command");
+        assert_eq!(
+            slash_menu_enter_submission("/ag default", agent),
+            "/agent default"
+        );
+        assert_eq!(
+            slash_menu_enter_submission("   /agent default  ", agent),
+            "/agent default"
+        );
     }
 
     #[test]

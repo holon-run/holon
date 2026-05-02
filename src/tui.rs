@@ -1442,6 +1442,47 @@ mod tests {
         assert_eq!(app.composer.as_str(), "");
     }
 
+    #[tokio::test]
+    async fn slash_menu_enter_runs_selected_prefix_command() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/mo");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.overlay,
+            OverlayState::ModelPicker {
+                filter: String::new(),
+                selected: 0
+            }
+        );
+        assert_eq!(app.composer.as_str(), "");
+    }
+
+    #[tokio::test]
+    async fn slash_menu_enter_runs_selected_command_from_root_menu() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/");
+        app.slash_menu_selected = 1;
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.overlay, OverlayState::Agents);
+        assert_eq!(app.composer.as_str(), "");
+    }
+
     #[test]
     fn centered_rect_rows_uses_fixed_height() {
         let area = Rect::new(0, 0, 100, 40);
