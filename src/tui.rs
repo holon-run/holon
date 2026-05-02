@@ -9,7 +9,7 @@ use crate::{
     client::{AgentStreamEvent, EventStreamRequest, LocalClient, LocalEventStream, LocalHttpError},
     config::{AltScreenMode, AppConfig},
     system::{workspace_access_mode_label, workspace_projection_label},
-    tui_markdown::render_markdown_text,
+    tui_markdown::{render_markdown_text, render_markdown_text_spaced},
     types::{
         AgentSummary, BriefRecord, TaskRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
     },
@@ -45,8 +45,10 @@ mod projection;
 mod render;
 
 #[cfg(test)]
-use chat::{build_chat_text, collect_chat_items, is_operator_origin_value};
-use chat::{chat_text, paragraph_max_scroll, CachedChatText, ChatScrollState};
+use chat::{
+    build_chat_text, chat_text, collect_chat_items, is_operator_origin_value, ConversationCell,
+};
+use chat::{chat_text_for_width, paragraph_max_scroll, CachedChatText, ChatScrollState};
 use composer::ComposerState;
 use logging::TuiLogWriter;
 #[cfg(test)]
@@ -402,7 +404,12 @@ impl TuiApp {
                 return Err(err);
             }
         };
-        let projection = TuiProjection::from_snapshot(snapshot);
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        if !switching_agents {
+            if let Some(previous) = self.projection.as_mut() {
+                projection.inherit_recent_event_logs_from(previous);
+            }
+        }
         let cursor = projection.cursor.clone();
 
         self.stop_stream_task();
@@ -822,7 +829,8 @@ mod tests {
         build_chat_text, centered_rect_rows, chat_text, collect_chat_items,
         determine_alt_screen_mode_for_terminal, is_cursor_too_old_error, is_operator_origin_value,
         paragraph_max_scroll, projection::TuiProjection, AgentListChange, ChatScrollState,
-        ComposerState, OverlayState, TuiApp, TuiConnectionState, TuiRuntimeMessage,
+        ComposerState, ConversationCell, OverlayState, TuiApp, TuiConnectionState,
+        TuiRuntimeMessage,
     };
     use crate::{
         client::{
@@ -1060,9 +1068,9 @@ mod tests {
             .into_iter()
             .map(|line| line.spans.into_iter().map(|span| span.content).collect())
             .collect();
-        assert!(lines.iter().any(|line| line.contains("You")));
+        assert!(lines.iter().any(|line| line.contains("› ")));
         assert!(lines.iter().any(|line| line.contains("Fix the failing CI")));
-        assert!(lines.iter().any(|line| line.contains("Holon")));
+        assert!(lines.iter().any(|line| line.contains("• ")));
         assert!(lines
             .iter()
             .any(|line| line.contains("I started a worktree task.")));
@@ -1093,7 +1101,9 @@ mod tests {
             .into_iter()
             .map(|line| line.spans.into_iter().map(|span| span.content).collect())
             .collect();
-        assert!(lines.iter().any(|line| line.contains("Holon  First line")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("• ") && line.contains("First line")));
         assert!(lines.iter().any(|line| line.contains("Second line")));
     }
 
@@ -1613,6 +1623,54 @@ mod tests {
     }
 
     #[test]
+    fn chat_text_keeps_markdown_block_separator_unindented() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.briefs = vec![BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: Utc::now(),
+            text: "### Title\n\nBody".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        }];
+
+        let lines = build_chat_text(&collect_chat_items(&app)).lines;
+        let title_index = lines
+            .iter()
+            .position(|line| {
+                let rendered_line: String = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect();
+                rendered_line.contains("### Title")
+            })
+            .expect("heading should render");
+        let blank_line = lines
+            .get(title_index + 1)
+            .expect("markdown block separator should render");
+        assert!(blank_line.spans.is_empty());
+
+        let body_line = lines
+            .get(title_index + 2)
+            .expect("heading body should render");
+        let rendered_body: String = body_line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(rendered_body.ends_with("Body"));
+    }
+
+    #[test]
     fn chat_text_skips_ack_briefs() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
@@ -1686,7 +1744,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_text_excludes_internal_projection_events_and_provider_text() {
+    fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
             client,
@@ -1742,8 +1800,8 @@ mod tests {
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
         assert!(!rendered.contains("System (work)"));
-        assert!(!rendered.contains("prepare rollout plan"));
-        assert!(!rendered.contains("hidden provider partial"));
+        assert!(rendered.contains("Assistant hidden provider partial"));
+        assert!(rendered.contains("Action    prepare rollout plan [Open]"));
     }
 
     #[test]
@@ -1856,9 +1914,57 @@ mod tests {
             .into_iter()
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
-        assert!(rendered.contains("Holon (working)"));
-        assert!(rendered.contains("Improve the Conversation working indicator"));
-        assert!(rendered.contains("Now: ExecCommand: cargo test tui"));
+        assert!(rendered.contains("Working"));
+        assert!(rendered.contains("Current   Improve the Conversation working indicator"));
+        assert!(rendered.contains("Assistant ..."));
+        assert!(rendered.contains("Action    Still working"));
+    }
+
+    #[test]
+    fn chat_text_keeps_active_action_after_snapshot_refresh() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-refresh");
+        snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        snapshot.agent.agent.working_memory.current_working_memory =
+            crate::types::WorkingMemorySnapshot {
+                work_summary: Some("Keep the active action stable".into()),
+                ..Default::default()
+            };
+        let mut previous_projection =
+            TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+        previous_projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-tool".into(),
+                event: "tool_executed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-tool".into(),
+                    seq: 2,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    payload: json!({
+                        "tool_name": "ExecCommand",
+                        "exec_command_cmd": "cargo test tui"
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut refreshed_projection = TuiProjection::from_snapshot(snapshot);
+        refreshed_projection.inherit_recent_event_logs_from(&mut previous_projection);
+        app.projection = Some(refreshed_projection);
+
+        let rendered: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(rendered.contains("Action    ExecCommand: cargo test tui"));
+        assert!(!rendered.contains("Action    Waiting for activity"));
     }
 
     #[test]
@@ -1919,9 +2025,11 @@ mod tests {
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
 
-        assert!(rendered.contains("Holon (queued)"));
-        assert!(rendered.contains("Queued work is waiting to run"));
-        assert!(rendered.contains("Queue: pending 1, active tasks 0"));
+        assert!(rendered.contains("Queued"));
+        assert!(rendered.contains("Current   Queued work is waiting to run"));
+        assert!(rendered.contains("Assistant ..."));
+        assert!(rendered.contains("Action    Waiting for activity"));
+        assert!(!rendered.contains("Queue: pending 1, active tasks 0"));
     }
 
     #[test]
@@ -1973,8 +2081,56 @@ mod tests {
             .get(items.len().saturating_sub(2))
             .expect("durable item before active activity");
 
-        assert_eq!(active_item.speaker, "Holon (working)");
-        assert!(active_item.created_at >= previous_item.created_at);
+        match active_item {
+            ConversationCell::ActiveActivity {
+                speaker,
+                created_at,
+                ..
+            } => {
+                assert!(speaker.starts_with("Holon (working)"));
+                assert!(*created_at >= previous_item.created_at());
+            }
+            other => panic!("expected active activity item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn active_activity_cells_stay_stable_without_new_events() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        snapshot.agent.agent.working_memory.current_working_memory =
+            crate::types::WorkingMemorySnapshot {
+                work_summary: Some("Keep cache stable while working".into()),
+                ..Default::default()
+            };
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let first_items = collect_chat_items(&app);
+        let second_items = collect_chat_items(&app);
+        assert_eq!(first_items, second_items);
+
+        let _ = chat_text(&app);
+        let cached_cells = app
+            .chat_text_cache
+            .borrow()
+            .as_ref()
+            .expect("active activity should be cached")
+            .cells
+            .clone();
+        let _ = chat_text(&app);
+        assert_eq!(
+            cached_cells,
+            app.chat_text_cache
+                .borrow()
+                .as_ref()
+                .expect("active activity should remain cached")
+                .cells
+        );
     }
 
     #[test]
@@ -2014,8 +2170,8 @@ mod tests {
         }];
 
         let items = collect_chat_items(&app);
-        assert_eq!(items[0].speaker, "You");
-        assert_eq!(items[1].speaker, "Holon");
+        assert!(matches!(items[0], ConversationCell::UserMessage { .. }));
+        assert!(matches!(items[1], ConversationCell::AssistantMarkdown(_)));
     }
 
     #[test]
@@ -2181,7 +2337,7 @@ mod tests {
         {
             let cache_ref = app.chat_text_cache.borrow();
             let cached = cache_ref.as_ref().expect("chat text should be cached");
-            assert_eq!(cached.items, collect_chat_items(&app));
+            assert_eq!(cached.cells, collect_chat_items(&app));
         }
 
         app.briefs = vec![BriefRecord {
@@ -2207,7 +2363,7 @@ mod tests {
 
         let cache_ref = app.chat_text_cache.borrow();
         let cached = cache_ref.as_ref().expect("chat text should be recached");
-        assert_eq!(cached.items, collect_chat_items(&app));
+        assert_eq!(cached.cells, collect_chat_items(&app));
 
         drop(cache_ref);
         app.briefs.clear();

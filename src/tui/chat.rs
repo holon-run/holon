@@ -75,21 +75,40 @@ pub(super) enum CachedChatRole {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CachedChatItem {
-    pub(super) created_at: DateTime<chrono::Utc>,
-    pub(super) role: CachedChatRole,
-    pub(super) speaker: String,
-    pub(super) body: String,
+pub(super) struct AssistantMarkdownCell {
+    created_at: DateTime<chrono::Utc>,
+    agent_id: String,
+    markdown: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ConversationCell {
+    UserMessage {
+        created_at: DateTime<chrono::Utc>,
+        body: String,
+    },
+    AssistantMarkdown(AssistantMarkdownCell),
+    ActiveActivity {
+        created_at: DateTime<chrono::Utc>,
+        speaker: String,
+        body: String,
+    },
+    SystemNotice {
+        created_at: DateTime<chrono::Utc>,
+        speaker: String,
+        body: String,
+    },
 }
 
 #[derive(Clone)]
 pub(super) struct CachedChatText {
-    pub(super) items: Vec<CachedChatItem>,
+    pub(super) cells: Vec<ConversationCell>,
+    pub(super) width: u16,
     pub(super) text: Text<'static>,
 }
 
-pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
-    let mut items = Vec::new();
+pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
+    let mut cells = Vec::new();
 
     for entry in &app.transcript {
         if entry.kind != TranscriptEntryKind::IncomingMessage {
@@ -107,10 +126,8 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
             .get("body")
             .and_then(render_message_body_value)
             .unwrap_or_else(|| compact_json(&entry.data));
-        items.push(CachedChatItem {
+        cells.push(ConversationCell::UserMessage {
             created_at: entry.created_at,
-            role: CachedChatRole::Operator,
-            speaker: "You".to_string(),
             body,
         });
     }
@@ -119,16 +136,15 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
         if matches!(brief.kind, crate::types::BriefKind::Ack) {
             continue;
         }
-        items.push(CachedChatItem {
+        cells.push(ConversationCell::AssistantMarkdown(AssistantMarkdownCell {
             created_at: brief.created_at,
-            role: CachedChatRole::Agent,
-            speaker: match brief.kind {
+            agent_id: match brief.kind {
                 crate::types::BriefKind::Result => "Holon".to_string(),
                 crate::types::BriefKind::Failure => "Holon (failed)".to_string(),
                 crate::types::BriefKind::Ack => unreachable!("ack briefs are filtered above"),
             },
-            body: render_brief_body(brief),
-        });
+            markdown: render_brief_body(brief),
+        }));
     }
 
     if let Some(projection) = app.projection.as_ref() {
@@ -136,37 +152,114 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
             if !is_chat_visible_conversation_event(&event.kind) {
                 continue;
             }
-            items.push(CachedChatItem {
+            cells.push(ConversationCell::SystemNotice {
                 created_at: event.ts,
-                role: CachedChatRole::System,
                 speaker: conversation_event_speaker(&event.kind),
                 body: conversation_event_body(event),
             });
         }
     }
 
-    items.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| chat_role_rank(left.role).cmp(&chat_role_rank(right.role)))
-            .then_with(|| left.speaker.cmp(&right.speaker))
-            .then_with(|| left.body.cmp(&right.body))
+    cells.sort_by(|left, right| {
+        left.created_at()
+            .cmp(&right.created_at())
+            .then_with(|| chat_role_rank(left.role()).cmp(&chat_role_rank(right.role())))
+            .then_with(|| left.sort_speaker().cmp(right.sort_speaker()))
+            .then_with(|| left.sort_body().cmp(right.sort_body()))
     });
-    let fallback_ts = items.last().map(|item| item.created_at);
+    let fallback_ts = cells.last().map(ConversationCell::created_at);
     if let Some(active_item) = active_activity_item(app, fallback_ts) {
-        items.push(active_item);
+        cells.push(active_item);
     }
-    items
+    cells
 }
 
 pub(super) fn is_chat_visible_conversation_event(kind: &str) -> bool {
     matches!(kind, "operator_notification_requested" | "runtime_error")
 }
 
-pub(super) fn build_chat_text(items: &[CachedChatItem]) -> Text<'static> {
+impl ConversationCell {
+    pub(super) fn created_at(&self) -> DateTime<chrono::Utc> {
+        match self {
+            Self::UserMessage { created_at, .. }
+            | Self::ActiveActivity { created_at, .. }
+            | Self::SystemNotice { created_at, .. } => *created_at,
+            Self::AssistantMarkdown(cell) => cell.created_at,
+        }
+    }
+
+    fn role(&self) -> CachedChatRole {
+        match self {
+            Self::UserMessage { .. } => CachedChatRole::Operator,
+            Self::AssistantMarkdown(_) => CachedChatRole::Agent,
+            Self::ActiveActivity { .. } | Self::SystemNotice { .. } => CachedChatRole::System,
+        }
+    }
+
+    fn sort_speaker(&self) -> &str {
+        match self {
+            Self::UserMessage { .. } => "You",
+            Self::AssistantMarkdown(cell) => &cell.agent_id,
+            Self::ActiveActivity { speaker, .. } | Self::SystemNotice { speaker, .. } => speaker,
+        }
+    }
+
+    fn sort_body(&self) -> &str {
+        match self {
+            Self::UserMessage { body, .. }
+            | Self::ActiveActivity { body, .. }
+            | Self::SystemNotice { body, .. } => body,
+            Self::AssistantMarkdown(cell) => &cell.markdown,
+        }
+    }
+
+    fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
+        match self {
+            Self::UserMessage { created_at, body } => render_prefixed_markdown_lines(
+                *created_at,
+                body,
+                CachedChatRole::Operator,
+                width,
+                false,
+            ),
+            Self::AssistantMarkdown(cell) => cell.render_lines(width),
+            Self::ActiveActivity { speaker, body, .. } => {
+                render_active_activity_lines(speaker, body)
+            }
+            Self::SystemNotice {
+                created_at, body, ..
+            } => render_prefixed_markdown_lines(
+                *created_at,
+                body,
+                CachedChatRole::System,
+                width,
+                false,
+            ),
+        }
+    }
+}
+
+impl AssistantMarkdownCell {
+    fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
+        render_prefixed_markdown_lines(
+            self.created_at,
+            &self.markdown,
+            CachedChatRole::Agent,
+            width,
+            true,
+        )
+    }
+}
+
+#[cfg(test)]
+pub(super) fn build_chat_text(items: &[ConversationCell]) -> Text<'static> {
+    build_chat_text_for_width(items, u16::MAX)
+}
+
+pub(super) fn build_chat_text_for_width(items: &[ConversationCell], width: u16) -> Text<'static> {
     let mut text = Text::default();
     for (index, item) in items.iter().enumerate() {
-        append_chat_item(&mut text, item);
+        text.lines.extend(item.render_lines(width));
         if index + 1 < items.len() {
             text.lines.push(Line::default());
         }
@@ -175,7 +268,12 @@ pub(super) fn build_chat_text(items: &[CachedChatItem]) -> Text<'static> {
     text
 }
 
+#[cfg(test)]
 pub(super) fn chat_text(app: &TuiApp) -> Text<'static> {
+    chat_text_for_width(app, u16::MAX)
+}
+
+pub(super) fn chat_text_for_width(app: &TuiApp, width: u16) -> Text<'static> {
     let items = collect_chat_items(app);
     if items.is_empty() {
         *app.chat_text_cache.borrow_mut() = None;
@@ -183,80 +281,149 @@ pub(super) fn chat_text(app: &TuiApp) -> Text<'static> {
     }
 
     if let Some(cached) = app.chat_text_cache.borrow().as_ref() {
-        if cached.items == items {
-            return cached.text.clone();
+        if cached.cells == items && cached.width == width {
+            return refresh_active_activity_marker(cached.text.clone());
         }
     }
 
-    let text = build_chat_text(&items);
+    let text = build_chat_text_for_width(&items, width);
     *app.chat_text_cache.borrow_mut() = Some(CachedChatText {
-        items,
+        cells: items,
+        width,
         text: text.clone(),
     });
     text
 }
 
-fn append_chat_item(target: &mut Text<'static>, item: &CachedChatItem) {
-    let body = render_markdown_text(&item.body);
+fn render_prefixed_markdown_lines(
+    created_at: DateTime<chrono::Utc>,
+    body: &str,
+    role: CachedChatRole,
+    width: u16,
+    spaced_markdown: bool,
+) -> Vec<Line<'static>> {
+    let body = if spaced_markdown && width >= 48 {
+        render_markdown_text_spaced(body)
+    } else {
+        render_markdown_text(body)
+    };
     let body_lines = body.lines;
-    let prefix = chat_prefix_text(item);
-    let continuation_indent = " ".repeat(prefix.chars().count());
+    let prefix = chat_prefix_spans(created_at, role);
+    let continuation_indent = chat_continuation_indent(created_at);
+    let mut lines = Vec::new();
 
     if let Some((first, rest)) = body_lines.split_first() {
-        let mut spans = Vec::with_capacity(first.spans.len() + 3);
-        spans.push(Span::styled(
-            chat_timestamp(item),
-            Style::default().add_modifier(Modifier::DIM),
-        ));
-        spans.push(Span::styled(
-            item.speaker.clone(),
-            chat_speaker_style(item.role),
-        ));
-        spans.push(Span::raw("  "));
+        let mut spans = Vec::with_capacity(prefix.len() + first.spans.len());
+        spans.extend(prefix);
         spans.extend(first.spans.clone());
-        target.lines.push(Line::from(spans).style(first.style));
+        lines.push(Line::from(spans).style(first.style));
 
         for line in rest {
+            if line.spans.iter().all(|span| span.content.is_empty()) {
+                lines.push(Line::default());
+                continue;
+            }
+
             let mut spans = Vec::with_capacity(line.spans.len() + 1);
             spans.push(Span::raw(continuation_indent.clone()));
             spans.extend(line.spans.clone());
-            target.lines.push(Line::from(spans).style(line.style));
+            lines.push(Line::from(spans).style(line.style));
         }
     } else {
-        target.lines.push(Line::from(vec![
-            Span::styled(
-                chat_timestamp(item),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-            Span::styled(item.speaker.clone(), chat_speaker_style(item.role)),
-        ]));
+        lines.push(Line::from(prefix));
     }
-
-    // Add extra spacing between messages for better readability.
-    // Two blank lines makes message separation more visually distinct.
-    target.lines.push(Line::from(""));
-    target.lines.push(Line::from(""));
+    lines
 }
 
-fn chat_prefix_text(item: &CachedChatItem) -> String {
-    format!("{}{}  ", chat_timestamp(item), item.speaker)
+fn render_active_activity_lines(speaker: &str, body: &str) -> Vec<Line<'static>> {
+    let status = active_activity_status_label(speaker).unwrap_or("Working");
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            active_activity_spinner(),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Span::raw(" "),
+        Span::styled(status, Style::default().add_modifier(Modifier::BOLD)),
+    ])];
+
+    let body = render_markdown_text(body);
+    for line in body.lines {
+        let mut spans = Vec::with_capacity(line.spans.len() + 1);
+        spans.push(Span::raw("  "));
+        spans.extend(line.spans);
+        lines.push(Line::from(spans).style(line.style));
+    }
+    lines
 }
 
-fn chat_timestamp(item: &CachedChatItem) -> String {
-    format!(
-        "[{}] ",
-        item.created_at.with_timezone(&Local).format("%H:%M")
-    )
-}
-
-fn chat_speaker_style(role: CachedChatRole) -> Style {
-    match role {
-        CachedChatRole::Operator | CachedChatRole::Agent => {
-            Style::default().add_modifier(Modifier::BOLD)
+fn refresh_active_activity_marker(mut text: Text<'static>) -> Text<'static> {
+    for line in &mut text.lines {
+        let is_active_activity_header = line.spans.len() >= 3
+            && line.spans.get(1).is_some_and(|span| span.content == " ")
+            && line.spans.get(2).is_some_and(|span| {
+                matches!(
+                    span.content.as_ref(),
+                    "Working" | "Queued" | "Starting" | "Waiting" | "Delegating"
+                )
+            });
+        if is_active_activity_header {
+            line.spans[0] = Span::styled(
+                active_activity_spinner(),
+                Style::default().add_modifier(Modifier::DIM),
+            );
+            break;
         }
-        CachedChatRole::System => Style::default()
-            .add_modifier(Modifier::BOLD)
-            .add_modifier(Modifier::DIM),
+    }
+    text
+}
+
+fn chat_prefix_spans(
+    created_at: DateTime<chrono::Utc>,
+    role: CachedChatRole,
+) -> Vec<Span<'static>> {
+    let (marker, marker_style) = match role {
+        CachedChatRole::Operator => ("› ", Style::default().add_modifier(Modifier::BOLD)),
+        CachedChatRole::Agent => ("• ", Style::default().add_modifier(Modifier::DIM)),
+        CachedChatRole::System => (
+            "! ",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::DIM),
+        ),
+    };
+
+    vec![
+        Span::styled(marker, marker_style),
+        Span::styled(
+            chat_timestamp(created_at),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Span::raw(" "),
+    ]
+}
+
+fn chat_continuation_indent(created_at: DateTime<chrono::Utc>) -> String {
+    let prefix_width = 2 + chat_timestamp(created_at).chars().count() + 1;
+    " ".repeat(prefix_width)
+}
+
+fn chat_timestamp(created_at: DateTime<chrono::Utc>) -> String {
+    created_at.with_timezone(&Local).format("%H:%M").to_string()
+}
+
+fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
+    if speaker.starts_with("Holon (working)") {
+        Some("Working")
+    } else if speaker.starts_with("Holon (queued)") {
+        Some("Queued")
+    } else if speaker.starts_with("Holon (starting)") {
+        Some("Starting")
+    } else if speaker.starts_with("Holon (waiting)") {
+        Some("Waiting")
+    } else if speaker.starts_with("Holon (delegating)") {
+        Some("Delegating")
+    } else {
+        None
     }
 }
 
@@ -271,7 +438,7 @@ fn chat_role_rank(role: CachedChatRole) -> u8 {
 fn active_activity_item(
     app: &TuiApp,
     fallback_ts: Option<DateTime<chrono::Utc>>,
-) -> Option<CachedChatItem> {
+) -> Option<ConversationCell> {
     let projection = app.projection.as_ref();
     let agent = projection
         .map(|projection| &projection.agent)
@@ -280,7 +447,8 @@ fn active_activity_item(
         return None;
     }
 
-    let latest_activity = projection.and_then(latest_activity_event);
+    let latest_action = projection.and_then(latest_action_event);
+    let latest_assistant = latest_assistant_message(app, projection);
     let latest_event_ts =
         projection.and_then(|projection| projection.event_log().last().map(|event| event.ts));
     let created_at = [
@@ -297,18 +465,22 @@ fn active_activity_item(
     .into_iter()
     .flatten()
     .max()
-    .unwrap_or_else(chrono::Utc::now);
+    .unwrap_or_else(stable_active_activity_timestamp);
 
-    Some(CachedChatItem {
+    Some(ConversationCell::ActiveActivity {
         created_at,
-        role: CachedChatRole::System,
         speaker: active_activity_speaker(agent),
         body: active_activity_body(
             agent,
             projection.map(|projection| projection.tasks.as_slice()),
-            latest_activity,
+            latest_assistant.as_deref(),
+            latest_action,
         ),
     })
+}
+
+fn stable_active_activity_timestamp() -> DateTime<chrono::Utc> {
+    DateTime::<chrono::Utc>::from(std::time::SystemTime::UNIX_EPOCH)
 }
 
 fn agent_has_active_activity(agent: &AgentSummary) -> bool {
@@ -333,14 +505,95 @@ fn agent_has_active_activity(agent: &AgentSummary) -> bool {
         || active_child
 }
 
-fn latest_activity_event(
+fn latest_action_event(
     projection: &crate::tui::projection::TuiProjection,
 ) -> Option<&crate::tui::projection::ProjectionEventRecord> {
     projection
         .event_log()
         .iter()
         .rev()
-        .find(|event| crate::tui::projection::is_ephemeral_activity_kind(&event.kind))
+        .find(|event| is_active_action_event_kind(&event.kind))
+}
+
+fn is_active_action_event_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "tool_executed"
+            | "tool_execution_failed"
+            | "task_created"
+            | "task_status_updated"
+            | "task_result_received"
+            | "work_item_written"
+            | "waiting_intent_created"
+            | "waiting_intent_cancelled"
+            | "callback_delivered"
+            | "operator_notification_requested"
+            | "workspace_entered"
+            | "workspace_exited"
+            | "workspace_detached"
+            | "worktree_entered"
+            | "worktree_exited"
+            | "worktree_auto_cleaned_up"
+            | "worktree_auto_cleanup_failed"
+            | "task_worktree_branch_cleanup_retained"
+            | "skill_activated"
+            | "system_tick_emitted"
+            | "message_admitted"
+            | "message_processing_started"
+            | "control_applied"
+            | "brief_created"
+            | "turn_terminal"
+            | "runtime_error"
+            | "max_output_tokens_recovery"
+            | "turn_local_checkpoint_recorded"
+    )
+}
+
+fn latest_assistant_message(
+    app: &TuiApp,
+    projection: Option<&crate::tui::projection::TuiProjection>,
+) -> Option<String> {
+    projection
+        .and_then(|projection| {
+            projection
+                .event_log()
+                .iter()
+                .rev()
+                .find_map(assistant_message_from_event)
+        })
+        .or_else(|| {
+            app.transcript
+                .iter()
+                .rev()
+                .find_map(assistant_message_from_transcript)
+        })
+}
+
+fn assistant_message_from_event(
+    event: &crate::tui::projection::ProjectionEventRecord,
+) -> Option<String> {
+    if event.kind != "provider_round_completed" && event.kind != "text_only_round_observed" {
+        return None;
+    }
+    event.payload.get("text_preview").and_then(non_empty_value)
+}
+
+fn assistant_message_from_transcript(entry: &TranscriptEntry) -> Option<String> {
+    if !matches!(
+        entry.kind,
+        TranscriptEntryKind::AssistantRound | TranscriptEntryKind::SubagentAssistantRound
+    ) {
+        return None;
+    }
+    let blocks = entry.data.get("blocks")?.as_array()?;
+    let text = blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .filter_map(|text| non_empty(Some(text)).map(ToString::to_string))
+        .collect::<Vec<_>>()
+        .join(" ");
+    non_empty(Some(&text)).map(ToString::to_string)
 }
 
 fn active_activity_speaker(agent: &AgentSummary) -> String {
@@ -354,25 +607,45 @@ fn active_activity_speaker(agent: &AgentSummary) -> String {
     }
 }
 
+fn active_activity_spinner() -> &'static str {
+    match (Local::now().timestamp_millis() / 250).rem_euclid(4) {
+        0 => "-",
+        1 => "\\",
+        2 => "|",
+        _ => "/",
+    }
+}
+
 fn active_activity_body(
     agent: &AgentSummary,
     tasks: Option<&[TaskRecord]>,
-    latest_activity: Option<&crate::tui::projection::ProjectionEventRecord>,
+    latest_assistant: Option<&str>,
+    latest_action: Option<&crate::tui::projection::ProjectionEventRecord>,
 ) -> String {
-    let mut lines = Vec::new();
+    let current = current_activity_summary(agent, tasks);
+    let assistant = latest_assistant
+        .map(|text| trim_activity_line(text, 120))
+        .unwrap_or_else(|| "...".into());
+    let action = latest_action
+        .map(|event| trim_activity_line(&action_event_body(event), 120))
+        .unwrap_or_else(|| "Waiting for activity".into());
+
+    [
+        format!("Current   {}", trim_activity_line(&current, 120)),
+        format!("Assistant {}", assistant),
+        format!("Action    {}", action),
+    ]
+    .join("\n")
+}
+
+fn current_activity_summary(agent: &AgentSummary, tasks: Option<&[TaskRecord]>) -> String {
     let memory = &agent.agent.working_memory.current_working_memory;
 
-    if let Some(summary) = non_empty(memory.work_summary.as_deref()) {
-        lines.push(format!("Working: {}", trim_activity_line(summary, 180)));
-    } else if let Some(task_summary) = active_task_summary(agent, tasks) {
-        lines.push(format!("Task: {}", trim_activity_line(&task_summary, 180)));
-    } else if let Some(child_summary) = active_child_summary(agent) {
-        lines.push(format!(
-            "Delegated: {}",
-            trim_activity_line(&child_summary, 180)
-        ));
-    } else {
-        lines.push(match agent.agent.status {
+    non_empty(memory.work_summary.as_deref())
+        .map(ToString::to_string)
+        .or_else(|| active_task_summary(agent, tasks))
+        .or_else(|| active_child_summary(agent))
+        .unwrap_or_else(|| match agent.agent.status {
             crate::types::AgentStatus::Booting => "Starting runtime".into(),
             crate::types::AgentStatus::AwaitingTask => "Waiting for active task progress".into(),
             crate::types::AgentStatus::AwakeRunning => "Working on the current turn".into(),
@@ -380,78 +653,15 @@ fn active_activity_body(
                 "Queued work is waiting to run".into()
             }
             _ => "Work is still active".into(),
-        });
-    }
+        })
+}
 
-    if let Some(target) = non_empty(memory.delivery_target.as_deref()) {
-        lines.push(format!("Target: {}", trim_activity_line(target, 160)));
+fn action_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
+    if event.kind == "tool_executed" || event.kind == "tool_execution_failed" {
+        progress_event_body(event)
+    } else {
+        event.summary.clone()
     }
-
-    if let Some(work_item_id) = non_empty(
-        memory
-            .current_work_item_id
-            .as_deref()
-            .or(agent.agent.current_work_item_id.as_deref())
-            .or(agent.agent.current_turn_work_item_id.as_deref()),
-    ) {
-        lines.push(format!("Work item: {work_item_id}"));
-    }
-
-    if let Some(event) = latest_activity {
-        lines.push(format!(
-            "Now: {}",
-            trim_activity_line(&progress_event_body(event), 180)
-        ));
-    }
-
-    if !agent.agent.active_task_ids.is_empty() || agent.agent.pending > 0 {
-        lines.push(format!(
-            "Queue: pending {}, active tasks {}",
-            agent.agent.pending,
-            agent.agent.active_task_ids.len()
-        ));
-    }
-
-    if !agent.active_children.is_empty() {
-        let children = agent
-            .active_children
-            .iter()
-            .take(2)
-            .map(|child| {
-                let mut description = format!(
-                    "{} {:?}",
-                    child.identity.agent_id, child.observability.phase
-                );
-                if let Some(summary) = child
-                    .observability
-                    .work_summary
-                    .as_deref()
-                    .or(child.observability.last_progress_brief.as_deref())
-                {
-                    description.push_str(": ");
-                    description.push_str(&trim_activity_line(summary, 100));
-                }
-                description
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        lines.push(format!("Children: {children}"));
-    }
-
-    if !memory.waiting_on.is_empty() {
-        lines.push(format!(
-            "Waiting on: {}",
-            memory
-                .waiting_on
-                .iter()
-                .take(2)
-                .map(|item| trim_activity_line(item, 80))
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    lines.join("\n")
 }
 
 fn active_task_summary(agent: &AgentSummary, tasks: Option<&[TaskRecord]>) -> Option<String> {
@@ -487,6 +697,13 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
             Some(trimmed)
         }
     })
+}
+
+fn non_empty_value(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .and_then(|text| non_empty(Some(text)))
+        .map(ToString::to_string)
 }
 
 pub(super) fn paragraph_max_scroll(text: &Text<'_>, area: Rect) -> u16 {

@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeSet,
+    mem,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -111,6 +112,14 @@ impl TuiProjection {
 
     pub(crate) fn reset_from_snapshot(&mut self, snapshot: AgentStateSnapshot) {
         *self = Self::from_snapshot(snapshot);
+    }
+
+    pub(crate) fn inherit_recent_event_logs_from(&mut self, previous: &mut Self) {
+        self.event_log = mem::take(&mut previous.event_log);
+        self.durable_conversation_log = mem::take(&mut previous.durable_conversation_log);
+        if let Some(last_event) = self.event_log.last() {
+            self.cursor = Some(last_event.id.clone());
+        }
     }
 
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
@@ -1003,6 +1012,46 @@ mod tests {
                 .map(|event| event.summary.as_str()),
             Some("provider round completed")
         );
+    }
+
+    #[test]
+    fn projection_refresh_moves_inherited_logs_and_advances_cursor() {
+        let mut previous = TuiProjection::from_snapshot(sample_snapshot());
+        previous.apply_event(
+            sample_event(
+                "provider_round_completed",
+                json!({ "round": 1, "text_preview": "partial" }),
+            ),
+            &test_log_writer(),
+        );
+        previous.apply_event(
+            sample_event(
+                "operator_notification_requested",
+                json!({
+                    "id": "notification-1",
+                    "summary": "needs review",
+                    "message": "needs review",
+                    "created_at": Utc::now(),
+                }),
+            ),
+            &test_log_writer(),
+        );
+        previous.apply_event(
+            sample_event(
+                "tool_executed",
+                json!({ "tool_name": "ExecCommand", "exec_command_cmd": "cargo test tui" }),
+            ),
+            &test_log_writer(),
+        );
+
+        let mut refreshed = TuiProjection::from_snapshot(sample_snapshot());
+        refreshed.inherit_recent_event_logs_from(&mut previous);
+
+        assert_eq!(refreshed.cursor.as_deref(), Some("evt-tool_executed"));
+        assert_eq!(refreshed.event_log().len(), 3);
+        assert_eq!(refreshed.durable_conversation_events().count(), 1);
+        assert!(previous.event_log().is_empty());
+        assert_eq!(previous.durable_conversation_events().count(), 0);
     }
 
     #[test]

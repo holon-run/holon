@@ -22,11 +22,22 @@ struct LinkContext {
 }
 
 pub(crate) fn render_markdown_text(input: &str) -> Text<'static> {
+    render_markdown_text_inner(input, false)
+}
+
+pub(crate) fn render_markdown_text_spaced(input: &str) -> Text<'static> {
+    render_markdown_text_inner(input, true)
+}
+
+fn render_markdown_text_inner(input: &str, block_spacing: bool) -> Text<'static> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
 
     let parser = Parser::new_ext(input, options);
-    let mut renderer = MarkdownRenderer::default();
+    let mut renderer = MarkdownRenderer {
+        block_spacing,
+        ..Default::default()
+    };
     for event in parser {
         renderer.handle_event(event);
     }
@@ -46,6 +57,7 @@ struct MarkdownRenderer {
     in_code_block: bool,
     show_code_block_fence: bool,
     pending_blank_line: bool,
+    block_spacing: bool,
 }
 
 impl MarkdownRenderer {
@@ -113,7 +125,12 @@ impl MarkdownRenderer {
                 }
                 self.in_code_block = true;
             }
-            Tag::List(start) => self.list_stack.push(ListContext { next_index: start }),
+            Tag::List(start) => {
+                if self.list_stack.is_empty() {
+                    self.ensure_blank_line_between_blocks();
+                }
+                self.list_stack.push(ListContext { next_index: start });
+            }
             Tag::Item => self.start_item(),
             Tag::Emphasis => self.push_style(Style::default().add_modifier(Modifier::ITALIC)),
             Tag::Strong => self.push_style(Style::default().add_modifier(Modifier::BOLD)),
@@ -211,6 +228,14 @@ impl MarkdownRenderer {
 
     fn finish(mut self) -> Text<'static> {
         self.flush_current_line();
+        while self
+            .text
+            .lines
+            .last()
+            .is_some_and(|line| line.spans.iter().all(|span| span.content.is_empty()))
+        {
+            self.text.lines.pop();
+        }
         self.text
     }
 
@@ -243,6 +268,16 @@ impl MarkdownRenderer {
     fn ensure_blank_line_between_blocks(&mut self) {
         if self.pending_blank_line {
             self.flush_current_line();
+            if self.block_spacing
+                && self.item_stack.is_empty()
+                && self
+                    .text
+                    .lines
+                    .last()
+                    .is_some_and(|line| !line.spans.iter().all(|span| span.content.is_empty()))
+            {
+                self.text.lines.push(Line::default());
+            }
             self.pending_blank_line = false;
         }
     }
@@ -358,10 +393,18 @@ fn quote_style() -> Style {
 
 #[cfg(test)]
 mod tests {
-    use super::render_markdown_text;
+    use super::{render_markdown_text, render_markdown_text_spaced};
 
     fn flatten_lines(input: &str) -> Vec<String> {
         render_markdown_text(input)
+            .lines
+            .into_iter()
+            .map(|line| line.spans.into_iter().map(|span| span.content).collect())
+            .collect()
+    }
+
+    fn flatten_spaced_lines(input: &str) -> Vec<String> {
+        render_markdown_text_spaced(input)
             .lines
             .into_iter()
             .map(|line| line.spans.into_iter().map(|span| span.content).collect())
@@ -396,5 +439,17 @@ mod tests {
     fn renders_indented_code_block() {
         let lines = flatten_lines("    one\n    two");
         assert_eq!(lines, vec!["    one", "    two"]);
+    }
+
+    #[test]
+    fn spaced_renderer_keeps_one_blank_line_between_top_level_blocks() {
+        let lines = flatten_spaced_lines("First\n\nSecond\n\n- one\n- two");
+        assert_eq!(lines, vec!["First", "", "Second", "", "- one", "- two"]);
+    }
+
+    #[test]
+    fn spaced_renderer_keeps_one_blank_line_between_heading_and_body() {
+        let lines = flatten_spaced_lines("### Title\n\nBody");
+        assert_eq!(lines, vec!["### Title", "", "Body"]);
     }
 }
