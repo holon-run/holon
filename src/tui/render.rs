@@ -261,13 +261,22 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
 }
 
 fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> u16 {
+    const MAX_PROMPT_PANE_HEIGHT: u16 = 12;
+
     let input_width = pane_width.saturating_sub(2).max(1);
-    let prompt_rows = render_prompt_buffer(buffer)
-        .split('\n')
-        .map(|line| wrapped_prompt_rows(line, input_width))
-        .sum::<u16>()
-        .max(1);
-    (prompt_rows + slash_menu_rows as u16 + 2).clamp(3, 12)
+    let mut prompt_rows = 0u32;
+    for line in render_prompt_buffer(buffer).split('\n') {
+        prompt_rows = prompt_rows.saturating_add(u32::from(wrapped_prompt_rows(line, input_width)));
+        if prompt_rows >= u32::from(MAX_PROMPT_PANE_HEIGHT) {
+            break;
+        }
+    }
+    let slash_menu_rows = slash_menu_rows.min(usize::from(MAX_PROMPT_PANE_HEIGHT)) as u32;
+    let pane_rows = prompt_rows
+        .max(1)
+        .saturating_add(slash_menu_rows)
+        .saturating_add(2);
+    pane_rows.clamp(3, u32::from(MAX_PROMPT_PANE_HEIGHT)) as u16
 }
 
 fn status_bar_height(status_line: &str) -> u16 {
@@ -412,9 +421,10 @@ fn prompt_cursor_position(area: Rect, buffer: &str, cursor: usize, hint_rows: u1
 }
 
 fn wrapped_prompt_rows(line: &str, visible_line_width: u16) -> u16 {
-    let line_width = display_width(line);
-    let rows = (line_width + visible_line_width.saturating_sub(1)) / visible_line_width;
-    rows.max(1)
+    let line_width = u32::from(display_width(line));
+    let visible_line_width = u32::from(visible_line_width.max(1));
+    let rows = line_width.saturating_add(visible_line_width.saturating_sub(1)) / visible_line_width;
+    rows.max(1).min(u32::from(u16::MAX)) as u16
 }
 
 fn display_width(text: &str) -> u16 {
@@ -971,6 +981,13 @@ mod tests {
     fn prompt_pane_height_accounts_for_soft_wrapped_lines() {
         assert_eq!(prompt_pane_height("abcdefgh", 0, 10), 4);
         assert_eq!(prompt_pane_height("abcdefghabcdefgh", 0, 10), 5);
+    }
+
+    #[test]
+    fn prompt_pane_height_saturates_for_large_pastes() {
+        let buffer = "abcdefghij\n".repeat(70_000);
+        assert_eq!(prompt_pane_height(&buffer, usize::MAX, 4), 12);
+        assert_eq!(prompt_pane_height(&"a".repeat(70_000), 0, 4), 12);
     }
 
     #[test]
