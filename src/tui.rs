@@ -60,12 +60,6 @@ const BRIEF_LIMIT: usize = 24;
 const TRANSCRIPT_LIMIT: usize = 40;
 const TASK_LIMIT: usize = 40;
 
-#[derive(Debug, Clone)]
-pub(crate) struct CachedActivityText {
-    agent_id: String,
-    text: String,
-}
-
 pub async fn run_tui(config: AppConfig, no_alt_screen: bool) -> Result<()> {
     let client = LocalClient::new(config.clone())?;
     let log_writer = TuiLogWriter::new(config.agent_root_dir())?;
@@ -164,7 +158,6 @@ struct TuiApp {
     pub(crate) status_line: String,
     should_quit: bool,
     chat_text_cache: RefCell<Option<CachedChatText>>,
-    pub(crate) activity_text_cache: RefCell<Option<CachedActivityText>>,
     log_writer: TuiLogWriter,
 }
 
@@ -226,7 +219,6 @@ impl TuiApp {
             status_line: "Connecting to local Holon runtime...".into(),
             should_quit: false,
             chat_text_cache: RefCell::new(None),
-            activity_text_cache: RefCell::new(None),
             log_writer,
         }
     }
@@ -361,7 +353,6 @@ impl TuiApp {
         self.transcript.clear();
         self.tasks.clear();
         self.projection = None;
-        self.activity_text_cache.borrow_mut().take();
         self.last_refresh_at = None;
         self.last_event_at = None;
         self.refresh_deadline = None;
@@ -405,7 +396,6 @@ impl TuiApp {
 
         self.stop_stream_task();
         self.selected_agent = target_index;
-        self.activity_text_cache.borrow_mut().take();
         self.projection = Some(projection);
         self.apply_projection_view();
         self.last_refresh_at = Some(Local::now());
@@ -1622,7 +1612,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_text_includes_durable_projection_system_events() {
+    fn chat_text_excludes_internal_projection_events_and_provider_text() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
             client,
@@ -1655,6 +1645,21 @@ mod tests {
             },
             &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-provider".into(),
+                event: "provider_round_completed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-provider".into(),
+                    seq: 3,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "provider_round_completed".into(),
+                    payload: json!({ "round": 1, "text_preview": "hidden provider partial" }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
         app.projection = Some(projection);
 
         let rendered: String = build_chat_text(&collect_chat_items(&app))
@@ -1662,8 +1667,9 @@ mod tests {
             .into_iter()
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
-        assert!(rendered.contains("System (work)"));
-        assert!(rendered.contains("prepare rollout plan"));
+        assert!(!rendered.contains("System (work)"));
+        assert!(!rendered.contains("prepare rollout plan"));
+        assert!(!rendered.contains("hidden provider partial"));
     }
 
     #[test]

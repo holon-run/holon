@@ -132,6 +132,8 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
     }
 
     if let Some(projection) = app.projection.as_ref() {
+        let mut visible_event_ids = std::collections::HashSet::new();
+
         for event in projection.durable_conversation_events() {
             if !is_chat_visible_conversation_event(&event.kind) {
                 continue;
@@ -141,6 +143,19 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
                 role: CachedChatRole::System,
                 speaker: conversation_event_speaker(&event.kind),
                 body: conversation_event_body(event),
+            });
+            visible_event_ids.insert(event.id.as_str());
+        }
+
+        for event in projection.recent_activity_events() {
+            if visible_event_ids.contains(event.id.as_str()) {
+                continue;
+            }
+            items.push(CachedChatItem {
+                created_at: event.ts,
+                role: CachedChatRole::System,
+                speaker: conversation_event_speaker(&event.kind),
+                body: progress_event_body(event),
             });
         }
     }
@@ -156,14 +171,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
 }
 
 pub(super) fn is_chat_visible_conversation_event(kind: &str) -> bool {
-    !matches!(
-        kind,
-        "message_enqueued"
-            | "brief_created"
-            | "task_created"
-            | "task_status_updated"
-            | "task_result_received"
-    )
+    matches!(kind, "operator_notification_requested" | "runtime_error")
 }
 
 pub(super) fn build_chat_text(items: &[CachedChatItem]) -> Text<'static> {
@@ -347,6 +355,35 @@ pub(super) fn conversation_event_body(
     format!("{prefix}{}", event.summary)
 }
 
+fn progress_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
+    if event.kind == "tool_executed" || event.kind == "tool_execution_failed" {
+        return event
+            .payload
+            .get("tool_name")
+            .and_then(serde_json::Value::as_str)
+            .map(|tool_name| {
+                if tool_name == "ExecCommand" {
+                    event
+                        .payload
+                        .get("exec_command_cmd")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|cmd| {
+                            if event.kind == "tool_execution_failed" {
+                                format!("ExecCommand failed: {cmd}")
+                            } else {
+                                format!("ExecCommand: {cmd}")
+                            }
+                        })
+                        .unwrap_or_else(|| event.summary.clone())
+                } else {
+                    event.summary.clone()
+                }
+            })
+            .unwrap_or_else(|| event.summary.clone());
+    }
+    conversation_event_body(event)
+}
+
 fn render_brief_body(brief: &BriefRecord) -> String {
     if let Some(task_id) = brief.related_task_id.as_deref() {
         let preview = brief
@@ -380,4 +417,88 @@ fn trim_preview(input: &str, max_chars: usize) -> String {
         .collect::<String>();
     trimmed.push('…');
     trimmed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_chat_visible_conversation_event, progress_event_body};
+    use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
+    use chrono::Utc;
+    use serde_json::json;
+
+    #[test]
+    fn progress_event_body_shows_full_exec_command() {
+        let event = ProjectionEventRecord {
+            id: "evt-1".into(),
+            seq: 1,
+            ts: Utc::now(),
+            lane: ProjectionEventLane::Debug,
+            kind: "tool_executed".into(),
+            summary: "tool executed: ExecCommand".into(),
+            payload: json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "git status --short --branch"
+            }),
+        };
+        let rendered = progress_event_body(&event);
+        assert_eq!(rendered, "ExecCommand: git status --short --branch");
+    }
+
+    #[test]
+    fn progress_event_body_marks_failed_exec_command() {
+        let event = ProjectionEventRecord {
+            id: "evt-2".into(),
+            seq: 2,
+            ts: Utc::now(),
+            lane: ProjectionEventLane::Debug,
+            kind: "tool_execution_failed".into(),
+            summary: "tool execution failed: ExecCommand".into(),
+            payload: json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo test tui"
+            }),
+        };
+
+        let rendered = progress_event_body(&event);
+
+        assert_eq!(rendered, "ExecCommand failed: cargo test tui");
+    }
+
+    #[test]
+    fn progress_event_body_uses_summary_for_non_command_tools() {
+        let event = ProjectionEventRecord {
+            id: "evt-2".into(),
+            seq: 2,
+            ts: Utc::now(),
+            lane: ProjectionEventLane::Debug,
+            kind: "tool_executed".into(),
+            summary: "tool executed: Sleep".into(),
+            payload: json!({
+                "tool_name": "Sleep"
+            }),
+        };
+        let rendered = progress_event_body(&event);
+        assert_eq!(rendered, "tool executed: Sleep");
+    }
+
+    #[test]
+    fn chat_visible_conversation_events_are_user_facing_only() {
+        assert!(is_chat_visible_conversation_event(
+            "operator_notification_requested"
+        ));
+        assert!(is_chat_visible_conversation_event("runtime_error"));
+
+        assert!(!is_chat_visible_conversation_event("work_item_written"));
+        assert!(!is_chat_visible_conversation_event(
+            "waiting_intent_created"
+        ));
+        assert!(!is_chat_visible_conversation_event(
+            "waiting_intent_cancelled"
+        ));
+        assert!(!is_chat_visible_conversation_event("callback_delivered"));
+        assert!(!is_chat_visible_conversation_event("workspace_attached"));
+        assert!(!is_chat_visible_conversation_event(
+            "provider_round_completed"
+        ));
+    }
 }

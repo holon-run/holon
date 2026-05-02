@@ -13,7 +13,6 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
         .constraints([
             Constraint::Length(2),
             Constraint::Min(0),
-            Constraint::Length(4),
             Constraint::Length(prompt_height),
             Constraint::Length(status_height),
         ])
@@ -21,9 +20,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
 
     draw_header(frame, outer[0], app);
     draw_main_panels(frame, outer[1], app);
-    draw_activity_pane(frame, outer[2], app);
-    draw_prompt_pane(frame, outer[3], app, &slash_menu);
-    draw_status_bar(frame, outer[4], app);
+    draw_prompt_pane(frame, outer[2], app, &slash_menu);
+    draw_status_bar(frame, outer[3], app);
     draw_overlay(frame, app);
 }
 
@@ -73,13 +71,6 @@ fn draw_runtime_state(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
                 .title("Runtime State")
                 .borders(Borders::ALL),
         )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
-}
-
-fn draw_activity_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-    let paragraph = Paragraph::new(render_activity_text(app))
-        .block(Block::default().title("Logs").borders(Borders::ALL))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
@@ -266,67 +257,6 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
     lines.join("\n")
 }
 
-fn render_activity_text(app: &TuiApp) -> String {
-    let Some(projection) = app.projection.as_ref() else {
-        return render_status_line_or_default(app, "Bootstrapping snapshot and stream...");
-    };
-    let agent_id = projection.agent.identity.agent_id.as_str();
-    let events = projection.recent_log_events(4);
-    if events.is_empty() {
-        let cached = app.activity_text_cache.borrow();
-        if let Some(cached) = cached.as_ref().filter(|c| c.agent_id == agent_id) {
-            return cached.text.clone();
-        }
-        // Show "No in-flight activity" only when turn has ended.
-        if projection.session.current_run_id.is_none() {
-            return "No in-flight activity.".into();
-        }
-        return String::new();
-    }
-
-    let mut text_parts = Vec::new();
-
-    // Prepend status line message if it exists (for UI feedback like "Opened help")
-    if !app.status_line.trim().is_empty() {
-        text_parts.push(app.status_line.trim().to_string());
-    }
-
-    let event_text = events
-        .into_iter()
-        .map(|event| format_activity_event(event))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if !event_text.is_empty() {
-        text_parts.push(event_text);
-    }
-
-    let text = text_parts.join("\n");
-    if !text.is_empty() {
-        *app.activity_text_cache.borrow_mut() = Some(super::CachedActivityText {
-            agent_id: agent_id.to_string(),
-            text: text.clone(),
-        });
-        text
-    } else {
-        // Borrow cache once and reuse for both checks to avoid duplication
-        let cached = app.activity_text_cache.borrow();
-        cached
-            .as_ref()
-            .filter(|c| c.agent_id == agent_id && !c.text.is_empty())
-            .map(|c| c.text.clone())
-            .unwrap_or_default()
-    }
-}
-
-fn render_status_line_or_default(app: &TuiApp, default: &str) -> String {
-    if app.status_line.is_empty() {
-        default.to_string()
-    } else {
-        app.status_line.clone()
-    }
-}
-
 fn prompt_pane_height(buffer: &str, slash_menu_rows: usize) -> u16 {
     let mut prompt_lines = buffer.lines().count();
     if buffer.is_empty() || buffer.ends_with('\n') {
@@ -481,36 +411,6 @@ fn wrapped_prompt_rows(line: &str, visible_line_width: u16) -> u16 {
 
 fn display_width(text: &str) -> u16 {
     UnicodeWidthStr::width(text).min(u16::MAX as usize) as u16
-}
-
-fn format_activity_event(event: &crate::tui::projection::ProjectionEventRecord) -> String {
-    let detail = if event.kind == "tool_executed" || event.kind == "tool_execution_failed" {
-        event
-            .payload
-            .get("tool_name")
-            .and_then(Value::as_str)
-            .map(|tool_name| {
-                if tool_name == "ExecCommand" {
-                    event
-                        .payload
-                        .get("exec_command_cmd")
-                        .and_then(Value::as_str)
-                        .map(|cmd| format!("ExecCommand: {cmd}"))
-                        .unwrap_or_else(|| event.summary.clone())
-                } else {
-                    event.summary.clone()
-                }
-            })
-            .unwrap_or_else(|| event.summary.clone())
-    } else {
-        event.summary.clone()
-    };
-
-    format!(
-        "[{}] {}",
-        event.ts.with_timezone(&Local).format("%H:%M:%S"),
-        detail
-    )
 }
 
 pub(super) fn render_header(agent: &AgentSummary) -> String {
@@ -761,17 +661,10 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_activity_event, prompt_cursor_position, render_activity_text, render_header,
-        render_model_status, render_prompt_buffer, render_prompt_text, render_summary,
-        status_bar_height,
+        prompt_cursor_position, render_header, render_model_status, render_prompt_buffer,
+        render_prompt_text, render_summary, status_bar_height,
     };
-    use crate::client::{
-        AgentStateSnapshot, LocalClient, StateSessionSnapshot, StateWorkspaceSnapshot,
-    };
-    use crate::config::{AltScreenMode, AppConfig};
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
-    use crate::tui::logging::TuiLogWriter;
-    use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord, TuiProjection};
     use crate::types::{
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentSummary,
@@ -779,84 +672,8 @@ mod tests {
         ChildAgentSummary, ClosureDecision, ClosureOutcome, LoadedAgentsMdView, RuntimePosture,
         SkillsRuntimeView, TokenUsage,
     };
-    use chrono::Utc;
     use ratatui::prelude::{Line, Rect};
-    use serde_json::json;
-    use std::collections::HashMap;
     use std::path::PathBuf;
-
-    use super::super::{CachedActivityText, TuiApp};
-
-    fn test_config() -> AppConfig {
-        let temp = tempfile::tempdir().unwrap().keep();
-        AppConfig {
-            default_agent_id: "default".into(),
-            http_addr: "127.0.0.1:0".into(),
-            callback_base_url: "http://127.0.0.1:0".into(),
-            home_dir: temp.clone(),
-            data_dir: temp.clone(),
-            socket_path: temp.join("run").join("holon.sock"),
-            workspace_dir: temp.join("workspace"),
-            context_window_messages: 8,
-            context_window_briefs: 8,
-            compaction_trigger_messages: 10,
-            compaction_keep_recent_messages: 4,
-            prompt_budget_estimated_tokens: 4096,
-            compaction_trigger_estimated_tokens: 2048,
-            compaction_keep_recent_estimated_tokens: 768,
-            recent_episode_candidates: 12,
-            max_relevant_episodes: 3,
-            control_token: Some("secret".into()),
-            control_auth_mode: crate::config::ControlAuthMode::Auto,
-            config_file_path: temp.join("config.json"),
-            stored_config: Default::default(),
-            default_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
-            fallback_models: Vec::new(),
-            runtime_max_output_tokens: 8192,
-            default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,
-            max_tool_output_tokens: crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32,
-            disable_provider_fallback: false,
-            tui_alternate_screen: AltScreenMode::Auto,
-            validated_model_overrides: HashMap::new(),
-            validated_unknown_model_fallback: None,
-            providers: crate::config::provider_registry_for_tests(
-                None,
-                Some("dummy"),
-                temp.join(".codex"),
-            ),
-        }
-    }
-
-    fn sample_app() -> TuiApp {
-        TuiApp::new(
-            LocalClient::new(test_config()).unwrap(),
-            TuiLogWriter::new_temp().unwrap(),
-        )
-    }
-
-    fn sample_projection(current_run_id: Option<&str>) -> TuiProjection {
-        TuiProjection::from_snapshot(AgentStateSnapshot {
-            agent: sample_agent_summary(),
-            session: StateSessionSnapshot {
-                current_run_id: current_run_id.map(str::to_string),
-                pending_count: usize::from(current_run_id.is_some()),
-                last_turn: None,
-            },
-            tasks: Vec::new(),
-            transcript_tail: Vec::new(),
-            briefs_tail: Vec::new(),
-            timers: Vec::new(),
-            work_items: Vec::new(),
-            work_plan: None,
-            waiting_intents: Vec::new(),
-            external_triggers: Vec::new(),
-            operator_notifications: Vec::new(),
-            workspace: StateWorkspaceSnapshot::default(),
-            execution: None,
-            brief: None,
-            cursor: Some("cursor-1".into()),
-        })
-    }
 
     fn sample_agent_summary() -> AgentSummary {
         let mut state = AgentState::new("default");
@@ -1052,53 +869,6 @@ mod tests {
     }
 
     #[test]
-    fn activity_empty_projection_uses_status_line() {
-        let mut app = sample_app();
-        app.status_line = "Bootstrapping agent".into();
-
-        assert_eq!(render_activity_text(&app), "Bootstrapping agent");
-    }
-
-    #[test]
-    fn activity_empty_projection_uses_default_when_status_empty() {
-        let mut app = sample_app();
-        app.status_line.clear();
-
-        assert_eq!(
-            render_activity_text(&app),
-            "Bootstrapping snapshot and stream..."
-        );
-    }
-
-    #[test]
-    fn activity_empty_events_active_run_uses_agent_cache() {
-        let mut app = sample_app();
-        app.projection = Some(sample_projection(Some("run-1")));
-        *app.activity_text_cache.borrow_mut() = Some(CachedActivityText {
-            agent_id: "default".into(),
-            text: "tool running".into(),
-        });
-
-        assert_eq!(render_activity_text(&app), "tool running");
-    }
-
-    #[test]
-    fn activity_empty_events_active_run_without_cache_is_empty() {
-        let mut app = sample_app();
-        app.projection = Some(sample_projection(Some("run-1")));
-
-        assert_eq!(render_activity_text(&app), "");
-    }
-
-    #[test]
-    fn activity_empty_events_ended_run_reports_no_inflight_activity() {
-        let mut app = sample_app();
-        app.projection = Some(sample_projection(None));
-
-        assert_eq!(render_activity_text(&app), "No in-flight activity.");
-    }
-
-    #[test]
     fn prompt_cursor_tracks_multiline_end_position() {
         let area = Rect::new(10, 5, 40, 6);
         assert_eq!(
@@ -1174,43 +944,6 @@ mod tests {
     fn empty_status_line_uses_compact_status_bar_height() {
         assert_eq!(status_bar_height(""), 3);
         assert_eq!(status_bar_height("Action failed"), 4);
-    }
-
-    #[test]
-    fn activity_shows_full_exec_command() {
-        let event = ProjectionEventRecord {
-            id: "evt-1".into(),
-            seq: 1,
-            ts: Utc::now(),
-            lane: ProjectionEventLane::Debug,
-            kind: "tool_executed".into(),
-            summary: "tool executed: ExecCommand".into(),
-            payload: json!({
-                "tool_name": "ExecCommand",
-                "exec_command_cmd": "git status --short --branch"
-            }),
-        };
-
-        let rendered = format_activity_event(&event);
-        assert!(rendered.contains("ExecCommand: git status --short --branch"));
-    }
-
-    #[test]
-    fn activity_uses_summary_for_non_command_tools() {
-        let event = ProjectionEventRecord {
-            id: "evt-2".into(),
-            seq: 2,
-            ts: Utc::now(),
-            lane: ProjectionEventLane::Debug,
-            kind: "tool_executed".into(),
-            summary: "tool executed: read_file".into(),
-            payload: json!({
-                "tool_name": "read_file"
-            }),
-        };
-
-        let rendered = format_activity_event(&event);
-        assert!(rendered.contains("tool executed: read_file"));
     }
 }
 

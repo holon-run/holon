@@ -215,12 +215,10 @@ impl TuiApp {
             SlashCommand::Help => {
                 self.overlay = OverlayState::HelpView { scroll: 0 };
                 self.status_line = "Opened slash command help".into();
-                self.cache_activity_message("Opened slash command help");
             }
             SlashCommand::Agents => {
                 self.overlay = OverlayState::Agents;
                 self.status_line = "Opened agents overlay".into();
-                self.cache_activity_message("Opened agents overlay");
             }
             SlashCommand::Events => {
                 self.overlay = OverlayState::Events {
@@ -228,7 +226,6 @@ impl TuiApp {
                     detail_scroll: 0,
                 };
                 self.status_line = "Opened raw events overlay".into();
-                self.cache_activity_message("Opened raw events overlay");
             }
             SlashCommand::Model => {
                 self.overlay = OverlayState::ModelPicker {
@@ -236,7 +233,6 @@ impl TuiApp {
                     selected: 0,
                 };
                 self.status_line = "Opened model picker".into();
-                self.cache_activity_message("Opened model picker");
             }
             SlashCommand::Tasks => {
                 self.overlay = OverlayState::Tasks {
@@ -244,17 +240,14 @@ impl TuiApp {
                     detail_scroll: 0,
                 };
                 self.status_line = "Opened tasks overlay".into();
-                self.cache_activity_message("Opened tasks overlay");
             }
             SlashCommand::Transcript => {
                 self.overlay = OverlayState::Transcript { scroll: 0 };
                 self.status_line = "Opened transcript overlay".into();
-                self.cache_activity_message("Opened transcript overlay");
             }
             SlashCommand::Refresh => {
                 self.overlay = OverlayState::None;
                 self.status_line = "Refreshing selected agent from /state".into();
-                self.cache_activity_message("Refreshing selected agent from /state");
                 self.bootstrap_selected_agent().await?;
             }
             SlashCommand::ClearStatus => {
@@ -266,7 +259,6 @@ impl TuiApp {
                     composer: ComposerState::new(),
                 };
                 self.status_line = "Opened debug prompt dialog".into();
-                self.cache_activity_message("Opened debug prompt dialog");
             }
         }
         Ok(())
@@ -669,16 +661,12 @@ impl TuiApp {
                 self.client.clear_agent_model_override(&agent_id).await?;
                 self.status_line =
                     format!("Cleared model override for {agent_id}; inheriting runtime default");
-                let msg = self.status_line.clone();
-                self.cache_activity_message(&msg);
             }
             crate::tui::model_picker::ModelPickerChoice::Model { model } => {
                 self.client
                     .set_agent_model_override(&agent_id, model.clone())
                     .await?;
                 self.status_line = format!("Set model override for {agent_id} to {model}");
-                let msg = self.status_line.clone();
-                self.cache_activity_message(&msg);
             }
         }
         self.overlay = OverlayState::None;
@@ -704,17 +692,6 @@ impl TuiApp {
             .as_ref()
             .and_then(|projection| projection.event_log().iter().rev().nth(index))
             .map(|event| event.id.clone())
-    }
-
-    /// Cache a UI feedback message in the activity text cache so it persists
-    /// in the Logs panel even after the status_line is cleared.
-    fn cache_activity_message(&mut self, message: &str) {
-        if let Some(projection) = &self.projection {
-            *self.activity_text_cache.borrow_mut() = Some(CachedActivityText {
-                agent_id: projection.agent.identity.agent_id.clone(),
-                text: message.to_string(),
-            });
-        }
     }
 }
 
