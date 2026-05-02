@@ -345,6 +345,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
         "Slash Commands",
         "  /help show this help",
         "  /agents open agent picker/detail",
+        "  /agent <agent-id> switch to a specific agent by id",
         "  /events open raw event inspector",
         "  /model open model picker for the selected agent",
         "  /tasks open task overlay",
