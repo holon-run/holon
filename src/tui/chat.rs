@@ -171,14 +171,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<CachedChatItem> {
 }
 
 pub(super) fn is_chat_visible_conversation_event(kind: &str) -> bool {
-    !matches!(
-        kind,
-        "message_enqueued"
-            | "brief_created"
-            | "task_created"
-            | "task_status_updated"
-            | "task_result_received"
-    )
+    matches!(kind, "operator_notification_requested" | "runtime_error")
 }
 
 pub(super) fn build_chat_text(items: &[CachedChatItem]) -> Text<'static> {
@@ -374,7 +367,13 @@ fn progress_event_body(event: &crate::tui::projection::ProjectionEventRecord) ->
                         .payload
                         .get("exec_command_cmd")
                         .and_then(serde_json::Value::as_str)
-                        .map(|cmd| format!("ExecCommand: {cmd}"))
+                        .map(|cmd| {
+                            if event.kind == "tool_execution_failed" {
+                                format!("ExecCommand failed: {cmd}")
+                            } else {
+                                format!("ExecCommand: {cmd}")
+                            }
+                        })
                         .unwrap_or_else(|| event.summary.clone())
                 } else {
                     event.summary.clone()
@@ -422,7 +421,7 @@ fn trim_preview(input: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::progress_event_body;
+    use super::{is_chat_visible_conversation_event, progress_event_body};
     use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
     use chrono::Utc;
     use serde_json::json;
@@ -446,6 +445,26 @@ mod tests {
     }
 
     #[test]
+    fn progress_event_body_marks_failed_exec_command() {
+        let event = ProjectionEventRecord {
+            id: "evt-2".into(),
+            seq: 2,
+            ts: Utc::now(),
+            lane: ProjectionEventLane::Debug,
+            kind: "tool_execution_failed".into(),
+            summary: "tool execution failed: ExecCommand".into(),
+            payload: json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo test tui"
+            }),
+        };
+
+        let rendered = progress_event_body(&event);
+
+        assert_eq!(rendered, "ExecCommand failed: cargo test tui");
+    }
+
+    #[test]
     fn progress_event_body_uses_summary_for_non_command_tools() {
         let event = ProjectionEventRecord {
             id: "evt-2".into(),
@@ -460,5 +479,26 @@ mod tests {
         };
         let rendered = progress_event_body(&event);
         assert_eq!(rendered, "tool executed: Sleep");
+    }
+
+    #[test]
+    fn chat_visible_conversation_events_are_user_facing_only() {
+        assert!(is_chat_visible_conversation_event(
+            "operator_notification_requested"
+        ));
+        assert!(is_chat_visible_conversation_event("runtime_error"));
+
+        assert!(!is_chat_visible_conversation_event("work_item_written"));
+        assert!(!is_chat_visible_conversation_event(
+            "waiting_intent_created"
+        ));
+        assert!(!is_chat_visible_conversation_event(
+            "waiting_intent_cancelled"
+        ));
+        assert!(!is_chat_visible_conversation_event("callback_delivered"));
+        assert!(!is_chat_visible_conversation_event("workspace_attached"));
+        assert!(!is_chat_visible_conversation_event(
+            "provider_round_completed"
+        ));
     }
 }

@@ -1612,7 +1612,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_text_includes_durable_projection_system_events() {
+    fn chat_text_excludes_internal_projection_events_and_provider_text() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
             client,
@@ -1645,6 +1645,21 @@ mod tests {
             },
             &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-provider".into(),
+                event: "provider_round_completed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-provider".into(),
+                    seq: 3,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "provider_round_completed".into(),
+                    payload: json!({ "round": 1, "text_preview": "hidden provider partial" }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
         app.projection = Some(projection);
 
         let rendered: String = build_chat_text(&collect_chat_items(&app))
@@ -1652,8 +1667,9 @@ mod tests {
             .into_iter()
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
-        assert!(rendered.contains("System (work)"));
-        assert!(rendered.contains("prepare rollout plan"));
+        assert!(!rendered.contains("System (work)"));
+        assert!(!rendered.contains("prepare rollout plan"));
+        assert!(!rendered.contains("hidden provider partial"));
     }
 
     #[test]

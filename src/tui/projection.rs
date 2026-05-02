@@ -666,9 +666,7 @@ pub(crate) fn is_durable_conversation_kind(kind: &str) -> bool {
 pub(crate) fn is_ephemeral_activity_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "provider_round_completed"
-            | "text_only_round_observed"
-            | "tool_executed"
+        "tool_executed"
             | "tool_execution_failed"
             | "skill_activated"
             | "system_tick_emitted"
@@ -982,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn projection_marks_transcript_stale_for_round_events() {
+    fn projection_logs_provider_rounds_without_recent_activity() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
 
         projection.apply_event(
@@ -993,12 +991,10 @@ mod tests {
             &test_log_writer(),
         );
 
-        assert!(projection
-            .stale_slices
-            .contains(&ProjectionSlice::TranscriptTail));
+        assert!(projection.recent_activity_events().is_empty());
         assert_eq!(
             projection.event_log().last().map(|event| event.lane),
-            Some(ProjectionEventLane::Debug)
+            Some(ProjectionEventLane::State)
         );
         assert_eq!(
             projection
@@ -1026,9 +1022,11 @@ mod tests {
         );
 
         let activity = projection.recent_activity_events();
-        assert_eq!(activity.len(), 2);
-        assert_eq!(activity[0].kind, "provider_round_completed");
-        assert_eq!(activity[1].kind, "tool_executed");
+        assert_eq!(activity.len(), 1);
+        assert_eq!(activity[0].kind, "tool_executed");
+        assert!(!activity.iter().any(|event| {
+            event.summary.contains("partial") || event.payload.get("text_preview").is_some()
+        }));
 
         projection.apply_event(
             sample_event(
