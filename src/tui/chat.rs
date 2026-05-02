@@ -197,22 +197,19 @@ pub(super) fn chat_text(app: &TuiApp) -> Text<'static> {
 }
 
 fn append_chat_item(target: &mut Text<'static>, item: &CachedChatItem) {
+    if active_activity_status_label(&item.speaker).is_some() {
+        append_active_activity_item(target, item);
+        return;
+    }
+
     let body = render_markdown_text(&item.body);
     let body_lines = body.lines;
-    let prefix = chat_prefix_text(item);
-    let continuation_indent = " ".repeat(prefix.chars().count());
+    let prefix = chat_prefix_spans(item);
+    let continuation_indent = chat_continuation_indent(item);
 
     if let Some((first, rest)) = body_lines.split_first() {
-        let mut spans = Vec::with_capacity(first.spans.len() + 3);
-        spans.push(Span::styled(
-            chat_timestamp(item),
-            Style::default().add_modifier(Modifier::DIM),
-        ));
-        spans.push(Span::styled(
-            item.speaker.clone(),
-            chat_speaker_style(item.role),
-        ));
-        spans.push(Span::raw("  "));
+        let mut spans = Vec::with_capacity(prefix.len() + first.spans.len());
+        spans.extend(prefix);
         spans.extend(first.spans.clone());
         target.lines.push(Line::from(spans).style(first.style));
 
@@ -223,40 +220,85 @@ fn append_chat_item(target: &mut Text<'static>, item: &CachedChatItem) {
             target.lines.push(Line::from(spans).style(line.style));
         }
     } else {
-        target.lines.push(Line::from(vec![
-            Span::styled(
-                chat_timestamp(item),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-            Span::styled(item.speaker.clone(), chat_speaker_style(item.role)),
-        ]));
+        target.lines.push(Line::from(prefix));
     }
-
-    // Add extra spacing between messages for better readability.
-    // Two blank lines makes message separation more visually distinct.
-    target.lines.push(Line::from(""));
-    target.lines.push(Line::from(""));
 }
 
-fn chat_prefix_text(item: &CachedChatItem) -> String {
-    format!("{}{}  ", chat_timestamp(item), item.speaker)
+fn append_active_activity_item(target: &mut Text<'static>, item: &CachedChatItem) {
+    let status = active_activity_status_label(&item.speaker).unwrap_or("Working");
+    let marker = active_activity_display_marker(&item.speaker);
+    target.lines.push(Line::from(vec![
+        Span::styled(marker, Style::default().add_modifier(Modifier::DIM)),
+        Span::raw(" "),
+        Span::styled(status, Style::default().add_modifier(Modifier::BOLD)),
+    ]));
+
+    let body = render_markdown_text(&item.body);
+    for line in body.lines {
+        let mut spans = Vec::with_capacity(line.spans.len() + 1);
+        spans.push(Span::raw("  "));
+        spans.extend(line.spans);
+        target.lines.push(Line::from(spans).style(line.style));
+    }
+}
+
+fn chat_prefix_spans(item: &CachedChatItem) -> Vec<Span<'static>> {
+    let (marker, marker_style) = match item.role {
+        CachedChatRole::Operator => ("› ", Style::default().add_modifier(Modifier::BOLD)),
+        CachedChatRole::Agent => ("• ", Style::default().add_modifier(Modifier::DIM)),
+        CachedChatRole::System => (
+            "! ",
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::DIM),
+        ),
+    };
+
+    vec![
+        Span::styled(marker, marker_style),
+        Span::styled(
+            chat_timestamp(item),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Span::raw(" "),
+    ]
+}
+
+fn chat_continuation_indent(item: &CachedChatItem) -> String {
+    let prefix_width = 2 + chat_timestamp(item).chars().count() + 1;
+    " ".repeat(prefix_width)
 }
 
 fn chat_timestamp(item: &CachedChatItem) -> String {
-    format!(
-        "[{}] ",
-        item.created_at.with_timezone(&Local).format("%H:%M")
-    )
+    item.created_at
+        .with_timezone(&Local)
+        .format("%H:%M")
+        .to_string()
 }
 
-fn chat_speaker_style(role: CachedChatRole) -> Style {
-    match role {
-        CachedChatRole::Operator | CachedChatRole::Agent => {
-            Style::default().add_modifier(Modifier::BOLD)
-        }
-        CachedChatRole::System => Style::default()
-            .add_modifier(Modifier::BOLD)
-            .add_modifier(Modifier::DIM),
+fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
+    if speaker.starts_with("Holon (working)") {
+        Some("Working")
+    } else if speaker.starts_with("Holon (queued)") {
+        Some("Queued")
+    } else if speaker.starts_with("Holon (starting)") {
+        Some("Starting")
+    } else if speaker.starts_with("Holon (waiting)") {
+        Some("Waiting")
+    } else if speaker.starts_with("Holon (delegating)") {
+        Some("Delegating")
+    } else {
+        None
+    }
+}
+
+fn active_activity_display_marker(speaker: &str) -> &'static str {
+    match speaker.rsplit_once(' ').map(|(_, marker)| marker) {
+        Some("-") => "-",
+        Some("\\") => "\\",
+        Some("|") => "|",
+        Some("/") => "/",
+        _ => "◦",
     }
 }
 

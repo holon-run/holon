@@ -1060,9 +1060,9 @@ mod tests {
             .into_iter()
             .map(|line| line.spans.into_iter().map(|span| span.content).collect())
             .collect();
-        assert!(lines.iter().any(|line| line.contains("You")));
+        assert!(lines.iter().any(|line| line.contains("› ")));
         assert!(lines.iter().any(|line| line.contains("Fix the failing CI")));
-        assert!(lines.iter().any(|line| line.contains("Holon")));
+        assert!(lines.iter().any(|line| line.contains("• ")));
         assert!(lines
             .iter()
             .any(|line| line.contains("I started a worktree task.")));
@@ -1093,7 +1093,9 @@ mod tests {
             .into_iter()
             .map(|line| line.spans.into_iter().map(|span| span.content).collect())
             .collect();
-        assert!(lines.iter().any(|line| line.contains("Holon  First line")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("• ") && line.contains("First line")));
         assert!(lines.iter().any(|line| line.contains("Second line")));
     }
 
@@ -1856,7 +1858,7 @@ mod tests {
             .into_iter()
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
-        assert!(rendered.contains("Holon (working"));
+        assert!(rendered.contains("Working"));
         assert!(rendered.contains("Current   Improve the Conversation working indicator"));
         assert!(rendered.contains("Assistant ..."));
         assert!(rendered.contains("Action    Still working"));
@@ -1920,7 +1922,7 @@ mod tests {
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
 
-        assert!(rendered.contains("Holon (queued"));
+        assert!(rendered.contains("Queued"));
         assert!(rendered.contains("Current   Queued work is waiting to run"));
         assert!(rendered.contains("Assistant ..."));
         assert!(rendered.contains("Action    Waiting for activity"));
