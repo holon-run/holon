@@ -99,13 +99,13 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
             "Slash: Up/Down select  Tab complete  Enter run  Esc close"
         }
         OverlayState::None => {
-            "/help commands  Left/Right/Home/End edit  Up/Down scroll  Ctrl+A agents  Ctrl+E events  Ctrl+J tasks  Ctrl+C quit"
+            "/help commands  Up/Down history (empty)  PgUp/PgDn scroll  Ctrl+A/E edit  ? help  Ctrl+C quit"
         }
         OverlayState::Agents => "Agents: Up/Down, Esc",
         OverlayState::Events { .. } => "Events: Up/Down, PgUp/PgDn, Home/End, Esc",
         OverlayState::Transcript { .. } => "Transcript: Up/Down, PgUp/PgDn, Home/End, Esc",
         OverlayState::Tasks { .. } => {
-            "Tasks: Up/Down, PgUp/PgDn, Home/End, f full, l follow, x stop, i input, Esc"
+            "Tasks: Up/Down, PgUp/PgDn, Home/End, Esc"
         }
         OverlayState::ModelPicker { .. } => {
             "Model: type filter, Backspace edit, Up/Down move, Enter select, Esc cancel"
@@ -609,8 +609,10 @@ pub(super) fn task_action_availability(
         .and_then(Value::as_bool)
         .unwrap_or(false)
         || has_input_target;
-    let is_active = matches!(task.status, TaskStatus::Queued | TaskStatus::Running);
-
+    let is_active_or_cancelling = matches!(
+        task.status,
+        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+    );
     match action {
         TaskOverlayAction::FullOutput if task.kind != TaskKind::CommandTask => {
             TaskActionAvailability::unavailable(action, "only command tasks expose full output")
@@ -631,9 +633,10 @@ pub(super) fn task_action_availability(
             TaskActionAvailability::unavailable(action, "no live output artifact is available yet")
         }
         TaskOverlayAction::FollowOutput => TaskActionAvailability::available(action),
-        TaskOverlayAction::Stop if !is_active => {
-            TaskActionAvailability::unavailable(action, "task is not queued or running")
-        }
+        TaskOverlayAction::Stop if !is_active_or_cancelling => TaskActionAvailability::unavailable(
+            action,
+            "task is not queued, running, or cancelling",
+        ),
         TaskOverlayAction::Stop => TaskActionAvailability::available(action),
         TaskOverlayAction::Input if !accepts_input || task.status != TaskStatus::Running => {
             TaskActionAvailability::unavailable(action, "task is not currently accepting input")
