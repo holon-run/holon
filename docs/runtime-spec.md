@@ -1613,6 +1613,15 @@ work-item mutation may invalidate turn-local checkpoint state because the
 runtime focus changed, but failed tool inputs and `ExecCommand` calls do not
 invalidate checkpoint anchors by command-name heuristics.
 
+During a long provider turn, the runtime may inject a provider-only work-item
+progress reminder when many consecutive provider rounds complete without a
+successful `CreateWorkItem`, `PickWorkItem`, `UpdateWorkItem`, or
+`CompleteWorkItem` call. The reminder is derived from the current
+`WorkItemRecord` objective, plan_status, plan, todo_list, and blocker state. It
+does not mark progress by itself and should only ask the model to update work
+state when material progress, scope changes, blockers, or completed checklist
+items actually emerged.
+
 ### Control-Plane Work-Item Enqueue
 
 The runtime also exposes a control-plane enqueue path for future work items:

@@ -20,8 +20,9 @@ use crate::{
         ToolCall, ToolError, ToolSpec,
     },
     types::{
-        AuditEvent, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel,
-        TurnTerminalCheckpointRecord, TurnTerminalKind, TurnTerminalRecord,
+        AuditEvent, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        TurnTerminalCheckpointRecord, TurnTerminalKind, TurnTerminalRecord, WorkItemPlanStatus,
+        WorkItemRecord,
     },
 };
 
@@ -43,6 +44,8 @@ const ROUND_TEXT_PREVIEW_LIMIT: usize = 600;
 const RECAP_TEXT_PREVIEW_LIMIT: usize = 160;
 const MIN_EXACT_TAIL_ROUNDS: usize = 2;
 const CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS: usize = 256;
+const WORK_ITEM_STALE_REMINDER_ROUNDS: usize = 10;
+const WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS: usize = 10;
 const COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT: &str = "\
 [Runtime-generated full progress checkpoint request]
 You are crossing a context compaction boundary. Before continuing, include a concise progress checkpoint for continuation in your next assistant message.
@@ -654,6 +657,70 @@ fn round_invalidates_checkpoint_anchor(round: &TurnRoundRecord) -> bool {
         .any(tool_result_invalidates_checkpoint_anchor)
 }
 
+fn round_updated_work_item(round: &TurnRoundRecord) -> bool {
+    round.tool_result_envelopes.iter().any(|envelope| {
+        envelope.status == ToolResultStatus::Success
+            && matches!(
+                envelope.tool_name.as_str(),
+                "CreateWorkItem" | "PickWorkItem" | "UpdateWorkItem" | "CompleteWorkItem"
+            )
+    })
+}
+
+fn build_work_item_stale_reminder(
+    work_item: &WorkItemRecord,
+    rounds_since_update: usize,
+) -> String {
+    let mut lines = vec![
+        "[Runtime-generated work item progress reminder]".to_string(),
+        format!(
+            "The current work item has gone {rounds_since_update} provider rounds without a successful CreateWorkItem, PickWorkItem, UpdateWorkItem, or CompleteWorkItem call."
+        ),
+        "Before continuing broad exploration, realign with the current work item. If material progress, scope changes, blockers, or completed checklist items have emerged, call UpdateWorkItem. If the current in-progress step is still not ready to update, state the specific missing fact and run only the next bounded command/query.".to_string(),
+        String::new(),
+        "Current work item snapshot:".to_string(),
+        format!("- Id: {}", work_item.id),
+        format!("- Objective: {}", work_item.objective),
+        format!(
+            "- Plan status: {}",
+            work_item_plan_status_label(work_item.plan_status)
+        ),
+    ];
+    if let Some(plan) = work_item.plan.as_deref() {
+        lines.push("- Plan:".to_string());
+        lines.extend(plan.lines().map(|line| format!("  {line}")));
+    }
+    if !work_item.todo_list.is_empty() {
+        lines.push("- Todo list:".to_string());
+        lines.extend(
+            work_item
+                .todo_list
+                .iter()
+                .map(|todo| format!("  - [{}] {}", todo_item_state_label(todo.state), todo.text)),
+        );
+    }
+    if let Some(blocked_by) = work_item.blocked_by.as_deref() {
+        lines.push(format!("- Blocked by: {blocked_by}"));
+    }
+    lines.join("\n")
+}
+
+fn work_item_plan_status_label(status: WorkItemPlanStatus) -> &'static str {
+    match status {
+        WorkItemPlanStatus::Draft => "draft",
+        WorkItemPlanStatus::Ready => "ready",
+        WorkItemPlanStatus::NeedsInput => "needs_input",
+    }
+}
+
+fn todo_item_state_label(state: TodoItemState) -> &'static str {
+    match state {
+        TodoItemState::Pending => "pending",
+        TodoItemState::InProgress => "in_progress",
+        TodoItemState::Completed => "completed",
+    }
+}
+
 fn build_delta_checkpoint_prompt(
     previous_round: Option<usize>,
     source_turn_index: Option<u64>,
@@ -684,6 +751,15 @@ Include:
 If no material facts changed, say exactly that and continue from the base checkpoint's next action.
 Keep this delta brief; it exists to preserve continuity after tool output compression, not to re-summarize the full task."
     )
+}
+
+fn push_runtime_reminder_message(
+    conversation: &mut Vec<ConversationMessage>,
+    runtime_reminder: Option<&str>,
+) {
+    if let Some(reminder) = runtime_reminder.filter(|text| !text.trim().is_empty()) {
+        conversation.push(ConversationMessage::UserText(reminder.to_string()));
+    }
 }
 
 fn build_turn_local_checkpoint_request(
@@ -741,15 +817,41 @@ fn build_turn_local_projection(
     prompt_budget: usize,
     keep_recent_budget: usize,
 ) -> TurnLocalProjectionOutcome {
+    build_turn_local_projection_with_runtime_reminder(
+        prompt_frame,
+        rounds,
+        available_tools,
+        checkpoint_state,
+        checkpoint_request_id,
+        prompt_budget,
+        keep_recent_budget,
+        None,
+    )
+}
+
+fn build_turn_local_projection_with_runtime_reminder(
+    prompt_frame: &ProviderPromptFrame,
+    rounds: &[TurnRoundRecord],
+    available_tools: &[ToolSpec],
+    checkpoint_state: &TurnLocalCheckpointState,
+    checkpoint_request_id: Option<String>,
+    prompt_budget: usize,
+    keep_recent_budget: usize,
+    runtime_reminder: Option<&str>,
+) -> TurnLocalProjectionOutcome {
     let tool_overhead_estimated_tokens = estimate_tool_specs_tokens(available_tools);
     let system_prompt_estimated_tokens = estimate_prompt_frame_tokens(prompt_frame);
     let context_attachment_estimated_tokens =
         estimate_prompt_blocks_tokens(&prompt_frame.context_blocks);
+    let runtime_reminder_estimated_tokens = runtime_reminder
+        .map(estimate_text_tokens)
+        .unwrap_or_default();
     let effective_budget_estimated_tokens = prompt_budget
         .saturating_sub(tool_overhead_estimated_tokens)
         .saturating_sub(CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS);
-    let estimated_baseline_tokens =
-        system_prompt_estimated_tokens.saturating_add(context_attachment_estimated_tokens);
+    let estimated_baseline_tokens = system_prompt_estimated_tokens
+        .saturating_add(context_attachment_estimated_tokens)
+        .saturating_add(runtime_reminder_estimated_tokens);
 
     let baseline_over_budget =
         |reason: &str,
@@ -774,6 +876,7 @@ fn build_turn_local_projection(
     let mut exact_conversation = vec![ConversationMessage::UserBlocks(
         prompt_frame.context_blocks.clone(),
     )];
+    push_runtime_reminder_message(&mut exact_conversation, runtime_reminder);
     for round in rounds {
         exact_conversation.extend(exact_round_messages(round));
     }
@@ -791,6 +894,7 @@ fn build_turn_local_projection(
     let mut minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
         prompt_frame.context_blocks.clone(),
     )];
+    push_runtime_reminder_message(&mut minimum_viable_conversation, runtime_reminder);
     if let Some(last_round) = rounds.last() {
         minimum_viable_conversation.extend(exact_round_messages(last_round));
     }
@@ -811,6 +915,7 @@ fn build_turn_local_projection(
         let mut conversation = vec![ConversationMessage::UserBlocks(
             prompt_frame.context_blocks.clone(),
         )];
+        push_runtime_reminder_message(&mut conversation, runtime_reminder);
         let exact_tail = &rounds[tail_start..];
         let exact_tail_tokens = exact_tail.iter().map(estimate_round_tokens).sum::<usize>();
         let include_checkpoint = exact_tail
@@ -832,6 +937,7 @@ fn build_turn_local_projection(
         let recap_budget = effective_budget_estimated_tokens.saturating_sub(
             system_prompt_estimated_tokens
                 .saturating_add(context_attachment_estimated_tokens)
+                .saturating_add(runtime_reminder_estimated_tokens)
                 .saturating_add(exact_tail_tokens)
                 .saturating_add(checkpoint_estimated_tokens),
         );
@@ -1090,6 +1196,8 @@ impl RuntimeHandle {
         let mut truncated_text_history = Vec::new();
         let mut last_assistant_message: Option<String> = None;
         let mut max_output_recovery_count = 0usize;
+        let mut rounds_since_work_item_update = 0usize;
+        let mut rounds_since_work_item_reminder = WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS;
         let mut checkpoint_state = {
             let guard = self.inner.agent.lock().await;
             checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
@@ -1164,7 +1272,40 @@ impl RuntimeHandle {
                 let checkpoint_request_id =
                     Some(format!("turn-{turn_index}-round-{round}-checkpoint"));
                 let prompt_frame = build_provider_prompt_frame(&effective_prompt);
-                let projection = match build_turn_local_projection(
+                let stale_work_item_reminder = if rounds_since_work_item_update
+                    >= WORK_ITEM_STALE_REMINDER_ROUNDS
+                    && rounds_since_work_item_reminder >= WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS
+                {
+                    let current_work_item_id = {
+                        let guard = self.inner.agent.lock().await;
+                        guard.state.current_work_item_id.clone()
+                    };
+                    current_work_item_id
+                        .as_deref()
+                        .and_then(|id| self.inner.storage.latest_work_item(id).ok().flatten())
+                        .map(|work_item| {
+                            build_work_item_stale_reminder(
+                                &work_item,
+                                rounds_since_work_item_update,
+                            )
+                        })
+                } else {
+                    None
+                };
+                if let Some(reminder) = stale_work_item_reminder.as_ref() {
+                    self.inner.storage.append_event(&AuditEvent::new(
+                        "work_item_stale_reminder_injected",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "round": round,
+                            "rounds_since_work_item_update": rounds_since_work_item_update,
+                            "cooldown_rounds": WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS,
+                            "text_preview": truncate_preview(reminder, ROUND_TEXT_PREVIEW_LIMIT),
+                        }),
+                    ))?;
+                    rounds_since_work_item_reminder = 0;
+                }
+                let projection = match build_turn_local_projection_with_runtime_reminder(
                     &prompt_frame,
                     &completed_rounds,
                     &available_tools,
@@ -1172,6 +1313,7 @@ impl RuntimeHandle {
                     checkpoint_request_id,
                     context_config.prompt_budget_estimated_tokens,
                     context_config.compaction_keep_recent_estimated_tokens,
+                    stale_work_item_reminder.as_deref(),
                 ) {
                     TurnLocalProjectionOutcome::Projection(projection) => projection,
                     TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
@@ -1807,6 +1949,13 @@ impl RuntimeHandle {
                 checkpoint_state.anchor_generation =
                     checkpoint_state.anchor_generation.saturating_add(1);
             }
+            if round_updated_work_item(&round_record) {
+                rounds_since_work_item_update = 0;
+                rounds_since_work_item_reminder = WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS;
+            } else {
+                rounds_since_work_item_update = rounds_since_work_item_update.saturating_add(1);
+                rounds_since_work_item_reminder = rounds_since_work_item_reminder.saturating_add(1);
+            }
             completed_rounds.push(round_record);
 
             if only_sleep_tools {
@@ -1965,6 +2114,64 @@ mod tests {
             error: None,
         }];
         record
+    }
+
+    #[test]
+    fn build_work_item_stale_reminder_includes_current_work_item_snapshot() {
+        let mut work_item = WorkItemRecord::new(
+            "default",
+            "Ship work item reminder tests",
+            crate::types::WorkItemState::Open,
+        );
+        work_item.id = "work_reminder".into();
+        work_item.plan_status = WorkItemPlanStatus::Ready;
+        work_item.plan = Some("Patch runtime reminder.\nRun focused tests.".into());
+        work_item.todo_list = vec![
+            crate::types::TodoItem {
+                text: "Patch runtime reminder".into(),
+                state: TodoItemState::InProgress,
+            },
+            crate::types::TodoItem {
+                text: "Run focused tests".into(),
+                state: TodoItemState::Pending,
+            },
+        ];
+
+        let reminder = build_work_item_stale_reminder(&work_item, 10);
+
+        assert!(reminder.contains("[Runtime-generated work item progress reminder]"));
+        assert!(reminder.contains("- Id: work_reminder"));
+        assert!(reminder.contains("- Objective: Ship work item reminder tests"));
+        assert!(reminder.contains("- Plan status: ready"));
+        assert!(reminder.contains("Patch runtime reminder."));
+        assert!(reminder.contains("  - [in_progress] Patch runtime reminder"));
+        assert!(reminder.contains("  - [pending] Run focused tests"));
+    }
+
+    #[test]
+    fn build_turn_local_projection_includes_runtime_reminder() {
+        let prompt_frame = fixture_prompt_frame();
+        let reminder = "[Runtime-generated work item progress reminder]\nCall UpdateWorkItem if material progress emerged.";
+
+        let projection = build_turn_local_projection_with_runtime_reminder(
+            &prompt_frame,
+            &[],
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            4_000,
+            120,
+            Some(reminder),
+        );
+
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected projection outcome");
+        };
+        assert!(projection.conversation.iter().any(|message| matches!(
+            message,
+            ConversationMessage::UserText(text) if text == reminder
+        )));
+        assert!(projection.compaction.is_none());
     }
 
     fn checkpoint_state_with_latest(
