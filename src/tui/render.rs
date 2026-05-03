@@ -609,7 +609,10 @@ pub(super) fn task_action_availability(
         .and_then(Value::as_bool)
         .unwrap_or(false)
         || has_input_target;
-    let is_active_or_cancelling = matches!(task.status, TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling);
+    let is_active_or_cancelling = matches!(
+        task.status,
+        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+    );
     match action {
         TaskOverlayAction::FullOutput if task.kind != TaskKind::CommandTask => {
             TaskActionAvailability::unavailable(action, "only command tasks expose full output")
@@ -630,9 +633,10 @@ pub(super) fn task_action_availability(
             TaskActionAvailability::unavailable(action, "no live output artifact is available yet")
         }
         TaskOverlayAction::FollowOutput => TaskActionAvailability::available(action),
-        TaskOverlayAction::Stop if !is_active_or_cancelling => {
-            TaskActionAvailability::unavailable(action, "task is not queued, running, or cancelling")
-        }
+        TaskOverlayAction::Stop if !is_active_or_cancelling => TaskActionAvailability::unavailable(
+            action,
+            "task is not queued, running, or cancelling",
+        ),
         TaskOverlayAction::Stop => TaskActionAvailability::available(action),
         TaskOverlayAction::Input if !accepts_input || task.status != TaskStatus::Running => {
             TaskActionAvailability::unavailable(action, "task is not currently accepting input")

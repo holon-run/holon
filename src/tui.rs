@@ -2361,7 +2361,7 @@ mod tests {
             app.status_line,
             format!("Failed to switch to agent beta: {err}")
         );
-}
+    }
 
     fn test_app() -> TuiApp {
         let client = LocalClient::new(test_config()).unwrap();

@@ -1,0 +1,15 @@
+@@ -98,9 +103,13 @@
+         } else {
+             trimmed_end
+         };
+-        before[..word_end].rfind(' ').map(|i| i + 1).unwrap_or(0)
++        before[..word_end].rfind(|c: char| c.is_whitespace()).map(|i| {
++            // Find the byte after the whitespace character
++            i + before[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1)
++        }).unwrap_or(0)
+     }
+ 
++
+     fn previous_boundary(&self, from: usize) -> Option<usize> {
+         self.text[..from]
+             .char_indices()
