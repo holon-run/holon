@@ -482,7 +482,10 @@ fn render_current_work_item(work_item: &WorkItemRecord) -> String {
         format!("- Id: {}", work_item.id),
         format!("- State: {:?}", work_item.state),
         format!("- Objective: {}", work_item.objective),
-        format!("- Plan state: {:?}", work_item.plan_status),
+        format!(
+            "- Plan status: {}",
+            work_item_plan_status_label(work_item.plan_status)
+        ),
     ];
     if let Some(plan) = work_item.plan.as_deref() {
         lines.push("- Plan:".to_string());
@@ -503,6 +506,14 @@ fn render_current_work_item(work_item: &WorkItemRecord) -> String {
         lines.push(format!("- Blocked by: {blocked_by}"));
     }
     lines.join("\n")
+}
+
+fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'static str {
+    match status {
+        crate::types::WorkItemPlanStatus::Draft => "draft",
+        crate::types::WorkItemPlanStatus::Ready => "ready",
+        crate::types::WorkItemPlanStatus::NeedsInput => "needs_input",
+    }
 }
 
 fn render_queued_blocked_work_items(items: &[&WorkItemRecord]) -> String {

@@ -2297,6 +2297,64 @@ mod tests {
         assert!(projection.compaction.is_none());
     }
 
+    #[test]
+    fn large_work_item_stale_reminder_does_not_force_baseline_over_budget() {
+        let mut work_item = WorkItemRecord::new(
+            "default",
+            "Keep reminder bounded with large plan and todo list",
+            crate::types::WorkItemState::Open,
+        );
+        work_item.id = "work_large_reminder".into();
+        work_item.plan_status = WorkItemPlanStatus::Ready;
+        work_item.plan = Some(
+            (0..80)
+                .map(|idx| format!("step {idx}: {}", "inspect and verify ".repeat(40)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        work_item.todo_list = (0..80)
+            .map(|idx| crate::types::TodoItem {
+                text: format!("todo {idx}: {}", "finish bounded work ".repeat(30)),
+                state: if idx % 3 == 0 {
+                    TodoItemState::Completed
+                } else if idx % 3 == 1 {
+                    TodoItemState::InProgress
+                } else {
+                    TodoItemState::Pending
+                },
+            })
+            .collect();
+        let reminder = build_work_item_stale_reminder(&work_item, 10);
+        let prompt_frame = fixture_prompt_frame();
+
+        assert!(reminder.contains("... plan truncated"));
+        assert!(!reminder.contains("[completed]"));
+        assert!(runtime_reminder_fits_baseline(
+            &prompt_frame,
+            &[],
+            4_000,
+            &reminder
+        ));
+        let projection = build_turn_local_projection_with_runtime_reminder(
+            &prompt_frame,
+            &[],
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-large".into()),
+            4_000,
+            120,
+            Some(&reminder),
+        );
+
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected bounded reminder to fit baseline");
+        };
+        assert!(projection.conversation.iter().any(|message| matches!(
+            message,
+            ConversationMessage::UserText(text) if text == &reminder
+        )));
+    }
+
     fn checkpoint_state_with_latest(
         text: &str,
         response_round: usize,

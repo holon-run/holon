@@ -233,7 +233,7 @@ Current work item:
 - Id: work_prompt
 - State: Open
 - Objective: Ship prompt snapshot coverage
-- Plan state: Draft
+- Plan status: draft
 - Todo list:
   - [in_progress] Capture baseline operator layout
   - [pending] Cover callback and task result surfaces
@@ -560,7 +560,7 @@ Current work item:
 - Id: work_active
 - State: Open
 - Objective: Complete snapshot coverage expansion
-- Plan state: Draft
+- Plan status: draft
 - Todo list:
   - [in_progress] Add active work with queued work test
   - [pending] Add post-compaction snapshot tests
@@ -649,7 +649,7 @@ Current work item:
 - Id: work_no_delta
 - State: Open
 - Objective: Test delta absence
-- Plan state: Draft
+- Plan status: draft
 - Todo list:
   - [in_progress] Verify delta absence
 - Blocked by: verifying snapshot without delta
@@ -772,7 +772,7 @@ Current work item:
 - Id: work_ci
 - State: Open
 - Objective: Handle CI callback
-- Plan state: Draft
+- Plan status: draft
 - Todo list:
   - [completed] Wait for CI callback
   - [in_progress] Process CI result
@@ -889,7 +889,7 @@ Current work item:
 - Id: work_waiting
 - State: Open
 - Objective: External service integration
-- Plan state: Draft
+- Plan status: draft
 - Todo list:
   - [in_progress] Wait for rate limit reset
   - [pending] Retry API request
@@ -1032,7 +1032,7 @@ Current work item:
 - Id: work_compaction
 - State: Open
 - Objective: Long-running task with compaction
-- Plan state: Draft
+- Plan status: draft
 - Todo list:
   - [completed] Complete initial phase
   - [in_progress] Work on expanded coverage
@@ -1178,7 +1178,7 @@ Current work item:
 - Id: work_test
 - State: Open
 - Objective: Test execution and verification
-- Plan state: Draft
+- Plan status: draft
 - Todo list:
   - [completed] Execute cargo test
   - [in_progress] Verify test results
