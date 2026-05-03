@@ -25,9 +25,9 @@ pub(crate) use crate::{
         BriefRecord, CallbackDeliveryMode, ClosureDecision, ClosureOutcome, ContinuationClass,
         ContinuationTriggerKind, LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageKind,
         MessageOrigin, PendingWakeHint, Priority, TaskKind, TaskOutputRetrievalStatus, TaskRecord,
-        TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TokenUsage, TrustLevel,
-        TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord,
-        WorkItemState, WorkPlanItem, WorkPlanStepStatus, WorkReactivationMode, WorkspaceEntry,
+        TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TodoItem, TodoItemState,
+        TokenUsage, TrustLevel, TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus,
+        WaitingReason, WorkItemRecord, WorkItemState, WorkReactivationMode, WorkspaceEntry,
     },
 };
 
@@ -142,27 +142,29 @@ pub(crate) async fn seed_bound_work_item(
     summary: Option<&str>,
     blocked_by: Option<&str>,
 ) -> String {
-    let (mut record, _) = runtime
+    let mut record = runtime
         .create_work_item(
-            summary
-                .unwrap_or("finish the bound delivery target")
-                .to_string(),
+            summary.unwrap_or("finish the bound objective").to_string(),
             None,
+            None,
+            Vec::new(),
         )
         .await
         .unwrap();
     if let Some(blocked_by) = blocked_by {
-        (record, _) = runtime
+        record = runtime
             .update_work_item_fields(
                 record.id.clone(),
                 None,
-                Some(Some(blocked_by.to_string())),
                 None,
+                None,
+                None,
+                Some(Some(blocked_by.to_string())),
             )
             .await
             .unwrap();
     }
-    if state == WorkItemState::Done {
+    if state == WorkItemState::Completed {
         record = runtime
             .complete_work_item(record.id.clone(), summary.map(str::to_string))
             .await

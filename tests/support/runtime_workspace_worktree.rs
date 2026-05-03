@@ -32,9 +32,9 @@ use holon::{
         FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemState,
-        WorkPlanItem, WorkPlanStepStatus,
+        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TodoItem, TodoItemState,
+        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus,
+        WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -940,7 +940,7 @@ pub async fn worktree_subagent_task_auto_removes_worktree_when_no_changes_wt104(
     };
     assert!(
         task_result_text.contains("Worktree cleanup: auto-removed clean task-owned artifact."),
-        "task result should report cleanup status: {task_result_text}"
+        "task result should report cleanup state: {task_result_text}"
     );
 
     Ok(())

@@ -285,7 +285,7 @@ pub async fn run_once_with_host(
 
         if let Some((status, waiting_reason)) = candidate_status {
             if let Some(candidate) = candidate_completion.as_ref() {
-                if candidate.status == status
+                if candidate.state == status
                     && candidate.waiting_reason == waiting_reason
                     && candidate.activity_signature == poll_view.activity_signature
                     && candidate.observed_at.elapsed()
@@ -295,7 +295,7 @@ pub async fn run_once_with_host(
                 }
             }
             let should_reset_candidate = candidate_completion.as_ref().is_none_or(|candidate| {
-                candidate.status != status
+                candidate.state != status
                     || candidate.waiting_reason != waiting_reason
                     || candidate.activity_signature != poll_view.activity_signature
             });
@@ -312,7 +312,7 @@ pub async fn run_once_with_host(
 
         tokio::time::sleep(Duration::from_millis(RUN_POLL_INTERVAL_MS)).await;
     };
-    let final_status = final_candidate.status;
+    let final_status = final_candidate.state;
     let waiting_reason = final_candidate.waiting_reason;
     let mut final_state = session.runtime.agent_state().await?;
 
@@ -495,7 +495,7 @@ struct PollActivitySignature {
 
 #[derive(Debug, Clone)]
 struct CandidateCompletion {
-    status: RunFinalStatus,
+    state: RunFinalStatus,
     waiting_reason: Option<WaitingReason>,
     activity_signature: PollActivitySignature,
     observed_at: Instant,
@@ -503,12 +503,12 @@ struct CandidateCompletion {
 
 impl CandidateCompletion {
     fn new(
-        status: RunFinalStatus,
+        state: RunFinalStatus,
         waiting_reason: Option<WaitingReason>,
         activity_signature: PollActivitySignature,
     ) -> Self {
         Self {
-            status,
+            state,
             waiting_reason,
             activity_signature,
             observed_at: Instant::now(),
@@ -617,9 +617,9 @@ async fn active_new_task_ids(
     Ok(active)
 }
 
-fn is_active_task_status(status: &TaskStatus) -> bool {
+fn is_active_task_status(state: &TaskStatus) -> bool {
     matches!(
-        status,
+        state,
         TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
     )
 }
@@ -1039,8 +1039,8 @@ fn normalize_workspace_relative_path(path: &str, workspace_root: &Path) -> Strin
         .unwrap_or_else(|_| path.to_string())
 }
 
-fn final_status_label(status: RunFinalStatus) -> &'static str {
-    match status {
+fn final_status_label(state: RunFinalStatus) -> &'static str {
+    match state {
         RunFinalStatus::Completed => "completed",
         RunFinalStatus::Waiting => "waiting",
         RunFinalStatus::Failed => "failed",
@@ -1057,8 +1057,8 @@ fn waiting_reason_label(reason: WaitingReason) -> &'static str {
     }
 }
 
-fn task_status_label(status: &TaskStatus) -> &'static str {
-    match status {
+fn task_status_label(state: &TaskStatus) -> &'static str {
+    match state {
         TaskStatus::Queued => "queued",
         TaskStatus::Running => "running",
         TaskStatus::Cancelling => "cancelling",

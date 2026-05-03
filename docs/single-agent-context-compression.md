@@ -487,7 +487,7 @@ pub struct ContextEpisodeRecord {
     pub start_message_offset: usize,
     pub end_message_offset: usize,
     pub active_work_item_id: Option<String>,
-    pub delivery_target: Option<String>,
+    pub objective: Option<String>,
     pub work_summary: Option<String>,
     pub scope_hints: Vec<String>,
     pub summary: String,
@@ -528,7 +528,7 @@ Suggested shape:
 ```rust
 pub struct WorkingMemorySnapshot {
     pub active_work_item_id: Option<String>,
-    pub delivery_target: Option<String>,
+    pub objective: Option<String>,
     pub work_summary: Option<String>,
     pub scope_hints: Vec<String>,
     pub current_plan: Vec<String>,
@@ -639,7 +639,7 @@ state, not free-authored by the model.
 Recommended source mapping:
 
 - `active_work_item_id`: active work item id when one exists
-- `delivery_target`: active work item delivery target
+- `objective`: active work item delivery target
 - `work_summary`: active work item summary
 - `scope_hints`: bounded extraction from trusted operator prompts, active work
   progress, and recent result briefs; prefer evidence bound to the current

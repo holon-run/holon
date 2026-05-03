@@ -49,28 +49,30 @@ pub struct TestConfigBuilder {
 
 pub async fn test_work_item(
     runtime: &RuntimeHandle,
-    delivery_target: &str,
+    objective: &str,
     state: WorkItemState,
     current: bool,
     blocked_by: Option<&str>,
 ) -> Result<WorkItemRecord> {
-    let (mut record, _) = runtime
-        .create_work_item(delivery_target.to_string(), None)
+    let mut record = runtime
+        .create_work_item(objective.to_string(), None, None, Vec::new())
         .await?;
     if let Some(blocked_by) = blocked_by {
-        (record, _) = runtime
+        record = runtime
             .update_work_item_fields(
                 record.id.clone(),
                 None,
-                Some(Some(blocked_by.to_string())),
                 None,
+                None,
+                None,
+                Some(Some(blocked_by.to_string())),
             )
             .await?;
     }
     if current {
         runtime.pick_work_item(record.id.clone()).await?;
     }
-    if state == WorkItemState::Done {
+    if state == WorkItemState::Completed {
         record = runtime.complete_work_item(record.id.clone(), None).await?;
     }
     Ok(record)

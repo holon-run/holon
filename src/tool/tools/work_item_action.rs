@@ -1,43 +1,43 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     tool::helpers::{parse_tool_args_with_recovery_hint, validate_non_empty},
-    types::{WorkItemRecord, WorkPlanItem, WorkPlanSnapshot, WorkPlanStepStatus},
+    types::{TodoItem, TodoItemState, WorkItemRecord},
 };
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
-pub(crate) enum WorkPlanStepStateArgs {
+pub(crate) enum TodoItemStateArgs {
     Pending,
-    Doing,
-    Done,
+    InProgress,
+    Completed,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct WorkPlanItemArgs {
-    pub(crate) step: String,
-    pub(crate) state: WorkPlanStepStateArgs,
+pub(crate) struct TodoItemArgs {
+    pub(crate) text: String,
+    pub(crate) state: TodoItemStateArgs,
 }
 
-pub(crate) fn convert_plan(
+pub(crate) fn convert_todo_list(
     tool_name: &str,
-    plan: Vec<WorkPlanItemArgs>,
-) -> Result<Vec<WorkPlanItem>> {
-    plan.into_iter()
+    items: Vec<TodoItemArgs>,
+) -> Result<Vec<TodoItem>> {
+    items
+        .into_iter()
         .enumerate()
         .map(|(index, item)| {
-            Ok(WorkPlanItem {
-                step: validate_non_empty(item.step, tool_name, "step")
-                    .with_context(|| format!("invalid work plan item {index}"))?,
-                status: match item.state {
-                    WorkPlanStepStateArgs::Pending => WorkPlanStepStatus::Pending,
-                    WorkPlanStepStateArgs::Doing => WorkPlanStepStatus::InProgress,
-                    WorkPlanStepStateArgs::Done => WorkPlanStepStatus::Completed,
+            Ok(TodoItem {
+                text: validate_non_empty(item.text, tool_name, "text")
+                    .with_context(|| format!("invalid todo_list item {index}"))?,
+                state: match item.state {
+                    TodoItemStateArgs::Pending => TodoItemState::Pending,
+                    TodoItemStateArgs::InProgress => TodoItemState::InProgress,
+                    TodoItemStateArgs::Completed => TodoItemState::Completed,
                 },
             })
         })
@@ -59,57 +59,13 @@ where
 fn work_item_action_recovery_hint(tool_name: &str) -> &'static str {
     match tool_name {
         "CreateWorkItem" => {
-            "ensure the JSON matches the CreateWorkItem schema, including required top-level field \"delivery_target\"; use plan items like {\"step\":\"inspect current handler\",\"state\":\"done\"}; state must be pending, doing, or done"
+            "ensure the JSON matches the CreateWorkItem schema, including required top-level field \"objective\"; use todo_list items like {\"text\":\"inspect current handler\",\"state\":\"completed\"}; todo state must be pending, in_progress, or completed"
         }
         "UpdateWorkItem" => {
-            "ensure the JSON matches the UpdateWorkItem schema, including required top-level field \"work_item_id\"; use plan items like {\"step\":\"inspect current handler\",\"state\":\"done\"}; state must be pending, doing, or done"
+            "ensure the JSON matches the UpdateWorkItem schema, including required top-level field \"work_item_id\"; use todo_list items like {\"text\":\"inspect current handler\",\"state\":\"completed\"}; todo state must be pending, in_progress, or completed"
         }
         _ => {
-            "ensure the JSON matches the tool schema exactly; use plan items like {\"step\":\"inspect current handler\",\"state\":\"done\"}; state must be pending, doing, or done"
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum WorkPlanStepStateView {
-    Pending,
-    Doing,
-    Done,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct WorkPlanItemView {
-    pub(crate) step: String,
-    pub(crate) state: WorkPlanStepStateView,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct WorkPlanView {
-    pub(crate) work_item_id: String,
-    pub(crate) agent_id: String,
-    pub(crate) created_at: DateTime<Utc>,
-    pub(crate) items: Vec<WorkPlanItemView>,
-}
-
-impl From<WorkPlanSnapshot> for WorkPlanView {
-    fn from(snapshot: WorkPlanSnapshot) -> Self {
-        Self {
-            work_item_id: snapshot.work_item_id,
-            agent_id: snapshot.agent_id,
-            created_at: snapshot.created_at,
-            items: snapshot
-                .items
-                .into_iter()
-                .map(|item| WorkPlanItemView {
-                    step: item.step,
-                    state: match item.status {
-                        WorkPlanStepStatus::Pending => WorkPlanStepStateView::Pending,
-                        WorkPlanStepStatus::InProgress => WorkPlanStepStateView::Doing,
-                        WorkPlanStepStatus::Completed => WorkPlanStepStateView::Done,
-                    },
-                })
-                .collect(),
+            "ensure the JSON matches the tool schema exactly; todo state must be pending, in_progress, or completed"
         }
     }
 }
@@ -117,15 +73,10 @@ impl From<WorkPlanSnapshot> for WorkPlanView {
 #[derive(Serialize)]
 pub(crate) struct WorkItemMutationResult {
     pub(crate) work_item: WorkItemRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) plan: Option<WorkPlanView>,
 }
 
 impl WorkItemMutationResult {
-    pub(crate) fn new(work_item: WorkItemRecord, plan: Option<WorkPlanSnapshot>) -> Self {
-        Self {
-            work_item,
-            plan: plan.map(Into::into),
-        }
+    pub(crate) fn new(work_item: WorkItemRecord) -> Self {
+        Self { work_item }
     }
 }

@@ -650,7 +650,7 @@ fn work_item_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
 }
 
 fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
-    let body = item.delivery_target.clone();
+    let body = item.objective.clone();
     MemoryDocument {
         source_ref: format!("work_item:{}", item.id),
         source_kind: "work_item".into(),
@@ -658,7 +658,7 @@ fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
         workspace_id: Some(item.workspace_id),
         agent_id: item.agent_id,
         source_path: None,
-        title: item.delivery_target.clone(),
+        title: item.objective.clone(),
         sanitized_excerpt: excerpt(&body),
         body,
         metadata: json!({
@@ -777,11 +777,11 @@ mod tests {
 
     fn work_item_with_workspace(
         agent_id: &str,
-        delivery_target: &str,
+        objective: &str,
         status: WorkItemState,
         workspace_id: &str,
     ) -> WorkItemRecord {
-        let mut work_item = WorkItemRecord::new(agent_id, delivery_target, status);
+        let mut work_item = WorkItemRecord::new(agent_id, objective, status);
         work_item.workspace_id = workspace_id.to_string();
         work_item
     }
@@ -934,7 +934,7 @@ mod tests {
         let mut work_item = WorkItemRecord::new(
             "default",
             "MemorySearch index implementation",
-            WorkItemState::Done,
+            WorkItemState::Completed,
         );
         work_item.workspace_id = "ws-holon".into();
         storage.append_work_item(&work_item).unwrap();
@@ -951,7 +951,7 @@ mod tests {
                 end_message_count: 3,
                 boundary_reason: EpisodeBoundaryReason::HardTurnCap,
                 current_work_item_id: Some(work_item.id.clone()),
-                delivery_target: Some("memory search".into()),
+                objective: Some("memory search".into()),
                 work_summary: Some("index worker".into()),
                 scope_hints: vec![],
                 summary: "Implemented workspace-aware recall over runtime evidence".into(),
@@ -1025,7 +1025,7 @@ mod tests {
         let work_item = work_item_with_workspace(
             "default",
             "existing work item",
-            WorkItemState::Done,
+            WorkItemState::Completed,
             "ws-existing",
         );
         storage.append_work_item(&work_item).unwrap();
@@ -1042,7 +1042,7 @@ mod tests {
                 end_message_count: 2,
                 boundary_reason: EpisodeBoundaryReason::HardTurnCap,
                 current_work_item_id: Some(work_item.id),
-                delivery_target: Some("existing episode".into()),
+                objective: Some("existing episode".into()),
                 work_summary: Some("existing episode summary".into()),
                 scope_hints: vec![],
                 summary: "existing context episode memory".into(),

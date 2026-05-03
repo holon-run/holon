@@ -1023,7 +1023,7 @@ pub struct WorkingMemorySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_target: Option<String>,
+    pub objective: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1068,7 +1068,7 @@ pub struct TurnMemoryDelta {
     #[serde(default)]
     pub active_work_changed: bool,
     #[serde(default)]
-    pub work_plan_changed: bool,
+    pub current_plan_changed: bool,
     #[serde(default)]
     pub scope_hints_changed: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1107,7 +1107,7 @@ pub struct ActiveEpisodeBuilder {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_target: Option<String>,
+    pub objective: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1151,7 +1151,7 @@ impl ActiveEpisodeBuilder {
             start_message_count: message_count,
             latest_message_count: message_count,
             current_work_item_id: snapshot.current_work_item_id.clone(),
-            delivery_target: snapshot.delivery_target.clone(),
+            objective: snapshot.objective.clone(),
             work_summary: snapshot.work_summary.clone(),
             scope_hints: Vec::new(),
             working_set_files: snapshot.working_set_files.clone(),
@@ -1180,7 +1180,7 @@ pub struct ContextEpisodeRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_target: Option<String>,
+    pub objective: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2075,9 +2075,11 @@ pub struct SpawnAgentResult {
 pub struct SpawnAgentWorkItemRequest {
     pub parent_work_item_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_delivery_target: Option<String>,
+    pub child_objective: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_plan: Option<Vec<WorkPlanItem>>,
+    pub child_plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_todo_list: Vec<TodoItem>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2279,7 +2281,15 @@ pub struct CommandTaskSpec {
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemState {
     Open,
-    Done,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemPlanStatus {
+    Draft,
+    Ready,
+    NeedsInput,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2289,10 +2299,17 @@ pub struct WorkItemRecord {
     pub agent_id: String,
     #[serde(default = "default_agent_home_workspace_id")]
     pub workspace_id: String,
-    pub delivery_target: String,
+    pub objective: String,
     pub state: WorkItemState,
+    pub plan_status: WorkItemPlanStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todo_list: Vec<TodoItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -2300,7 +2317,7 @@ pub struct WorkItemRecord {
 impl WorkItemRecord {
     pub fn new(
         agent_id: impl Into<String>,
-        delivery_target: impl Into<String>,
+        objective: impl Into<String>,
         state: WorkItemState,
     ) -> Self {
         let now = Utc::now();
@@ -2308,9 +2325,13 @@ impl WorkItemRecord {
             id: format!("work_{}", Uuid::new_v4().simple()),
             agent_id: agent_id.into(),
             workspace_id: AGENT_HOME_WORKSPACE_ID.to_string(),
-            delivery_target: delivery_target.into(),
+            objective: objective.into(),
             state,
+            plan_status: WorkItemPlanStatus::Draft,
+            plan: None,
+            todo_list: Vec::new(),
             blocked_by: None,
+            result_summary: None,
             created_at: now,
             updated_at: now,
         }
@@ -2321,7 +2342,7 @@ impl WorkItemRecord {
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemDelegationState {
     Open,
-    Done,
+    Completed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2395,41 +2416,17 @@ impl DeliverySummaryRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TodoItem {
+    pub text: String,
+    pub state: TodoItemState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkPlanStepStatus {
+pub enum TodoItemState {
     Pending,
     InProgress,
     Completed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkPlanItem {
-    pub step: String,
-    pub status: WorkPlanStepStatus,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkPlanSnapshot {
-    pub work_item_id: String,
-    #[serde(alias = "session_id")]
-    pub agent_id: String,
-    pub created_at: DateTime<Utc>,
-    pub items: Vec<WorkPlanItem>,
-}
-
-impl WorkPlanSnapshot {
-    pub fn new(
-        agent_id: impl Into<String>,
-        work_item_id: impl Into<String>,
-        items: Vec<WorkPlanItem>,
-    ) -> Self {
-        Self {
-            work_item_id: work_item_id.into(),
-            agent_id: agent_id.into(),
-            created_at: Utc::now(),
-            items,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

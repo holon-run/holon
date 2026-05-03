@@ -236,8 +236,13 @@ async fn run_once_prefers_completed_work_item_delivery_summary_over_latest_turn_
     let host =
         RuntimeHost::new_with_provider(test_config(workspace_dir, home_dir), provider.clone())?;
     let runtime = host.default_runtime().await?;
-    let (work_item, _) = runtime
-        .create_work_item("cover prompt/context snapshots".into(), None)
+    let work_item = runtime
+        .create_work_item(
+            "cover prompt/context snapshots".into(),
+            None,
+            None,
+            Vec::new(),
+        )
         .await?;
     runtime.pick_work_item(work_item.id.clone()).await?;
     provider.set_work_item_id(work_item.id.clone()).await;

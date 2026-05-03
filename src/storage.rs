@@ -17,7 +17,7 @@ use crate::types::{
     OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, TaskRecord,
     TimerRecord, ToolExecutionRecord, TranscriptEntry, WaitingIntentRecord,
     WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkItemState,
-    WorkPlanSnapshot, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
+    WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -39,7 +39,6 @@ pub struct RecoverySnapshot {
     pub active_tasks: Vec<TaskRecord>,
     pub active_timers: Vec<TimerRecord>,
     pub work_items: Vec<WorkItemRecord>,
-    pub work_plans: Vec<WorkPlanSnapshot>,
     pub work_item_delegations: Vec<WorkItemDelegationRecord>,
 }
 
@@ -52,7 +51,6 @@ pub struct AppStorage {
     tasks_path: PathBuf,
     work_items_path: PathBuf,
     delivery_summaries_path: PathBuf,
-    work_plans_path: PathBuf,
     work_item_delegations_path: PathBuf,
     timers_path: PathBuf,
     tools_path: PathBuf,
@@ -112,7 +110,6 @@ impl AppStorage {
             tasks_path: ledger_dir.join("tasks.jsonl"),
             work_items_path: ledger_dir.join("work_items.jsonl"),
             delivery_summaries_path: ledger_dir.join("delivery_summaries.jsonl"),
-            work_plans_path: ledger_dir.join("work_plans.jsonl"),
             work_item_delegations_path: ledger_dir.join("work_item_delegations.jsonl"),
             timers_path: ledger_dir.join("timers.jsonl"),
             tools_path: ledger_dir.join("tools.jsonl"),
@@ -191,10 +188,6 @@ impl AppStorage {
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
         append_jsonl(&self.delivery_summaries_path, record)
-    }
-
-    pub fn append_work_plan(&self, snapshot: &WorkPlanSnapshot) -> Result<()> {
-        append_jsonl(&self.work_plans_path, snapshot)
     }
 
     pub fn append_work_item_delegation(&self, record: &WorkItemDelegationRecord) -> Result<()> {
@@ -333,10 +326,6 @@ impl AppStorage {
         limit: usize,
     ) -> Result<Vec<DeliverySummaryRecord>> {
         read_recent_jsonl(&self.delivery_summaries_path, limit)
-    }
-
-    pub fn read_recent_work_plans(&self, limit: usize) -> Result<Vec<WorkPlanSnapshot>> {
-        read_recent_jsonl(&self.work_plans_path, limit)
     }
 
     pub fn read_recent_work_item_delegations(
@@ -597,37 +586,6 @@ impl AppStorage {
         Ok(None)
     }
 
-    pub fn latest_work_plans(&self) -> Result<Vec<WorkPlanSnapshot>> {
-        let records = self.read_recent_work_plans(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.work_item_id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
-    }
-
-    pub fn latest_work_plan(&self, work_item_id: &str) -> Result<Option<WorkPlanSnapshot>> {
-        if !self.work_plans_path.exists() {
-            return Ok(None);
-        }
-
-        let content = fs::read_to_string(&self.work_plans_path)
-            .with_context(|| format!("failed to read {}", self.work_plans_path.display()))?;
-        for line in content.lines().rev().filter(|line| !line.trim().is_empty()) {
-            let record: WorkPlanSnapshot = serde_json::from_str(line).with_context(|| {
-                format!(
-                    "failed to decode line from {}",
-                    self.work_plans_path.display()
-                )
-            })?;
-            if record.work_item_id == work_item_id {
-                return Ok(Some(record));
-            }
-        }
-
-        Ok(None)
-    }
-
     pub fn latest_work_item_delegations(&self) -> Result<Vec<WorkItemDelegationRecord>> {
         let records = self.read_recent_work_item_delegations(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
@@ -771,7 +729,6 @@ impl AppStorage {
             .filter(|record| record.status == crate::types::TimerStatus::Active)
             .collect();
         let work_items = self.latest_work_items()?;
-        let work_plans = self.latest_work_plans()?;
         let work_item_delegations = self.latest_work_item_delegations()?;
 
         Ok(RecoverySnapshot {
@@ -780,7 +737,6 @@ impl AppStorage {
             active_tasks,
             active_timers,
             work_items,
-            work_plans,
             work_item_delegations,
         })
     }
@@ -927,8 +883,8 @@ mod tests {
 
     use crate::types::{
         AgentState, AgentStatus, EpisodeBoundaryReason, Priority, QueueEntryRecord,
-        QueueEntryStatus, TranscriptEntry, TranscriptEntryKind, WorkItemRecord, WorkItemState,
-        WorkPlanItem, WorkPlanSnapshot, WorkPlanStepStatus,
+        QueueEntryStatus, TodoItem, TodoItemState, TranscriptEntry, TranscriptEntryKind,
+        WorkItemState,
     };
 
     use super::*;
@@ -1083,56 +1039,29 @@ mod tests {
     }
 
     #[test]
-    fn storage_latest_work_plan_returns_latest_snapshot_per_work_item() {
+    fn storage_recovery_snapshot_includes_work_item_plan_and_todo_list() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
-        let first = WorkPlanSnapshot::new(
-            "default",
-            "work_1",
-            vec![WorkPlanItem {
-                step: "inspect".into(),
-                status: WorkPlanStepStatus::Pending,
-            }],
-        );
-        let second = WorkPlanSnapshot::new(
-            "default",
-            "work_1",
-            vec![WorkPlanItem {
-                step: "inspect".into(),
-                status: WorkPlanStepStatus::Completed,
-            }],
-        );
-
-        storage.append_work_plan(&first).unwrap();
-        storage.append_work_plan(&second).unwrap();
-
-        let latest = storage.latest_work_plan("work_1").unwrap().unwrap();
-        assert_eq!(latest.items.len(), 1);
-        assert_eq!(latest.items[0].status, WorkPlanStepStatus::Completed);
-    }
-
-    #[test]
-    fn storage_recovery_snapshot_includes_work_items_and_plans() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
-        let work_item = WorkItemRecord::new("default", "fix issue #223", WorkItemState::Open);
-        let work_plan = WorkPlanSnapshot::new(
-            "default",
-            work_item.id.clone(),
-            vec![WorkPlanItem {
-                step: "persist work item store".into(),
-                status: WorkPlanStepStatus::InProgress,
-            }],
-        );
+        let mut work_item = WorkItemRecord::new("default", "fix issue #223", WorkItemState::Open);
+        work_item.plan = Some("Implement the new WorkItem model.".into());
+        work_item.todo_list = vec![TodoItem {
+            text: "persist work item store".into(),
+            state: TodoItemState::InProgress,
+        }];
 
         storage.append_work_item(&work_item).unwrap();
-        storage.append_work_plan(&work_plan).unwrap();
 
         let snapshot = storage.recovery_snapshot().unwrap();
         assert_eq!(snapshot.work_items.len(), 1);
         assert_eq!(snapshot.work_items[0].id, work_item.id);
-        assert_eq!(snapshot.work_plans.len(), 1);
-        assert_eq!(snapshot.work_plans[0].work_item_id, work_plan.work_item_id);
+        assert_eq!(
+            snapshot.work_items[0].plan.as_deref(),
+            Some("Implement the new WorkItem model.")
+        );
+        assert_eq!(
+            snapshot.work_items[0].todo_list[0].state,
+            TodoItemState::InProgress
+        );
     }
 
     #[test]
@@ -1187,7 +1116,7 @@ mod tests {
         queued_late.created_at = Utc::now() + chrono::Duration::minutes(1);
         queued_late.updated_at = queued_late.created_at;
 
-        let completed = WorkItemRecord::new("default", "completed", WorkItemState::Done);
+        let completed = WorkItemRecord::new("default", "completed", WorkItemState::Completed);
 
         storage.append_work_item(&current).unwrap();
         storage.append_work_item(&waiting).unwrap();
@@ -1203,13 +1132,13 @@ mod tests {
             projection
                 .current
                 .as_ref()
-                .map(|item| item.delivery_target.as_str()),
+                .map(|item| item.objective.as_str()),
             Some("current item")
         );
         let rendered = projection
             .queued_blocked
             .iter()
-            .map(|item| item.delivery_target.as_str())
+            .map(|item| item.objective.as_str())
             .collect::<Vec<_>>();
         assert_eq!(
             rendered,
@@ -1242,14 +1171,14 @@ mod tests {
 
         let anchor = storage.waiting_contract_anchor().unwrap();
         assert_eq!(
-            anchor.as_ref().map(|item| item.delivery_target.as_str()),
+            anchor.as_ref().map(|item| item.objective.as_str()),
             Some("newer waiting anchor")
         );
         let projection = storage.work_queue_prompt_projection().unwrap();
         let rendered = projection
             .queued_blocked
             .iter()
-            .map(|item| item.delivery_target.as_str())
+            .map(|item| item.objective.as_str())
             .collect::<Vec<_>>();
         assert_eq!(
             rendered,

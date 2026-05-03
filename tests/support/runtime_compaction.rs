@@ -32,9 +32,9 @@ use holon::{
         FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemState,
-        WorkPlanItem, WorkPlanStepStatus,
+        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TodoItem, TodoItemState,
+        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus,
+        WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -81,18 +81,22 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
     )
     .await?;
     runtime
-        .update_work_plan(
+        .update_work_item_fields(
             active.id.clone(),
-            vec![
-                WorkPlanItem {
-                    step: "capture long-running survival case".into(),
-                    status: WorkPlanStepStatus::Completed,
+            None,
+            None,
+            None,
+            Some(vec![
+                TodoItem {
+                    text: "capture long-running survival case".into(),
+                    state: TodoItemState::Completed,
                 },
-                WorkPlanItem {
-                    step: "cover task rejoin after compaction".into(),
-                    status: WorkPlanStepStatus::InProgress,
+                TodoItem {
+                    text: "cover task rejoin after compaction".into(),
+                    state: TodoItemState::InProgress,
                 },
-            ],
+            ]),
+            None,
         )
         .await?;
 
@@ -115,7 +119,7 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
     let _completed = test_work_item(
         &runtime,
         "Already shipped shadow-state cleanup",
-        WorkItemState::Done,
+        WorkItemState::Completed,
         false,
         None,
     )
@@ -165,10 +169,10 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         .expect("queued/blocked work section should be present after compaction");
     assert!(queued_blocked_section
         .content
-        .contains(queued.delivery_target.as_str()));
+        .contains(queued.objective.as_str()));
     assert!(queued_blocked_section
         .content
-        .contains(waiting.delivery_target.as_str()));
+        .contains(waiting.objective.as_str()));
     assert!(!queued_blocked_section
         .content
         .contains("Already shipped shadow-state cleanup"));
@@ -193,12 +197,16 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
     )
     .await?;
     runtime
-        .update_work_plan(
+        .update_work_item_fields(
             work_item.id.clone(),
-            vec![WorkPlanItem {
-                step: "verify task rejoin survives compaction".into(),
-                status: WorkPlanStepStatus::InProgress,
-            }],
+            None,
+            None,
+            None,
+            Some(vec![TodoItem {
+                text: "verify task rejoin survives compaction".into(),
+                state: TodoItemState::InProgress,
+            }]),
+            None,
         )
         .await?;
     for idx in 0..3 {
@@ -281,7 +289,7 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
         .await?
         .expect("current work item should still exist");
     assert_eq!(latest.state, WorkItemState::Open);
-    assert_eq!(latest.delivery_target, work_item.delivery_target);
+    assert_eq!(latest.objective, work_item.objective);
 
     Ok(())
 }
@@ -303,12 +311,16 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
     )
     .await?;
     runtime
-        .update_work_plan(
+        .update_work_item_fields(
             active.id.clone(),
-            vec![WorkPlanItem {
-                step: "resume from contentful wake hint".into(),
-                status: WorkPlanStepStatus::InProgress,
-            }],
+            None,
+            None,
+            None,
+            Some(vec![TodoItem {
+                text: "resume from contentful wake hint".into(),
+                state: TodoItemState::InProgress,
+            }]),
+            None,
         )
         .await?;
     let queued = test_work_item(
@@ -418,12 +430,16 @@ pub async fn queued_notification_after_compaction_keeps_queued_work_visible() ->
     )
     .await?;
     runtime
-        .update_work_plan(
+        .update_work_item_fields(
             queued.id.clone(),
-            vec![WorkPlanItem {
-                step: "surface queued work after compaction".into(),
-                status: WorkPlanStepStatus::InProgress,
-            }],
+            None,
+            None,
+            None,
+            Some(vec![TodoItem {
+                text: "surface queued work after compaction".into(),
+                state: TodoItemState::InProgress,
+            }]),
+            None,
         )
         .await?;
     for idx in 0..3 {
@@ -724,8 +740,8 @@ pub async fn max_output_recovery_followed_by_turn_local_compaction_preserves_pro
     assert!(
         checkpoint_request
             .user_text_snapshot
-            .contains("current work plan state"),
-        "progress checkpoint should include work-plan continuity"
+            .contains("current work item objective, plan_status, plan, and todo_list state"),
+        "progress checkpoint should include work-item plan continuity"
     );
     assert!(
         checkpoint_request

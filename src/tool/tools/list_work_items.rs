@@ -29,7 +29,7 @@ const MAX_LIMIT: usize = 100;
 pub(crate) enum ListWorkItemsFilter {
     All,
     Open,
-    Done,
+    Completed,
     Current,
     Queued,
     Blocked,
@@ -44,6 +44,8 @@ pub(crate) struct ListWorkItemsArgs {
     pub(crate) limit: Option<usize>,
     #[serde(default)]
     pub(crate) include_plan: bool,
+    #[serde(default)]
+    pub(crate) include_todo_list: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,7 +63,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<ListWorkItemsArgs>(
             NAME,
-            "List recent work items with explicit current, open, done, queued, and blocked views. Use this before relying on memory briefs for work-item focus.",
+            "List recent work items with explicit current, open, completed, queued, and blocked views. Use this before relying on memory briefs for work-item focus.",
         )?,
     })
 }
@@ -86,7 +88,16 @@ pub(crate) async fn execute(
     let selected = matching.into_iter().take(limit).collect::<Vec<_>>();
     let mut work_items = Vec::with_capacity(selected.len());
     for record in selected {
-        work_items.push(view_for_record(runtime, &context, record, args.include_plan).await?);
+        work_items.push(
+            view_for_record(
+                runtime,
+                &context,
+                record,
+                args.include_plan,
+                args.include_todo_list,
+            )
+            .await?,
+        );
     }
     serialize_success(
         NAME,
@@ -111,7 +122,9 @@ fn matches_filter(
     match filter {
         ListWorkItemsFilter::All => true,
         ListWorkItemsFilter::Open => lifecycle_view(&record.state) == WorkItemLifecycleView::Open,
-        ListWorkItemsFilter::Done => lifecycle_view(&record.state) == WorkItemLifecycleView::Done,
+        ListWorkItemsFilter::Completed => {
+            lifecycle_view(&record.state) == WorkItemLifecycleView::Completed
+        }
         ListWorkItemsFilter::Current => is_current,
         ListWorkItemsFilter::Queued => {
             !is_current

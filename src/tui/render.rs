@@ -203,23 +203,28 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
             lines.push(format!(
                 "  - [{:?}] {}",
                 item.state,
-                trim(&item.delivery_target, 40)
+                trim(&item.objective, 40)
             ));
         }
     }
-    if let Some(plan) = projection.work_plan.as_ref() {
-        let active = plan
-            .items
+    if let Some(work_item) = projection
+        .work_items
+        .iter()
+        .find(|item| item.state == crate::types::WorkItemState::Open && item.blocked_by.is_none())
+    {
+        let active = work_item
+            .todo_list
             .iter()
-            .find(|item| matches!(item.status, crate::types::WorkPlanStepStatus::InProgress))
+            .find(|item| matches!(item.state, crate::types::TodoItemState::InProgress))
             .or_else(|| {
-                plan.items
+                work_item
+                    .todo_list
                     .iter()
-                    .find(|item| matches!(item.status, crate::types::WorkPlanStepStatus::Pending))
+                    .find(|item| matches!(item.state, crate::types::TodoItemState::Pending))
             })
-            .map(|item| trim(&item.step, 40))
+            .map(|item| trim(&item.text, 40))
             .unwrap_or_else(|| "<completed>".into());
-        lines.push(format!("  Plan: {active}"));
+        lines.push(format!("  Todo: {active}"));
     }
     lines.push(String::new());
     lines.push("Waiting".into());

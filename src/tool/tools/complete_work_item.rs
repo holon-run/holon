@@ -27,7 +27,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<CompleteWorkItemArgs>(
             NAME,
-            "Mark an open work item done and optionally record a concise result summary.",
+            "Mark an open work item completed and optionally record a concise result summary.",
         )?,
     })
 }
@@ -46,5 +46,5 @@ pub(crate) async fn execute(
             normalize_optional_non_empty(args.result_summary),
         )
         .await?;
-    serialize_success(NAME, &WorkItemMutationResult::new(work_item, None))
+    serialize_success(NAME, &WorkItemMutationResult::new(work_item))
 }

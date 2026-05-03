@@ -7,9 +7,9 @@ use crate::types::{
     AgentProfilePreset, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot, DeliverySummaryRecord,
     FailureArtifact, FailureArtifactCategory, SpawnAgentResult, SpawnAgentWorkItemRequest,
     TaskHandle, TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult,
-    TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, ToolArtifactRef,
-    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkItemState, WorkPlanItem,
-    WorkPlanSnapshot, CHILD_AGENT_TASK_KIND,
+    TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef,
+    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemPlanStatus, WorkItemRecord,
+    WorkItemState, CHILD_AGENT_TASK_KIND,
 };
 use std::collections::BTreeMap;
 
@@ -19,7 +19,7 @@ const TASK_OUTPUT_PREVIEW_CHAR_BUDGET: usize = 8_000;
 
 #[derive(Debug, Clone)]
 struct TaskMessageSnapshot {
-    status: TaskStatus,
+    state: TaskStatus,
     text: String,
 }
 
@@ -255,9 +255,9 @@ impl RuntimeHandle {
                             &parent_agent_id,
                             &request.parent_work_item_id,
                         )?;
-                        if record.state == WorkItemState::Done {
+                        if record.state == WorkItemState::Completed {
                             return Err(anyhow!(
-                                "cannot delegate from done work item {}",
+                                "cannot delegate from completed work item {}",
                                 request.parent_work_item_id
                             ));
                         }
@@ -307,21 +307,22 @@ impl RuntimeHandle {
                 let delegation = if let (Some(request), Some(parent_work_item)) =
                     (work_item, parent_work_item)
                 {
-                    let child_delivery_target = request
-                        .child_delivery_target
+                    let child_objective = request
+                        .child_objective
                         .filter(|value| !value.trim().is_empty())
                         .unwrap_or_else(|| {
                             queued_task
                                 .summary
                                 .clone()
-                                .unwrap_or_else(|| parent_work_item.delivery_target.clone())
+                                .unwrap_or_else(|| parent_work_item.objective.clone())
                         });
                     Some(
                         self.create_child_work_item_delegation(
                             parent_work_item,
                             spawned.child_agent_id.clone(),
-                            child_delivery_target,
+                            child_objective,
                             request.child_plan,
+                            request.child_todo_list,
                         )
                         .await?,
                     )
@@ -943,7 +944,7 @@ impl RuntimeHandle {
             .open_work_item_delegation_for_child(&child_agent_id)?;
         if let Some(delegation) = delegation.as_ref() {
             let completed = WorkItemDelegationRecord {
-                state: WorkItemDelegationState::Done,
+                state: WorkItemDelegationState::Completed,
                 result_summary: Some(text.clone()),
                 updated_at: Utc::now(),
                 ..delegation.clone()
@@ -1911,12 +1912,18 @@ impl RuntimeHandle {
 
     pub async fn create_work_item(
         &self,
-        delivery_target: String,
-        plan: Option<Vec<WorkPlanItem>>,
-    ) -> Result<(WorkItemRecord, Option<WorkPlanSnapshot>)> {
+        objective: String,
+        plan_status: Option<WorkItemPlanStatus>,
+        plan: Option<String>,
+        todo_list: Vec<TodoItem>,
+    ) -> Result<WorkItemRecord> {
         let agent_id = self.agent_id().await?;
-        let mut record =
-            WorkItemRecord::new(agent_id.clone(), delivery_target, WorkItemState::Open);
+        let mut record = WorkItemRecord::new(agent_id.clone(), objective, WorkItemState::Open);
+        if let Some(plan_status) = plan_status {
+            record.plan_status = plan_status;
+        }
+        record.plan = plan;
+        record.todo_list = todo_list;
         record.workspace_id = self
             .agent_state()
             .await?
@@ -1931,12 +1938,8 @@ impl RuntimeHandle {
                 "record": record,
             }),
         ))?;
-        let plan = match plan {
-            Some(items) => Some(self.update_work_plan(record.id.clone(), items).await?),
-            None => None,
-        };
         self.inner.notify.notify_one();
-        Ok((record, plan))
+        Ok(record)
     }
 
     pub async fn pick_work_item(
@@ -1950,8 +1953,8 @@ impl RuntimeHandle {
             None => None,
         };
         let record = self.validate_owned_work_item(&agent_id, &work_item_id)?;
-        if record.state == WorkItemState::Done {
-            return Err(anyhow!("cannot pick done work item {}", work_item_id));
+        if record.state == WorkItemState::Completed {
+            return Err(anyhow!("cannot pick completed work item {}", work_item_id));
         }
         {
             let mut guard = self.inner.agent.lock().await;
@@ -1973,20 +1976,40 @@ impl RuntimeHandle {
     pub async fn update_work_item_fields(
         &self,
         work_item_id: String,
-        delivery_target: Option<String>,
+        objective: Option<String>,
+        plan_status: Option<WorkItemPlanStatus>,
+        plan: Option<Option<String>>,
+        todo_list: Option<Vec<TodoItem>>,
         blocked_by: Option<Option<String>>,
-        plan: Option<Vec<WorkPlanItem>>,
-    ) -> Result<(WorkItemRecord, Option<WorkPlanSnapshot>)> {
+    ) -> Result<WorkItemRecord> {
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
-        if existing.state == WorkItemState::Done {
-            return Err(anyhow!("cannot update done work item {}", work_item_id));
+        if existing.state == WorkItemState::Completed {
+            return Err(anyhow!(
+                "cannot update completed work item {}",
+                work_item_id
+            ));
         }
         let mut record = existing.clone();
         let mut wrote_item = false;
-        let previous_delivery_target = record.delivery_target.clone();
-        if let Some(delivery_target) = delivery_target {
-            record.delivery_target = delivery_target;
+        let previous_objective = record.objective.clone();
+        if let Some(objective) = objective {
+            record.objective = objective;
+            record.updated_at = Utc::now();
+            wrote_item = true;
+        }
+        if let Some(plan_status) = plan_status {
+            record.plan_status = plan_status;
+            record.updated_at = Utc::now();
+            wrote_item = true;
+        }
+        if let Some(plan) = plan {
+            record.plan = plan;
+            record.updated_at = Utc::now();
+            wrote_item = true;
+        }
+        if let Some(todo_list) = todo_list {
+            record.todo_list = todo_list;
             record.updated_at = Utc::now();
             wrote_item = true;
         }
@@ -2002,19 +2025,15 @@ impl RuntimeHandle {
                 serde_json::json!({
                     "action": "updated",
                     "record": record,
-                    "previous_delivery_target": previous_delivery_target,
-                    "delivery_target_changed": previous_delivery_target != record.delivery_target,
+                    "previous_objective": previous_objective,
+                    "objective_changed": previous_objective != record.objective,
                 }),
             ))?;
         }
-        let plan = match plan {
-            Some(items) => Some(self.update_work_plan(work_item_id, items).await?),
-            None => None,
-        };
-        if wrote_item || plan.is_some() {
+        if wrote_item {
             self.inner.notify.notify_one();
         }
-        Ok((record, plan))
+        Ok(record)
     }
 
     pub async fn complete_work_item(
@@ -2024,7 +2043,7 @@ impl RuntimeHandle {
     ) -> Result<WorkItemRecord> {
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
-        if existing.state == WorkItemState::Done {
+        if existing.state == WorkItemState::Completed {
             return Ok(existing);
         }
         let has_blocking_tasks = {
@@ -2038,8 +2057,9 @@ impl RuntimeHandle {
             ));
         }
         let record = WorkItemRecord {
-            state: WorkItemState::Done,
+            state: WorkItemState::Completed,
             blocked_by: None,
+            result_summary: result_summary.clone(),
             updated_at: Utc::now(),
             ..existing
         };
@@ -2076,33 +2096,6 @@ impl RuntimeHandle {
         Ok(record)
     }
 
-    pub async fn update_work_plan(
-        &self,
-        work_item_id: String,
-        items: Vec<WorkPlanItem>,
-    ) -> Result<WorkPlanSnapshot> {
-        let agent_id = self.agent_id().await?;
-        let work_item = self
-            .inner
-            .storage
-            .latest_work_item(&work_item_id)?
-            .ok_or_else(|| anyhow!("unknown work item {}", work_item_id))?;
-        if work_item.agent_id != agent_id {
-            return Err(anyhow!(
-                "work item {} belongs to another agent",
-                work_item_id
-            ));
-        }
-
-        let snapshot = WorkPlanSnapshot::new(agent_id, work_item_id, items);
-        self.inner.storage.append_work_plan(&snapshot)?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_plan_snapshot_written",
-            to_json_value(&snapshot),
-        ))?;
-        Ok(snapshot)
-    }
-
     fn validate_owned_work_item(
         &self,
         agent_id: &str,
@@ -2126,8 +2119,9 @@ impl RuntimeHandle {
         &self,
         parent_work_item: WorkItemRecord,
         child_agent_id: String,
-        child_delivery_target: String,
-        child_plan: Option<Vec<WorkPlanItem>>,
+        child_objective: String,
+        child_plan: Option<String>,
+        child_todo_list: Vec<TodoItem>,
     ) -> Result<WorkItemDelegationRecord> {
         let bridge = self
             .inner
@@ -2135,7 +2129,12 @@ impl RuntimeHandle {
             .clone()
             .ok_or_else(|| anyhow!("runtime host is required for work-item delegation"))?;
         let child_work_item = bridge
-            .create_child_work_item(&child_agent_id, child_delivery_target, child_plan)
+            .create_child_work_item(
+                &child_agent_id,
+                child_objective,
+                child_plan,
+                child_todo_list,
+            )
             .await?;
         let delegation = WorkItemDelegationRecord::new(
             parent_work_item.agent_id,
@@ -2154,8 +2153,8 @@ impl RuntimeHandle {
     }
 }
 
-fn task_status_name(status: &TaskStatus) -> &'static str {
-    match status {
+fn task_status_name(state: &TaskStatus) -> &'static str {
+    match state {
         TaskStatus::Queued => "queued",
         TaskStatus::Running => "running",
         TaskStatus::Cancelling => "cancelling",
@@ -2298,7 +2297,7 @@ fn latest_task_message_in(
         };
 
         let snapshot = TaskMessageSnapshot {
-            status: task_status_from_message(&message, metadata),
+            state: task_status_from_message(&message, metadata),
             text: render_task_message_body(&message.body),
         };
 
@@ -2322,14 +2321,14 @@ fn effective_task_output_status(
     }
 
     match latest_message {
-        Some(message) => message.status.clone(),
+        Some(message) => message.state.clone(),
         None => task_status.clone(),
     }
 }
 
-fn task_output_ready(task: &TaskRecord, status: &TaskStatus) -> bool {
+fn task_output_ready(task: &TaskRecord, state: &TaskStatus) -> bool {
     if matches!(
-        status,
+        state,
         TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
     ) {
         return false;
@@ -2375,13 +2374,13 @@ fn task_output_ready(task: &TaskRecord, status: &TaskStatus) -> bool {
 
 fn task_failure_artifact(
     task: &TaskRecord,
-    status: &TaskStatus,
+    state: &TaskStatus,
     output: &str,
     output_path: Option<&str>,
     exit_status: Option<i32>,
 ) -> Option<FailureArtifact> {
     if !matches!(
-        status,
+        state,
         TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted
     ) {
         return None;
@@ -2408,12 +2407,12 @@ fn task_failure_artifact(
         let kind = if let Some(code) = exit_status {
             if code != 0 {
                 "command_task_exit_nonzero"
-            } else if matches!(status, TaskStatus::Interrupted) {
+            } else if matches!(state, TaskStatus::Interrupted) {
                 "command_task_interrupted"
             } else {
                 "command_task_failed"
             }
-        } else if matches!(status, TaskStatus::Interrupted) {
+        } else if matches!(state, TaskStatus::Interrupted) {
             "command_task_interrupted"
         } else if has_error {
             "command_task_error"
@@ -2423,7 +2422,7 @@ fn task_failure_artifact(
             "command_task_output"
         };
 
-        let summary = if matches!(status, TaskStatus::Interrupted) {
+        let summary = if matches!(state, TaskStatus::Interrupted) {
             "command task interrupted by runtime restart".to_string()
         } else if let Some(code) = exit_status {
             format!("command task exited with status {code}")
@@ -2444,7 +2443,7 @@ fn task_failure_artifact(
 
         (kind, summary, exit_status)
     } else {
-        let kind = match status {
+        let kind = match state {
             TaskStatus::Cancelled => "task_cancelled",
             TaskStatus::Interrupted => "task_interrupted",
             _ => "task_failed",
@@ -2483,9 +2482,9 @@ fn task_output_artifacts(output_path: Option<&str>) -> (Vec<ToolArtifactRef>, Op
     )
 }
 
-fn is_terminal_task_status(status: &TaskStatus) -> bool {
+fn is_terminal_task_status(state: &TaskStatus) -> bool {
     matches!(
-        status,
+        state,
         TaskStatus::Completed
             | TaskStatus::Failed
             | TaskStatus::Cancelled

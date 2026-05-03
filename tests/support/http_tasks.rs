@@ -22,8 +22,8 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TrustLevel, WaitingIntentStatus, WorkItemState, WorkPlanItem,
-        WorkPlanStepStatus,
+        OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel, WaitingIntentStatus,
+        WorkItemState,
     },
 };
 use reqwest::Client;
@@ -163,7 +163,7 @@ pub async fn create_work_item_route_persists_queued_item_without_message_ingress
     let response = client
         .post(format!("{base}/control/agents/default/work-items"))
         .json(&serde_json::json!({
-            "delivery_target": "follow up on queued runtime cleanup"
+            "objective": "follow up on queued runtime cleanup"
         }))
         .send()
         .await?;
@@ -171,10 +171,7 @@ pub async fn create_work_item_route_persists_queued_item_without_message_ingress
 
     let body: serde_json::Value = response.json().await?;
     assert_eq!(body["state"], "open");
-    assert_eq!(
-        body["delivery_target"],
-        "follow up on queued runtime cleanup"
-    );
+    assert_eq!(body["objective"], "follow up on queued runtime cleanup");
     let work_item_id = body["id"]
         .as_str()
         .expect("response should include work item id")
@@ -185,7 +182,7 @@ pub async fn create_work_item_route_persists_queued_item_without_message_ingress
         let item = runtime.storage().latest_work_item(&work_item_id)?;
         let events = runtime.storage().read_recent_events(200)?;
         Ok(item.is_some_and(|item| {
-            item.delivery_target == "follow up on queued runtime cleanup"
+            item.objective == "follow up on queued runtime cleanup"
                 && item.state == WorkItemState::Open
         }) && events.iter().any(|event| {
             event.kind == "work_item_enqueue_requested"
@@ -221,7 +218,7 @@ pub async fn create_work_item_route_does_not_replace_existing_active_item() -> R
     let response = client
         .post(format!("{base}/control/agents/default/work-items"))
         .json(&serde_json::json!({
-            "delivery_target": "queued follow-up after active work",
+            "objective": "queued follow-up after active work",
             "summary": "queued from route"
         }))
         .send()
@@ -234,7 +231,7 @@ pub async fn create_work_item_route_does_not_replace_existing_active_item() -> R
             .iter()
             .any(|item| item.id == active.id && item.state == WorkItemState::Open)
             && work_items.iter().any(|item| {
-                item.delivery_target == "queued follow-up after active work"
+                item.objective == "queued follow-up after active work"
                     && item.state == WorkItemState::Open
             }))
     })
@@ -244,14 +241,14 @@ pub async fn create_work_item_route_does_not_replace_existing_active_item() -> R
     Ok(())
 }
 
-pub async fn create_work_item_route_rejects_empty_delivery_target_with_bad_request() -> Result<()> {
+pub async fn create_work_item_route_rejects_empty_objective_with_bad_request() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
 
     let response = client
         .post(format!("{base}/control/agents/default/work-items"))
         .json(&serde_json::json!({
-            "delivery_target": "   ",
+            "objective": "   ",
             "summary": "queued from control plane"
         }))
         .send()
@@ -260,7 +257,7 @@ pub async fn create_work_item_route_rejects_empty_delivery_target_with_bad_reque
 
     let body: serde_json::Value = response.json().await?;
     assert_eq!(body["ok"], false);
-    assert_eq!(body["error"], "delivery_target must not be empty");
+    assert_eq!(body["error"], "objective must not be empty");
 
     server.abort();
     Ok(())

@@ -1,9 +1,7 @@
 use super::*;
 use crate::{
     storage::WorkQueuePromptProjection,
-    types::{
-        BriefKind, TaskStatus, WorkPlanStepStatus, WorkReactivationMode, WorkReactivationSignal,
-    },
+    types::{BriefKind, TaskStatus, TodoItemState, WorkReactivationMode, WorkReactivationSignal},
 };
 
 const CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT: usize = 512;
@@ -263,17 +261,10 @@ impl RuntimeHandle {
             return Ok(true);
         }
 
-        if self
-            .inner
-            .storage
-            .latest_work_plan(&work_item.id)?
-            .is_some_and(|plan| {
-                plan.created_at > anchor
-                    || plan
-                        .items
-                        .iter()
-                        .any(|item| item.status != WorkPlanStepStatus::Completed)
-            })
+        if work_item
+            .todo_list
+            .iter()
+            .any(|item| item.state != TodoItemState::Completed)
         {
             return Ok(true);
         }
@@ -429,12 +420,9 @@ impl RuntimeHandle {
             Priority::Normal,
             MessageBody::Text {
                 text: if reason == "queued_available" {
-                    format!(
-                        "Queued work item is available: {}",
-                        work_item.delivery_target
-                    )
+                    format!("Queued work item is available: {}", work_item.objective)
                 } else {
-                    format!("Continue current work item: {}", work_item.delivery_target)
+                    format!("Continue current work item: {}", work_item.objective)
                 },
             },
         )
@@ -446,7 +434,7 @@ impl RuntimeHandle {
             "work_queue": {
                 "reason": reason,
                 "work_item_id": work_item.id,
-                "delivery_target": work_item.delivery_target,
+                "objective": work_item.objective,
                 "state": work_item.state,
                 "runtime_switched_current_item": false,
             }
@@ -576,9 +564,7 @@ mod tests {
     use super::*;
     use crate::context::ContextConfig;
     use crate::provider::StubProvider;
-    use crate::types::{
-        AgentStatus, WorkItemRecord, WorkItemState, WorkPlanItem, WorkPlanSnapshot,
-    };
+    use crate::types::{AgentStatus, TodoItem, TodoItemState, WorkItemRecord, WorkItemState};
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
 
@@ -630,16 +616,8 @@ mod tests {
     }
 
     fn add_queued_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
-        let record = WorkItemRecord {
-            id: id.to_string(),
-            agent_id: "default".to_string(),
-            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.to_string(),
-            delivery_target: target.to_string(),
-            state: WorkItemState::Open,
-            blocked_by: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
+        let mut record = WorkItemRecord::new("default", target, WorkItemState::Open);
+        record.id = id.to_string();
         test_runtime
             .runtime
             .inner
@@ -650,16 +628,8 @@ mod tests {
     }
 
     fn add_current_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
-        let record = WorkItemRecord {
-            id: id.to_string(),
-            agent_id: "default".to_string(),
-            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.to_string(),
-            delivery_target: target.to_string(),
-            state: WorkItemState::Open,
-            blocked_by: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
+        let mut record = WorkItemRecord::new("default", target, WorkItemState::Open);
+        record.id = id.to_string();
         test_runtime
             .runtime
             .inner
@@ -1338,23 +1308,21 @@ mod tests {
     }
 
     #[test]
-    fn continue_active_preserved_when_work_plan_has_pending_step() {
+    fn continue_active_preserved_when_todo_list_has_pending_item() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
-        let active = add_current_work_item(&test_runtime, "wi-active", "active-target");
+        let mut active = add_current_work_item(&test_runtime, "wi-active", "active-target");
+        active.todo_list = vec![TodoItem {
+            text: "finish remaining implementation".to_string(),
+            state: TodoItemState::InProgress,
+        }];
+        active.updated_at = chrono::Utc::now();
         test_runtime
             .runtime
             .inner
             .storage
-            .append_work_plan(&WorkPlanSnapshot::new(
-                "default",
-                &active.id,
-                vec![WorkPlanItem {
-                    step: "finish remaining implementation".to_string(),
-                    status: WorkPlanStepStatus::InProgress,
-                }],
-            ))
+            .append_work_item(&active)
             .unwrap();
         append_result_brief_for_work_item(&test_runtime, &active.id, "Progress report.");
 
@@ -1365,7 +1333,7 @@ mod tests {
 
         assert!(
             emitted,
-            "an unfinished work plan should keep continue_active eligible"
+            "an unfinished todo list should keep continue_active eligible"
         );
     }
 

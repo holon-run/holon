@@ -33,8 +33,8 @@ use crate::{
         AgentIdentityRecord, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
         AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentVisibility,
         ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord, ExternalTriggerStatus,
-        OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord, TaskStatus, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WorkItemRecord, WorkPlanItem, WorkspaceEntry,
+        OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord, TaskStatus, TodoItem,
+        TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkItemRecord, WorkspaceEntry,
         WorkspaceOccupancyRecord,
     },
 };
@@ -259,11 +259,11 @@ impl RuntimeHost {
     pub async fn enqueue_public_work_item(
         &self,
         agent_id: &str,
-        delivery_target: String,
+        objective: String,
     ) -> std::result::Result<(RuntimeHandle, crate::types::WorkItemRecord), PublicAgentError> {
         let runtime = self.get_public_agent(agent_id).await?;
-        let (record, _) = runtime
-            .create_work_item(delivery_target, None)
+        let record = runtime
+            .create_work_item(objective, None, None, Vec::new())
             .await
             .map_err(PublicAgentError::Runtime)?;
         Ok((runtime, record))
@@ -1228,11 +1228,14 @@ impl RuntimeHostBridge {
     pub(crate) async fn create_child_work_item(
         &self,
         agent_id: &str,
-        delivery_target: String,
-        plan: Option<Vec<WorkPlanItem>>,
+        objective: String,
+        plan: Option<String>,
+        todo_list: Vec<TodoItem>,
     ) -> Result<WorkItemRecord> {
         let runtime = self.host()?.get_or_create_agent(agent_id).await?;
-        let (work_item, _) = runtime.create_work_item(delivery_target, plan).await?;
+        let work_item = runtime
+            .create_work_item(objective, None, plan, todo_list)
+            .await?;
         let (_, current) = runtime.pick_work_item(work_item.id.clone()).await?;
         Ok(current)
     }

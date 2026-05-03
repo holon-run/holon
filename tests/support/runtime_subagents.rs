@@ -32,9 +32,9 @@ use holon::{
         FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemState,
-        WorkPlanItem, WorkPlanStepStatus,
+        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TodoItem, TodoItemState,
+        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus,
+        WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;

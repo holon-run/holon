@@ -19,7 +19,7 @@ use crate::{
         ActiveWorkspaceEntry, AgentState, AgentSummary, BriefRecord, ClosureDecision,
         ExternalTriggerStateSnapshot, MessageEnvelope, TaskRecord, TimerRecord, TimerStatus,
         TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord, WorkItemRecord, WorkItemState,
-        WorkPlanSnapshot, WorktreeSession,
+        WorktreeSession,
     },
 };
 
@@ -40,7 +40,6 @@ pub(crate) enum ProjectionSlice {
     BriefsTail,
     Timers,
     WorkItems,
-    WorkPlan,
     WaitingIntents,
     ExternalTriggers,
     OperatorNotifications,
@@ -74,7 +73,6 @@ pub(crate) struct TuiProjection {
     pub(crate) briefs_tail: Vec<BriefRecord>,
     pub(crate) timers: Vec<TimerRecord>,
     pub(crate) work_items: Vec<WorkItemRecord>,
-    pub(crate) work_plan: Option<WorkPlanSnapshot>,
     pub(crate) waiting_intents: Vec<WaitingIntentRecord>,
     pub(crate) external_triggers: Vec<ExternalTriggerStateSnapshot>,
     pub(crate) operator_notifications: Vec<crate::types::OperatorNotificationRecord>,
@@ -98,7 +96,6 @@ impl TuiProjection {
             briefs_tail: snapshot.briefs_tail,
             timers: snapshot.timers,
             work_items: snapshot.work_items,
-            work_plan: snapshot.work_plan,
             waiting_intents: snapshot.waiting_intents,
             external_triggers,
             operator_notifications,
@@ -232,14 +229,6 @@ impl TuiProjection {
                     self.stale_slices.remove(&ProjectionSlice::WorkItems);
                 } else {
                     self.mark_stale([ProjectionSlice::WorkItems]);
-                }
-            }
-            "work_plan_snapshot_written" => {
-                if let Some(plan) = decode_payload::<WorkPlanSnapshot>(&event.data.payload) {
-                    self.work_plan = Some(plan);
-                    self.stale_slices.remove(&ProjectionSlice::WorkPlan);
-                } else {
-                    self.mark_stale([ProjectionSlice::WorkPlan]);
                 }
             }
             "workspace_attached" => {
@@ -645,7 +634,7 @@ fn work_item_rank(item: &WorkItemRecord) -> u8 {
     match item.state {
         WorkItemState::Open if item.blocked_by.is_none() => 0,
         WorkItemState::Open => 1,
-        WorkItemState::Done => 2,
+        WorkItemState::Completed => 2,
     }
 }
 
@@ -754,7 +743,7 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
             .get("record")
             .cloned()
             .and_then(decode_value::<WorkItemRecord>)
-            .map(|record| format!("{} [{:?}]", record.delivery_target, record.state))
+            .map(|record| format!("{} [{:?}]", record.objective, record.state))
             .unwrap_or_else(|| event.data.event_type.clone()),
         "waiting_intent_created" => decode_payload::<WaitingIntentRecord>(&event.data.payload)
             .map(|waiting| format!("waiting: {}", trim_summary(&waiting.description)))
@@ -889,10 +878,10 @@ mod tests {
             ExternalTriggerStateSnapshot, ExternalTriggerStatus, LoadedAgentsMdView, MessageBody,
             MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
             RuntimePosture, SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus,
-            TokenUsage, TranscriptEntry, TranscriptEntryKind, TurnTerminalKind, TurnTerminalRecord,
-            WaitingIntentRecord, WaitingIntentStatus, WaitingIntentSummary, WorkItemRecord,
-            WorkItemState, WorkPlanItem, WorkPlanSnapshot, WorkPlanStepStatus,
-            WorkspaceOccupancyRecord, WorktreeSession,
+            TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+            TurnTerminalKind, TurnTerminalRecord, WaitingIntentRecord, WaitingIntentStatus,
+            WaitingIntentSummary, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
+            WorktreeSession,
         },
     };
     use chrono::Utc;
@@ -1157,7 +1146,7 @@ mod tests {
                         "id": "work-1",
                         "agent_id": "default",
                         "workspace_id": "agent_home",
-                        "delivery_target": "operator",
+                        "objective": "operator",
                         "state": "open",
                         "created_at": Utc::now(),
                         "updated_at": Utc::now()
@@ -1460,20 +1449,15 @@ mod tests {
                 last_fired_at: None,
                 fire_count: 0,
             }],
-            work_items: vec![WorkItemRecord::new(
-                "default",
-                "active delivery",
-                WorkItemState::Open,
-            )],
-            work_plan: Some(WorkPlanSnapshot {
-                agent_id: "default".into(),
-                work_item_id: "work-1".into(),
-                created_at: Utc::now(),
-                items: vec![WorkPlanItem {
-                    step: "do it".into(),
-                    status: WorkPlanStepStatus::InProgress,
-                }],
-            }),
+            work_items: {
+                let mut item =
+                    WorkItemRecord::new("default", "active delivery", WorkItemState::Open);
+                item.todo_list = vec![TodoItem {
+                    text: "do it".into(),
+                    state: TodoItemState::InProgress,
+                }];
+                vec![item]
+            },
             waiting_intents: vec![WaitingIntentRecord {
                 id: "wait-1".into(),
                 agent_id: "default".into(),

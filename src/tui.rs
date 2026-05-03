@@ -761,7 +761,6 @@ impl TuiApp {
                 ProjectionSlice::BriefsTail => "briefs",
                 ProjectionSlice::Timers => "timers",
                 ProjectionSlice::WorkItems => "work-items",
-                ProjectionSlice::WorkPlan => "work-plan",
                 ProjectionSlice::WaitingIntents => "waiting",
                 ProjectionSlice::ExternalTriggers => "external-triggers",
                 ProjectionSlice::OperatorNotifications => "operator-notifications",
@@ -1003,7 +1002,6 @@ mod tests {
             briefs_tail: Vec::new(),
             timers: Vec::new(),
             work_items: Vec::new(),
-            work_plan: None,
             waiting_intents: Vec::new(),
             external_triggers: Vec::new(),
             operator_notifications: Vec::new(),
@@ -1722,7 +1720,7 @@ mod tests {
                             "id": "work-1",
                             "agent_id": "default",
                             "workspace_id": "agent_home",
-                            "delivery_target": "prepare rollout plan",
+                            "objective": "prepare rollout plan",
                             "state": "open",
                             "created_at": Utc::now(),
                             "updated_at": Utc::now()
@@ -1813,7 +1811,7 @@ mod tests {
         snapshot.agent.agent.working_memory.current_working_memory =
             crate::types::WorkingMemorySnapshot {
                 current_work_item_id: Some("work-1".into()),
-                delivery_target: Some("fix TUI active activity".into()),
+                objective: Some("fix TUI active activity".into()),
                 work_summary: Some("Improve the Conversation working indicator".into()),
                 ..Default::default()
             };

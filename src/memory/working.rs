@@ -7,9 +7,8 @@ use crate::{
     storage::AppStorage,
     types::{
         AgentState, AuditEvent, ClosureDecision, ExternalTriggerScope, MessageEnvelope,
-        MessageKind, ToolExecutionRecord, TurnMemoryDelta, WaitingIntentStatus, WorkItemRecord,
-        WorkPlanSnapshot, WorkPlanStepStatus, WorkingMemoryDelta, WorkingMemorySnapshot,
-        WorkingMemoryUpdateReason,
+        MessageKind, TodoItemState, ToolExecutionRecord, TurnMemoryDelta, WaitingIntentStatus,
+        WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot, WorkingMemoryUpdateReason,
     },
 };
 
@@ -143,10 +142,6 @@ pub fn derive_working_memory_snapshot(
             })
     });
     let current_work_item = waiting_anchor;
-    let current_work_plan = current_work_item
-        .map(|item| storage.latest_work_plan(&item.id))
-        .transpose()?
-        .flatten();
     let recent_tools = storage.read_recent_tool_executions(MEMORY_TOOL_SCAN_LIMIT)?;
     let active_waiting = storage
         .latest_waiting_intents()?
@@ -157,10 +152,10 @@ pub fn derive_working_memory_snapshot(
     let current_work_item_id = current_work_item.map(|item| item.id.as_str());
     let memory_tools = collect_memory_tools(&recent_tools, current_work_item_id);
 
-    let work_summary = current_work_item.map(|item| item.delivery_target.clone());
-    let current_plan = current_work_plan
+    let work_summary = current_work_item.map(|item| item.objective.clone());
+    let current_plan = current_work_item
         .as_ref()
-        .map(render_current_plan)
+        .map(|item| render_current_plan(item))
         .unwrap_or_default();
     let queued_waiting_followups = projection
         .queued_blocked
@@ -168,17 +163,13 @@ pub fn derive_working_memory_snapshot(
         .filter(|item| Some(item.id.as_str()) != current_work_item.map(|anchor| anchor.id.as_str()))
         .cloned()
         .collect::<Vec<_>>();
-    let pending_followups = collect_pending_followups(
-        current_work_item,
-        current_work_plan.as_ref(),
-        &queued_waiting_followups,
-    );
+    let pending_followups = collect_pending_followups(current_work_item, &queued_waiting_followups);
     let waiting_on = collect_waiting_on(&active_waiting, current_work_item_id, current_closure);
     let working_set_files = collect_working_set_files(&memory_tools);
 
     Ok(WorkingMemorySnapshot {
         current_work_item_id: current_work_item.map(|item| item.id.clone()),
-        delivery_target: current_work_item.map(|item| item.delivery_target.clone()),
+        objective: current_work_item.map(|item| item.objective.clone()),
         work_summary,
         current_plan,
         working_set_files,
@@ -195,7 +186,7 @@ fn derive_update_reason(
     next: &WorkingMemorySnapshot,
 ) -> WorkingMemoryUpdateReason {
     if previous.current_work_item_id != next.current_work_item_id
-        || previous.delivery_target != next.delivery_target
+        || previous.objective != next.objective
         || previous.work_summary != next.work_summary
     {
         return WorkingMemoryUpdateReason::ActiveWorkChanged;
@@ -249,9 +240,9 @@ fn derive_turn_memory_delta(
     TurnMemoryDelta {
         turn_index: turn_index.max(1),
         active_work_changed: previous.current_work_item_id != next.current_work_item_id
-            || previous.delivery_target != next.delivery_target
+            || previous.objective != next.objective
             || previous.work_summary != next.work_summary,
-        work_plan_changed: previous.current_plan != next.current_plan,
+        current_plan_changed: previous.current_plan != next.current_plan,
         scope_hints_changed: false,
         touched_files: diff_list(&previous.working_set_files, &next.working_set_files),
         commands,
@@ -283,10 +274,10 @@ fn derive_working_memory_delta(
     push_changed_field(
         &mut changed_fields,
         &mut summary_lines,
-        "delivery_target",
-        previous.delivery_target.as_deref(),
-        next.delivery_target.as_deref(),
-        "delivery target",
+        "objective",
+        previous.objective.as_deref(),
+        next.objective.as_deref(),
+        "objective",
     );
     push_changed_field(
         &mut changed_fields,
@@ -376,18 +367,29 @@ fn merge_pending_delta(
     }
 }
 
-fn render_current_plan(plan: &WorkPlanSnapshot) -> Vec<String> {
-    plan.items
-        .iter()
-        .filter(|item| item.status != WorkPlanStepStatus::Completed)
-        .map(|item| format!("[{:?}] {}", item.status, item.step))
-        .take(MEMORY_PLAN_LIMIT)
-        .collect()
+fn render_current_plan(plan: &WorkItemRecord) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(plan_text) = plan.plan.as_deref() {
+        lines.extend(
+            plan_text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(ToString::to_string)
+                .take(MEMORY_PLAN_LIMIT),
+        );
+    }
+    lines.extend(
+        plan.todo_list
+            .iter()
+            .filter(|item| item.state != TodoItemState::Completed)
+            .map(|item| format!("[{:?}] {}", item.state, item.text)),
+    );
+    limit_vec(lines, MEMORY_PLAN_LIMIT)
 }
 
 fn collect_pending_followups(
     current_work_item: Option<&WorkItemRecord>,
-    current_work_plan: Option<&WorkPlanSnapshot>,
     queued_waiting: &[WorkItemRecord],
 ) -> Vec<String> {
     let mut items = Vec::new();
@@ -395,21 +397,21 @@ fn collect_pending_followups(
     if let Some(active) = current_work_item {
         items.push(format!(
             "current: {}",
-            truncate_line(&active.delivery_target, 120)
+            truncate_line(&active.objective, 120)
         ));
     }
-    if let Some(plan) = current_work_plan {
+    if let Some(plan) = current_work_item {
         items.extend(
-            plan.items
+            plan.todo_list
                 .iter()
-                .filter(|item| item.status != WorkPlanStepStatus::Completed)
-                .map(|item| format!("plan: {}", truncate_line(&item.step, 120))),
+                .filter(|item| item.state != TodoItemState::Completed)
+                .map(|item| format!("todo: {}", truncate_line(&item.text, 120))),
         );
     }
     items.extend(
         queued_waiting
             .iter()
-            .map(|item| format!("queued: {}", truncate_line(&item.delivery_target, 120))),
+            .map(|item| format!("queued: {}", truncate_line(&item.objective, 120))),
     );
 
     dedup_owned(items, MEMORY_FOLLOWUP_LIMIT)
@@ -732,10 +734,9 @@ mod tests {
         storage::AppStorage,
         types::{
             AgentState, BriefKind, BriefRecord, CallbackDeliveryMode, ClosureDecision, MessageBody,
-            MessageEnvelope, MessageKind, MessageOrigin, Priority, RuntimePosture,
-            ToolExecutionRecord, ToolExecutionStatus, TrustLevel, WaitingIntentRecord,
-            WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemState, WorkPlanItem,
-            WorkPlanSnapshot, WorkPlanStepStatus,
+            MessageEnvelope, MessageKind, MessageOrigin, Priority, RuntimePosture, TodoItem,
+            TodoItemState, ToolExecutionRecord, ToolExecutionStatus, TrustLevel,
+            WaitingIntentRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemState,
         },
     };
 
@@ -766,29 +767,24 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
-        let active = WorkItemRecord::new(
+        let mut active = WorkItemRecord::new(
             "default",
             "repair benchmark export output",
             WorkItemState::Open,
         );
+        active.plan = Some("Patch exporter and run focused test.".into());
+        active.todo_list = vec![
+            TodoItem {
+                text: "patch exporter".into(),
+                state: TodoItemState::InProgress,
+            },
+            TodoItem {
+                text: "run focused test".into(),
+                state: TodoItemState::Pending,
+            },
+        ];
         storage.append_work_item(&active).unwrap();
         set_current_work_item(&storage, &active.id);
-        storage
-            .append_work_plan(&WorkPlanSnapshot::new(
-                "default",
-                &active.id,
-                vec![
-                    WorkPlanItem {
-                        step: "patch exporter".into(),
-                        status: WorkPlanStepStatus::InProgress,
-                    },
-                    WorkPlanItem {
-                        step: "run focused test".into(),
-                        status: WorkPlanStepStatus::Pending,
-                    },
-                ],
-            ))
-            .unwrap();
         storage
             .append_brief(&BriefRecord::new(
                 "default",
@@ -905,7 +901,7 @@ mod tests {
             Some(waiting.id.as_str())
         );
         assert_eq!(
-            snapshot.delivery_target.as_deref(),
+            snapshot.objective.as_deref(),
             Some("wait for operator approval")
         );
         assert!(!snapshot
@@ -1400,9 +1396,9 @@ mod tests {
 
         agent.working_memory.current_working_memory = WorkingMemorySnapshot {
             current_work_item_id: Some(active.id.clone()),
-            delivery_target: Some(active.delivery_target.clone()),
-            work_summary: Some(active.delivery_target.clone()),
-            pending_followups: vec![format!("current: {}", active.delivery_target)],
+            objective: Some(active.objective.clone()),
+            work_summary: Some(active.objective.clone()),
+            pending_followups: vec![format!("current: {}", active.objective)],
             scope_hints: vec!["legacy brief text".into()],
             recent_decisions: vec!["legacy final answer prose".into()],
             ..WorkingMemorySnapshot::default()
@@ -1479,7 +1475,7 @@ mod tests {
         assert!(refresh.working_memory_updated);
         assert_eq!(agent.context_summary, None);
         assert_eq!(
-            agent.working_memory.current_working_memory.delivery_target,
+            agent.working_memory.current_working_memory.objective,
             Some("ship memory cleanup".into())
         );
     }

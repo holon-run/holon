@@ -5,15 +5,15 @@ use serde_json::Value;
 
 use crate::{
     runtime::RuntimeHandle,
-    tool::helpers::validate_non_empty,
+    tool::helpers::{normalize_optional_non_empty, validate_non_empty},
     tool::spec::typed_spec,
-    types::{ToolCapabilityFamily, TrustLevel},
+    types::{ToolCapabilityFamily, TrustLevel, WorkItemPlanStatus},
 };
 
 use super::{
     serialize_success,
     work_item_action::{
-        convert_plan, parse_work_item_action_args, WorkItemMutationResult, WorkPlanItemArgs,
+        convert_todo_list, parse_work_item_action_args, TodoItemArgs, WorkItemMutationResult,
     },
     BuiltinToolDefinition,
 };
@@ -23,9 +23,32 @@ pub(crate) const NAME: &str = "CreateWorkItem";
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CreateWorkItemArgs {
-    pub(crate) delivery_target: String,
+    pub(crate) objective: String,
     #[serde(default)]
-    pub(crate) plan: Option<Vec<WorkPlanItemArgs>>,
+    pub(crate) plan_status: Option<WorkItemPlanStatusArg>,
+    #[serde(default)]
+    pub(crate) plan: Option<String>,
+    #[serde(default)]
+    pub(crate) todo_list: Option<Vec<TodoItemArgs>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub(crate) enum WorkItemPlanStatusArg {
+    Draft,
+    Ready,
+    NeedsInput,
+}
+
+impl From<WorkItemPlanStatusArg> for WorkItemPlanStatus {
+    fn from(value: WorkItemPlanStatusArg) -> Self {
+        match value {
+            WorkItemPlanStatusArg::Draft => Self::Draft,
+            WorkItemPlanStatusArg::Ready => Self::Ready,
+            WorkItemPlanStatusArg::NeedsInput => Self::NeedsInput,
+        }
+    }
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -33,7 +56,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<CreateWorkItemArgs>(
             NAME,
-            "Create a new open work item for a genuinely separate delivery target. Do not create a new work item just to refine the current task; use UpdateWorkItem.delivery_target for that. Use PickWorkItem separately to make a different existing item current.",
+            "Create a new open work item for a genuinely separate objective. Use plan for durable task understanding and todo_list only for progress checklist items. Do not create a new work item just to refine the current task; use UpdateWorkItem.objective and UpdateWorkItem.plan for that.",
         )?,
     })
 }
@@ -45,8 +68,23 @@ pub(crate) async fn execute(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: CreateWorkItemArgs = parse_work_item_action_args(NAME, input)?;
-    let delivery_target = validate_non_empty(args.delivery_target, NAME, "delivery_target")?;
-    let plan = args.plan.map(|plan| convert_plan(NAME, plan)).transpose()?;
-    let (work_item, plan) = runtime.create_work_item(delivery_target, plan).await?;
-    serialize_success(NAME, &WorkItemMutationResult::new(work_item, plan))
+    let objective = validate_non_empty(args.objective, NAME, "objective")?;
+    let plan = args
+        .plan
+        .map(|value| validate_non_empty(value, NAME, "plan"))
+        .transpose()?;
+    let todo_list = args
+        .todo_list
+        .map(|items| convert_todo_list(NAME, items))
+        .transpose()?
+        .unwrap_or_default();
+    let work_item = runtime
+        .create_work_item(
+            objective,
+            args.plan_status.map(Into::into),
+            normalize_optional_non_empty(plan),
+            todo_list,
+        )
+        .await?;
+    serialize_success(NAME, &WorkItemMutationResult::new(work_item))
 }
