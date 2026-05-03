@@ -1148,6 +1148,8 @@ mod tests {
                         "workspace_id": "agent_home",
                         "objective": "operator",
                         "state": "open",
+                        "plan_status": "draft",
+                        "todo_list": [],
                         "created_at": Utc::now(),
                         "updated_at": Utc::now()
                     }
