@@ -187,7 +187,7 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
         current_work_item_id: Some(work_item.id.clone()),
         objective: Some(work_item.objective.clone()),
         work_summary: Some("prompt snapshot coverage".into()),
-        current_plan: vec!["capture operator surface snapshot".into()],
+        plan: Some(vec!["capture operator surface snapshot"].join("\n")),
         ..WorkingMemorySnapshot::default()
     };
     session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
@@ -195,7 +195,7 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
         to_revision: 3,
         created_at_turn: 4,
         reason: holon::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-        changed_fields: vec!["current_plan".into()],
+        changed_fields: vec!["plan".into()],
         summary_lines: vec![
             "captured the baseline operator turn layout".into(),
             "queued callback and task-result follow-up snapshots".into(),
@@ -215,15 +215,15 @@ Working memory:
 - Current work item id: work_prompt
 - Objective: Ship prompt snapshot coverage
 - Work summary: prompt snapshot coverage
-- Current plan:
-  - capture operator surface snapshot
+- Plan:
+  capture operator surface snapshot
 
 ## working_memory_delta
 Working memory updated since the last prompt:
 - Revision: 2 -> 3
 - Reason: terminal_turn_completed
 - Changed fields:
-  - current_plan
+  - plan
 - Summary:
   - captured the baseline operator turn layout
   - queued callback and task-result follow-up snapshots
@@ -535,7 +535,7 @@ fn active_work_with_queued_work_shows_both_items() -> Result<()> {
         current_work_item_id: Some(active_work.id.clone()),
         objective: Some(active_work.objective.clone()),
         work_summary: Some("expand prompt context snapshot coverage".into()),
-        current_plan: vec!["add active work with queued work test".into()],
+        plan: Some(vec!["add active work with queued work test"].join("\n")),
         ..WorkingMemorySnapshot::default()
     };
 
@@ -552,8 +552,8 @@ Working memory:
 - Current work item id: work_active
 - Objective: Complete snapshot coverage expansion
 - Work summary: expand prompt context snapshot coverage
-- Current plan:
-  - add active work with queued work test
+- Plan:
+  add active work with queued work test
 
 ## current_work_item
 Current work item:
@@ -623,7 +623,7 @@ fn operator_turn_without_working_memory_delta() -> Result<()> {
         current_work_item_id: Some(work_item.id.clone()),
         objective: Some(work_item.objective.clone()),
         work_summary: Some("test working memory delta absence".into()),
-        current_plan: vec!["verify delta absence".into()],
+        plan: Some(vec!["verify delta absence"].join("\n")),
         ..WorkingMemorySnapshot::default()
     };
     // No pending_working_memory_delta set
@@ -641,8 +641,8 @@ Working memory:
 - Current work item id: work_no_delta
 - Objective: Test delta absence
 - Work summary: test working memory delta absence
-- Current plan:
-  - verify delta absence
+- Plan:
+  verify delta absence
 
 ## current_work_item
 Current work item:
@@ -718,11 +718,14 @@ fn callback_with_active_work_and_delta() -> Result<()> {
         current_work_item_id: Some(work_item.id.clone()),
         objective: Some(work_item.objective.clone()),
         work_summary: Some("process CI completion callback".into()),
-        current_plan: vec![
-            "wait for CI callback".into(),
-            "process CI result".into(),
-            "update work item status".into(),
-        ],
+        plan: Some(
+            vec![
+                "wait for CI callback",
+                "process CI result",
+                "update work item status",
+            ]
+            .join("\n"),
+        ),
         ..WorkingMemorySnapshot::default()
     };
     session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
@@ -730,7 +733,7 @@ fn callback_with_active_work_and_delta() -> Result<()> {
         to_revision: 6,
         created_at_turn: 12,
         reason: holon::types::WorkingMemoryUpdateReason::TaskRejoined,
-        changed_fields: vec!["current_plan".into(), "waiting_on".into()],
+        changed_fields: vec!["plan".into(), "waiting_on".into()],
         summary_lines: vec![
             "CI pipeline completed successfully".into(),
             "ready to proceed with next work item".into(),
@@ -750,17 +753,17 @@ Working memory:
 - Current work item id: work_ci
 - Objective: Handle CI callback
 - Work summary: process CI completion callback
-- Current plan:
-  - wait for CI callback
-  - process CI result
-  - update work item status
+- Plan:
+  wait for CI callback
+  process CI result
+  update work item status
 
 ## working_memory_delta
 Working memory updated since the last prompt:
 - Revision: 5 -> 6
 - Reason: task_rejoined
 - Changed fields:
-  - current_plan
+  - plan
   - waiting_on
 - Summary:
   - CI pipeline completed successfully
@@ -863,10 +866,7 @@ fn system_tick_with_waiting_work_item() -> Result<()> {
         current_work_item_id: Some(waiting_work.id.clone()),
         objective: Some(waiting_work.objective.clone()),
         work_summary: Some("waiting for external service response".into()),
-        current_plan: vec![
-            "wait for rate limit reset".into(),
-            "retry API request".into(),
-        ],
+        plan: Some(vec!["wait for rate limit reset", "retry API request"].join("\n")),
         ..WorkingMemorySnapshot::default()
     };
 
@@ -883,9 +883,9 @@ Working memory:
 - Current work item id: work_waiting
 - Objective: External service integration
 - Work summary: waiting for external service response
-- Current plan:
-  - wait for rate limit reset
-  - retry API request
+- Plan:
+  wait for rate limit reset
+  retry API request
 
 ## current_work_item
 Current work item:
@@ -982,11 +982,14 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
         current_work_item_id: Some(work_item.id.clone()),
         objective: Some(work_item.objective.clone()),
         work_summary: Some("task spanning multiple compaction points".into()),
-        current_plan: vec![
-            "complete initial phase".into(),
-            "work on expanded coverage".into(),
-            "final verification".into(),
-        ],
+        plan: Some(
+            vec![
+                "complete initial phase",
+                "work on expanded coverage",
+                "final verification",
+            ]
+            .join("\n"),
+        ),
         ..WorkingMemorySnapshot::default()
     };
     session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
@@ -1014,10 +1017,10 @@ Working memory:
 - Current work item id: work_compaction
 - Objective: Long-running task with compaction
 - Work summary: task spanning multiple compaction points
-- Current plan:
-  - complete initial phase
-  - work on expanded coverage
-  - final verification
+- Plan:
+  complete initial phase
+  work on expanded coverage
+  final verification
 
 ## working_memory_delta
 Working memory updated since the last prompt:
@@ -1125,11 +1128,14 @@ fn task_result_with_multiple_work_items() -> Result<()> {
         current_work_item_id: Some(active_work.id.clone()),
         objective: Some(active_work.objective.clone()),
         work_summary: Some("run cargo test and verify results".into()),
-        current_plan: vec![
-            "execute cargo test".into(),
-            "verify test results".into(),
-            "document any failures".into(),
-        ],
+        plan: Some(
+            vec![
+                "execute cargo test",
+                "verify test results",
+                "document any failures",
+            ]
+            .join("\n"),
+        ),
         ..WorkingMemorySnapshot::default()
     };
     session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
@@ -1137,7 +1143,7 @@ fn task_result_with_multiple_work_items() -> Result<()> {
         to_revision: 4,
         created_at_turn: 8,
         reason: holon::types::WorkingMemoryUpdateReason::TaskRejoined,
-        changed_fields: vec!["current_plan".into()],
+        changed_fields: vec!["plan".into()],
         summary_lines: vec![
             "cargo test completed successfully".into(),
             "120 tests passed, 0 failed".into(),
@@ -1158,17 +1164,17 @@ Working memory:
 - Current work item id: work_test
 - Objective: Test execution and verification
 - Work summary: run cargo test and verify results
-- Current plan:
-  - execute cargo test
-  - verify test results
-  - document any failures
+- Plan:
+  execute cargo test
+  verify test results
+  document any failures
 
 ## working_memory_delta
 Working memory updated since the last prompt:
 - Revision: 3 -> 4
 - Reason: task_rejoined
 - Changed fields:
-  - current_plan
+  - plan
 - Summary:
   - cargo test completed successfully
   - 120 tests passed, 0 failed

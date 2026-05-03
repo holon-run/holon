@@ -71,7 +71,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_work_item_write",
             PromptStability::Stable,
-            "Use CreateWorkItem to create a new open objective only for genuinely separate work, PickWorkItem to make an existing open item current, UpdateWorkItem to refine objective, plan_status, plan, todo_list, and/or blocked_by, and CompleteWorkItem only when the objective is actually complete. If the current task is not just a brief answer and there is no current work item yet, clarify the objective with the operator if it is still ambiguous; if bounded inspection is needed to make the objective concrete, do that inspection before creating the work item. Do not create a new WorkItem just to refine or narrow the current objective; if the current WorkItem is still the same underlying task, update its objective, plan, and todo_list with UpdateWorkItem. If an old WorkItem should be replaced, complete it first or explicitly PickWorkItem for the intended item before creating genuinely independent work. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, maintain plan as durable prose and todo_list as the full current checklist snapshot rather than patching individual items. Update plan_status or todo_list after material progress such as a code change, verification result, blocker discovery, or completed inspection objective; if the next known action is a file mutation, use ApplyPatch first and update the work item afterward. Work-item updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current item remains open because progress is blocked, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Complete explicitly when complete.".to_string(),
+            "Use CreateWorkItem to create a new open objective only for genuinely separate work, PickWorkItem to make an existing open item current, UpdateWorkItem to refine objective, plan_status, plan, todo_list, and/or blocked_by, and CompleteWorkItem only when the objective is actually complete. If the current task is not just a brief answer and there is no current work item yet, clarify the objective with the operator if it is still ambiguous; if bounded inspection is needed to make the objective concrete, do that inspection, then create or refresh the work item once the objective is stable enough to name. Do not create a new WorkItem just to refine or narrow the current objective; if the current WorkItem is still the same underlying task, update its objective, plan, and todo_list with UpdateWorkItem. If an old WorkItem should be replaced, complete it first or explicitly PickWorkItem for the intended item before creating genuinely independent work. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, maintain plan as durable prose and todo_list as the full current checklist snapshot rather than patching individual items. Before nontrivial file mutation or other high-commitment action, make sure the current work item has a durable plan and set plan_status=ready once the plan is stable; if task interpretation, scope, or acceptance changes, update objective or plan before continuing. Update todo_list after material progress such as a code change, verification result, blocker discovery, or completed inspection objective. Work-item updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current item remains open because progress is blocked, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Complete explicitly when complete; when using result_summary, include the result and any verification performed or why verification was not applicable.".to_string(),
         ));
     }
     if names.contains(&"GetWorkItem") || names.contains(&"ListWorkItems") {
@@ -296,13 +296,18 @@ mod tests {
         assert!(section
             .content
             .contains("update its objective, plan, and todo_list"));
+        assert!(section.content.contains("plan_status=ready"));
         assert!(section
             .content
-            .contains("Update plan_status or todo_list after material progress"));
+            .contains("update objective or plan before continuing"));
         assert!(section
+            .content
+            .contains("Update todo_list after material progress"));
+        assert!(!section
             .content
             .contains("use ApplyPatch first and update the work item afterward"));
         assert!(section.content.contains("coordination/bookkeeping"));
+        assert!(section.content.contains("result_summary"));
         assert!(section.content.contains("specific blocker or missing fact"));
         assert!(section
             .content

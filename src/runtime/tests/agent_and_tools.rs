@@ -926,7 +926,7 @@ async fn interactive_turn_keeps_pending_working_memory_delta_when_prompt_omits_i
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.working_memory.current_working_memory = crate::types::WorkingMemorySnapshot {
             objective: Some("ship the prompt delta gating fix".into()),
-            current_plan: vec!["[InProgress] wire prompt render acknowledgement".into()],
+            plan: Some(vec!["[InProgress] wire prompt render acknowledgement"].join("\n")),
             ..crate::types::WorkingMemorySnapshot::default()
         };
         guard.state.working_memory.working_memory_revision = 5;
@@ -936,9 +936,9 @@ async fn interactive_turn_keeps_pending_working_memory_delta_when_prompt_omits_i
                 to_revision: 5,
                 created_at_turn: 7,
                 reason: crate::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-                changed_fields: vec!["current_plan".into()],
+                changed_fields: vec!["plan".into()],
                 summary_lines: vec![
-                    "updated the current plan with a long-form explanation of why prompt rendering acknowledgement must happen after budgeted assembly rather than before prompt construction".into(),
+                    "updated the plan with a long-form explanation of why prompt rendering acknowledgement must happen after budgeted assembly rather than before prompt construction".into(),
                     "recorded the continuity decision that pending deltas stay durable across turns until the model actually sees the delta section in a rendered prompt".into(),
                     "captured low-budget prompt coverage for the interactive runtime path that previously cleared the delta too early".into(),
                 ],
