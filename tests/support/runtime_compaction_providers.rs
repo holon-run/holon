@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -10,10 +8,11 @@ use holon::provider::{
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use super::{
-    runtime_helpers::{compact_request_snapshot, delegated_prompt_text},
-    runtime_providers::CapturedTurnRequest,
+use super::runtime_helpers::{
+    compact_request_snapshot, delegated_prompt_text, CompactionRequestSnapshot,
 };
+
+use super::runtime_providers::CapturedTurnRequest;
 
 /// Provider that demonstrates max-output recovery flow
 pub struct MaxOutputRecoveryProvider {
@@ -107,7 +106,7 @@ impl AgentProvider for MaxOutputRecoveryProvider {
 /// Provider that demonstrates repeated compaction behavior
 pub struct RepeatedCompactionProvider {
     calls: Arc<Mutex<usize>>,
-    requests: Arc<Mutex<Vec<super::runtime_helpers::CompactionRequestSnapshot>>>,
+    requests: Arc<Mutex<Vec<CompactionRequestSnapshot>>>,
 }
 
 impl RepeatedCompactionProvider {
@@ -118,9 +117,7 @@ impl RepeatedCompactionProvider {
         }
     }
 
-    pub async fn captured_requests(
-        &self,
-    ) -> Vec<super::runtime_helpers::CompactionRequestSnapshot> {
+    pub async fn captured_requests(&self) -> Vec<CompactionRequestSnapshot> {
         self.requests.lock().await.clone()
     }
 }
@@ -225,7 +222,7 @@ impl AgentProvider for RepeatedCompactionProvider {
 /// Provider that demonstrates max-output followed by compaction
 pub struct MaxOutputThenCompactionProvider {
     calls: Arc<Mutex<usize>>,
-    requests: Arc<Mutex<Vec<super::runtime_helpers::CompactionRequestSnapshot>>>,
+    requests: Arc<Mutex<Vec<CompactionRequestSnapshot>>>,
 }
 
 impl MaxOutputThenCompactionProvider {
@@ -236,9 +233,7 @@ impl MaxOutputThenCompactionProvider {
         }
     }
 
-    pub async fn captured_requests(
-        &self,
-    ) -> Vec<super::runtime_helpers::CompactionRequestSnapshot> {
+    pub async fn captured_requests(&self) -> Vec<CompactionRequestSnapshot> {
         self.requests.lock().await.clone()
     }
 }
