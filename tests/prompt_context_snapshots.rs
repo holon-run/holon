@@ -754,9 +754,7 @@ Working memory:
 - Objective: Handle CI callback
 - Work summary: process CI completion callback
 - Plan:
-  wait for CI callback
-  process CI result
-  update work item status
+  wait for CI callback process CI result update work item status
 
 ## working_memory_delta
 Working memory updated since the last prompt:
@@ -884,8 +882,7 @@ Working memory:
 - Objective: External service integration
 - Work summary: waiting for external service response
 - Plan:
-  wait for rate limit reset
-  retry API request
+  wait for rate limit reset retry API request
 
 ## current_work_item
 Current work item:
@@ -1018,9 +1015,7 @@ Working memory:
 - Objective: Long-running task with compaction
 - Work summary: task spanning multiple compaction points
 - Plan:
-  complete initial phase
-  work on expanded coverage
-  final verification
+  complete initial phase work on expanded coverage final verification
 
 ## working_memory_delta
 Working memory updated since the last prompt:
@@ -1165,9 +1160,7 @@ Working memory:
 - Objective: Test execution and verification
 - Work summary: run cargo test and verify results
 - Plan:
-  execute cargo test
-  verify test results
-  document any failures
+  execute cargo test verify test results document any failures
 
 ## working_memory_delta
 Working memory updated since the last prompt:

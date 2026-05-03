@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Instant};
+use std::{collections::HashSet, env, time::Instant};
 
 use anyhow::Result;
 use serde_json::Value;
@@ -46,6 +46,10 @@ const MIN_EXACT_TAIL_ROUNDS: usize = 2;
 const CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS: usize = 256;
 const WORK_ITEM_STALE_REMINDER_ROUNDS: usize = 10;
 const WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS: usize = 10;
+const WORK_ITEM_STALE_REMINDER_MAX_TOKENS: usize = 512;
+const WORK_ITEM_STALE_REMINDER_PLAN_LINE_LIMIT: usize = 8;
+const WORK_ITEM_STALE_REMINDER_PLAN_CHAR_LIMIT: usize = 1_200;
+const WORK_ITEM_STALE_REMINDER_TODO_LIMIT: usize = 8;
 const COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT: &str = "\
 [Runtime-generated full progress checkpoint request]
 You are crossing a context compaction boundary. Before continuing, include a concise progress checkpoint for continuation in your next assistant message.
@@ -667,6 +671,35 @@ fn round_updated_work_item(round: &TurnRoundRecord) -> bool {
     })
 }
 
+fn work_item_stale_reminder_rounds() -> usize {
+    env_usize_or_default(
+        "HOLON_WORK_ITEM_STALE_REMINDER_ROUNDS",
+        WORK_ITEM_STALE_REMINDER_ROUNDS,
+    )
+}
+
+fn work_item_stale_reminder_cooldown_rounds() -> usize {
+    env_usize_or_default(
+        "HOLON_WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS",
+        WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS,
+    )
+}
+
+fn work_item_stale_reminder_max_tokens() -> usize {
+    env_usize_or_default(
+        "HOLON_WORK_ITEM_STALE_REMINDER_MAX_TOKENS",
+        WORK_ITEM_STALE_REMINDER_MAX_TOKENS,
+    )
+}
+
+fn env_usize_or_default(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
 fn build_work_item_stale_reminder(
     work_item: &WorkItemRecord,
     rounds_since_update: usize,
@@ -688,7 +721,23 @@ fn build_work_item_stale_reminder(
     ];
     if let Some(plan) = work_item.plan.as_deref() {
         lines.push("- Plan:".to_string());
-        lines.extend(plan.lines().map(|line| format!("  {line}")));
+        let mut plan_chars = 0usize;
+        for line in plan.lines().take(WORK_ITEM_STALE_REMINDER_PLAN_LINE_LIMIT) {
+            let remaining = WORK_ITEM_STALE_REMINDER_PLAN_CHAR_LIMIT.saturating_sub(plan_chars);
+            if remaining == 0 {
+                break;
+            }
+            let rendered = truncate_preview(line, remaining);
+            plan_chars = plan_chars.saturating_add(rendered.len());
+            lines.push(format!("  {rendered}"));
+        }
+        let omitted_lines = plan
+            .lines()
+            .skip(WORK_ITEM_STALE_REMINDER_PLAN_LINE_LIMIT)
+            .count();
+        if omitted_lines > 0 || plan_chars >= WORK_ITEM_STALE_REMINDER_PLAN_CHAR_LIMIT {
+            lines.push("  ... plan truncated".to_string());
+        }
     }
     if !work_item.todo_list.is_empty() {
         lines.push("- Todo list:".to_string());
@@ -696,13 +745,53 @@ fn build_work_item_stale_reminder(
             work_item
                 .todo_list
                 .iter()
+                .filter(|todo| todo.state != TodoItemState::Completed)
+                .take(WORK_ITEM_STALE_REMINDER_TODO_LIMIT)
                 .map(|todo| format!("  - [{}] {}", todo_item_state_label(todo.state), todo.text)),
         );
+        let omitted = work_item
+            .todo_list
+            .iter()
+            .filter(|todo| todo.state != TodoItemState::Completed)
+            .skip(WORK_ITEM_STALE_REMINDER_TODO_LIMIT)
+            .count();
+        if omitted > 0 {
+            lines.push(format!(
+                "  - ... {omitted} more active todo item(s) omitted"
+            ));
+        }
     }
     if let Some(blocked_by) = work_item.blocked_by.as_deref() {
         lines.push(format!("- Blocked by: {blocked_by}"));
     }
-    lines.join("\n")
+    let reminder = lines.join("\n");
+    truncate_reminder_to_token_budget(&reminder, work_item_stale_reminder_max_tokens())
+}
+
+fn truncate_reminder_to_token_budget(reminder: &str, max_tokens: usize) -> String {
+    if estimate_text_tokens(reminder) <= max_tokens {
+        return reminder.to_string();
+    }
+    let max_chars = max_tokens.saturating_mul(4).max(256);
+    format!(
+        "{}\n... reminder truncated to fit token budget",
+        truncate_preview(reminder, max_chars)
+    )
+}
+
+fn runtime_reminder_fits_baseline(
+    prompt_frame: &ProviderPromptFrame,
+    available_tools: &[ToolSpec],
+    prompt_budget: usize,
+    reminder: &str,
+) -> bool {
+    let effective_budget_estimated_tokens = prompt_budget
+        .saturating_sub(estimate_tool_specs_tokens(available_tools))
+        .saturating_sub(CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS);
+    let baseline_with_reminder = estimate_prompt_frame_tokens(prompt_frame)
+        .saturating_add(estimate_prompt_blocks_tokens(&prompt_frame.context_blocks))
+        .saturating_add(estimate_text_tokens(reminder));
+    baseline_with_reminder <= effective_budget_estimated_tokens
 }
 
 fn work_item_plan_status_label(status: WorkItemPlanStatus) -> &'static str {
@@ -1197,7 +1286,7 @@ impl RuntimeHandle {
         let mut last_assistant_message: Option<String> = None;
         let mut max_output_recovery_count = 0usize;
         let mut rounds_since_work_item_update = 0usize;
-        let mut rounds_since_work_item_reminder = WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS;
+        let mut rounds_since_work_item_reminder = work_item_stale_reminder_cooldown_rounds();
         let mut checkpoint_state = {
             let guard = self.inner.agent.lock().await;
             checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
@@ -1272,9 +1361,10 @@ impl RuntimeHandle {
                 let checkpoint_request_id =
                     Some(format!("turn-{turn_index}-round-{round}-checkpoint"));
                 let prompt_frame = build_provider_prompt_frame(&effective_prompt);
-                let stale_work_item_reminder = if rounds_since_work_item_update
-                    >= WORK_ITEM_STALE_REMINDER_ROUNDS
-                    && rounds_since_work_item_reminder >= WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS
+                let reminder_rounds = work_item_stale_reminder_rounds();
+                let reminder_cooldown_rounds = work_item_stale_reminder_cooldown_rounds();
+                let stale_work_item_reminder = if rounds_since_work_item_update >= reminder_rounds
+                    && rounds_since_work_item_reminder >= reminder_cooldown_rounds
                 {
                     let current_work_item_id = {
                         let guard = self.inner.agent.lock().await;
@@ -1284,22 +1374,53 @@ impl RuntimeHandle {
                         .as_deref()
                         .and_then(|id| self.inner.storage.latest_work_item(id).ok().flatten())
                         .map(|work_item| {
-                            build_work_item_stale_reminder(
+                            let reminder = build_work_item_stale_reminder(
                                 &work_item,
                                 rounds_since_work_item_update,
-                            )
+                            );
+                            (work_item, reminder)
                         })
                 } else {
                     None
                 };
-                if let Some(reminder) = stale_work_item_reminder.as_ref() {
+                let stale_work_item_reminder =
+                    if let Some((work_item, reminder)) = stale_work_item_reminder {
+                        if runtime_reminder_fits_baseline(
+                            &prompt_frame,
+                            &available_tools,
+                            context_config.prompt_budget_estimated_tokens,
+                            &reminder,
+                        ) {
+                            Some((work_item, reminder))
+                        } else {
+                            self.inner.storage.append_event(&AuditEvent::new(
+                            "work_item_stale_reminder_skipped",
+                            serde_json::json!({
+                                "agent_id": agent_id,
+                                "round": round,
+                                "work_item_id": work_item.id,
+                                "plan_status": work_item_plan_status_label(work_item.plan_status),
+                                "rounds_since_work_item_update": rounds_since_work_item_update,
+                                "cooldown_rounds": reminder_cooldown_rounds,
+                                "reason": "baseline_budget",
+                            }),
+                        ))?;
+                            rounds_since_work_item_reminder = 0;
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                if let Some((work_item, reminder)) = stale_work_item_reminder.as_ref() {
                     self.inner.storage.append_event(&AuditEvent::new(
                         "work_item_stale_reminder_injected",
                         serde_json::json!({
                             "agent_id": agent_id,
                             "round": round,
+                            "work_item_id": work_item.id,
+                            "plan_status": work_item_plan_status_label(work_item.plan_status),
                             "rounds_since_work_item_update": rounds_since_work_item_update,
-                            "cooldown_rounds": WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS,
+                            "cooldown_rounds": reminder_cooldown_rounds,
                             "text_preview": truncate_preview(reminder, ROUND_TEXT_PREVIEW_LIMIT),
                         }),
                     ))?;
@@ -1313,7 +1434,9 @@ impl RuntimeHandle {
                     checkpoint_request_id,
                     context_config.prompt_budget_estimated_tokens,
                     context_config.compaction_keep_recent_estimated_tokens,
-                    stale_work_item_reminder.as_deref(),
+                    stale_work_item_reminder
+                        .as_ref()
+                        .map(|(_, reminder)| reminder.as_str()),
                 ) {
                     TurnLocalProjectionOutcome::Projection(projection) => projection,
                     TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
