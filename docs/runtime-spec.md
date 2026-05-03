@@ -1484,30 +1484,50 @@ that persisted field instead of inferring workspace from a later event scan.
 
 ### Work-Item Persistence Foundation
 
-The work-item rollout uses a persisted store that is separate from `AgentState`.
-
-Phase-1 foundation records are:
+Persistent work tracking uses two records:
 
 - `WorkItemRecord`
-- `WorkPlanSnapshot`
 - `DeliverySummaryRecord`
 
-`WorkItemRecord` is the persisted runtime record for one high-level delivery
-target. The minimal shape is:
+`WorkItemRecord` is the persisted runtime record for one high-level objective.
+The minimal shape is:
 
 - `id`
 - `agent_id`
 - `workspace_id`
-- `delivery_target`
+- `objective`
 - `state`
+- `plan_status`
+- `plan?`
+- `todo_list`
 - `blocked_by?`
+- `result_summary?`
 - `created_at`
 - `updated_at`
 
 `state` is one of:
 
 - `open`
-- `done`
+- `completed`
+
+`plan_status` is one of:
+
+- `draft`
+- `ready`
+- `needs_input`
+
+`plan` is durable prose attached to the work item. `todo_list` is the
+structured checklist snapshot for current execution bookkeeping. Each todo item
+contains:
+
+- `text`
+- `state`
+
+Todo item state is one of:
+
+- `pending`
+- `in_progress`
+- `completed`
 
 Current focus is not encoded in `WorkItemRecord.state`. The owning
 `AgentState.current_work_item_id` points at the currently selected open work
@@ -1515,43 +1535,7 @@ item. Queued and blocked are derived views:
 
 - queued: open work that is not current and has no `blocked_by`
 - blocked: open work with `blocked_by`
-- done: work whose state is `done`
-
-`WorkPlanSnapshot` is the latest full checklist snapshot for one work item. The
-minimal shape is:
-
-- `work_item_id`
-- `agent_id`
-- `created_at`
-- `items`
-
-Each persisted plan item contains:
-
-- `step`
-- `status`
-
-The initial plan-step status set is:
-
-- `pending`
-- `in_progress`
-- `completed`
-
-Model-visible work-item tool results project the same checklist through the RFC
-tool vocabulary instead of exposing the persisted field names. `CreateWorkItem`,
-`UpdateWorkItem`, `GetWorkItem`, and `ListWorkItems(include_plan=true)` return
-plan items as:
-
-- `step`
-- `state`
-
-The model-visible plan-step state set is:
-
-- `pending`
-- `doing`
-- `done`
-
-Tool inputs use the same model-visible `state` vocabulary. The internal
-`status` values remain a storage detail.
+- completed: work whose state is `completed`
 
 The runtime persists a `DeliverySummaryRecord` when `CompleteWorkItem` receives
 an explicit `result_summary`. It is associated with the completed work item and
@@ -1561,9 +1545,6 @@ is separate from raw terminal assistant text.
 `DeliverySummaryRecord.text` over the raw terminal assistant message. The raw
 terminal message remains available separately as `run_once.raw_final_text` for
 diagnostics and benchmark reporting.
-
-`WorkPlan` is work-item-scoped and is now the only formal checklist model in
-the runtime. The earlier agent-wide todo snapshot has been retired.
 
 Early rollout phases remain message-driven by default. Work items are optional
 until later scheduler integration lands; if no work items exist yet, the
@@ -1575,10 +1556,9 @@ When work items exist, prompt context should project them explicitly.
 
 Early rollout projection rules are:
 
-- project the full current snapshot of the active `WorkItemRecord`
-- project the full current `WorkPlanSnapshot` for that active item when present
+- project the full current `WorkItemRecord`, including plan and todo_list
 - project only compact entries for queued and blocked open items
-- exclude done items from the normal prompt projection
+- exclude completed items from the normal prompt projection
 - if no work items exist yet, preserve the current message-driven prompt path
   without synthesizing a bootstrap work item
 
@@ -1596,8 +1576,10 @@ The runtime exposes explicit trusted action tools for work-item state:
 
 `CreateWorkItem` creates a new open work item:
 
-- `delivery_target` is required
-- `plan` is optional
+- `objective` is required
+- `plan_status` is optional
+- `plan` is optional durable prose
+- `todo_list` is optional full checklist snapshot
 
 `PickWorkItem` sets `AgentState.current_work_item_id` to an existing open work
 item owned by the agent.
@@ -1605,28 +1587,31 @@ item owned by the agent.
 `UpdateWorkItem` updates mutable fields on an existing work item:
 
 - `work_item_id` is required
+- `objective` is optional
+- `plan_status` is optional
+- `plan` is optional and nullable
+- `todo_list` is optional and uses full-snapshot replacement semantics
 - `blocked_by` is optional and nullable
-- `plan` is optional and uses full-snapshot replacement semantics
 
-`CompleteWorkItem` marks an existing work item done:
+`CompleteWorkItem` marks an existing work item completed:
 
 - `work_item_id` is required
 - `result_summary` is optional completion metadata
 
-There is no separate agent-facing `UpdateWorkPlan` tool. Work-plan replacement
-is performed through `UpdateWorkItem.plan`; the storage layer may still persist
-plan snapshots separately.
+There is no separate agent-facing `UpdateWorkPlan` tool and no separate
+work-plan storage stream. Plan and todo state live on the latest
+`WorkItemRecord` snapshot.
 
 These tools are part of the explicit adoption path for work items. They do not
 require runtime-side semantic resolution of arbitrary ingress into a work item.
 
-Work-plan updates are coordination state, not the artifact progress ledger.
-Prompt guidance should frame `UpdateWorkItem.plan` as bookkeeping after
-material progress such as a file mutation, verification result, blocker
-discovery, or completed inspection objective. A successful work-item mutation
-may invalidate turn-local checkpoint state because the runtime focus changed,
-but failed tool inputs and `ExecCommand` calls do not invalidate checkpoint
-anchors by command-name heuristics.
+Work-item updates are coordination state, not the artifact progress ledger.
+Prompt guidance should frame plan_status, plan, and todo_list updates as
+bookkeeping after material progress such as a file mutation, verification
+result, blocker discovery, or completed inspection objective. A successful
+work-item mutation may invalidate turn-local checkpoint state because the
+runtime focus changed, but failed tool inputs and `ExecCommand` calls do not
+invalidate checkpoint anchors by command-name heuristics.
 
 ### Control-Plane Work-Item Enqueue
 
@@ -1639,7 +1624,7 @@ without creating a normal transcript message first.
 
 The minimal request shape is:
 
-- `delivery_target` required
+- `objective` required
 
 Rules:
 
@@ -1663,7 +1648,7 @@ Rules:
 
 - the turn-end commit path only applies when the turn started with a bound
   current work item
-- completing a work item is only done through explicit `CompleteWorkItem`
+- completing a work item is only completed through explicit `CompleteWorkItem`
 - if runtime facts show a blocking wait condition, the controller may set
   `blocked_by` on the bound open item
 - if the turn completes without an explicit completion or blocker, the item
@@ -1683,7 +1668,7 @@ Rules:
   unblocked work item, emit a system tick to continue that work item
 - if the runtime is idle, no current runnable work item exists, and at least one
   queued open work item exists, wake the agent so it can pick one
-- blocked and done items do not participate in activation
+- blocked and completed items do not participate in activation
 - if no work items exist, preserve the existing message-driven idle path
 - work-queue ticks are runtime-owned system ticks, not external ingress
 - coalesced wake hints still participate in the idle path and should not be

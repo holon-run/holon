@@ -390,7 +390,7 @@ mod tests {
             .find(|spec| spec.name == "UpdateWorkItem")
             .expect("UpdateWorkItem should be present");
         assert!(update_work_item.input_schema["properties"]
-            .get("delivery_target")
+            .get("objective")
             .is_some());
 
         let spawn_agent = specs

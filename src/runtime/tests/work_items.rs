@@ -16,27 +16,31 @@ async fn work_item_query_tools_return_current_open_done_views() {
     )
     .unwrap();
 
-    let (active, _) = runtime
-        .create_work_item("finish active delivery".into(), None)
+    let active = runtime
+        .create_work_item("finish active delivery".into(), None, None, Vec::new())
         .await
         .unwrap();
     runtime.pick_work_item(active.id.clone()).await.unwrap();
     runtime
-        .update_work_plan(
+        .update_work_item_fields(
             active.id.clone(),
-            vec![crate::types::WorkPlanItem {
-                step: "inspect query surface".into(),
-                status: crate::types::WorkPlanStepStatus::InProgress,
-            }],
+            None,
+            None,
+            Some(Some("Inspect query surface behavior.".into())),
+            Some(vec![crate::types::TodoItem {
+                text: "inspect query surface".into(),
+                state: crate::types::TodoItemState::InProgress,
+            }]),
+            None,
         )
         .await
         .unwrap();
-    let (queued, _) = runtime
-        .create_work_item("queued delivery".into(), None)
+    let queued = runtime
+        .create_work_item("queued delivery".into(), None, None, Vec::new())
         .await
         .unwrap();
-    let (completed, _) = runtime
-        .create_work_item("completed delivery".into(), None)
+    let completed = runtime
+        .create_work_item("completed delivery".into(), None, None, Vec::new())
         .await
         .unwrap();
     let completed = runtime
@@ -54,7 +58,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
             &crate::tool::ToolCall {
                 id: "active".into(),
                 name: "ListWorkItems".into(),
-                input: serde_json::json!({"filter": "current", "include_plan": true}),
+                input: serde_json::json!({"filter": "current", "include_plan": true, "include_todo_list": true}),
             },
         )
         .await
@@ -68,12 +72,15 @@ async fn work_item_query_tools_return_current_open_done_views() {
     assert_eq!(active_item["state"].as_str(), Some("open"));
     assert_eq!(active_item["focus"].as_str(), Some("current"));
     assert_eq!(active_item["is_current"].as_bool(), Some(true));
-    assert_eq!(active_item["plan"]["items"].as_array().unwrap().len(), 1);
     assert_eq!(
-        active_item["plan"]["items"][0]["state"].as_str(),
-        Some("doing")
+        active_item["plan"].as_str(),
+        Some("Inspect query surface behavior.")
     );
-    assert!(active_item["plan"]["items"][0]["status"].is_null());
+    assert_eq!(active_item["todo_list"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        active_item["todo_list"][0]["state"].as_str(),
+        Some("in_progress")
+    );
 
     let (list_result, _) = registry
         .execute(
@@ -101,22 +108,28 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .iter()
         .any(|item| item["id"].as_str() == Some(completed.id.as_str())));
 
-    let (done_result, _) = registry
+    let (completed_result, _) = registry
         .execute(
             &runtime,
             "default",
             &TrustLevel::TrustedOperator,
             &crate::tool::ToolCall {
-                id: "done".into(),
+                id: "completed".into(),
                 name: "GetWorkItem".into(),
                 input: serde_json::json!({"work_item_id": completed.id}),
             },
         )
         .await
         .unwrap();
-    let done_payload = done_result.envelope.result.unwrap();
-    assert_eq!(done_payload["work_item"]["state"].as_str(), Some("done"));
-    assert_eq!(done_payload["work_item"]["focus"].as_str(), Some("done"));
+    let completed_payload = completed_result.envelope.result.unwrap();
+    assert_eq!(
+        completed_payload["work_item"]["state"].as_str(),
+        Some("completed")
+    );
+    assert_eq!(
+        completed_payload["work_item"]["focus"].as_str(),
+        Some("completed")
+    );
 
     bind_turn_to_work_item(&runtime, completed.id.as_str()).await;
     let (fallback_result, _) = registry
@@ -144,7 +157,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
 }
 
 #[tokio::test]
-async fn work_item_plan_tools_use_state_vocabulary_for_model_visible_shape() {
+async fn work_item_tools_use_objective_plan_and_todo_list_shape() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -168,11 +181,13 @@ async fn work_item_plan_tools_use_state_vocabulary_for_model_visible_shape() {
                 id: "create".into(),
                 name: "CreateWorkItem".into(),
                 input: serde_json::json!({
-                    "delivery_target": "ship work item plan contract",
-                    "plan": [
-                        { "step": "inspect current contract", "state": "done" },
-                        { "step": "update tool shape", "state": "doing" },
-                        { "step": "verify regression", "state": "pending" }
+                    "objective": "ship work item objective contract",
+                    "plan_status": "ready",
+                    "plan": "1. Inspect current contract\n2. Update tool shape\n3. Verify regression",
+                    "todo_list": [
+                        { "text": "inspect current contract", "state": "completed" },
+                        { "text": "update tool shape", "state": "in_progress" },
+                        { "text": "verify regression", "state": "pending" }
                     ]
                 }),
             },
@@ -182,18 +197,26 @@ async fn work_item_plan_tools_use_state_vocabulary_for_model_visible_shape() {
     let create_payload = create_result.envelope.result.unwrap();
     let work_item_id = create_payload["work_item"]["id"].as_str().unwrap();
     assert_eq!(
-        create_payload["plan"]["items"][0]["state"].as_str(),
-        Some("done")
+        create_payload["work_item"]["plan_status"].as_str(),
+        Some("ready")
     );
     assert_eq!(
-        create_payload["plan"]["items"][1]["state"].as_str(),
-        Some("doing")
+        create_payload["work_item"]["plan"].as_str(),
+        Some("1. Inspect current contract\n2. Update tool shape\n3. Verify regression")
     );
     assert_eq!(
-        create_payload["plan"]["items"][2]["state"].as_str(),
+        create_payload["work_item"]["todo_list"][0]["state"].as_str(),
+        Some("completed")
+    );
+    assert_eq!(
+        create_payload["work_item"]["todo_list"][1]["state"].as_str(),
+        Some("in_progress")
+    );
+    assert_eq!(
+        create_payload["work_item"]["todo_list"][2]["state"].as_str(),
         Some("pending")
     );
-    assert!(create_payload["plan"]["items"][0]["status"].is_null());
+    assert!(create_payload["work_item"]["todo_list"][0]["status"].is_null());
 
     let (get_result, _) = registry
         .execute(
@@ -205,7 +228,8 @@ async fn work_item_plan_tools_use_state_vocabulary_for_model_visible_shape() {
                 name: "GetWorkItem".into(),
                 input: serde_json::json!({
                     "work_item_id": work_item_id,
-                    "include_plan": true
+                    "include_plan": true,
+                    "include_todo_list": true
                 }),
             },
         )
@@ -213,12 +237,12 @@ async fn work_item_plan_tools_use_state_vocabulary_for_model_visible_shape() {
         .unwrap();
     let get_payload = get_result.envelope.result.unwrap();
     assert_eq!(
-        get_payload["work_item"]["plan"]["items"][1]["state"].as_str(),
-        Some("doing")
+        get_payload["work_item"]["todo_list"][1]["state"].as_str(),
+        Some("in_progress")
     );
-    assert!(get_payload["work_item"]["plan"]["items"][1]["status"].is_null());
+    assert!(get_payload["work_item"]["todo_list"][1]["status"].is_null());
 
-    let returned_items = get_payload["work_item"]["plan"]["items"].clone();
+    let returned_items = get_payload["work_item"]["todo_list"].clone();
     let (update_result, _) = registry
         .execute(
             &runtime,
@@ -229,7 +253,7 @@ async fn work_item_plan_tools_use_state_vocabulary_for_model_visible_shape() {
                 name: "UpdateWorkItem".into(),
                 input: serde_json::json!({
                     "work_item_id": work_item_id,
-                    "plan": returned_items
+                    "todo_list": returned_items
                 }),
             },
         )
@@ -237,14 +261,14 @@ async fn work_item_plan_tools_use_state_vocabulary_for_model_visible_shape() {
         .unwrap();
     let update_payload = update_result.envelope.result.unwrap();
     assert_eq!(
-        update_payload["plan"]["items"][1]["state"].as_str(),
-        Some("doing")
+        update_payload["work_item"]["todo_list"][1]["state"].as_str(),
+        Some("in_progress")
     );
-    assert!(update_payload["plan"]["items"][1]["status"].is_null());
+    assert!(update_payload["work_item"]["todo_list"][1]["status"].is_null());
 }
 
 #[tokio::test]
-async fn update_work_item_can_refine_delivery_target() {
+async fn update_work_item_can_refine_objective() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -258,8 +282,8 @@ async fn update_work_item_can_refine_delivery_target() {
     )
     .unwrap();
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
-    let (work_item, _) = runtime
-        .create_work_item("Fix issue #869".into(), None)
+    let work_item = runtime
+        .create_work_item("Fix issue #869".into(), None, None, Vec::new())
         .await
         .unwrap();
 
@@ -273,7 +297,7 @@ async fn update_work_item_can_refine_delivery_target() {
                 name: "UpdateWorkItem".into(),
                 input: serde_json::json!({
                     "work_item_id": work_item.id.clone(),
-                    "delivery_target": "Fix issue #869 by allowing delivery_target refinement"
+                    "objective": "Fix issue #869 by allowing objective refinement"
                 }),
             },
         )
@@ -281,8 +305,8 @@ async fn update_work_item_can_refine_delivery_target() {
         .unwrap();
     let payload = update_result.envelope.result.unwrap();
     assert_eq!(
-        payload["work_item"]["delivery_target"].as_str(),
-        Some("Fix issue #869 by allowing delivery_target refinement")
+        payload["work_item"]["objective"].as_str(),
+        Some("Fix issue #869 by allowing objective refinement")
     );
 
     let latest = runtime
@@ -291,13 +315,13 @@ async fn update_work_item_can_refine_delivery_target() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        latest.delivery_target,
-        "Fix issue #869 by allowing delivery_target refinement"
+        latest.objective,
+        "Fix issue #869 by allowing objective refinement"
     );
 }
 
 #[tokio::test]
-async fn update_work_item_can_refine_delivery_target_and_plan_together() {
+async fn update_work_item_can_refine_objective_and_plan_together() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -311,8 +335,8 @@ async fn update_work_item_can_refine_delivery_target_and_plan_together() {
     )
     .unwrap();
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
-    let (work_item, _) = runtime
-        .create_work_item("Fix issue #869".into(), None)
+    let work_item = runtime
+        .create_work_item("Fix issue #869".into(), None, None, Vec::new())
         .await
         .unwrap();
 
@@ -326,10 +350,11 @@ async fn update_work_item_can_refine_delivery_target_and_plan_together() {
                 name: "UpdateWorkItem".into(),
                 input: serde_json::json!({
                     "work_item_id": work_item.id.clone(),
-                    "delivery_target": "Fix issue #869 by allowing delivery_target refinement",
-                    "plan": [
-                        { "step": "extend UpdateWorkItem schema", "state": "done" },
-                        { "step": "verify target update persistence", "state": "doing" }
+                    "objective": "Fix issue #869 by allowing objective refinement",
+                    "plan": "Extend UpdateWorkItem schema, then verify persistence.",
+                    "todo_list": [
+                        { "text": "extend UpdateWorkItem schema", "state": "completed" },
+                        { "text": "verify target update persistence", "state": "in_progress" }
                     ]
                 }),
             },
@@ -338,15 +363,21 @@ async fn update_work_item_can_refine_delivery_target_and_plan_together() {
         .unwrap();
     let payload = update_result.envelope.result.unwrap();
     assert_eq!(
-        payload["work_item"]["delivery_target"].as_str(),
-        Some("Fix issue #869 by allowing delivery_target refinement")
+        payload["work_item"]["objective"].as_str(),
+        Some("Fix issue #869 by allowing objective refinement")
     );
-    assert_eq!(payload["plan"]["items"][0]["state"].as_str(), Some("done"));
-    assert_eq!(payload["plan"]["items"][1]["state"].as_str(), Some("doing"));
+    assert_eq!(
+        payload["work_item"]["todo_list"][0]["state"].as_str(),
+        Some("completed")
+    );
+    assert_eq!(
+        payload["work_item"]["todo_list"][1]["state"].as_str(),
+        Some("in_progress")
+    );
 }
 
 #[tokio::test]
-async fn update_work_item_rejects_empty_delivery_target() {
+async fn update_work_item_rejects_empty_objective() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -360,8 +391,8 @@ async fn update_work_item_rejects_empty_delivery_target() {
     )
     .unwrap();
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
-    let (work_item, _) = runtime
-        .create_work_item("Fix issue #869".into(), None)
+    let work_item = runtime
+        .create_work_item("Fix issue #869".into(), None, None, Vec::new())
         .await
         .unwrap();
 
@@ -375,7 +406,7 @@ async fn update_work_item_rejects_empty_delivery_target() {
                 name: "UpdateWorkItem".into(),
                 input: serde_json::json!({
                     "work_item_id": work_item.id.clone(),
-                    "delivery_target": "   "
+                    "objective": "   "
                 }),
             },
         )
@@ -383,7 +414,7 @@ async fn update_work_item_rejects_empty_delivery_target() {
         .unwrap_err();
     let tool_error = crate::tool::ToolError::from_anyhow(&error);
     assert_eq!(tool_error.kind, "invalid_tool_input");
-    assert!(tool_error.message.contains("delivery_target"));
+    assert!(tool_error.message.contains("objective"));
 }
 
 #[tokio::test]
@@ -412,8 +443,8 @@ async fn update_work_item_old_plan_shape_returns_state_example_hint() {
                 name: "UpdateWorkItem".into(),
                 input: serde_json::json!({
                     "work_item_id": "item-1",
-                    "plan": [
-                        { "step": "inspect current handler", "status": "completed" }
+                    "todo_list": [
+                        { "text": "inspect current handler", "status": "completed" }
                     ]
                 }),
             },
@@ -432,8 +463,8 @@ async fn update_work_item_old_plan_shape_returns_state_example_hint() {
     assert!(parse_error.contains("state"));
     let recovery_hint = tool_error.recovery_hint.as_deref().unwrap_or_default();
     assert!(recovery_hint.contains("work_item_id"));
-    assert!(recovery_hint.contains("\"state\":\"done\""));
-    assert!(recovery_hint.contains("pending, doing, or done"));
+    assert!(recovery_hint.contains("\"state\":\"completed\""));
+    assert!(recovery_hint.contains("pending, in_progress, or completed"));
 }
 
 #[tokio::test]
@@ -461,8 +492,8 @@ async fn update_work_item_missing_id_returns_top_level_field_hint() {
                 id: "missing-id".into(),
                 name: "UpdateWorkItem".into(),
                 input: serde_json::json!({
-                    "plan": [
-                        { "step": "inspect current handler", "state": "done" }
+                    "todo_list": [
+                        { "text": "inspect current handler", "state": "completed" }
                     ]
                 }),
             },
@@ -474,7 +505,7 @@ async fn update_work_item_missing_id_returns_top_level_field_hint() {
     let recovery_hint = tool_error.recovery_hint.as_deref().unwrap_or_default();
     assert!(recovery_hint.contains("UpdateWorkItem schema"));
     assert!(recovery_hint.contains("work_item_id"));
-    assert!(recovery_hint.contains("\"state\":\"done\""));
+    assert!(recovery_hint.contains("\"state\":\"completed\""));
 }
 
 #[tokio::test]
@@ -570,8 +601,8 @@ async fn interactive_tool_execution_binds_current_turn_work_item() {
     )
     .unwrap();
 
-    let (work_item, _) = runtime
-        .create_work_item("verify binding".into(), None)
+    let work_item = runtime
+        .create_work_item("verify binding".into(), None, None, Vec::new())
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
@@ -811,7 +842,7 @@ async fn turn_end_work_item_commit_preserves_explicit_completed_claim_without_wa
 
     let work_item_id = seed_bound_work_item(
         &runtime,
-        WorkItemState::Done,
+        WorkItemState::Completed,
         Some("finished"),
         Some("all requested changes are done"),
     )
@@ -823,7 +854,7 @@ async fn turn_end_work_item_commit_preserves_explicit_completed_claim_without_wa
         .unwrap();
 
     assert_eq!(committed.id, work_item_id);
-    assert_eq!(committed.state, WorkItemState::Done);
+    assert_eq!(committed.state, WorkItemState::Completed);
     assert!(committed.blocked_by.is_none());
 }
 
@@ -844,7 +875,7 @@ async fn turn_end_work_item_commit_rejects_completed_claim_when_runtime_is_still
 
     let work_item_id = seed_bound_work_item(
         &runtime,
-        WorkItemState::Done,
+        WorkItemState::Completed,
         Some("finished"),
         Some("marked complete too early"),
     )
@@ -858,7 +889,7 @@ async fn turn_end_work_item_commit_rejects_completed_claim_when_runtime_is_still
         .unwrap();
 
     assert_eq!(committed.id, work_item_id);
-    assert_eq!(committed.state, WorkItemState::Done);
+    assert_eq!(committed.state, WorkItemState::Completed);
     assert!(committed.blocked_by.is_none());
 }
 
@@ -1087,8 +1118,8 @@ async fn reconcile_waiting_contract_cancels_old_waits_after_active_work_switch()
     )
     .unwrap();
 
-    let (old_work, _) = runtime
-        .create_work_item("old delivery target".into(), None)
+    let old_work = runtime
+        .create_work_item("old objective".into(), None, None, Vec::new())
         .await
         .unwrap();
     {
@@ -1122,8 +1153,8 @@ async fn reconcile_waiting_contract_cancels_old_waits_after_active_work_switch()
         .complete_work_item(old_work.id.clone(), Some("old work done".into()))
         .await
         .unwrap();
-    let (new_work, _) = runtime
-        .create_work_item("new delivery target".into(), None)
+    let new_work = runtime
+        .create_work_item("new objective".into(), None, None, Vec::new())
         .await
         .unwrap();
     runtime.pick_work_item(new_work.id.clone()).await.unwrap();
@@ -1181,8 +1212,8 @@ async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_s
     )
     .unwrap();
 
-    let (old_work, _) = runtime
-        .create_work_item("old delivery target".into(), None)
+    let old_work = runtime
+        .create_work_item("old objective".into(), None, None, Vec::new())
         .await
         .unwrap();
     runtime.pick_work_item(old_work.id.clone()).await.unwrap();
@@ -1209,8 +1240,8 @@ async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_s
         .complete_work_item(old_work.id.clone(), Some("old work done".into()))
         .await
         .unwrap();
-    let (new_work, _) = runtime
-        .create_work_item("new delivery target".into(), None)
+    let new_work = runtime
+        .create_work_item("new objective".into(), None, None, Vec::new())
         .await
         .unwrap();
     runtime.pick_work_item(new_work.id.clone()).await.unwrap();
@@ -1259,8 +1290,8 @@ async fn reconcile_waiting_contract_cancels_waits_when_only_waiting_anchor_exist
     )
     .unwrap();
 
-    let (waiting_work, _) = runtime
-        .create_work_item("waiting-only delivery target".into(), None)
+    let waiting_work = runtime
+        .create_work_item("waiting-only objective".into(), None, None, Vec::new())
         .await
         .unwrap();
     {
@@ -1332,8 +1363,8 @@ async fn reconcile_waiting_contract_keeps_waits_when_anchor_is_newly_established
     )
     .unwrap();
 
-    let (work, _) = runtime
-        .create_work_item("newly anchored delivery target".into(), None)
+    let work = runtime
+        .create_work_item("newly anchored objective".into(), None, None, Vec::new())
         .await
         .unwrap();
     runtime.pick_work_item(work.id.clone()).await.unwrap();

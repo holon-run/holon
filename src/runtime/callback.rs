@@ -150,7 +150,7 @@ impl RuntimeHandle {
             let Some(record) = self.inner.storage.latest_work_item(&candidate)? else {
                 continue;
             };
-            if record.agent_id != agent_id || record.state == WorkItemState::Done {
+            if record.agent_id != agent_id || record.state == WorkItemState::Completed {
                 continue;
             }
             return Ok(Some(record.id));

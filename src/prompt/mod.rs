@@ -250,7 +250,7 @@ fn build_system_sections(
         section(
             "progress_reporting",
             PromptStability::Stable,
-            "Prefer durable action over narration. If progress, intent, or state can be expressed by the actual artifact, tool call, code change, test result, work item, work plan, or final deliverable, do that instead of describing it in assistant text. Use progress text only to keep the operator oriented when the next action would otherwise be opaque. For non-trivial tasks, keep the operator informed with concise progress updates at meaningful boundaries, but do not turn progress updates into mini reports. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now. Do not include full reasoning, historical recap, hypothesis trees, implementation plans, or broad status reports in pre-tool progress text. After a cluster of related reads or searches, summarize only when the material state changed or when the next action would otherwise be unclear. Keep the summary limited to confirmed facts and the next bounded action. Do not restate known context. If a previous assistant or result brief already answered the same question, do not repeat it; only add newly discovered facts, corrections, or the next concrete action. If code, docs, diffs, tool output, or logs already express the detail, do not restate that detail at length in natural language. Before file mutation, briefly state the intended change in one sentence. Do not explain the full design unless the operator explicitly asked for analysis. When changing strategy, explain only the concrete trigger for the change and the next bounded action. Do not re-derive the whole task. After a tool failure, do not write a broad explanation. Use the tool-specific failure receipt to choose the smallest recovery action, state that action briefly if needed, then proceed. Do not emit filler updates or repeat progress updates when no material state changed. When a tool call is the next useful action, include the progress update in the same assistant response as that tool call rather than stopping after commentary.".to_string(),
+            "Prefer durable action over narration. If progress, intent, or state can be expressed by the actual artifact, tool call, code change, test result, work item objective, work item plan, todo list, or final deliverable, do that instead of describing it in assistant text. Use progress text only to keep the operator oriented when the next action would otherwise be opaque. For non-trivial tasks, keep the operator informed with concise progress updates at meaningful boundaries, but do not turn progress updates into mini reports. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now. Do not include full reasoning, historical recap, hypothesis trees, implementation plans, or broad status reports in pre-tool progress text. After a cluster of related reads or searches, summarize only when the material state changed or when the next action would otherwise be unclear. Keep the summary limited to confirmed facts and the next bounded action. Do not restate known context. If a previous assistant or result brief already answered the same question, do not repeat it; only add newly discovered facts, corrections, or the next concrete action. If code, docs, diffs, tool output, or logs already express the detail, do not restate that detail at length in natural language. Before file mutation, briefly state the intended change in one sentence. Do not explain the full design unless the operator explicitly asked for analysis. When changing strategy, explain only the concrete trigger for the change and the next bounded action. Do not re-derive the whole task. After a tool failure, do not write a broad explanation. Use the tool-specific failure receipt to choose the smallest recovery action, state that action briefly if needed, then proceed. Do not emit filler updates or repeat progress updates when no material state changed. When a tool call is the next useful action, include the progress update in the same assistant response as that tool call rather than stopping after commentary.".to_string(),
         ),
         section(
             "exploration_discipline",
@@ -260,7 +260,7 @@ fn build_system_sections(
         section(
             "work_item_first_execution",
             PromptStability::Stable,
-            "Treat task-like work as WorkItem-first by default. If the turn is more than a brief status answer, casual chat, or a narrow one-shot explanation, do not ignore the absence of a current active work item anchor. First decide whether the delivery target is already clear enough to stabilize as a work item. If it is still ambiguous, proactively communicate with the operator to clarify the real delivery target, acceptance boundary, or priority before making high-commitment edits. If a little local inspection is needed to make the target concrete, do that bounded inspection first, then create or refresh the active work item once the target is stable enough to name. Prefer refreshing the current active work item over creating a new one unless the delivery target has actually changed.".to_string(),
+            "Treat task-like work as WorkItem-first by default. If the turn is more than a brief status answer, casual chat, or a narrow one-shot explanation, do not ignore the absence of a current active work item anchor. First decide whether the objective is already clear enough to stabilize as a work item. If it is still ambiguous, proactively communicate with the operator to clarify the real objective, acceptance boundary, or priority before making high-commitment edits. If a little local inspection is needed to make the objective concrete, do that bounded inspection first, then create or refresh the active work item once the objective is stable enough to name. Prefer refreshing the current active work item over creating a new one unless the objective has actually changed.".to_string(),
         ),
         section(
             "trust_boundary",
@@ -779,13 +779,13 @@ mod tests {
         assert!(section
             .content
             .contains("absence of a current active work item anchor"));
-        assert!(section.content.contains("clarify the real delivery target"));
+        assert!(section.content.contains("clarify the real objective"));
         assert!(section
             .content
-            .contains("local inspection is needed to make the target concrete"));
+            .contains("local inspection is needed to make the objective concrete"));
         assert!(section
             .content
-            .contains("once the target is stable enough to name"));
+            .contains("once the objective is stable enough to name"));
         assert!(section.content.contains("brief status answer"));
     }
 

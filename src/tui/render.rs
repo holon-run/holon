@@ -203,23 +203,25 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
             lines.push(format!(
                 "  - [{:?}] {}",
                 item.state,
-                trim(&item.delivery_target, 40)
+                trim(&item.objective, 40)
             ));
         }
     }
-    if let Some(plan) = projection.work_plan.as_ref() {
-        let active = plan
-            .items
+    if let Some(work_item) = todo_summary_work_item(&projection.agent.agent, &projection.work_items)
+    {
+        let active = work_item
+            .todo_list
             .iter()
-            .find(|item| matches!(item.status, crate::types::WorkPlanStepStatus::InProgress))
+            .find(|item| matches!(item.state, crate::types::TodoItemState::InProgress))
             .or_else(|| {
-                plan.items
+                work_item
+                    .todo_list
                     .iter()
-                    .find(|item| matches!(item.status, crate::types::WorkPlanStepStatus::Pending))
+                    .find(|item| matches!(item.state, crate::types::TodoItemState::Pending))
             })
-            .map(|item| trim(&item.step, 40))
+            .map(|item| trim(&item.text, 40))
             .unwrap_or_else(|| "<completed>".into());
-        lines.push(format!("  Plan: {active}"));
+        lines.push(format!("  Todo: {active}"));
     }
     lines.push(String::new());
     lines.push("Waiting".into());
@@ -258,6 +260,22 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
     }
 
     lines.join("\n")
+}
+
+fn todo_summary_work_item<'a>(
+    agent: &crate::types::AgentState,
+    work_items: &'a [crate::types::WorkItemRecord],
+) -> Option<&'a crate::types::WorkItemRecord> {
+    agent
+        .current_turn_work_item_id
+        .as_deref()
+        .or(agent.current_work_item_id.as_deref())
+        .and_then(|current_id| work_items.iter().find(|item| item.id == current_id))
+        .or_else(|| {
+            work_items.iter().find(|item| {
+                item.state == crate::types::WorkItemState::Open && item.blocked_by.is_none()
+            })
+        })
 }
 
 fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> u16 {
@@ -833,7 +851,7 @@ mod tests {
     use super::{
         prompt_cursor_position, prompt_pane_height, render_header, render_model_status,
         render_prompt_buffer, render_prompt_text, render_summary, render_task_detail,
-        status_bar_height,
+        status_bar_height, todo_summary_work_item,
     };
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::types::{
@@ -841,7 +859,8 @@ mod tests {
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentSummary,
         AgentTokenUsageSummary, AgentVisibility, ChildAgentObservabilitySnapshot, ChildAgentPhase,
         ChildAgentSummary, ClosureDecision, ClosureOutcome, LoadedAgentsMdView, RuntimePosture,
-        SkillsRuntimeView, TaskKind, TaskRecord, TaskStatus, TokenUsage,
+        SkillsRuntimeView, TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TokenUsage,
+        WorkItemRecord, WorkItemState,
     };
     use chrono::{TimeZone, Utc};
     use ratatui::prelude::{Line, Rect};
@@ -1052,6 +1071,31 @@ mod tests {
             render_model_status(&fallback),
             "model: anthropic/claude-sonnet-4-6 (fallback from openai/gpt-5.4)"
         );
+    }
+
+    #[test]
+    fn todo_summary_prefers_current_work_item_over_first_open_item() {
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some("work-current".into());
+        let mut first_open = WorkItemRecord::new("default", "first open", WorkItemState::Open);
+        first_open.id = "work-first".into();
+        first_open.todo_list = vec![TodoItem {
+            text: "wrong todo".into(),
+            state: TodoItemState::InProgress,
+        }];
+        let mut current = WorkItemRecord::new("default", "selected work", WorkItemState::Open);
+        current.id = "work-current".into();
+        current.blocked_by = Some("waiting on review".into());
+        current.todo_list = vec![TodoItem {
+            text: "selected todo".into(),
+            state: TodoItemState::Pending,
+        }];
+
+        let work_items = [first_open, current];
+        let selected = todo_summary_work_item(&agent, &work_items)
+            .expect("current work item should be selected");
+        assert_eq!(selected.id, "work-current");
+        assert_eq!(selected.todo_list[0].text, "selected todo");
     }
 
     #[test]

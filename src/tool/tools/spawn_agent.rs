@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     serialize_success,
-    work_item_action::{convert_plan, WorkPlanItemArgs},
+    work_item_action::{convert_todo_list, TodoItemArgs},
     BuiltinToolDefinition,
 };
 use crate::tool::helpers::{
@@ -55,9 +55,11 @@ pub(crate) struct SpawnAgentArgs {
 pub(crate) struct SpawnAgentWorkItemArgs {
     pub(crate) parent_work_item_id: String,
     #[serde(default)]
-    pub(crate) child_delivery_target: Option<String>,
+    pub(crate) child_objective: Option<String>,
     #[serde(default)]
-    pub(crate) child_plan: Option<Vec<WorkPlanItemArgs>>,
+    pub(crate) child_plan: Option<String>,
+    #[serde(default)]
+    pub(crate) child_todo_list: Option<Vec<TodoItemArgs>>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -99,13 +101,13 @@ pub(crate) async fn execute(
                     NAME,
                     "parent_work_item_id",
                 )?,
-                child_delivery_target: normalize_optional_non_empty(
-                    work_item.child_delivery_target,
-                ),
-                child_plan: work_item
-                    .child_plan
-                    .map(|plan| convert_plan(NAME, plan))
-                    .transpose()?,
+                child_objective: normalize_optional_non_empty(work_item.child_objective),
+                child_plan: normalize_optional_non_empty(work_item.child_plan),
+                child_todo_list: work_item
+                    .child_todo_list
+                    .map(|items| convert_todo_list(NAME, items))
+                    .transpose()?
+                    .unwrap_or_default(),
             })
         })
         .transpose()?;

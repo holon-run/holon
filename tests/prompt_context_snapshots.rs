@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use chrono::Utc;
 use holon::{
     context::ContextConfig,
     prompt::build_effective_prompt,
@@ -11,8 +12,8 @@ use holon::{
         AgentRegistryStatus, AgentState, AgentVisibility, ContinuationClass,
         ContinuationResolution, ContinuationTriggerKind, LoadedAgentsMd, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        SkillsRuntimeView, TrustLevel, WaitingReason, WorkItemRecord, WorkItemState, WorkPlanItem,
-        WorkPlanSnapshot, WorkPlanStepStatus, WorkingMemoryDelta, WorkingMemorySnapshot,
+        SkillsRuntimeView, TodoItem, TodoItemState, TrustLevel, WaitingReason, WorkItemRecord,
+        WorkItemState, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
 use serde_json::json;
@@ -45,7 +46,7 @@ Process execution guarantees:
   - secret_isolation: not_enforced
   - child_process_containment: not_enforced"#;
 
-const CONTEXT_CONTRACT: &str = r#"Interpret the memory block with this priority: current work item first for the committed delivery target and current runtime task, working memory delta next for the newest updates since the last prompt, and working memory after that for rolling agent context. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as the most reliable continuity evidence across turns. When these sources differ on task scope or delivery target, treat the current work item's `delivery_target` as the ground truth for the current committed task unless the current input explicitly changes it."#;
+const CONTEXT_CONTRACT: &str = r#"Interpret the memory block with this priority: current work item objective first, durable plan second, todo_list third, working memory delta next, and rolling working memory after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and `plan` as the ground truth unless the current input explicitly changes it."#;
 
 fn sample_identity() -> AgentIdentityView {
     AgentIdentityView {
@@ -121,6 +122,20 @@ fn assert_snapshot(actual: &str, expected: &str) {
     assert_eq!(actual, expected);
 }
 
+fn append_work_item_todo(
+    storage: &AppStorage,
+    work_item_id: String,
+    todo_list: Vec<TodoItem>,
+) -> Result<()> {
+    let Some(mut work_item) = storage.latest_work_item(&work_item_id)? else {
+        anyhow::bail!("missing work item {work_item_id}");
+    };
+    work_item.todo_list = todo_list;
+    work_item.updated_at = Utc::now();
+    storage.append_work_item(&work_item)?;
+    Ok(())
+}
+
 #[test]
 fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Result<()> {
     let dir = tempdir()?;
@@ -134,20 +149,20 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
     work_item.id = "work_prompt".into();
     work_item.blocked_by = Some("baseline operator snapshot first".into());
     storage.append_work_item(&work_item)?;
-    storage.append_work_plan(&WorkPlanSnapshot::new(
-        "default",
+    append_work_item_todo(
+        &storage,
         work_item.id.clone(),
         vec![
-            WorkPlanItem {
-                step: "Capture baseline operator layout".into(),
-                status: WorkPlanStepStatus::InProgress,
+            TodoItem {
+                text: "Capture baseline operator layout".into(),
+                state: TodoItemState::InProgress,
             },
-            WorkPlanItem {
-                step: "Cover callback and task result surfaces".into(),
-                status: WorkPlanStepStatus::Pending,
+            TodoItem {
+                text: "Cover callback and task result surfaces".into(),
+                state: TodoItemState::Pending,
             },
         ],
-    ))?;
+    )?;
 
     let current_message = MessageEnvelope::new(
         "default",
@@ -170,7 +185,7 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
     session.current_work_item_id = Some(work_item.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
         current_work_item_id: Some(work_item.id.clone()),
-        delivery_target: Some(work_item.delivery_target.clone()),
+        objective: Some(work_item.objective.clone()),
         work_summary: Some("prompt snapshot coverage".into()),
         current_plan: vec!["capture operator surface snapshot".into()],
         ..WorkingMemorySnapshot::default()
@@ -198,7 +213,7 @@ Agent id: default
 ## working_memory
 Working memory:
 - Current work item id: work_prompt
-- Delivery target: Ship prompt snapshot coverage
+- Objective: Ship prompt snapshot coverage
 - Work summary: prompt snapshot coverage
 - Current plan:
   - capture operator surface snapshot
@@ -217,11 +232,12 @@ Working memory updated since the last prompt:
 Current work item:
 - Id: work_prompt
 - State: Open
-- Delivery target: Ship prompt snapshot coverage
+- Objective: Ship prompt snapshot coverage
+- Plan state: Draft
+- Todo list:
+  - [in_progress] Capture baseline operator layout
+  - [pending] Cover callback and task result surfaces
 - Blocked by: baseline operator snapshot first
-- Current work plan:
-  - [InProgress] Capture baseline operator layout
-  - [Pending] Cover callback and task result surfaces
 
 ## context_contract
 {CONTEXT_CONTRACT}
@@ -460,20 +476,20 @@ fn active_work_with_queued_work_shows_both_items() -> Result<()> {
     active_work.id = "work_active".into();
     active_work.blocked_by = Some("currently adding queued work interaction tests".into());
     storage.append_work_item(&active_work)?;
-    storage.append_work_plan(&WorkPlanSnapshot::new(
-        "default",
+    append_work_item_todo(
+        &storage,
         active_work.id.clone(),
         vec![
-            WorkPlanItem {
-                step: "Add active work with queued work test".into(),
-                status: WorkPlanStepStatus::InProgress,
+            TodoItem {
+                text: "Add active work with queued work test".into(),
+                state: TodoItemState::InProgress,
             },
-            WorkPlanItem {
-                step: "Add post-compaction snapshot tests".into(),
-                status: WorkPlanStepStatus::Pending,
+            TodoItem {
+                text: "Add post-compaction snapshot tests".into(),
+                state: TodoItemState::Pending,
             },
         ],
-    ))?;
+    )?;
 
     // Create a queued work item
     let mut queued_work =
@@ -481,20 +497,20 @@ fn active_work_with_queued_work_shows_both_items() -> Result<()> {
     queued_work.id = "work_queued".into();
     queued_work.blocked_by = Some("blocked on active work completion".into());
     storage.append_work_item(&queued_work)?;
-    storage.append_work_plan(&WorkPlanSnapshot::new(
-        "default",
+    append_work_item_todo(
+        &storage,
         queued_work.id.clone(),
         vec![
-            WorkPlanItem {
-                step: "Review expanded snapshot coverage changes".into(),
-                status: WorkPlanStepStatus::Pending,
+            TodoItem {
+                text: "Review expanded snapshot coverage changes".into(),
+                state: TodoItemState::Pending,
             },
-            WorkPlanItem {
-                step: "Verify tests pass".into(),
-                status: WorkPlanStepStatus::Pending,
+            TodoItem {
+                text: "Verify tests pass".into(),
+                state: TodoItemState::Pending,
             },
         ],
-    ))?;
+    )?;
 
     let current_message = MessageEnvelope::new(
         "default",
@@ -517,7 +533,7 @@ fn active_work_with_queued_work_shows_both_items() -> Result<()> {
     session.current_work_item_id = Some(active_work.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
         current_work_item_id: Some(active_work.id.clone()),
-        delivery_target: Some(active_work.delivery_target.clone()),
+        objective: Some(active_work.objective.clone()),
         work_summary: Some("expand prompt context snapshot coverage".into()),
         current_plan: vec!["add active work with queued work test".into()],
         ..WorkingMemorySnapshot::default()
@@ -534,7 +550,7 @@ Agent id: default
 ## working_memory
 Working memory:
 - Current work item id: work_active
-- Delivery target: Complete snapshot coverage expansion
+- Objective: Complete snapshot coverage expansion
 - Work summary: expand prompt context snapshot coverage
 - Current plan:
   - add active work with queued work test
@@ -543,11 +559,12 @@ Working memory:
 Current work item:
 - Id: work_active
 - State: Open
-- Delivery target: Complete snapshot coverage expansion
+- Objective: Complete snapshot coverage expansion
+- Plan state: Draft
+- Todo list:
+  - [in_progress] Add active work with queued work test
+  - [pending] Add post-compaction snapshot tests
 - Blocked by: currently adding queued work interaction tests
-- Current work plan:
-  - [InProgress] Add active work with queued work test
-  - [Pending] Add post-compaction snapshot tests
 
 ## queued_blocked_work_items
 Queued and blocked work items:
@@ -574,14 +591,14 @@ fn operator_turn_without_working_memory_delta() -> Result<()> {
     work_item.id = "work_no_delta".into();
     work_item.blocked_by = Some("verifying snapshot without delta".into());
     storage.append_work_item(&work_item)?;
-    storage.append_work_plan(&WorkPlanSnapshot::new(
-        "default",
+    append_work_item_todo(
+        &storage,
         work_item.id.clone(),
-        vec![WorkPlanItem {
-            step: "Verify delta absence".into(),
-            status: WorkPlanStepStatus::InProgress,
+        vec![TodoItem {
+            text: "Verify delta absence".into(),
+            state: TodoItemState::InProgress,
         }],
-    ))?;
+    )?;
 
     let current_message = MessageEnvelope::new(
         "default",
@@ -604,7 +621,7 @@ fn operator_turn_without_working_memory_delta() -> Result<()> {
     session.current_work_item_id = Some(work_item.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
         current_work_item_id: Some(work_item.id.clone()),
-        delivery_target: Some(work_item.delivery_target.clone()),
+        objective: Some(work_item.objective.clone()),
         work_summary: Some("test working memory delta absence".into()),
         current_plan: vec!["verify delta absence".into()],
         ..WorkingMemorySnapshot::default()
@@ -622,7 +639,7 @@ Agent id: default
 ## working_memory
 Working memory:
 - Current work item id: work_no_delta
-- Delivery target: Test delta absence
+- Objective: Test delta absence
 - Work summary: test working memory delta absence
 - Current plan:
   - verify delta absence
@@ -631,10 +648,11 @@ Working memory:
 Current work item:
 - Id: work_no_delta
 - State: Open
-- Delivery target: Test delta absence
+- Objective: Test delta absence
+- Plan state: Draft
+- Todo list:
+  - [in_progress] Verify delta absence
 - Blocked by: verifying snapshot without delta
-- Current work plan:
-  - [InProgress] Verify delta absence
 
 ## context_contract
 {CONTEXT_CONTRACT}
@@ -657,24 +675,24 @@ fn callback_with_active_work_and_delta() -> Result<()> {
     work_item.id = "work_ci".into();
     work_item.blocked_by = Some("awaiting CI result".into());
     storage.append_work_item(&work_item)?;
-    storage.append_work_plan(&WorkPlanSnapshot::new(
-        "default",
+    append_work_item_todo(
+        &storage,
         work_item.id.clone(),
         vec![
-            WorkPlanItem {
-                step: "Wait for CI callback".into(),
-                status: WorkPlanStepStatus::Completed,
+            TodoItem {
+                text: "Wait for CI callback".into(),
+                state: TodoItemState::Completed,
             },
-            WorkPlanItem {
-                step: "Process CI result".into(),
-                status: WorkPlanStepStatus::InProgress,
+            TodoItem {
+                text: "Process CI result".into(),
+                state: TodoItemState::InProgress,
             },
-            WorkPlanItem {
-                step: "Update work item status".into(),
-                status: WorkPlanStepStatus::Pending,
+            TodoItem {
+                text: "Update work item status".into(),
+                state: TodoItemState::Pending,
             },
         ],
-    ))?;
+    )?;
 
     let callback_message = MessageEnvelope::new(
         "default",
@@ -698,7 +716,7 @@ fn callback_with_active_work_and_delta() -> Result<()> {
     session.current_work_item_id = Some(work_item.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
         current_work_item_id: Some(work_item.id.clone()),
-        delivery_target: Some(work_item.delivery_target.clone()),
+        objective: Some(work_item.objective.clone()),
         work_summary: Some("process CI completion callback".into()),
         current_plan: vec![
             "wait for CI callback".into(),
@@ -730,7 +748,7 @@ Agent id: default
 ## working_memory
 Working memory:
 - Current work item id: work_ci
-- Delivery target: Handle CI callback
+- Objective: Handle CI callback
 - Work summary: process CI completion callback
 - Current plan:
   - wait for CI callback
@@ -752,12 +770,13 @@ Working memory updated since the last prompt:
 Current work item:
 - Id: work_ci
 - State: Open
-- Delivery target: Handle CI callback
+- Objective: Handle CI callback
+- Plan state: Draft
+- Todo list:
+  - [completed] Wait for CI callback
+  - [in_progress] Process CI result
+  - [pending] Update work item status
 - Blocked by: awaiting CI result
-- Current work plan:
-  - [Completed] Wait for CI callback
-  - [InProgress] Process CI result
-  - [Pending] Update work item status
 
 ## context_contract
 {CONTEXT_CONTRACT}
@@ -784,20 +803,20 @@ fn system_tick_with_waiting_work_item() -> Result<()> {
     waiting_work.id = "work_waiting".into();
     waiting_work.blocked_by = Some("blocked on API rate limit".into());
     storage.append_work_item(&waiting_work)?;
-    storage.append_work_plan(&WorkPlanSnapshot::new(
-        "default",
+    append_work_item_todo(
+        &storage,
         waiting_work.id.clone(),
         vec![
-            WorkPlanItem {
-                step: "Wait for rate limit reset".into(),
-                status: WorkPlanStepStatus::InProgress,
+            TodoItem {
+                text: "Wait for rate limit reset".into(),
+                state: TodoItemState::InProgress,
             },
-            WorkPlanItem {
-                step: "Retry API request".into(),
-                status: WorkPlanStepStatus::Pending,
+            TodoItem {
+                text: "Retry API request".into(),
+                state: TodoItemState::Pending,
             },
         ],
-    ))?;
+    )?;
 
     let mut system_tick = MessageEnvelope::new(
         "default",
@@ -842,7 +861,7 @@ fn system_tick_with_waiting_work_item() -> Result<()> {
     session.current_work_item_id = Some(waiting_work.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
         current_work_item_id: Some(waiting_work.id.clone()),
-        delivery_target: Some(waiting_work.delivery_target.clone()),
+        objective: Some(waiting_work.objective.clone()),
         work_summary: Some("waiting for external service response".into()),
         current_plan: vec![
             "wait for rate limit reset".into(),
@@ -862,7 +881,7 @@ Agent id: default
 ## working_memory
 Working memory:
 - Current work item id: work_waiting
-- Delivery target: External service integration
+- Objective: External service integration
 - Work summary: waiting for external service response
 - Current plan:
   - wait for rate limit reset
@@ -872,11 +891,12 @@ Working memory:
 Current work item:
 - Id: work_waiting
 - State: Open
-- Delivery target: External service integration
+- Objective: External service integration
+- Plan state: Draft
+- Todo list:
+  - [in_progress] Wait for rate limit reset
+  - [pending] Retry API request
 - Blocked by: blocked on API rate limit
-- Current work plan:
-  - [InProgress] Wait for rate limit reset
-  - [Pending] Retry API request
 
 ## context_contract
 {CONTEXT_CONTRACT}
@@ -918,24 +938,24 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
     work_item.id = "work_compaction".into();
     work_item.blocked_by = Some("continuing after compaction".into());
     storage.append_work_item(&work_item)?;
-    storage.append_work_plan(&WorkPlanSnapshot::new(
-        "default",
+    append_work_item_todo(
+        &storage,
         work_item.id.clone(),
         vec![
-            WorkPlanItem {
-                step: "Complete initial phase".into(),
-                status: WorkPlanStepStatus::Completed,
+            TodoItem {
+                text: "Complete initial phase".into(),
+                state: TodoItemState::Completed,
             },
-            WorkPlanItem {
-                step: "Work on expanded coverage".into(),
-                status: WorkPlanStepStatus::InProgress,
+            TodoItem {
+                text: "Work on expanded coverage".into(),
+                state: TodoItemState::InProgress,
             },
-            WorkPlanItem {
-                step: "Final verification".into(),
-                status: WorkPlanStepStatus::Pending,
+            TodoItem {
+                text: "Final verification".into(),
+                state: TodoItemState::Pending,
             },
         ],
-    ))?;
+    )?;
 
     let current_message = MessageEnvelope::new(
         "default",
@@ -960,7 +980,7 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
     session.current_work_item_id = Some(work_item.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
         current_work_item_id: Some(work_item.id.clone()),
-        delivery_target: Some(work_item.delivery_target.clone()),
+        objective: Some(work_item.objective.clone()),
         work_summary: Some("task spanning multiple compaction points".into()),
         current_plan: vec![
             "complete initial phase".into(),
@@ -992,7 +1012,7 @@ Agent id: default
 ## working_memory
 Working memory:
 - Current work item id: work_compaction
-- Delivery target: Long-running task with compaction
+- Objective: Long-running task with compaction
 - Work summary: task spanning multiple compaction points
 - Current plan:
   - complete initial phase
@@ -1013,12 +1033,13 @@ Working memory updated since the last prompt:
 Current work item:
 - Id: work_compaction
 - State: Open
-- Delivery target: Long-running task with compaction
+- Objective: Long-running task with compaction
+- Plan state: Draft
+- Todo list:
+  - [completed] Complete initial phase
+  - [in_progress] Work on expanded coverage
+  - [pending] Final verification
 - Blocked by: continuing after compaction
-- Current work plan:
-  - [Completed] Complete initial phase
-  - [InProgress] Work on expanded coverage
-  - [Pending] Final verification
 
 ## context_contract
 {CONTEXT_CONTRACT}
@@ -1039,7 +1060,7 @@ fn task_result_with_multiple_work_items() -> Result<()> {
 
     // Create completed work item
     let mut completed_work =
-        WorkItemRecord::new("default", "Build task execution", WorkItemState::Done);
+        WorkItemRecord::new("default", "Build task execution", WorkItemState::Completed);
     completed_work.id = "work_build".into();
     storage.append_work_item(&completed_work)?;
 
@@ -1052,24 +1073,24 @@ fn task_result_with_multiple_work_items() -> Result<()> {
     active_work.id = "work_test".into();
     active_work.blocked_by = Some("awaiting test completion".into());
     storage.append_work_item(&active_work)?;
-    storage.append_work_plan(&WorkPlanSnapshot::new(
-        "default",
+    append_work_item_todo(
+        &storage,
         active_work.id.clone(),
         vec![
-            WorkPlanItem {
-                step: "Execute cargo test".into(),
-                status: WorkPlanStepStatus::Completed,
+            TodoItem {
+                text: "Execute cargo test".into(),
+                state: TodoItemState::Completed,
             },
-            WorkPlanItem {
-                step: "Verify test results".into(),
-                status: WorkPlanStepStatus::InProgress,
+            TodoItem {
+                text: "Verify test results".into(),
+                state: TodoItemState::InProgress,
             },
-            WorkPlanItem {
-                step: "Document any failures".into(),
-                status: WorkPlanStepStatus::Pending,
+            TodoItem {
+                text: "Document any failures".into(),
+                state: TodoItemState::Pending,
             },
         ],
-    ))?;
+    )?;
 
     let task_result = MessageEnvelope::new(
         "default",
@@ -1102,7 +1123,7 @@ fn task_result_with_multiple_work_items() -> Result<()> {
     session.current_work_item_id = Some(active_work.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
         current_work_item_id: Some(active_work.id.clone()),
-        delivery_target: Some(active_work.delivery_target.clone()),
+        objective: Some(active_work.objective.clone()),
         work_summary: Some("run cargo test and verify results".into()),
         current_plan: vec![
             "execute cargo test".into(),
@@ -1135,7 +1156,7 @@ Agent id: default
 ## working_memory
 Working memory:
 - Current work item id: work_test
-- Delivery target: Test execution and verification
+- Objective: Test execution and verification
 - Work summary: run cargo test and verify results
 - Current plan:
   - execute cargo test
@@ -1157,12 +1178,13 @@ Working memory updated since the last prompt:
 Current work item:
 - Id: work_test
 - State: Open
-- Delivery target: Test execution and verification
+- Objective: Test execution and verification
+- Plan state: Draft
+- Todo list:
+  - [completed] Execute cargo test
+  - [in_progress] Verify test results
+  - [pending] Document any failures
 - Blocked by: awaiting test completion
-- Current work plan:
-  - [Completed] Execute cargo test
-  - [InProgress] Verify test results
-  - [Pending] Document any failures
 
 ## context_contract
 {CONTEXT_CONTRACT}

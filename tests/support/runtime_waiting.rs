@@ -32,9 +32,9 @@ use holon::{
         FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WaitingReason, WorkItemState,
-        WorkPlanItem, WorkPlanStepStatus,
+        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TodoItem, TodoItemState,
+        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus,
+        WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -231,17 +231,24 @@ pub async fn update_work_item_creates_and_updates_persisted_snapshot() -> Result
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
 
-    let (created, _) = runtime
-        .create_work_item("Ship work-item runtime foundation".into(), None)
+    let created = runtime
+        .create_work_item(
+            "Ship work-item runtime foundation".into(),
+            None,
+            None,
+            Vec::new(),
+        )
         .await?;
     assert!(created.id.starts_with("work_"));
 
-    let (updated, _) = runtime
+    let updated = runtime
         .update_work_item_fields(
             created.id.clone(),
             None,
-            Some(Some("queued follow-up after CI".into())),
             None,
+            None,
+            None,
+            Some(Some("queued follow-up after CI".into())),
         )
         .await?;
 
@@ -262,8 +269,13 @@ pub async fn update_work_item_replaces_latest_plan_snapshot_for_existing_work_it
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
 
-    let (work_item, _) = runtime
-        .create_work_item("Stabilize work plan projection".into(), None)
+    let work_item = runtime
+        .create_work_item(
+            "Stabilize work item todo projection".into(),
+            None,
+            None,
+            Vec::new(),
+        )
         .await?;
 
     runtime
@@ -271,42 +283,45 @@ pub async fn update_work_item_replaces_latest_plan_snapshot_for_existing_work_it
             work_item.id.clone(),
             None,
             None,
-            Some(vec![WorkPlanItem {
-                step: "persist work-item store".into(),
-                status: WorkPlanStepStatus::Completed,
+            None,
+            Some(vec![TodoItem {
+                text: "persist work-item store".into(),
+                state: TodoItemState::Completed,
             }]),
+            None,
         )
         .await?;
 
-    let (_, updated_plan) = runtime
+    let updated = runtime
         .update_work_item_fields(
             work_item.id.clone(),
             None,
             None,
+            None,
             Some(vec![
-                WorkPlanItem {
-                    step: "persist work-item store".into(),
-                    status: WorkPlanStepStatus::Completed,
+                TodoItem {
+                    text: "persist work-item store".into(),
+                    state: TodoItemState::Completed,
                 },
-                WorkPlanItem {
-                    step: "project work queue into prompt".into(),
-                    status: WorkPlanStepStatus::InProgress,
+                TodoItem {
+                    text: "project work queue into prompt".into(),
+                    state: TodoItemState::InProgress,
                 },
             ]),
+            None,
         )
         .await?;
-    let updated_plan = updated_plan.expect("expected plan snapshot");
 
-    let latest = runtime.latest_work_plan(&work_item.id).await?.unwrap();
-    assert_eq!(latest.items.len(), 2);
+    let latest = runtime.latest_work_item(&work_item.id).await?.unwrap();
+    assert_eq!(latest.todo_list.len(), 2);
     assert_eq!(
-        latest.items[1],
-        WorkPlanItem {
-            step: "project work queue into prompt".into(),
-            status: WorkPlanStepStatus::InProgress,
+        latest.todo_list[1],
+        TodoItem {
+            text: "project work queue into prompt".into(),
+            state: TodoItemState::InProgress,
         }
     );
-    assert_eq!(latest.created_at, updated_plan.created_at);
+    assert_eq!(latest.updated_at, updated.updated_at);
     Ok(())
 }
 
@@ -880,8 +895,8 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
-    let (work_item, _) = runtime
-        .create_work_item("wait for CI callback".into(), None)
+    let work_item = runtime
+        .create_work_item("wait for CI callback".into(), None, None, Vec::new())
         .await?;
     runtime.pick_work_item(work_item.id).await?;
 

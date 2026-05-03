@@ -174,8 +174,8 @@ fn merge_into_active_episode(
     if builder.current_work_item_id.is_none() {
         builder.current_work_item_id = current_snapshot.current_work_item_id.clone();
     }
-    if builder.delivery_target.is_none() {
-        builder.delivery_target = current_snapshot.delivery_target.clone();
+    if builder.objective.is_none() {
+        builder.objective = current_snapshot.objective.clone();
     }
     if builder.work_summary.is_none() {
         builder.work_summary = current_snapshot.work_summary.clone();
@@ -245,7 +245,7 @@ fn derive_boundary_reason(
 
     if !working_snapshot_is_empty(previous_snapshot)
         && (previous_snapshot.current_work_item_id != current_snapshot.current_work_item_id
-            || previous_snapshot.delivery_target != current_snapshot.delivery_target
+            || previous_snapshot.objective != current_snapshot.objective
             || previous_snapshot.work_summary != current_snapshot.work_summary)
     {
         return Some(EpisodeBoundaryReason::ActiveWorkSwitched);
@@ -301,7 +301,7 @@ fn finalize_episode(
         end_message_count: builder.latest_message_count,
         boundary_reason,
         current_work_item_id: builder.current_work_item_id,
-        delivery_target: builder.delivery_target,
+        objective: builder.objective,
         work_summary: builder.work_summary,
         scope_hints: builder.scope_hints,
         summary,
@@ -316,11 +316,7 @@ fn finalize_episode(
 
 fn render_episode_summary(builder: &ActiveEpisodeBuilder) -> String {
     let mut lines = Vec::new();
-    if let Some(target) = builder
-        .work_summary
-        .as_ref()
-        .or(builder.delivery_target.as_ref())
-    {
+    if let Some(target) = builder.work_summary.as_ref().or(builder.objective.as_ref()) {
         lines.push(format!("work: {}", truncate_line(target, 120)));
     }
     if !builder.scope_hints.is_empty() {
@@ -432,7 +428,7 @@ mod tests {
     fn snapshot(work_id: &str, summary: &str) -> WorkingMemorySnapshot {
         WorkingMemorySnapshot {
             current_work_item_id: Some(work_id.into()),
-            delivery_target: Some(summary.into()),
+            objective: Some(summary.into()),
             work_summary: Some(summary.into()),
             ..WorkingMemorySnapshot::default()
         }

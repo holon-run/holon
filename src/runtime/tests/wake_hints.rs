@@ -321,8 +321,13 @@ async fn queued_work_item_update_wakes_sleeping_runtime_and_surfaces_it() {
     let runtime_task = tokio::spawn(runtime.clone().run());
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let (queued, _) = runtime
-        .create_work_item("wake from direct queued work item update".into(), None)
+    let queued = runtime
+        .create_work_item(
+            "wake from direct queued work item update".into(),
+            None,
+            None,
+            Vec::new(),
+        )
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;

@@ -16,8 +16,8 @@ use crate::{
     types::{
         ActiveWorkspaceEntry, AgentSummary, BriefRecord, ExternalTriggerStateSnapshot,
         OperatorNotificationRecord, TaskRecord, TimerRecord, TranscriptEntry, TrustLevel,
-        TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord, WorkPlanSnapshot,
-        WorkspaceOccupancyRecord, WorktreeSession,
+        TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord,
+        WorktreeSession,
     },
 };
 
@@ -86,8 +86,6 @@ pub struct AgentStateSnapshot {
     pub timers: Vec<TimerRecord>,
     #[serde(default)]
     pub work_items: Vec<WorkItemRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub work_plan: Option<WorkPlanSnapshot>,
     #[serde(default)]
     pub waiting_intents: Vec<WaitingIntentRecord>,
     #[serde(default)]

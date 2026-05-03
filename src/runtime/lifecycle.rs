@@ -76,9 +76,13 @@ impl RuntimeHandle {
                 id: latest.id.clone(),
                 agent_id: latest.agent_id.clone(),
                 workspace_id: latest.workspace_id.clone(),
-                delivery_target: latest.delivery_target.clone(),
+                objective: latest.objective.clone(),
                 state: latest.state.clone(),
+                plan_status: latest.plan_status,
+                plan: latest.plan.clone(),
+                todo_list: latest.todo_list.clone(),
                 blocked_by,
+                result_summary: latest.result_summary.clone(),
                 created_at: latest.created_at,
                 updated_at: chrono::Utc::now(),
             };
@@ -177,11 +181,6 @@ impl RuntimeHandle {
             |record| record.id == work_item.id,
             DELIVERY_SUMMARY_EVIDENCE_LIMIT,
         )?;
-        let work_plans = read_recent_matching(
-            |limit| self.inner.storage.read_recent_work_plans(limit),
-            |record| record.work_item_id == work_item.id,
-            DELIVERY_SUMMARY_EVIDENCE_LIMIT,
-        )?;
         let briefs = read_recent_matching(
             |limit| self.inner.storage.read_recent_briefs(limit),
             |record| record.work_item_id.as_deref() == Some(work_item.id.as_str()),
@@ -209,7 +208,8 @@ impl RuntimeHandle {
             "work_item": work_item,
             "source_turn_index": turn_index,
             "work_item_snapshots": work_item_snapshots,
-            "work_plans": work_plans,
+            "plan": work_item.plan,
+            "todo_list": work_item.todo_list,
             "briefs": briefs,
             "tool_executions": tools,
             "recent_transcript": transcript,
@@ -626,13 +626,6 @@ impl RuntimeHandle {
             crate::memory::repair_memory_index_for_paths(&storage, &changed_paths)
         })
         .await?
-    }
-
-    pub async fn latest_work_plan(
-        &self,
-        work_item_id: &str,
-    ) -> Result<Option<crate::types::WorkPlanSnapshot>> {
-        self.inner.storage.latest_work_plan(work_item_id)
     }
 
     pub async fn recent_timers(&self, limit: usize) -> Result<Vec<TimerRecord>> {
@@ -1405,10 +1398,7 @@ fn fallback_delivery_summary_text(evidence: &serde_json::Value) -> String {
         .or_else(|| {
             evidence
                 .get("work_item")
-                .and_then(|item| {
-                    item.get("blocked_by")
-                        .or_else(|| item.get("delivery_target"))
-                })
+                .and_then(|item| item.get("blocked_by").or_else(|| item.get("objective")))
                 .and_then(|value| value.as_str())
                 .map(str::trim)
                 .filter(|text| !text.is_empty())

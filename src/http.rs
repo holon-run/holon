@@ -60,7 +60,7 @@ use crate::{
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
         TimerRecord, TranscriptEntry, TrustLevel, TurnTerminalRecord, WaitingIntentRecord,
-        WorkItemRecord, WorkItemState, WorkPlanSnapshot, WorkspaceOccupancyRecord, WorktreeSession,
+        WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -332,7 +332,6 @@ struct AgentStateSnapshot {
     briefs_tail: Vec<BriefRecord>,
     timers: Vec<TimerRecord>,
     work_items: Vec<WorkItemRecord>,
-    work_plan: Option<WorkPlanSnapshot>,
     waiting_intents: Vec<WaitingIntentRecord>,
     external_triggers: Vec<ExternalTriggerStateSnapshot>,
     operator_notifications: Vec<OperatorNotificationRecord>,
@@ -383,7 +382,7 @@ pub struct CreateCommandTaskRequest {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateWorkItemRequest {
-    pub delivery_target: String,
+    pub objective: String,
     pub trust: Option<TrustLevel>,
 }
 
@@ -729,16 +728,6 @@ pub async fn agent_state(
     let timers = runtime.recent_timers(50).await.map_err(error_response)?;
     let mut work_items = runtime.latest_work_items().await.map_err(error_response)?;
     sort_state_work_items(&mut work_items);
-    let work_plan = match select_state_work_plan_target(
-        agent.agent.current_turn_work_item_id.as_deref(),
-        &work_items,
-    ) {
-        Some(work_item_id) => runtime
-            .latest_work_plan(&work_item_id)
-            .await
-            .map_err(error_response)?,
-        None => None,
-    };
     let waiting_intents = runtime
         .latest_waiting_intents()
         .await
@@ -769,7 +758,6 @@ pub async fn agent_state(
         briefs_tail,
         timers,
         work_items,
-        work_plan,
         waiting_intents,
         external_triggers,
         operator_notifications,
@@ -804,26 +792,8 @@ fn state_work_item_rank(item: &WorkItemRecord) -> u8 {
     match item.state {
         WorkItemState::Open if item.blocked_by.is_none() => 0,
         WorkItemState::Open => 1,
-        WorkItemState::Done => 2,
+        WorkItemState::Completed => 2,
     }
-}
-
-fn select_state_work_plan_target(
-    current_turn_work_item_id: Option<&str>,
-    work_items: &[WorkItemRecord],
-) -> Option<String> {
-    let selected = current_turn_work_item_id
-        .and_then(|id| {
-            work_items
-                .iter()
-                .find(|item| item.id == id && item.state != WorkItemState::Done)
-        })
-        .or_else(|| {
-            work_items
-                .iter()
-                .find(|item| item.state == WorkItemState::Open)
-        })?;
-    Some(selected.id.clone())
 }
 
 fn state_workspace_snapshot(agent: &AgentSummary) -> StateWorkspaceSnapshot {
@@ -837,7 +807,7 @@ fn state_workspace_snapshot(agent: &AgentSummary) -> StateWorkspaceSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::{select_state_work_plan_target, sort_state_work_items};
+    use super::sort_state_work_items;
     use crate::types::{WorkItemRecord, WorkItemState};
     use chrono::{Duration, Utc};
 
@@ -858,7 +828,7 @@ mod tests {
         waiting.created_at = queued_late.created_at + Duration::minutes(1);
         waiting.updated_at = waiting.created_at;
 
-        let completed = WorkItemRecord::new("default", "completed", WorkItemState::Done);
+        let completed = WorkItemRecord::new("default", "completed", WorkItemState::Completed);
         let mut work_items = vec![
             waiting.clone(),
             completed,
@@ -871,37 +841,17 @@ mod tests {
 
         let ordered = work_items
             .iter()
-            .map(|item| item.delivery_target.as_str())
+            .map(|item| item.objective.as_str())
             .collect::<Vec<_>>();
         assert_eq!(
             ordered,
             vec![
-                active.delivery_target.as_str(),
-                queued_early.delivery_target.as_str(),
-                queued_late.delivery_target.as_str(),
-                waiting.delivery_target.as_str(),
+                active.objective.as_str(),
+                queued_early.objective.as_str(),
+                queued_late.objective.as_str(),
+                waiting.objective.as_str(),
                 "completed",
             ]
-        );
-    }
-
-    #[test]
-    fn state_work_plan_target_skips_completed_current_turn_binding() {
-        let completed_id = "completed-bound".to_string();
-        let queued_id = "queued-next".to_string();
-
-        let mut completed =
-            WorkItemRecord::new("default", "completed bound item", WorkItemState::Done);
-        completed.id = completed_id.clone();
-
-        let mut queued = WorkItemRecord::new("default", "queued next item", WorkItemState::Open);
-        queued.id = queued_id.clone();
-
-        let work_items = vec![completed, queued];
-
-        assert_eq!(
-            select_state_work_plan_target(Some(completed_id.as_str()), &work_items),
-            Some(queued_id)
         );
     }
 }
@@ -1253,13 +1203,13 @@ pub async fn create_work_item(
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.trust;
-    let delivery_target = request.delivery_target.trim().to_string();
-    if delivery_target.is_empty() {
-        return Err(bad_request("delivery_target must not be empty"));
+    let objective = request.objective.trim().to_string();
+    if objective.is_empty() {
+        return Err(bad_request("objective must not be empty"));
     }
     let (runtime, record) = state
         .host
-        .enqueue_public_work_item(&agent_id, delivery_target)
+        .enqueue_public_work_item(&agent_id, objective)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)

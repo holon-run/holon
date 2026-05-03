@@ -4,7 +4,7 @@ Decision:
 
 - remove parallel `objective_state` from `AgentState`
 - keep work truth centered on persisted `WorkItemRecord` and
-  `WorkPlanSnapshot`
+  `WorkItemRecord`
 - derive continuity projections from work, plan, brief, tool, and waiting
   evidence
 

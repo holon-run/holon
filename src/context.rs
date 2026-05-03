@@ -7,8 +7,8 @@ use crate::{
     types::{
         AdmissionContext, AgentState, AuthorityClass, BriefRecord, ContextEpisodeRecord,
         ContinuationClass, ContinuationResolution, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, ToolExecutionRecord,
-        TrustLevel, WorkItemRecord, WorkPlanSnapshot, WorkingMemoryDelta, WorkingMemorySnapshot,
+        MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TodoItemState,
+        ToolExecutionRecord, TrustLevel, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
 
@@ -62,10 +62,6 @@ pub fn build_context(
     let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
     let work_queue_projection = storage.work_queue_prompt_projection()?;
     let current_work_item = work_queue_projection.current.as_ref();
-    let current_work_plan = current_work_item
-        .map(|item| storage.latest_work_plan(&item.id))
-        .transpose()?
-        .flatten();
     let queued_blocked_items = work_queue_projection
         .queued_blocked
         .iter()
@@ -212,10 +208,7 @@ pub fn build_context(
         push_budgeted_section(
             &mut sections,
             &mut remaining_budget,
-            turn_section(
-                "current_work_item",
-                render_current_work_item(work_item, current_work_plan.as_ref()),
-            ),
+            turn_section("current_work_item", render_current_work_item(work_item)),
         );
     }
 
@@ -235,7 +228,7 @@ pub fn build_context(
         &mut remaining_budget,
         section(
             "context_contract",
-            "Interpret the memory block with this priority: current work item first for the committed delivery target and current runtime task, working memory delta next for the newest updates since the last prompt, and working memory after that for rolling agent context. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as the most reliable continuity evidence across turns. When these sources differ on task scope or delivery target, treat the current work item's `delivery_target` as the ground truth for the current committed task unless the current input explicitly changes it."
+            "Interpret the memory block with this priority: current work item objective first, durable plan second, todo_list third, working memory delta next, and rolling working memory after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and `plan` as the ground truth unless the current input explicitly changes it."
                 .to_string(),
         ),
     );
@@ -482,23 +475,31 @@ fn render_brief(brief: &BriefRecord) -> String {
     format!("- [{:?}] {}", brief.kind, brief.text)
 }
 
-fn render_current_work_item(work_item: &WorkItemRecord, plan: Option<&WorkPlanSnapshot>) -> String {
+fn render_current_work_item(work_item: &WorkItemRecord) -> String {
     let mut lines = vec![
         "Current work item:".to_string(),
         format!("- Id: {}", work_item.id),
         format!("- State: {:?}", work_item.state),
-        format!("- Delivery target: {}", work_item.delivery_target),
+        format!("- Objective: {}", work_item.objective),
+        format!("- Plan state: {:?}", work_item.plan_status),
     ];
+    if let Some(plan) = work_item.plan.as_deref() {
+        lines.push("- Plan:".to_string());
+        lines.extend(plan.lines().map(|line| format!("  {line}")));
+    }
+    if !work_item.todo_list.is_empty() {
+        lines.push("- Todo list:".to_string());
+        lines.extend(work_item.todo_list.iter().map(|item| {
+            let state = match item.state {
+                TodoItemState::Pending => "pending",
+                TodoItemState::InProgress => "in_progress",
+                TodoItemState::Completed => "completed",
+            };
+            format!("  - [{state}] {}", item.text)
+        }));
+    }
     if let Some(blocked_by) = work_item.blocked_by.as_deref() {
         lines.push(format!("- Blocked by: {blocked_by}"));
-    }
-    if let Some(plan) = plan {
-        lines.push("- Current work plan:".to_string());
-        lines.extend(
-            plan.items
-                .iter()
-                .map(|item| format!("  - [{:?}] {}", item.status, item.step)),
-        );
     }
     lines.join("\n")
 }
@@ -511,7 +512,7 @@ fn render_queued_blocked_work_items(items: &[&WorkItemRecord]) -> String {
         } else {
             "queued"
         };
-        let mut summary = format!("- [{view}] {} :: {}", item.id, item.delivery_target);
+        let mut summary = format!("- [{view}] {} :: {}", item.id, item.objective);
         if let Some(blocked_by) = item.blocked_by.as_deref() {
             summary.push_str(&format!(" :: blocked_by={blocked_by}"));
         }
@@ -529,8 +530,8 @@ fn render_working_memory(snapshot: &WorkingMemorySnapshot) -> String {
     if let Some(current_work_item_id) = snapshot.current_work_item_id.as_deref() {
         lines.push(format!("- Current work item id: {current_work_item_id}"));
     }
-    if let Some(delivery_target) = snapshot.delivery_target.as_deref() {
-        lines.push(format!("- Delivery target: {delivery_target}"));
+    if let Some(objective) = snapshot.objective.as_deref() {
+        lines.push(format!("- Objective: {objective}"));
     }
     if let Some(work_summary) = snapshot.work_summary.as_deref() {
         lines.push(format!("- Work summary: {work_summary}"));
@@ -858,8 +859,8 @@ fn render_work_queue_tick_context(message: &MessageEnvelope) -> Option<String> {
         .get("work_item_id")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
-    let delivery_target = work_queue
-        .get("delivery_target")
+    let objective = work_queue
+        .get("objective")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
     let runtime_switched_current = work_queue
@@ -870,7 +871,7 @@ fn render_work_queue_tick_context(message: &MessageEnvelope) -> Option<String> {
         " - Work queue:\n\
          - Reason: {reason}\n\
          - Work item id: {work_item_id}\n\
-         - Delivery target: {delivery_target}\n\
+         - Objective: {objective}\n\
          - Runtime switched current item: {runtime_switched_current}"
     ))
 }
@@ -1017,7 +1018,7 @@ fn render_budgeted_lines(heading: &str, lines: Vec<String>, budget: usize) -> Op
 #[derive(Debug, Clone)]
 struct EpisodeSelectionAnchor<'a> {
     current_work_item_id: Option<&'a str>,
-    delivery_target: Option<&'a str>,
+    objective: Option<&'a str>,
     work_summary: Option<&'a str>,
     working_set_files: &'a [String],
     pending_followups: &'a [String],
@@ -1043,7 +1044,7 @@ fn build_relevant_episode_memory_section(
         body_preview(&current_message.body),
         working_memory.work_summary.as_deref().unwrap_or_default(),
         current_work_item
-            .map(|item| item.delivery_target.as_str())
+            .map(|item| item.objective.as_str())
             .unwrap_or_default()
     );
     let anchor = EpisodeSelectionAnchor {
@@ -1051,10 +1052,10 @@ fn build_relevant_episode_memory_section(
             .current_work_item_id
             .as_deref()
             .or_else(|| current_work_item.map(|item| item.id.as_str())),
-        delivery_target: working_memory
-            .delivery_target
+        objective: working_memory
+            .objective
             .as_deref()
-            .or_else(|| current_work_item.map(|item| item.delivery_target.as_str())),
+            .or_else(|| current_work_item.map(|item| item.objective.as_str())),
         work_summary: working_memory.work_summary.as_deref(),
         working_set_files: &working_memory.working_set_files,
         pending_followups: &working_memory.pending_followups,
@@ -1115,8 +1116,8 @@ fn render_episode_block(episode: &ContextEpisodeRecord) -> String {
         episode.end_turn_index,
         enum_label(&episode.boundary_reason)
     )];
-    if let Some(delivery_target) = episode.delivery_target.as_deref() {
-        lines.push(format!("  - Delivery target: {delivery_target}"));
+    if let Some(objective) = episode.objective.as_deref() {
+        lines.push(format!("  - Objective: {objective}"));
     }
     if let Some(work_summary) = episode.work_summary.as_deref() {
         lines.push(format!("  - Work summary: {work_summary}"));
@@ -1184,7 +1185,7 @@ fn episode_relevance_score(
         .map(|_| 120)
         .unwrap_or(0);
 
-    if normalized_option_eq(episode.delivery_target.as_deref(), anchor.delivery_target) {
+    if normalized_option_eq(episode.objective.as_deref(), anchor.objective) {
         score += 80;
     }
     if normalized_option_eq(episode.work_summary.as_deref(), anchor.work_summary) {
@@ -1349,7 +1350,7 @@ mod tests {
 
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            delivery_target: Some("ship working memory".into()),
+            objective: Some("ship working memory".into()),
             current_plan: vec!["[InProgress] keep cache identity stable".into()],
             ..WorkingMemorySnapshot::default()
         };
@@ -1396,7 +1397,7 @@ mod tests {
 
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            delivery_target: Some("ship working memory".into()),
+            objective: Some("ship working memory".into()),
             current_plan: vec!["[InProgress] keep cache identity stable".into()],
             ..WorkingMemorySnapshot::default()
         };
@@ -1590,7 +1591,7 @@ mod tests {
             .contains("Use prior briefs and recent tool results"));
         assert!(context_contract
             .content
-            .contains("current work item first for the committed delivery target"));
+            .contains("current work item objective first"));
     }
 
     #[test]
@@ -1780,7 +1781,7 @@ mod tests {
         let mut session = AgentState::new("default");
         session.context_summary = Some("stale compacted summary".into());
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            delivery_target: Some("active work".into()),
+            objective: Some("active work".into()),
             ..WorkingMemorySnapshot::default()
         };
         let changed = maybe_compact_agent(
@@ -1819,7 +1820,7 @@ mod tests {
         let mut session = AgentState::new("default");
         session.context_summary = Some("legacy summary".into());
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            delivery_target: Some("ship working memory".into()),
+            objective: Some("ship working memory".into()),
             current_plan: vec!["[InProgress] wire post-turn refresh".into()],
             ..WorkingMemorySnapshot::default()
         };
@@ -1921,7 +1922,7 @@ mod tests {
 
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            delivery_target: Some("stabilize wake path".into()),
+            objective: Some("stabilize wake path".into()),
             recent_decisions: vec!["leave flaky verification as raw evidence".into()],
             ..WorkingMemorySnapshot::default()
         };
@@ -2177,28 +2178,23 @@ mod tests {
             },
         );
 
-        let active = crate::types::WorkItemRecord::new(
+        let mut active = crate::types::WorkItemRecord::new(
             "default",
             "storage and recovery foundation",
             crate::types::WorkItemState::Open,
         );
+        active.plan = Some("Persist the work item store and project it into prompts.".into());
+        active.todo_list = vec![
+            crate::types::TodoItem {
+                text: "Persist work-item store".into(),
+                state: crate::types::TodoItemState::Completed,
+            },
+            crate::types::TodoItem {
+                text: "Project active item into prompt".into(),
+                state: crate::types::TodoItemState::InProgress,
+            },
+        ];
         storage.append_work_item(&active).unwrap();
-        storage
-            .append_work_plan(&crate::types::WorkPlanSnapshot::new(
-                "default",
-                active.id.clone(),
-                vec![
-                    crate::types::WorkPlanItem {
-                        step: "Persist work-item store".into(),
-                        status: crate::types::WorkPlanStepStatus::Completed,
-                    },
-                    crate::types::WorkPlanItem {
-                        step: "Project active item into prompt".into(),
-                        status: crate::types::WorkPlanStepStatus::InProgress,
-                    },
-                ],
-            ))
-            .unwrap();
 
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(active.id.clone());
@@ -2263,7 +2259,7 @@ mod tests {
         let completed = crate::types::WorkItemRecord::new(
             "default",
             "Already finished item",
-            crate::types::WorkItemState::Done,
+            crate::types::WorkItemState::Completed,
         );
         storage.append_work_item(&queued).unwrap();
         storage.append_work_item(&waiting).unwrap();
@@ -2546,7 +2542,7 @@ mod tests {
             "work_queue": {
                 "reason": "continue_active",
                 "work_item_id": "work_123",
-                "delivery_target": "fix stale pid handling",
+                "objective": "fix stale pid handling",
                 "runtime_switched_current_item": false
             }
         }));
@@ -2750,7 +2746,7 @@ mod tests {
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
             current_work_item_id: Some(active.id.clone()),
-            delivery_target: Some(active.delivery_target.clone()),
+            objective: Some(active.objective.clone()),
             work_summary: Some("wake path patching".into()),
             current_plan: vec!["finish wake-path regression".into()],
             ..WorkingMemorySnapshot::default()
@@ -2862,7 +2858,7 @@ mod tests {
 
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            delivery_target: Some("ship the prompt delta gating fix".into()),
+            objective: Some("ship the prompt delta gating fix".into()),
             current_plan: vec!["[InProgress] wire prompt render acknowledgement".into()],
             ..WorkingMemorySnapshot::default()
         };
@@ -2918,7 +2914,7 @@ mod tests {
             end_message_count: 6,
             boundary_reason: EpisodeBoundaryReason::HardTurnCap,
             current_work_item_id: Some("work_old".into()),
-            delivery_target: Some("Refactor parser".into()),
+            objective: Some("Refactor parser".into()),
             work_summary: Some("parser cleanup".into()),
             scope_hints: vec!["keep unrelated runtime behavior unchanged".into()],
             summary: "Completed parser refactor and removed dead branches.".into(),
@@ -2943,7 +2939,7 @@ mod tests {
             end_message_count: 14,
             boundary_reason: EpisodeBoundaryReason::WaitBoundary,
             current_work_item_id: Some("work_runtime".into()),
-            delivery_target: Some("Fix wake path".into()),
+            objective: Some("Fix wake path".into()),
             work_summary: Some("wake path patching".into()),
             scope_hints: vec!["keep behavior unchanged outside the wake path".into()],
             summary:
@@ -2972,7 +2968,7 @@ mod tests {
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
             current_work_item_id: Some("work_runtime".into()),
-            delivery_target: Some("Fix wake path".into()),
+            objective: Some("Fix wake path".into()),
             work_summary: Some("wake path patching".into()),
             working_set_files: vec!["src/runtime.rs".into()],
             pending_followups: vec!["confirm remaining wake edge case".into()],
@@ -3021,7 +3017,7 @@ mod tests {
 
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            delivery_target: Some("Stabilize prompt budgeting".into()),
+            objective: Some("Stabilize prompt budgeting".into()),
             work_summary: Some("Trim oversized context sections before append".into()),
             scope_hints: vec![
                 "scope hint one repeats enough text to force truncation".repeat(8),

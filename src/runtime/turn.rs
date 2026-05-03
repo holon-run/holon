@@ -49,14 +49,14 @@ You are crossing a context compaction boundary. Before continuing, include a con
 
 Include:
 - current user goal
-- current work plan state
+- current work item objective, plan_status, plan, and todo_list state
 - files, commands, or sources already inspected
 - key findings and ruled-out paths
 - what remains unknown
 - the next goal-aligned action
 
 If continuing exploration, name the specific missing information and the next bounded command/query. If enough evidence already exists to act, make the next action the concrete mutation, verification, or delivery step instead of another read.
-If the current plan step became complete through material progress, update the work plan after that progress is recorded.
+If the current todo item became complete through material progress, update the work item after that progress is recorded.
 This is not a request to finish the task; after the checkpoint, continue with the next goal-aligned action when useful.
 Do not assume the task requires code changes unless the user goal does.";
 

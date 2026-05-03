@@ -22,8 +22,8 @@ use holon::{
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
-        MessageDeliverySurface, MessageKind, MessageOrigin, TrustLevel, WorkItemState,
-        WorkPlanItem, WorkPlanStepStatus,
+        MessageDeliverySurface, MessageKind, MessageOrigin, TodoItem, TodoItemState, TrustLevel,
+        WorkItemState,
     },
 };
 use reqwest::Client;
@@ -93,7 +93,7 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     assert!(state_payload["briefs_tail"].is_array());
     assert!(state_payload["timers"].is_array());
     assert!(state_payload["work_items"].is_array());
-    assert!(state_payload["work_plan"].is_null());
+    assert!(state_payload.get("work_plan").is_none());
     assert!(state_payload["waiting_intents"].is_array());
     assert!(state_payload["external_triggers"].is_array());
     assert!(state_payload["workspace"].is_object());
@@ -127,12 +127,16 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     )
     .await?;
     runtime
-        .update_work_plan(
+        .update_work_item_fields(
             work_item.id.clone(),
-            vec![WorkPlanItem {
-                step: "expand /state".into(),
-                status: WorkPlanStepStatus::InProgress,
-            }],
+            None,
+            None,
+            None,
+            Some(vec![TodoItem {
+                text: "expand /state".into(),
+                state: TodoItemState::InProgress,
+            }]),
+            None,
         )
         .await?;
     runtime
@@ -159,7 +163,7 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     assert!(
         runtime_work_items
             .iter()
-            .any(|item| item.id == work_item.id && item.state != WorkItemState::Done),
+            .any(|item| item.id == work_item.id && item.state != WorkItemState::Completed),
         "runtime work items missing expected bootstrap item: {:?}",
         runtime_work_items
     );
@@ -175,7 +179,7 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
             .as_array()
             .map(|items| items.iter().any(|item| {
                 item["id"] == serde_json::Value::String(work_item.id.clone())
-                    && item["state"] != serde_json::Value::String("done".into())
+                    && item["state"] != serde_json::Value::String("completed".into())
             }))
             .unwrap_or(false),
         "raw snapshot missing expected work item: {}",
@@ -195,12 +199,13 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     assert!(snapshot
         .work_items
         .iter()
-        .any(|item| item.id == work_item.id && item.state != WorkItemState::Done));
+        .any(|item| item.id == work_item.id && item.state != WorkItemState::Completed));
     assert_eq!(
         snapshot
-            .work_plan
-            .as_ref()
-            .map(|plan| plan.work_item_id.clone()),
+            .work_items
+            .iter()
+            .find(|item| item.id == work_item.id)
+            .map(|item| item.id.clone()),
         Some(work_item.id.clone())
     );
     assert_eq!(snapshot.waiting_intents.len(), 1);

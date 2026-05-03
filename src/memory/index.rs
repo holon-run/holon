@@ -650,7 +650,7 @@ fn work_item_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
 }
 
 fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
-    let body = item.delivery_target.clone();
+    let body = work_item_document_body(&item);
     MemoryDocument {
         source_ref: format!("work_item:{}", item.id),
         source_kind: "work_item".into(),
@@ -658,7 +658,7 @@ fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
         workspace_id: Some(item.workspace_id),
         agent_id: item.agent_id,
         source_path: None,
-        title: item.delivery_target.clone(),
+        title: item.objective.clone(),
         sanitized_excerpt: excerpt(&body),
         body,
         metadata: json!({
@@ -667,6 +667,47 @@ fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
             "blocked_by": item.blocked_by,
         }),
         updated_at: item.updated_at,
+    }
+}
+
+fn work_item_document_body(item: &WorkItemRecord) -> String {
+    let mut lines = vec![
+        format!("Objective: {}", item.objective),
+        format!(
+            "Plan status: {}",
+            work_item_plan_status_label(item.plan_status)
+        ),
+    ];
+    if let Some(plan) = item.plan.as_deref().filter(|plan| !plan.trim().is_empty()) {
+        lines.push("Plan:".into());
+        lines.push(plan.to_string());
+    }
+    if !item.todo_list.is_empty() {
+        lines.push("Todo list:".into());
+        for todo in &item.todo_list {
+            lines.push(format!(
+                "- [{}] {}",
+                todo_item_state_label(todo.state),
+                todo.text
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'static str {
+    match status {
+        crate::types::WorkItemPlanStatus::Draft => "draft",
+        crate::types::WorkItemPlanStatus::Ready => "ready",
+        crate::types::WorkItemPlanStatus::NeedsInput => "needs_input",
+    }
+}
+
+fn todo_item_state_label(state: crate::types::TodoItemState) -> &'static str {
+    match state {
+        crate::types::TodoItemState::Pending => "pending",
+        crate::types::TodoItemState::InProgress => "in_progress",
+        crate::types::TodoItemState::Completed => "completed",
     }
 }
 
@@ -760,7 +801,8 @@ mod tests {
     use crate::{
         agent_template::ensure_agent_home_layout,
         types::{
-            AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, WorkItemState,
+            AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, TodoItem,
+            TodoItemState, WorkItemPlanStatus, WorkItemState,
         },
     };
 
@@ -777,11 +819,11 @@ mod tests {
 
     fn work_item_with_workspace(
         agent_id: &str,
-        delivery_target: &str,
+        objective: &str,
         status: WorkItemState,
         workspace_id: &str,
     ) -> WorkItemRecord {
-        let mut work_item = WorkItemRecord::new(agent_id, delivery_target, status);
+        let mut work_item = WorkItemRecord::new(agent_id, objective, status);
         work_item.workspace_id = workspace_id.to_string();
         work_item
     }
@@ -934,9 +976,21 @@ mod tests {
         let mut work_item = WorkItemRecord::new(
             "default",
             "MemorySearch index implementation",
-            WorkItemState::Done,
+            WorkItemState::Completed,
         );
         work_item.workspace_id = "ws-holon".into();
+        work_item.plan_status = WorkItemPlanStatus::Ready;
+        work_item.plan = Some("Persist checksum-oriented task understanding in recall.".into());
+        work_item.todo_list = vec![
+            TodoItem {
+                text: "Index durable objective plan text".into(),
+                state: TodoItemState::Completed,
+            },
+            TodoItem {
+                text: "Verify checklist retrieval marker".into(),
+                state: TodoItemState::InProgress,
+            },
+        ];
         storage.append_work_item(&work_item).unwrap();
         storage
             .append_context_episode(&ContextEpisodeRecord {
@@ -951,7 +1005,7 @@ mod tests {
                 end_message_count: 3,
                 boundary_reason: EpisodeBoundaryReason::HardTurnCap,
                 current_work_item_id: Some(work_item.id.clone()),
-                delivery_target: Some("memory search".into()),
+                objective: Some("memory search".into()),
                 work_summary: Some("index worker".into()),
                 scope_hints: vec![],
                 summary: "Implemented workspace-aware recall over runtime evidence".into(),
@@ -976,6 +1030,22 @@ mod tests {
             .any(|result| result.kind == "context_episode"));
         let results = search_memory(&storage, "MemorySearch", 10, Some("ws-holon"), false).unwrap();
         assert!(results.iter().any(|result| result.kind == "work_item"));
+        let results = search_memory(&storage, "checksum", 10, Some("ws-holon"), false).unwrap();
+        assert!(results.iter().any(|result| result.kind == "work_item"));
+        let results = search_memory(&storage, "checklist", 10, Some("ws-holon"), false).unwrap();
+        assert!(results.iter().any(|result| result.kind == "work_item"));
+        let work_item_doc = get_memory(
+            &storage,
+            &format!("work_item:{}", work_item.id),
+            None,
+            Some("ws-holon"),
+        )
+        .unwrap()
+        .expect("work item memory document");
+        assert!(work_item_doc.content.contains("Plan status: ready"));
+        assert!(work_item_doc
+            .content
+            .contains("Verify checklist retrieval marker"));
         assert!(results.iter().all(|result| result.scope_kind == "agent"
             || result.workspace_id.as_deref() == Some("ws-holon")));
         let other_results = search_memory(&storage, "other", 10, Some("ws-holon"), false).unwrap();
@@ -1025,7 +1095,7 @@ mod tests {
         let work_item = work_item_with_workspace(
             "default",
             "existing work item",
-            WorkItemState::Done,
+            WorkItemState::Completed,
             "ws-existing",
         );
         storage.append_work_item(&work_item).unwrap();
@@ -1042,7 +1112,7 @@ mod tests {
                 end_message_count: 2,
                 boundary_reason: EpisodeBoundaryReason::HardTurnCap,
                 current_work_item_id: Some(work_item.id),
-                delivery_target: Some("existing episode".into()),
+                objective: Some("existing episode".into()),
                 work_summary: Some("existing episode summary".into()),
                 scope_hints: vec![],
                 summary: "existing context episode memory".into(),

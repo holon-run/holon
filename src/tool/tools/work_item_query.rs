@@ -4,16 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     runtime::RuntimeHandle,
-    types::{WorkItemRecord, WorkItemState},
+    types::{TodoItem, WorkItemPlanStatus, WorkItemRecord, WorkItemState},
 };
-
-use super::work_item_action::WorkPlanView;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkItemLifecycleView {
     Open,
-    Done,
+    Completed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,7 +20,7 @@ pub(crate) enum WorkItemFocusView {
     Current,
     Queued,
     Blocked,
-    Done,
+    Completed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,14 +28,17 @@ pub(crate) struct WorkItemView {
     pub(crate) id: String,
     pub(crate) agent_id: String,
     pub(crate) workspace_id: String,
-    pub(crate) delivery_target: String,
+    pub(crate) objective: String,
     pub(crate) state: WorkItemLifecycleView,
     pub(crate) focus: WorkItemFocusView,
     pub(crate) is_current: bool,
+    pub(crate) plan_status: WorkItemPlanStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) todo_list: Vec<TodoItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) blocked_by: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) plan: Option<WorkPlanView>,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) updated_at: DateTime<Utc>,
 }
@@ -77,13 +78,16 @@ pub(crate) async fn view_for_record(
     context: &WorkItemQueryContext,
     record: WorkItemRecord,
     include_plan: bool,
+    include_todo_list: bool,
 ) -> Result<WorkItemView> {
+    let _ = runtime;
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
         && record.state == WorkItemState::Open;
-    let plan = if include_plan {
-        runtime.latest_work_plan(&record.id).await?.map(Into::into)
+    let plan = include_plan.then(|| record.plan.clone()).flatten();
+    let todo_list = if include_todo_list {
+        record.todo_list.clone()
     } else {
-        None
+        Vec::new()
     };
     let state = lifecycle_view(&record.state);
     let focus = focus_view(&record, is_current);
@@ -91,12 +95,14 @@ pub(crate) async fn view_for_record(
         id: record.id,
         agent_id: record.agent_id,
         workspace_id: record.workspace_id,
-        delivery_target: record.delivery_target,
+        objective: record.objective,
         state,
         focus,
         is_current,
-        blocked_by: record.blocked_by,
+        plan_status: record.plan_status,
         plan,
+        todo_list,
+        blocked_by: record.blocked_by,
         created_at: record.created_at,
         updated_at: record.updated_at,
     })
@@ -105,13 +111,13 @@ pub(crate) async fn view_for_record(
 pub(crate) fn lifecycle_view(state: &WorkItemState) -> WorkItemLifecycleView {
     match state {
         WorkItemState::Open => WorkItemLifecycleView::Open,
-        WorkItemState::Done => WorkItemLifecycleView::Done,
+        WorkItemState::Completed => WorkItemLifecycleView::Completed,
     }
 }
 
 pub(crate) fn focus_view(record: &WorkItemRecord, is_current: bool) -> WorkItemFocusView {
-    if record.state == WorkItemState::Done {
-        return WorkItemFocusView::Done;
+    if record.state == WorkItemState::Completed {
+        return WorkItemFocusView::Completed;
     }
     if is_current {
         return WorkItemFocusView::Current;
