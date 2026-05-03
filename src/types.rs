@@ -1028,8 +1028,10 @@ pub struct WorkingMemorySnapshot {
     pub work_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scope_hints: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub current_plan: Vec<String>,
+    pub todo_list: Vec<TodoItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working_set_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1068,7 +1070,9 @@ pub struct TurnMemoryDelta {
     #[serde(default)]
     pub active_work_changed: bool,
     #[serde(default)]
-    pub current_plan_changed: bool,
+    pub plan_changed: bool,
+    #[serde(default)]
+    pub todo_list_changed: bool,
     #[serde(default)]
     pub scope_hints_changed: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

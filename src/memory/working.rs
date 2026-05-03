@@ -7,8 +7,9 @@ use crate::{
     storage::AppStorage,
     types::{
         AgentState, AuditEvent, ClosureDecision, ExternalTriggerScope, MessageEnvelope,
-        MessageKind, TodoItemState, ToolExecutionRecord, TurnMemoryDelta, WaitingIntentStatus,
-        WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot, WorkingMemoryUpdateReason,
+        MessageKind, TodoItem, TodoItemState, ToolExecutionRecord, TurnMemoryDelta,
+        WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
+        WorkingMemoryUpdateReason,
     },
 };
 
@@ -153,9 +154,9 @@ pub fn derive_working_memory_snapshot(
     let memory_tools = collect_memory_tools(&recent_tools, current_work_item_id);
 
     let work_summary = current_work_item.map(|item| item.objective.clone());
-    let current_plan = current_work_item
-        .as_ref()
-        .map(|item| render_current_plan(item))
+    let plan = current_work_item.and_then(|item| item.plan.clone());
+    let todo_list = current_work_item
+        .map(|item| item.todo_list.clone())
         .unwrap_or_default();
     let queued_waiting_followups = projection
         .queued_blocked
@@ -171,7 +172,8 @@ pub fn derive_working_memory_snapshot(
         current_work_item_id: current_work_item.map(|item| item.id.clone()),
         objective: current_work_item.map(|item| item.objective.clone()),
         work_summary,
-        current_plan,
+        plan,
+        todo_list,
         working_set_files,
         pending_followups,
         waiting_on,
@@ -242,7 +244,8 @@ fn derive_turn_memory_delta(
         active_work_changed: previous.current_work_item_id != next.current_work_item_id
             || previous.objective != next.objective
             || previous.work_summary != next.work_summary,
-        current_plan_changed: previous.current_plan != next.current_plan,
+        plan_changed: previous.plan != next.plan,
+        todo_list_changed: previous.todo_list != next.todo_list,
         scope_hints_changed: false,
         touched_files: diff_list(&previous.working_set_files, &next.working_set_files),
         commands,
@@ -287,13 +290,19 @@ fn derive_working_memory_delta(
         next.work_summary.as_deref(),
         "work summary",
     );
-    push_changed_vec(
+    push_changed_field(
         &mut changed_fields,
         &mut summary_lines,
-        "current_plan",
-        &previous.current_plan,
-        &next.current_plan,
-        "current plan",
+        "plan",
+        previous.plan.as_deref(),
+        next.plan.as_deref(),
+        "plan",
+    );
+    push_changed_todo_list(
+        &mut changed_fields,
+        &mut summary_lines,
+        &previous.todo_list,
+        &next.todo_list,
     );
     push_changed_vec(
         &mut changed_fields,
@@ -365,27 +374,6 @@ fn merge_pending_delta(
             MEMORY_SUMMARY_LINE_LIMIT,
         ),
     }
-}
-
-fn render_current_plan(plan: &WorkItemRecord) -> Vec<String> {
-    let mut lines = Vec::new();
-    if let Some(plan_text) = plan.plan.as_deref() {
-        lines.extend(
-            plan_text
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(ToString::to_string)
-                .take(MEMORY_PLAN_LIMIT),
-        );
-    }
-    lines.extend(
-        plan.todo_list
-            .iter()
-            .filter(|item| item.state != TodoItemState::Completed)
-            .map(|item| format!("[{:?}] {}", item.state, item.text)),
-    );
-    limit_vec(lines, MEMORY_PLAN_LIMIT)
 }
 
 fn collect_pending_followups(
@@ -686,6 +674,44 @@ fn push_changed_vec(
     }
 }
 
+fn push_changed_todo_list(
+    changed_fields: &mut Vec<String>,
+    summary_lines: &mut Vec<String>,
+    previous: &[TodoItem],
+    next: &[TodoItem],
+) {
+    if previous == next {
+        return;
+    }
+    changed_fields.push("todo_list".to_string());
+    if next.is_empty() {
+        summary_lines.push("cleared todo list".to_string());
+    } else {
+        summary_lines.push(format!(
+            "updated todo list: {}",
+            truncate_line(&render_todo_list_summary(next).join("; "), 120)
+        ));
+    }
+}
+
+fn render_todo_list_summary(items: &[TodoItem]) -> Vec<String> {
+    limit_vec(
+        items
+            .iter()
+            .map(|item| format!("[{}] {}", todo_state_label(item.state), item.text))
+            .collect(),
+        MEMORY_PLAN_LIMIT,
+    )
+}
+
+fn todo_state_label(state: TodoItemState) -> &'static str {
+    match state {
+        TodoItemState::Pending => "pending",
+        TodoItemState::InProgress => "in_progress",
+        TodoItemState::Completed => "completed",
+    }
+}
+
 fn format_waiting_reason(reason: crate::types::WaitingReason) -> &'static str {
     match reason {
         crate::types::WaitingReason::AwaitingOperatorInput => "awaiting operator input",
@@ -861,10 +887,14 @@ mod tests {
             snapshot.current_work_item_id.as_deref(),
             Some(active.id.as_str())
         );
+        assert_eq!(
+            snapshot.plan.as_deref(),
+            Some("Patch exporter and run focused test.")
+        );
         assert!(snapshot
-            .current_plan
+            .todo_list
             .iter()
-            .any(|item| item.contains("patch exporter")));
+            .any(|item| item.text.contains("patch exporter")));
         assert!(snapshot
             .working_set_files
             .contains(&"src/export.rs".to_string()));

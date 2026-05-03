@@ -4,6 +4,7 @@ use crate::{
     prompt::{PromptSection, PromptStability},
     storage::AppStorage,
     system::{execution_policy_summary_lines, ExecutionSnapshot},
+    tool::helpers::truncate_text,
     types::{
         AdmissionContext, AgentState, AuthorityClass, BriefRecord, ContextEpisodeRecord,
         ContinuationClass, ContinuationResolution, MessageBody, MessageDeliverySurface,
@@ -481,7 +482,10 @@ fn render_current_work_item(work_item: &WorkItemRecord) -> String {
         format!("- Id: {}", work_item.id),
         format!("- State: {:?}", work_item.state),
         format!("- Objective: {}", work_item.objective),
-        format!("- Plan state: {:?}", work_item.plan_status),
+        format!(
+            "- Plan status: {}",
+            work_item_plan_status_label(work_item.plan_status)
+        ),
     ];
     if let Some(plan) = work_item.plan.as_deref() {
         lines.push("- Plan:".to_string());
@@ -502,6 +506,14 @@ fn render_current_work_item(work_item: &WorkItemRecord) -> String {
         lines.push(format!("- Blocked by: {blocked_by}"));
     }
     lines.join("\n")
+}
+
+fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'static str {
+    match status {
+        crate::types::WorkItemPlanStatus::Draft => "draft",
+        crate::types::WorkItemPlanStatus::Ready => "ready",
+        crate::types::WorkItemPlanStatus::NeedsInput => "needs_input",
+    }
 }
 
 fn render_queued_blocked_work_items(items: &[&WorkItemRecord]) -> String {
@@ -536,14 +548,32 @@ fn render_working_memory(snapshot: &WorkingMemorySnapshot) -> String {
     if let Some(work_summary) = snapshot.work_summary.as_deref() {
         lines.push(format!("- Work summary: {work_summary}"));
     }
-    if !snapshot.current_plan.is_empty() {
-        lines.push("- Current plan:".to_string());
-        lines.extend(
-            snapshot
-                .current_plan
-                .iter()
-                .map(|step| format!("  - {step}")),
-        );
+    if let Some(plan) = snapshot.plan.as_deref() {
+        lines.push("- Plan:".to_string());
+        lines.push(format!(
+            "  {}",
+            truncate_text(&plan.replace('\n', " "), 160)
+        ));
+    }
+    if !snapshot.todo_list.is_empty() {
+        lines.push("- Todo list:".to_string());
+        let active_items = snapshot
+            .todo_list
+            .iter()
+            .filter(|item| item.state != TodoItemState::Completed)
+            .take(3);
+        lines.extend(active_items.map(|item| format!("  - {}", render_todo_item_compact(item))));
+        let omitted = snapshot
+            .todo_list
+            .iter()
+            .filter(|item| item.state != TodoItemState::Completed)
+            .skip(3)
+            .count();
+        if omitted > 0 {
+            lines.push(format!(
+                "  - ... {omitted} more active todo item(s) omitted"
+            ));
+        }
     }
     if !snapshot.working_set_files.is_empty() {
         lines.push("- Working set files:".to_string());
@@ -573,6 +603,15 @@ fn render_working_memory(snapshot: &WorkingMemorySnapshot) -> String {
         );
     }
     lines.join("\n")
+}
+
+fn render_todo_item_compact(item: &crate::types::TodoItem) -> String {
+    let state = match item.state {
+        TodoItemState::Pending => "pending",
+        TodoItemState::InProgress => "in_progress",
+        TodoItemState::Completed => "completed",
+    };
+    format!("[{state}] {}", truncate_text(&item.text, 120))
 }
 
 fn render_working_memory_delta_with_budget(
@@ -1351,7 +1390,7 @@ mod tests {
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
             objective: Some("ship working memory".into()),
-            current_plan: vec!["[InProgress] keep cache identity stable".into()],
+            plan: Some(vec!["[InProgress] keep cache identity stable"].join("\n")),
             ..WorkingMemorySnapshot::default()
         };
         session.working_memory.compression_epoch = 7;
@@ -1398,7 +1437,7 @@ mod tests {
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
             objective: Some("ship working memory".into()),
-            current_plan: vec!["[InProgress] keep cache identity stable".into()],
+            plan: Some(vec!["[InProgress] keep cache identity stable"].join("\n")),
             ..WorkingMemorySnapshot::default()
         };
         session.working_memory.working_memory_revision = 3;
@@ -1821,7 +1860,7 @@ mod tests {
         session.context_summary = Some("legacy summary".into());
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
             objective: Some("ship working memory".into()),
-            current_plan: vec!["[InProgress] wire post-turn refresh".into()],
+            plan: Some(vec!["[InProgress] wire post-turn refresh"].join("\n")),
             ..WorkingMemorySnapshot::default()
         };
         session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
@@ -1829,8 +1868,8 @@ mod tests {
             to_revision: 1,
             created_at_turn: 1,
             reason: crate::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-            changed_fields: vec!["current_plan".into()],
-            summary_lines: vec!["updated current plan: [InProgress] wire post-turn refresh".into()],
+            changed_fields: vec!["plan".into()],
+            summary_lines: vec!["updated plan: [InProgress] wire post-turn refresh".into()],
         });
 
         let built = build_context(
@@ -2748,7 +2787,7 @@ mod tests {
             current_work_item_id: Some(active.id.clone()),
             objective: Some(active.objective.clone()),
             work_summary: Some("wake path patching".into()),
-            current_plan: vec!["finish wake-path regression".into()],
+            plan: Some(vec!["finish wake-path regression"].join("\n")),
             ..WorkingMemorySnapshot::default()
         };
         session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
@@ -2756,8 +2795,8 @@ mod tests {
             to_revision: 2,
             created_at_turn: 2,
             reason: crate::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-            changed_fields: vec!["current_plan".into()],
-            summary_lines: vec!["updated current plan: finish wake-path regression".into()],
+            changed_fields: vec!["plan".into()],
+            summary_lines: vec!["updated plan: finish wake-path regression".into()],
         });
 
         let built = build_context(
@@ -2859,7 +2898,7 @@ mod tests {
         let mut session = AgentState::new("default");
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
             objective: Some("ship the prompt delta gating fix".into()),
-            current_plan: vec!["[InProgress] wire prompt render acknowledgement".into()],
+            plan: Some(vec!["[InProgress] wire prompt render acknowledgement"].join("\n")),
             ..WorkingMemorySnapshot::default()
         };
         session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
@@ -2867,9 +2906,9 @@ mod tests {
             to_revision: 5,
             created_at_turn: 7,
             reason: crate::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-            changed_fields: vec!["current_plan".into()],
+            changed_fields: vec!["plan".into()],
             summary_lines: vec![
-                "updated the current plan with a long-form explanation of why prompt rendering acknowledgement must happen after budgeted assembly rather than before prompt construction".into(),
+                "updated the plan with a long-form explanation of why prompt rendering acknowledgement must happen after budgeted assembly rather than before prompt construction".into(),
                 "recorded the continuity decision that pending deltas stay durable across turns until the model actually sees the delta section in a rendered prompt".into(),
                 "captured low-budget prompt coverage for the interactive runtime path that previously cleared the delta too early".into(),
             ],
@@ -3023,10 +3062,13 @@ mod tests {
                 "scope hint one repeats enough text to force truncation".repeat(8),
                 "scope hint two repeats enough text to force truncation".repeat(8),
             ],
-            current_plan: vec![
-                "inspect pre-turn sections for hard budget compliance".repeat(8),
-                "retain current input after oversized section truncation".repeat(8),
-            ],
+            plan: Some(
+                vec![
+                    "inspect pre-turn sections for hard budget compliance".repeat(8),
+                    "retain current input after oversized section truncation".repeat(8),
+                ]
+                .join("\n"),
+            ),
             working_set_files: vec![
                 "src/context.rs".repeat(12),
                 "src/runtime/message_dispatch.rs".repeat(12),

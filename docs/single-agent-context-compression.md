@@ -25,7 +25,7 @@ Holon already has a good foundation for this problem.
 Relevant current behavior:
 
 - `src/storage.rs` keeps durable append-only logs for messages, briefs, tools,
-  transcript, tasks, timers, work items, and work plans.
+  transcript, tasks, timers, and work items.
 - `src/context.rs` builds model-visible context from recent messages, recent
   briefs, recent tool executions, work queue state, worktree state,
   `context_summary`, and the current input/continuation contract.
@@ -194,7 +194,6 @@ This is the existing append-only store:
 - transcript
 - tasks
 - work items
-- work plans
 
 This is the truth source. It is not prompt-bounded. It is not compacted away.
 
@@ -205,7 +204,7 @@ This is the smallest and most volatile layer. It should include:
 - current input
 - continuation context
 - active work item
-- active work plan
+- active work item plan and todo_list
 - latest result brief
 - most recent message tail
 - most recent tool-result tail
@@ -221,12 +220,12 @@ agent in this session.
 
 Suggested fields:
 
-- active delivery target
+- active work item objective
 - active work summary
 - scope hints and completion hints
 - active workspace/worktree snapshot
 - important open threads
-- current plan / next checkpoints
+- durable plan and todo_list
 - working set files
 - important recent decisions
 - most recent verified outcome
@@ -241,7 +240,7 @@ Older history should be grouped into immutable episode summaries.
 
 An episode is not "N messages". It is a meaningful work chunk, for example:
 
-- one active work item or delivery-target phase
+- one active work item or objective phase
 - one debug/fix cycle
 - one analysis chunk
 - one background-task coordination interval
@@ -253,7 +252,7 @@ Each episode summary should capture:
 - covered turn range
 - covered message range
 - active work item id at the time
-- delivery target / work summary at the time
+- objective / work summary at the time
 - scope hints at the time
 - key files touched
 - key commands / verification
@@ -332,10 +331,14 @@ Working memory:
 - Scope hints:
   - benchmark passes and output format remains unchanged
   - do not redesign the internal metric model
-- Current plan:
-  - isolate the failing export path
-  - patch the zero-value handling
-  - rerun focused verification
+- Plan:
+  isolate the failing export path
+  patch the zero-value handling
+  rerun focused verification
+- Todo list:
+  - [completed] isolate the failing export path
+  - [in_progress] patch the zero-value handling
+  - [pending] rerun focused verification
 - Working set files:
   - src/benchmark/report.rs
   - tests/metrics_export.rs
@@ -419,7 +422,7 @@ Suggested prompt shape:
 ```text
 Active episode checkpoint:
 - Started at turn: 41
-- Current delivery target: fix flaky benchmark failure in metrics export
+- Current objective: fix flaky benchmark failure in metrics export
 - Scope hints:
   - keep output format unchanged
 - Working set files:
@@ -531,7 +534,8 @@ pub struct WorkingMemorySnapshot {
     pub objective: Option<String>,
     pub work_summary: Option<String>,
     pub scope_hints: Vec<String>,
-    pub current_plan: Vec<String>,
+    pub plan: Option<String>,
+    pub todo_list: Vec<TodoItem>,
     pub working_set_files: Vec<String>,
     pub recent_decisions: Vec<String>,
     pub pending_followups: Vec<String>,
@@ -582,7 +586,8 @@ from durable evidence:
 pub struct TurnMemoryDelta {
     pub turn_index: u64,
     pub active_work_changed: bool,
-    pub work_plan_changed: bool,
+    pub plan_changed: bool,
+    pub todo_list_changed: bool,
     pub scope_hints_changed: bool,
     pub touched_files: Vec<String>,
     pub commands: Vec<String>,
@@ -623,7 +628,7 @@ After every terminal interactive turn:
 Episode finalization boundaries should include:
 
 - active work item switch
-- delivery target changed materially
+- objective changed materially
 - strong scope-hint change
 - completed result with a meaningful state transition
 - explicit long wait / sleep boundary
@@ -639,13 +644,14 @@ state, not free-authored by the model.
 Recommended source mapping:
 
 - `active_work_item_id`: active work item id when one exists
-- `objective`: active work item delivery target
+- `objective`: active work item objective
 - `work_summary`: active work item summary
 - `scope_hints`: bounded extraction from trusted operator prompts, active work
   progress, and recent result briefs; prefer evidence bound to the current
   active work item and only fall back to legacy unbound records when no
   active-work-bound evidence exists
-- `current_plan`: active work plan items that are not completed
+- `plan`: active work item durable prose plan
+- `todo_list`: active work item structured checklist snapshot
 - `working_set_files`: recent `ApplyPatch`, relevant
   `read_file`, and file-oriented tool arguments, using the same active-work
   binding preference and legacy-unbound fallback
@@ -747,7 +753,7 @@ Recommended sources:
 
 - current message for `current_input`
 - continuation resolution for `continuation_context`
-- active work item and work plan for work coordination sections
+- active work item, plan, and todo_list for work coordination sections
 - latest result brief for immediate follow-up grounding
 - recent messages for short conversation continuity
 - recent tool executions for concrete recent evidence
@@ -798,7 +804,7 @@ Episode extraction should use existing durable evidence, especially:
   verification evidence
 - `agent_home/.holon/ledger/transcript.jsonl` for assistant round boundaries,
   continuation prompts, and rejoin/wake signals
-- active work item, work plan, and waiting intent state for semantic phase
+- active work item, plan, todo_list, and waiting intent state for semantic phase
   changes
 
 This is deliberately different from "take old prompt text and summarize it."
@@ -811,7 +817,7 @@ That builder accumulates:
 
 - covered turn range
 - active work item snapshot
-- delivery target / work summary snapshot
+- objective / work summary snapshot
 - scope hints snapshot
 - touched files
 - commands
@@ -831,7 +837,7 @@ Episode boundaries should be semantic, not purely count-based.
 Recommended first-pass boundary reasons:
 
 - active work item switched
-- delivery target changed materially
+- objective changed materially
 - scope hints changed materially
 - meaningful terminal result checkpoint
 - entered waiting or sleep state
