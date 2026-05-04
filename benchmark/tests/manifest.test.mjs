@@ -14,7 +14,10 @@ import {
   buildHolonBenchmarkEnv,
   buildOperatorPrompt,
   classifyVerificationResult,
+  classifyBenchmarkFinalizationDecision,
+  classifyHolonBenchmarkCompletion,
   collectChangedFilesFromGitOutputs,
+  captureHolonProviderRequests,
   codexBenchmarkConfigToml,
   detectScopeViolation,
   evaluateRealTaskSuccess,
@@ -282,6 +285,80 @@ test("buildHolonBenchmarkEnv disables provider fallback only for live benchmark 
   assert.equal(replayEnv.EXISTING_FLAG, "1");
   assert.equal(replayEnv.HOLON_MODEL, "openai-codex/gpt-5.3-codex-spark");
   assert.equal("HOLON_DISABLE_PROVIDER_FALLBACK" in replayEnv, false);
+});
+
+test("classifyHolonBenchmarkCompletion reports incomplete for awake running state", () => {
+  const result = classifyHolonBenchmarkCompletion({
+    runTimedOut: false,
+    runFinalStatus: "completed",
+    durableState: {
+      agent_status: "awake_running",
+      current_work_item_state: "open",
+      work_plan_in_progress_count: 1
+    }
+  });
+  assert.equal(result.terminal_state, "incomplete");
+  assert.equal(result.classification, "agent_incomplete");
+});
+
+test("classifyHolonBenchmarkCompletion reports runner_interrupted on timeout", () => {
+  const result = classifyHolonBenchmarkCompletion({
+    runTimedOut: true,
+    runFinalStatus: null,
+    durableState: {
+      agent_status: "asleep",
+      current_work_item_state: "completed",
+      work_plan_in_progress_count: 0
+    }
+  });
+  assert.equal(result.terminal_state, "incomplete");
+  assert.equal(result.classification, "runner_interrupted");
+});
+
+test("classifyBenchmarkFinalizationDecision blocks incomplete runner state", () => {
+  const blocked = classifyBenchmarkFinalizationDecision({
+    terminalState: "incomplete",
+    completionClassification: "agent_incomplete"
+  });
+  assert.equal(blocked.can_finalize, false);
+  assert.equal(blocked.reason, "agent_incomplete");
+
+  const allowed = classifyBenchmarkFinalizationDecision({
+    terminalState: "terminal",
+    completionClassification: "completed"
+  });
+  assert.equal(allowed.can_finalize, true);
+});
+
+test("captureHolonProviderRequests redacts sensitive fields", () => {
+  const captured = captureHolonProviderRequests({
+    transcript: [
+      {
+        kind: "assistant_round",
+        round: 2,
+        created_at: "2026-05-04T00:00:00Z",
+        stop_reason: "completed",
+        data: {
+          requested_model: "openai-codex/gpt-5.3-codex-spark",
+          provider_request_diagnostics: {
+            request_lowering_mode: "provider_window_replay",
+            authorization: "Bearer secret-value"
+          },
+          blocks: [
+            { type: "text", text: "review issue and patch runtime" },
+            { type: "tool_use", name: "ExecCommand", id: "call_1" }
+          ]
+        }
+      }
+    ],
+    events: []
+  });
+  assert.equal(captured.request_body_available, false);
+  assert.equal(captured.rounds.length, 1);
+  assert.equal(
+    captured.rounds[0].provider_request_diagnostics.authorization,
+    "[REDACTED]"
+  );
 });
 
 test("buildOperatorPrompt preserves legacy push-only PR policy", () => {
