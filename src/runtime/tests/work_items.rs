@@ -725,6 +725,7 @@ async fn turn_end_work_item_commit_keeps_failed_turn_open_without_blocker() {
         guard.state.last_turn_terminal = Some(TurnTerminalRecord {
             turn_index: guard.state.turn_index,
             kind: TurnTerminalKind::Aborted,
+            reason: None,
             last_assistant_message: Some("provider context_length_exceeded".into()),
             checkpoint: None,
             completed_at: Utc::now(),
@@ -771,6 +772,7 @@ async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
         guard.state.last_turn_terminal = Some(TurnTerminalRecord {
             turn_index: guard.state.turn_index,
             kind: TurnTerminalKind::Aborted,
+            reason: None,
             last_assistant_message: Some("provider timeout".into()),
             checkpoint: None,
             completed_at: Utc::now(),

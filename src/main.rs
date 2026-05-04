@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use holon::{
     client::LocalClient,
     config::{
@@ -38,6 +38,25 @@ use tracing_subscriber::EnvFilter;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ValueEnum)]
+enum ControlCommandAction {
+    Pause,
+    Resume,
+    Stop,
+    Interrupt,
+}
+
+impl ControlCommandAction {
+    fn as_control_action(&self) -> Option<ControlAction> {
+        match self {
+            Self::Pause => Some(ControlAction::Pause),
+            Self::Resume => Some(ControlAction::Resume),
+            Self::Stop => Some(ControlAction::Stop),
+            Self::Interrupt => None,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -104,7 +123,7 @@ enum Commands {
         agent: Option<String>,
     },
     Control {
-        action: ControlAction,
+        action: ControlCommandAction,
         #[arg(long)]
         agent: Option<String>,
     },
@@ -526,11 +545,25 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         }
         Commands::Control { action, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            if action == ControlCommandAction::Interrupt {
+                return post_control_json(
+                    &config,
+                    &format!("/control/agents/{agent}/current-run/interrupt"),
+                    &http::InterruptCurrentRunRequest {
+                        run_id: None,
+                        mode: Some("pause_after_abort".into()),
+                        trust: Some(TrustLevel::TrustedOperator),
+                    },
+                )
+                .await;
+            }
             post_control_json(
                 &config,
                 &format!("/control/agents/{agent}/control"),
                 &ControlRequest {
-                    action,
+                    action: action
+                        .as_control_action()
+                        .expect("interrupt action should be handled separately"),
                     trust: Some(TrustLevel::TrustedOperator),
                 },
             )

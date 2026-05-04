@@ -129,6 +129,7 @@ pub(crate) async fn bind_turn_to_work_item(runtime: &RuntimeHandle, work_item_id
     guard.state.last_turn_terminal = Some(TurnTerminalRecord {
         turn_index: 1,
         kind: TurnTerminalKind::Completed,
+        reason: None,
         last_assistant_message: Some("done".into()),
         checkpoint: None,
         completed_at: Utc::now(),

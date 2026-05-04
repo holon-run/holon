@@ -9,7 +9,7 @@ use crate::{
     provider::{
         provider_attempt_timeline, provider_error_is_context_length_exceeded, AgentProvider,
         ConversationMessage, ModelBlock, PromptContentBlock, ProviderAttemptTimeline,
-        ProviderPromptFrame, ProviderTurnRequest, ToolResultBlock,
+        ProviderPromptFrame, ProviderTurnRequest, ProviderTurnResponse, ToolResultBlock,
     },
     runtime::provider_turn::{
         build_continuation_request, build_provider_prompt_frame, build_provider_turn_request,
@@ -26,7 +26,9 @@ use crate::{
     },
 };
 
-use super::{combine_text_history, is_max_output_stop_reason, RuntimeHandle};
+use super::{
+    combine_text_history, is_max_output_stop_reason, CurrentRunInterrupted, RuntimeHandle,
+};
 
 pub(super) struct AgentLoopOutcome {
     pub(super) final_text: String,
@@ -1263,6 +1265,7 @@ impl RuntimeHandle {
             let record = TurnTerminalRecord {
                 turn_index: guard.state.turn_index,
                 kind,
+                reason: None,
                 last_assistant_message,
                 checkpoint,
                 completed_at: chrono::Utc::now(),
@@ -1277,6 +1280,66 @@ impl RuntimeHandle {
             serde_json::to_value(&record)?,
         ))?;
         Ok(record)
+    }
+
+    async fn persist_turn_interrupted_record(
+        &self,
+        run_id: &str,
+        last_assistant_message: Option<String>,
+        duration_ms: u64,
+    ) -> Result<TurnTerminalRecord> {
+        let record = {
+            let mut guard = self.inner.agent.lock().await;
+            let record = TurnTerminalRecord {
+                turn_index: guard.state.turn_index,
+                kind: TurnTerminalKind::Aborted,
+                reason: Some("operator_interrupted".into()),
+                last_assistant_message,
+                checkpoint: None,
+                completed_at: chrono::Utc::now(),
+                duration_ms,
+            };
+            guard.state.last_turn_terminal = Some(record.clone());
+            self.inner.storage.write_agent(&guard.state)?;
+            record
+        };
+        self.inner.storage.append_event(&AuditEvent::new(
+            "turn_terminal",
+            serde_json::to_value(&record)?,
+        ))?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "turn_terminal_aborted",
+            serde_json::json!({
+                "run_id": run_id,
+                "reason": "operator_interrupted",
+                "record": record,
+            }),
+        ))?;
+        Ok(record)
+    }
+
+    async fn complete_turn_with_interrupt(
+        &self,
+        provider: std::sync::Arc<dyn AgentProvider>,
+        request: ProviderTurnRequest,
+    ) -> Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> {
+        if let Some((run_id, token)) = self.current_run_interrupt_token().await {
+            tokio::select! {
+                result = provider.complete_turn_with_diagnostics(request) => result,
+                _ = token.cancelled() => Err(CurrentRunInterrupted { run_id }.into()),
+            }
+        } else {
+            provider.complete_turn_with_diagnostics(request).await
+        }
+    }
+
+    async fn ensure_not_interrupted(&self) -> Result<()> {
+        if let Some((run_id, token)) = self.current_run_interrupt_token().await {
+            if token.is_cancelled() {
+                return Err(CurrentRunInterrupted { run_id }.into());
+            }
+        }
+        Ok(())
     }
 
     pub(super) async fn run_agent_loop(
@@ -1302,6 +1365,17 @@ impl RuntimeHandle {
         };
 
         loop {
+            if let Err(err) = self.ensure_not_interrupted().await {
+                if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+                    self.persist_turn_interrupted_record(
+                        &interrupted.run_id,
+                        last_assistant_message.clone(),
+                        turn_started_at.elapsed().as_millis() as u64,
+                    )
+                    .await?;
+                }
+                return Err(err);
+            }
             round += 1;
             if let Some(max_tool_rounds) = loop_control.max_tool_rounds {
                 if round > max_tool_rounds {
@@ -1335,11 +1409,20 @@ impl RuntimeHandle {
                 let request = build_provider_turn_request(&effective_prompt, available_tools);
                 let provider = self.current_provider().await;
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
-                match provider.complete_turn_with_diagnostics(request).await {
+                match self.complete_turn_with_interrupt(provider, request).await {
                     Ok((response, attempt_timeline)) => {
                         (response, attempt_timeline, context_management)
                     }
                     Err(err) => {
+                        if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+                            self.persist_turn_interrupted_record(
+                                &interrupted.run_id,
+                                last_assistant_message.clone(),
+                                turn_started_at.elapsed().as_millis() as u64,
+                            )
+                            .await?;
+                            return Err(err);
+                        }
                         if let Some(outcome) = self
                             .maybe_handle_context_length_exceeded(
                                 agent_id,
@@ -1542,11 +1625,20 @@ impl RuntimeHandle {
                 );
                 let provider = self.current_provider().await;
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
-                match provider.complete_turn_with_diagnostics(request).await {
+                match self.complete_turn_with_interrupt(provider, request).await {
                     Ok((response, attempt_timeline)) => {
                         (response, attempt_timeline, context_management)
                     }
                     Err(err) => {
+                        if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+                            self.persist_turn_interrupted_record(
+                                &interrupted.run_id,
+                                last_assistant_message.clone(),
+                                turn_started_at.elapsed().as_millis() as u64,
+                            )
+                            .await?;
+                            return Err(err);
+                        }
                         if let Some(outcome) = self
                             .maybe_handle_context_length_exceeded(
                                 agent_id,
@@ -1886,6 +1978,17 @@ impl RuntimeHandle {
             let mut tool_results = Vec::new();
             let mut tool_result_envelopes = Vec::new();
             for call in tool_calls {
+                if let Err(err) = self.ensure_not_interrupted().await {
+                    if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+                        self.persist_turn_interrupted_record(
+                            &interrupted.run_id,
+                            last_assistant_message.clone(),
+                            turn_started_at.elapsed().as_millis() as u64,
+                        )
+                        .await?;
+                    }
+                    return Err(err);
+                }
                 let tool_call_id = call.id.clone();
                 let tool_name = call.name.clone();
                 if !allowed_tool_names.contains(&call.name) {
@@ -1968,12 +2071,20 @@ impl RuntimeHandle {
                     tool_result_envelopes.push(result.envelope);
                     continue;
                 }
-                match self
-                    .inner
-                    .tools
-                    .execute(self, agent_id, &trust, &call)
-                    .await
+                let tool_execution = if let Some((run_id, token)) =
+                    self.current_run_interrupt_token().await
                 {
+                    tokio::select! {
+                        result = self.inner.tools.execute(self, agent_id, &trust, &call) => result,
+                        _ = token.cancelled() => Err(CurrentRunInterrupted { run_id }.into()),
+                    }
+                } else {
+                    self.inner
+                        .tools
+                        .execute(self, agent_id, &trust, &call)
+                        .await
+                };
+                match tool_execution {
                     Ok((result, mut record)) => {
                         let result_content =
                             crate::tool::tools::render_tool_result_for_model(&result)?;
@@ -2028,6 +2139,15 @@ impl RuntimeHandle {
                         });
                     }
                     Err(err) => {
+                        if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+                            self.persist_turn_interrupted_record(
+                                &interrupted.run_id,
+                                last_assistant_message.clone(),
+                                turn_started_at.elapsed().as_millis() as u64,
+                            )
+                            .await?;
+                            return Err(err);
+                        }
                         let error = ToolError::from_anyhow(&err);
                         let message = error.render();
                         self.inner.storage.append_event(&AuditEvent::new(
@@ -3393,6 +3513,7 @@ mod tests {
         let terminal = TurnTerminalRecord {
             turn_index: 7,
             kind: TurnTerminalKind::Completed,
+            reason: None,
             last_assistant_message: Some("ordinary final text without checkpoint keywords".into()),
             checkpoint: Some(TurnTerminalCheckpointRecord {
                 request_id: "checkpoint-7".into(),
@@ -3424,6 +3545,7 @@ mod tests {
         let terminal = TurnTerminalRecord {
             turn_index: 7,
             kind: TurnTerminalKind::Completed,
+            reason: None,
             last_assistant_message: Some(
                 "Progress checkpoint:\n\n- current user goal: fix issue\n- next goal-aligned action: apply patch"
                     .into(),

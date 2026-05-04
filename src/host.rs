@@ -256,6 +256,18 @@ impl RuntimeHost {
         Ok(runtime)
     }
 
+    pub async fn interrupt_public_agent_current_run(
+        &self,
+        agent_id: &str,
+        request: crate::runtime::CurrentRunInterruptRequest,
+    ) -> std::result::Result<crate::runtime::CurrentRunInterruptOutcome, PublicAgentError> {
+        let runtime = self.get_public_agent(agent_id).await?;
+        runtime
+            .interrupt_current_run(request)
+            .await
+            .map_err(PublicAgentError::Runtime)
+    }
+
     pub async fn enqueue_public_work_item(
         &self,
         agent_id: &str,
@@ -2000,6 +2012,7 @@ mod tests {
         child_state.last_turn_terminal = Some(crate::types::TurnTerminalRecord {
             turn_index: 1,
             kind: crate::types::TurnTerminalKind::Completed,
+            reason: None,
             last_assistant_message: Some("child finished after restart".into()),
             checkpoint: None,
             completed_at: chrono::Utc::now(),

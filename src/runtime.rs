@@ -34,6 +34,7 @@ use bootstrap::ProviderReconfigurator;
 use chrono::Utc;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -159,6 +160,51 @@ struct RuntimeInner {
 struct RuntimeAgent {
     state: AgentState,
     queue: RuntimeQueue,
+    current_run_interrupt: Option<CurrentRunInterruptHandle>,
+}
+
+#[derive(Debug, Clone)]
+struct CurrentRunInterruptHandle {
+    run_id: String,
+    token: CancellationToken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurrentRunInterruptMode {
+    PauseAfterAbort,
+}
+
+impl CurrentRunInterruptMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PauseAfterAbort => "pause_after_abort",
+        }
+    }
+}
+
+impl Default for CurrentRunInterruptMode {
+    fn default() -> Self {
+        Self::PauseAfterAbort
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentRunInterruptRequest {
+    pub run_id: Option<String>,
+    pub mode: CurrentRunInterruptMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentRunInterruptOutcome {
+    pub agent_id: String,
+    pub run_id: String,
+    pub mode: CurrentRunInterruptMode,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("current run interrupted by operator")]
+pub struct CurrentRunInterrupted {
+    pub run_id: String,
 }
 
 impl RuntimeHandle {
@@ -180,6 +226,55 @@ impl RuntimeHandle {
 
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
         self.inner.storage.poll_activity_marker()
+    }
+
+    pub async fn interrupt_current_run(
+        &self,
+        request: CurrentRunInterruptRequest,
+    ) -> Result<CurrentRunInterruptOutcome> {
+        let mut guard = self.inner.agent.lock().await;
+        let agent_id = guard.state.id.clone();
+        let Some(handle) = guard.current_run_interrupt.as_ref().cloned() else {
+            return Err(anyhow!("agent {agent_id} has no current run to interrupt"));
+        };
+        if let Some(expected_run_id) = request.run_id.as_deref() {
+            if expected_run_id != handle.run_id {
+                return Err(anyhow!(
+                    "stale run_id {expected_run_id}; current run is {}",
+                    handle.run_id
+                ));
+            }
+        }
+
+        handle.token.cancel();
+        guard.state.status = AgentStatus::Paused;
+        guard.state.current_run_id = None;
+        self.inner.storage.write_agent(&guard.state)?;
+        drop(guard);
+
+        self.inner.storage.append_event(&AuditEvent::new(
+            "current_run_interrupted",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "run_id": handle.run_id,
+                "mode": request.mode.as_str(),
+                "reason": "operator_interrupted",
+            }),
+        ))?;
+        self.inner.notify.notify_waiters();
+        Ok(CurrentRunInterruptOutcome {
+            agent_id,
+            run_id: handle.run_id,
+            mode: request.mode,
+        })
+    }
+
+    pub(crate) async fn current_run_interrupt_token(&self) -> Option<(String, CancellationToken)> {
+        let guard = self.inner.agent.lock().await;
+        guard
+            .current_run_interrupt
+            .as_ref()
+            .map(|handle| (handle.run_id.clone(), handle.token.clone()))
     }
 
     pub fn all_events(&self) -> Result<Vec<AuditEvent>> {
@@ -743,10 +838,16 @@ impl RuntimeHandle {
                 if guard.state.status == AgentStatus::Paused {
                     None
                 } else if let Some(message) = guard.queue.pop() {
+                    let run_id = Uuid::new_v4().to_string();
+                    let interrupt_token = CancellationToken::new();
                     let prior_state = guard.state.clone();
                     guard.state.pending = guard.queue.len();
                     guard.state.status = AgentStatus::AwakeRunning;
-                    guard.state.current_run_id = Some(Uuid::new_v4().to_string());
+                    guard.state.current_run_id = Some(run_id.clone());
+                    guard.current_run_interrupt = Some(CurrentRunInterruptHandle {
+                        run_id,
+                        token: interrupt_token,
+                    });
                     guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
                     self.inner.storage.write_agent(&guard.state)?;
                     self.inner.storage.append_queue_entry(&QueueEntryRecord {
@@ -787,20 +888,41 @@ impl RuntimeHandle {
 
             let prior_closure = self.closure_decision_for_state(&prior_state, None).await?;
             if let Err(err) = self.process_message(message.clone(), prior_closure).await {
-                error!("failed to process message {}: {err:#}", message.id);
-                self.inner.storage.append_event(&AuditEvent::new(
-                    "runtime_error",
-                    serde_json::json!({
-                        "message_id": message.id,
-                        "message_kind": message.kind,
-                        "error": err.to_string(),
-                        "token_usage": provider_attempt_timeline(&err)
-                            .and_then(|timeline| timeline.aggregated_token_usage.clone()),
-                        "provider_attempt_timeline": provider_attempt_timeline(&err),
-                    }),
-                ))?;
-                self.persist_runtime_failure_artifacts(&message, &err)
-                    .await?;
+                let interrupted = err.downcast_ref::<CurrentRunInterrupted>().cloned();
+                if let Some(interrupted) = interrupted.as_ref() {
+                    self.inner.storage.append_queue_entry(&QueueEntryRecord {
+                        message_id: message.id.clone(),
+                        agent_id: message.agent_id.clone(),
+                        priority: message.priority.clone(),
+                        status: QueueEntryStatus::Interrupted,
+                        created_at: message.created_at,
+                        updated_at: Utc::now(),
+                    })?;
+                    self.inner.storage.append_event(&AuditEvent::new(
+                        "message_processing_interrupted",
+                        serde_json::json!({
+                            "message_id": message.id,
+                            "message_kind": message.kind,
+                            "run_id": interrupted.run_id,
+                            "reason": "operator_interrupted",
+                        }),
+                    ))?;
+                } else {
+                    error!("failed to process message {}: {err:#}", message.id);
+                    self.inner.storage.append_event(&AuditEvent::new(
+                        "runtime_error",
+                        serde_json::json!({
+                            "message_id": message.id,
+                            "message_kind": message.kind,
+                            "error": err.to_string(),
+                            "token_usage": provider_attempt_timeline(&err)
+                                .and_then(|timeline| timeline.aggregated_token_usage.clone()),
+                            "provider_attempt_timeline": provider_attempt_timeline(&err),
+                        }),
+                    ))?;
+                    self.persist_runtime_failure_artifacts(&message, &err)
+                        .await?;
+                }
                 let mut guard = self.inner.agent.lock().await;
                 if !matches!(
                     guard.state.status,
@@ -816,12 +938,23 @@ impl RuntimeHandle {
                     };
                 }
                 guard.state.current_run_id = None;
+                if interrupted.as_ref().is_some_and(|interrupted| {
+                    guard
+                        .current_run_interrupt
+                        .as_ref()
+                        .is_some_and(|handle| handle.run_id == interrupted.run_id)
+                }) {
+                    guard.current_run_interrupt = None;
+                }
                 self.inner.storage.write_agent(&guard.state)?;
                 drop(guard);
                 self.maybe_commit_turn_end_work_item_transition().await?;
                 self.record_closure_decision_event(Some(true)).await?;
                 self.maybe_emit_pending_system_tick(None).await?;
             } else {
+                let mut guard = self.inner.agent.lock().await;
+                guard.current_run_interrupt = None;
+                drop(guard);
                 self.inner.storage.append_queue_entry(&QueueEntryRecord {
                     message_id: message.id.clone(),
                     agent_id: message.agent_id.clone(),
