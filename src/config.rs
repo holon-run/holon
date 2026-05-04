@@ -1758,7 +1758,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
     insert_anthropic_compatible_provider(
         &mut registry,
         "xiaomi-anthropic",
-        "https://api.xiaomimimo.com/anthropic",
+        "https://token-plan-cn.xiaomimimo.com/anthropic",
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
@@ -3169,7 +3169,7 @@ mod tests {
         );
         assert_eq!(
             xiaomi_anthropic.base_url,
-            "https://api.xiaomimimo.com/anthropic"
+            "https://token-plan-cn.xiaomimimo.com/anthropic"
         );
         assert_eq!(xiaomi_anthropic.credential.as_deref(), Some("xiaomi-key"));
 
