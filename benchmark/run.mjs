@@ -655,8 +655,8 @@ async function runRealBenchmarkTask({
   const scopeViolation = detectScopeViolation(changedFiles, manifest.evaluation);
   const finalizationDecision = classifyBenchmarkFinalizationDecision(runnerResult);
   await writeJson(path.join(taskDir, "finalization.json"), finalizationDecision);
-  let commitInfo = { status: "skipped_incomplete_runner", reason: finalizationDecision.reason };
-  let prInfo = { status: "skipped_incomplete_runner", reason: finalizationDecision.reason };
+  let commitInfo = { status: "skipped_finalization", reason: finalizationDecision.reason };
+  let prInfo = { status: "skipped_finalization", reason: finalizationDecision.reason };
   if (finalizationDecision.can_finalize) {
     commitInfo = await commitBenchmarkChanges({
       worktreePath,
@@ -942,7 +942,6 @@ async function runHolonRealTask({ runnerConfig, prompt, worktreePath, taskDir, r
   await copyAgentJsonlArtifact(agentDir, taskDir, "transcript.jsonl");
   await copyAgentStateArtifact(agentDir, taskDir, "agent.json");
   await copyAgentJsonlArtifact(agentDir, taskDir, "work_items.jsonl");
-  await copyAgentJsonlArtifact(agentDir, taskDir, "work_plans.jsonl");
 
   const briefs = await readAgentJsonlArtifact(agentDir, "briefs.jsonl", taskDir);
   const toolExecutions = await readAgentJsonlArtifact(agentDir, "tools.jsonl", taskDir);
@@ -971,7 +970,7 @@ async function runHolonRealTask({ runnerConfig, prompt, worktreePath, taskDir, r
     runFinalStatus: parsed?.final_status ?? null,
     durableState
   });
-  const finalMessage = parsed ? selectHolonFinalMessage(parsed, briefs) : "";
+  const finalMessage = selectHolonFinalMessage(parsed ?? {}, briefs);
   const defaultErrorKind = run.timedOut
     ? "holon_run_timed_out"
     : run.stdout.trim()
@@ -3927,34 +3926,22 @@ function latestRecordsById(rows) {
   return map;
 }
 
-function latestWorkPlansByWorkItem(rows) {
-  const map = new Map();
-  for (const row of rows ?? []) {
-    if (!row || typeof row !== "object" || !row.work_item_id) {
-      continue;
-    }
-    map.set(row.work_item_id, row);
-  }
-  return map;
-}
-
 async function summarizeHolonDurableState(agentDir, taskDir) {
   const agentState = await readJsonIfExists(path.join(agentDir, ".holon", "state", "agent.json"));
   const workItems = await readAgentJsonlArtifact(agentDir, "work_items.jsonl", taskDir);
-  const workPlans = await readAgentJsonlArtifact(agentDir, "work_plans.jsonl", taskDir);
   const workItemsById = latestRecordsById(workItems);
-  const plansByWorkItem = latestWorkPlansByWorkItem(workPlans);
   const currentWorkItemId = agentState?.current_work_item_id ?? null;
   const currentWorkItem = currentWorkItemId ? workItemsById.get(currentWorkItemId) ?? null : null;
-  const currentPlan = currentWorkItemId ? plansByWorkItem.get(currentWorkItemId) ?? null : null;
-  const inProgressTodos = (currentPlan?.items ?? []).filter((item) => item?.status === "in_progress");
+  const inProgressTodos = (currentWorkItem?.todo_list ?? []).filter(
+    (item) => item?.state === "in_progress"
+  );
   return {
     agent_status: agentState?.status ?? null,
     current_work_item_id: currentWorkItemId,
     current_work_item_state: currentWorkItem?.state ?? null,
     current_work_item_delivery_target: currentWorkItem?.delivery_target ?? null,
     work_plan_in_progress_count: inProgressTodos.length,
-    work_plan_in_progress_steps: inProgressTodos.map((item) => item?.step).filter(Boolean),
+    work_plan_in_progress_steps: inProgressTodos.map((item) => item?.text).filter(Boolean),
     agent_total_input_tokens: agentState?.total_input_tokens ?? null,
     agent_total_output_tokens: agentState?.total_output_tokens ?? null,
     agent_total_model_rounds: agentState?.total_model_rounds ?? null
@@ -3962,7 +3949,8 @@ async function summarizeHolonDurableState(agentDir, taskDir) {
 }
 
 function redactSecrets(value) {
-  const secretKeyPattern = /(authorization|api[_-]?key|cookie|token|secret|bearer|password)/i;
+  const secretKeyPattern =
+    /^(authorization|proxy_authorization|api[_-]?key|cookie|set-cookie|password|secret|access_token|refresh_token|id_token|session_token|bearer_token|credential|credentials)$/i;
   if (Array.isArray(value)) {
     return value.map((item) => redactSecrets(item));
   }
@@ -4008,7 +3996,7 @@ export function captureHolonProviderRequests({ transcript, events }) {
         response_stop_reason: entry.stop_reason ?? null,
         assistant_blocks: blocks.map((block) =>
           block?.type === "text"
-            ? { type: "text", text: String(block.text ?? ""), bytes: String(block.text ?? "").length }
+            ? { type: "text", text: String(block.text ?? ""), bytes: Buffer.byteLength(String(block.text ?? ""), "utf8") }
             : {
                 type: block?.type ?? "unknown",
                 name: block?.name ?? null,

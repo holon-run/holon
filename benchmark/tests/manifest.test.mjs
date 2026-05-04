@@ -344,8 +344,12 @@ test("captureHolonProviderRequests redacts sensitive fields", () => {
             request_lowering_mode: "provider_window_replay",
             authorization: "Bearer secret-value"
           },
+          token_usage: {
+            input_tokens: 123,
+            output_tokens: 45
+          },
           blocks: [
-            { type: "text", text: "review issue and patch runtime" },
+            { type: "text", text: "你好" },
             { type: "tool_use", name: "ExecCommand", id: "call_1" }
           ]
         }
@@ -357,12 +361,18 @@ test("captureHolonProviderRequests redacts sensitive fields", () => {
   assert.equal(captured.rounds.length, 1);
   assert.equal(
     captured.rounds[0].assistant_blocks[0].text,
-    "review issue and patch runtime"
+    "你好"
+  );
+  assert.equal(
+    captured.rounds[0].assistant_blocks[0].bytes,
+    Buffer.byteLength("你好", "utf8")
   );
   assert.equal(
     captured.rounds[0].provider_request_diagnostics.authorization,
     "[REDACTED]"
   );
+  assert.equal(captured.rounds[0].token_usage.input_tokens, 123);
+  assert.equal(captured.rounds[0].token_usage.output_tokens, 45);
 });
 
 test("buildOperatorPrompt preserves legacy push-only PR policy", () => {
