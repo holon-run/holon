@@ -1590,10 +1590,10 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["CHUTES_API_KEY"],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "deepseek",
-        "https://api.deepseek.com",
+        "https://api.deepseek.com/anthropic",
         &["DEEPSEEK_API_KEY"],
         settings_env,
     )?;
@@ -1748,10 +1748,10 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         ],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "xiaomi",
-        "https://api.xiaomimimo.com/v1",
+        "https://token-plan-cn.xiaomimimo.com/anthropic",
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
@@ -3127,11 +3127,8 @@ mod tests {
         let deepseek = providers
             .get(&ProviderId::parse("deepseek").unwrap())
             .unwrap();
-        assert_eq!(
-            deepseek.transport,
-            ProviderTransportKind::OpenAiChatCompletions
-        );
-        assert_eq!(deepseek.base_url, "https://api.deepseek.com");
+        assert_eq!(deepseek.transport, ProviderTransportKind::AnthropicMessages);
+        assert_eq!(deepseek.base_url, "https://api.deepseek.com/anthropic");
         assert_eq!(deepseek.credential.as_deref(), Some("deepseek-key"));
 
         let deepseek_anthropic = providers
@@ -3153,11 +3150,11 @@ mod tests {
         let xiaomi = providers
             .get(&ProviderId::parse("xiaomi").unwrap())
             .unwrap();
+        assert_eq!(xiaomi.transport, ProviderTransportKind::AnthropicMessages);
         assert_eq!(
-            xiaomi.transport,
-            ProviderTransportKind::OpenAiChatCompletions
+            xiaomi.base_url,
+            "https://token-plan-cn.xiaomimimo.com/anthropic"
         );
-        assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/v1");
         assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
 
         let xiaomi_anthropic = providers
