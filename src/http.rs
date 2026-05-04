@@ -1483,6 +1483,9 @@ pub async fn set_agent_model(
     Json(request): Json<SetAgentModelRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    if let Some(reasoning_effort) = request.reasoning_effort.as_deref() {
+        validate_reasoning_effort(reasoning_effort)?;
+    }
     let admission_context = control_admission_context(&state);
     let provided_trust = request.trust;
     let model = ModelRef::parse(&request.model).map_err(error_response)?;
@@ -1516,6 +1519,15 @@ pub async fn set_agent_model(
         "agent_id": agent_id,
         "model": model_state,
     })))
+}
+
+fn validate_reasoning_effort(value: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    match value {
+        "low" | "medium" | "high" | "xhigh" => Ok(()),
+        _ => Err(bad_request(format!(
+            "invalid reasoning_effort '{value}'; must be one of low, medium, high, xhigh"
+        ))),
+    }
 }
 
 pub async fn clear_agent_model(

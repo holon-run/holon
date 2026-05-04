@@ -561,12 +561,14 @@ impl TuiApp {
             OverlayState::ModelEffortPicker {
                 model,
                 mut selected,
+                return_filter,
+                return_selected,
             } => {
                 match key.code {
                     KeyCode::Esc => {
                         self.overlay = OverlayState::ModelPicker {
-                            filter: String::new(),
-                            selected: 0,
+                            filter: return_filter,
+                            selected: return_selected,
                         };
                     }
                     KeyCode::Enter => {
@@ -575,14 +577,30 @@ impl TuiApp {
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         selected = selected.saturating_sub(1);
-                        self.overlay = OverlayState::ModelEffortPicker { model, selected };
+                        self.overlay = OverlayState::ModelEffortPicker {
+                            model,
+                            selected,
+                            return_filter,
+                            return_selected,
+                        };
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        selected = (selected + 1).min(4);
-                        self.overlay = OverlayState::ModelEffortPicker { model, selected };
+                        let max = crate::tui::overlay::MODEL_REASONING_EFFORT_OPTIONS.len() - 1;
+                        selected = (selected + 1).min(max);
+                        self.overlay = OverlayState::ModelEffortPicker {
+                            model,
+                            selected,
+                            return_filter,
+                            return_selected,
+                        };
                     }
                     _ => {
-                        self.overlay = OverlayState::ModelEffortPicker { model, selected };
+                        self.overlay = OverlayState::ModelEffortPicker {
+                            model,
+                            selected,
+                            return_filter,
+                            return_selected,
+                        };
                     }
                 }
                 Ok(())
@@ -847,7 +865,12 @@ impl TuiApp {
                 self.bootstrap_selected_agent().await?;
             }
             crate::tui::model_picker::ModelPickerChoice::Model { model } => {
-                self.overlay = OverlayState::ModelEffortPicker { model, selected: 0 };
+                self.overlay = OverlayState::ModelEffortPicker {
+                    model,
+                    selected: 0,
+                    return_filter: filter.to_string(),
+                    return_selected: selected,
+                };
             }
         }
         Ok(())
@@ -862,12 +885,14 @@ impl TuiApp {
             .selected_agent_id()
             .ok_or_else(|| anyhow!("no agent selected"))?
             .to_string();
-        let reasoning_effort = match selected {
-            0 => None,
-            1 => Some("low".to_string()),
-            2 => Some("medium".to_string()),
-            3 => Some("high".to_string()),
-            _ => Some("xhigh".to_string()),
+        let reasoning_effort = crate::tui::overlay::MODEL_REASONING_EFFORT_OPTIONS
+            .get(selected)
+            .copied()
+            .unwrap_or("xhigh");
+        let reasoning_effort = if reasoning_effort == "inherit" {
+            None
+        } else {
+            Some(reasoning_effort.to_string())
         };
         self.client
             .set_agent_model_override(&agent_id, model.to_string(), reasoning_effort.clone())
