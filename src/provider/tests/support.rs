@@ -76,9 +76,7 @@ pub async fn spawn_raw_http_server_bytes_sequence_with_delay(
     format!("http://{}", addr)
 }
 
-pub async fn spawn_raw_http_server_scripted(
-    responses: Vec<Vec<(u64, Vec<u8>)>>,
-) -> String {
+pub async fn spawn_raw_http_server_scripted(responses: Vec<Vec<(u64, Vec<u8>)>>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
