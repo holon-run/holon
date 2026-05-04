@@ -1748,18 +1748,18 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         ],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_openai_compatible_provider(
         &mut registry,
         "xiaomi",
-        "https://token-plan-cn.xiaomimimo.com/anthropic",
+        "https://api.xiaomimimo.com/v1",
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
         &mut registry,
-        "xiaomi-anthropic",
+        "xiaomi-token-plan",
         "https://token-plan-cn.xiaomimimo.com/anthropic",
-        &["XIAOMI_API_KEY"],
+        &["XIAOMI_TOKEN_PLAN_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
@@ -3097,6 +3097,10 @@ mod tests {
         );
         settings_env.insert("DEEPSEEK_API_KEY".to_string(), "deepseek-key".to_string());
         settings_env.insert("XIAOMI_API_KEY".to_string(), "xiaomi-key".to_string());
+        settings_env.insert(
+            "XIAOMI_TOKEN_PLAN_API_KEY".to_string(),
+            "xiaomi-token-plan-key".to_string(),
+        );
         settings_env.insert("DASHSCOPE_API_KEY".to_string(), "dashscope-key".to_string());
 
         let providers = super::built_in_provider_registry(&settings_env).unwrap();
@@ -3150,25 +3154,28 @@ mod tests {
         let xiaomi = providers
             .get(&ProviderId::parse("xiaomi").unwrap())
             .unwrap();
-        assert_eq!(xiaomi.transport, ProviderTransportKind::AnthropicMessages);
         assert_eq!(
-            xiaomi.base_url,
-            "https://token-plan-cn.xiaomimimo.com/anthropic"
+            xiaomi.transport,
+            ProviderTransportKind::OpenAiChatCompletions
         );
+        assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/v1");
         assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
 
-        let xiaomi_anthropic = providers
-            .get(&ProviderId::parse("xiaomi-anthropic").unwrap())
+        let xiaomi_token_plan = providers
+            .get(&ProviderId::parse("xiaomi-token-plan").unwrap())
             .unwrap();
         assert_eq!(
-            xiaomi_anthropic.transport,
+            xiaomi_token_plan.transport,
             ProviderTransportKind::AnthropicMessages
         );
         assert_eq!(
-            xiaomi_anthropic.base_url,
+            xiaomi_token_plan.base_url,
             "https://token-plan-cn.xiaomimimo.com/anthropic"
         );
-        assert_eq!(xiaomi_anthropic.credential.as_deref(), Some("xiaomi-key"));
+        assert_eq!(
+            xiaomi_token_plan.credential.as_deref(),
+            Some("xiaomi-token-plan-key")
+        );
 
         let minimax = providers
             .get(&ProviderId::parse("minimax").unwrap())

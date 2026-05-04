@@ -107,11 +107,11 @@ async fn live_deepseek_anthropic_accepts_context_management() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires XIAOMI_API_KEY and network access"]
-async fn live_xiaomi_anthropic_accepts_context_management() -> Result<()> {
+#[ignore = "requires XIAOMI_TOKEN_PLAN_API_KEY and network access"]
+async fn live_xiaomi_token_plan_accepts_context_management() -> Result<()> {
     provider_accepts_context_management(
-        "xiaomi-anthropic",
-        &provider_model_env("xiaomi-anthropic", "mimo-v2-pro"),
+        "xiaomi-token-plan",
+        &provider_model_env("xiaomi-token-plan", "mimo-v2-pro"),
     )
     .await
 }

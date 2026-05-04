@@ -1532,7 +1532,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "xiaomi-anthropic",
+            "xiaomi-token-plan",
             "mimo-v2-flash",
             "Xiaomi MiMo V2 Flash",
             262_144,
@@ -1541,7 +1541,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "xiaomi-anthropic",
+            "xiaomi-token-plan",
             "mimo-v2-pro",
             "Xiaomi MiMo V2 Pro",
             1_048_576,
@@ -1550,7 +1550,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "xiaomi-anthropic",
+            "xiaomi-token-plan",
             "mimo-v2-omni",
             "Xiaomi MiMo V2 Omni",
             262_144,
@@ -1791,7 +1791,7 @@ mod tests {
         assert_eq!(deepseek.source, ModelMetadataSource::BuiltInCatalog);
 
         let xiaomi = catalog.resolve_policy(
-            &ModelRef::parse("xiaomi-anthropic/mimo-v2-pro").unwrap(),
+            &ModelRef::parse("xiaomi-token-plan/mimo-v2-pro").unwrap(),
             &HashMap::new(),
             None,
             &base_context(),
