@@ -1602,6 +1602,7 @@ mod tests {
                 )
                 .unwrap(),
                 override_model: None,
+                override_reasoning_effort: None,
                 source: AgentModelSource::RuntimeDefault,
                 effective_fallback_models: Vec::new(),
                 resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy {

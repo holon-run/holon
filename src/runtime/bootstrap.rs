@@ -367,6 +367,7 @@ impl RuntimeHandle {
             fallback_active,
             effective_fallback_models: effective_chain.into_iter().skip(1).collect(),
             override_model: state.model_override.clone(),
+            override_reasoning_effort: state.model_override_reasoning_effort.clone(),
             resolved_policy,
             available_models: self.inner.model_catalog.available_models(),
             model_availability: self.inner.model_availability.clone(),
@@ -388,6 +389,14 @@ impl RuntimeHandle {
             state.model_override.as_ref(),
         );
         let mut provider_config = reconfig.config.clone();
+        if let (Some(primary), Some(reasoning_effort)) = (
+            chain.first(),
+            state.model_override_reasoning_effort.as_ref(),
+        ) {
+            if let Some(provider) = provider_config.providers.get_mut(&primary.provider) {
+                provider.reasoning_effort = Some(reasoning_effort.clone());
+            }
+        }
         provider_config.runtime_max_output_tokens = self
             .inner
             .model_catalog

@@ -423,6 +423,8 @@ pub struct DetachWorkspaceRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SetAgentModelRequest {
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub trust: Option<TrustLevel>,
 }
 
@@ -1493,7 +1495,7 @@ pub async fn set_agent_model(
         .await
         .map_err(error_response)?;
     let model_state = runtime
-        .set_model_override(model.clone())
+        .set_model_override(model.clone(), request.reasoning_effort.clone())
         .await
         .map_err(error_response)?;
     runtime

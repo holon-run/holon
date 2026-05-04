@@ -320,11 +320,13 @@ impl LocalClient {
         &self,
         agent_id: &str,
         model: impl Into<String>,
+        reasoning_effort: Option<String>,
     ) -> Result<Value> {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/model"),
             &SetAgentModelRequest {
                 model: model.into(),
+                reasoning_effort,
                 trust: Some(TrustLevel::TrustedOperator),
             },
         )

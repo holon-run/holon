@@ -110,6 +110,9 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
         OverlayState::ModelPicker { .. } => {
             "Model: type filter, Backspace edit, Up/Down move, Enter select, Esc cancel"
         }
+        OverlayState::ModelEffortPicker { .. } => {
+            "Reasoning effort: Up/Down move, Enter select, Esc back"
+        }
         OverlayState::DebugPromptInput { .. } => "Debug prompt: Enter confirm, Esc cancel",
         OverlayState::DebugPromptView { .. } => "Debug prompt: Up/Down, PgUp/PgDn, Home/End, Esc",
         OverlayState::HelpView { .. } => "Help: Up/Down, PgUp/PgDn, Home/End, Esc",
@@ -721,6 +724,13 @@ pub(super) fn render_model_status(agent: &AgentSummary) -> String {
         );
     }
     if agent.model.override_model.is_some() {
+        if let Some(effort) = agent.model.override_reasoning_effort.as_deref() {
+            return format!(
+                "model: {} (agent override, effort={})",
+                model.as_string(),
+                effort
+            );
+        }
         return format!("model: {} (agent override)", model.as_string());
     }
     format!("model: {}", model.as_string())
@@ -756,6 +766,9 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
     ];
     if let Some(model_override) = agent.model.override_model.as_ref() {
         lines.push(format!("Override: {}", model_override.as_string()));
+        if let Some(effort) = agent.model.override_reasoning_effort.as_deref() {
+            lines.push(format!("Override effort: {}", effort));
+        }
     }
     if let Some(hint) = agent.lifecycle.operator_hint.as_deref() {
         lines.push(format!("Lifecycle hint: {}", hint));
@@ -900,6 +913,7 @@ mod tests {
                 )
                 .unwrap(),
                 override_model: None,
+                override_reasoning_effort: None,
                 source: AgentModelSource::RuntimeDefault,
                 effective_fallback_models: Vec::new(),
                 resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy {

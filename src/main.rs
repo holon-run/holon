@@ -772,7 +772,7 @@ async fn handle_agents_command(config: &AppConfig, command: Option<AgentsCommand
                 }
                 AgentModelCommands::Set { model, agent } => {
                     let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
-                    print_json(&client.set_agent_model_override(&agent, model).await?)
+                    print_json(&client.set_agent_model_override(&agent, model, None).await?)
                 }
                 AgentModelCommands::Clear { agent } => {
                     let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());

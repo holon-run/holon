@@ -558,6 +558,35 @@ impl TuiApp {
                 }
                 Ok(())
             }
+            OverlayState::ModelEffortPicker {
+                model,
+                mut selected,
+            } => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.overlay = OverlayState::ModelPicker {
+                            filter: String::new(),
+                            selected: 0,
+                        };
+                    }
+                    KeyCode::Enter => {
+                        self.apply_model_effort_picker_selection(&model, selected)
+                            .await?;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        selected = selected.saturating_sub(1);
+                        self.overlay = OverlayState::ModelEffortPicker { model, selected };
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        selected = (selected + 1).min(4);
+                        self.overlay = OverlayState::ModelEffortPicker { model, selected };
+                    }
+                    _ => {
+                        self.overlay = OverlayState::ModelEffortPicker { model, selected };
+                    }
+                }
+                Ok(())
+            }
             OverlayState::DebugPromptInput { mut composer } => {
                 match edit_buffer(key, &mut composer) {
                     Some(BufferAction::Submit) => {
@@ -814,14 +843,40 @@ impl TuiApp {
                 self.client.clear_agent_model_override(&agent_id).await?;
                 self.status_line =
                     format!("Cleared model override for {agent_id}; inheriting runtime default");
+                self.overlay = OverlayState::None;
+                self.bootstrap_selected_agent().await?;
             }
             crate::tui::model_picker::ModelPickerChoice::Model { model } => {
-                self.client
-                    .set_agent_model_override(&agent_id, model.clone())
-                    .await?;
-                self.status_line = format!("Set model override for {agent_id} to {model}");
+                self.overlay = OverlayState::ModelEffortPicker { model, selected: 0 };
             }
         }
+        Ok(())
+    }
+
+    async fn apply_model_effort_picker_selection(
+        &mut self,
+        model: &str,
+        selected: usize,
+    ) -> Result<()> {
+        let agent_id = self
+            .selected_agent_id()
+            .ok_or_else(|| anyhow!("no agent selected"))?
+            .to_string();
+        let reasoning_effort = match selected {
+            0 => None,
+            1 => Some("low".to_string()),
+            2 => Some("medium".to_string()),
+            3 => Some("high".to_string()),
+            _ => Some("xhigh".to_string()),
+        };
+        self.client
+            .set_agent_model_override(&agent_id, model.to_string(), reasoning_effort.clone())
+            .await?;
+        let suffix = reasoning_effort
+            .as_deref()
+            .map(|value| format!(" with reasoning effort {value}"))
+            .unwrap_or_default();
+        self.status_line = format!("Set model override for {agent_id} to {model}{suffix}");
         self.overlay = OverlayState::None;
         self.bootstrap_selected_agent().await?;
         Ok(())
