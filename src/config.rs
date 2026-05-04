@@ -1052,13 +1052,20 @@ pub fn built_in_provider_default_config(
     provider_id: &ProviderId,
 ) -> Result<Option<ProviderConfigFile>> {
     let settings_env = load_settings_env()?;
+    built_in_provider_default_config_with_settings(provider_id, &settings_env)
+}
+
+fn built_in_provider_default_config_with_settings(
+    provider_id: &ProviderId,
+    settings_env: &HashMap<String, String>,
+) -> Result<Option<ProviderConfigFile>> {
     let registry = built_in_provider_registry(&settings_env)?;
     Ok(registry
         .get(provider_id)
         .map(|provider| ProviderConfigFile {
             transport: provider.transport,
             base_url: provider.base_url.clone(),
-            auth: provider.auth.clone(),
+            auth: ProviderAuthConfig::default(),
             reasoning_effort: None,
         }))
 }
@@ -3439,6 +3446,30 @@ mod tests {
         let vllm = providers.get(&ProviderId::parse("vllm").unwrap()).unwrap();
         assert_eq!(vllm.auth.source, CredentialSource::None);
         assert_eq!(vllm.credential, None);
+    }
+
+    #[test]
+    fn built_in_provider_default_config_resolves_known_and_unknown_provider() {
+        let settings_env = HashMap::new();
+
+        let known = super::built_in_provider_default_config_with_settings(
+            &ProviderId::parse("zai-anthropic").unwrap(),
+            &settings_env,
+        )
+        .unwrap()
+        .expect("expected built-in default");
+        assert_eq!(known.transport, ProviderTransportKind::AnthropicMessages);
+        assert_eq!(known.base_url, "https://api.z.ai/api/anthropic");
+        assert_eq!(known.auth.source, CredentialSource::None);
+        assert_eq!(known.auth.kind, CredentialKind::None);
+        assert!(known.auth.env.is_none());
+
+        let unknown = super::built_in_provider_default_config_with_settings(
+            &ProviderId::parse("unknown-provider").unwrap(),
+            &settings_env,
+        )
+        .unwrap();
+        assert!(unknown.is_none());
     }
 
     #[test]

@@ -258,7 +258,10 @@ enum ConfigCredentialCommands {
         kind: String,
         #[arg(long)]
         stdin: bool,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Raw credential material (not recommended for secrets; prefer --stdin to avoid shell history/process args leakage)."
+        )]
         material: Option<String>,
     },
     List,
@@ -1006,7 +1009,9 @@ async fn handle_config_credentials_command(command: ConfigCredentialCommands) ->
                 value
             } else if stdin {
                 eprint!("Enter credential material for {profile} and press Enter: ");
-                std::io::stderr().flush().ok();
+                std::io::stderr()
+                    .flush()
+                    .context("failed to flush credential prompt to stderr")?;
                 let mut value = String::new();
                 std::io::stdin()
                     .read_line(&mut value)
