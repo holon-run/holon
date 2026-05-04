@@ -706,6 +706,7 @@ impl AppStorage {
                     messages_by_id.get(&entry.message_id).cloned()
                 }
                 crate::types::QueueEntryStatus::Processed
+                | crate::types::QueueEntryStatus::Interrupted
                 | crate::types::QueueEntryStatus::Dropped => None,
             })
             .collect::<Vec<_>>();

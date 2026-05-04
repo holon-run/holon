@@ -241,6 +241,20 @@ The central inspection primitive should be:
 managed execution handle, while `AgentGet` should inspect the agent that owns
 the broader context.
 
+The agent plane also owns the current-run intervention surface.
+
+`current_run_id` identifies the provider/tool turn currently executing inside
+the agent. Operator interruption is a control-plane mutation, not an enqueued
+message. It should:
+
+- cancel only the current provider/tool future;
+- preserve the agent, work item, ledger, and workspace state;
+- reject an optional stale `run_id` guard if the observed run has changed;
+- record an aborted terminal turn with reason `operator_interrupted`;
+- record the dequeued message outcome as interrupted rather than processed;
+- pause the agent by default after the abort so it does not immediately repeat
+  the same path.
+
 For bounded parent-supervised delegation, `SpawnAgent` should always return the
 new `agent_id` and return a task-plane handle when the parent keeps a
 supervising execution record for that child.

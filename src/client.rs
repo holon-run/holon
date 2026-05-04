@@ -258,6 +258,22 @@ impl LocalClient {
         .await
     }
 
+    pub async fn interrupt_current_run(
+        &self,
+        agent_id: &str,
+        run_id: Option<String>,
+    ) -> Result<Value> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/current-run/interrupt"),
+            &crate::http::InterruptCurrentRunRequest {
+                run_id,
+                mode: Some("pause_after_abort".into()),
+                trust: Some(TrustLevel::TrustedOperator),
+            },
+        )
+        .await
+    }
+
     pub async fn attach_workspace(
         &self,
         agent_id: &str,

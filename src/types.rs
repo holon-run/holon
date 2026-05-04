@@ -1029,6 +1029,8 @@ pub struct TurnTerminalRecord {
     pub turn_index: u64,
     pub kind: TurnTerminalKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_assistant_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<TurnTerminalCheckpointRecord>,
@@ -2508,6 +2510,7 @@ pub enum QueueEntryStatus {
     Queued,
     Dequeued,
     Processed,
+    Interrupted,
     Dropped,
 }
 

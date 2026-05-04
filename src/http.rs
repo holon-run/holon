@@ -50,6 +50,7 @@ use crate::{
     host::{PublicAgentError, RuntimeHost},
     ingress::{InboundRequest, WakeDisposition, WakeHint},
     policy::{default_trust_for_origin, validate_message_kind_for_origin},
+    runtime::{CurrentRunInterruptError, CurrentRunInterruptMode, CurrentRunInterruptRequest},
     storage::FileActivityMarker,
     system::{ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary},
     types::{
@@ -152,6 +153,10 @@ pub fn router(state: AppState) -> Router {
             post(clear_agent_model),
         )
         .route("/control/agents/:agent_id/control", post(control))
+        .route(
+            "/control/agents/:agent_id/current-run/interrupt",
+            post(interrupt_current_run),
+        )
         .route("/control/agents/:agent_id/prompt", post(control_prompt))
         .route(
             "/control/agents/:agent_id/operator-bindings",
@@ -406,6 +411,13 @@ pub struct CreateTimerRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ControlRequest {
     pub action: ControlAction,
+    pub trust: Option<TrustLevel>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InterruptCurrentRunRequest {
+    pub run_id: Option<String>,
+    pub mode: Option<String>,
     pub trust: Option<TrustLevel>,
 }
 
@@ -1444,6 +1456,46 @@ pub async fn control(
     Ok(Json(json!({ "ok": true })))
 }
 
+pub async fn interrupt_current_run(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<InterruptCurrentRunRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let mode = match request.mode.as_deref().unwrap_or("pause_after_abort") {
+        "pause_after_abort" => CurrentRunInterruptMode::PauseAfterAbort,
+        other => {
+            return Err(bad_request(format!(
+                "unsupported interrupt mode {other}; expected pause_after_abort"
+            )))
+        }
+    };
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.trust.clone();
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let outcome = runtime
+        .interrupt_current_run(CurrentRunInterruptRequest {
+            run_id: request.run_id.clone(),
+            mode,
+        })
+        .await
+        .map_err(interrupt_error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "interrupted": true,
+        "agent_id": outcome.agent_id,
+        "run_id": outcome.run_id,
+        "mode": outcome.mode.as_str(),
+        "admission_context": admission_context,
+        "provided_trust": provided_trust,
+    })))
+}
+
 pub async fn attach_workspace(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -2305,6 +2357,34 @@ fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<Value>) {
             agent_id,
         ),
         PublicAgentError::Runtime(error) => error_response(error),
+    }
+}
+
+fn interrupt_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    match error.downcast::<CurrentRunInterruptError>() {
+        Ok(CurrentRunInterruptError::StaleRunId {
+            requested_run_id,
+            current_run_id,
+        }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "code": "stale_run_id",
+                "error": format!("stale run_id {requested_run_id}; current run is {current_run_id}"),
+                "requested_run_id": requested_run_id,
+                "current_run_id": current_run_id,
+            })),
+        ),
+        Ok(CurrentRunInterruptError::NoCurrentRun { agent_id }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "code": "no_current_run",
+                "error": format!("agent {agent_id} has no current run to interrupt"),
+                "agent_id": agent_id,
+            })),
+        ),
+        Err(error) => error_response(error),
     }
 }
 

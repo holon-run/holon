@@ -11,6 +11,7 @@ enum SlashCommand {
     Refresh,
     ClearStatus,
     DebugPrompt,
+    Interrupt,
     Agent,
     Skills,
     SkillInstall,
@@ -38,7 +39,7 @@ pub(super) struct SlashCommandSpec {
     command: SlashCommand,
 }
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 13] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 14] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -101,6 +102,13 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 13] = [
         usage: "/debug-prompt",
         arg_rule: SlashArgRule::None,
         command: SlashCommand::DebugPrompt,
+    },
+    SlashCommandSpec {
+        name: "/interrupt",
+        description: "interrupt current agent run",
+        usage: "/interrupt",
+        arg_rule: SlashArgRule::None,
+        command: SlashCommand::Interrupt,
     },
     SlashCommandSpec {
         name: "/agent",
@@ -406,6 +414,23 @@ impl TuiApp {
                     composer: ComposerState::new(),
                 };
                 self.status_line = "Opened debug prompt dialog".into();
+            }
+            SlashCommand::Interrupt => {
+                let agent_id = match self.selected_agent_id() {
+                    Some(id) => id.to_string(),
+                    None => {
+                        self.status_line = "No agent selected".into();
+                        return Ok(());
+                    }
+                };
+                let run_id = self
+                    .projection
+                    .as_ref()
+                    .and_then(|projection| projection.session.current_run_id.clone());
+                self.client.interrupt_current_run(&agent_id, run_id).await?;
+                self.overlay = OverlayState::None;
+                self.status_line = format!("Interrupted current run for {agent_id}");
+                let _ = self.bootstrap_selected_agent().await;
             }
             SlashCommand::Agent => {
                 let requested_agent_id = args
@@ -1221,6 +1246,10 @@ mod tests {
         assert_eq!(
             parse_composer_submission("/debug-prompt").unwrap(),
             Some(ComposerSubmission::Slash(SlashCommand::DebugPrompt, vec![]))
+        );
+        assert_eq!(
+            parse_composer_submission("/interrupt").unwrap(),
+            Some(ComposerSubmission::Slash(SlashCommand::Interrupt, vec![]))
         );
         assert_eq!(
             parse_composer_submission("/agent default").unwrap(),

@@ -309,7 +309,11 @@ impl RuntimeHandle {
 
         Ok(Self {
             inner: Arc::new(RuntimeInner {
-                agent: Mutex::new(RuntimeAgent { state, queue }),
+                agent: Mutex::new(RuntimeAgent {
+                    state,
+                    queue,
+                    current_run_interrupt: None,
+                }),
                 notify: Notify::new(),
                 storage,
                 provider: RwLock::new(provider),

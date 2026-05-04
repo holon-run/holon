@@ -1412,6 +1412,7 @@ mod tests {
                 last_turn: Some(TurnTerminalRecord {
                     turn_index: 1,
                     kind: TurnTerminalKind::Completed,
+                    reason: None,
                     last_assistant_message: Some("done".into()),
                     checkpoint: None,
                     completed_at: Utc::now(),

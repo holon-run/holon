@@ -1,6 +1,18 @@
 use super::super::*;
 use super::support::*;
 
+struct BlockingProvider {
+    started: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl AgentProvider for BlockingProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.started.notify_waiters();
+        std::future::pending::<Result<ProviderTurnResponse>>().await
+    }
+}
+
 #[tokio::test]
 async fn non_model_visible_external_events_do_not_run_interactive_turn() {
     let dir = tempdir().unwrap();
@@ -42,6 +54,167 @@ async fn non_model_visible_external_events_do_not_run_interactive_turn() {
     assert!(transcript
         .iter()
         .all(|entry| entry.kind != TranscriptEntryKind::AssistantRound));
+}
+
+#[tokio::test]
+async fn interrupt_current_run_aborts_provider_turn_and_pauses_agent() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(BlockingProvider {
+            started: started.clone(),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "block".into(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    let runner = tokio::spawn(runtime.clone().run());
+    started.notified().await;
+    let run_id = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_run_id
+        .expect("run id should be active");
+
+    let outcome = runtime
+        .interrupt_current_run(CurrentRunInterruptRequest {
+            run_id: Some(run_id.clone()),
+            mode: CurrentRunInterruptMode::PauseAfterAbort,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.run_id, run_id);
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let state = runtime.agent_state().await.unwrap();
+            if state
+                .last_turn_terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.reason.as_deref() == Some("operator_interrupted"))
+            {
+                break state;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("interrupted terminal should be persisted");
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Paused);
+    assert_eq!(state.current_run_id, None);
+    assert_eq!(
+        state
+            .last_turn_terminal
+            .as_ref()
+            .map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Aborted)
+    );
+    assert_eq!(
+        state
+            .last_turn_terminal
+            .as_ref()
+            .and_then(|terminal| terminal.reason.as_deref()),
+        Some("operator_interrupted")
+    );
+    let queue_entries = runtime.storage().latest_queue_entries().unwrap();
+    assert!(queue_entries
+        .iter()
+        .any(|entry| entry.status == QueueEntryStatus::Interrupted));
+    let events = runtime.all_events().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "current_run_interrupted"));
+
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+    runner.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn interrupt_current_run_rejects_stale_run_id() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(BlockingProvider {
+            started: started.clone(),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "block".into(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    let runner = tokio::spawn(runtime.clone().run());
+    started.notified().await;
+
+    let err = runtime
+        .interrupt_current_run(CurrentRunInterruptRequest {
+            run_id: Some("stale-run".into()),
+            mode: CurrentRunInterruptMode::PauseAfterAbort,
+        })
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("stale run_id"));
+    assert!(runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_run_id
+        .is_some());
+
+    runtime
+        .interrupt_current_run(CurrentRunInterruptRequest {
+            run_id: None,
+            mode: CurrentRunInterruptMode::PauseAfterAbort,
+        })
+        .await
+        .unwrap();
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+    runner.await.unwrap().unwrap();
 }
 
 #[tokio::test]
