@@ -58,6 +58,42 @@ pub async fn spawn_raw_http_server_bytes_sequence(responses: Vec<Vec<u8>>) -> St
     format!("http://{}", addr)
 }
 
+pub async fn spawn_raw_http_server_bytes_sequence_with_delay(
+    responses: Vec<(u64, Vec<u8>)>,
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for (delay_ms, response) in responses {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            drain_http_request(&mut stream).await;
+            if delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            stream.write_all(&response).await.unwrap();
+        }
+    });
+    format!("http://{}", addr)
+}
+
+pub async fn spawn_raw_http_server_scripted(responses: Vec<Vec<(u64, Vec<u8>)>>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for chunks in responses {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            drain_http_request(&mut stream).await;
+            for (delay_ms, chunk) in chunks {
+                if delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                stream.write_all(&chunk).await.unwrap();
+            }
+        }
+    });
+    format!("http://{}", addr)
+}
+
 async fn drain_http_request(stream: &mut TcpStream) {
     let mut buffer = [0u8; 1024];
     let mut request = Vec::new();

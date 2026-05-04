@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reqwest::{Client, Response};
+use reqwest::{Client, RequestBuilder, Response};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
 
 use crate::{
@@ -20,11 +21,11 @@ use crate::{
     },
 };
 
-use super::build_http_client;
+use super::{build_http_client, request_send_timeout, stream_idle_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error, classify_status_error, invalid_response_error,
-    provider_transport_error, ProviderFailureClassification, ProviderFailureKind,
-    ProviderTransportError, RetryDisposition,
+    provider_transport_error, timeout_transport_error, ProviderFailureClassification,
+    ProviderFailureKind, ProviderTransportError, RetryDisposition,
 };
 
 #[derive(Clone)]
@@ -2432,16 +2433,16 @@ async fn send_chat_completion_request(
         request = request.header(name, value);
     }
 
-    let response = request.json(&body).send().await.map_err(|error| {
-        classify_reqwest_transport_error(
-            "OpenAI Chat Completions request failed",
-            "request_send",
-            "openai",
-            Some(&provider_model_ref("openai", &body)),
-            Some(url.as_str()),
-            error,
-        )
-    })?;
+    let response = send_openai_request(
+        request.json(&body),
+        "OpenAI Chat Completions request failed",
+        "request_send",
+        "openai",
+        Some(&provider_model_ref("openai", &body)),
+        Some(url.as_str()),
+        true,
+    )
+    .await?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -2729,16 +2730,16 @@ pub(crate) async fn send_chat_completion_stream_request(
         request = request.header(name, value);
     }
 
-    let response = request.json(&body).send().await.map_err(|error| {
-        classify_reqwest_transport_error(
-            "OpenAI Chat Completions streaming request failed",
-            "request_send",
-            "openai",
-            Some(&provider_model_ref("openai", &body)),
-            Some(url.as_str()),
-            error,
-        )
-    })?;
+    let response = send_openai_request(
+        request.json(&body),
+        "OpenAI Chat Completions streaming request failed",
+        "request_send",
+        "openai",
+        Some(&provider_model_ref("openai", &body)),
+        Some(url.as_str()),
+        true,
+    )
+    .await?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -3055,16 +3056,16 @@ async fn send_openai_responses_request(
         request = request.header(name, value);
     }
 
-    let response = request.json(&body).send().await.map_err(|error| {
-        classify_reqwest_transport_error(
-            "OpenAI-style request failed",
-            "request_send",
-            "openai",
-            Some(&provider_model_ref("openai", &body)),
-            Some(url.as_str()),
-            error,
-        )
-    })?;
+    let response = send_openai_request(
+        request.json(&body),
+        "OpenAI-style request failed",
+        "request_send",
+        "openai",
+        Some(&provider_model_ref("openai", &body)),
+        Some(url.as_str()),
+        true,
+    )
+    .await?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -3102,16 +3103,16 @@ async fn send_openai_compact_request(
         request = request.header(name, value);
     }
 
-    let response = request.json(&body).send().await.map_err(|error| {
-        classify_reqwest_transport_error(
-            "OpenAI compact request failed",
-            "request_send",
-            "openai",
-            Some(&provider_model_ref("openai", &body)),
-            Some(url.as_str()),
-            error,
-        )
-    })?;
+    let response = send_openai_request(
+        request.json(&body),
+        "OpenAI compact request failed",
+        "request_send",
+        "openai",
+        Some(&provider_model_ref("openai", &body)),
+        Some(url.as_str()),
+        true,
+    )
+    .await?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -3162,16 +3163,16 @@ async fn send_openai_responses_streaming_request(
         request = request.header(name, value);
     }
 
-    let response = request.json(&body).send().await.map_err(|error| {
-        classify_reqwest_transport_error(
-            "OpenAI-style streaming request failed",
-            "streaming_request_send",
-            "openai-codex",
-            Some(&provider_model_ref("openai-codex", &body)),
-            Some(url.as_str()),
-            error,
-        )
-    })?;
+    let response = send_openai_request(
+        request.json(&body),
+        "OpenAI-style streaming request failed",
+        "streaming_request_send",
+        "openai-codex",
+        Some(&provider_model_ref("openai-codex", &body)),
+        Some(url.as_str()),
+        false,
+    )
+    .await?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -3187,7 +3188,48 @@ async fn send_openai_responses_streaming_request(
     parse_openai_response_with_transport_state(terminal_response)
 }
 
+async fn send_openai_request(
+    mut request: RequestBuilder,
+    context: &str,
+    stage: &str,
+    provider: &str,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    enforce_full_request_deadline: bool,
+) -> Result<Response> {
+    let timeout = request_send_timeout();
+    if enforce_full_request_deadline {
+        request = request.timeout(timeout);
+        return request.send().await.map_err(|error| {
+            classify_reqwest_transport_error(context, stage, provider, model_ref, url, error)
+        });
+    }
+    tokio::time::timeout(timeout, request.send())
+        .await
+        .map_err(|_| {
+            timeout_transport_error(
+                context,
+                stage,
+                provider,
+                model_ref,
+                url,
+                format!("request_send_timeout_ms={}", timeout.as_millis()),
+            )
+        })?
+        .map_err(|error| {
+            classify_reqwest_transport_error(context, stage, provider, model_ref, url, error)
+        })
+}
+
 async fn read_openai_streaming_response(response: Response) -> Result<Value> {
+    let idle_timeout = stream_idle_timeout();
+    read_openai_streaming_response_with_timeout(response, idle_timeout).await
+}
+
+async fn read_openai_streaming_response_with_timeout(
+    response: Response,
+    idle_timeout: Duration,
+) -> Result<Value> {
     const MAX_STREAMED_OUTPUT_ITEMS: usize = 128;
 
     let mut response = response;
@@ -3195,16 +3237,32 @@ async fn read_openai_streaming_response(response: Response) -> Result<Value> {
     let mut data_lines = Vec::new();
     let mut streamed_output_items = Vec::new();
 
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        classify_reqwest_transport_error(
-            "OpenAI-style streaming response body failed",
-            "streaming_response_body",
-            "openai-codex",
-            None,
-            None,
-            error,
-        )
-    })? {
+    while let Some(chunk) = tokio::time::timeout(idle_timeout, response.chunk())
+        .await
+        .map_err(|_| {
+            timeout_transport_error(
+                "OpenAI-style streaming response body timed out",
+                "streaming_response_body",
+                "openai-codex",
+                None,
+                None,
+                format!(
+                    "timed out waiting for SSE chunk after {} ms",
+                    idle_timeout.as_millis()
+                ),
+            )
+        })?
+        .map_err(|error| {
+            classify_reqwest_transport_error(
+                "OpenAI-style streaming response body failed",
+                "streaming_response_body",
+                "openai-codex",
+                None,
+                None,
+                error,
+            )
+        })?
+    {
         pending.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(newline_idx) = pending.find('\n') {
             let mut line = pending[..newline_idx].to_string();

@@ -230,8 +230,10 @@ cargo test --test live_openai_chat_completions
 
 ### Safety Limits
 
-- **Timeout**: 300 seconds default HTTP timeout; override with
+- **Request send timeout**: 300 seconds default for request send/header phase; override with
   `HOLON_PROVIDER_HTTP_TIMEOUT_SECS`
+- **Streaming idle timeout**: 300 seconds default between streamed chunks; override with
+  `HOLON_PROVIDER_STREAM_IDLE_TIMEOUT_MS`
 - **Token limits**: Configurable via `max_tokens`
 - **Response size**: Maximum output tokens enforced by model
 
@@ -340,7 +342,8 @@ Model references: `deepseek/deepseek-chat`
    - Consider higher-tier API plan
 
 4. **Streaming timeout**
-   - Increase `HOLON_PROVIDER_HTTP_TIMEOUT_SECS` if needed
+   - Increase `HOLON_PROVIDER_STREAM_IDLE_TIMEOUT_MS` for long gaps between stream chunks
+   - Increase `HOLON_PROVIDER_HTTP_TIMEOUT_SECS` only if request send/header setup is slow
    - Check network connectivity
    - Verify server load/status
 

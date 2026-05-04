@@ -8,6 +8,7 @@ use std::sync::{
 use super::support::*;
 use super::*;
 use crate::config::ProviderId;
+use crate::provider::transports::set_stream_idle_timeout_override_for_tests;
 use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
 
@@ -870,6 +871,68 @@ async fn openai_codex_retries_streaming_body_read_interruptions() {
     assert_eq!(
         timeline.attempts[0].failure_kind.as_deref(),
         Some("connection")
+    );
+    assert_eq!(
+        timeline.attempts[0].disposition.as_deref(),
+        Some("retryable")
+    );
+    assert_eq!(
+        timeline.attempts[0]
+            .transport_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.stage.as_str()),
+        Some("streaming_response_body")
+    );
+    assert_eq!(
+        timeline.attempts[1].outcome,
+        ProviderAttemptOutcome::Succeeded
+    );
+}
+
+#[tokio::test]
+async fn openai_codex_retries_streaming_idle_timeout_interruptions() {
+    // First response sends headers immediately, then stalls before the first SSE chunk.
+    let delayed_headers =
+        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n".to_vec();
+    let delayed_chunk = b"20\r\nevent: response.created\n".to_vec();
+    let body = openai_text_sse_response("resp_ok", "retry ok");
+    let complete = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .into_bytes();
+    let base_url = spawn_raw_http_server_scripted(vec![
+        vec![(0, delayed_headers), (400, delayed_chunk)],
+        vec![(0, complete)],
+    ])
+    .await;
+    let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai_codex())
+        .unwrap()
+        .base_url = base_url;
+    set_stream_idle_timeout_override_for_tests(Some(100));
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+
+    let (response, diagnostics) = provider
+        .complete_turn_with_diagnostics(provider_turn_request())
+        .await
+        .expect("idle timeout interruption should retry and recover");
+
+    set_stream_idle_timeout_override_for_tests(None);
+
+    assert!(matches!(
+        &response.blocks[0],
+        ModelBlock::Text { text } if text == "retry ok"
+    ));
+    let timeline = diagnostics.expect("missing attempt timeline");
+    assert_eq!(timeline.attempts.len(), 2);
+    assert_eq!(
+        timeline.attempts[0].failure_kind.as_deref(),
+        Some("timeout")
     );
     assert_eq!(
         timeline.attempts[0].disposition.as_deref(),

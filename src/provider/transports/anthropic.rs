@@ -21,7 +21,7 @@ use crate::{
     },
 };
 
-use super::build_http_client;
+use super::{build_http_client, request_send_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error, classify_status_error, invalid_response_error,
 };
@@ -200,6 +200,7 @@ impl AgentProvider for AnthropicProvider {
                 request_builder.header("anthropic-beta", "context-management-2025-06-27");
         }
         let response = request_builder
+            .timeout(request_send_timeout())
             .json(&request_body)
             .send()
             .await

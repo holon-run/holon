@@ -249,6 +249,33 @@ pub(crate) fn invalid_response_error(
     )
 }
 
+pub(crate) fn timeout_transport_error(
+    context: &str,
+    stage: &str,
+    provider: &str,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    reason: impl Into<String>,
+) -> anyhow::Error {
+    provider_transport_error(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::Timeout,
+            disposition: RetryDisposition::Retryable,
+        },
+        None,
+        Some(ProviderTransportDiagnostics {
+            stage: stage.to_string(),
+            provider: Some(provider.to_string()),
+            model_ref: model_ref.map(ToString::to_string),
+            url: url.map(sanitize_transport_url),
+            status: None,
+            reqwest: None,
+            source_chain: vec![reason.into()],
+        }),
+        context.to_string(),
+    )
+}
+
 fn sanitize_transport_url(raw: &str) -> String {
     let Ok(mut url) = reqwest::Url::parse(raw) else {
         return raw.to_string();
