@@ -129,7 +129,8 @@ fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<SkillCat
                 continue;
             }
         };
-        if !file_type.is_dir() {
+        // Accept both regular directories and symlinks-to-directories as skill entries.
+        if !file_type.is_dir() && !file_type.is_symlink() {
             continue;
         }
         let skill_name = child.file_name().to_string_lossy().to_string();
@@ -225,7 +226,29 @@ fn scope_label(scope: SkillScope) -> &'static str {
 const SKILL_ROOT_SUFFIX_AGENT: &str = "skills";
 
 fn agent_skills_root(agent_home: &Path) -> PathBuf {
-    agent_home.join(SKILL_ROOT_SUFFIX_AGENT)
+    // Prefer an existing skill root if one already exists (e.g. .agents/skills, .codex/skills).
+    // This avoids creating a new `skills/` root that would shadow legacy roots.
+    if let Some(existing) = select_skill_root(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
+        existing
+    } else {
+        agent_home.join(SKILL_ROOT_SUFFIX_AGENT)
+    }
+}
+
+/// Validate that a skill name is a single path component with no traversal.
+fn validate_skill_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.contains(std::path::is_separator)
+        || name == "."
+        || name == ".."
+        || name.contains("..")
+    {
+        bail!(
+            "invalid skill name '{}': must be a single path component without traversal",
+            name
+        );
+    }
+    Ok(())
 }
 
 pub fn install_skill(agent_home: &Path, kind: &crate::types::SkillInstallKind) -> Result<String> {
@@ -234,10 +257,13 @@ pub fn install_skill(agent_home: &Path, kind: &crate::types::SkillInstallKind) -
         .with_context(|| format!("failed to create {}", skills_root.display()))?;
     let name = match kind {
         crate::types::SkillInstallKind::Builtin { name } => {
+            validate_skill_name(name)?;
             crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
             name.clone()
         }
         crate::types::SkillInstallKind::Local { path } => {
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            validate_skill_name(file_name)?;
             let dest = crate::agent_template::materialize_local_skill_ref(&skills_root, path)?;
             dest.file_name()
                 .and_then(|n| n.to_str())
@@ -249,12 +275,25 @@ pub fn install_skill(agent_home: &Path, kind: &crate::types::SkillInstallKind) -
 }
 
 pub fn uninstall_skill(agent_home: &Path, name: &str) -> Result<()> {
+    validate_skill_name(name)?;
     let skills_root = agent_skills_root(agent_home);
     let destination = skills_root.join(name);
-    if !destination.exists() {
+    // Use symlink_metadata to detect symlinks without following them.
+    let meta = match fs::symlink_metadata(&destination) {
+        Ok(m) => m,
+        Err(_) => {
+            bail!(
+                "skill '{}' is not installed in agent skills directory",
+                name
+            );
+        }
+    };
+    // Verify this looks like a skill installation by checking for SKILL_ENTRYPOINT.
+    if !destination.join(SKILL_ENTRYPOINT).exists() && !meta.is_symlink() {
         bail!(
-            "skill '{}' is not installed in agent skills directory",
-            name
+            "directory '{}' does not appear to be a skill installation (missing {})",
+            destination.display(),
+            SKILL_ENTRYPOINT
         );
     }
     crate::agent_template::remove_materialized_skill_destination(&destination)?;

@@ -826,7 +826,13 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
                 holon::types::SkillInstallKind::Builtin { name: name_or_path }
             } else {
                 let path = std::path::PathBuf::from(&name_or_path);
-                if path.is_absolute() && path.is_dir() {
+                if path.is_absolute() {
+                    if !path.is_dir() {
+                        anyhow::bail!(
+                            "path '{}' does not exist or is not a directory. Use --builtin to install a builtin skill by name.",
+                            path.display()
+                        );
+                    }
                     holon::types::SkillInstallKind::Local { path }
                 } else {
                     holon::types::SkillInstallKind::Builtin { name: name_or_path }

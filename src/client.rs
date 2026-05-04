@@ -346,12 +346,16 @@ impl LocalClient {
     pub async fn list_skills(&self, agent_id: &str) -> Result<Value> {
         let body = self
             .send(
-                RequestSpec::get(&format!("/agents/{agent_id}/skills")),
+                RequestSpec::get(&format!("/agents/{}/skills", agent_id)),
                 false,
             )
             .await?;
-        serde_json::from_slice(&body)
-            .with_context(|| "failed to decode response body for GET /agents/{agent_id}/skills")
+        serde_json::from_slice(&body).with_context(|| {
+            format!(
+                "failed to decode response body for GET /agents/{}/skills",
+                agent_id
+            )
+        })
     }
 
     pub async fn install_skill(
