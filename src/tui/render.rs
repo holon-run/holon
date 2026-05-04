@@ -122,32 +122,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
         OverlayState::HelpView { .. } => "Help: Up/Down, PgUp/PgDn, Home/End, Esc",
     };
 
-    let refreshed = app
-        .last_refresh_at
-        .map(|timestamp| timestamp.format("%H:%M:%S").to_string())
-        .unwrap_or_else(|| "unknown".into());
-    // Show refresh time as fallback for event time to avoid misleading "never"
-    // when agent was just bootstrapped and hasn't received events yet
-    let last_event = app
-        .last_event_at
-        .or(app.last_refresh_at)
-        .map(|timestamp| timestamp.format("%H:%M:%S").to_string())
-        .unwrap_or_else(|| "unknown".into());
-    let stale = app
-        .stale_slice_summary()
-        .map(|summary| format!("  Projection stale: {summary}"))
-        .unwrap_or_default();
-    let connection = if let Some(detail) = app.connection_detail() {
-        format!(
-            "{} ({detail})  snapshot {refreshed}  event {last_event}{stale}",
-            app.connection_label()
-        )
-    } else {
-        format!(
-            "{}  snapshot {refreshed}  event {last_event}{stale}",
-            app.connection_label()
-        )
-    };
+    let connection = app.connection_label().to_string();
     let model = app
         .selected_agent_summary()
         .map(render_model_status)
@@ -511,12 +486,10 @@ fn display_width(text: &str) -> u16 {
 
 pub(super) fn render_header(agent: &AgentSummary) -> String {
     let mut line = format!(
-        "{}  {:?}  {}  pending {}  tasks {}",
+        "{}  {:?}  {}",
         agent.identity.agent_id,
         agent.agent.status,
-        agent.identity.contract_badge(),
-        agent.agent.pending,
-        agent.agent.active_task_ids.len(),
+        agent.identity.contract_badge()
     );
     if agent.lifecycle.resume_required {
         line.push_str("  resume required");
