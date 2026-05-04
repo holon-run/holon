@@ -20,7 +20,7 @@ use crate::{
     },
 };
 
-use super::build_http_client;
+use super::{build_http_client, stream_idle_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error, classify_status_error, invalid_response_error,
     provider_transport_error, ProviderFailureClassification, ProviderFailureKind,
@@ -3191,11 +3191,28 @@ async fn read_openai_streaming_response(response: Response) -> Result<Value> {
     const MAX_STREAMED_OUTPUT_ITEMS: usize = 128;
 
     let mut response = response;
+    let idle_timeout = stream_idle_timeout();
     let mut pending = String::new();
     let mut data_lines = Vec::new();
     let mut streamed_output_items = Vec::new();
 
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
+    while let Some(chunk) = tokio::time::timeout(idle_timeout, response.chunk())
+        .await
+        .map_err(|_| {
+            provider_transport_error(
+                ProviderFailureClassification {
+                    kind: ProviderFailureKind::Timeout,
+                    disposition: RetryDisposition::Retryable,
+                },
+                None,
+                None,
+                format!(
+                    "OpenAI-style streaming response body timed out waiting for SSE chunk after {} ms",
+                    idle_timeout.as_millis()
+                ),
+            )
+        })?
+        .map_err(|error| {
         classify_reqwest_transport_error(
             "OpenAI-style streaming response body failed",
             "streaming_response_body",

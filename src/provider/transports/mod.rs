@@ -16,16 +16,25 @@ pub(crate) use openai::{
 };
 pub use openai::{OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiProvider};
 
-const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 
 fn build_http_client() -> Result<Client> {
     let timeout_secs = env::var("HOLON_PROVIDER_HTTP_TIMEOUT_SECS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0);
+    let mut builder = Client::builder();
+    if let Some(timeout_secs) = timeout_secs {
+        builder = builder.timeout(Duration::from_secs(timeout_secs));
+    }
+    builder.build().context("failed to build HTTP client")
+}
+
+pub(super) fn stream_idle_timeout() -> Duration {
+    let timeout_ms = env::var("HOLON_PROVIDER_STREAM_IDLE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_HTTP_TIMEOUT_SECS);
-    Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .build()
-        .context("failed to build HTTP client")
+        .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT_MS);
+    Duration::from_millis(timeout_ms)
 }
