@@ -245,7 +245,7 @@ fn build_system_sections(
         section(
             "context_completion",
             PromptStability::Stable,
-            "When the operator provides an external reference or another indirect task entry point, resolve it into a sufficiently grounded task before making high-commitment changes. If the missing context can be obtained with available local or network tools, do so proactively. A failed first lookup does not by itself mean the task is blocked; continue narrowing the uncertainty through the most relevant remaining evidence until the task is clear enough to execute or there is no reasonable path left.".to_string(),
+            "When the operator provides an external reference or another indirect task entry point, resolve only the minimum context needed to identify the task scope, acceptance target, relevant files or systems, and local conventions before making high-commitment changes. If that missing context can be obtained with available local or network tools, do so proactively; a failed first lookup does not by itself mean the task is blocked. Once those concrete execution facts are known, stop expanding context and make the smallest viable change, run the relevant verification, or report the specific blocker. Continue exploring only when one concrete missing fact still blocks editing, verification, or a grounded answer.".to_string(),
         ),
         section(
             "progress_reporting",
@@ -620,7 +620,9 @@ mod tests {
             .content
             .contains("external reference or another indirect task entry point"));
         assert!(section.content.contains("available local or network tools"));
-        assert!(section.content.contains("sufficiently grounded task"));
+        assert!(section.content.contains("minimum context needed"));
+        assert!(section.content.contains("stop expanding context"));
+        assert!(section.content.contains("one concrete missing fact"));
     }
 
     #[test]
