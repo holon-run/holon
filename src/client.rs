@@ -343,6 +343,43 @@ impl LocalClient {
         .await
     }
 
+    pub async fn list_skills(&self, agent_id: &str) -> Result<Value> {
+        let body = self
+            .send(
+                RequestSpec::get(&format!("/agents/{}/skills", agent_id)),
+                false,
+            )
+            .await?;
+        serde_json::from_slice(&body).with_context(|| {
+            format!(
+                "failed to decode response body for GET /agents/{}/skills",
+                agent_id
+            )
+        })
+    }
+
+    pub async fn install_skill(
+        &self,
+        agent_id: &str,
+        kind: crate::types::SkillInstallKind,
+    ) -> Result<Value> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/skills/install"),
+            &crate::types::InstallSkillRequest { kind },
+        )
+        .await
+    }
+
+    pub async fn uninstall_skill(&self, agent_id: &str, name: &str) -> Result<Value> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/skills/uninstall"),
+            &crate::types::UninstallSkillRequest {
+                name: name.to_string(),
+            },
+        )
+        .await
+    }
+
     pub async fn stream_agent_events(
         &self,
         agent_id: &str,

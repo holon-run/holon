@@ -262,6 +262,24 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
         lines.push(format!("  Timers: {} active", active_timers));
     }
 
+    lines.push(String::new());
+    lines.push("Skills".into());
+    if agent.skills.discoverable_skills.is_empty() {
+        lines.push("  No skills".into());
+    } else {
+        for skill in &agent.skills.discoverable_skills {
+            lines.push(format!(
+                "  - {} [{}]",
+                skill.name,
+                match skill.scope {
+                    crate::types::SkillScope::Agent => "agent",
+                    crate::types::SkillScope::User => "user",
+                    crate::types::SkillScope::Workspace => "workspace",
+                }
+            ));
+        }
+    }
+
     lines.join("\n")
 }
 

@@ -12,6 +12,9 @@ enum SlashCommand {
     ClearStatus,
     DebugPrompt,
     Agent,
+    Skills,
+    SkillInstall,
+    SkillUninstall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +38,7 @@ pub(super) struct SlashCommandSpec {
     command: SlashCommand,
 }
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 10] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 13] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -105,6 +108,27 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 10] = [
         usage: "/agent <agent-id>",
         arg_rule: SlashArgRule::ExactlyOne,
         command: SlashCommand::Agent,
+    },
+    SlashCommandSpec {
+        name: "/skills",
+        description: "show installed skills",
+        usage: "/skills",
+        arg_rule: SlashArgRule::None,
+        command: SlashCommand::Skills,
+    },
+    SlashCommandSpec {
+        name: "/skill-install",
+        description: "install a builtin skill",
+        usage: "/skill-install <name>",
+        arg_rule: SlashArgRule::ExactlyOne,
+        command: SlashCommand::SkillInstall,
+    },
+    SlashCommandSpec {
+        name: "/skill-uninstall",
+        description: "uninstall a skill",
+        usage: "/skill-uninstall <name>",
+        arg_rule: SlashArgRule::ExactlyOne,
+        command: SlashCommand::SkillUninstall,
     },
 ];
 
@@ -400,6 +424,66 @@ impl TuiApp {
                 self.overlay = OverlayState::None;
                 self.bootstrap_agent_index(target_index).await?;
                 self.status_line = format!("Switched to agent {requested_agent_id}");
+            }
+            SlashCommand::Skills => {
+                let agent_id = match self.selected_agent_id() {
+                    Some(id) => id.to_string(),
+                    None => {
+                        self.status_line = "No agent selected".into();
+                        return Ok(());
+                    }
+                };
+                let response = self.client.list_skills(&agent_id).await?;
+                if let Some(skills) = response.get("skills").and_then(|s| s.as_array()) {
+                    if skills.is_empty() {
+                        self.status_line = "No skills installed".into();
+                    } else {
+                        let names: Vec<String> = skills
+                            .iter()
+                            .filter_map(|s| {
+                                s.get("name")
+                                    .and_then(|n| n.as_str())
+                                    .map(|n| n.to_string())
+                            })
+                            .collect();
+                        self.status_line = format!("Skills: {}", names.join(", "));
+                    }
+                } else {
+                    self.status_line = "Failed to list skills".into();
+                }
+            }
+            SlashCommand::SkillInstall => {
+                let skill_name = args
+                    .into_iter()
+                    .next()
+                    .expect("slash command /skill-install requires one argument");
+                let agent_id = match self.selected_agent_id() {
+                    Some(id) => id.to_string(),
+                    None => {
+                        self.status_line = "No agent selected".into();
+                        return Ok(());
+                    }
+                };
+                let kind = crate::types::SkillInstallKind::Builtin {
+                    name: skill_name.clone(),
+                };
+                self.client.install_skill(&agent_id, kind).await?;
+                self.status_line = format!("Installed skill: {skill_name}");
+            }
+            SlashCommand::SkillUninstall => {
+                let skill_name = args
+                    .into_iter()
+                    .next()
+                    .expect("slash command /skill-uninstall requires one argument");
+                let agent_id = match self.selected_agent_id() {
+                    Some(id) => id.to_string(),
+                    None => {
+                        self.status_line = "No agent selected".into();
+                        return Ok(());
+                    }
+                };
+                self.client.uninstall_skill(&agent_id, &skill_name).await?;
+                self.status_line = format!("Uninstalled skill: {skill_name}");
             }
         }
         Ok(())
