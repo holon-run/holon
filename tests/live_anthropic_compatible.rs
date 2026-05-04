@@ -15,7 +15,7 @@ fn live_config() -> Result<AppConfig> {
 
 fn provider_model_env(provider: &str, default_model: &str) -> String {
     let env_name = format!(
-        "HOLON_LIVE_{}_ANTHROPIC_MODEL",
+        "HOLON_LIVE_{}_MODEL",
         provider.replace('-', "_").to_ascii_uppercase()
     );
     std::env::var(env_name).unwrap_or_else(|_| default_model.into())
@@ -52,6 +52,12 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         }),
         freeform_grammar: None,
     };
+    let context_blocks = vec![PromptContentBlock {
+        text: "Runtime context block: the probe result must be preserved in the continuation."
+            .into(),
+        stability: PromptStability::AgentScoped,
+        cache_breakpoint: true,
+    }];
     let prompt_frame = ProviderPromptFrame::structured(
         "Reply to the user briefly after reading the tool result.",
         vec![PromptContentBlock {
@@ -59,7 +65,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
             stability: PromptStability::AgentScoped,
             cache_breakpoint: false,
         }],
-        vec![],
+        context_blocks.clone(),
         Some(ProviderPromptCache {
             agent_id: format!("live-{provider_id_text}-context-management"),
             prompt_cache_key: format!("live-{provider_id_text}-context-management"),
@@ -72,6 +78,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         .complete_turn(ProviderTurnRequest {
             prompt_frame,
             conversation: vec![
+                ConversationMessage::UserBlocks(context_blocks),
                 ConversationMessage::UserText("Use the probe result and answer exactly OK.".into()),
                 ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
                     id: "call_context_management_probe".into(),
@@ -89,9 +96,25 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         })
         .await?;
 
+    let response_text = output
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            ModelBlock::Text { text } => Some(text.as_str()),
+            ModelBlock::ToolUse { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        !output.blocks.is_empty(),
-        "{provider_id_text}/{model} returned no supported content blocks"
+        output
+            .blocks
+            .iter()
+            .all(|block| matches!(block, ModelBlock::Text { .. })),
+        "{provider_id_text}/{model} emitted another tool call instead of completing the continuation"
+    );
+    assert!(
+        response_text.trim().trim_end_matches('.') == "OK",
+        "{provider_id_text}/{model} did not answer from the tool result; got {response_text:?}"
     );
     Ok(())
 }

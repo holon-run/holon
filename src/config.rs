@@ -1824,13 +1824,14 @@ fn insert_anthropic_compatible_provider(
     env_names: &[&str],
     settings_env: &HashMap<String, String>,
 ) -> Result<()> {
-    insert_builtin_http_provider(
+    insert_builtin_http_provider_with_context_management(
         registry,
         provider,
         ProviderTransportKind::AnthropicMessages,
         default_base_url,
         env_names,
         settings_env,
+        resolve_anthropic_context_management_config()?,
     )
 }
 
@@ -1841,6 +1842,26 @@ fn insert_builtin_http_provider(
     default_base_url: &str,
     env_names: &[&str],
     settings_env: &HashMap<String, String>,
+) -> Result<()> {
+    insert_builtin_http_provider_with_context_management(
+        registry,
+        provider,
+        transport,
+        default_base_url,
+        env_names,
+        settings_env,
+        Default::default(),
+    )
+}
+
+fn insert_builtin_http_provider_with_context_management(
+    registry: &mut ProviderRegistry,
+    provider: &str,
+    transport: ProviderTransportKind,
+    default_base_url: &str,
+    env_names: &[&str],
+    settings_env: &HashMap<String, String>,
+    context_management: AnthropicContextManagementConfig,
 ) -> Result<()> {
     let id = ProviderId::parse(provider)?;
     let base_url_env = format!("HOLON_{}_BASE_URL", env_key_fragment(provider));
@@ -1877,7 +1898,7 @@ fn insert_builtin_http_provider(
             codex_home: None,
             originator: None,
             reasoning_effort: None,
-            context_management: Default::default(),
+            context_management,
         },
     );
     Ok(())
@@ -3150,6 +3171,10 @@ mod tests {
             deepseek_anthropic.credential.as_deref(),
             Some("deepseek-key")
         );
+        assert_eq!(
+            deepseek_anthropic.context_management.cache_strategy,
+            AnthropicCacheStrategy::ClaudeCliLike
+        );
 
         let xiaomi = providers
             .get(&ProviderId::parse("xiaomi").unwrap())
@@ -3175,6 +3200,10 @@ mod tests {
         assert_eq!(
             xiaomi_token_plan.credential.as_deref(),
             Some("xiaomi-token-plan-key")
+        );
+        assert_eq!(
+            xiaomi_token_plan.context_management.cache_strategy,
+            AnthropicCacheStrategy::ClaudeCliLike
         );
 
         let minimax = providers
