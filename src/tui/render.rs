@@ -67,11 +67,7 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
 
 fn draw_runtime_state(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
     let paragraph = Paragraph::new(render_runtime_state_text(app))
-        .block(
-            Block::default()
-                .title("Runtime State")
-                .borders(Borders::ALL),
-        )
+        .block(Block::default().title("Agent State").borders(Borders::ALL))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
@@ -168,15 +164,12 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
             "Agent: {} / {:?}",
             agent.identity.agent_id, agent.agent.status
         ),
-        format!(
-            "Queue: pending {}  active tasks {}",
-            agent.agent.pending,
-            agent.agent.active_task_ids.len()
-        ),
+        format!("Contract: {}", agent.identity.contract_badge()),
         format!(
             "Closure: {:?} / {:?}",
             agent.closure.outcome, agent.closure.runtime_posture
         ),
+        String::new(),
         render_model_status(agent),
     ];
 
@@ -196,6 +189,13 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
     if let Some(worktree) = projection.workspace.worktree_session.as_ref() {
         lines.push(format!("  Worktree: {}", worktree.worktree_branch));
     }
+
+    lines.push(String::new());
+    lines.push(format!(
+        "Queue: pending {}  active tasks {}",
+        agent.agent.pending,
+        agent.agent.active_task_ids.len()
+    ));
 
     lines.push(String::new());
     lines.push("Work".into());
@@ -471,19 +471,6 @@ fn display_width(text: &str) -> u16 {
 }
 
 pub(super) fn render_header(agent: &AgentSummary) -> String {
-    let workspace = agent
-        .agent
-        .active_workspace_entry
-        .as_ref()
-        .map(|entry| {
-            format!(
-                "{} ({}/{})",
-                entry.workspace_id,
-                workspace_projection_label(Some(entry.projection_kind)),
-                workspace_access_mode_label(Some(entry.access_mode))
-            )
-        })
-        .unwrap_or_else(|| "none".to_string());
     let mut line = format!(
         "{}  {:?}  {}  pending {}  tasks {}",
         agent.identity.agent_id,
@@ -495,7 +482,6 @@ pub(super) fn render_header(agent: &AgentSummary) -> String {
     if agent.lifecycle.resume_required {
         line.push_str("  resume required");
     }
-    line.push_str(&format!("  workspace {workspace}"));
     line
 }
 
