@@ -50,7 +50,7 @@ use crate::{
     host::{PublicAgentError, RuntimeHost},
     ingress::{InboundRequest, WakeDisposition, WakeHint},
     policy::{default_trust_for_origin, validate_message_kind_for_origin},
-    runtime::{CurrentRunInterruptMode, CurrentRunInterruptRequest},
+    runtime::{CurrentRunInterruptError, CurrentRunInterruptMode, CurrentRunInterruptRequest},
     storage::FileActivityMarker,
     system::{ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary},
     types::{
@@ -2361,28 +2361,31 @@ fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<Value>) {
 }
 
 fn interrupt_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
-    let message = error.to_string();
-    if message.contains("stale run_id") {
-        return (
+    match error.downcast::<CurrentRunInterruptError>() {
+        Ok(CurrentRunInterruptError::StaleRunId {
+            requested_run_id,
+            current_run_id,
+        }) => (
             StatusCode::CONFLICT,
             Json(json!({
                 "ok": false,
                 "code": "stale_run_id",
-                "error": message,
+                "error": format!("stale run_id {requested_run_id}; current run is {current_run_id}"),
+                "requested_run_id": requested_run_id,
+                "current_run_id": current_run_id,
             })),
-        );
-    }
-    if message.contains("has no current run to interrupt") {
-        return (
+        ),
+        Ok(CurrentRunInterruptError::NoCurrentRun { agent_id }) => (
             StatusCode::CONFLICT,
             Json(json!({
                 "ok": false,
                 "code": "no_current_run",
-                "error": message,
+                "error": format!("agent {agent_id} has no current run to interrupt"),
+                "agent_id": agent_id,
             })),
-        );
+        ),
+        Err(error) => error_response(error),
     }
-    error_response(error)
 }
 
 fn error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {

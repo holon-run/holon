@@ -201,6 +201,17 @@ pub struct CurrentRunInterruptOutcome {
     pub mode: CurrentRunInterruptMode,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CurrentRunInterruptError {
+    #[error("agent {agent_id} has no current run to interrupt")]
+    NoCurrentRun { agent_id: String },
+    #[error("stale run_id {requested_run_id}; current run is {current_run_id}")]
+    StaleRunId {
+        requested_run_id: String,
+        current_run_id: String,
+    },
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("current run interrupted by operator")]
 pub struct CurrentRunInterrupted {
@@ -235,14 +246,15 @@ impl RuntimeHandle {
         let mut guard = self.inner.agent.lock().await;
         let agent_id = guard.state.id.clone();
         let Some(handle) = guard.current_run_interrupt.as_ref().cloned() else {
-            return Err(anyhow!("agent {agent_id} has no current run to interrupt"));
+            return Err(CurrentRunInterruptError::NoCurrentRun { agent_id }.into());
         };
         if let Some(expected_run_id) = request.run_id.as_deref() {
             if expected_run_id != handle.run_id {
-                return Err(anyhow!(
-                    "stale run_id {expected_run_id}; current run is {}",
-                    handle.run_id
-                ));
+                return Err(CurrentRunInterruptError::StaleRunId {
+                    requested_run_id: expected_run_id.to_string(),
+                    current_run_id: handle.run_id.clone(),
+                }
+                .into());
             }
         }
 
@@ -938,14 +950,7 @@ impl RuntimeHandle {
                     };
                 }
                 guard.state.current_run_id = None;
-                if interrupted.as_ref().is_some_and(|interrupted| {
-                    guard
-                        .current_run_interrupt
-                        .as_ref()
-                        .is_some_and(|handle| handle.run_id == interrupted.run_id)
-                }) {
-                    guard.current_run_interrupt = None;
-                }
+                guard.current_run_interrupt = None;
                 self.inner.storage.write_agent(&guard.state)?;
                 drop(guard);
                 self.maybe_commit_turn_end_work_item_transition().await?;
