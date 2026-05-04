@@ -72,7 +72,13 @@ impl LocalSystem {
         unsafe {
             if libc::kill(pgid_neg, libc::SIGKILL) != 0 {
                 let err = std::io::Error::last_os_error();
-                if err.raw_os_error() != Some(libc::ESRCH) {
+                // On macOS, sending SIGKILL to a process group whose leader has already
+                // exited can return EPERM instead of ESRCH. Treat both as "already dead".
+                let already_dead = matches!(
+                    err.raw_os_error(),
+                    Some(libc::ESRCH) | Some(libc::EPERM)
+                );
+                if !already_dead {
                     return Err(anyhow!("failed to send SIGKILL to process group {}: {}", pgid, err));
                 }
             }
