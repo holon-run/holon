@@ -60,30 +60,36 @@ impl LocalSystem {
                 let err = std::io::Error::last_os_error();
                 // ESRCH = no such process - already exited, treat as success
                 if err.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(anyhow!("failed to send SIGTERM to process group {}: {}", pgid, err));
+                    return Err(anyhow!(
+                        "failed to send SIGTERM to process group {}: {}",
+                        pgid,
+                        err
+                    ));
                 }
             }
         }
-        
+
         // Give processes 100ms to exit cleanly
         std::thread::sleep(std::time::Duration::from_millis(100));
-        
+
         // Force kill any remaining processes with SIGKILL
         unsafe {
             if libc::kill(pgid_neg, libc::SIGKILL) != 0 {
                 let err = std::io::Error::last_os_error();
                 // On macOS, sending SIGKILL to a process group whose leader has already
                 // exited can return EPERM instead of ESRCH. Treat both as "already dead".
-                let already_dead = matches!(
-                    err.raw_os_error(),
-                    Some(libc::ESRCH) | Some(libc::EPERM)
-                );
+                let already_dead =
+                    matches!(err.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM));
                 if !already_dead {
-                    return Err(anyhow!("failed to send SIGKILL to process group {}: {}", pgid, err));
+                    return Err(anyhow!(
+                        "failed to send SIGKILL to process group {}: {}",
+                        pgid,
+                        err
+                    ));
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -212,10 +218,7 @@ impl LocalSystem {
             .openpty(PtySize::default())
             .context("failed to allocate pty")?;
         let command = self.build_pty_command(execution, &req)?;
-        let child = pair
-            .slave
-            .spawn_command(command)
-            ?;
+        let child = pair.slave.spawn_command(command)?;
         let process_group_id = child.process_id().map(|pid| ProcessGroupId { pid });
         let killer = child.clone_killer();
         let child = Arc::new(Mutex::new(child));
@@ -323,7 +326,10 @@ impl ProcessHost for LocalSystem {
             let pgid = None;
             pgid
         };
-        Ok(Box::new(LocalRunningProcess { child, process_group_id }))
+        Ok(Box::new(LocalRunningProcess {
+            child,
+            process_group_id,
+        }))
     }
 }
 
@@ -640,15 +646,15 @@ impl RunningProcess for LocalPtyRunningProcess {
         }
         #[cfg(windows)]
         {
-        let killer = Arc::clone(&self.killer);
-        tokio::task::spawn_blocking(move || {
-            let mut killer = killer
-                .lock()
-                .map_err(|_| anyhow!("failed to lock pty killer"))?;
-            killer.kill().context("failed to stop pty process")
-        })
-        .await
-        .context("pty stop task failed")?
+            let killer = Arc::clone(&self.killer);
+            tokio::task::spawn_blocking(move || {
+                let mut killer = killer
+                    .lock()
+                    .map_err(|_| anyhow!("failed to lock pty killer"))?;
+                killer.kill().context("failed to stop pty process")
+            })
+            .await
+            .context("pty stop task failed")?
         }
     }
 }
