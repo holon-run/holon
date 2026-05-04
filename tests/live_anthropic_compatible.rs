@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use holon::{
-    config::{AppConfig, ProviderId},
+    config::{AppConfig, ProviderId, ProviderTransportKind},
     prompt::PromptStability,
     provider::{
         AgentProvider, AnthropicProvider, ConversationMessage, ModelBlock, PromptContentBlock,
@@ -30,6 +30,11 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         .providers
         .get_mut(&provider_id)
         .with_context(|| format!("missing {provider_id_text} provider config"))?;
+    assert_eq!(
+        provider_config.transport,
+        ProviderTransportKind::AnthropicMessages,
+        "{provider_id_text} is not configured with Anthropic Messages transport"
+    );
     provider_config.context_management.enabled = true;
     provider_config.context_management.trigger_input_tokens = 1;
     provider_config.context_management.keep_recent_tool_uses = 1;
@@ -135,6 +140,46 @@ async fn live_xiaomi_token_plan_accepts_context_management() -> Result<()> {
     provider_accepts_context_management(
         "xiaomi-token-plan",
         &provider_model_env("xiaomi-token-plan", "mimo-v2-pro"),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires XIAOMI_API_KEY and network access"]
+async fn live_xiaomi_anthropic_accepts_context_management() -> Result<()> {
+    provider_accepts_context_management(
+        "xiaomi-anthropic",
+        &provider_model_env("xiaomi-anthropic", "mimo-v2-pro"),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires XIAOMI_TOKEN_PLAN_API_KEY and network access"]
+async fn live_xiaomi_token_plan_anthropic_accepts_context_management() -> Result<()> {
+    provider_accepts_context_management(
+        "xiaomi-token-plan-anthropic",
+        &provider_model_env("xiaomi-token-plan-anthropic", "mimo-v2-pro"),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires ZAI_API_KEY and network access"]
+async fn live_zai_anthropic_accepts_context_management() -> Result<()> {
+    provider_accepts_context_management(
+        "zai-anthropic",
+        &provider_model_env("zai-anthropic", "glm-4.7"),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires BIGMODEL_API_KEY and network access"]
+async fn live_bigmodel_anthropic_accepts_context_management() -> Result<()> {
+    provider_accepts_context_management(
+        "bigmodel-anthropic",
+        &provider_model_env("bigmodel-anthropic", "glm-4.7"),
     )
     .await
 }

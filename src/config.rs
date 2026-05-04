@@ -1606,6 +1606,13 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
     )?;
     insert_openai_compatible_provider(
         &mut registry,
+        "deepseek-openai",
+        "https://api.deepseek.com/v1",
+        &["DEEPSEEK_API_KEY"],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
         "fireworks",
         "https://api.fireworks.ai/inference/v1",
         &["FIREWORKS_API_KEY"],
@@ -1748,9 +1755,23 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         ],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "xiaomi",
+        "https://api.xiaomimimo.com/anthropic",
+        &["XIAOMI_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "xiaomi-anthropic",
+        "https://api.xiaomimimo.com/anthropic",
+        &["XIAOMI_API_KEY"],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
+        "xiaomi-openai",
         "https://api.xiaomimimo.com/v1",
         &["XIAOMI_API_KEY"],
         settings_env,
@@ -1759,6 +1780,20 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &mut registry,
         "xiaomi-token-plan",
         "https://token-plan-cn.xiaomimimo.com/anthropic",
+        &["XIAOMI_TOKEN_PLAN_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "xiaomi-token-plan-anthropic",
+        "https://token-plan-cn.xiaomimimo.com/anthropic",
+        &["XIAOMI_TOKEN_PLAN_API_KEY"],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
+        "xiaomi-token-plan-openai",
+        "https://token-plan-cn.xiaomimimo.com/v1",
         &["XIAOMI_TOKEN_PLAN_API_KEY"],
         settings_env,
     )?;
@@ -1774,6 +1809,41 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         "zai",
         "https://api.z.ai/api/paas/v4",
         &["ZAI_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "zai-anthropic",
+        "https://api.z.ai/api/anthropic",
+        &["ZAI_API_KEY"],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
+        "zai-openai",
+        "https://api.z.ai/api/paas/v4",
+        &["ZAI_API_KEY"],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
+        "bigmodel",
+        "https://open.bigmodel.cn/api/paas/v4",
+        &["BIGMODEL_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "bigmodel-anthropic",
+        "https://open.bigmodel.cn/api/anthropic",
+        &["BIGMODEL_API_KEY"],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
+        "bigmodel-openai",
+        "https://open.bigmodel.cn/api/paas/v4",
+        &["BIGMODEL_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
@@ -3122,6 +3192,8 @@ mod tests {
             "XIAOMI_TOKEN_PLAN_API_KEY".to_string(),
             "xiaomi-token-plan-key".to_string(),
         );
+        settings_env.insert("ZAI_API_KEY".to_string(), "zai-key".to_string());
+        settings_env.insert("BIGMODEL_API_KEY".to_string(), "bigmodel-key".to_string());
         settings_env.insert("DASHSCOPE_API_KEY".to_string(), "dashscope-key".to_string());
 
         let providers = super::built_in_provider_registry(&settings_env).unwrap();
@@ -3176,15 +3248,49 @@ mod tests {
             AnthropicCacheStrategy::ClaudeCliLike
         );
 
+        let deepseek_openai = providers
+            .get(&ProviderId::parse("deepseek-openai").unwrap())
+            .unwrap();
+        assert_eq!(
+            deepseek_openai.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(deepseek_openai.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(deepseek_openai.credential.as_deref(), Some("deepseek-key"));
+
         let xiaomi = providers
             .get(&ProviderId::parse("xiaomi").unwrap())
             .unwrap();
+        assert_eq!(xiaomi.transport, ProviderTransportKind::AnthropicMessages);
+        assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/anthropic");
+        assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
         assert_eq!(
-            xiaomi.transport,
+            xiaomi.context_management.cache_strategy,
+            AnthropicCacheStrategy::ClaudeCliLike
+        );
+
+        let xiaomi_anthropic = providers
+            .get(&ProviderId::parse("xiaomi-anthropic").unwrap())
+            .unwrap();
+        assert_eq!(
+            xiaomi_anthropic.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            xiaomi_anthropic.base_url,
+            "https://api.xiaomimimo.com/anthropic"
+        );
+        assert_eq!(xiaomi_anthropic.credential.as_deref(), Some("xiaomi-key"));
+
+        let xiaomi_openai = providers
+            .get(&ProviderId::parse("xiaomi-openai").unwrap())
+            .unwrap();
+        assert_eq!(
+            xiaomi_openai.transport,
             ProviderTransportKind::OpenAiChatCompletions
         );
-        assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/v1");
-        assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
+        assert_eq!(xiaomi_openai.base_url, "https://api.xiaomimimo.com/v1");
+        assert_eq!(xiaomi_openai.credential.as_deref(), Some("xiaomi-key"));
 
         let xiaomi_token_plan = providers
             .get(&ProviderId::parse("xiaomi-token-plan").unwrap())
@@ -3205,6 +3311,97 @@ mod tests {
             xiaomi_token_plan.context_management.cache_strategy,
             AnthropicCacheStrategy::ClaudeCliLike
         );
+
+        let xiaomi_token_plan_anthropic = providers
+            .get(&ProviderId::parse("xiaomi-token-plan-anthropic").unwrap())
+            .unwrap();
+        assert_eq!(
+            xiaomi_token_plan_anthropic.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            xiaomi_token_plan_anthropic.base_url,
+            "https://token-plan-cn.xiaomimimo.com/anthropic"
+        );
+        assert_eq!(
+            xiaomi_token_plan_anthropic.credential.as_deref(),
+            Some("xiaomi-token-plan-key")
+        );
+
+        let xiaomi_token_plan_openai = providers
+            .get(&ProviderId::parse("xiaomi-token-plan-openai").unwrap())
+            .unwrap();
+        assert_eq!(
+            xiaomi_token_plan_openai.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(
+            xiaomi_token_plan_openai.base_url,
+            "https://token-plan-cn.xiaomimimo.com/v1"
+        );
+        assert_eq!(
+            xiaomi_token_plan_openai.credential.as_deref(),
+            Some("xiaomi-token-plan-key")
+        );
+
+        let zai = providers.get(&ProviderId::parse("zai").unwrap()).unwrap();
+        assert_eq!(zai.transport, ProviderTransportKind::OpenAiChatCompletions);
+        assert_eq!(zai.base_url, "https://api.z.ai/api/paas/v4");
+        assert_eq!(zai.credential.as_deref(), Some("zai-key"));
+
+        let zai_anthropic = providers
+            .get(&ProviderId::parse("zai-anthropic").unwrap())
+            .unwrap();
+        assert_eq!(
+            zai_anthropic.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(zai_anthropic.base_url, "https://api.z.ai/api/anthropic");
+
+        let zai_openai = providers
+            .get(&ProviderId::parse("zai-openai").unwrap())
+            .unwrap();
+        assert_eq!(
+            zai_openai.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(zai_openai.base_url, "https://api.z.ai/api/paas/v4");
+        assert_eq!(zai_openai.credential.as_deref(), Some("zai-key"));
+
+        let bigmodel = providers
+            .get(&ProviderId::parse("bigmodel").unwrap())
+            .unwrap();
+        assert_eq!(
+            bigmodel.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(bigmodel.base_url, "https://open.bigmodel.cn/api/paas/v4");
+        assert_eq!(bigmodel.credential.as_deref(), Some("bigmodel-key"));
+
+        let bigmodel_anthropic = providers
+            .get(&ProviderId::parse("bigmodel-anthropic").unwrap())
+            .unwrap();
+        assert_eq!(
+            bigmodel_anthropic.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            bigmodel_anthropic.base_url,
+            "https://open.bigmodel.cn/api/anthropic"
+        );
+
+        let bigmodel_openai = providers
+            .get(&ProviderId::parse("bigmodel-openai").unwrap())
+            .unwrap();
+        assert_eq!(
+            bigmodel_openai.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(
+            bigmodel_openai.base_url,
+            "https://open.bigmodel.cn/api/paas/v4"
+        );
+        assert_eq!(bigmodel_openai.credential.as_deref(), Some("bigmodel-key"));
 
         let minimax = providers
             .get(&ProviderId::parse("minimax").unwrap())

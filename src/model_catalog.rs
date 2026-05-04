@@ -372,6 +372,33 @@ fn catalog_model(
     }
 }
 
+fn extend_catalog_model_aliases_from_source(
+    entries: &mut Vec<BuiltInModelMetadata>,
+    source_provider: &str,
+    alias_providers: &[&str],
+) {
+    let source_provider_id = provider_id(source_provider);
+    let source_entries = entries
+        .iter()
+        .filter(|entry| entry.model_ref.provider == source_provider_id)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for provider in alias_providers {
+        let alias_provider_id = provider_id(provider);
+        for source_entry in &source_entries {
+            let mut alias_entry = source_entry.clone();
+            alias_entry.model_ref =
+                ModelRef::new(alias_provider_id.clone(), &source_entry.model_ref.model);
+            alias_entry.description = format!(
+                "Holon built-in runtime metadata for the {}/{} compatible provider model.",
+                provider, source_entry.model_ref.model
+            );
+            entries.push(alias_entry);
+        }
+    }
+}
+
 fn built_in_entries() -> Vec<BuiltInModelMetadata> {
     let mut entries = vec![
         BuiltInModelMetadata {
@@ -517,7 +544,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
 }
 
 fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
-    vec![
+    let mut entries = vec![
         catalog_model(
             "anthropic",
             "claude-opus-4-7",
@@ -1684,7 +1711,30 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model("zai", "glm-4.5v", "GLM-4.5V", 64_000, 16_384, true, true),
-    ]
+    ];
+    extend_catalog_model_aliases_from_source(&mut entries, "deepseek", &["deepseek-openai"]);
+    extend_catalog_model_aliases_from_source(
+        &mut entries,
+        "xiaomi",
+        &[
+            "xiaomi-anthropic",
+            "xiaomi-openai",
+            "xiaomi-token-plan-anthropic",
+            "xiaomi-token-plan-openai",
+        ],
+    );
+    extend_catalog_model_aliases_from_source(
+        &mut entries,
+        "zai",
+        &[
+            "zai-anthropic",
+            "zai-openai",
+            "bigmodel",
+            "bigmodel-anthropic",
+            "bigmodel-openai",
+        ],
+    );
+    entries
 }
 
 #[cfg(test)]
@@ -1790,8 +1840,18 @@ mod tests {
         assert_eq!(deepseek.runtime_max_output_tokens, 384_000);
         assert_eq!(deepseek.source, ModelMetadataSource::BuiltInCatalog);
 
+        let deepseek_openai = catalog.resolve_policy(
+            &ModelRef::parse("deepseek-openai/deepseek-v4-flash").unwrap(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(deepseek_openai.display_name, "DeepSeek V4 Flash");
+        assert_eq!(deepseek_openai.source, ModelMetadataSource::BuiltInCatalog);
+
         let xiaomi = catalog.resolve_policy(
-            &ModelRef::parse("xiaomi-token-plan/mimo-v2-pro").unwrap(),
+            &ModelRef::parse("xiaomi-token-plan-openai/mimo-v2-pro").unwrap(),
             &HashMap::new(),
             None,
             &base_context(),
@@ -1802,6 +1862,26 @@ mod tests {
         assert_eq!(xiaomi.runtime_max_output_tokens, 32_000);
         assert!(xiaomi.capabilities.reasoning_summaries);
         assert_eq!(xiaomi.source, ModelMetadataSource::BuiltInCatalog);
+
+        let zai = catalog.resolve_policy(
+            &ModelRef::parse("zai-anthropic/glm-4.7").unwrap(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(zai.display_name, "GLM-4.7");
+        assert_eq!(zai.source, ModelMetadataSource::BuiltInCatalog);
+
+        let bigmodel = catalog.resolve_policy(
+            &ModelRef::parse("bigmodel-openai/glm-4.7").unwrap(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(bigmodel.display_name, "GLM-4.7");
+        assert_eq!(bigmodel.source, ModelMetadataSource::BuiltInCatalog);
     }
 
     #[test]
