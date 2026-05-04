@@ -336,6 +336,8 @@ mod tests {
             "CancelExternalTrigger",
             "ApplyPatch",
             "ExecCommand",
+            "WebFetch",
+            "WebSearch",
         ] {
             assert!(names.iter().any(|name| name == expected));
         }
@@ -544,6 +546,8 @@ mod tests {
         assert!(names.iter().any(|name| name == "CreateExternalTrigger"));
         assert!(names.iter().any(|name| name == "CancelExternalTrigger"));
         assert!(names.iter().any(|name| name == "ApplyPatch"));
+        assert!(names.iter().any(|name| name == "WebFetch"));
+        assert!(names.iter().any(|name| name == "WebSearch"));
         assert!(names.iter().all(|name| name != "CreateTask"));
     }
 
@@ -601,6 +605,8 @@ mod tests {
             family_for("UseWorkspace"),
             ToolCapabilityFamily::LocalEnvironment
         );
+        assert_eq!(family_for("WebFetch"), ToolCapabilityFamily::Web);
+        assert_eq!(family_for("WebSearch"), ToolCapabilityFamily::Web);
     }
 
     #[test]

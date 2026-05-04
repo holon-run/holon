@@ -28,6 +28,7 @@ pub mod tool;
 pub mod tui;
 mod tui_markdown;
 pub mod types;
+pub mod web;
 
 #[cfg(test)]
 mod worktree_tests;

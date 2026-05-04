@@ -72,6 +72,7 @@ use crate::{
         TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
         WaitingIntentSummary, WorkItemState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
+    web::WebConfig,
 };
 use command_task::ManagedTaskHandle;
 use continuation::{resolve_continuation, ContinuationTrigger};
@@ -141,6 +142,7 @@ struct RuntimeInner {
     context_config: RwLock<ContextConfig>,
     default_tool_output_tokens: u64,
     max_tool_output_tokens: u64,
+    web_config: WebConfig,
     callback_base_url: String,
     tools: ToolRegistry,
     system: Arc<LocalSystem>,
@@ -208,6 +210,10 @@ impl RuntimeHandle {
 
     pub(crate) fn system(&self) -> Arc<LocalSystem> {
         self.inner.system.clone()
+    }
+
+    pub(crate) fn web_config(&self) -> &WebConfig {
+        &self.inner.web_config
     }
 
     fn user_home(&self) -> Option<PathBuf> {

@@ -138,6 +138,7 @@ pub enum AgentProfilePreset {
 pub(crate) enum ToolCapabilityFamily {
     CoreAgent,
     LocalEnvironment,
+    Web,
     AgentCreation,
     AuthorityExpanding,
     ExternalTrigger,
@@ -148,6 +149,7 @@ impl ToolCapabilityFamily {
         match self {
             Self::CoreAgent => "core_agent",
             Self::LocalEnvironment => "local_environment",
+            Self::Web => "web",
             Self::AgentCreation => "agent_creation",
             Self::AuthorityExpanding => "authority_expanding",
             Self::ExternalTrigger => "external_trigger",
@@ -178,12 +180,14 @@ impl AgentProfilePreset {
                 family,
                 ToolCapabilityFamily::CoreAgent
                     | ToolCapabilityFamily::LocalEnvironment
+                    | ToolCapabilityFamily::Web
                     | ToolCapabilityFamily::ExternalTrigger
             ),
             Self::PublicNamed => matches!(
                 family,
                 ToolCapabilityFamily::CoreAgent
                     | ToolCapabilityFamily::LocalEnvironment
+                    | ToolCapabilityFamily::Web
                     | ToolCapabilityFamily::AgentCreation
                     | ToolCapabilityFamily::AuthorityExpanding
                     | ToolCapabilityFamily::ExternalTrigger
