@@ -653,24 +653,30 @@ async function runRealBenchmarkTask({
   const changedFiles = await diffAgainstBase(repoPath, worktreePath, manifest.base.sha, taskDir);
   await writeJson(path.join(taskDir, "changed-files.json"), changedFiles);
   const scopeViolation = detectScopeViolation(changedFiles, manifest.evaluation);
-  const commitInfo = await commitBenchmarkChanges({
-    worktreePath,
-    branchName,
-    taskId: manifest.task_id,
-    runnerId
-  });
-  const prInfo = await withRepoSideEffectLock(repoPath, async () => {
-    return maybeCreateBenchmarkPr({
-      repoPath,
+  const finalizationDecision = classifyBenchmarkFinalizationDecision(runnerResult);
+  await writeJson(path.join(taskDir, "finalization.json"), finalizationDecision);
+  let commitInfo = { status: "skipped_finalization", reason: finalizationDecision.reason };
+  let prInfo = { status: "skipped_finalization", reason: finalizationDecision.reason };
+  if (finalizationDecision.can_finalize) {
+    commitInfo = await commitBenchmarkChanges({
       worktreePath,
-      manifest,
-      runnerId,
       branchName,
-      suiteConfig,
-      prompt,
-      commitInfo
+      taskId: manifest.task_id,
+      runnerId
     });
-  });
+    prInfo = await withRepoSideEffectLock(repoPath, async () => {
+      return maybeCreateBenchmarkPr({
+        repoPath,
+        worktreePath,
+        manifest,
+        runnerId,
+        branchName,
+        suiteConfig,
+        prompt,
+        commitInfo
+      });
+    });
+  }
   await writeJson(path.join(taskDir, "pr.json"), prInfo);
   await writeFile(
     path.join(taskDir, "final-message.md"),
@@ -708,6 +714,8 @@ async function runRealBenchmarkTask({
     final_message_length: (runnerResult.finalMessage ?? "").length,
     timed_out: Boolean(runnerResult.timedOut),
     error_kind: runnerResult.errorKind ?? null,
+    completion_classification: runnerResult.completionClassification ?? null,
+    completion_terminal_state: runnerResult.terminalState ?? null,
     verify_exit_code: verifyExitCode,
     input_tokens: runnerResult.inputTokens ?? 0,
     output_tokens: runnerResult.outputTokens ?? 0,
@@ -927,40 +935,68 @@ async function runHolonRealTask({ runnerConfig, prompt, worktreePath, taskDir, r
   if (run.stderr) {
     await writeFile(path.join(taskDir, "runner.log"), run.stderr, "utf8");
   }
-  if (!run.stdout.trim()) {
-    throw new Error("holon run produced empty stdout");
-  }
-  const parsed = JSON.parse(run.stdout);
-  await writeJson(path.join(taskDir, "holon-run.json"), parsed);
   const agentDir = path.join(homeDir, "agents", agentId);
-  const briefs = await readAgentJsonlArtifact(agentDir, "briefs.jsonl", taskDir);
   await copyAgentJsonlArtifact(agentDir, taskDir, "briefs.jsonl");
   await copyAgentJsonlArtifact(agentDir, taskDir, "events.jsonl");
   await copyAgentJsonlArtifact(agentDir, taskDir, "tools.jsonl");
   await copyAgentJsonlArtifact(agentDir, taskDir, "transcript.jsonl");
+  await copyAgentStateArtifact(agentDir, taskDir, "agent.json");
+  await copyAgentJsonlArtifact(agentDir, taskDir, "work_items.jsonl");
 
+  const briefs = await readAgentJsonlArtifact(agentDir, "briefs.jsonl", taskDir);
   const toolExecutions = await readAgentJsonlArtifact(agentDir, "tools.jsonl", taskDir);
   const toolMetrics = summarizeHolonToolExecutions(toolExecutions);
   const events = await readAgentJsonlArtifact(agentDir, "events.jsonl", taskDir);
   const transcript = await readAgentJsonlArtifact(agentDir, "transcript.jsonl", taskDir);
+  const durableState = await summarizeHolonDurableState(agentDir, taskDir);
+  await writeJson(path.join(taskDir, "holon-durable-state.json"), durableState);
+
+  await writeJson(
+    path.join(taskDir, "provider-requests.json"),
+    captureHolonProviderRequests({ transcript, events })
+  );
+
+  let parsed = null;
+  if (run.stdout.trim()) {
+    parsed = JSON.parse(run.stdout);
+    await writeJson(path.join(taskDir, "holon-run.json"), parsed);
+  }
   const tokenOptimization = summarizeHolonTokenOptimization(tokenOptimizationEvents(events, transcript), toolExecutions, {
     modelRef: runnerConfig.model_ref
   });
   await writeJson(path.join(taskDir, "token-optimization.json"), tokenOptimization);
-  const finalMessage = selectHolonFinalMessage(parsed, briefs);
+  const completion = classifyHolonBenchmarkCompletion({
+    runTimedOut: run.timedOut,
+    runFinalStatus: parsed?.final_status ?? null,
+    durableState
+  });
+  const finalMessage = selectHolonFinalMessage(parsed ?? {}, briefs);
+  const defaultErrorKind = run.timedOut
+    ? "holon_run_timed_out"
+    : run.stdout.trim()
+      ? null
+      : "holon run produced empty stdout";
   return {
     finalMessage,
     durationMs: Date.now() - startedAt,
-    toolCalls: parsed.tool_calls ?? toolExecutions.length,
-    shellCommands: parsed.shell_commands ?? 0,
-    execCommandItems: parsed.exec_command_items ?? 0,
-    batchedExecCommandItems: parsed.batched_exec_command_items ?? 0,
-    timedOut: parsed.final_status === "max_turns_exceeded",
-    errorKind: parsed.final_status !== "completed" ? parsed.final_status : null,
-    inputTokens: parsed.input_tokens ?? 0,
-    outputTokens: parsed.output_tokens ?? 0,
-    modelRounds: parsed.model_rounds ?? 0,
-    runnerTurns: parsed.model_rounds ?? 0,
+    toolCalls: parsed?.tool_calls ?? toolExecutions.length,
+    shellCommands: parsed?.shell_commands ?? 0,
+    execCommandItems: parsed?.exec_command_items ?? 0,
+    batchedExecCommandItems: parsed?.batched_exec_command_items ?? 0,
+    timedOut: Boolean(run.timedOut || parsed?.final_status === "max_turns_exceeded"),
+    errorKind:
+      completion.terminal_state === "terminal"
+        ? parsed?.final_status && parsed.final_status !== "completed"
+          ? parsed.final_status
+          : defaultErrorKind
+        : completion.classification,
+    terminalState: completion.terminal_state,
+    completionClassification: completion.classification,
+    completionEvidence: completion.evidence,
+    inputTokens: parsed?.input_tokens ?? durableState.agent_total_input_tokens ?? 0,
+    outputTokens: parsed?.output_tokens ?? durableState.agent_total_output_tokens ?? 0,
+    modelRounds: parsed?.model_rounds ?? durableState.agent_total_model_rounds ?? 0,
+    runnerTurns: parsed?.model_rounds ?? durableState.agent_total_model_rounds ?? 0,
     runnerTurnsKind: "provider_rounds",
     tokenOptimization,
     ...toolMetrics
@@ -1474,6 +1510,81 @@ export function evaluateRealTaskSuccess({
         ? !hasChanges
         : true;
   return verifyOk && runnerOk && scopeOk && outcomeOk;
+}
+
+export function classifyBenchmarkFinalizationDecision(runnerResult) {
+  if (runnerResult?.terminalState === "terminal") {
+    return { can_finalize: true, reason: "terminal" };
+  }
+  if (runnerResult?.terminalState === "incomplete") {
+    return {
+      can_finalize: false,
+      reason: runnerResult?.completionClassification ?? "agent_incomplete"
+    };
+  }
+  if (runnerResult?.timedOut) {
+    return { can_finalize: false, reason: "runner_interrupted" };
+  }
+  if (runnerResult?.errorKind) {
+    return { can_finalize: false, reason: "runner_error" };
+  }
+  return { can_finalize: true, reason: "default_terminal" };
+}
+
+export function classifyHolonBenchmarkCompletion({ runTimedOut, runFinalStatus, durableState }) {
+  const evidence = [];
+  if (runTimedOut) {
+    evidence.push("runner_timed_out");
+  }
+  if (durableState?.agent_status) {
+    evidence.push(`agent_status=${durableState.agent_status}`);
+  }
+  if (durableState?.current_work_item_state) {
+    evidence.push(`current_work_item_state=${durableState.current_work_item_state}`);
+  }
+  if ((durableState?.work_plan_in_progress_count ?? 0) > 0) {
+    evidence.push(`work_plan_in_progress_count=${durableState.work_plan_in_progress_count}`);
+  }
+  if (runFinalStatus) {
+    evidence.push(`run_final_status=${runFinalStatus}`);
+  }
+
+  if (runTimedOut) {
+    return {
+      terminal_state: "incomplete",
+      classification: "runner_interrupted",
+      evidence
+    };
+  }
+  if (durableState?.agent_status === "awake_running") {
+    return {
+      terminal_state: "incomplete",
+      classification: "agent_incomplete",
+      evidence
+    };
+  }
+  if (
+    durableState?.current_work_item_state === "open" ||
+    (durableState?.work_plan_in_progress_count ?? 0) > 0
+  ) {
+    return {
+      terminal_state: "incomplete",
+      classification: "agent_incomplete",
+      evidence
+    };
+  }
+  if (runFinalStatus && runFinalStatus !== "completed") {
+    return {
+      terminal_state: "terminal",
+      classification: "runner_failed_terminal",
+      evidence
+    };
+  }
+  return {
+    terminal_state: "terminal",
+    classification: "completed",
+    evidence
+  };
 }
 
 function latestBriefOfKind(briefs, kind) {
@@ -3793,6 +3904,115 @@ async function copyAgentJsonlArtifact(agentDir, taskDir, filename) {
       return;
     }
   }
+}
+
+async function copyAgentStateArtifact(agentDir, taskDir, filename) {
+  for (const candidate of [path.join(agentDir, ".holon", "state", filename), path.join(agentDir, filename)]) {
+    if (await isNonEmptyFile(candidate)) {
+      await copyIfExists(candidate, path.join(taskDir, filename));
+      return;
+    }
+  }
+}
+
+function latestRecordsById(rows) {
+  const map = new Map();
+  for (const row of rows ?? []) {
+    if (!row || typeof row !== "object" || !row.id) {
+      continue;
+    }
+    map.set(row.id, row);
+  }
+  return map;
+}
+
+async function summarizeHolonDurableState(agentDir, taskDir) {
+  const agentState = await readJsonIfExists(path.join(agentDir, ".holon", "state", "agent.json"));
+  const workItems = await readAgentJsonlArtifact(agentDir, "work_items.jsonl", taskDir);
+  const workItemsById = latestRecordsById(workItems);
+  const currentWorkItemId = agentState?.current_work_item_id ?? null;
+  const currentWorkItem = currentWorkItemId ? workItemsById.get(currentWorkItemId) ?? null : null;
+  const inProgressTodos = (currentWorkItem?.todo_list ?? []).filter(
+    (item) => item?.state === "in_progress"
+  );
+  return {
+    agent_status: agentState?.status ?? null,
+    current_work_item_id: currentWorkItemId,
+    current_work_item_state: currentWorkItem?.state ?? null,
+    current_work_item_delivery_target: currentWorkItem?.delivery_target ?? null,
+    work_plan_in_progress_count: inProgressTodos.length,
+    work_plan_in_progress_steps: inProgressTodos.map((item) => item?.text).filter(Boolean),
+    agent_total_input_tokens: agentState?.total_input_tokens ?? null,
+    agent_total_output_tokens: agentState?.total_output_tokens ?? null,
+    agent_total_model_rounds: agentState?.total_model_rounds ?? null
+  };
+}
+
+function redactSecrets(value) {
+  const secretKeyPattern =
+    /^(authorization|proxy_authorization|api[_-]?key|cookie|set-cookie|password|secret|access_token|refresh_token|id_token|session_token|bearer_token|credential|credentials)$/i;
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSecrets(item));
+  }
+  if (value && typeof value === "object") {
+    const output = {};
+    for (const [key, nested] of Object.entries(value)) {
+      if (secretKeyPattern.test(key)) {
+        output[key] = "[REDACTED]";
+      } else {
+        output[key] = redactSecrets(nested);
+      }
+    }
+    return output;
+  }
+  if (typeof value === "string") {
+    return value.replace(/(bearer\s+)[a-z0-9._-]+/gi, "$1[REDACTED]");
+  }
+  return value;
+}
+
+export function captureHolonProviderRequests({ transcript, events }) {
+  const assistantRounds = (transcript ?? []).filter((entry) => entry?.kind === "assistant_round");
+  const turnLocalCompactionEvents = (events ?? []).filter(
+    (entry) => entry?.kind === "turn_local_compaction_applied" || entry?.kind === "turn_local_checkpoint_requested"
+  );
+  return {
+    schema_version: 1,
+    capture_mode: "benchmark_debug",
+    request_body_available: false,
+    note: "Captured from durable ledger diagnostics; provider transport raw request body is not persisted in default runtime artifacts.",
+    rounds: assistantRounds.map((entry) => {
+      const data = entry?.data ?? {};
+      const blocks = Array.isArray(data.blocks) ? data.blocks : [];
+      return redactSecrets({
+        round: entry.round ?? null,
+        created_at: entry.created_at ?? null,
+        requested_model: data.requested_model ?? null,
+        active_model: data.active_model ?? null,
+        provider_request_diagnostics: data.provider_request_diagnostics ?? null,
+        provider_cache_usage: data.provider_cache_usage ?? null,
+        context_management: data.context_management ?? null,
+        token_usage: data.token_usage ?? null,
+        response_stop_reason: entry.stop_reason ?? null,
+        assistant_blocks: blocks.map((block) =>
+          block?.type === "text"
+            ? { type: "text", text: String(block.text ?? ""), bytes: Buffer.byteLength(String(block.text ?? ""), "utf8") }
+            : {
+                type: block?.type ?? "unknown",
+                name: block?.name ?? null,
+                id: block?.id ?? null
+              }
+        )
+      });
+    }),
+    compaction_events: redactSecrets(
+      turnLocalCompactionEvents.map((event) => ({
+        kind: event.kind,
+        created_at: event.created_at ?? null,
+        data: event.data ?? null
+      }))
+    )
+  };
 }
 
 async function isNonEmptyFile(pathname) {

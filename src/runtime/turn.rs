@@ -768,6 +768,15 @@ fn build_work_item_stale_reminder(
     truncate_reminder_to_token_budget(&reminder, work_item_stale_reminder_max_tokens())
 }
 
+fn maybe_reset_work_item_stale_reminder_cooldown(
+    rounds_since_work_item_reminder: &mut usize,
+    reminder_injected: bool,
+) {
+    if reminder_injected {
+        *rounds_since_work_item_reminder = 0;
+    }
+}
+
 fn truncate_reminder_to_token_budget(reminder: &str, max_tokens: usize) -> String {
     if estimate_text_tokens(reminder) <= max_tokens {
         return reminder.to_string();
@@ -1405,7 +1414,6 @@ impl RuntimeHandle {
                                 "reason": "baseline_budget",
                             }),
                         ))?;
-                            rounds_since_work_item_reminder = 0;
                             None
                         }
                     } else {
@@ -1424,8 +1432,11 @@ impl RuntimeHandle {
                             "text_preview": truncate_preview(reminder, ROUND_TEXT_PREVIEW_LIMIT),
                         }),
                     ))?;
-                    rounds_since_work_item_reminder = 0;
                 }
+                maybe_reset_work_item_stale_reminder_cooldown(
+                    &mut rounds_since_work_item_reminder,
+                    stale_work_item_reminder.is_some(),
+                );
                 let projection = match build_turn_local_projection_with_runtime_reminder(
                     &prompt_frame,
                     &completed_rounds,
@@ -2295,6 +2306,22 @@ mod tests {
             ConversationMessage::UserText(text) if text == reminder
         )));
         assert!(projection.compaction.is_none());
+    }
+
+    #[test]
+    fn stale_reminder_cooldown_resets_only_when_reminder_is_injected() {
+        let mut rounds_since_work_item_reminder = 12usize;
+        maybe_reset_work_item_stale_reminder_cooldown(&mut rounds_since_work_item_reminder, false);
+        assert_eq!(
+            rounds_since_work_item_reminder, 12,
+            "skipped reminder must not consume cooldown"
+        );
+
+        maybe_reset_work_item_stale_reminder_cooldown(&mut rounds_since_work_item_reminder, true);
+        assert_eq!(
+            rounds_since_work_item_reminder, 0,
+            "only injected reminder should reset cooldown"
+        );
     }
 
     #[test]
