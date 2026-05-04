@@ -138,3 +138,43 @@ async fn live_xiaomi_token_plan_accepts_context_management() -> Result<()> {
     )
     .await
 }
+
+#[tokio::test]
+#[ignore = "requires XIAOMI_API_KEY and network access"]
+async fn live_xiaomi_anthropic_accepts_context_management() -> Result<()> {
+    provider_accepts_context_management(
+        "xiaomi-anthropic",
+        &provider_model_env("xiaomi-anthropic", "mimo-v2-pro"),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires XIAOMI_TOKEN_PLAN_API_KEY and network access"]
+async fn live_xiaomi_token_plan_anthropic_accepts_context_management() -> Result<()> {
+    provider_accepts_context_management(
+        "xiaomi-token-plan-anthropic",
+        &provider_model_env("xiaomi-token-plan-anthropic", "mimo-v2-pro"),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires ZAI_API_KEY and network access"]
+async fn live_zai_anthropic_accepts_context_management() -> Result<()> {
+    provider_accepts_context_management(
+        "zai-anthropic",
+        &provider_model_env("zai-anthropic", "glm-4.7"),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires BIGMODEL_API_KEY and network access"]
+async fn live_bigmodel_anthropic_accepts_context_management() -> Result<()> {
+    provider_accepts_context_management(
+        "bigmodel-anthropic",
+        &provider_model_env("bigmodel-anthropic", "glm-4.7"),
+    )
+    .await
+}
