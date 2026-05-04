@@ -74,6 +74,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         Some(ProviderPromptCache {
             agent_id: format!("live-{provider_id_text}-context-management"),
             prompt_cache_key: format!("live-{provider_id_text}-context-management"),
+            context_fingerprint: format!("live-{provider_id_text}-context-management"),
             working_memory_revision: 0,
             compression_epoch: 0,
         }),

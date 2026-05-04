@@ -108,6 +108,7 @@ async fn first_provider_round_records_prompt_cache_identity_fields() {
     prompt.cache_identity.working_memory_revision = 7;
     prompt.cache_identity.compression_epoch = 3;
     prompt.cache_identity.prompt_cache_key = "default:wm7:ce3".into();
+    prompt.cache_identity.context_fingerprint = "fingerprint-wm7-ce3".into();
 
     runtime
         .run_agent_loop(
@@ -135,6 +136,10 @@ async fn first_provider_round_records_prompt_cache_identity_fields() {
         Some(7)
     );
     assert_eq!(provider_event.data["compression_epoch"].as_u64(), Some(3));
+    assert_eq!(
+        provider_event.data["context_fingerprint"].as_str(),
+        Some("fingerprint-wm7-ce3")
+    );
 
     let transcript = runtime.storage().read_recent_transcript(10).unwrap();
     let assistant_round = transcript
@@ -150,6 +155,10 @@ async fn first_provider_round_records_prompt_cache_identity_fields() {
         Some(7)
     );
     assert_eq!(assistant_round.data["compression_epoch"].as_u64(), Some(3));
+    assert_eq!(
+        assistant_round.data["context_fingerprint"].as_str(),
+        Some("fingerprint-wm7-ce3")
+    );
 }
 
 #[tokio::test]

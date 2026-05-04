@@ -1417,7 +1417,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cache_identity_stays_stable_when_only_legacy_compaction_changes() {
+    fn prompt_cache_identity_changes_when_projected_context_lineage_changes() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         for idx in 0..6 {
@@ -1529,7 +1529,18 @@ mod tests {
             previous_compacted_message_count
         );
         assert_eq!(session.compacted_message_count, 5);
-        assert_eq!(first_prompt.cache_identity, second_prompt.cache_identity);
+        assert_eq!(
+            first_prompt.cache_identity.agent_id,
+            second_prompt.cache_identity.agent_id
+        );
+        assert_ne!(
+            first_prompt.cache_identity.context_fingerprint,
+            second_prompt.cache_identity.context_fingerprint
+        );
+        assert_ne!(
+            first_prompt.cache_identity.prompt_cache_key,
+            second_prompt.cache_identity.prompt_cache_key
+        );
         assert_eq!(second_prompt.cache_identity.compression_epoch, 7);
     }
 

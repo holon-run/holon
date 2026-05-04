@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::{
     context::{build_context, BuiltContext, ContextConfig},
@@ -45,6 +47,7 @@ pub struct PromptSection {
 pub struct PromptCacheIdentity {
     pub agent_id: String,
     pub prompt_cache_key: String,
+    pub context_fingerprint: String,
     pub working_memory_revision: u64,
     pub compression_epoch: u64,
 }
@@ -92,6 +95,10 @@ impl EffectivePrompt {
         output.push(format!(
             "Prompt cache key: {}",
             self.cache_identity.prompt_cache_key
+        ));
+        output.push(format!(
+            "Context fingerprint: {}",
+            self.cache_identity.context_fingerprint
         ));
         output.push(format!(
             "Working memory revision: {}",
@@ -186,6 +193,13 @@ pub fn build_effective_prompt(
     let context_sections = built_context.sections;
     let rendered_system_prompt = render_sections(&system_sections);
     let rendered_context_attachment = render_sections(&context_sections);
+    let context_fingerprint = prompt_context_fingerprint(
+        session,
+        execution,
+        &system_sections,
+        &context_sections,
+        available_tools,
+    );
 
     Ok(EffectivePrompt {
         agent_home: agent_home.to_path_buf(),
@@ -194,7 +208,8 @@ pub fn build_effective_prompt(
         loaded_agents_md,
         cache_identity: PromptCacheIdentity {
             agent_id: session.id.clone(),
-            prompt_cache_key: session.id.clone(),
+            prompt_cache_key: prompt_cache_key(&session.id, &context_fingerprint),
+            context_fingerprint,
             working_memory_revision: session.working_memory.working_memory_revision,
             compression_epoch: session.working_memory.compression_epoch,
         },
@@ -203,6 +218,37 @@ pub fn build_effective_prompt(
         rendered_system_prompt,
         rendered_context_attachment,
     })
+}
+
+fn prompt_cache_key(agent_id: &str, context_fingerprint: &str) -> String {
+    let short_fingerprint = context_fingerprint.get(..16).unwrap_or(context_fingerprint);
+    format!("{agent_id}:ctx:{short_fingerprint}")
+}
+
+fn prompt_context_fingerprint(
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    system_sections: &[PromptSection],
+    context_sections: &[PromptSection],
+    available_tools: &[ToolSpec],
+) -> String {
+    let payload = json!({
+        "agent_id": session.id,
+        "turn_index": session.turn_index,
+        "compacted_message_count": session.compacted_message_count,
+        "working_memory_revision": session.working_memory.working_memory_revision,
+        "compression_epoch": session.working_memory.compression_epoch,
+        "workspace_id": execution.workspace_id,
+        "execution_root_id": execution.execution_root_id,
+        "workspace_anchor": execution.workspace_anchor,
+        "execution_root": execution.execution_root,
+        "system_sections": system_sections,
+        "context_sections": context_sections,
+        "tools": available_tools,
+    });
+    let canonical =
+        serde_json::to_vec(&payload).expect("prompt cache fingerprint should serialize");
+    format!("{:x}", Sha256::digest(canonical))
 }
 
 fn build_system_sections(
@@ -548,6 +594,7 @@ mod tests {
         PromptCacheIdentity {
             agent_id: "default".into(),
             prompt_cache_key: "default".into(),
+            context_fingerprint: "fingerprint-default".into(),
             working_memory_revision: 3,
             compression_epoch: 1,
         }
