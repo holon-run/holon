@@ -635,15 +635,18 @@ impl RuntimeHandle {
     pub async fn set_model_override(
         &self,
         model_override: crate::config::ModelRef,
+        reasoning_effort: Option<String>,
     ) -> Result<crate::types::AgentModelState> {
         let mut next_state = self.agent_state().await?;
         next_state.model_override = Some(model_override.clone());
+        next_state.model_override_reasoning_effort = reasoning_effort.clone();
         self.reconfigure_provider_for_state(&next_state).await?;
 
         let model_state = self.model_state_for(&next_state);
         {
             let mut guard = self.inner.agent.lock().await;
             guard.state.model_override = Some(model_override);
+            guard.state.model_override_reasoning_effort = reasoning_effort;
             self.inner.storage.write_agent(&guard.state)?;
         }
         self.append_audit_event(
@@ -659,12 +662,14 @@ impl RuntimeHandle {
     pub async fn clear_model_override(&self) -> Result<crate::types::AgentModelState> {
         let mut next_state = self.agent_state().await?;
         next_state.model_override = None;
+        next_state.model_override_reasoning_effort = None;
         self.reconfigure_provider_for_state(&next_state).await?;
 
         let model_state = self.model_state_for(&next_state);
         {
             let mut guard = self.inner.agent.lock().await;
             guard.state.model_override = None;
+            guard.state.model_override_reasoning_effort = None;
             self.inner.storage.write_agent(&guard.state)?;
         }
         self.append_audit_event(

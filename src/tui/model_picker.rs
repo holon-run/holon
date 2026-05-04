@@ -25,6 +25,7 @@ pub(super) fn model_picker_rows(agent: Option<&AgentSummary>, filter: &str) -> V
         .model
         .model_availability
         .iter()
+        .filter(|entry| entry.available)
         .map(model_availability_row);
     if query.is_empty() {
         let mut rows = vec![inherit_row];
@@ -196,6 +197,7 @@ mod tests {
                 fallback_active: false,
                 effective_fallback_models: Vec::new(),
                 override_model: None,
+                override_reasoning_effort: None,
                 resolved_policy: policy("openai/gpt-5.4", "GPT-5.4"),
                 available_models: Vec::new(),
                 model_availability: vec![
@@ -244,20 +246,18 @@ mod tests {
     fn picker_rows_include_inherit_and_runtime_availability() {
         let agent = summary();
         let rows = model_picker_rows(Some(&agent), "");
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 2);
         assert!(rows[0].title.contains("inherit runtime default"));
         assert!(rows[1].title.contains("openai/gpt-5.4"));
-        assert!(!rows[2].available);
-        assert!(rows[2].detail.contains("credential_missing"));
+        assert!(rows[1].available);
     }
 
     #[test]
     fn picker_rows_filter_by_model_and_label() {
         let agent = summary();
         let rows = model_picker_rows(Some(&agent), "sonnet");
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 1);
         assert!(rows[0].title.contains("inherit runtime default"));
-        assert!(rows[1].title.contains("claude-sonnet-4-6"));
     }
 
     #[test]

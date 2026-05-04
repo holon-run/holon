@@ -1276,6 +1276,8 @@ pub struct AgentState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<ModelRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override_reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_requested_model: Option<ModelRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_active_model: Option<ModelRef>,
@@ -1347,6 +1349,7 @@ impl AgentState {
             active_skills: Vec::new(),
             last_continuation: None,
             model_override: None,
+            model_override_reasoning_effort: None,
             last_requested_model: None,
             last_active_model: None,
             last_turn_terminal: None,
@@ -2695,6 +2698,8 @@ pub struct AgentModelState {
     pub effective_fallback_models: Vec<ModelRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_reasoning_effort: Option<String>,
     #[serde(default)]
     pub resolved_policy: ResolvedRuntimeModelPolicy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

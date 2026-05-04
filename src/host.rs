@@ -1566,7 +1566,7 @@ mod tests {
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
         parent
-            .set_model_override(ModelRef::parse("anthropic/claude-haiku-4-5").unwrap())
+            .set_model_override(ModelRef::parse("anthropic/claude-haiku-4-5").unwrap(), None)
             .await
             .unwrap();
 
@@ -1658,7 +1658,7 @@ mod tests {
             .any(|entry| entry.model_ref.as_string() == "openai/gpt-5.4"));
 
         let updated = runtime
-            .set_model_override(ModelRef::parse("openai/gpt-5.4").unwrap())
+            .set_model_override(ModelRef::parse("openai/gpt-5.4").unwrap(), None)
             .await
             .unwrap();
         assert_eq!(
@@ -1746,7 +1746,7 @@ mod tests {
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
         parent
-            .set_model_override(ModelRef::parse("anthropic/claude-haiku-4-5").unwrap())
+            .set_model_override(ModelRef::parse("anthropic/claude-haiku-4-5").unwrap(), None)
             .await
             .unwrap();
         let parent_state = parent.agent_state().await.unwrap();

@@ -558,6 +558,53 @@ impl TuiApp {
                 }
                 Ok(())
             }
+            OverlayState::ModelEffortPicker {
+                model,
+                mut selected,
+                return_filter,
+                return_selected,
+            } => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.overlay = OverlayState::ModelPicker {
+                            filter: return_filter,
+                            selected: return_selected,
+                        };
+                    }
+                    KeyCode::Enter => {
+                        self.apply_model_effort_picker_selection(&model, selected)
+                            .await?;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        selected = selected.saturating_sub(1);
+                        self.overlay = OverlayState::ModelEffortPicker {
+                            model,
+                            selected,
+                            return_filter,
+                            return_selected,
+                        };
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let max = crate::tui::overlay::MODEL_REASONING_EFFORT_OPTIONS.len() - 1;
+                        selected = (selected + 1).min(max);
+                        self.overlay = OverlayState::ModelEffortPicker {
+                            model,
+                            selected,
+                            return_filter,
+                            return_selected,
+                        };
+                    }
+                    _ => {
+                        self.overlay = OverlayState::ModelEffortPicker {
+                            model,
+                            selected,
+                            return_filter,
+                            return_selected,
+                        };
+                    }
+                }
+                Ok(())
+            }
             OverlayState::DebugPromptInput { mut composer } => {
                 match edit_buffer(key, &mut composer) {
                     Some(BufferAction::Submit) => {
@@ -814,14 +861,47 @@ impl TuiApp {
                 self.client.clear_agent_model_override(&agent_id).await?;
                 self.status_line =
                     format!("Cleared model override for {agent_id}; inheriting runtime default");
+                self.overlay = OverlayState::None;
+                self.bootstrap_selected_agent().await?;
             }
             crate::tui::model_picker::ModelPickerChoice::Model { model } => {
-                self.client
-                    .set_agent_model_override(&agent_id, model.clone())
-                    .await?;
-                self.status_line = format!("Set model override for {agent_id} to {model}");
+                self.overlay = OverlayState::ModelEffortPicker {
+                    model,
+                    selected: 0,
+                    return_filter: filter.to_string(),
+                    return_selected: selected,
+                };
             }
         }
+        Ok(())
+    }
+
+    async fn apply_model_effort_picker_selection(
+        &mut self,
+        model: &str,
+        selected: usize,
+    ) -> Result<()> {
+        let agent_id = self
+            .selected_agent_id()
+            .ok_or_else(|| anyhow!("no agent selected"))?
+            .to_string();
+        let reasoning_effort = crate::tui::overlay::MODEL_REASONING_EFFORT_OPTIONS
+            .get(selected)
+            .copied()
+            .unwrap_or("xhigh");
+        let reasoning_effort = if reasoning_effort == "inherit" {
+            None
+        } else {
+            Some(reasoning_effort.to_string())
+        };
+        self.client
+            .set_agent_model_override(&agent_id, model.to_string(), reasoning_effort.clone())
+            .await?;
+        let suffix = reasoning_effort
+            .as_deref()
+            .map(|value| format!(" with reasoning effort {value}"))
+            .unwrap_or_default();
+        self.status_line = format!("Set model override for {agent_id} to {model}{suffix}");
         self.overlay = OverlayState::None;
         self.bootstrap_selected_agent().await?;
         Ok(())

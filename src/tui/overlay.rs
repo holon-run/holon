@@ -2,6 +2,9 @@ use super::*;
 use crate::tui::composer::ComposerState;
 use unicode_width::UnicodeWidthStr;
 
+pub(super) const MODEL_REASONING_EFFORT_OPTIONS: [&str; 5] =
+    ["inherit", "low", "medium", "high", "xhigh"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OverlayState {
     None,
@@ -20,6 +23,12 @@ pub(super) enum OverlayState {
     ModelPicker {
         filter: String,
         selected: usize,
+    },
+    ModelEffortPicker {
+        model: String,
+        selected: usize,
+        return_filter: String,
+        return_selected: usize,
     },
     DebugPromptInput {
         composer: ComposerState,
@@ -50,6 +59,9 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
         OverlayState::ModelPicker { filter, selected } => {
             draw_model_picker_overlay(frame, app, filter, *selected)
         }
+        OverlayState::ModelEffortPicker {
+            model, selected, ..
+        } => draw_model_effort_picker_overlay(frame, app, model, *selected),
         OverlayState::DebugPromptInput { composer } => draw_input_modal(
             frame,
             "Debug Prompt",
@@ -315,6 +327,63 @@ fn draw_model_picker_overlay(frame: &mut Frame<'_>, app: &TuiApp, filter: &str, 
         .unwrap_or_else(|| "model: <no agent selected>".into());
     let help = Paragraph::new(format!(
         "{current}\nType to filter, Backspace edits, Up/Down moves, Enter selects, Esc cancels"
+    ))
+    .block(Block::default().borders(Borders::ALL))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(help, layout[2]);
+}
+
+fn draw_model_effort_picker_overlay(
+    frame: &mut Frame<'_>,
+    app: &TuiApp,
+    model: &str,
+    selected: usize,
+) {
+    let popup = centered_rect(70, 42, frame.area());
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
+        .split(popup);
+    frame.render_widget(Clear, popup);
+
+    let header = Paragraph::new(format!("Model: {model}")).block(
+        Block::default()
+            .title("Reasoning Effort")
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(header, layout[0]);
+
+    let items = MODEL_REASONING_EFFORT_OPTIONS
+        .iter()
+        .map(|option| {
+            let detail = if *option == "inherit" {
+                "use provider/runtime default"
+            } else {
+                "force reasoning effort"
+            };
+            ListItem::new(format!("{option}\n  {detail}"))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    state.select(Some(
+        selected.min(MODEL_REASONING_EFFORT_OPTIONS.len().saturating_sub(1)),
+    ));
+    let list = List::new(items)
+        .block(Block::default().title("Effort").borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, layout[1], &mut state);
+
+    let current = app
+        .selected_agent_summary()
+        .map(render::render_model_status)
+        .unwrap_or_else(|| "model: <no agent selected>".into());
+    let help = Paragraph::new(format!(
+        "{current}\nUp/Down moves, Enter confirms, Esc goes back"
     ))
     .block(Block::default().borders(Borders::ALL))
     .wrap(Wrap { trim: false });
