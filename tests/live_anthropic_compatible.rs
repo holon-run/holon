@@ -183,3 +183,10 @@ async fn live_bigmodel_anthropic_accepts_context_management() -> Result<()> {
     )
     .await
 }
+
+#[tokio::test]
+#[ignore = "requires MINIMAX_API_KEY and network access"]
+async fn live_minimax_anthropic_accepts_context_management() -> Result<()> {
+    provider_accepts_context_management("minimax", &provider_model_env("minimax", "MiniMax-M2.7"))
+        .await
+}
