@@ -425,6 +425,24 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::BuiltInCatalog,
         },
         BuiltInModelMetadata {
+            model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex"),
+            display_name: "GPT-5.3 Codex (Codex)".into(),
+            description: "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
+            context_window_tokens: Some(272_000),
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                reasoning_summaries: true,
+                interactive_exec: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+        },
+        BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex-spark"),
             display_name: "GPT-5.3 Codex Spark (Codex)".into(),
             description: "Codex Spark runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
@@ -1654,6 +1672,23 @@ mod tests {
         assert_eq!(policy.prompt_budget_estimated_tokens, 121_600);
         assert_eq!(policy.compaction_trigger_estimated_tokens, 109_440);
         assert_eq!(policy.compaction_keep_recent_estimated_tokens, 41_587);
+        assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
+    }
+
+    #[test]
+    fn resolves_built_in_policy_for_codex_53_model() {
+        let catalog = BuiltInModelCatalog::new();
+        let policy = catalog.resolve_policy(
+            &ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex"),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(policy.context_window_tokens, Some(272_000));
+        assert_eq!(policy.prompt_budget_estimated_tokens, 258_400);
+        assert_eq!(policy.compaction_trigger_estimated_tokens, 232_560);
+        assert_eq!(policy.compaction_keep_recent_estimated_tokens, 88_372);
         assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
     }
 
