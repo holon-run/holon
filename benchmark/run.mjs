@@ -952,12 +952,10 @@ async function runHolonRealTask({ runnerConfig, prompt, worktreePath, taskDir, r
   const durableState = await summarizeHolonDurableState(agentDir, taskDir);
   await writeJson(path.join(taskDir, "holon-durable-state.json"), durableState);
 
-  if (String(runnerEnv.HOLON_BENCH_CAPTURE_PROVIDER_REQUEST ?? "") === "1") {
-    await writeJson(
-      path.join(taskDir, "provider-requests.json"),
-      captureHolonProviderRequests({ transcript, events, maxPreviewChars: 600 })
-    );
-  }
+  await writeJson(
+    path.join(taskDir, "provider-requests.json"),
+    captureHolonProviderRequests({ transcript, events })
+  );
 
   let parsed = null;
   if (run.stdout.trim()) {
@@ -3985,15 +3983,7 @@ function redactSecrets(value) {
   return value;
 }
 
-function previewText(text, maxChars = 240) {
-  const value = String(text ?? "");
-  if (value.length <= maxChars) {
-    return value;
-  }
-  return `${value.slice(0, maxChars)}...`;
-}
-
-export function captureHolonProviderRequests({ transcript, events, maxPreviewChars = 600 }) {
+export function captureHolonProviderRequests({ transcript, events }) {
   const assistantRounds = (transcript ?? []).filter((entry) => entry?.kind === "assistant_round");
   const turnLocalCompactionEvents = (events ?? []).filter(
     (entry) => entry?.kind === "turn_local_compaction_applied" || entry?.kind === "turn_local_checkpoint_requested"
@@ -4016,9 +4006,9 @@ export function captureHolonProviderRequests({ transcript, events, maxPreviewCha
         context_management: data.context_management ?? null,
         token_usage: data.token_usage ?? null,
         response_stop_reason: entry.stop_reason ?? null,
-        assistant_blocks_preview: blocks.map((block) =>
+        assistant_blocks: blocks.map((block) =>
           block?.type === "text"
-            ? { type: "text", preview: previewText(block.text, maxPreviewChars), bytes: String(block.text ?? "").length }
+            ? { type: "text", text: String(block.text ?? ""), bytes: String(block.text ?? "").length }
             : {
                 type: block?.type ?? "unknown",
                 name: block?.name ?? null,

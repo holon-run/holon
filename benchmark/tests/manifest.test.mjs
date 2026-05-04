@@ -356,6 +356,10 @@ test("captureHolonProviderRequests redacts sensitive fields", () => {
   assert.equal(captured.request_body_available, false);
   assert.equal(captured.rounds.length, 1);
   assert.equal(
+    captured.rounds[0].assistant_blocks[0].text,
+    "review issue and patch runtime"
+  );
+  assert.equal(
     captured.rounds[0].provider_request_diagnostics.authorization,
     "[REDACTED]"
   );
