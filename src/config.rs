@@ -1048,6 +1048,21 @@ pub fn validate_provider_config(
     validate_provider_auth(provider_id, &provider_config.auth)
 }
 
+pub fn built_in_provider_default_config(
+    provider_id: &ProviderId,
+) -> Result<Option<ProviderConfigFile>> {
+    let settings_env = load_settings_env()?;
+    let registry = built_in_provider_registry(&settings_env)?;
+    Ok(registry
+        .get(provider_id)
+        .map(|provider| ProviderConfigFile {
+            transport: provider.transport,
+            base_url: provider.base_url.clone(),
+            auth: provider.auth.clone(),
+            reasoning_effort: None,
+        }))
+}
+
 pub fn provider_config_views(config: &AppConfig) -> Vec<ProviderConfigView> {
     config
         .providers
@@ -1804,10 +1819,10 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["XAI_API_KEY"],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "zai",
-        "https://api.z.ai/api/paas/v4",
+        "https://api.z.ai/api/anthropic",
         &["ZAI_API_KEY"],
         settings_env,
     )?;
@@ -1825,10 +1840,10 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["ZAI_API_KEY"],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "bigmodel",
-        "https://open.bigmodel.cn/api/paas/v4",
+        "https://open.bigmodel.cn/api/anthropic",
         &["BIGMODEL_API_KEY"],
         settings_env,
     )?;
@@ -3345,8 +3360,8 @@ mod tests {
         );
 
         let zai = providers.get(&ProviderId::parse("zai").unwrap()).unwrap();
-        assert_eq!(zai.transport, ProviderTransportKind::OpenAiChatCompletions);
-        assert_eq!(zai.base_url, "https://api.z.ai/api/paas/v4");
+        assert_eq!(zai.transport, ProviderTransportKind::AnthropicMessages);
+        assert_eq!(zai.base_url, "https://api.z.ai/api/anthropic");
         assert_eq!(zai.credential.as_deref(), Some("zai-key"));
 
         let zai_anthropic = providers
@@ -3371,11 +3386,8 @@ mod tests {
         let bigmodel = providers
             .get(&ProviderId::parse("bigmodel").unwrap())
             .unwrap();
-        assert_eq!(
-            bigmodel.transport,
-            ProviderTransportKind::OpenAiChatCompletions
-        );
-        assert_eq!(bigmodel.base_url, "https://open.bigmodel.cn/api/paas/v4");
+        assert_eq!(bigmodel.transport, ProviderTransportKind::AnthropicMessages);
+        assert_eq!(bigmodel.base_url, "https://open.bigmodel.cn/api/anthropic");
         assert_eq!(bigmodel.credential.as_deref(), Some("bigmodel-key"));
 
         let bigmodel_anthropic = providers

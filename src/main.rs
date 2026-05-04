@@ -1,19 +1,20 @@
 use std::{
-    io::Read,
+    io::Write,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use holon::{
     client::LocalClient,
     config::{
-        config_schema, credential_store_path, default_holon_home, get_config_key,
-        list_credential_profiles_at, load_persisted_config_at, persisted_config_path,
-        provider_config_view, provider_config_views, remove_credential_profile_at,
-        save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
-        validate_provider_config, AppConfig, CredentialKind, CredentialSource, ProviderAuthConfig,
-        ProviderConfigFile, ProviderId, ProviderTransportKind,
+        built_in_provider_default_config, config_schema, credential_store_path, default_holon_home,
+        get_config_key, list_credential_profiles_at, load_persisted_config_at,
+        persisted_config_path, provider_config_view, provider_config_views,
+        remove_credential_profile_at, save_persisted_config_at, set_config_key,
+        set_credential_profile_at, unset_config_key, validate_provider_config, AppConfig,
+        CredentialKind, CredentialSource, ProviderAuthConfig, ProviderConfigFile, ProviderId,
+        ProviderTransportKind,
     },
     daemon::{
         daemon_logs, daemon_restart, daemon_start, daemon_status, daemon_stop,
@@ -223,9 +224,9 @@ enum ConfigProviderCommands {
     Set {
         provider: String,
         #[arg(long)]
-        transport: String,
+        transport: Option<String>,
         #[arg(long)]
-        base_url: String,
+        base_url: Option<String>,
         #[arg(long, default_value = "none")]
         credential_source: String,
         #[arg(long, default_value = "none")]
@@ -257,6 +258,8 @@ enum ConfigCredentialCommands {
         kind: String,
         #[arg(long)]
         stdin: bool,
+        #[arg(long)]
+        material: Option<String>,
     },
     List,
     Remove {
@@ -870,8 +873,44 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
             credential_external,
         } => {
             let id = ProviderId::parse(&provider)?;
+            let built_in_defaults = built_in_provider_default_config(&id)?;
+            let transport = match (transport, built_in_defaults.as_ref()) {
+                (Some(raw), Some(defaults)) => {
+                    let parsed = ProviderTransportKind::parse(&raw)?;
+                    let id_str = id.as_str();
+                    if (id_str.ends_with("-anthropic") || id_str.ends_with("-openai"))
+                        && parsed != defaults.transport
+                    {
+                        return Err(anyhow!(
+                            "provider {} has fixed transport {}; remove --transport or set it to {}",
+                            id_str,
+                            defaults.transport.as_str(),
+                            defaults.transport.as_str()
+                        ));
+                    }
+                    parsed
+                }
+                (Some(raw), None) => ProviderTransportKind::parse(&raw)?,
+                (None, Some(defaults)) => defaults.transport,
+                (None, None) => {
+                    return Err(anyhow!(
+                        "provider {} requires --transport when no built-in default exists",
+                        id.as_str()
+                    ));
+                }
+            };
+            let base_url = match (base_url, built_in_defaults.as_ref()) {
+                (Some(value), _) => value,
+                (None, Some(defaults)) => defaults.base_url.clone(),
+                (None, None) => {
+                    return Err(anyhow!(
+                        "provider {} requires --base-url when no built-in default exists",
+                        id.as_str()
+                    ));
+                }
+            };
             let provider_config = ProviderConfigFile {
-                transport: ProviderTransportKind::parse(&transport)?,
+                transport,
                 base_url,
                 auth: ProviderAuthConfig {
                     source: CredentialSource::parse(&credential_source)?,
@@ -958,14 +997,24 @@ async fn handle_config_credentials_command(command: ConfigCredentialCommands) ->
             profile,
             kind,
             stdin,
+            material,
         } => {
-            if !stdin {
-                anyhow::bail!("credential material input requires --stdin");
+            if stdin && material.is_some() {
+                anyhow::bail!("--stdin cannot be used together with --material");
             }
-            let mut material = String::new();
-            std::io::stdin()
-                .read_to_string(&mut material)
-                .context("failed to read credential material from stdin")?;
+            let mut material = if let Some(value) = material {
+                value
+            } else if stdin {
+                eprint!("Enter credential material for {profile} and press Enter: ");
+                std::io::stderr().flush().ok();
+                let mut value = String::new();
+                std::io::stdin()
+                    .read_line(&mut value)
+                    .context("failed to read credential material from stdin")?;
+                value
+            } else {
+                anyhow::bail!("credential set requires either --stdin or --material");
+            };
             trim_trailing_newlines(&mut material);
             let status = set_credential_profile_at(
                 &path,
