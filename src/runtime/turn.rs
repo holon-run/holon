@@ -1285,6 +1285,7 @@ impl RuntimeHandle {
     async fn persist_turn_interrupted_record(
         &self,
         run_id: &str,
+        reason: &str,
         last_assistant_message: Option<String>,
         duration_ms: u64,
     ) -> Result<TurnTerminalRecord> {
@@ -1293,7 +1294,7 @@ impl RuntimeHandle {
             let record = TurnTerminalRecord {
                 turn_index: guard.state.turn_index,
                 kind: TurnTerminalKind::Aborted,
-                reason: Some("operator_interrupted".into()),
+                reason: Some(reason.to_string()),
                 last_assistant_message,
                 checkpoint: None,
                 completed_at: chrono::Utc::now(),
@@ -1311,7 +1312,7 @@ impl RuntimeHandle {
             "turn_terminal_aborted",
             serde_json::json!({
                 "run_id": run_id,
-                "reason": "operator_interrupted",
+                "reason": reason,
                 "record": record,
             }),
         ))?;
@@ -1323,10 +1324,13 @@ impl RuntimeHandle {
         provider: std::sync::Arc<dyn AgentProvider>,
         request: ProviderTurnRequest,
     ) -> Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> {
-        if let Some((run_id, token)) = self.current_run_interrupt_token().await {
+        if let Some(snapshot) = self.current_run_interrupt_token().await {
             tokio::select! {
                 result = provider.complete_turn_with_diagnostics(request) => result,
-                _ = token.cancelled() => Err(CurrentRunInterrupted { run_id }.into()),
+                _ = snapshot.token.cancelled() => Err(CurrentRunInterrupted {
+                    run_id: snapshot.run_id.clone(),
+                    reason: snapshot.reason(),
+                }.into()),
             }
         } else {
             provider.complete_turn_with_diagnostics(request).await
@@ -1334,9 +1338,13 @@ impl RuntimeHandle {
     }
 
     async fn ensure_not_interrupted(&self) -> Result<()> {
-        if let Some((run_id, token)) = self.current_run_interrupt_token().await {
-            if token.is_cancelled() {
-                return Err(CurrentRunInterrupted { run_id }.into());
+        if let Some(snapshot) = self.current_run_interrupt_token().await {
+            if snapshot.token.is_cancelled() {
+                return Err(CurrentRunInterrupted {
+                    run_id: snapshot.run_id.clone(),
+                    reason: snapshot.reason(),
+                }
+                .into());
             }
         }
         Ok(())
@@ -1369,6 +1377,7 @@ impl RuntimeHandle {
                 if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
                     self.persist_turn_interrupted_record(
                         &interrupted.run_id,
+                        &interrupted.reason,
                         last_assistant_message.clone(),
                         turn_started_at.elapsed().as_millis() as u64,
                     )
@@ -1417,6 +1426,7 @@ impl RuntimeHandle {
                         if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
                             self.persist_turn_interrupted_record(
                                 &interrupted.run_id,
+                                &interrupted.reason,
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                             )
@@ -1633,6 +1643,7 @@ impl RuntimeHandle {
                         if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
                             self.persist_turn_interrupted_record(
                                 &interrupted.run_id,
+                                &interrupted.reason,
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                             )
@@ -1982,6 +1993,7 @@ impl RuntimeHandle {
                     if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
                         self.persist_turn_interrupted_record(
                             &interrupted.run_id,
+                            &interrupted.reason,
                             last_assistant_message.clone(),
                             turn_started_at.elapsed().as_millis() as u64,
                         )
@@ -2071,12 +2083,15 @@ impl RuntimeHandle {
                     tool_result_envelopes.push(result.envelope);
                     continue;
                 }
-                let tool_execution = if let Some((run_id, token)) =
+                let tool_execution = if let Some(snapshot) =
                     self.current_run_interrupt_token().await
                 {
                     tokio::select! {
                         result = self.inner.tools.execute(self, agent_id, &trust, &call) => result,
-                        _ = token.cancelled() => Err(CurrentRunInterrupted { run_id }.into()),
+                        _ = snapshot.token.cancelled() => Err(CurrentRunInterrupted {
+                            run_id: snapshot.run_id.clone(),
+                            reason: snapshot.reason(),
+                        }.into()),
                     }
                 } else {
                     self.inner
@@ -2142,6 +2157,7 @@ impl RuntimeHandle {
                         if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
                             self.persist_turn_interrupted_record(
                                 &interrupted.run_id,
+                                &interrupted.reason,
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                             )

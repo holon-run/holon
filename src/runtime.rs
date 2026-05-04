@@ -24,7 +24,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex as StdMutex,
     },
     time::Duration,
 };
@@ -167,6 +167,7 @@ struct RuntimeAgent {
 struct CurrentRunInterruptHandle {
     run_id: String,
     token: CancellationToken,
+    reason: Arc<StdMutex<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,9 +214,26 @@ pub enum CurrentRunInterruptError {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("current run interrupted by operator")]
+#[error("current run interrupted: {reason}")]
 pub struct CurrentRunInterrupted {
     pub run_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CurrentRunInterruptSnapshot {
+    pub(crate) run_id: String,
+    pub(crate) token: CancellationToken,
+    pub(crate) reason: Arc<StdMutex<String>>,
+}
+
+impl CurrentRunInterruptSnapshot {
+    pub(crate) fn reason(&self) -> String {
+        self.reason
+            .lock()
+            .map(|reason| reason.clone())
+            .unwrap_or_else(|_| "operator_interrupted".into())
+    }
 }
 
 impl RuntimeHandle {
@@ -258,6 +276,9 @@ impl RuntimeHandle {
             }
         }
 
+        if let Ok(mut reason) = handle.reason.lock() {
+            *reason = "operator_interrupted".into();
+        }
         handle.token.cancel();
         guard.state.status = AgentStatus::Paused;
         guard.state.current_run_id = None;
@@ -281,12 +302,16 @@ impl RuntimeHandle {
         })
     }
 
-    pub(crate) async fn current_run_interrupt_token(&self) -> Option<(String, CancellationToken)> {
+    pub(crate) async fn current_run_interrupt_token(&self) -> Option<CurrentRunInterruptSnapshot> {
         let guard = self.inner.agent.lock().await;
         guard
             .current_run_interrupt
             .as_ref()
-            .map(|handle| (handle.run_id.clone(), handle.token.clone()))
+            .map(|handle| CurrentRunInterruptSnapshot {
+                run_id: handle.run_id.clone(),
+                token: handle.token.clone(),
+                reason: handle.reason.clone(),
+            })
     }
 
     pub fn all_events(&self) -> Result<Vec<AuditEvent>> {
@@ -859,6 +884,7 @@ impl RuntimeHandle {
                     guard.current_run_interrupt = Some(CurrentRunInterruptHandle {
                         run_id,
                         token: interrupt_token,
+                        reason: Arc::new(StdMutex::new("operator_interrupted".into())),
                     });
                     guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
                     self.inner.storage.write_agent(&guard.state)?;
@@ -916,7 +942,7 @@ impl RuntimeHandle {
                             "message_id": message.id,
                             "message_kind": message.kind,
                             "run_id": interrupted.run_id,
-                            "reason": "operator_interrupted",
+                            "reason": interrupted.reason,
                         }),
                     ))?;
                 } else {

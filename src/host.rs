@@ -55,6 +55,7 @@ pub struct RuntimeHost {
 pub(crate) const TEMP_AGENT_PREFIX: &str = "tmp_";
 const TEMP_RUN_AGENT_PREFIX: &str = "tmp_run_";
 const TEMP_CHILD_AGENT_PREFIX: &str = "tmp_child_";
+const HOST_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
 pub enum PublicAgentError {
@@ -154,9 +155,27 @@ impl RuntimeHost {
             let mut agents = self.inner.agents.write().await;
             agents.drain().map(|(_, entry)| entry).collect::<Vec<_>>()
         };
-        for entry in entries {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let abort_handles = entries
+            .iter()
+            .map(|entry| entry.task.abort_handle())
+            .collect::<Vec<_>>();
+        for entry in &entries {
             let _ = entry.runtime.request_service_shutdown().await;
-            let _ = entry.task.await;
+        }
+        if tokio::time::timeout(HOST_SHUTDOWN_GRACE, async move {
+            for entry in entries {
+                let _ = entry.task.await;
+            }
+        })
+        .await
+        .is_err()
+        {
+            for handle in abort_handles {
+                handle.abort();
+            }
         }
         Ok(())
     }
@@ -1385,17 +1404,20 @@ impl RuntimeHostBridge {
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
+    use async_trait::async_trait;
     use tempfile::tempdir;
+    use tokio::sync::Notify;
 
     use crate::{
         config::{provider_registry_for_tests, ControlAuthMode, ModelRef},
-        provider::StubProvider,
+        provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse, StubProvider},
         runtime::RuntimeHandle,
         storage::AppStorage,
         types::{
             AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
             AgentVisibility, ControlAction, MessageBody, MessageEnvelope, MessageKind,
             MessageOrigin, Priority, TaskRecord, TaskRecoverySpec, TaskStatus, TrustLevel,
+            TurnTerminalKind,
         },
     };
 
@@ -1413,6 +1435,21 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    struct BlockingProvider {
+        started: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl AgentProvider for BlockingProvider {
+        async fn complete_turn(
+            &self,
+            _request: ProviderTurnRequest,
+        ) -> anyhow::Result<ProviderTurnResponse> {
+            self.started.notify_waiters();
+            std::future::pending::<anyhow::Result<ProviderTurnResponse>>().await
+        }
     }
 
     fn provider_test_config(anthropic_token: Option<&str>) -> ProviderConfigFixture {
@@ -2302,6 +2339,66 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.kind == "runtime_service_shutdown_requested"));
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_interrupts_active_run_with_daemon_shutdown_reason() {
+        let home = tempdir().unwrap();
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let agent_id = config.default_agent_id.clone();
+        let started = Arc::new(Notify::new());
+        let provider = Arc::new(BlockingProvider {
+            started: started.clone(),
+        });
+        let host = RuntimeHost::new_with_provider(config, provider).unwrap();
+        let runtime = host.default_runtime().await.unwrap();
+        let started_wait = started.notified();
+
+        runtime
+            .enqueue(MessageEnvelope::new(
+                &agent_id,
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                TrustLevel::TrustedOperator,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "block until daemon shutdown".into(),
+                },
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), started_wait)
+            .await
+            .expect("provider turn should start");
+
+        tokio::time::timeout(Duration::from_secs(5), host.shutdown())
+            .await
+            .expect("host shutdown should be bounded")
+            .unwrap();
+
+        let storage = AppStorage::new(host.agent_data_dir(&agent_id)).unwrap();
+        let persisted = storage.read_agent().unwrap().unwrap();
+        assert_ne!(persisted.status, AgentStatus::Stopped);
+        assert_eq!(persisted.current_run_id, None);
+        let terminal = persisted
+            .last_turn_terminal
+            .expect("interrupted run should persist a terminal record");
+        assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
+        assert_eq!(terminal.reason.as_deref(), Some("daemon_shutdown"));
+
+        let events = storage.read_recent_events(32).unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "runtime_service_shutdown_requested"
+                && event.data.get("interrupted_run_id").is_some()
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "current_run_interrupted"
+                && event.data.get("reason").and_then(Value::as_str) == Some("daemon_shutdown")
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "message_processing_interrupted"
+                && event.data.get("reason").and_then(Value::as_str) == Some("daemon_shutdown")
+        }));
     }
 
     #[tokio::test]

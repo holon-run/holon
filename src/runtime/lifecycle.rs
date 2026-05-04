@@ -328,10 +328,36 @@ impl RuntimeHandle {
         self.inner
             .shutdown_requested
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut interrupted_run_id = None;
+        {
+            let mut guard = self.inner.agent.lock().await;
+            if let Some(handle) = guard.current_run_interrupt.as_ref() {
+                if let Ok(mut reason) = handle.reason.lock() {
+                    *reason = "daemon_shutdown".into();
+                }
+                handle.token.cancel();
+                interrupted_run_id = Some(handle.run_id.clone());
+                guard.state.current_run_id = None;
+                self.inner.storage.write_agent(&guard.state)?;
+            }
+        }
         self.inner.storage.append_event(&AuditEvent::new(
             "runtime_service_shutdown_requested",
-            serde_json::json!({}),
+            serde_json::json!({
+                "interrupted_run_id": interrupted_run_id,
+            }),
         ))?;
+        if let Some(run_id) = interrupted_run_id {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "current_run_interrupted",
+                serde_json::json!({
+                    "agent_id": self.agent_id().await?,
+                    "run_id": run_id,
+                    "mode": "shutdown",
+                    "reason": "daemon_shutdown",
+                }),
+            ))?;
+        }
         self.inner.notify.notify_one();
         Ok(())
     }
