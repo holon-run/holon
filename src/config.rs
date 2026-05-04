@@ -1590,10 +1590,17 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["CHUTES_API_KEY"],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "deepseek",
-        "https://api.deepseek.com",
+        "https://api.deepseek.com/anthropic",
+        &["DEEPSEEK_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "deepseek-anthropic",
+        "https://api.deepseek.com/anthropic",
         &["DEEPSEEK_API_KEY"],
         settings_env,
     )?;
@@ -1748,6 +1755,13 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "xiaomi-token-plan",
+        "https://token-plan-cn.xiaomimimo.com/anthropic",
+        &["XIAOMI_TOKEN_PLAN_API_KEY"],
+        settings_env,
+    )?;
     insert_openai_compatible_provider(
         &mut registry,
         "xai",
@@ -1810,13 +1824,14 @@ fn insert_anthropic_compatible_provider(
     env_names: &[&str],
     settings_env: &HashMap<String, String>,
 ) -> Result<()> {
-    insert_builtin_http_provider(
+    insert_builtin_http_provider_with_context_management(
         registry,
         provider,
         ProviderTransportKind::AnthropicMessages,
         default_base_url,
         env_names,
         settings_env,
+        resolve_anthropic_context_management_config()?,
     )
 }
 
@@ -1827,6 +1842,26 @@ fn insert_builtin_http_provider(
     default_base_url: &str,
     env_names: &[&str],
     settings_env: &HashMap<String, String>,
+) -> Result<()> {
+    insert_builtin_http_provider_with_context_management(
+        registry,
+        provider,
+        transport,
+        default_base_url,
+        env_names,
+        settings_env,
+        Default::default(),
+    )
+}
+
+fn insert_builtin_http_provider_with_context_management(
+    registry: &mut ProviderRegistry,
+    provider: &str,
+    transport: ProviderTransportKind,
+    default_base_url: &str,
+    env_names: &[&str],
+    settings_env: &HashMap<String, String>,
+    context_management: AnthropicContextManagementConfig,
 ) -> Result<()> {
     let id = ProviderId::parse(provider)?;
     let base_url_env = format!("HOLON_{}_BASE_URL", env_key_fragment(provider));
@@ -1863,7 +1898,7 @@ fn insert_builtin_http_provider(
             codex_home: None,
             originator: None,
             reasoning_effort: None,
-            context_management: Default::default(),
+            context_management,
         },
     );
     Ok(())
@@ -3081,6 +3116,12 @@ mod tests {
             "HOLON_OPENROUTER_BASE_URL".to_string(),
             "https://openrouter.example/api/v3".to_string(),
         );
+        settings_env.insert("DEEPSEEK_API_KEY".to_string(), "deepseek-key".to_string());
+        settings_env.insert("XIAOMI_API_KEY".to_string(), "xiaomi-key".to_string());
+        settings_env.insert(
+            "XIAOMI_TOKEN_PLAN_API_KEY".to_string(),
+            "xiaomi-token-plan-key".to_string(),
+        );
         settings_env.insert("DASHSCOPE_API_KEY".to_string(), "dashscope-key".to_string());
 
         let providers = super::built_in_provider_registry(&settings_env).unwrap();
@@ -3106,6 +3147,63 @@ mod tests {
         assert_eq!(
             stepfun_plan.auth.env.as_deref(),
             Some("STEPFUN_PLAN_API_KEY or STEPFUN_API_KEY")
+        );
+
+        let deepseek = providers
+            .get(&ProviderId::parse("deepseek").unwrap())
+            .unwrap();
+        assert_eq!(deepseek.transport, ProviderTransportKind::AnthropicMessages);
+        assert_eq!(deepseek.base_url, "https://api.deepseek.com/anthropic");
+        assert_eq!(deepseek.credential.as_deref(), Some("deepseek-key"));
+
+        let deepseek_anthropic = providers
+            .get(&ProviderId::parse("deepseek-anthropic").unwrap())
+            .unwrap();
+        assert_eq!(
+            deepseek_anthropic.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            deepseek_anthropic.base_url,
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(
+            deepseek_anthropic.credential.as_deref(),
+            Some("deepseek-key")
+        );
+        assert_eq!(
+            deepseek_anthropic.context_management.cache_strategy,
+            AnthropicCacheStrategy::ClaudeCliLike
+        );
+
+        let xiaomi = providers
+            .get(&ProviderId::parse("xiaomi").unwrap())
+            .unwrap();
+        assert_eq!(
+            xiaomi.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/v1");
+        assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
+
+        let xiaomi_token_plan = providers
+            .get(&ProviderId::parse("xiaomi-token-plan").unwrap())
+            .unwrap();
+        assert_eq!(
+            xiaomi_token_plan.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            xiaomi_token_plan.base_url,
+            "https://token-plan-cn.xiaomimimo.com/anthropic"
+        );
+        assert_eq!(
+            xiaomi_token_plan.credential.as_deref(),
+            Some("xiaomi-token-plan-key")
+        );
+        assert_eq!(
+            xiaomi_token_plan.context_management.cache_strategy,
+            AnthropicCacheStrategy::ClaudeCliLike
         );
 
         let minimax = providers
