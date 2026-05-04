@@ -1,9 +1,7 @@
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -26,9 +24,68 @@ use super::{
 #[derive(Debug, Default)]
 pub struct LocalSystem;
 
+/// Process group ID for tracking spawned process groups on Unix
+#[derive(Debug, Clone)]
+pub struct ProcessGroupId {
+    pub pid: u32,
+}
+
 impl LocalSystem {
     pub fn new() -> Self {
         Self
+    }
+
+    #[cfg(unix)]
+    fn spawn_in_new_process_group(command: &mut Command) -> Result<()> {
+        unsafe {
+            command.pre_exec(|| {
+                // Create new process group with process group ID = process ID
+                libc::setpgid(0, 0);
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        Ok(())
+    }
+
+    /// Kill entire process group by process group ID (Unix only)
+    #[cfg(unix)]
+    fn kill_process_group(pgid: u32) -> Result<()> {
+        // Send SIGTERM to entire process group using negative PGID
+        let pgid_neg = -(pgid as i32);
+        unsafe {
+            if libc::kill(pgid_neg, libc::SIGTERM) != 0 {
+                let err = std::io::Error::last_os_error();
+                // ESRCH = no such process - already exited, treat as success
+                if err.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(anyhow!("failed to send SIGTERM to process group {}: {}", pgid, err));
+                }
+            }
+        }
+        
+        // Give processes 100ms to exit cleanly
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        
+        // Force kill any remaining processes with SIGKILL
+        unsafe {
+            if libc::kill(pgid_neg, libc::SIGKILL) != 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(anyhow!("failed to send SIGKILL to process group {}: {}", pgid, err));
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn kill_process_group(_pgid: u32) -> Result<()> {
+        // On Windows, process group termination is handled differently
+        // For now, this is a no-op since Windows handles job objects differently
+        Ok(())
     }
 
     pub async fn open_output_file(&self, path: &Path) -> Result<tokio::fs::File> {
@@ -75,6 +132,10 @@ impl LocalSystem {
         };
 
         command.current_dir(&cwd).kill_on_drop(true);
+        #[cfg(unix)]
+        Self::spawn_in_new_process_group(&mut command)?;
+        #[cfg(windows)]
+        let _ = command;
         for (key, value) in &req.env {
             command.env(key, value);
         }
@@ -125,6 +186,8 @@ impl LocalSystem {
         for (key, value) in &req.env {
             command.env(key, value);
         }
+        #[cfg(unix)]
+        command.env("HOLON_PROCESS_GROUP", "1");
         Ok(command)
     }
 
@@ -146,7 +209,8 @@ impl LocalSystem {
         let child = pair
             .slave
             .spawn_command(command)
-            .context("failed to spawn pty process")?;
+            ?;
+        let process_group_id = child.process_id().map(|pid| ProcessGroupId { pid });
         let killer = child.clone_killer();
         let child = Arc::new(Mutex::new(child));
         let exit_state = Arc::new(Mutex::new(None));
@@ -184,6 +248,7 @@ impl LocalSystem {
         );
         Ok(Box::new(LocalPtyRunningProcess {
             child,
+            process_group_id,
             killer: Arc::new(Mutex::new(killer)),
             stdout,
             writer: Arc::new(Mutex::new(writer)),
@@ -245,7 +310,14 @@ impl ProcessHost for LocalSystem {
             Stdio::null()
         });
         let child = command.spawn().context("failed to spawn process")?;
-        Ok(Box::new(LocalRunningProcess { child }))
+        let process_group_id = {
+            #[cfg(unix)]
+            let pgid = child.id().map(|id| ProcessGroupId { pid: id });
+            #[cfg(not(unix))]
+            let pgid = None;
+            pgid
+        };
+        Ok(Box::new(LocalRunningProcess { child, process_group_id }))
     }
 }
 
@@ -411,10 +483,14 @@ impl FileHost for LocalSystem {
 
 struct LocalRunningProcess {
     child: Child,
+    #[cfg(unix)]
+    process_group_id: Option<ProcessGroupId>,
 }
 
 struct LocalPtyRunningProcess {
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    #[cfg(unix)]
+    process_group_id: Option<ProcessGroupId>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     stdout: Option<Box<dyn ProcessOutput>>,
     writer: Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>>,
@@ -474,6 +550,15 @@ impl RunningProcess for LocalRunningProcess {
     }
 
     async fn stop(&mut self, _signal: StopSignal) -> Result<()> {
+        #[cfg(unix)]
+        if let Some(ref pgid) = self.process_group_id {
+            return LocalSystem::kill_process_group(pgid.pid);
+        }
+        #[cfg(unix)]
+        {
+            self.child.start_kill().context("failed to stop process")
+        }
+        #[cfg(windows)]
         self.child.start_kill().context("failed to stop process")
     }
 }
@@ -531,6 +616,24 @@ impl RunningProcess for LocalPtyRunningProcess {
     }
 
     async fn stop(&mut self, _signal: StopSignal) -> Result<()> {
+        #[cfg(unix)]
+        if let Some(ref pgid) = self.process_group_id {
+            return LocalSystem::kill_process_group(pgid.pid);
+        }
+        #[cfg(unix)]
+        {
+            let killer = Arc::clone(&self.killer);
+            tokio::task::spawn_blocking(move || {
+                let mut killer = killer
+                    .lock()
+                    .map_err(|_| anyhow!("failed to lock pty killer"))?;
+                killer.kill().context("failed to stop pty process")
+            })
+            .await
+            .context("pty stop task failed")?
+        }
+        #[cfg(windows)]
+        {
         let killer = Arc::clone(&self.killer);
         tokio::task::spawn_blocking(move || {
             let mut killer = killer
@@ -540,6 +643,7 @@ impl RunningProcess for LocalPtyRunningProcess {
         })
         .await
         .context("pty stop task failed")?
+        }
     }
 }
 
