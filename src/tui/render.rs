@@ -39,7 +39,7 @@ fn draw_main_panels(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
             .split(area)
     };
     draw_chat(frame, layout[0], app);
-    draw_runtime_state(frame, layout[1], app);
+    draw_agent_state(frame, layout[1], app);
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
@@ -65,13 +65,9 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_runtime_state(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-    let paragraph = Paragraph::new(render_runtime_state_text(app))
-        .block(
-            Block::default()
-                .title("Runtime State")
-                .borders(Borders::ALL),
-        )
+fn draw_agent_state(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
+    let paragraph = Paragraph::new(render_agent_state_text(app))
+        .block(Block::default().title("Agent State").borders(Borders::ALL))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
@@ -157,7 +153,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_runtime_state_text(app: &TuiApp) -> String {
+fn render_agent_state_text(app: &TuiApp) -> String {
     let Some(projection) = app.projection.as_ref() else {
         return "Projection not initialized yet.".into();
     };
@@ -168,6 +164,7 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
             "Agent: {} / {:?}",
             agent.identity.agent_id, agent.agent.status
         ),
+        format!("Contract: {}", agent.identity.contract_badge()),
         format!(
             "Queue: pending {}  active tasks {}",
             agent.agent.pending,
@@ -177,8 +174,14 @@ fn render_runtime_state_text(app: &TuiApp) -> String {
             "Closure: {:?} / {:?}",
             agent.closure.outcome, agent.closure.runtime_posture
         ),
-        render_model_status(agent),
     ];
+
+    lines.push(String::new());
+    // Model section
+    let model_info = render_model_status(agent);
+    // Strip the "model: " prefix from render_model_status
+    let model_detail = model_info.strip_prefix("model: ").unwrap_or(&model_info);
+    lines.push(format!("Model: {model_detail}"));
 
     lines.push(String::new());
     lines.push("Workspace".into());
@@ -471,19 +474,6 @@ fn display_width(text: &str) -> u16 {
 }
 
 pub(super) fn render_header(agent: &AgentSummary) -> String {
-    let workspace = agent
-        .agent
-        .active_workspace_entry
-        .as_ref()
-        .map(|entry| {
-            format!(
-                "{} ({}/{})",
-                entry.workspace_id,
-                workspace_projection_label(Some(entry.projection_kind)),
-                workspace_access_mode_label(Some(entry.access_mode))
-            )
-        })
-        .unwrap_or_else(|| "none".to_string());
     let mut line = format!(
         "{}  {:?}  {}  pending {}  tasks {}",
         agent.identity.agent_id,
@@ -495,7 +485,6 @@ pub(super) fn render_header(agent: &AgentSummary) -> String {
     if agent.lifecycle.resume_required {
         line.push_str("  resume required");
     }
-    line.push_str(&format!("  workspace {workspace}"));
     line
 }
 
