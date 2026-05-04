@@ -61,6 +61,7 @@ async fn live_openai_codex_remote_compact_route_probe() -> Result<()> {
                 Some(ProviderPromptCache {
                     agent_id: "live-openai-codex-compact-probe".into(),
                     prompt_cache_key: "live-openai-codex-compact-probe".into(),
+                    context_fingerprint: "live-openai-codex-compact-probe".into(),
                     working_memory_revision: 0,
                     compression_epoch: 0,
                 }),

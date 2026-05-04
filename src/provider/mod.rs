@@ -100,6 +100,7 @@ pub struct PromptContentBlock {
 pub struct ProviderPromptCache {
     pub agent_id: String,
     pub prompt_cache_key: String,
+    pub context_fingerprint: String,
     pub working_memory_revision: u64,
     pub compression_epoch: u64,
 }

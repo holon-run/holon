@@ -162,6 +162,7 @@ pub fn provider_turn_request_with_prompt_frame() -> ProviderTurnRequest {
             Some(ProviderPromptCache {
                 agent_id: "default".into(),
                 prompt_cache_key: "cache-key".into(),
+                context_fingerprint: "fingerprint-cache-key".into(),
                 working_memory_revision: 7,
                 compression_epoch: 3,
             }),

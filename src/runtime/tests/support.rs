@@ -98,6 +98,7 @@ pub(crate) fn test_effective_prompt() -> EffectivePrompt {
         cache_identity: crate::prompt::PromptCacheIdentity {
             agent_id: "default".into(),
             prompt_cache_key: "default".into(),
+            context_fingerprint: "fingerprint-default".into(),
             working_memory_revision: 1,
             compression_epoch: 0,
         },
