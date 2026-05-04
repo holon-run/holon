@@ -112,6 +112,10 @@ enum Commands {
         #[command(subcommand)]
         command: Option<AgentsCommands>,
     },
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommands,
+    },
     Run {
         text: String,
         #[arg(long, default_value = "trusted-operator")]
@@ -341,6 +345,26 @@ enum AgentModelCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum SkillsCommands {
+    List {
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Install {
+        name_or_path: String,
+        #[arg(long)]
+        builtin: bool,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Uninstall {
+        name: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
@@ -513,6 +537,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
             .await
         }
         Commands::Agents { command } => handle_agents_command(&config, command).await,
+        Commands::Skills { command } => handle_skills_command(&config, command).await,
         Commands::Workspace { command } => handle_workspace_command(&config, command).await,
         Commands::Tui { no_alt_screen } => run_tui(config, no_alt_screen).await,
         Commands::Run { .. } => unreachable!("run command is handled separately"),
@@ -783,12 +808,70 @@ async fn handle_agents_command(config: &AppConfig, command: Option<AgentsCommand
     }
 }
 
+async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> Result<()> {
+    match command {
+        SkillsCommands::List { agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            let response: serde_json::Value =
+                get_json(config, &format!("/agents/{agent}/skills")).await?;
+            print_json(&response)
+        }
+        SkillsCommands::Install {
+            name_or_path,
+            builtin,
+            agent,
+        } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            let kind = if builtin {
+                holon::types::SkillInstallKind::Builtin { name: name_or_path }
+            } else {
+                let path = std::path::PathBuf::from(&name_or_path);
+                if path.is_absolute() && path.is_dir() {
+                    holon::types::SkillInstallKind::Local { path }
+                } else {
+                    holon::types::SkillInstallKind::Builtin { name: name_or_path }
+                }
+            };
+            post_control_json(
+                config,
+                &format!("/control/agents/{agent}/skills/install"),
+                &holon::types::InstallSkillRequest { kind },
+            )
+            .await
+        }
+        SkillsCommands::Uninstall { name, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            post_control_json(
+                config,
+                &format!("/control/agents/{agent}/skills/uninstall"),
+                &holon::types::UninstallSkillRequest { name },
+            )
+            .await
+        }
+    }
+}
+
 async fn post_control_json<T: serde::Serialize>(
     config: &AppConfig,
     path: &str,
     payload: &T,
 ) -> Result<()> {
     post_json_with_auth(config, path, payload, true).await
+}
+
+async fn get_json(config: &AppConfig, path: &str) -> Result<serde_json::Value> {
+    let request = reqwest::Client::new().get(format!("http://{}{}", config.http_addr, path));
+    let response = request.send().await.context("HTTP request failed")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("GET {} returned {}: {}", path, status, body);
+    }
+    let body = response
+        .text()
+        .await
+        .context("failed to read response body")?;
+    serde_json::from_str(&body).context("failed to parse JSON response")
 }
 
 async fn post_json_with_auth<T: serde::Serialize>(

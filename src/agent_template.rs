@@ -812,11 +812,15 @@ async fn materialize_skill_ref(
     }
 }
 
-fn builtin_skill(name: &str) -> Option<&'static BuiltinSkill> {
+pub fn builtin_skill(name: &str) -> Option<&'static BuiltinSkill> {
     BUILTIN_SKILLS.iter().find(|skill| skill.name == name)
 }
 
-fn materialize_builtin_skill_ref(skills_root: &Path, name: &str) -> Result<PathBuf> {
+pub fn builtin_skill_names() -> Vec<&'static str> {
+    BUILTIN_SKILLS.iter().map(|skill| skill.name).collect()
+}
+
+pub fn materialize_builtin_skill_ref(skills_root: &Path, name: &str) -> Result<PathBuf> {
     let skill = builtin_skill(name).ok_or_else(|| anyhow!("unknown builtin skill ref: {name}"))?;
     fs::create_dir_all(skills_root)
         .with_context(|| format!("failed to create {}", skills_root.display()))?;
@@ -836,7 +840,7 @@ fn materialize_builtin_skill_ref(skills_root: &Path, name: &str) -> Result<PathB
     Ok(destination)
 }
 
-fn materialize_local_skill_ref(skills_root: &Path, path: &Path) -> Result<PathBuf> {
+pub fn materialize_local_skill_ref(skills_root: &Path, path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
         bail!("local skill ref path must be absolute: {}", path.display());
     }
@@ -882,7 +886,7 @@ fn materialize_local_skill_ref(skills_root: &Path, path: &Path) -> Result<PathBu
     Ok(destination)
 }
 
-fn remove_materialized_skill_destination(destination: &Path) -> std::io::Result<()> {
+pub fn remove_materialized_skill_destination(destination: &Path) -> std::io::Result<()> {
     let metadata = fs::symlink_metadata(destination)?;
     if metadata.file_type().is_symlink() {
         fs::remove_file(destination)

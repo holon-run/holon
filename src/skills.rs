@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use tracing::warn;
 
 use crate::types::{
@@ -222,6 +222,52 @@ fn scope_label(scope: SkillScope) -> &'static str {
     }
 }
 
+const SKILL_ROOT_SUFFIX_AGENT: &str = "skills";
+
+fn agent_skills_root(agent_home: &Path) -> PathBuf {
+    agent_home.join(SKILL_ROOT_SUFFIX_AGENT)
+}
+
+pub fn install_skill(agent_home: &Path, kind: &crate::types::SkillInstallKind) -> Result<String> {
+    let skills_root = agent_skills_root(agent_home);
+    fs::create_dir_all(&skills_root)
+        .with_context(|| format!("failed to create {}", skills_root.display()))?;
+    let name = match kind {
+        crate::types::SkillInstallKind::Builtin { name } => {
+            crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
+            name.clone()
+        }
+        crate::types::SkillInstallKind::Local { path } => {
+            let dest = crate::agent_template::materialize_local_skill_ref(&skills_root, path)?;
+            dest.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_default()
+        }
+    };
+    Ok(name)
+}
+
+pub fn uninstall_skill(agent_home: &Path, name: &str) -> Result<()> {
+    let skills_root = agent_skills_root(agent_home);
+    let destination = skills_root.join(name);
+    if !destination.exists() {
+        bail!(
+            "skill '{}' is not installed in agent skills directory",
+            name
+        );
+    }
+    crate::agent_template::remove_materialized_skill_destination(&destination)?;
+    Ok(())
+}
+
+pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<SkillCatalogEntry>> {
+    let skills_root = agent_skills_root(agent_home);
+    if !skills_root.is_dir() {
+        return Ok(Vec::new());
+    }
+    load_catalog_for_scope(SkillScope::Agent, &skills_root)
+}
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

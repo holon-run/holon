@@ -178,6 +178,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/webhooks/generic/:agent_id", post(generic_webhook))
         .route("/enqueue", post(enqueue_default))
+        .route("/agents/:agent_id/skills", get(list_skills))
+        .route(
+            "/control/agents/:agent_id/skills/install",
+            post(install_skill),
+        )
+        .route(
+            "/control/agents/:agent_id/skills/uninstall",
+            post(uninstall_skill),
+        )
         .route("/status", get(status_default))
         .route("/briefs", get(briefs_default))
         .route("/state", get(state_default))
@@ -1284,6 +1293,86 @@ pub async fn create_timer(
         )
         .map_err(error_response)?;
     Ok(Json(timer))
+}
+
+pub async fn list_skills(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let agent_home = runtime.agent_home();
+    let skills = crate::skills::list_installed_skills(&agent_home).map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "skills": skills,
+    })))
+}
+
+pub async fn install_skill(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::types::InstallSkillRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let agent_home = runtime.agent_home();
+    let skill_name =
+        crate::skills::install_skill(&agent_home, &request.kind).map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "skill_installed",
+            json!({
+                "target_agent_id": agent_id,
+                "skill_name": skill_name,
+                "kind": request.kind,
+            }),
+        )
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "skill_name": skill_name,
+    })))
+}
+
+pub async fn uninstall_skill(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::types::UninstallSkillRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let agent_home = runtime.agent_home();
+    crate::skills::uninstall_skill(&agent_home, &request.name).map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "skill_uninstalled",
+            json!({
+                "target_agent_id": agent_id,
+                "skill_name": request.name,
+            }),
+        )
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "skill_name": request.name,
+    })))
 }
 
 pub async fn create_agent(
