@@ -1597,6 +1597,13 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["DEEPSEEK_API_KEY"],
         settings_env,
     )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "deepseek-anthropic",
+        "https://api.deepseek.com/anthropic",
+        &["DEEPSEEK_API_KEY"],
+        settings_env,
+    )?;
     insert_openai_compatible_provider(
         &mut registry,
         "fireworks",
@@ -1745,6 +1752,13 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &mut registry,
         "xiaomi",
         "https://api.xiaomimimo.com/v1",
+        &["XIAOMI_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "xiaomi-anthropic",
+        "https://api.xiaomimimo.com/anthropic",
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
@@ -3081,6 +3095,8 @@ mod tests {
             "HOLON_OPENROUTER_BASE_URL".to_string(),
             "https://openrouter.example/api/v3".to_string(),
         );
+        settings_env.insert("DEEPSEEK_API_KEY".to_string(), "deepseek-key".to_string());
+        settings_env.insert("XIAOMI_API_KEY".to_string(), "xiaomi-key".to_string());
         settings_env.insert("DASHSCOPE_API_KEY".to_string(), "dashscope-key".to_string());
 
         let providers = super::built_in_provider_registry(&settings_env).unwrap();
@@ -3107,6 +3123,55 @@ mod tests {
             stepfun_plan.auth.env.as_deref(),
             Some("STEPFUN_PLAN_API_KEY or STEPFUN_API_KEY")
         );
+
+        let deepseek = providers
+            .get(&ProviderId::parse("deepseek").unwrap())
+            .unwrap();
+        assert_eq!(
+            deepseek.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(deepseek.base_url, "https://api.deepseek.com");
+        assert_eq!(deepseek.credential.as_deref(), Some("deepseek-key"));
+
+        let deepseek_anthropic = providers
+            .get(&ProviderId::parse("deepseek-anthropic").unwrap())
+            .unwrap();
+        assert_eq!(
+            deepseek_anthropic.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            deepseek_anthropic.base_url,
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(
+            deepseek_anthropic.credential.as_deref(),
+            Some("deepseek-key")
+        );
+
+        let xiaomi = providers
+            .get(&ProviderId::parse("xiaomi").unwrap())
+            .unwrap();
+        assert_eq!(
+            xiaomi.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/v1");
+        assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
+
+        let xiaomi_anthropic = providers
+            .get(&ProviderId::parse("xiaomi-anthropic").unwrap())
+            .unwrap();
+        assert_eq!(
+            xiaomi_anthropic.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            xiaomi_anthropic.base_url,
+            "https://api.xiaomimimo.com/anthropic"
+        );
+        assert_eq!(xiaomi_anthropic.credential.as_deref(), Some("xiaomi-key"));
 
         let minimax = providers
             .get(&ProviderId::parse("minimax").unwrap())

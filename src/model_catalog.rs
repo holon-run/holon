@@ -719,6 +719,42 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
+            "deepseek-anthropic",
+            "deepseek-v4-flash",
+            "DeepSeek V4 Flash",
+            1_000_000,
+            384_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "deepseek-anthropic",
+            "deepseek-v4-pro",
+            "DeepSeek V4 Pro",
+            1_000_000,
+            384_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "deepseek-anthropic",
+            "deepseek-chat",
+            "DeepSeek Chat",
+            131_072,
+            8_192,
+            false,
+            false,
+        ),
+        catalog_model(
+            "deepseek-anthropic",
+            "deepseek-reasoner",
+            "DeepSeek Reasoner",
+            131_072,
+            65_536,
+            true,
+            false,
+        ),
+        catalog_model(
             "fireworks",
             "accounts/fireworks/models/kimi-k2p6",
             "Kimi K2.6",
@@ -1495,6 +1531,33 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         ),
+        catalog_model(
+            "xiaomi-anthropic",
+            "mimo-v2-flash",
+            "Xiaomi MiMo V2 Flash",
+            262_144,
+            8_192,
+            false,
+            false,
+        ),
+        catalog_model(
+            "xiaomi-anthropic",
+            "mimo-v2-pro",
+            "Xiaomi MiMo V2 Pro",
+            1_048_576,
+            32_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "xiaomi-anthropic",
+            "mimo-v2-omni",
+            "Xiaomi MiMo V2 Omni",
+            262_144,
+            32_000,
+            true,
+            true,
+        ),
         catalog_model("xai", "grok-3", "Grok 3", 131_072, 8_192, false, false),
         catalog_model(
             "xai",
@@ -1709,6 +1772,36 @@ mod tests {
         assert_eq!(policy.runtime_max_output_tokens, 384_000);
         assert!(policy.capabilities.reasoning_summaries);
         assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
+    }
+
+    #[test]
+    fn resolves_anthropic_compatible_provider_model_policy() {
+        let catalog = BuiltInModelCatalog::new();
+
+        let deepseek = catalog.resolve_policy(
+            &ModelRef::parse("deepseek-anthropic/deepseek-v4-flash").unwrap(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(deepseek.display_name, "DeepSeek V4 Flash");
+        assert_eq!(deepseek.context_window_tokens, Some(1_000_000));
+        assert_eq!(deepseek.runtime_max_output_tokens, 384_000);
+        assert_eq!(deepseek.source, ModelMetadataSource::BuiltInCatalog);
+
+        let xiaomi = catalog.resolve_policy(
+            &ModelRef::parse("xiaomi-anthropic/mimo-v2-pro").unwrap(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(xiaomi.display_name, "Xiaomi MiMo V2 Pro");
+        assert_eq!(xiaomi.context_window_tokens, Some(1_048_576));
+        assert_eq!(xiaomi.runtime_max_output_tokens, 32_000);
+        assert!(xiaomi.capabilities.reasoning_summaries);
+        assert_eq!(xiaomi.source, ModelMetadataSource::BuiltInCatalog);
     }
 
     #[test]
