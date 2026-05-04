@@ -32,6 +32,8 @@ pub(crate) mod task_status;
 pub(crate) mod task_stop;
 pub(crate) mod update_work_item;
 pub(crate) mod use_workspace;
+pub(crate) mod web_fetch;
+pub(crate) mod web_search;
 pub(crate) mod work_item_action;
 pub(crate) mod work_item_query;
 
@@ -66,6 +68,8 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         exec_command::definition()?,
         exec_command_batch::definition()?,
         use_workspace::definition()?,
+        web_fetch::definition()?,
+        web_search::definition()?,
     ])
 }
 
@@ -120,6 +124,8 @@ pub(crate) async fn execute_builtin_tool(
             exec_command_batch::execute(runtime, agent_id, trust, &call.input).await
         }
         use_workspace::NAME => use_workspace::execute(runtime, agent_id, trust, &call.input).await,
+        web_fetch::NAME => web_fetch::execute(runtime, agent_id, trust, &call.input).await,
+        web_search::NAME => web_search::execute(runtime, agent_id, trust, &call.input).await,
         _ => Err(anyhow!("unknown builtin tool {}", call.name)),
     }
 }
