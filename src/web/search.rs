@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::Serialize;
 use serde_json::json;
 use url::{form_urlencoded, Url};
 
 use crate::{
     tool::ToolError,
-    web::{policy::timeout, WebConfig, WebProviderConfig, WebProviderKind},
+    web::{policy::timeout, WebConfig, WebFetchConfig, WebProviderConfig, WebProviderKind},
 };
+
+const SEARCH_RESPONSE_BYTES: usize = 1_000_000;
 
 #[derive(Debug, Clone)]
 pub struct WebSearchRequest {
@@ -52,10 +54,7 @@ pub async fn search(request: WebSearchRequest, config: &WebConfig) -> Result<Web
         ));
     }
 
-    let max_results = request
-        .max_results
-        .unwrap_or(config.search.max_results)
-        .min(config.search.max_results.max(1));
+    let max_results = normalize_max_results(request.max_results, config.search.max_results)?;
     let provider = request
         .provider
         .as_deref()
@@ -75,8 +74,14 @@ pub async fn search(request: WebSearchRequest, config: &WebConfig) -> Result<Web
             })?;
             match provider_config.kind {
                 WebProviderKind::Searxng => {
-                    searxng_search(&request.query, max_results, provider_id, provider_config)
-                        .await?
+                    searxng_search(
+                        &request.query,
+                        max_results,
+                        provider_id,
+                        provider_config,
+                        &config.fetch,
+                    )
+                    .await?
                 }
                 WebProviderKind::DuckDuckGo => {
                     duckduckgo_search(&request.query, max_results, &config.fetch).await?
@@ -123,7 +128,14 @@ async fn search_auto(
         .iter()
         .find(|(_, provider)| provider.kind == WebProviderKind::Searxng)
     {
-        return searxng_search(query, max_results, provider_id, provider_config).await;
+        return searxng_search(
+            query,
+            max_results,
+            provider_id,
+            provider_config,
+            &config.fetch,
+        )
+        .await;
     }
     duckduckgo_search(query, max_results, &config.fetch).await
 }
@@ -136,7 +148,7 @@ async fn duckduckgo_search(
     let encoded = form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
     let url = format!("https://lite.duckduckgo.com/lite/?q={encoded}");
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
-    let html = client.get(&url).send().await?.text().await?;
+    let html = send_search_text(client.get(&url), "duckduckgo").await?;
     let results = parse_duckduckgo_lite_results(&html, max_results);
     if results.is_empty() {
         return Err(search_error(
@@ -154,6 +166,7 @@ async fn searxng_search(
     max_results: usize,
     provider_id: &str,
     provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
 ) -> Result<Vec<WebSearchResult>> {
     let base_url = provider.base_url.as_deref().ok_or_else(|| {
         search_error(
@@ -163,15 +176,22 @@ async fn searxng_search(
             "set web.providers.<id>.base_url to a SearXNG instance",
         )
     })?;
-    let mut url = Url::parse(base_url)
+    let mut url = searxng_search_url(base_url)
         .map_err(|error| anyhow!("invalid SearXNG base_url for {provider_id}: {error}"))?;
-    url.set_path("search");
     url.query_pairs_mut()
         .append_pair("q", query)
         .append_pair("format", "json")
         .append_pair("language", "auto");
-    let client = Client::new();
-    let payload: serde_json::Value = client.get(url).send().await?.json().await?;
+    let client = Client::builder().timeout(timeout(fetch_config)).build()?;
+    let body = send_search_text(client.get(url), provider_id).await?;
+    let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("SearXNG returned invalid JSON: {error}"),
+            provider_id,
+            "check the configured SearXNG instance or use provider=duckduckgo",
+        )
+    })?;
     let results = payload
         .get("results")
         .and_then(|value| value.as_array())
@@ -206,6 +226,88 @@ async fn searxng_search(
         ));
     }
     Ok(results)
+}
+
+fn normalize_max_results(requested: Option<usize>, configured: usize) -> Result<usize> {
+    if requested == Some(0) {
+        return Err(search_error(
+            "invalid_tool_input",
+            "WebSearch max_results must be greater than zero",
+            "web_search",
+            "omit max_results or provide a positive integer",
+        ));
+    }
+    Ok(requested
+        .unwrap_or(configured.max(1))
+        .min(configured.max(1))
+        .max(1))
+}
+
+async fn send_search_text(request: reqwest::RequestBuilder, provider: &str) -> Result<String> {
+    let response = request.send().await.map_err(|error| {
+        search_error(
+            "network_failed",
+            format!("WebSearch provider `{provider}` request failed: {error}"),
+            provider,
+            "retry later or configure another WebSearch provider",
+        )
+    })?;
+    let status = response.status();
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return Err(search_error(
+            "rate_limited",
+            format!("WebSearch provider `{provider}` rate limited the request"),
+            provider,
+            "retry later or configure another WebSearch provider",
+        ));
+    }
+    if !status.is_success() {
+        return Err(search_error(
+            "network_failed",
+            format!("WebSearch provider `{provider}` returned HTTP {status}"),
+            provider,
+            "retry later or configure another WebSearch provider",
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        search_error(
+            "network_failed",
+            format!("WebSearch provider `{provider}` response failed: {error}"),
+            provider,
+            "retry later or configure another WebSearch provider",
+        )
+    })? {
+        if bytes.len() + chunk.len() > SEARCH_RESPONSE_BYTES {
+            return Err(search_error(
+                "response_too_large",
+                format!("WebSearch provider `{provider}` response exceeded the byte limit"),
+                provider,
+                "narrow the query or configure another WebSearch provider",
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("WebSearch provider `{provider}` returned non-UTF-8 text: {error}"),
+            provider,
+            "configure another WebSearch provider",
+        )
+    })
+}
+
+fn searxng_search_url(base_url: &str) -> Result<Url> {
+    let mut base = Url::parse(base_url)?;
+    if !base.path().ends_with('/') {
+        let mut path = base.path().to_string();
+        path.push('/');
+        base.set_path(&path);
+    }
+    Ok(base.join("search")?)
 }
 
 fn parse_duckduckgo_lite_results(html: &str, max_results: usize) -> Vec<WebSearchResult> {
@@ -312,5 +414,28 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Example & Docs");
         assert_eq!(results[0].url, "https://example.com/docs");
+    }
+
+    #[test]
+    fn searxng_search_url_preserves_path_prefix() {
+        assert_eq!(
+            searxng_search_url("https://example.com/searxng/")
+                .unwrap()
+                .as_str(),
+            "https://example.com/searxng/search"
+        );
+        assert_eq!(
+            searxng_search_url("https://example.com/searxng")
+                .unwrap()
+                .as_str(),
+            "https://example.com/searxng/search"
+        );
+    }
+
+    #[test]
+    fn max_results_zero_is_invalid() {
+        let error = normalize_max_results(Some(0), 5).unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
     }
 }

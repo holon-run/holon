@@ -1329,6 +1329,27 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "web.fetch.max_response_bytes",
+            kind: "positive_integer",
+            description: "Maximum response bytes read by WebFetch before truncation.",
+            default: json!(crate::web::WebFetchConfig::default().max_response_bytes),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.fetch.timeout_seconds",
+            kind: "positive_integer",
+            description: "Per-request timeout for WebFetch and managed WebSearch providers.",
+            default: json!(crate::web::WebFetchConfig::default().timeout_seconds),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.fetch.max_redirects",
+            kind: "positive_integer",
+            description: "Maximum redirect hops followed by WebFetch.",
+            default: json!(crate::web::WebFetchConfig::default().max_redirects),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "web.fetch.allowed_hosts",
             kind: "string_list",
             description: "Hosts or host:port entries allowed by WebFetch, including explicit dev loopback exceptions.",
@@ -1470,6 +1491,24 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .max_chars
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "web.fetch.max_response_bytes" => Ok(config
+            .web
+            .fetch
+            .max_response_bytes
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "web.fetch.timeout_seconds" => Ok(config
+            .web
+            .fetch
+            .timeout_seconds
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "web.fetch.max_redirects" => Ok(config
+            .web
+            .fetch
+            .max_redirects
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "web.fetch.allowed_hosts" => Ok(json!(config.web.fetch.allowed_hosts)),
         "web.fetch.denied_hosts" => Ok(json!(config.web.fetch.denied_hosts)),
         "web.search.enabled" => Ok(config
@@ -1569,6 +1608,15 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "web.fetch.max_chars" => {
             config.web.fetch.max_chars = Some(parse_positive_usize_key(key, raw_value)?);
         }
+        "web.fetch.max_response_bytes" => {
+            config.web.fetch.max_response_bytes = Some(parse_positive_usize_key(key, raw_value)?);
+        }
+        "web.fetch.timeout_seconds" => {
+            config.web.fetch.timeout_seconds = Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "web.fetch.max_redirects" => {
+            config.web.fetch.max_redirects = Some(parse_positive_usize_key(key, raw_value)?);
+        }
         "web.fetch.allowed_hosts" => {
             config.web.fetch.allowed_hosts = parse_string_list(raw_value)?;
         }
@@ -1636,6 +1684,9 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "tui.alternate_screen" => config.tui.alternate_screen = None,
         "web.fetch.enabled" => config.web.fetch.enabled = None,
         "web.fetch.max_chars" => config.web.fetch.max_chars = None,
+        "web.fetch.max_response_bytes" => config.web.fetch.max_response_bytes = None,
+        "web.fetch.timeout_seconds" => config.web.fetch.timeout_seconds = None,
+        "web.fetch.max_redirects" => config.web.fetch.max_redirects = None,
         "web.fetch.allowed_hosts" => config.web.fetch.allowed_hosts.clear(),
         "web.fetch.denied_hosts" => config.web.fetch.denied_hosts.clear(),
         "web.search.enabled" => config.web.search.enabled = None,
@@ -2658,6 +2709,15 @@ fn parse_positive_u32_key(key: &str, raw_value: &str) -> Result<u32> {
         .ok_or_else(|| anyhow!("{key} expects a positive integer"))
 }
 
+fn parse_positive_u64_key(key: &str, raw_value: &str) -> Result<u64> {
+    raw_value
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| anyhow!("{key} expects a positive integer"))
+}
+
 fn parse_positive_usize_key(key: &str, raw_value: &str) -> Result<usize> {
     raw_value
         .trim()
@@ -3158,6 +3218,9 @@ mod tests {
         .unwrap();
         set_config_key(&mut config, "web.search.provider", "duckduckgo").unwrap();
         set_config_key(&mut config, "web.search.max_results", "3").unwrap();
+        set_config_key(&mut config, "web.fetch.max_response_bytes", "12345").unwrap();
+        set_config_key(&mut config, "web.fetch.timeout_seconds", "7").unwrap();
+        set_config_key(&mut config, "web.fetch.max_redirects", "2").unwrap();
 
         assert_eq!(
             get_config_key(&config, "web.fetch.enabled").unwrap(),
@@ -3175,15 +3238,34 @@ mod tests {
             get_config_key(&config, "web.search.max_results").unwrap(),
             json!(3)
         );
+        assert_eq!(
+            get_config_key(&config, "web.fetch.max_response_bytes").unwrap(),
+            json!(12_345)
+        );
+        assert_eq!(
+            get_config_key(&config, "web.fetch.timeout_seconds").unwrap(),
+            json!(7)
+        );
+        assert_eq!(
+            get_config_key(&config, "web.fetch.max_redirects").unwrap(),
+            json!(2)
+        );
 
         unset_config_key(&mut config, "web.fetch.allowed_hosts").unwrap();
         unset_config_key(&mut config, "web.search.provider").unwrap();
+        unset_config_key(&mut config, "web.fetch.max_response_bytes").unwrap();
+        unset_config_key(&mut config, "web.fetch.timeout_seconds").unwrap();
+        unset_config_key(&mut config, "web.fetch.max_redirects").unwrap();
         assert_eq!(
             get_config_key(&config, "web.fetch.allowed_hosts").unwrap(),
             json!([])
         );
         assert_eq!(
             get_config_key(&config, "web.search.provider").unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            get_config_key(&config, "web.fetch.max_response_bytes").unwrap(),
             Value::Null
         );
     }
@@ -3932,6 +4014,9 @@ mod tests {
         assert!(keys.contains(&"tui.alternate_screen"));
         assert!(keys.contains(&"web.fetch.enabled"));
         assert!(keys.contains(&"web.fetch.allowed_hosts"));
+        assert!(keys.contains(&"web.fetch.max_response_bytes"));
+        assert!(keys.contains(&"web.fetch.timeout_seconds"));
+        assert!(keys.contains(&"web.fetch.max_redirects"));
         assert!(keys.contains(&"web.search.provider"));
     }
 

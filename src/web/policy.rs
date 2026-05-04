@@ -1,4 +1,7 @@
-use std::{net::IpAddr, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 use anyhow::{anyhow, Result};
 use serde_json::json;
@@ -11,8 +14,18 @@ use crate::{tool::ToolError, web::WebFetchConfig};
 pub struct WebAccessDecision {
     pub url: String,
     pub host: String,
+    pub port: u16,
     pub resolved_ips: Vec<IpAddr>,
     pub allowed_by_host_rule: bool,
+}
+
+impl WebAccessDecision {
+    pub fn pinned_socket_addrs(&self) -> Vec<SocketAddr> {
+        self.resolved_ips
+            .iter()
+            .map(|ip| SocketAddr::new(*ip, self.port))
+            .collect()
+    }
 }
 
 pub async fn validate_fetch_url(url: &Url, config: &WebFetchConfig) -> Result<WebAccessDecision> {
@@ -35,6 +48,8 @@ pub async fn validate_fetch_url(url: &Url, config: &WebFetchConfig) -> Result<We
                 "provide a URL with a hostname or IP address",
             )
         })?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
         .to_ascii_lowercase();
     let port = url.port_or_known_default().ok_or_else(|| {
         policy_error(
@@ -95,6 +110,7 @@ pub async fn validate_fetch_url(url: &Url, config: &WebFetchConfig) -> Result<We
     Ok(WebAccessDecision {
         url: url.as_str().to_string(),
         host,
+        port,
         resolved_ips,
         allowed_by_host_rule,
     })
@@ -135,9 +151,54 @@ async fn resolve_host(host: &str, port: u16) -> Result<Vec<IpAddr>> {
 
 fn host_rule_matches(rules: &[String], host: &str, port: u16) -> bool {
     rules.iter().any(|rule| {
-        let normalized = rule.trim().trim_matches('[').trim_matches(']');
-        normalized.eq_ignore_ascii_case(host)
-            || normalized.eq_ignore_ascii_case(&format!("{host}:{port}"))
+        let Some(parsed) = parse_host_rule(rule) else {
+            return false;
+        };
+        if !parsed.host.eq_ignore_ascii_case(host) {
+            return false;
+        }
+        parsed.port.is_none_or(|rule_port| rule_port == port)
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostRule {
+    host: String,
+    port: Option<u16>,
+}
+
+fn parse_host_rule(rule: &str) -> Option<HostRule> {
+    let trimmed = rule.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        let close = rest.find(']')?;
+        let host = rest[..close].to_ascii_lowercase();
+        let suffix = &rest[close + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            suffix.strip_prefix(':')?.parse::<u16>().ok()
+        };
+        return Some(HostRule { host, port });
+    }
+
+    let colon_count = trimmed.matches(':').count();
+    if colon_count == 1 {
+        let (host, port) = trimmed.rsplit_once(':')?;
+        if let Ok(port) = port.parse::<u16>() {
+            return Some(HostRule {
+                host: host.to_ascii_lowercase(),
+                port: Some(port),
+            });
+        }
+    }
+
+    Some(HostRule {
+        host: trimmed.to_ascii_lowercase(),
+        port: None,
     })
 }
 
@@ -187,6 +248,15 @@ mod tests {
         let mut config = WebFetchConfig::default();
         config.allowed_hosts = vec!["127.0.0.1:3000".into()];
         let url = Url::parse("http://127.0.0.1:3000/").unwrap();
+        let decision = validate_fetch_url(&url, &config).await.unwrap();
+        assert!(decision.allowed_by_host_rule);
+    }
+
+    #[tokio::test]
+    async fn allowlisted_ipv6_loopback_with_port_matches() {
+        let mut config = WebFetchConfig::default();
+        config.allowed_hosts = vec!["[::1]:5173".into()];
+        let url = Url::parse("http://[::1]:5173/").unwrap();
         let decision = validate_fetch_url(&url, &config).await.unwrap();
         assert!(decision.allowed_by_host_rule);
     }

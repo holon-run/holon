@@ -69,13 +69,9 @@ pub async fn fetch(request: WebFetchRequest, config: &WebFetchConfig) -> Result<
         )
     })?;
     let original_url = current_url.to_string();
-    let client = Client::builder()
-        .timeout(timeout(config))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-
     for redirect_count in 0..=config.max_redirects {
-        validate_fetch_url(&current_url, config).await?;
+        let access = validate_fetch_url(&current_url, config).await?;
+        let client = pinned_client(&access.host, &access.pinned_socket_addrs(), config)?;
         let response = client.get(current_url.clone()).send().await?;
         if response.status().is_redirection() {
             if redirect_count == config.max_redirects {
@@ -127,6 +123,18 @@ pub async fn fetch(request: WebFetchRequest, config: &WebFetchConfig) -> Result<
         json!({ "url": original_url }),
         "fetch the final URL directly or raise web.fetch.max_redirects",
     ))
+}
+
+fn pinned_client(
+    host: &str,
+    addrs: &[std::net::SocketAddr],
+    config: &WebFetchConfig,
+) -> Result<Client> {
+    Ok(Client::builder()
+        .timeout(timeout(config))
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(host, addrs)
+        .build()?)
 }
 
 fn redirect_target(
