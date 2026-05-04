@@ -1804,10 +1804,10 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["XAI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_openai_compatible_provider(
         &mut registry,
         "zai",
-        "https://api.z.ai/api/anthropic",
+        "https://api.z.ai/api/paas/v4",
         &["ZAI_API_KEY"],
         settings_env,
     )?;
@@ -1825,10 +1825,10 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["ZAI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_openai_compatible_provider(
         &mut registry,
         "bigmodel",
-        "https://open.bigmodel.cn/api/anthropic",
+        "https://open.bigmodel.cn/api/paas/v4",
         &["BIGMODEL_API_KEY"],
         settings_env,
     )?;
@@ -3345,9 +3345,18 @@ mod tests {
         );
 
         let zai = providers.get(&ProviderId::parse("zai").unwrap()).unwrap();
-        assert_eq!(zai.transport, ProviderTransportKind::AnthropicMessages);
-        assert_eq!(zai.base_url, "https://api.z.ai/api/anthropic");
+        assert_eq!(zai.transport, ProviderTransportKind::OpenAiChatCompletions);
+        assert_eq!(zai.base_url, "https://api.z.ai/api/paas/v4");
         assert_eq!(zai.credential.as_deref(), Some("zai-key"));
+
+        let zai_anthropic = providers
+            .get(&ProviderId::parse("zai-anthropic").unwrap())
+            .unwrap();
+        assert_eq!(
+            zai_anthropic.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(zai_anthropic.base_url, "https://api.z.ai/api/anthropic");
 
         let zai_openai = providers
             .get(&ProviderId::parse("zai-openai").unwrap())
@@ -3362,9 +3371,24 @@ mod tests {
         let bigmodel = providers
             .get(&ProviderId::parse("bigmodel").unwrap())
             .unwrap();
-        assert_eq!(bigmodel.transport, ProviderTransportKind::AnthropicMessages);
-        assert_eq!(bigmodel.base_url, "https://open.bigmodel.cn/api/anthropic");
+        assert_eq!(
+            bigmodel.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(bigmodel.base_url, "https://open.bigmodel.cn/api/paas/v4");
         assert_eq!(bigmodel.credential.as_deref(), Some("bigmodel-key"));
+
+        let bigmodel_anthropic = providers
+            .get(&ProviderId::parse("bigmodel-anthropic").unwrap())
+            .unwrap();
+        assert_eq!(
+            bigmodel_anthropic.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            bigmodel_anthropic.base_url,
+            "https://open.bigmodel.cn/api/anthropic"
+        );
 
         let bigmodel_openai = providers
             .get(&ProviderId::parse("bigmodel-openai").unwrap())

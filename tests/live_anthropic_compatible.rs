@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use holon::{
-    config::{AppConfig, ProviderId},
+    config::{AppConfig, ProviderId, ProviderTransportKind},
     prompt::PromptStability,
     provider::{
         AgentProvider, AnthropicProvider, ConversationMessage, ModelBlock, PromptContentBlock,
@@ -30,6 +30,11 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         .providers
         .get_mut(&provider_id)
         .with_context(|| format!("missing {provider_id_text} provider config"))?;
+    assert_eq!(
+        provider_config.transport,
+        ProviderTransportKind::AnthropicMessages,
+        "{provider_id_text} is not configured with Anthropic Messages transport"
+    );
     provider_config.context_management.enabled = true;
     provider_config.context_management.trigger_input_tokens = 1;
     provider_config.context_management.keep_recent_tool_uses = 1;

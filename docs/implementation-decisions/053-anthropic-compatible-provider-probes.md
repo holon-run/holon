@@ -3,7 +3,7 @@
 When a provider family exposes both Anthropic Messages and OpenAI-compatible
 interfaces, Holon keeps explicit `provider-anthropic` and `provider-openai`
 entries. The bare `provider` id is the current default alias for that family.
-The default currently prefers Anthropic Messages for agent/coding use after live
+The default can prefer Anthropic Messages for agent/coding use after live
 validation confirms Holon's tool-use continuation shape with
 `context_management` enabled.
 
@@ -20,6 +20,10 @@ Z.ai and BigModel are separate provider families even though both expose Zhipu
 models, because they use separate account systems and base URLs. Holon exposes
 `zai`, `zai-anthropic`, `zai-openai`, `bigmodel`, `bigmodel-anthropic`, and
 `bigmodel-openai`.
+
+At this stage only DeepSeek and Xiaomi Anthropic-compatible endpoints have live
+probe evidence in this repository. Z.ai and BigModel Anthropic probes are wired
+as ignored tests but not yet validated with real credentials.
 
 DeepSeek uses `DEEPSEEK_API_KEY`. Xiaomi uses `XIAOMI_API_KEY`. Xiaomi
 token-plan uses `XIAOMI_TOKEN_PLAN_API_KEY`. Z.ai uses `ZAI_API_KEY`. BigModel

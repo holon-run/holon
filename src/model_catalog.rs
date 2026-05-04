@@ -372,32 +372,29 @@ fn catalog_model(
     }
 }
 
-#[derive(Clone, Copy)]
-struct CatalogModelSpec {
-    model: &'static str,
-    display_name: &'static str,
-    context_window_tokens: usize,
-    max_output_tokens: u32,
-    reasoning_summaries: bool,
-    image_input: bool,
-}
-
-fn extend_catalog_model_aliases(
+fn extend_catalog_model_aliases_from_source(
     entries: &mut Vec<BuiltInModelMetadata>,
-    providers: &[&str],
-    models: &[CatalogModelSpec],
+    source_provider: &str,
+    alias_providers: &[&str],
 ) {
-    for provider in providers {
-        for model in models {
-            entries.push(catalog_model(
-                provider,
-                model.model,
-                model.display_name,
-                model.context_window_tokens,
-                model.max_output_tokens,
-                model.reasoning_summaries,
-                model.image_input,
-            ));
+    let source_provider_id = provider_id(source_provider);
+    let source_entries = entries
+        .iter()
+        .filter(|entry| entry.model_ref.provider == source_provider_id)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for provider in alias_providers {
+        let alias_provider_id = provider_id(provider);
+        for source_entry in &source_entries {
+            let mut alias_entry = source_entry.clone();
+            alias_entry.model_ref =
+                ModelRef::new(alias_provider_id.clone(), &source_entry.model_ref.model);
+            alias_entry.description = format!(
+                "Holon built-in runtime metadata for the {}/{} compatible provider model.",
+                provider, source_entry.model_ref.model
+            );
+            entries.push(alias_entry);
         }
     }
 }
@@ -1715,193 +1712,26 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model("zai", "glm-4.5v", "GLM-4.5V", 64_000, 16_384, true, true),
     ];
-    extend_catalog_model_aliases(
+    extend_catalog_model_aliases_from_source(&mut entries, "deepseek", &["deepseek-openai"]);
+    extend_catalog_model_aliases_from_source(
         &mut entries,
-        &["deepseek-openai"],
-        &[
-            CatalogModelSpec {
-                model: "deepseek-v4-flash",
-                display_name: "DeepSeek V4 Flash",
-                context_window_tokens: 1_000_000,
-                max_output_tokens: 384_000,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "deepseek-v4-pro",
-                display_name: "DeepSeek V4 Pro",
-                context_window_tokens: 1_000_000,
-                max_output_tokens: 384_000,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "deepseek-chat",
-                display_name: "DeepSeek Chat",
-                context_window_tokens: 131_072,
-                max_output_tokens: 8_192,
-                reasoning_summaries: false,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "deepseek-reasoner",
-                display_name: "DeepSeek Reasoner",
-                context_window_tokens: 131_072,
-                max_output_tokens: 65_536,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-        ],
-    );
-    extend_catalog_model_aliases(
-        &mut entries,
+        "xiaomi",
         &[
             "xiaomi-anthropic",
             "xiaomi-openai",
             "xiaomi-token-plan-anthropic",
             "xiaomi-token-plan-openai",
         ],
-        &[
-            CatalogModelSpec {
-                model: "mimo-v2-flash",
-                display_name: "Xiaomi MiMo V2 Flash",
-                context_window_tokens: 262_144,
-                max_output_tokens: 8_192,
-                reasoning_summaries: false,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "mimo-v2-pro",
-                display_name: "Xiaomi MiMo V2 Pro",
-                context_window_tokens: 1_048_576,
-                max_output_tokens: 32_000,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "mimo-v2-omni",
-                display_name: "Xiaomi MiMo V2 Omni",
-                context_window_tokens: 262_144,
-                max_output_tokens: 32_000,
-                reasoning_summaries: true,
-                image_input: true,
-            },
-        ],
     );
-    extend_catalog_model_aliases(
+    extend_catalog_model_aliases_from_source(
         &mut entries,
+        "zai",
         &[
             "zai-anthropic",
             "zai-openai",
             "bigmodel",
             "bigmodel-anthropic",
             "bigmodel-openai",
-        ],
-        &[
-            CatalogModelSpec {
-                model: "glm-5.1",
-                display_name: "GLM-5.1",
-                context_window_tokens: 202_800,
-                max_output_tokens: 131_100,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-5",
-                display_name: "GLM-5",
-                context_window_tokens: 202_800,
-                max_output_tokens: 131_100,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-5-turbo",
-                display_name: "GLM-5 Turbo",
-                context_window_tokens: 202_800,
-                max_output_tokens: 131_100,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-5v-turbo",
-                display_name: "GLM-5V Turbo",
-                context_window_tokens: 202_800,
-                max_output_tokens: 131_100,
-                reasoning_summaries: true,
-                image_input: true,
-            },
-            CatalogModelSpec {
-                model: "glm-4.7",
-                display_name: "GLM-4.7",
-                context_window_tokens: 204_800,
-                max_output_tokens: 131_072,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-4.7-flash",
-                display_name: "GLM-4.7 Flash",
-                context_window_tokens: 200_000,
-                max_output_tokens: 131_072,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-4.7-flashx",
-                display_name: "GLM-4.7 FlashX",
-                context_window_tokens: 200_000,
-                max_output_tokens: 128_000,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-4.6",
-                display_name: "GLM-4.6",
-                context_window_tokens: 204_800,
-                max_output_tokens: 131_072,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-4.6v",
-                display_name: "GLM-4.6V",
-                context_window_tokens: 128_000,
-                max_output_tokens: 32_768,
-                reasoning_summaries: true,
-                image_input: true,
-            },
-            CatalogModelSpec {
-                model: "glm-4.5",
-                display_name: "GLM-4.5",
-                context_window_tokens: 131_072,
-                max_output_tokens: 98_304,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-4.5-air",
-                display_name: "GLM-4.5 Air",
-                context_window_tokens: 131_072,
-                max_output_tokens: 98_304,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-4.5-flash",
-                display_name: "GLM-4.5 Flash",
-                context_window_tokens: 131_072,
-                max_output_tokens: 98_304,
-                reasoning_summaries: true,
-                image_input: false,
-            },
-            CatalogModelSpec {
-                model: "glm-4.5v",
-                display_name: "GLM-4.5V",
-                context_window_tokens: 64_000,
-                max_output_tokens: 16_384,
-                reasoning_summaries: true,
-                image_input: true,
-            },
         ],
     );
     entries
