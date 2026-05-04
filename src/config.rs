@@ -14,6 +14,7 @@ use crate::{
     model_catalog::{
         BuiltInModelCatalog, BuiltInModelMetadata, ModelRuntimeOverride, ResolvedRuntimeModelPolicy,
     },
+    web::WebProviderKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +217,8 @@ pub struct HolonConfigFile {
     pub runtime: RuntimeConfigFile,
     #[serde(default, skip_serializing_if = "TuiConfigFile::is_empty")]
     pub tui: TuiConfigFile,
+    #[serde(default, skip_serializing_if = "WebConfigFile::is_empty")]
+    pub web: WebConfigFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -314,6 +317,75 @@ pub struct RuntimeConfigFile {
 pub struct TuiConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alternate_screen: Option<AltScreenMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebConfigFile {
+    #[serde(default, skip_serializing_if = "WebFetchConfigFile::is_empty")]
+    pub fetch: WebFetchConfigFile,
+    #[serde(default, skip_serializing_if = "WebSearchConfigFile::is_empty")]
+    pub search: WebSearchConfigFile,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub providers: BTreeMap<String, WebProviderConfigFile>,
+}
+
+impl WebConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.fetch.is_empty() && self.search.is_empty() && self.providers.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebFetchConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_response_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_redirects: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_hosts: Vec<String>,
+}
+
+impl WebFetchConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.max_chars.is_none()
+            && self.max_response_bytes.is_none()
+            && self.timeout_seconds.is_none()
+            && self.max_redirects.is_none()
+            && self.allowed_hosts.is_empty()
+            && self.denied_hosts.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebSearchConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
+}
+
+impl WebSearchConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none() && self.provider.is_none() && self.max_results.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebProviderConfigFile {
+    pub kind: WebProviderKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1242,6 +1314,55 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             default: json!("auto"),
             allowed_values: vec!["auto", "always", "never"],
         },
+        ConfigSchemaEntry {
+            key: "web.fetch.enabled",
+            kind: "boolean",
+            description: "Enable the runtime-native WebFetch tool.",
+            default: json!(true),
+            allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
+            key: "web.fetch.max_chars",
+            kind: "positive_integer",
+            description: "Maximum model-visible characters returned by WebFetch.",
+            default: json!(crate::web::WebFetchConfig::default().max_chars),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.fetch.allowed_hosts",
+            kind: "string_list",
+            description: "Hosts or host:port entries allowed by WebFetch, including explicit dev loopback exceptions.",
+            default: json!([]),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.fetch.denied_hosts",
+            kind: "string_list",
+            description: "Hosts or host:port entries blocked by WebFetch.",
+            default: json!([]),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.search.enabled",
+            kind: "boolean",
+            description: "Enable the WebSearch provider-routed tool.",
+            default: json!(true),
+            allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
+            key: "web.search.provider",
+            kind: "string",
+            description: "Default WebSearch provider id, or auto for SearXNG then DuckDuckGo fallback.",
+            default: json!("auto"),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.search.max_results",
+            kind: "positive_integer",
+            description: "Maximum number of WebSearch results returned to the model.",
+            default: json!(crate::web::WebSearchConfig::default().max_results),
+            allowed_values: vec![],
+        },
     ]
 }
 
@@ -1337,6 +1458,39 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .alternate_screen
             .map(|value| Value::String(value.as_str().to_string()))
             .unwrap_or(Value::Null)),
+        "web.fetch.enabled" => Ok(config
+            .web
+            .fetch
+            .enabled
+            .map(Value::Bool)
+            .unwrap_or(Value::Null)),
+        "web.fetch.max_chars" => Ok(config
+            .web
+            .fetch
+            .max_chars
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "web.fetch.allowed_hosts" => Ok(json!(config.web.fetch.allowed_hosts)),
+        "web.fetch.denied_hosts" => Ok(json!(config.web.fetch.denied_hosts)),
+        "web.search.enabled" => Ok(config
+            .web
+            .search
+            .enabled
+            .map(Value::Bool)
+            .unwrap_or(Value::Null)),
+        "web.search.provider" => Ok(config
+            .web
+            .search
+            .provider
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null)),
+        "web.search.max_results" => Ok(config
+            .web
+            .search
+            .max_results
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         _ => Err(unknown_config_key(key)),
     }
 }
@@ -1407,6 +1561,35 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "tui.alternate_screen" => {
             config.tui.alternate_screen = Some(AltScreenMode::parse(raw_value)?);
         }
+        "web.fetch.enabled" => {
+            config.web.fetch.enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "web.fetch.max_chars" => {
+            config.web.fetch.max_chars = Some(parse_positive_usize_key(key, raw_value)?);
+        }
+        "web.fetch.allowed_hosts" => {
+            config.web.fetch.allowed_hosts = parse_string_list(raw_value)?;
+        }
+        "web.fetch.denied_hosts" => {
+            config.web.fetch.denied_hosts = parse_string_list(raw_value)?;
+        }
+        "web.search.enabled" => {
+            config.web.search.enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "web.search.provider" => {
+            let provider = raw_value.trim();
+            if provider.is_empty() {
+                return Err(anyhow!("{key} expects a non-empty provider id"));
+            }
+            config.web.search.provider = Some(provider.to_string());
+        }
+        "web.search.max_results" => {
+            config.web.search.max_results = Some(parse_positive_usize_key(key, raw_value)?);
+        }
         _ => return Err(unknown_config_key(key)),
     }
     Ok(())
@@ -1451,6 +1634,13 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "runtime.max_tool_output_tokens" => config.runtime.max_tool_output_tokens = None,
         "runtime.disable_provider_fallback" => config.runtime.disable_provider_fallback = None,
         "tui.alternate_screen" => config.tui.alternate_screen = None,
+        "web.fetch.enabled" => config.web.fetch.enabled = None,
+        "web.fetch.max_chars" => config.web.fetch.max_chars = None,
+        "web.fetch.allowed_hosts" => config.web.fetch.allowed_hosts.clear(),
+        "web.fetch.denied_hosts" => config.web.fetch.denied_hosts.clear(),
+        "web.search.enabled" => config.web.search.enabled = None,
+        "web.search.provider" => config.web.search.provider = None,
+        "web.search.max_results" => config.web.search.max_results = None,
         _ => return Err(unknown_config_key(key)),
     }
     Ok(())
@@ -2316,6 +2506,25 @@ fn parse_model_ref_list(raw_value: &str) -> Result<Vec<ModelRef>> {
     Ok(values)
 }
 
+fn parse_string_list(raw_value: &str) -> Result<Vec<String>> {
+    let trimmed = raw_value.trim();
+    if trimmed.starts_with('[') {
+        let values: Vec<String> =
+            serde_json::from_str(trimmed).context("expected a JSON string array")?;
+        return Ok(values
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect());
+    }
+    Ok(trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
 fn parse_model_catalog_value(raw_value: &str) -> Result<BTreeMap<String, ModelRuntimeOverride>> {
     let parsed: BTreeMap<String, ModelRuntimeOverride> =
         serde_json::from_str(raw_value).context("models.catalog expects a JSON object")?;
@@ -2933,6 +3142,48 @@ mod tests {
         );
         assert_eq!(
             get_config_key(&config, "runtime.max_tool_output_tokens").unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn set_get_and_unset_round_trip_web_config() {
+        let mut config = HolonConfigFile::default();
+        set_config_key(&mut config, "web.fetch.enabled", "true").unwrap();
+        set_config_key(
+            &mut config,
+            "web.fetch.allowed_hosts",
+            "localhost:3000,127.0.0.1:5173",
+        )
+        .unwrap();
+        set_config_key(&mut config, "web.search.provider", "duckduckgo").unwrap();
+        set_config_key(&mut config, "web.search.max_results", "3").unwrap();
+
+        assert_eq!(
+            get_config_key(&config, "web.fetch.enabled").unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            get_config_key(&config, "web.fetch.allowed_hosts").unwrap(),
+            json!(["localhost:3000", "127.0.0.1:5173"])
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.provider").unwrap(),
+            json!("duckduckgo")
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.max_results").unwrap(),
+            json!(3)
+        );
+
+        unset_config_key(&mut config, "web.fetch.allowed_hosts").unwrap();
+        unset_config_key(&mut config, "web.search.provider").unwrap();
+        assert_eq!(
+            get_config_key(&config, "web.fetch.allowed_hosts").unwrap(),
+            json!([])
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.provider").unwrap(),
             Value::Null
         );
     }
@@ -3679,6 +3930,9 @@ mod tests {
         assert!(keys.contains(&"runtime.max_tool_output_tokens"));
         assert!(keys.contains(&"runtime.disable_provider_fallback"));
         assert!(keys.contains(&"tui.alternate_screen"));
+        assert!(keys.contains(&"web.fetch.enabled"));
+        assert!(keys.contains(&"web.fetch.allowed_hosts"));
+        assert!(keys.contains(&"web.search.provider"));
     }
 
     #[test]

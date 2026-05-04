@@ -34,6 +34,7 @@ tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-width = "0.2"
+url = "2.5"
 uuid = { version = "1.11", features = ["serde", "v4"] }
 twox-hash = { version = "2.1.2", features = ["std"] }
 

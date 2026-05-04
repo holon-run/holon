@@ -71,3 +71,4 @@ Current decision notes:
 - [051 Runtime Config Provider Credentials](./051-runtime-config-provider-credentials.md)
 - [052 Turn-Local Compaction Remains Request Projection](./052-turn-local-compaction-remains-request-projection.md)
 - [053 Anthropic-Compatible Provider Probes](./053-anthropic-compatible-provider-probes.md)
+- [054 Web Tool Plane](./054-web-tool-plane.md)
