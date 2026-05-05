@@ -57,7 +57,7 @@ use crate::{
         ActiveWorkspaceEntry, AdmissionContext, AgentRegistryStatus, AgentSummary, AgentVisibility,
         AuditEvent, BriefRecord, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
         ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageKind,
-        MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
+        MessageOrigin, OperatorMessageRecord, OperatorNotificationRecord, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
         TimerRecord, TranscriptEntry, TrustLevel, TurnTerminalRecord, WaitingIntentRecord,
@@ -343,6 +343,7 @@ struct AgentStateSnapshot {
     session: StateSessionSnapshot,
     tasks: Vec<TaskRecord>,
     transcript_tail: Vec<TranscriptEntry>,
+    operator_messages: Vec<OperatorMessageRecord>,
     briefs_tail: Vec<BriefRecord>,
     timers: Vec<TimerRecord>,
     work_items: Vec<WorkItemRecord>,
@@ -749,6 +750,10 @@ pub async fn agent_state(
         .recent_transcript(100)
         .await
         .map_err(error_response)?;
+    let operator_messages = runtime
+        .recent_operator_messages(100)
+        .await
+        .map_err(error_response)?;
     let briefs_tail = runtime.recent_briefs(24).await.map_err(error_response)?;
     let brief = briefs_tail.last().cloned();
     let timers = runtime.recent_timers(50).await.map_err(error_response)?;
@@ -781,6 +786,7 @@ pub async fn agent_state(
         session,
         tasks,
         transcript_tail,
+        operator_messages,
         briefs_tail,
         timers,
         work_items,

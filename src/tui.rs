@@ -11,7 +11,8 @@ use crate::{
     system::{workspace_access_mode_label, workspace_projection_label},
     tui_markdown::{render_markdown_text, render_markdown_text_spaced},
     types::{
-        AgentSummary, BriefRecord, TaskRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        AgentSummary, BriefRecord, MessageBody, OperatorMessageRecord, OperatorMessageStatus,
+        TaskRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
     },
 };
 use anyhow::{anyhow, Result};
@@ -162,6 +163,7 @@ struct TuiApp {
     agents: Vec<AgentSummary>,
     briefs: Vec<BriefRecord>,
     transcript: Vec<TranscriptEntry>,
+    optimistic_operator_messages: Vec<OperatorMessageRecord>,
     tasks: Vec<TaskRecord>,
     projection: Option<TuiProjection>,
     connection_state: TuiConnectionState,
@@ -225,6 +227,7 @@ impl TuiApp {
             agents: Vec::new(),
             briefs: Vec::new(),
             transcript: Vec::new(),
+            optimistic_operator_messages: Vec::new(),
             tasks: Vec::new(),
             projection: None,
             connection_state: TuiConnectionState::Bootstrapping,
@@ -370,6 +373,50 @@ impl TuiApp {
         self.agents.get(self.selected_agent)
     }
 
+    fn add_optimistic_operator_message(&mut self, agent_id: String, body: String) -> String {
+        let message_id = format!("local-{}", uuid::Uuid::new_v4());
+        let now = chrono::Utc::now();
+        self.optimistic_operator_messages
+            .push(OperatorMessageRecord {
+                message_id: message_id.clone(),
+                agent_id,
+                status: OperatorMessageStatus::Sending,
+                created_at: now,
+                updated_at: now,
+                body: MessageBody::Text { text: body },
+                error: None,
+            });
+        *self.chat_text_cache.borrow_mut() = None;
+        message_id
+    }
+
+    fn reconcile_optimistic_operator_message(&mut self, local_message_id: &str, accepted_id: &str) {
+        if let Some(message) = self
+            .optimistic_operator_messages
+            .iter_mut()
+            .find(|message| message.message_id == local_message_id)
+        {
+            message.message_id = accepted_id.to_string();
+            message.status = OperatorMessageStatus::Queued;
+            message.updated_at = chrono::Utc::now();
+            message.error = None;
+        }
+        *self.chat_text_cache.borrow_mut() = None;
+    }
+
+    fn fail_optimistic_operator_message(&mut self, local_message_id: &str, error: String) {
+        if let Some(message) = self
+            .optimistic_operator_messages
+            .iter_mut()
+            .find(|message| message.message_id == local_message_id)
+        {
+            message.status = OperatorMessageStatus::Failed;
+            message.updated_at = chrono::Utc::now();
+            message.error = Some(error);
+        }
+        *self.chat_text_cache.borrow_mut() = None;
+    }
+
     fn clear_agent_view(&mut self) {
         self.clear_projection_view();
         self.agents.clear();
@@ -380,6 +427,7 @@ impl TuiApp {
         self.stop_stream_task();
         self.briefs.clear();
         self.transcript.clear();
+        self.optimistic_operator_messages.clear();
         self.tasks.clear();
         self.projection = None;
         self.last_refresh_at = None;
@@ -864,7 +912,8 @@ mod tests {
             AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
             AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus, AgentSummary,
             AgentTokenUsageSummary, AgentVisibility, BriefKind, BriefRecord, ChildAgentSummary,
-            ClosureDecision, ClosureOutcome, LoadedAgentsMdView, RuntimePosture, SkillsRuntimeView,
+            ClosureDecision, ClosureOutcome, LoadedAgentsMdView, MessageBody,
+            OperatorMessageRecord, OperatorMessageStatus, RuntimePosture, SkillsRuntimeView,
             TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingIntentSummary,
         },
     };
@@ -1018,6 +1067,7 @@ mod tests {
             },
             tasks: Vec::new(),
             transcript_tail: Vec::new(),
+            operator_messages: Vec::new(),
             briefs_tail: Vec::new(),
             timers: Vec::new(),
             work_items: Vec::new(),
@@ -2203,6 +2253,99 @@ mod tests {
         let items = collect_chat_items(&app);
         assert!(matches!(items[0], ConversationCell::UserMessage { .. }));
         assert!(matches!(items[1], ConversationCell::AssistantMarkdown(_)));
+    }
+
+    #[test]
+    fn chat_includes_pending_operator_message_from_snapshot() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.operator_messages = vec![OperatorMessageRecord {
+            message_id: "message-queued".into(),
+            agent_id: "default".into(),
+            status: OperatorMessageStatus::WaitingForSafePoint,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            body: MessageBody::Text {
+                text: "please stop soon".into(),
+            },
+            error: None,
+        }];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let items = collect_chat_items(&app);
+        let user_messages = items
+            .iter()
+            .filter(|item| matches!(item, ConversationCell::UserMessage { .. }))
+            .collect::<Vec<_>>();
+
+        assert_eq!(user_messages.len(), 1);
+        assert!(matches!(
+            user_messages[0],
+            ConversationCell::UserMessage {
+                body,
+                status: Some(OperatorMessageStatus::WaitingForSafePoint),
+                ..
+            } if body == "please stop soon"
+        ));
+    }
+
+    #[test]
+    fn chat_dedupes_pending_operator_message_when_transcript_contains_it() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let ts = Utc::now();
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.transcript_tail = vec![TranscriptEntry {
+            id: "tr-message-1".into(),
+            agent_id: "default".into(),
+            created_at: ts,
+            kind: TranscriptEntryKind::IncomingMessage,
+            round: None,
+            related_message_id: Some("message-1".into()),
+            stop_reason: None,
+            input_tokens: None,
+            output_tokens: None,
+            data: json!({
+                "origin": { "kind": "operator", "actor_id": null },
+                "body": { "type": "text", "text": "persisted operator text" }
+            }),
+        }];
+        snapshot.operator_messages = vec![OperatorMessageRecord {
+            message_id: "message-1".into(),
+            agent_id: "default".into(),
+            status: OperatorMessageStatus::Processing,
+            created_at: ts,
+            updated_at: ts,
+            body: MessageBody::Text {
+                text: "persisted operator text".into(),
+            },
+            error: None,
+        }];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+        app.apply_projection_view();
+
+        let items = collect_chat_items(&app);
+        let user_messages = items
+            .iter()
+            .filter(|item| matches!(item, ConversationCell::UserMessage { .. }))
+            .collect::<Vec<_>>();
+
+        assert_eq!(user_messages.len(), 1);
+        assert!(matches!(
+            user_messages[0],
+            ConversationCell::UserMessage {
+                body,
+                status: Some(OperatorMessageStatus::Processing),
+                ..
+            } if body == "persisted operator text"
+        ));
     }
 
     #[test]

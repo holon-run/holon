@@ -15,9 +15,9 @@ use crate::{
     system::ExecutionSnapshot,
     types::{
         ActiveWorkspaceEntry, AgentSummary, BriefRecord, ExternalTriggerStateSnapshot,
-        OperatorNotificationRecord, TaskRecord, TimerRecord, TranscriptEntry, TrustLevel,
-        TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord,
-        WorktreeSession,
+        OperatorMessageRecord, OperatorNotificationRecord, TaskRecord, TimerRecord,
+        TranscriptEntry, TrustLevel, TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord,
+        WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -83,6 +83,8 @@ pub struct AgentStateSnapshot {
     pub tasks: Vec<TaskRecord>,
     pub transcript_tail: Vec<TranscriptEntry>,
     #[serde(default)]
+    pub operator_messages: Vec<OperatorMessageRecord>,
+    #[serde(default)]
     pub briefs_tail: Vec<BriefRecord>,
     #[serde(default)]
     pub timers: Vec<TimerRecord>,
@@ -101,6 +103,13 @@ pub struct AgentStateSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<BriefRecord>,
     pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlPromptResponse {
+    pub ok: bool,
+    pub agent_id: String,
+    pub message_id: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -252,7 +261,11 @@ impl LocalClient {
             .await
     }
 
-    pub async fn control_prompt(&self, agent_id: &str, text: impl Into<String>) -> Result<Value> {
+    pub async fn control_prompt(
+        &self,
+        agent_id: &str,
+        text: impl Into<String>,
+    ) -> Result<ControlPromptResponse> {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/prompt"),
             &ControlPromptRequest { text: text.into() },

@@ -2515,6 +2515,30 @@ pub enum QueueEntryStatus {
     Dropped,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorMessageStatus {
+    Sending,
+    Queued,
+    WaitingForSafePoint,
+    Processing,
+    Processed,
+    Failed,
+    Dropped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OperatorMessageRecord {
+    pub message_id: String,
+    pub agent_id: String,
+    pub status: OperatorMessageStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub body: MessageBody,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueueEntryRecord {
     pub message_id: String,
