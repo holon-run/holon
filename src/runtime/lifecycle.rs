@@ -338,6 +338,16 @@ impl RuntimeHandle {
                 handle.token.cancel();
                 interrupted_run_id = Some(handle.run_id.clone());
                 guard.state.current_run_id = None;
+                if matches!(guard.state.status, AgentStatus::AwakeRunning) {
+                    guard.state.status = if task_state_reducer::has_blocking_active_tasks(
+                        &self.inner.storage,
+                        &guard.state.active_task_ids,
+                    )? {
+                        AgentStatus::AwaitingTask
+                    } else {
+                        AgentStatus::AwakeIdle
+                    };
+                }
                 self.inner.storage.write_agent(&guard.state)?;
             }
         }

@@ -55,7 +55,11 @@ pub struct RuntimeHost {
 pub(crate) const TEMP_AGENT_PREFIX: &str = "tmp_";
 const TEMP_RUN_AGENT_PREFIX: &str = "tmp_run_";
 const TEMP_CHILD_AGENT_PREFIX: &str = "tmp_child_";
+// Give runtime loops a short cleanup window while keeping daemon stop bounded.
+#[cfg(not(test))]
 const HOST_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const HOST_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
 pub enum PublicAgentError {
@@ -158,23 +162,24 @@ impl RuntimeHost {
         if entries.is_empty() {
             return Ok(());
         }
-        let abort_handles = entries
-            .iter()
-            .map(|entry| entry.task.abort_handle())
-            .collect::<Vec<_>>();
-        for entry in &entries {
+        let mut tasks = Vec::with_capacity(entries.len());
+        for entry in entries {
             let _ = entry.runtime.request_service_shutdown().await;
+            tasks.push(entry.task);
         }
-        if tokio::time::timeout(HOST_SHUTDOWN_GRACE, async move {
-            for entry in entries {
-                let _ = entry.task.await;
+        if tokio::time::timeout(HOST_SHUTDOWN_GRACE, async {
+            for task in &mut tasks {
+                let _ = task.await;
             }
         })
         .await
         .is_err()
         {
-            for handle in abort_handles {
-                handle.abort();
+            for task in &tasks {
+                task.abort();
+            }
+            for task in tasks {
+                let _ = task.await;
             }
         }
         Ok(())
@@ -1402,7 +1407,13 @@ impl RuntimeHostBridge {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::{
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+    };
 
     use async_trait::async_trait;
     use tempfile::tempdir;
@@ -1439,6 +1450,14 @@ mod tests {
 
     struct BlockingProvider {
         started: Arc<Notify>,
+    }
+
+    struct AbortObserved(Arc<AtomicBool>);
+
+    impl Drop for AbortObserved {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
     }
 
     #[async_trait]
@@ -2378,7 +2397,7 @@ mod tests {
 
         let storage = AppStorage::new(host.agent_data_dir(&agent_id)).unwrap();
         let persisted = storage.read_agent().unwrap().unwrap();
-        assert_ne!(persisted.status, AgentStatus::Stopped);
+        assert_eq!(persisted.status, AgentStatus::AwakeIdle);
         assert_eq!(persisted.current_run_id, None);
         let terminal = persisted
             .last_turn_terminal
@@ -2399,6 +2418,38 @@ mod tests {
             event.kind == "message_processing_interrupted"
                 && event.data.get("reason").and_then(Value::as_str) == Some("daemon_shutdown")
         }));
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_awaits_runtime_task_after_abort() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        let _runtime = host.default_runtime().await.unwrap();
+        let aborted = Arc::new(AtomicBool::new(false));
+        let replacement_task = {
+            let aborted = aborted.clone();
+            tokio::spawn(async move {
+                let _abort_observed = AbortObserved(aborted);
+                std::future::pending::<()>().await;
+            })
+        };
+
+        let old_task = {
+            let mut agents = host.inner.agents.write().await;
+            let entry = agents
+                .get_mut(&agent_id)
+                .expect("default runtime should be loaded");
+            std::mem::replace(&mut entry.task, replacement_task)
+        };
+        old_task.abort();
+        let _ = old_task.await;
+
+        host.shutdown().await.unwrap();
+
+        assert!(
+            aborted.load(Ordering::SeqCst),
+            "host shutdown should await the aborted runtime task"
+        );
     }
 
     #[tokio::test]
