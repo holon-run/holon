@@ -5,11 +5,63 @@ struct BlockingProvider {
     started: Arc<tokio::sync::Notify>,
 }
 
+struct OperatorInterjectionProbeProvider {
+    calls: Mutex<usize>,
+    requests: Mutex<Vec<ProviderTurnRequest>>,
+    first_tool_round: Arc<tokio::sync::Notify>,
+}
+
 #[async_trait]
 impl AgentProvider for BlockingProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         self.started.notify_waiters();
         std::future::pending::<Result<ProviderTurnResponse>>().await
+    }
+}
+
+#[async_trait]
+impl AgentProvider for OperatorInterjectionProbeProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let call = *calls;
+        drop(calls);
+        self.requests.lock().await.push(request);
+        if call == 1 {
+            self.first_tool_round.notify_waiters();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::ToolUse {
+                    id: "sleep".into(),
+                    name: "Sleep".into(),
+                    input: serde_json::json!({
+                        "reason": "wait for operator interjection",
+                        "duration_ms": 1,
+                    }),
+                }],
+                stop_reason: None,
+                input_tokens: 10,
+                output_tokens: 10,
+                cache_usage: None,
+                request_diagnostics: None,
+            })
+        } else {
+            Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text {
+                    text: "interjection handled".into(),
+                }],
+                stop_reason: None,
+                input_tokens: 10,
+                output_tokens: 10,
+                cache_usage: None,
+                request_diagnostics: None,
+            })
+        }
+    }
+
+    #[cfg(test)]
+    fn configured_model_refs(&self) -> Vec<String> {
+        vec!["stub".into()]
     }
 }
 
@@ -152,6 +204,124 @@ async fn interrupt_current_run_aborts_provider_turn_and_pauses_agent() {
         .await
         .unwrap();
     runner.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn interrupt_operator_prompt_is_interjected_before_next_provider_round() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let first_tool_round = Arc::new(tokio::sync::Notify::new());
+    let provider = Arc::new(OperatorInterjectionProbeProvider {
+        calls: Mutex::new(0),
+        requests: Mutex::new(Vec::new()),
+        first_tool_round: first_tool_round.clone(),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        ContextConfig {
+            prompt_budget_estimated_tokens: 100_000,
+            compaction_trigger_estimated_tokens: 80_000,
+            compaction_keep_recent_estimated_tokens: 40_000,
+            ..context_config()
+        },
+    )
+    .unwrap();
+
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "start slow command".into(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    let runner = tokio::spawn(runtime.clone().run());
+    first_tool_round.notified().await;
+
+    let interjection = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+        },
+        TrustLevel::TrustedOperator,
+        Priority::Interrupt,
+        MessageBody::Text {
+            text: "stop exploring and use the smaller fix".into(),
+        },
+    );
+    let interjection_id = interjection.id.clone();
+    runtime.enqueue(interjection).await.unwrap();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if provider.requests.lock().await.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let requests = provider.requests.lock().await;
+    let second_request = requests.get(1).expect("second provider request");
+    assert!(second_request.conversation.iter().any(|message| {
+        matches!(
+            message,
+            ConversationMessage::UserText(text)
+                if text.contains("[Operator message received while this turn was in progress]")
+                    && text.contains(&interjection_id)
+                    && text.contains("stop exploring and use the smaller fix")
+        )
+    }));
+    drop(requests);
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let state = runtime.agent_state().await.unwrap();
+            if state
+                .last_turn_terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let queue_entries = runtime.storage().latest_queue_entries().unwrap();
+    let interjected_entry = queue_entries
+        .iter()
+        .find(|entry| entry.message_id == interjection_id)
+        .expect("interjection queue entry");
+    assert_eq!(interjected_entry.status, QueueEntryStatus::Interjected);
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "operator_interjection_admitted"
+            && event
+                .data
+                .get("message_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(interjection_id.as_str())
+    }));
+
+    runner.abort();
 }
 
 #[tokio::test]

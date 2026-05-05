@@ -20,7 +20,8 @@ use crate::{
         ToolCall, ToolError, ToolSpec,
     },
     types::{
-        AuditEvent, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        AuditEvent, MessageBody, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
+        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel,
         TurnTerminalCheckpointRecord, TurnTerminalKind, TurnTerminalRecord, WorkItemPlanStatus,
         WorkItemRecord,
     },
@@ -52,6 +53,8 @@ const WORK_ITEM_STALE_REMINDER_MAX_TOKENS: usize = 512;
 const WORK_ITEM_STALE_REMINDER_PLAN_LINE_LIMIT: usize = 8;
 const WORK_ITEM_STALE_REMINDER_PLAN_CHAR_LIMIT: usize = 1_200;
 const WORK_ITEM_STALE_REMINDER_TODO_LIMIT: usize = 8;
+const OPERATOR_INTERJECTION_HEADER: &str =
+    "[Operator message received while this turn was in progress]";
 const COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT: &str = "\
 [Runtime-generated full progress checkpoint request]
 You are crossing a context compaction boundary. Before continuing, include a concise progress checkpoint for continuation in your next assistant message.
@@ -201,6 +204,41 @@ fn build_checkpoint_resume_round(
         tool_result_envelopes: Vec::new(),
         follow_up_user_texts: vec![continuation_text],
     }
+}
+
+fn append_follow_up_user_texts(round: &mut TurnRoundRecord, texts: Vec<String>) {
+    if texts.is_empty() {
+        return;
+    }
+    round.follow_up_user_texts.extend(texts);
+    round.estimated_tokens = build_round_estimated_tokens(
+        &round.assistant_blocks,
+        &round.tool_results,
+        &round.follow_up_user_texts,
+    );
+}
+
+fn message_body_text(body: &MessageBody) -> String {
+    match body {
+        MessageBody::Text { text } => text.clone(),
+        MessageBody::Json { value } => {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+        MessageBody::Brief { title, text, .. } => title
+            .as_deref()
+            .map(|title| format!("{title}\n\n{text}"))
+            .unwrap_or_else(|| text.clone()),
+    }
+}
+
+fn render_operator_interjection_text(message: &MessageEnvelope) -> String {
+    format!(
+        "{OPERATOR_INTERJECTION_HEADER}\nmessage_id={}\norigin=operator\ntrust=trusted_operator\nauthority_class=operator_instruction\ndelivery_surface={}\nadmission_context={}\n\n{}",
+        message.id,
+        serde_json::to_string(&message.delivery_surface).unwrap_or_else(|_| format!("{:?}", message.delivery_surface)),
+        serde_json::to_string(&message.admission_context).unwrap_or_else(|_| format!("{:?}", message.admission_context)),
+        message_body_text(&message.body).trim(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -591,7 +629,10 @@ fn build_round_recap_line(round: &TurnRoundRecord) -> String {
         parts.push(format!("results=[{}]", tool_results.join(" | ")));
     }
     if !round.follow_up_user_texts.is_empty() {
-        parts.push("continuation_prompt=max_output_tokens".into());
+        parts.push(format!(
+            "follow_up_user_texts={}",
+            round.follow_up_user_texts.len()
+        ));
     }
 
     let detail = if parts.is_empty() {
@@ -1350,6 +1391,74 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    async fn drain_operator_interjections(
+        &self,
+        agent_id: &str,
+        round: usize,
+        boundary: &str,
+    ) -> Result<Vec<String>> {
+        let mut messages = Vec::new();
+        {
+            let mut guard = self.inner.agent.lock().await;
+            while let Some(message) = guard.queue.pop_interrupt_operator_prompt() {
+                guard.state.pending = guard.queue.len();
+                messages.push(message);
+            }
+            if !messages.is_empty() {
+                self.inner.storage.write_agent(&guard.state)?;
+            }
+        }
+
+        let mut follow_up_texts = Vec::new();
+        for message in messages {
+            self.inner.storage.append_queue_entry(&QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Interjected,
+                created_at: message.created_at,
+                updated_at: chrono::Utc::now(),
+            })?;
+            self.record_incoming_transcript_entry(&message)?;
+            let text = render_operator_interjection_text(&message);
+            self.inner.storage.append_event(&AuditEvent::new(
+                "operator_interjection_admitted",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "round": round,
+                    "boundary": boundary,
+                    "message_id": message.id,
+                    "origin": message.origin,
+                    "trust": message.trust,
+                    "authority_class": message.authority_class,
+                    "priority": message.priority,
+                    "delivery_surface": message.delivery_surface,
+                    "admission_context": message.admission_context,
+                    "text_preview": truncate_preview(&message_body_text(&message.body), ROUND_TEXT_PREVIEW_LIMIT),
+                }),
+            ))?;
+            follow_up_texts.push(text);
+        }
+        Ok(follow_up_texts)
+    }
+
+    async fn append_operator_interjections_to_last_round(
+        &self,
+        agent_id: &str,
+        round: usize,
+        boundary: &str,
+        completed_rounds: &mut [TurnRoundRecord],
+    ) -> Result<bool> {
+        let interjections = self
+            .drain_operator_interjections(agent_id, round, boundary)
+            .await?;
+        let admitted = !interjections.is_empty();
+        if let Some(last_round) = completed_rounds.last_mut() {
+            append_follow_up_user_texts(last_round, interjections);
+        }
+        Ok(admitted)
+    }
+
     pub(super) async fn run_agent_loop(
         &self,
         agent_id: &str,
@@ -1405,6 +1514,15 @@ impl RuntimeHandle {
                         terminal_kind: TurnTerminalKind::Aborted,
                     });
                 }
+            }
+            if round > 1 {
+                self.append_operator_interjections_to_last_round(
+                    agent_id,
+                    round,
+                    "before_provider_continuation",
+                    &mut completed_rounds,
+                )
+                .await?;
             }
 
             let identity = self.agent_identity_view().await?;
@@ -1895,6 +2013,35 @@ impl RuntimeHandle {
                 ))?;
             }
 
+            if tool_calls.is_empty() {
+                let interjections = self
+                    .drain_operator_interjections(agent_id, round, "after_provider_round")
+                    .await?;
+                if !interjections.is_empty() {
+                    let mut round_record = TurnRoundRecord {
+                        round,
+                        estimated_tokens: build_round_estimated_tokens(
+                            &completed_round_assistant_blocks,
+                            &[],
+                            &[],
+                        ),
+                        assistant_blocks: completed_round_assistant_blocks,
+                        text_blocks,
+                        tool_calls: Vec::new(),
+                        tool_results: Vec::new(),
+                        tool_result_envelopes: Vec::new(),
+                        follow_up_user_texts: Vec::new(),
+                    };
+                    append_follow_up_user_texts(&mut round_record, interjections);
+                    if round_invalidates_checkpoint_anchor(&round_record) {
+                        checkpoint_state.anchor_generation =
+                            checkpoint_state.anchor_generation.saturating_add(1);
+                    }
+                    completed_rounds.push(round_record);
+                    continue;
+                }
+            }
+
             if tool_calls.is_empty() && is_max_output_stop_reason(stop_reason.as_deref()) {
                 if max_output_recovery_count < MAX_OUTPUT_RECOVERY_ATTEMPTS {
                     if !combined_text.is_empty() {
@@ -2203,19 +2350,23 @@ impl RuntimeHandle {
                         "results": tool_results.clone(),
                     }),
                 ))?;
+            let interjections = self
+                .drain_operator_interjections(agent_id, round, "after_tool_results")
+                .await?;
+            let has_operator_interjections = !interjections.is_empty();
             let round_record = TurnRoundRecord {
                 round,
                 estimated_tokens: build_round_estimated_tokens(
                     &completed_round_assistant_blocks,
                     &tool_results,
-                    &[],
+                    &interjections,
                 ),
                 assistant_blocks: completed_round_assistant_blocks,
                 text_blocks,
                 tool_calls: round_tool_calls,
                 tool_results,
                 tool_result_envelopes,
-                follow_up_user_texts: Vec::new(),
+                follow_up_user_texts: interjections,
             };
             if round_invalidates_checkpoint_anchor(&round_record) {
                 checkpoint_state.anchor_generation =
@@ -2230,7 +2381,7 @@ impl RuntimeHandle {
             }
             completed_rounds.push(round_record);
 
-            if only_sleep_tools {
+            if only_sleep_tools && !has_operator_interjections {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
                 self.persist_turn_terminal_record(
                     TurnTerminalKind::Completed,

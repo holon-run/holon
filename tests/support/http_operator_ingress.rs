@@ -23,7 +23,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel, WaitingIntentStatus,
+        OperatorDeliveryStatus, Priority, TodoItem, TodoItemState, TrustLevel, WaitingIntentStatus,
         WorkItemState,
     },
 };
@@ -97,6 +97,7 @@ pub async fn operator_ingress_records_remote_operator_provenance() -> Result<()>
         })
         .expect("remote operator message should be stored");
     assert_eq!(message.kind, MessageKind::OperatorPrompt);
+    assert_eq!(message.priority, Priority::Interrupt);
     assert_eq!(
         message.origin,
         MessageOrigin::Operator {
