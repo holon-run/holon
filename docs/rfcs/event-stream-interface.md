@@ -325,6 +325,45 @@ them into views such as:
 That classification belongs in the client projection layer, not in the stream
 transport.
 
+## Operator Visibility Projection
+
+The raw stream remains the canonical runtime event feed. First-party clients
+may derive an operator visibility projection from that feed, but the projection
+must not replace the raw event contract.
+
+`OperatorVisibility` is a projection-level classification, not a new runtime
+event family. It answers how prominently an event-derived item should appear
+to the operator and whether it is eligible for future operator delivery.
+
+Levels are ordered from most operator-facing to most diagnostic:
+
+1. `action_required`
+   - the agent is awaiting operator input and emits an operator-facing brief
+   - default external delivery candidate
+2. `work_done`
+   - a work item completes and emits an explicit completion result summary or
+     completion brief
+   - default external delivery candidate for background or long-running work
+3. `turn_result`
+   - other terminal user-facing brief result or failure output
+   - durable TUI conversation item; external delivery is policy-controlled
+4. `progress`
+   - in-turn assistant progress such as provider text previews
+   - live TUI activity only by default
+5. `trace`
+   - tool execution, tool results, and internal runtime diagnostics
+   - debug/timeline inspection only by default
+
+The classifier may inspect the event payload and current projection state. For
+example, a `brief_created` event can classify as `action_required`,
+`work_done`, or `turn_result` depending on the closure decision and work-item
+state associated with the brief.
+
+The stream should not precompute this classification on the server in the
+first phase. Keeping the stream raw lets the TUI, future web clients, and
+operator-delivery router share a classifier while still preserving the original
+audit events.
+
 ## Event Payload Strategy
 
 The stream payload should remain raw and explicit.
@@ -506,6 +545,20 @@ event feed:
 
 These projections have different retention and presentation rules.
 
+The TUI should expose an operator display level, defaulting to `3`. The display
+level means:
+
+- durable conversation shows projected items with
+  `operator_visibility <= display_level`
+- the Working/activity area summarizes current-turn projected items with
+  `operator_visibility > display_level`
+- when `display_level = 5`, the Working/activity area is hidden because the
+  visible timeline already includes progress and trace items
+
+The Working/activity area is therefore not a separate message class. It is a
+current-turn summary of lower-visibility items that the current display level
+chooses not to show as durable conversation.
+
 ### Durable conversation projection
 
 The main conversation surface should keep only operator-relevant items that
@@ -514,7 +567,8 @@ need to remain visible as part of the ongoing discussion.
 Typical durable items include:
 
 - operator messages
-- `brief_created`
+- `brief_created` classified as `action_required`, `work_done`, or
+  `turn_result`
 - key coordination/system cards such as:
   - work item creation or meaningful status changes
   - entering or leaving an explicit waiting state
@@ -532,15 +586,18 @@ the durable conversation history.
 
 Typical ephemeral items include:
 
-- `provider_round_completed`
-- `text_only_round_observed`
-- `tool_executed`
-- `tool_execution_failed`
+- `provider_round_completed` and `text_only_round_observed` classified as
+  `progress`
+- `tool_executed` and `tool_execution_failed` classified as `trace`
 - lightweight task/workspace/worktree progress that is only relevant while the
   turn is in flight
 
 These should be shown as transient activity or progress UI near the main
 conversation, not as a permanent secondary history view.
+
+Ephemeral activity must be scoped to the current turn, run, or message
+boundary. A newly submitted operator message should reset the activity summary
+instead of inheriting the previous turn's assistant preview or tool action.
 
 When a new durable `brief_created` arrives, or when the turn reaches a terminal
 state, the TUI may clear or collapse the corresponding ephemeral activity for

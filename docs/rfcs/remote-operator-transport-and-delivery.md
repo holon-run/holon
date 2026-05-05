@@ -380,6 +380,18 @@ implementation is small.
 The delivery router consumes user-facing runtime events and decides whether to
 deliver them to an external route.
 
+Delivery routing should use the same operator visibility classifier as
+first-party projections:
+
+- `action_required` and `work_done` are delivered by default when an external
+  route is available
+- `turn_result` may be delivered when the agent or operator policy opts in
+- `progress` and `trace` are not external-delivery candidates by default
+
+The operator visibility level is a routing input, not the delivery target. The
+router still resolves the concrete target through reply routes, waiting or
+work-item routes, and agent policy.
+
 Important trigger points include:
 
 - `approval_requested`
@@ -393,6 +405,11 @@ Important trigger points include:
 The delivery router should not treat provider delivery as part of model
 execution success. Delivery is a user-facing side effect with its own audit
 trail.
+
+External delivery policy must remain independent from the TUI display level.
+The TUI may expose `progress` or `trace` locally for debugging, but that does
+not make those events eligible for Telegram, Slack, Matrix, or AgentInbox
+operator delivery.
 
 ## Transport Delivery Callback
 

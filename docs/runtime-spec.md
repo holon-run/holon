@@ -403,6 +403,28 @@ The phase-1 TUI is expected to surface:
 - terminal alternate-screen behavior that can stay in normal scrollback mode
   when the operator environment makes full-screen TUI awkward
 
+The TUI should derive operator-visible presentation from raw runtime events
+through a shared operator visibility classifier. Levels are ordered from most
+operator-facing to most diagnostic:
+
+1. `action_required`: the agent is awaiting operator input and emits an
+   operator-facing brief
+2. `work_done`: a work item completes and emits an explicit completion summary
+   or completion brief
+3. `turn_result`: other terminal user-facing brief result or failure output
+4. `progress`: in-turn assistant progress such as provider text previews
+5. `trace`: tool execution, tool results, and internal runtime diagnostics
+
+The default TUI display level is `3`. The main conversation shows items with
+`operator_visibility <= display_level`. The Working/activity area summarizes
+current-turn items with `operator_visibility > display_level`. When the display
+level is `5`, the Working/activity area should be hidden because progress and
+trace items are already visible.
+
+Working/activity summaries are scoped to the current turn, run, or message
+boundary. A newly submitted operator message must not inherit the previous
+turn's assistant preview or tool action.
+
 The current interaction model is intentionally narrow:
 
 - one primary conversation surface
@@ -2314,6 +2336,17 @@ have different purposes.
   empty result instead of synthesizing a generic "completed" summary.
 - Failures should summarize why the active turn failed in operator-facing
   language while keeping structured diagnostics elsewhere.
+
+Brief records participate in operator visibility classification:
+
+- a brief emitted while the agent is awaiting operator input is
+  `action_required`
+- a brief tied to explicit work-item completion is `work_done`
+- other terminal result or failure briefs are `turn_result`
+
+In-turn assistant previews and tool traces are not briefs and should not be
+promoted to external operator delivery merely because a local TUI chooses to
+display them.
 
 ### Minimum Brief Shape
 
