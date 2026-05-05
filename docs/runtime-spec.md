@@ -1545,6 +1545,11 @@ The runtime persists a `DeliverySummaryRecord` when `CompleteWorkItem` receives
 an explicit `result_summary`. It is associated with the completed work item and
 is separate from raw terminal assistant text.
 
+Delivery summaries are explicit-only in this release line. The turn-end and
+work-item lifecycle do not synthesize fallback summaries from runtime evidence.
+If `CompleteWorkItem` omits `result_summary`, no `DeliverySummaryRecord` is
+created.
+
 `run_once.final_text` prefers the newest completed work item's
 `DeliverySummaryRecord.text` over the raw terminal assistant message. The raw
 terminal message remains available separately as `run_once.raw_final_text` for
