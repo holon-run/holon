@@ -3,9 +3,10 @@ use super::*;
 impl RuntimeHandle {
     pub(super) async fn process_message(
         &self,
-        message: MessageEnvelope,
+        mut message: MessageEnvelope,
         prior_closure: ClosureDecision,
     ) -> Result<()> {
+        message.normalize_admission_fields();
         self.inner.storage.append_event(&AuditEvent::new(
             "message_processing_started",
             to_json_value(&message),
@@ -175,6 +176,10 @@ impl RuntimeHandle {
                     "authority_class": message.authority_class,
                     "delivery_surface": message.delivery_surface,
                     "admission_context": message.admission_context,
+                    "trigger_kind": message.trigger_kind,
+                    "work_item_id": message.work_item_id.clone(),
+                    "task_id": message.task_id.clone(),
+                    "source_refs": message.source_refs.clone(),
                     "priority": message.priority,
                     "body": message.body,
                     "metadata": message.metadata,

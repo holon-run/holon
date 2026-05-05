@@ -321,6 +321,15 @@ fn message_header(message: &MessageEnvelope) -> String {
     if let Some(context) = message.admission_context {
         labels.push(admission_context_label(context).to_string());
     }
+    if let Some(trigger_kind) = message.trigger_kind {
+        labels.push(format!("trigger:{}", enum_label(&trigger_kind)));
+    }
+    if let Some(work_item_id) = message.work_item_id.as_deref() {
+        labels.push(format!("work_item:{work_item_id}"));
+    }
+    if let Some(task_id) = message.task_id.as_deref() {
+        labels.push(format!("task:{task_id}"));
+    }
     labels.push(authority_class_label(message.authority_class).to_string());
     labels.push(kind_label(message));
     format!("[{}]", labels.join("]["))
