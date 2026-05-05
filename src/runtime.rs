@@ -38,6 +38,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use uuid::Uuid;
 
+const OPERATOR_MESSAGE_SCAN_MIN: usize = 256;
+const OPERATOR_MESSAGE_SCAN_HEADROOM: usize = 16;
+
 #[cfg(test)]
 use crate::provider::{ConversationMessage, ProviderTurnRequest};
 use crate::{
@@ -769,29 +772,39 @@ impl RuntimeHandle {
         &self,
         limit: usize,
     ) -> Result<Vec<OperatorMessageRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let state = {
             let guard = self.inner.agent.lock().await;
             guard.state.clone()
         };
+        let scan_limit = limit
+            .saturating_mul(OPERATOR_MESSAGE_SCAN_HEADROOM)
+            .max(OPERATOR_MESSAGE_SCAN_MIN);
         let messages_by_id = self
             .inner
             .storage
-            .read_recent_messages(usize::MAX)?
+            .read_recent_messages(scan_limit)?
             .into_iter()
             .filter(|message| message.kind == MessageKind::OperatorPrompt)
             .map(|message| (message.id.clone(), message))
             .collect::<std::collections::BTreeMap<_, _>>();
 
-        let mut records = self
-            .inner
-            .storage
-            .latest_queue_entries()?
+        let mut latest_queue_entries = std::collections::BTreeMap::new();
+        for entry in self.inner.storage.read_recent_queue_entries(scan_limit)? {
+            latest_queue_entries.insert(entry.message_id.clone(), entry);
+        }
+
+        let mut records = latest_queue_entries
+            .values()
             .into_iter()
             .filter_map(|entry| {
                 let message = messages_by_id.get(&entry.message_id)?;
                 Some(OperatorMessageRecord {
-                    message_id: entry.message_id,
-                    agent_id: entry.agent_id,
+                    message_id: entry.message_id.clone(),
+                    agent_id: entry.agent_id.clone(),
                     status: operator_message_status(&entry.status, &entry.priority, &state),
                     created_at: entry.created_at,
                     updated_at: entry.updated_at,

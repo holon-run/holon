@@ -66,6 +66,7 @@ const AGENT_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const BRIEF_LIMIT: usize = 24;
 const TRANSCRIPT_LIMIT: usize = 40;
 const TASK_LIMIT: usize = 40;
+const OPTIMISTIC_OPERATOR_MESSAGE_LIMIT: usize = 64;
 
 pub async fn run_tui(config: AppConfig, no_alt_screen: bool) -> Result<()> {
     let client = LocalClient::new(config.clone())?;
@@ -417,6 +418,31 @@ impl TuiApp {
         *self.chat_text_cache.borrow_mut() = None;
     }
 
+    fn prune_optimistic_operator_messages(&mut self) {
+        let Some(projection) = self.projection.as_ref() else {
+            return;
+        };
+
+        let mut durable_message_ids = projection
+            .operator_messages
+            .iter()
+            .map(|message| message.message_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        durable_message_ids.extend(
+            self.transcript
+                .iter()
+                .filter_map(|entry| entry.related_message_id.clone()),
+        );
+
+        self.optimistic_operator_messages
+            .retain(|message| !durable_message_ids.contains(&message.message_id));
+        if self.optimistic_operator_messages.len() > OPTIMISTIC_OPERATOR_MESSAGE_LIMIT {
+            self.optimistic_operator_messages.drain(
+                0..self.optimistic_operator_messages.len() - OPTIMISTIC_OPERATOR_MESSAGE_LIMIT,
+            );
+        }
+    }
+
     fn clear_agent_view(&mut self) {
         self.clear_projection_view();
         self.agents.clear();
@@ -717,6 +743,7 @@ impl TuiApp {
             },
             other => other.clone(),
         };
+        self.prune_optimistic_operator_messages();
     }
 
     fn schedule_reconnect(&mut self, error: String) {
@@ -2345,6 +2372,58 @@ mod tests {
                 status: Some(OperatorMessageStatus::Processing),
                 ..
             } if body == "persisted operator text"
+        ));
+    }
+
+    #[test]
+    fn projection_operator_message_prunes_reconciled_optimistic_entry() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let ts = Utc::now();
+        app.optimistic_operator_messages = vec![OperatorMessageRecord {
+            message_id: "message-1".into(),
+            agent_id: "default".into(),
+            status: OperatorMessageStatus::Queued,
+            created_at: ts,
+            updated_at: ts,
+            body: MessageBody::Text {
+                text: "optimistic text".into(),
+            },
+            error: None,
+        }];
+
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.operator_messages = vec![OperatorMessageRecord {
+            message_id: "message-1".into(),
+            agent_id: "default".into(),
+            status: OperatorMessageStatus::Processing,
+            created_at: ts,
+            updated_at: ts,
+            body: MessageBody::Text {
+                text: "durable text".into(),
+            },
+            error: None,
+        }];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+        app.apply_projection_view();
+
+        assert!(app.optimistic_operator_messages.is_empty());
+        let items = collect_chat_items(&app);
+        let user_messages = items
+            .iter()
+            .filter(|item| matches!(item, ConversationCell::UserMessage { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(user_messages.len(), 1);
+        assert!(matches!(
+            user_messages[0],
+            ConversationCell::UserMessage {
+                body,
+                status: Some(OperatorMessageStatus::Processing),
+                ..
+            } if body == "durable text"
         ));
     }
 

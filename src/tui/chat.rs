@@ -201,13 +201,13 @@ fn operator_message_statuses(
     app: &TuiApp,
 ) -> std::collections::BTreeMap<String, OperatorMessageStatus> {
     let mut statuses = std::collections::BTreeMap::new();
+    for message in &app.optimistic_operator_messages {
+        statuses.insert(message.message_id.clone(), message.status.clone());
+    }
     if let Some(projection) = app.projection.as_ref() {
         for message in &projection.operator_messages {
             statuses.insert(message.message_id.clone(), message.status.clone());
         }
-    }
-    for message in &app.optimistic_operator_messages {
-        statuses.insert(message.message_id.clone(), message.status.clone());
     }
     statuses
 }
