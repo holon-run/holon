@@ -49,9 +49,7 @@ use crate::support::runtime_helpers::{
 };
 use crate::support::runtime_providers::{
     DelayedTextProvider, DelegatedBoundaryProvider, FileEditingProvider, LongShellProvider,
-    MaxOutputRecoveryProvider, MaxOutputThenCompactionProvider,
-    MultiPassCompactionRecoveryFlowProvider, NotifyThenAgentGetProvider, RecordingPromptProvider,
-    RepeatedCompactionProvider, RuntimeFailureProvider, ShellProvider,
+    NotifyThenAgentGetProvider, RecordingPromptProvider, RuntimeFailureProvider, ShellProvider,
     SleepOnlyCompletionAfterTextProvider, TerminalResultBriefProvider, ToolErrorProvider,
     ToolUsingProvider, TruncatedShellReinjectionProvider, UseWorkspaceProvider,
     VerboseRuntimeFailureProvider, WakeHintProvider, WorktreeCapturingProvider,

@@ -42,6 +42,10 @@ use tokio::sync::Mutex;
 
 use tokio::time::{sleep, Duration};
 
+use crate::support::runtime_compaction_providers::{
+    MaxOutputRecoveryProvider, MaxOutputThenCompactionProvider,
+    MultiPassCompactionRecoveryFlowProvider, RepeatedCompactionProvider,
+};
 use crate::support::runtime_helpers::{
     aggressive_compaction_config, git, init_git_repo, operator_transport_binding,
     parse_tool_result_payload, parse_tool_result_value, test_config, wait_for_worktree_presence,
@@ -49,9 +53,7 @@ use crate::support::runtime_helpers::{
 };
 use crate::support::runtime_providers::{
     DelayedTextProvider, DelegatedBoundaryProvider, FileEditingProvider, LongShellProvider,
-    MaxOutputRecoveryProvider, MaxOutputThenCompactionProvider,
-    MultiPassCompactionRecoveryFlowProvider, NotifyThenAgentGetProvider, RecordingPromptProvider,
-    RepeatedCompactionProvider, RuntimeFailureProvider, ShellProvider,
+    NotifyThenAgentGetProvider, RecordingPromptProvider, RuntimeFailureProvider, ShellProvider,
     SleepOnlyCompletionAfterTextProvider, TerminalResultBriefProvider, ToolErrorProvider,
     ToolUsingProvider, TruncatedShellReinjectionProvider, UseWorkspaceProvider,
     VerboseRuntimeFailureProvider, WakeHintProvider, WorktreeCapturingProvider,
