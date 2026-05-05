@@ -594,6 +594,9 @@ async fn enqueue_internal(
         ));
     }
     let priority = request.priority.unwrap_or(Priority::Normal);
+    if matches!(ingress, EnqueueIngress::Public) && priority == Priority::Interrupt {
+        return Err(forbidden("public enqueue may not use interrupt priority"));
+    }
     let origin = match ingress {
         EnqueueIngress::Public => match request.origin {
             Some(IncomingOrigin::Channel {
@@ -1724,7 +1727,7 @@ pub async fn control_prompt(
         agent_id,
         EnqueueRequest {
             kind: Some(MessageKind::OperatorPrompt),
-            priority: Some(Priority::Normal),
+            priority: Some(Priority::Interrupt),
             trust: Some(TrustLevel::TrustedOperator),
             body: Some(MessageBody::Text { text: request.text }),
             text: None,
@@ -1858,7 +1861,7 @@ pub async fn operator_ingress(
     let message = InboundRequest {
         agent_id: agent_id.clone(),
         kind: MessageKind::OperatorPrompt,
-        priority: Priority::Normal,
+        priority: Priority::Interrupt,
         origin: MessageOrigin::Operator {
             actor_id: Some(actor_id),
         },

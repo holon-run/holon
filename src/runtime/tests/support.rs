@@ -24,10 +24,11 @@ pub(crate) use crate::{
         AgentRegistryStatus, AgentState, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
         BriefRecord, CallbackDeliveryMode, ClosureDecision, ClosureOutcome, ContinuationClass,
         ContinuationTriggerKind, LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageKind,
-        MessageOrigin, PendingWakeHint, Priority, TaskKind, TaskOutputRetrievalStatus, TaskRecord,
-        TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TodoItem, TodoItemState,
-        TokenUsage, TrustLevel, TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus,
-        WaitingReason, WorkItemRecord, WorkItemState, WorkReactivationMode, WorkspaceEntry,
+        MessageOrigin, PendingWakeHint, Priority, QueueEntryStatus, TaskKind,
+        TaskOutputRetrievalStatus, TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord,
+        TimerStatus, TodoItem, TodoItemState, TokenUsage, TrustLevel, TurnTerminalKind,
+        TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemState,
+        WorkReactivationMode, WorkspaceEntry,
     },
 };
 

@@ -2510,6 +2510,7 @@ pub enum QueueEntryStatus {
     Queued,
     Dequeued,
     Processed,
+    Interjected,
     Interrupted,
     Dropped,
 }

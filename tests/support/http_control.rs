@@ -22,8 +22,8 @@ use holon::{
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
-        MessageDeliverySurface, MessageKind, MessageOrigin, TodoItem, TodoItemState, TrustLevel,
-        WorkItemState,
+        MessageDeliverySurface, MessageKind, MessageOrigin, Priority, TodoItem, TodoItemState,
+        TrustLevel, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -419,6 +419,7 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
                 && message.delivery_surface == Some(MessageDeliverySurface::HttpControlPrompt)
                 && message.admission_context == Some(AdmissionContext::LocalProcess)
                 && message.authority_class == AuthorityClass::OperatorInstruction
+                && message.priority == Priority::Interrupt
         }) && events.iter().any(|event| {
             event.kind == "message_admitted"
                 && event.data["delivery_surface"] == "http_control_prompt"
