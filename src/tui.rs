@@ -1222,6 +1222,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn paste_updates_model_picker_filter() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.overlay = OverlayState::ModelPicker {
+            filter: "gpt".into(),
+            selected: 0,
+        };
+
+        app.handle_paste("-5.3\n").await.unwrap();
+
+        assert_eq!(
+            app.overlay,
+            OverlayState::ModelPicker {
+                filter: "gpt-5.3".into(),
+                selected: 0,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn paste_into_debug_prompt_stays_single_line() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.overlay = OverlayState::DebugPromptInput {
+            composer: ComposerState::from("explain "),
+        };
+
+        app.handle_paste("first\nsecond").await.unwrap();
+
+        assert_eq!(
+            app.overlay,
+            OverlayState::DebugPromptInput {
+                composer: ComposerState::from("explain first second"),
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn enter_submits_instead_of_inserting_new_line() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(

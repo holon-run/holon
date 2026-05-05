@@ -445,7 +445,7 @@ fn prompt_pane_scroll(area: Rect, buffer: &str, cursor: usize, hint_rows: u16) -
     let input_width = area.width.saturating_sub(2).max(1);
     let (_, cursor_row) = prompt_cursor_visual_position(buffer, cursor, input_width, hint_rows);
     let viewport_rows = area.height.saturating_sub(2).max(1);
-    cursor_row.saturating_sub(viewport_rows.saturating_sub(1))
+    cursor_row.saturating_sub(viewport_rows)
 }
 
 fn prompt_cursor_position(
@@ -1205,6 +1205,12 @@ mod tests {
         assert!(scroll > 0);
         let (_, y) = prompt_cursor_position(area, buffer, buffer.len(), 0, scroll);
         assert!(y <= area.y + area.height.saturating_sub(2));
+    }
+
+    #[test]
+    fn prompt_pane_scroll_keeps_single_line_visible_in_short_pane() {
+        let area = Rect::new(10, 5, 20, 3);
+        assert_eq!(prompt_pane_scroll(area, "hello", "hello".len(), 0), 0);
     }
 
     #[test]
