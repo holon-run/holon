@@ -825,6 +825,14 @@ pub struct MessageEnvelope {
     pub trust: TrustLevel,
     pub authority_class: AuthorityClass,
     pub priority: Priority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_kind: Option<ContinuationTriggerKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_refs: BTreeMap<String, String>,
     pub body: MessageBody,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_surface: Option<MessageDeliverySurface>,
@@ -853,6 +861,10 @@ impl MessageEnvelope {
             authority_class: AuthorityClass::from_trust(&trust),
             trust,
             priority,
+            trigger_kind: None,
+            work_item_id: None,
+            task_id: None,
+            source_refs: BTreeMap::new(),
             body,
             delivery_surface: None,
             admission_context: None,
@@ -871,6 +883,100 @@ impl MessageEnvelope {
         self.admission_context = Some(admission_context);
         self
     }
+
+    pub fn normalize_admission_fields(&mut self) {
+        if self.trigger_kind.is_none() {
+            self.trigger_kind = Some(admission_trigger_kind_for_message_kind(&self.kind));
+        }
+
+        if self.task_id.is_none() {
+            if let MessageOrigin::Task { task_id } = &self.origin {
+                self.task_id = Some(task_id.clone());
+            }
+        }
+
+        let metadata_binding_trusted = self.metadata_binding_fields_are_trusted();
+        if let Some(metadata) = self.metadata.as_ref() {
+            if metadata_binding_trusted && self.work_item_id.is_none() {
+                self.work_item_id = metadata_string(metadata, "work_item_id")
+                    .or_else(|| metadata_string(metadata, "child_work_item_id"));
+            }
+            if metadata_binding_trusted && self.task_id.is_none() {
+                self.task_id = metadata_string(metadata, "task_id");
+            }
+            collect_source_ref(metadata, &mut self.source_refs, "queued_event_id");
+            collect_source_ref(metadata, &mut self.source_refs, "task_result_id");
+            collect_source_ref(metadata, &mut self.source_refs, "external_trigger_id");
+            collect_source_ref(metadata, &mut self.source_refs, "waiting_intent_id");
+            collect_source_ref(metadata, &mut self.source_refs, "callback_delivery_id");
+            collect_source_ref(metadata, &mut self.source_refs, "timer_id");
+            if let Some(wake_hint) = metadata.get("wake_hint") {
+                collect_source_ref(wake_hint, &mut self.source_refs, "external_trigger_id");
+                collect_source_ref(wake_hint, &mut self.source_refs, "waiting_intent_id");
+                collect_source_ref(wake_hint, &mut self.source_refs, "resource");
+            }
+        }
+
+        match &self.origin {
+            MessageOrigin::Callback { descriptor_id, .. } => {
+                self.source_refs
+                    .entry("external_trigger_id".into())
+                    .or_insert_with(|| descriptor_id.clone());
+            }
+            MessageOrigin::Timer { timer_id } => {
+                self.source_refs
+                    .entry("timer_id".into())
+                    .or_insert_with(|| timer_id.clone());
+            }
+            MessageOrigin::Task { task_id } => {
+                self.source_refs
+                    .entry("task_id".into())
+                    .or_insert_with(|| task_id.clone());
+            }
+            _ => {}
+        }
+    }
+
+    fn metadata_binding_fields_are_trusted(&self) -> bool {
+        self.trust == TrustLevel::TrustedSystem
+            && matches!(self.admission_context, Some(AdmissionContext::RuntimeOwned))
+            && matches!(
+                self.delivery_surface,
+                Some(MessageDeliverySurface::RuntimeSystem | MessageDeliverySurface::TaskRejoin)
+            )
+    }
+}
+
+pub fn admission_trigger_kind_for_message_kind(kind: &MessageKind) -> ContinuationTriggerKind {
+    match kind {
+        MessageKind::OperatorPrompt => ContinuationTriggerKind::OperatorInput,
+        MessageKind::ChannelEvent | MessageKind::WebhookEvent | MessageKind::CallbackEvent => {
+            ContinuationTriggerKind::ExternalEvent
+        }
+        MessageKind::TimerTick => ContinuationTriggerKind::TimerFire,
+        MessageKind::SystemTick => ContinuationTriggerKind::SystemTick,
+        MessageKind::TaskResult | MessageKind::TaskStatus => ContinuationTriggerKind::TaskResult,
+        MessageKind::InternalFollowup => ContinuationTriggerKind::InternalFollowup,
+        MessageKind::Control | MessageKind::BriefAck | MessageKind::BriefResult => {
+            ContinuationTriggerKind::SystemTick
+        }
+    }
+}
+
+fn metadata_string(metadata: &Value, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn collect_source_ref(metadata: &Value, refs: &mut BTreeMap<String, String>, key: &str) {
+    let Some(value) = metadata_string(metadata, key) else {
+        return;
+    };
+    refs.entry(key.to_string()).or_insert(value);
 }
 
 impl<'de> Deserialize<'de> for MessageEnvelope {
@@ -890,6 +996,14 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             #[serde(default)]
             authority_class: Option<AuthorityClass>,
             priority: Priority,
+            #[serde(default)]
+            trigger_kind: Option<ContinuationTriggerKind>,
+            #[serde(default)]
+            work_item_id: Option<String>,
+            #[serde(default)]
+            task_id: Option<String>,
+            #[serde(default)]
+            source_refs: BTreeMap<String, String>,
             body: MessageBody,
             #[serde(default)]
             delivery_surface: Option<MessageDeliverySurface>,
@@ -913,6 +1027,10 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             trust: compat.trust,
             authority_class,
             priority: compat.priority,
+            trigger_kind: compat.trigger_kind,
+            work_item_id: compat.work_item_id,
+            task_id: compat.task_id,
+            source_refs: compat.source_refs,
             body: compat.body,
             delivery_surface: compat.delivery_surface,
             admission_context: compat.admission_context,

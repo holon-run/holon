@@ -3,20 +3,15 @@ use super::*;
 impl RuntimeHandle {
     pub(super) async fn process_message(
         &self,
-        message: MessageEnvelope,
+        mut message: MessageEnvelope,
         prior_closure: ClosureDecision,
     ) -> Result<()> {
+        message.normalize_admission_fields();
         self.inner.storage.append_event(&AuditEvent::new(
             "message_processing_started",
             to_json_value(&message),
         ))?;
-        if let Some(work_item_id) = message
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("work_item_id"))
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.trim().is_empty())
-        {
+        if let Some(work_item_id) = message.work_item_id.as_deref() {
             let mut guard = self.inner.agent.lock().await;
             guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
         }
@@ -175,6 +170,10 @@ impl RuntimeHandle {
                     "authority_class": message.authority_class,
                     "delivery_surface": message.delivery_surface,
                     "admission_context": message.admission_context,
+                    "trigger_kind": message.trigger_kind,
+                    "work_item_id": message.work_item_id.clone(),
+                    "task_id": message.task_id.clone(),
+                    "source_refs": message.source_refs.clone(),
                     "priority": message.priority,
                     "body": message.body,
                     "metadata": message.metadata,

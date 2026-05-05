@@ -746,7 +746,8 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub async fn enqueue(&self, message: MessageEnvelope) -> Result<MessageEnvelope> {
+    pub async fn enqueue(&self, mut message: MessageEnvelope) -> Result<MessageEnvelope> {
+        message.normalize_admission_fields();
         self.inner.storage.append_message(&message)?;
         self.inner.storage.append_queue_entry(&QueueEntryRecord {
             message_id: message.id.clone(),
@@ -783,6 +784,10 @@ impl RuntimeHandle {
                 "authority_class": message.authority_class,
                 "delivery_surface": message.delivery_surface,
                 "admission_context": message.admission_context,
+                "trigger_kind": message.trigger_kind,
+                "work_item_id": message.work_item_id.clone(),
+                "task_id": message.task_id.clone(),
+                "source_refs": message.source_refs.clone(),
                 "correlation_id": message.correlation_id.clone(),
                 "causation_id": message.causation_id.clone(),
             }),

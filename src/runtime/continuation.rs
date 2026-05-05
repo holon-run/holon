@@ -1,7 +1,7 @@
 use crate::types::{
-    ClosureDecision, ClosureOutcome, ContinuationClass, ContinuationResolution,
-    ContinuationTriggerKind, MessageBody, MessageEnvelope, MessageKind, TaskRecord, TaskStatus,
-    WaitingReason,
+    admission_trigger_kind_for_message_kind, ClosureDecision, ClosureOutcome, ContinuationClass,
+    ContinuationResolution, ContinuationTriggerKind, MessageBody, MessageEnvelope, MessageKind,
+    TaskRecord, TaskStatus, WaitingReason,
 };
 
 #[derive(Debug, Clone)]
@@ -20,7 +20,7 @@ impl ContinuationTrigger {
     ) -> Option<Self> {
         match message.kind {
             MessageKind::OperatorPrompt => Some(Self {
-                kind: ContinuationTriggerKind::OperatorInput,
+                kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
                 task_blocking: false,
@@ -28,7 +28,7 @@ impl ContinuationTrigger {
             }),
             MessageKind::WebhookEvent | MessageKind::CallbackEvent | MessageKind::ChannelEvent => {
                 Some(Self {
-                    kind: ContinuationTriggerKind::ExternalEvent,
+                    kind: admission_trigger_kind_for_message_kind(&message.kind),
                     contentful: body_is_contentful(&message.body),
                     task_terminal: false,
                     task_blocking: false,
@@ -36,21 +36,21 @@ impl ContinuationTrigger {
                 })
             }
             MessageKind::TimerTick => Some(Self {
-                kind: ContinuationTriggerKind::TimerFire,
+                kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
                 task_blocking: false,
                 wake_hint_source: None,
             }),
             MessageKind::InternalFollowup => Some(Self {
-                kind: ContinuationTriggerKind::InternalFollowup,
+                kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
                 task_blocking: false,
                 wake_hint_source: None,
             }),
             MessageKind::SystemTick => Some(Self {
-                kind: ContinuationTriggerKind::SystemTick,
+                kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: system_tick_is_contentful(message),
                 task_terminal: false,
                 task_blocking: false,
@@ -63,7 +63,7 @@ impl ContinuationTrigger {
                     .map(ToString::to_string),
             }),
             MessageKind::TaskResult => Some(Self {
-                kind: ContinuationTriggerKind::TaskResult,
+                kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
                 task_terminal: task
                     .map(|task| {
