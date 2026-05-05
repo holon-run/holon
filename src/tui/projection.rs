@@ -53,6 +53,32 @@ pub(crate) enum ProjectionEventLane {
     Debug,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum OperatorVisibility {
+    ActionRequired = 1,
+    WorkDone = 2,
+    TurnResult = 3,
+    Progress = 4,
+    Trace = 5,
+}
+
+impl OperatorVisibility {
+    pub(crate) const DEFAULT_DISPLAY_LEVEL: Self = Self::TurnResult;
+
+    pub(crate) fn from_display_level(level: u8) -> Option<Self> {
+        match level {
+            3 => Some(Self::TurnResult),
+            4 => Some(Self::Progress),
+            5 => Some(Self::Trace),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn display_level(self) -> u8 {
+        self as u8
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProjectionEventRecord {
     pub(crate) id: String,
@@ -405,7 +431,7 @@ impl TuiProjection {
 
     pub(crate) fn recent_activity_events(&self) -> Vec<&ProjectionEventRecord> {
         let mut events = Vec::new();
-        for event in self.event_log.iter().rev() {
+        for event in self.current_turn_events_rev() {
             if is_activity_reset_kind(&event.kind) {
                 break;
             }
@@ -418,6 +444,88 @@ impl TuiProjection {
         }
         events.reverse();
         events
+    }
+
+    pub(crate) fn visible_events(
+        &self,
+        display_level: OperatorVisibility,
+    ) -> impl Iterator<Item = &ProjectionEventRecord> {
+        self.event_log
+            .iter()
+            .filter(move |event| self.operator_visibility(event) <= display_level)
+    }
+
+    pub(crate) fn hidden_current_turn_events(
+        &self,
+        display_level: OperatorVisibility,
+    ) -> Vec<&ProjectionEventRecord> {
+        let mut events = self
+            .current_turn_events_rev()
+            .filter(|event| self.operator_visibility(event) > display_level)
+            .take(8)
+            .collect::<Vec<_>>();
+        events.reverse();
+        events
+    }
+
+    pub(crate) fn operator_visibility(&self, event: &ProjectionEventRecord) -> OperatorVisibility {
+        match event.kind.as_str() {
+            "operator_notification_requested" => OperatorVisibility::ActionRequired,
+            "brief_created" => self.brief_visibility(event),
+            "work_item_written" if work_item_event_completed(event) => OperatorVisibility::WorkDone,
+            "runtime_error" => OperatorVisibility::TurnResult,
+            "provider_round_completed" | "text_only_round_observed" => OperatorVisibility::Progress,
+            "tool_executed"
+            | "tool_execution_failed"
+            | "max_output_tokens_recovery"
+            | "turn_local_checkpoint_recorded" => OperatorVisibility::Trace,
+            _ if is_ephemeral_activity_kind(&event.kind) => OperatorVisibility::Trace,
+            _ if is_durable_conversation_kind(&event.kind) => OperatorVisibility::TurnResult,
+            _ => OperatorVisibility::Trace,
+        }
+    }
+
+    fn brief_visibility(&self, event: &ProjectionEventRecord) -> OperatorVisibility {
+        if self.agent.closure.waiting_reason
+            == Some(crate::types::WaitingReason::AwaitingOperatorInput)
+        {
+            return OperatorVisibility::ActionRequired;
+        }
+        let Some(brief) = decode_payload::<BriefRecord>(&event.payload) else {
+            return OperatorVisibility::TurnResult;
+        };
+        if brief
+            .work_item_id
+            .as_deref()
+            .and_then(|work_item_id| self.work_items.iter().find(|item| item.id == work_item_id))
+            .is_some_and(|item| item.state == WorkItemState::Completed)
+        {
+            OperatorVisibility::WorkDone
+        } else {
+            OperatorVisibility::TurnResult
+        }
+    }
+
+    fn current_turn_events_rev(&self) -> impl Iterator<Item = &ProjectionEventRecord> {
+        let active_turn = self.agent.agent.turn_index;
+        let active_run = self.agent.agent.current_run_id.as_deref();
+        self.event_log.iter().rev().take_while(move |event| {
+            if is_activity_reset_kind(&event.kind) {
+                return false;
+            }
+            let event_turn = event.payload.get("turn_index").and_then(Value::as_u64);
+            let event_run = event.payload.get("run_id").and_then(Value::as_str);
+            if let Some(event_run) = event_run {
+                return Some(event_run) == active_run;
+            }
+            if let Some(event_turn) = event_turn {
+                return event_turn == active_turn;
+            }
+            !matches!(
+                event.kind.as_str(),
+                "turn_started" | "message_processing_started" | "message_enqueued"
+            )
+        })
     }
 
     pub(crate) fn recent_log_events(&self, limit: usize) -> Vec<&ProjectionEventRecord> {
@@ -703,6 +811,15 @@ fn work_item_rank(item: &WorkItemRecord) -> u8 {
     }
 }
 
+fn work_item_event_completed(event: &ProjectionEventRecord) -> bool {
+    event
+        .payload
+        .get("record")
+        .cloned()
+        .and_then(decode_value::<WorkItemRecord>)
+        .is_some_and(|record| record.state == WorkItemState::Completed)
+}
+
 fn operator_message_from_enqueued(message: &MessageEnvelope) -> OperatorMessageRecord {
     OperatorMessageRecord {
         message_id: message.id.clone(),
@@ -719,6 +836,7 @@ pub(crate) fn is_durable_conversation_kind(kind: &str) -> bool {
     matches!(
         kind,
         "message_enqueued"
+            | "turn_started"
             | "operator_interjection_admitted"
             | "brief_created"
             | "runtime_error"
@@ -742,7 +860,9 @@ pub(crate) fn is_durable_conversation_kind(kind: &str) -> bool {
 pub(crate) fn is_ephemeral_activity_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "tool_executed"
+        "provider_round_completed"
+            | "text_only_round_observed"
+            | "tool_executed"
             | "tool_execution_failed"
             | "skill_activated"
             | "system_tick_emitted"
@@ -757,6 +877,7 @@ fn is_loggable_event_kind(kind: &str) -> bool {
     matches!(
         kind,
         "message_enqueued"
+            | "turn_started"
             | "provider_round_completed"
             | "text_only_round_observed"
             | "tool_executed"
@@ -780,7 +901,15 @@ fn is_loggable_event_kind(kind: &str) -> bool {
 }
 
 fn is_activity_reset_kind(kind: &str) -> bool {
-    matches!(kind, "brief_created" | "turn_terminal" | "runtime_error")
+    matches!(
+        kind,
+        "turn_started"
+            | "message_processing_started"
+            | "operator_interjection_admitted"
+            | "brief_created"
+            | "turn_terminal"
+            | "runtime_error"
+    )
 }
 
 fn classify_event_lane(kind: &str) -> ProjectionEventLane {
@@ -802,6 +931,13 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
                 crate::types::MessageBody::Brief { text, .. } => trim_summary(&text),
             })
             .unwrap_or_else(|| event.data.event_type.clone()),
+        "turn_started" => event
+            .data
+            .payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .map(|message_id| format!("turn started for {message_id}"))
+            .unwrap_or_else(|| "turn started".into()),
         "operator_interjection_admitted" => event
             .data
             .payload
@@ -1064,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn projection_logs_provider_rounds_without_recent_activity() {
+    fn projection_logs_provider_rounds_as_progress_activity() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
 
         projection.apply_event(
@@ -1075,10 +1211,12 @@ mod tests {
             &test_log_writer(),
         );
 
-        assert!(projection.recent_activity_events().is_empty());
+        let activity = projection.recent_activity_events();
+        assert_eq!(activity.len(), 1);
+        assert_eq!(activity[0].kind, "provider_round_completed");
         assert_eq!(
             projection.event_log().last().map(|event| event.lane),
-            Some(ProjectionEventLane::State)
+            Some(ProjectionEventLane::Debug)
         );
         assert_eq!(
             projection
@@ -1223,11 +1361,9 @@ mod tests {
         );
 
         let activity = projection.recent_activity_events();
-        assert_eq!(activity.len(), 1);
-        assert_eq!(activity[0].kind, "tool_executed");
-        assert!(!activity.iter().any(|event| {
-            event.summary.contains("partial") || event.payload.get("text_preview").is_some()
-        }));
+        assert_eq!(activity.len(), 2);
+        assert_eq!(activity[0].kind, "provider_round_completed");
+        assert_eq!(activity[1].kind, "tool_executed");
 
         projection.apply_event(
             sample_event(

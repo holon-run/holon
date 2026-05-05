@@ -1882,11 +1882,17 @@ impl RuntimeHandle {
                 }
             }
             let token_usage = TokenUsage::new(response.input_tokens, response.output_tokens);
+            let (turn_index, run_id) = {
+                let guard = self.inner.agent.lock().await;
+                (guard.state.turn_index, guard.state.current_run_id.clone())
+            };
 
             self.inner.storage.append_event(&AuditEvent::new(
                 "provider_round_completed",
                 serde_json::json!({
                     "agent_id": agent_id,
+                    "turn_index": turn_index,
+                    "run_id": run_id,
                     "round": round,
                     "stop_reason": stop_reason,
                     "input_tokens": response.input_tokens,
@@ -2020,6 +2026,8 @@ impl RuntimeHandle {
                     "text_only_round_observed",
                     serde_json::json!({
                         "agent_id": agent_id,
+                        "turn_index": turn_index,
+                        "run_id": run_id,
                         "round": round,
                         "stop_reason": stop_reason,
                         "has_text": !combined_text.is_empty(),
@@ -2218,11 +2226,17 @@ impl RuntimeHandle {
                     )
                     .with_retryable(false);
                     let message = error.render();
+                    let (turn_index, run_id) = {
+                        let guard = self.inner.agent.lock().await;
+                        (guard.state.turn_index, guard.state.current_run_id.clone())
+                    };
                     self.inner.storage.append_event(&AuditEvent::new(
                         "tool_execution_failed",
                         serde_json::json!({
                             "tool_call_id": tool_call_id,
                             "tool_name": tool_name,
+                            "turn_index": turn_index,
+                            "run_id": run_id,
                             "exec_command_cmd": command_preview_field(&call),
                             "exec_command_cost": command_cost_field(
                                 &call,
@@ -2306,10 +2320,11 @@ impl RuntimeHandle {
                         let result_content =
                             crate::tool::tools::render_tool_result_for_model(&result)?;
                         let duration_ms = record.duration_ms;
-                        let (turn_index, work_item_id) = {
+                        let (turn_index, run_id, work_item_id) = {
                             let guard = self.inner.agent.lock().await;
                             (
                                 guard.state.turn_index,
+                                guard.state.current_run_id.clone(),
                                 guard.state.current_turn_work_item_id.clone(),
                             )
                         };
@@ -2333,6 +2348,8 @@ impl RuntimeHandle {
                             serde_json::json!({
                                 "tool_call_id": tool_call_id,
                                 "tool_name": tool_name,
+                                "turn_index": turn_index,
+                                "run_id": run_id,
                                 "exec_command_cmd": command_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
                                     &call,
@@ -2368,11 +2385,17 @@ impl RuntimeHandle {
                         }
                         let error = ToolError::from_anyhow(&err);
                         let message = error.render();
+                        let (turn_index, run_id) = {
+                            let guard = self.inner.agent.lock().await;
+                            (guard.state.turn_index, guard.state.current_run_id.clone())
+                        };
                         self.inner.storage.append_event(&AuditEvent::new(
                             "tool_execution_failed",
                             serde_json::json!({
                                 "tool_call_id": tool_call_id,
                                 "tool_name": tool_name,
+                                "turn_index": turn_index,
+                                "run_id": run_id,
                                 "exec_command_cmd": command_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
                                     &call,

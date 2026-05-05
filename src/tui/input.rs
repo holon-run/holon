@@ -11,6 +11,7 @@ enum SlashCommand {
     Refresh,
     ClearStatus,
     DebugPrompt,
+    Display,
     Interrupt,
     Agent,
     Skills,
@@ -39,7 +40,7 @@ pub(super) struct SlashCommandSpec {
     command: SlashCommand,
 }
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 14] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 15] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -102,6 +103,13 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 14] = [
         usage: "/debug-prompt",
         arg_rule: SlashArgRule::None,
         command: SlashCommand::DebugPrompt,
+    },
+    SlashCommandSpec {
+        name: "/display",
+        description: "set chat display level",
+        usage: "/display <3|4|5>",
+        arg_rule: SlashArgRule::ExactlyOne,
+        command: SlashCommand::Display,
     },
     SlashCommandSpec {
         name: "/interrupt",
@@ -461,6 +469,20 @@ impl TuiApp {
                     composer: ComposerState::new(),
                 };
                 self.status_line = "Opened debug prompt dialog".into();
+            }
+            SlashCommand::Display => {
+                let level = args
+                    .into_iter()
+                    .next()
+                    .expect("slash command /display requires one argument")
+                    .parse::<u8>()
+                    .map_err(|_| anyhow!("/display expects 3, 4, or 5"))?;
+                let display_level = OperatorVisibility::from_display_level(level)
+                    .ok_or_else(|| anyhow!("/display expects 3, 4, or 5"))?;
+                self.display_level = display_level;
+                self.chat_text_cache.borrow_mut().take();
+                self.overlay = OverlayState::None;
+                self.status_line = format!("Display level set to {level}");
             }
             SlashCommand::Interrupt => {
                 let agent_id = match self.selected_agent_id() {
@@ -1305,6 +1327,13 @@ mod tests {
                 vec!["default".into()]
             ))
         );
+        assert_eq!(
+            parse_composer_submission("/display 4").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::Display,
+                vec!["4".into()]
+            ))
+        );
     }
 
     #[test]
@@ -1322,6 +1351,12 @@ mod tests {
     #[test]
     fn slash_commands_require_arguments_for_agent() {
         let err = parse_composer_submission("/agent").unwrap_err();
+        assert!(err.to_string().contains("requires one argument"));
+    }
+
+    #[test]
+    fn slash_display_requires_one_argument() {
+        let err = parse_composer_submission("/display").unwrap_err();
         assert!(err.to_string().contains("requires one argument"));
     }
 

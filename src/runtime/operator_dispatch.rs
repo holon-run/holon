@@ -10,6 +10,7 @@ impl RuntimeHandle {
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
         self.begin_interactive_turn(
+            Some(message),
             operator_binding_id.as_deref(),
             operator_reply_route_id.as_deref(),
         )
