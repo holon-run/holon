@@ -32,7 +32,12 @@ jobs:
           curl -fsSL \
             "https://github.com/holon-run/holon/releases/download/${RELEASE_VERSION}/checksums.txt" \
             -o dist/checksums.txt
-          (cd dist && shasum -a 256 -c checksums.txt --ignore-missing)
+          (
+            cd dist
+            grep -E '[[:space:]]([.]/)?holon-linux-amd64[.]tar[.]gz$' checksums.txt > linux-amd64.checksums
+            test "$(wc -l < linux-amd64.checksums | tr -d ' ')" = "1"
+            shasum -a 256 -c linux-amd64.checksums
+          )
           tar -xzf dist/holon-linux-amd64.tar.gz -C smoke
 
       - name: Run release asset
