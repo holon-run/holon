@@ -325,7 +325,9 @@ impl TuiProjection {
             | "text_only_round_observed"
             | "max_output_tokens_recovery"
             | "runtime_error" => {
-                self.mark_stale([ProjectionSlice::TranscriptTail]);
+                // These events already carry enough payload for the active
+                // Conversation preview and event overlays. Avoid forcing a
+                // full /state refresh during normal turn progress.
             }
             "waiting_intent_created" | "waiting_intent_cancelled" => {
                 self.mark_stale([
@@ -356,12 +358,13 @@ impl TuiProjection {
                         event.data.ts,
                         None,
                     );
+                } else {
+                    self.mark_stale([
+                        ProjectionSlice::Agent,
+                        ProjectionSlice::Session,
+                        ProjectionSlice::TranscriptTail,
+                    ]);
                 }
-                self.mark_stale([
-                    ProjectionSlice::Agent,
-                    ProjectionSlice::Session,
-                    ProjectionSlice::TranscriptTail,
-                ]);
             }
             "operator_interjection_admitted" => {
                 if let Some(message_id) = read_string(&event.data.payload, "message_id") {
@@ -371,16 +374,15 @@ impl TuiProjection {
                         event.data.ts,
                         None,
                     );
+                } else {
+                    self.mark_stale([
+                        ProjectionSlice::Agent,
+                        ProjectionSlice::Session,
+                        ProjectionSlice::TranscriptTail,
+                    ]);
                 }
-                self.mark_stale([
-                    ProjectionSlice::Agent,
-                    ProjectionSlice::Session,
-                    ProjectionSlice::TranscriptTail,
-                ]);
             }
-            "message_admitted" | "control_applied" => {
-                self.mark_stale([ProjectionSlice::Agent, ProjectionSlice::Session]);
-            }
+            "message_admitted" | "control_applied" => {}
             _ => {}
         }
     }
@@ -1085,6 +1087,58 @@ mod tests {
                 .map(|event| event.summary.as_str()),
             Some("provider round completed")
         );
+    }
+
+    #[test]
+    fn transient_activity_events_do_not_force_state_refresh() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+
+        for (kind, payload) in [
+            (
+                "provider_round_completed",
+                json!({ "round": 1, "text_preview": "working" }),
+            ),
+            (
+                "text_only_round_observed",
+                json!({ "round": 2, "text_preview": "still working" }),
+            ),
+            ("max_output_tokens_recovery", json!({ "round": 3 })),
+            ("runtime_error", json!({ "message": "visible error" })),
+            ("message_admitted", json!({ "message_id": "message-1" })),
+            ("control_applied", json!({ "control": "interrupt" })),
+        ] {
+            projection.apply_event(sample_event(kind, payload), &test_log_writer());
+        }
+
+        assert!(projection.stale_slices.is_empty());
+    }
+
+    #[test]
+    fn message_processing_event_only_marks_stale_when_payload_is_incomplete() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let message = sample_message();
+
+        projection.apply_event(
+            sample_event(
+                "message_processing_started",
+                serde_json::to_value(&message).unwrap(),
+            ),
+            &test_log_writer(),
+        );
+
+        assert!(projection.stale_slices.is_empty());
+
+        projection.apply_event(
+            sample_event(
+                "message_processing_started",
+                json!({ "message_id": message.id }),
+            ),
+            &test_log_writer(),
+        );
+
+        assert!(projection
+            .stale_slices
+            .contains(&ProjectionSlice::TranscriptTail));
     }
 
     #[test]
