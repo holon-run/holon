@@ -55,10 +55,15 @@ pub(crate) enum ProjectionEventLane {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum OperatorVisibility {
+    /// Operator attention is required before the agent can continue.
     ActionRequired = 1,
+    /// A work item reached a durable completion point.
     WorkDone = 2,
+    /// Default operator-facing turn result or durable conversation event.
     TurnResult = 3,
+    /// In-turn assistant progress that is useful while the agent is active.
     Progress = 4,
+    /// Tool and internal trace events for detailed inspection.
     Trace = 5,
 }
 
@@ -1083,7 +1088,7 @@ fn trim_summary(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectionEventLane, ProjectionSlice, TuiProjection};
+    use super::{OperatorVisibility, ProjectionEventLane, ProjectionSlice, TuiProjection};
     use crate::{
         client::{
             AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StateWorkspaceSnapshot,
@@ -1102,8 +1107,8 @@ mod tests {
             RuntimePosture, SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus,
             TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
             TurnTerminalKind, TurnTerminalRecord, WaitingIntentRecord, WaitingIntentStatus,
-            WaitingIntentSummary, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
-            WorktreeSession,
+            WaitingIntentSummary, WaitingReason, WorkItemRecord, WorkItemState,
+            WorkspaceOccupancyRecord, WorktreeSession,
         },
     };
     use chrono::Utc;
@@ -1224,6 +1229,104 @@ mod tests {
                 .last()
                 .map(|event| event.summary.as_str()),
             Some("provider round completed")
+        );
+    }
+
+    #[test]
+    fn hidden_current_turn_events_stop_at_current_run_boundary() {
+        let mut snapshot = sample_snapshot();
+        snapshot.agent.agent.status = crate::types::AgentStatus::AwakeRunning;
+        snapshot.agent.agent.turn_index = 2;
+        snapshot.agent.agent.current_run_id = Some("run-2".into());
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+
+        projection.apply_event(
+            sample_event(
+                "provider_round_completed",
+                json!({
+                    "run_id": "run-1",
+                    "turn_index": 1,
+                    "round": 1,
+                    "text_preview": "previous turn"
+                }),
+            ),
+            &test_log_writer(),
+        );
+        projection.apply_event(
+            sample_event(
+                "turn_started",
+                json!({
+                    "run_id": "run-2",
+                    "turn_index": 2,
+                    "message_id": "msg-2"
+                }),
+            ),
+            &test_log_writer(),
+        );
+        projection.apply_event(
+            sample_event(
+                "provider_round_completed",
+                json!({
+                    "run_id": "run-2",
+                    "turn_index": 2,
+                    "round": 1,
+                    "text_preview": "current turn"
+                }),
+            ),
+            &test_log_writer(),
+        );
+        projection.apply_event(
+            sample_event(
+                "tool_executed",
+                json!({
+                    "tool_name": "ExecCommand",
+                    "exec_command_cmd": "cargo test"
+                }),
+            ),
+            &test_log_writer(),
+        );
+
+        let events = projection.hidden_current_turn_events(OperatorVisibility::TurnResult);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.summary.as_str())
+                .collect::<Vec<_>>(),
+            vec!["current turn", "tool executed: ExecCommand"]
+        );
+    }
+
+    #[test]
+    fn brief_visibility_marks_operator_wait_and_completed_work() {
+        let mut snapshot = sample_snapshot();
+        snapshot.agent.closure.waiting_reason = Some(WaitingReason::AwaitingOperatorInput);
+        let projection = TuiProjection::from_snapshot(snapshot);
+        let wait_brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Need operator input",
+            None,
+            None,
+        );
+        let wait_event =
+            projection_event_record("brief_created", serde_json::to_value(&wait_brief).unwrap());
+        assert_eq!(
+            projection.operator_visibility(&wait_event),
+            OperatorVisibility::ActionRequired
+        );
+
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let mut completed = WorkItemRecord::new("default", "finish docs", WorkItemState::Completed);
+        completed.id = "work-done".into();
+        projection.work_items = vec![completed];
+        let mut work_brief =
+            BriefRecord::new("default", BriefKind::Result, "Work done", None, None);
+        work_brief.work_item_id = Some("work-done".into());
+        let work_event =
+            projection_event_record("brief_created", serde_json::to_value(&work_brief).unwrap());
+        assert_eq!(
+            projection.operator_visibility(&work_event),
+            OperatorVisibility::WorkDone
         );
     }
 
@@ -1699,6 +1802,18 @@ mod tests {
                 event_type: kind.to_string(),
                 payload,
             },
+        }
+    }
+
+    fn projection_event_record(kind: &str, payload: Value) -> super::ProjectionEventRecord {
+        super::ProjectionEventRecord {
+            id: format!("evt-{kind}"),
+            seq: 1,
+            ts: Utc::now(),
+            kind: kind.to_string(),
+            lane: super::classify_event_lane(kind),
+            summary: kind.to_string(),
+            payload,
         }
     }
 
