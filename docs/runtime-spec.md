@@ -884,8 +884,10 @@ type MessageEnvelope = {
 - `authorityClass`: whether the content is operator instruction, runtime
   instruction, integration signal, or external evidence
 - `priority`: scheduling hint
-- `triggerKind`: normalized continuation/admission trigger kind derived by the
-  runtime from the admitted message kind
+- `triggerKind`: normalized admission trigger kind derived by the runtime from
+  the admitted message kind. This is a total envelope classification; runtime
+  continuation policy may still treat some message kinds, such as status or
+  brief acknowledgements, as non-continuations.
 - `workItemId`: associated work item binding when the admitted message carries
   one
 - `taskId`: associated task identity for task rejoin/status messages
@@ -909,11 +911,15 @@ mutations such as workspace attachment, timer creation, or named-agent creation
 remain audit events instead of synthetic queued messages.
 
 The runtime normalizes `triggerKind`, `workItemId`, `taskId`, and `sourceRefs`
-at the queue/admission boundary before turn execution. Ingress callers may keep
-legacy or adapter-specific details in `metadata`, but the turn context, audit
-record, transcript, and future policy code should not need to parse free-form
-prompt text to distinguish operator instruction, runtime coordination,
-task-result evidence, self-follow-up, and external-trigger evidence.
+at the queue/admission boundary before turn execution. Only runtime-owned
+ingress may project binding fields such as `workItemId` or `taskId` out of
+free-form `metadata`; public HTTP/callback metadata may contribute provenance
+references but must not become trusted routing or work-item binding state.
+Ingress callers may keep legacy or adapter-specific details in `metadata`, but
+the turn context, audit record, transcript, and future policy code should not
+need to parse free-form prompt text to distinguish operator instruction,
+runtime coordination, task-result evidence, self-follow-up, and
+external-trigger evidence.
 
 ```ts
 type MessageDeliverySurface =

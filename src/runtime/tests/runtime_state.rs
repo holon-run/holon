@@ -404,7 +404,61 @@ async fn enqueue_normalizes_callback_payload_without_operator_elevation() {
             .map(String::as_str),
         Some("wait-1")
     );
-    assert_eq!(queued.work_item_id.as_deref(), Some("wi-1"));
+    assert!(queued.work_item_id.is_none());
+}
+
+#[tokio::test]
+async fn enqueue_does_not_project_untrusted_metadata_into_binding_fields() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "public".into(),
+            event_type: Some("push".into()),
+        },
+        TrustLevel::UntrustedExternal,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "public event".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpWebhook,
+        AdmissionContext::PublicUnauthenticated,
+    );
+    message.metadata = Some(serde_json::json!({
+        "work_item_id": "forged-work",
+        "task_id": "forged-task",
+        "external_trigger_id": "ext-1"
+    }));
+
+    let queued = runtime.enqueue(message).await.unwrap();
+
+    assert!(queued.work_item_id.is_none());
+    assert!(queued.task_id.is_none());
+    assert_eq!(
+        queued
+            .source_refs
+            .get("external_trigger_id")
+            .map(String::as_str),
+        Some("ext-1")
+    );
 }
 
 #[tokio::test]

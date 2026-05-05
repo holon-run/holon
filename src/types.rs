@@ -886,7 +886,7 @@ impl MessageEnvelope {
 
     pub fn normalize_admission_fields(&mut self) {
         if self.trigger_kind.is_none() {
-            self.trigger_kind = Some(trigger_kind_for_message_kind(&self.kind));
+            self.trigger_kind = Some(admission_trigger_kind_for_message_kind(&self.kind));
         }
 
         if self.task_id.is_none() {
@@ -895,12 +895,13 @@ impl MessageEnvelope {
             }
         }
 
+        let metadata_binding_trusted = self.metadata_binding_fields_are_trusted();
         if let Some(metadata) = self.metadata.as_ref() {
-            if self.work_item_id.is_none() {
+            if metadata_binding_trusted && self.work_item_id.is_none() {
                 self.work_item_id = metadata_string(metadata, "work_item_id")
                     .or_else(|| metadata_string(metadata, "child_work_item_id"));
             }
-            if self.task_id.is_none() {
+            if metadata_binding_trusted && self.task_id.is_none() {
                 self.task_id = metadata_string(metadata, "task_id");
             }
             collect_source_ref(metadata, &mut self.source_refs, "queued_event_id");
@@ -935,9 +936,18 @@ impl MessageEnvelope {
             _ => {}
         }
     }
+
+    fn metadata_binding_fields_are_trusted(&self) -> bool {
+        self.trust == TrustLevel::TrustedSystem
+            && matches!(self.admission_context, Some(AdmissionContext::RuntimeOwned))
+            && matches!(
+                self.delivery_surface,
+                Some(MessageDeliverySurface::RuntimeSystem | MessageDeliverySurface::TaskRejoin)
+            )
+    }
 }
 
-pub fn trigger_kind_for_message_kind(kind: &MessageKind) -> ContinuationTriggerKind {
+pub fn admission_trigger_kind_for_message_kind(kind: &MessageKind) -> ContinuationTriggerKind {
     match kind {
         MessageKind::OperatorPrompt => ContinuationTriggerKind::OperatorInput,
         MessageKind::ChannelEvent | MessageKind::WebhookEvent | MessageKind::CallbackEvent => {
