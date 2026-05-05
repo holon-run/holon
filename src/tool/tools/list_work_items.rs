@@ -132,7 +132,6 @@ fn matches_filter(
             !is_current
                 && super::work_item_query::focus_view(record, is_current)
                     == WorkItemFocusView::Queued
-                && record.readiness() == WorkItemReadiness::Runnable
         }
         ListWorkItemsFilter::Blocked => {
             !is_current

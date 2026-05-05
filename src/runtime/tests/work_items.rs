@@ -255,6 +255,17 @@ async fn work_item_query_tools_return_readiness_views() {
         Some(false)
     );
 
+    let queued_payload = list("queued").await;
+    assert_eq!(queued_payload["total_matching"].as_u64(), Some(2));
+    let queued_ids = queued_payload["work_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect::<Vec<_>>();
+    assert!(queued_ids.contains(&runnable.id.as_str()));
+    assert!(queued_ids.contains(&waiting.id.as_str()));
+
     let blocked_payload = list("blocked").await;
     assert_eq!(blocked_payload["total_matching"].as_u64(), Some(1));
     assert_eq!(
