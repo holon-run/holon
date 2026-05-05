@@ -17,9 +17,9 @@ use crate::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentState, AgentSummary, BriefRecord, ClosureDecision,
-        ExternalTriggerStateSnapshot, MessageEnvelope, TaskRecord, TimerRecord, TimerStatus,
-        TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord, WorkItemRecord, WorkItemState,
-        WorktreeSession,
+        ExternalTriggerStateSnapshot, MessageEnvelope, OperatorMessageRecord,
+        OperatorMessageStatus, TaskRecord, TimerRecord, TimerStatus, TranscriptEntry,
+        TranscriptEntryKind, WaitingIntentRecord, WorkItemRecord, WorkItemState, WorktreeSession,
     },
 };
 
@@ -70,6 +70,7 @@ pub(crate) struct TuiProjection {
     pub(crate) session: StateSessionSnapshot,
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) transcript_tail: Vec<TranscriptEntry>,
+    pub(crate) operator_messages: Vec<OperatorMessageRecord>,
     pub(crate) briefs_tail: Vec<BriefRecord>,
     pub(crate) timers: Vec<TimerRecord>,
     pub(crate) work_items: Vec<WorkItemRecord>,
@@ -93,6 +94,7 @@ impl TuiProjection {
             session: snapshot.session,
             tasks: snapshot.tasks,
             transcript_tail: snapshot.transcript_tail,
+            operator_messages: snapshot.operator_messages,
             briefs_tail: snapshot.briefs_tail,
             timers: snapshot.timers,
             work_items: snapshot.work_items,
@@ -168,6 +170,7 @@ impl TuiProjection {
             }
             "message_enqueued" => {
                 if let Some(message) = decode_payload::<MessageEnvelope>(&event.data.payload) {
+                    self.upsert_operator_message(operator_message_from_enqueued(&message));
                     self.append_transcript_message(message);
                     self.stale_slices.remove(&ProjectionSlice::TranscriptTail);
                 } else {
@@ -345,7 +348,37 @@ impl TuiProjection {
                     self.mark_stale([ProjectionSlice::OperatorNotifications]);
                 }
             }
-            "message_admitted" | "message_processing_started" | "control_applied" => {
+            "message_processing_started" => {
+                if let Some(message) = decode_payload::<MessageEnvelope>(&event.data.payload) {
+                    self.update_operator_message_status(
+                        &message.id,
+                        OperatorMessageStatus::Processing,
+                        event.data.ts,
+                        None,
+                    );
+                }
+                self.mark_stale([
+                    ProjectionSlice::Agent,
+                    ProjectionSlice::Session,
+                    ProjectionSlice::TranscriptTail,
+                ]);
+            }
+            "operator_interjection_admitted" => {
+                if let Some(message_id) = read_string(&event.data.payload, "message_id") {
+                    self.update_operator_message_status(
+                        &message_id,
+                        OperatorMessageStatus::Processing,
+                        event.data.ts,
+                        None,
+                    );
+                }
+                self.mark_stale([
+                    ProjectionSlice::Agent,
+                    ProjectionSlice::Session,
+                    ProjectionSlice::TranscriptTail,
+                ]);
+            }
+            "message_admitted" | "control_applied" => {
                 self.mark_stale([ProjectionSlice::Agent, ProjectionSlice::Session]);
             }
             _ => {}
@@ -449,6 +482,36 @@ impl TuiProjection {
             TRANSCRIPT_TAIL_LIMIT,
             |left, right| left.created_at.cmp(&right.created_at),
         );
+    }
+
+    fn upsert_operator_message(&mut self, record: OperatorMessageRecord) {
+        if let Some(existing) = self
+            .operator_messages
+            .iter_mut()
+            .find(|existing| existing.message_id == record.message_id)
+        {
+            *existing = record;
+        } else {
+            self.operator_messages.push(record);
+        }
+    }
+
+    fn update_operator_message_status(
+        &mut self,
+        message_id: &str,
+        status: OperatorMessageStatus,
+        updated_at: DateTime<Utc>,
+        error: Option<String>,
+    ) {
+        if let Some(existing) = self
+            .operator_messages
+            .iter_mut()
+            .find(|existing| existing.message_id == message_id)
+        {
+            existing.status = status;
+            existing.updated_at = updated_at;
+            existing.error = error;
+        }
     }
 
     fn apply_timer_fired(&mut self, payload: &Value, fired_at: DateTime<Utc>) -> bool {
@@ -638,10 +701,23 @@ fn work_item_rank(item: &WorkItemRecord) -> u8 {
     }
 }
 
+fn operator_message_from_enqueued(message: &MessageEnvelope) -> OperatorMessageRecord {
+    OperatorMessageRecord {
+        message_id: message.id.clone(),
+        agent_id: message.agent_id.clone(),
+        status: OperatorMessageStatus::Queued,
+        created_at: message.created_at,
+        updated_at: message.created_at,
+        body: message.body.clone(),
+        error: None,
+    }
+}
+
 pub(crate) fn is_durable_conversation_kind(kind: &str) -> bool {
     matches!(
         kind,
         "message_enqueued"
+            | "operator_interjection_admitted"
             | "brief_created"
             | "runtime_error"
             | "turn_terminal"
@@ -696,6 +772,7 @@ fn is_loggable_event_kind(kind: &str) -> bool {
             | "worktree_entered"
             | "worktree_exited"
             | "runtime_error"
+            | "operator_interjection_admitted"
             | "turn_terminal"
     )
 }
@@ -723,6 +800,13 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
                 crate::types::MessageBody::Brief { text, .. } => trim_summary(&text),
             })
             .unwrap_or_else(|| event.data.event_type.clone()),
+        "operator_interjection_admitted" => event
+            .data
+            .payload
+            .get("text_preview")
+            .and_then(Value::as_str)
+            .map(|text| format!("operator message applied: {}", trim_summary(text)))
+            .unwrap_or_else(|| "operator message applied".into()),
         "brief_created" => decode_payload::<BriefRecord>(&event.data.payload)
             .map(|brief| trim_summary(&brief.text))
             .unwrap_or_else(|| event.data.event_type.clone()),
@@ -1432,6 +1516,7 @@ mod tests {
                 output_tokens: None,
                 data: json!({ "body": { "type": "text", "text": "hi" } }),
             }],
+            operator_messages: Vec::new(),
             briefs_tail: vec![BriefRecord::new(
                 "default",
                 BriefKind::Ack,

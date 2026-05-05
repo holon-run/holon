@@ -345,7 +345,18 @@ impl TuiApp {
                     .selected_agent_id()
                     .ok_or_else(|| anyhow!("no agent selected"))?
                     .to_string();
-                self.client.control_prompt(&agent_id, text).await?;
+                let local_message_id =
+                    self.add_optimistic_operator_message(agent_id.clone(), text.clone());
+                match self.client.control_prompt(&agent_id, text).await {
+                    Ok(response) => self.reconcile_optimistic_operator_message(
+                        &local_message_id,
+                        &response.message_id,
+                    ),
+                    Err(err) => {
+                        self.fail_optimistic_operator_message(&local_message_id, err.to_string());
+                        return Err(err);
+                    }
+                }
                 self.composer.clear();
                 self.chat_scroll.follow_tail();
                 self.status_line.clear();

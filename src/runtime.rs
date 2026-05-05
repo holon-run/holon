@@ -38,6 +38,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use uuid::Uuid;
 
+const OPERATOR_MESSAGE_SCAN_MIN: usize = 256;
+const OPERATOR_MESSAGE_SCAN_HEADROOM: usize = 16;
+
 #[cfg(test)]
 use crate::provider::{ConversationMessage, ProviderTurnRequest};
 use crate::{
@@ -65,12 +68,12 @@ use crate::{
         CancelWaitingResult, ClosureDecision, ContinuationResolution, ControlAction,
         ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerScope,
         ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
-        Priority, QueueEntryRecord, QueueEntryStatus, ResolvedModelAvailability,
-        RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture, SkillActivationSource,
-        SkillActivationState, SkillsRuntimeView, TaskKind, TaskRecord, TaskRecoverySpec,
-        TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, OperatorMessageRecord,
+        OperatorMessageStatus, PendingWakeHint, Priority, QueueEntryRecord, QueueEntryStatus,
+        ResolvedModelAvailability, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
+        SkillActivationSource, SkillActivationState, SkillsRuntimeView, TaskKind, TaskRecord,
+        TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
+        TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
         WaitingIntentSummary, WorkItemState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::WebConfig,
@@ -765,6 +768,62 @@ impl RuntimeHandle {
         Ok(message)
     }
 
+    pub async fn recent_operator_messages(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<OperatorMessageRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let state = {
+            let guard = self.inner.agent.lock().await;
+            guard.state.clone()
+        };
+        let scan_limit = limit
+            .saturating_mul(OPERATOR_MESSAGE_SCAN_HEADROOM)
+            .max(OPERATOR_MESSAGE_SCAN_MIN);
+        let messages_by_id = self
+            .inner
+            .storage
+            .read_recent_messages(scan_limit)?
+            .into_iter()
+            .filter(|message| message.kind == MessageKind::OperatorPrompt)
+            .map(|message| (message.id.clone(), message))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        let mut latest_queue_entries = std::collections::BTreeMap::new();
+        for entry in self.inner.storage.read_recent_queue_entries(scan_limit)? {
+            latest_queue_entries.insert(entry.message_id.clone(), entry);
+        }
+
+        let mut records = latest_queue_entries
+            .values()
+            .into_iter()
+            .filter_map(|entry| {
+                let message = messages_by_id.get(&entry.message_id)?;
+                Some(OperatorMessageRecord {
+                    message_id: entry.message_id.clone(),
+                    agent_id: entry.agent_id.clone(),
+                    status: operator_message_status(&entry.status, &entry.priority, &state),
+                    created_at: entry.created_at,
+                    updated_at: entry.updated_at,
+                    body: message.body.clone(),
+                    error: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.message_id.cmp(&right.message_id))
+        });
+        if records.len() > limit {
+            records.drain(0..records.len() - limit);
+        }
+        Ok(records)
+    }
+
     pub(crate) fn append_audit_event(&self, kind: &str, data: serde_json::Value) -> Result<()> {
         self.inner
             .storage
@@ -1033,6 +1092,27 @@ impl RuntimeHandle {
             }
         }
         Ok(())
+    }
+}
+
+fn operator_message_status(
+    status: &QueueEntryStatus,
+    priority: &Priority,
+    state: &AgentState,
+) -> OperatorMessageStatus {
+    match status {
+        QueueEntryStatus::Queued
+            if *priority == Priority::Interrupt && state.current_run_id.is_some() =>
+        {
+            OperatorMessageStatus::WaitingForSafePoint
+        }
+        QueueEntryStatus::Queued => OperatorMessageStatus::Queued,
+        QueueEntryStatus::Dequeued | QueueEntryStatus::Interjected => {
+            OperatorMessageStatus::Processing
+        }
+        QueueEntryStatus::Processed => OperatorMessageStatus::Processed,
+        QueueEntryStatus::Interrupted => OperatorMessageStatus::Failed,
+        QueueEntryStatus::Dropped => OperatorMessageStatus::Dropped,
     }
 }
 

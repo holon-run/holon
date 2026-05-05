@@ -410,6 +410,11 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
         .send()
         .await?;
     assert!(response.status().is_success());
+    let accepted: serde_json::Value = response.json().await?;
+    let message_id = accepted["message_id"]
+        .as_str()
+        .expect("control prompt should return message_id")
+        .to_string();
 
     wait_until(|| {
         let messages = runtime.storage().read_recent_messages(10)?;
@@ -428,6 +433,21 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
         }))
     })
     .await?;
+
+    let state_response = client
+        .get(format!("{base}/agents/default/state"))
+        .send()
+        .await?;
+    assert!(state_response.status().is_success());
+    let state_payload: serde_json::Value = state_response.json().await?;
+    let operator_messages = state_payload["operator_messages"]
+        .as_array()
+        .expect("state snapshot should include operator_messages");
+    assert!(operator_messages.iter().any(|message| {
+        message["message_id"] == message_id
+            && message["body"]["type"] == "text"
+            && message["body"]["text"] == "hello"
+    }));
 
     server.abort();
     Ok(())

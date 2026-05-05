@@ -86,6 +86,7 @@ pub(super) enum ConversationCell {
     UserMessage {
         created_at: DateTime<chrono::Utc>,
         body: String,
+        status: Option<OperatorMessageStatus>,
     },
     AssistantMarkdown(AssistantMarkdownCell),
     ActiveActivity {
@@ -109,6 +110,8 @@ pub(super) struct CachedChatText {
 
 pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     let mut cells = Vec::new();
+    let mut visible_operator_message_ids = std::collections::BTreeSet::new();
+    let operator_message_statuses = operator_message_statuses(app);
 
     for entry in &app.transcript {
         if entry.kind != TranscriptEntryKind::IncomingMessage {
@@ -126,10 +129,30 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             .get("body")
             .and_then(render_message_body_value)
             .unwrap_or_else(|| compact_json(&entry.data));
+        let status = if let Some(message_id) = entry.related_message_id.as_deref() {
+            visible_operator_message_ids.insert(message_id.to_string());
+            operator_message_statuses.get(message_id).cloned()
+        } else {
+            None
+        };
         cells.push(ConversationCell::UserMessage {
             created_at: entry.created_at,
             body,
+            status,
         });
+    }
+
+    if let Some(projection) = app.projection.as_ref() {
+        for message in &projection.operator_messages {
+            push_pending_operator_message_cell(
+                &mut cells,
+                &mut visible_operator_message_ids,
+                message,
+            );
+        }
+    }
+    for message in &app.optimistic_operator_messages {
+        push_pending_operator_message_cell(&mut cells, &mut visible_operator_message_ids, message);
     }
 
     for brief in &app.briefs {
@@ -174,6 +197,38 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     cells
 }
 
+fn operator_message_statuses(
+    app: &TuiApp,
+) -> std::collections::BTreeMap<String, OperatorMessageStatus> {
+    let mut statuses = std::collections::BTreeMap::new();
+    for message in &app.optimistic_operator_messages {
+        statuses.insert(message.message_id.clone(), message.status.clone());
+    }
+    if let Some(projection) = app.projection.as_ref() {
+        for message in &projection.operator_messages {
+            statuses.insert(message.message_id.clone(), message.status.clone());
+        }
+    }
+    statuses
+}
+
+fn push_pending_operator_message_cell(
+    cells: &mut Vec<ConversationCell>,
+    visible_operator_message_ids: &mut std::collections::BTreeSet<String>,
+    message: &OperatorMessageRecord,
+) {
+    if !visible_operator_message_ids.insert(message.message_id.clone()) {
+        return;
+    }
+    let body = render_operator_message_body(&message.body)
+        .unwrap_or_else(|| compact_json(&serde_json::to_value(&message.body).unwrap_or_default()));
+    cells.push(ConversationCell::UserMessage {
+        created_at: message.created_at,
+        body,
+        status: Some(message.status.clone()),
+    });
+}
+
 pub(super) fn is_chat_visible_conversation_event(kind: &str) -> bool {
     matches!(kind, "operator_notification_requested" | "runtime_error")
 }
@@ -215,13 +270,11 @@ impl ConversationCell {
 
     fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
-            Self::UserMessage { created_at, body } => render_prefixed_markdown_lines(
-                *created_at,
+            Self::UserMessage {
+                created_at,
                 body,
-                CachedChatRole::Operator,
-                width,
-                false,
-            ),
+                status,
+            } => render_operator_message_lines(*created_at, body, status.clone(), width),
             Self::AssistantMarkdown(cell) => cell.render_lines(width),
             Self::ActiveActivity { speaker, body, .. } => {
                 render_active_activity_lines(speaker, body)
@@ -333,6 +386,40 @@ fn render_prefixed_markdown_lines(
         lines.push(Line::from(prefix));
     }
     lines
+}
+
+fn render_operator_message_lines(
+    created_at: DateTime<chrono::Utc>,
+    body: &str,
+    status: Option<OperatorMessageStatus>,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines =
+        render_prefixed_markdown_lines(created_at, body, CachedChatRole::Operator, width, false);
+    if let Some(status) = status.and_then(operator_message_status_label) {
+        if let Some(first) = lines.first_mut() {
+            first.spans.insert(
+                3,
+                Span::styled(
+                    format!("[{status}] "),
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
+            );
+        }
+    }
+    lines
+}
+
+fn operator_message_status_label(status: OperatorMessageStatus) -> Option<&'static str> {
+    match status {
+        OperatorMessageStatus::Sending => Some("sending"),
+        OperatorMessageStatus::Queued => Some("queued"),
+        OperatorMessageStatus::WaitingForSafePoint => Some("waiting"),
+        OperatorMessageStatus::Processing => Some("processing"),
+        OperatorMessageStatus::Processed => Some("processed"),
+        OperatorMessageStatus::Failed => Some("failed"),
+        OperatorMessageStatus::Dropped => Some("dropped"),
+    }
 }
 
 fn render_active_activity_lines(speaker: &str, body: &str) -> Vec<Line<'static>> {
@@ -737,6 +824,13 @@ fn render_message_body_value(value: &Value) -> Option<String> {
             .map(ToString::to_string),
         "json" => value.get("value").map(compact_json),
         _ => None,
+    }
+}
+
+fn render_operator_message_body(body: &MessageBody) -> Option<String> {
+    match body {
+        MessageBody::Text { text } | MessageBody::Brief { text, .. } => Some(text.clone()),
+        MessageBody::Json { value } => Some(compact_json(value)),
     }
 }
 
