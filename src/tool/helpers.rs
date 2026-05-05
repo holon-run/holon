@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use crate::tool::ToolError;
 use crate::types::CommandCostDiagnostics;
 
-pub(crate) const DEFAULT_TOOL_OUTPUT_TOKENS: u64 = 2_000;
-pub(crate) const MAX_TOOL_OUTPUT_TOKENS: u64 = 10_000;
+pub(crate) const DEFAULT_TOOL_OUTPUT_TOKENS: u64 = 8_000;
+pub(crate) const MAX_TOOL_OUTPUT_TOKENS: u64 = 64_000;
 pub(crate) const COMMAND_COST_SOFT_THRESHOLD_CHARS: usize = 4_000;
 pub(crate) const COMMAND_PREVIEW_CHARS: usize = 240;
 
@@ -406,16 +406,16 @@ mod tests {
 
     #[test]
     fn output_budget_defaults_to_command_tool_default() {
-        assert_eq!(output_char_budget(None), 8_000);
+        assert_eq!(output_char_budget(None), 32_000);
     }
 
     #[test]
     fn effective_tool_output_tokens_defaults_and_clamps() {
-        assert_eq!(effective_tool_output_tokens(None, 2_000, 10_000), 2_000);
-        assert_eq!(effective_tool_output_tokens(Some(0), 2_000, 10_000), 2_000);
+        assert_eq!(effective_tool_output_tokens(None, 8_000, 64_000), 8_000);
+        assert_eq!(effective_tool_output_tokens(Some(0), 8_000, 64_000), 8_000);
         assert_eq!(
-            effective_tool_output_tokens(Some(50_000), 2_000, 10_000),
-            10_000
+            effective_tool_output_tokens(Some(100_000), 8_000, 64_000),
+            64_000
         );
     }
 

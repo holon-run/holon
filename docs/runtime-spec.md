@@ -333,7 +333,11 @@ Current phase-1 repo-inspection contract:
   `{"patch":"--- a/path\\n+++ b/path\\n@@ ...\\n"}`; both forms carry the
   same unified diff body into the runtime patch engine
 - oversized `exec_command` output is truncated before it re-enters the active
-  provider conversation as a tool result
+  provider conversation as a tool result; the default model-visible budget is
+  8,000 estimated tokens (about 32,000 chars), capped at 64,000 estimated
+  tokens and configurable through `runtime.default_tool_output_tokens`,
+  `runtime.max_tool_output_tokens`, `HOLON_DEFAULT_TOOL_OUTPUT_TOKENS`, and
+  `HOLON_MAX_TOOL_OUTPUT_TOKENS`
 
 Phase-1 implications:
 
