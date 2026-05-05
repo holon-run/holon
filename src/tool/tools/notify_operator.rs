@@ -22,10 +22,10 @@ pub(crate) struct NotifyOperatorArgs {
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
-        family: ToolCapabilityFamily::CoreAgent,
+        family: ToolCapabilityFamily::OperatorNotification,
         spec: typed_spec::<NotifyOperatorArgs>(
             NAME,
-            "Create an operator-facing notification record/event without stopping the current turn. Call Sleep explicitly afterward only if the agent should wait.",
+            "Create an operator-facing notification record/event for runtime policy or delivery adapters. Normal agent profiles do not expose this tool; agents should use final responses, work item blockers, and completion summaries instead of deciding notification policy themselves.",
         )?,
     })
 }

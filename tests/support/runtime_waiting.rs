@@ -495,52 +495,25 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
 pub async fn notify_operator_records_default_public_and_private_child_targets() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let default_runtime = host.default_runtime().await?;
-    let registry = ToolRegistry::new(default_runtime.workspace_root());
 
-    let (default_result, default_record) = registry
-        .execute(
-            &default_runtime,
-            "default",
-            &TrustLevel::TrustedOperator,
-            &ToolCall {
-                id: "notify-default".into(),
-                name: "NotifyOperator".into(),
-                input: json!({ "message": "\nDefault operator note\nsecond line" }),
-            },
-        )
+    let default_notification = default_runtime
+        .notify_operator("\nDefault operator note\nsecond line".into())
         .await?;
-    assert!(!default_result.should_sleep);
-    assert_eq!(default_record.tool_name, "NotifyOperator");
-    let default_value: serde_json::Value = parse_tool_result_payload(&default_result)?;
+    let default_value = serde_json::to_value(default_notification)?;
     assert_eq!(
-        default_value["notification"]["target_operator_boundary"],
+        default_value["target_operator_boundary"],
         "primary_operator"
     );
-    assert_eq!(
-        default_value["notification"]["summary"],
-        "Default operator note"
-    );
+    assert_eq!(default_value["summary"], "Default operator note");
 
     host.create_named_agent("public-agent", None).await?;
     let public_runtime = host.get_public_agent("public-agent").await?;
-    let (public_result, _) = registry
-        .execute(
-            &public_runtime,
-            "public-agent",
-            &TrustLevel::TrustedOperator,
-            &ToolCall {
-                id: "notify-public".into(),
-                name: "NotifyOperator".into(),
-                input: json!({ "message": "Public named note" }),
-            },
-        )
+    let public_notification = public_runtime
+        .notify_operator("Public named note".into())
         .await?;
-    let public_value: serde_json::Value = parse_tool_result_payload(&public_result)?;
-    assert_eq!(
-        public_value["notification"]["target_operator_boundary"],
-        "primary_operator"
-    );
-    assert_eq!(public_value["notification"]["agent_id"], "public-agent");
+    let public_value = serde_json::to_value(public_notification)?;
+    assert_eq!(public_value["target_operator_boundary"], "primary_operator");
+    assert_eq!(public_value["agent_id"], "public-agent");
 
     let spawned = default_runtime
         .spawn_agent(
@@ -555,32 +528,14 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
         )
         .await?;
     let child_runtime = host.get_or_create_agent(&spawned.agent_id).await?;
-    let (child_result, _) = registry
-        .execute(
-            &child_runtime,
-            &spawned.agent_id,
-            &TrustLevel::TrustedOperator,
-            &ToolCall {
-                id: "notify-child".into(),
-                name: "NotifyOperator".into(),
-                input: json!({ "message": "Child needs supervision visibility" }),
-            },
-        )
+    let child_notification = child_runtime
+        .notify_operator("Child needs supervision visibility".into())
         .await?;
-    let child_value: serde_json::Value = parse_tool_result_payload(&child_result)?;
-    assert_eq!(
-        child_value["notification"]["target_operator_boundary"],
-        "parent_supervisor"
-    );
-    assert_eq!(child_value["notification"]["agent_id"], "default");
-    assert_eq!(
-        child_value["notification"]["requested_by_agent_id"],
-        spawned.agent_id
-    );
-    assert_eq!(
-        child_value["notification"]["target_parent_agent_id"],
-        "default"
-    );
+    let child_value = serde_json::to_value(child_notification)?;
+    assert_eq!(child_value["target_operator_boundary"], "parent_supervisor");
+    assert_eq!(child_value["agent_id"], "default");
+    assert_eq!(child_value["requested_by_agent_id"], spawned.agent_id);
+    assert_eq!(child_value["target_parent_agent_id"], "default");
 
     let child_notifications = child_runtime.recent_operator_notifications(10).await?;
     assert_eq!(
@@ -605,52 +560,31 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
     Ok(())
 }
 
-pub async fn notify_operator_does_not_stop_same_turn_tool_execution() -> Result<()> {
-    let host =
-        RuntimeHost::new_with_provider(test_config(), Arc::new(NotifyThenAgentGetProvider::new()))?;
+pub async fn notify_operator_is_not_agent_facing_for_normal_profiles() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
 
-    runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "notify and continue".into(),
-            },
-        ))
+    let prompt = runtime
+        .preview_prompt("check tool visibility".into(), TrustLevel::TrustedOperator)
         .await?;
-    wait_until(|| {
-        Ok(runtime
-            .storage()
-            .read_recent_briefs(10)?
-            .iter()
-            .any(|brief| brief.text.contains("continued after notifying operator")))
-    })
-    .await?;
+    assert!(!prompt.rendered_system_prompt.contains("NotifyOperator"));
 
-    let tool_records = runtime.storage().read_recent_tool_executions(10)?;
-    assert!(tool_records
-        .iter()
-        .any(|record| record.tool_name == "NotifyOperator"));
-    assert!(tool_records
-        .iter()
-        .any(|record| record.tool_name == "AgentGet"));
-    let notification = runtime
-        .recent_operator_notifications(10)
-        .await?
-        .into_iter()
-        .next()
-        .expect("notification should be recorded");
-    assert_eq!(notification.summary, "Operator FYI");
-    let summary = runtime.agent_summary().await?;
-    assert_ne!(
-        summary.closure.waiting_reason,
-        Some(WaitingReason::AwaitingOperatorInput)
-    );
-    assert_eq!(summary.recent_operator_notifications.len(), 1);
+    let error = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "notify-rejected".into(),
+                name: "NotifyOperator".into(),
+                input: json!({ "message": "Operator FYI" }),
+            },
+        )
+        .await
+        .expect_err("normal agent profiles should not execute NotifyOperator");
+    assert!(error.to_string().contains("operator_notification"));
+    assert!(runtime.recent_operator_notifications(10).await?.is_empty());
     Ok(())
 }
 

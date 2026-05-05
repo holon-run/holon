@@ -202,6 +202,8 @@ The initial state set is:
 
 `needs_input`
 - the plan cannot be safely finalized without operator or external input.
+- the work item remains open but is not scheduler-runnable until the agent
+  processes the input and updates the work item back to `ready` or `draft`.
 
 Daemon mode does not require a human to confirm every plan. The agent may move
 from `draft` to `ready` when the task boundary is clear. It should use
@@ -352,10 +354,16 @@ Tick should ask:
 
 - is there runnable work worth activating?
 
+Runnable is a derived view, not a stored lifecycle state:
+
+- `state = open`
+- no `blocked_by`
+- `plan_status != needs_input`
+
 The minimal rule is:
 
-1. if the current WorkItem is open and not blocked, wake and continue it;
-2. otherwise, if another open and unblocked WorkItem exists, wake the agent so
+1. if the current WorkItem is runnable, wake and continue it;
+2. otherwise, if another queued runnable WorkItem exists, wake the agent so
    it can explicitly pick one;
 3. otherwise, remain idle.
 

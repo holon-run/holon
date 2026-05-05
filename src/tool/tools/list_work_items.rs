@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{ToolCapabilityFamily, TrustLevel, WorkItemState},
+    types::{ToolCapabilityFamily, TrustLevel, WorkItemReadiness, WorkItemState},
 };
 
 use super::{
@@ -33,6 +33,8 @@ pub(crate) enum ListWorkItemsFilter {
     Current,
     Queued,
     Blocked,
+    WaitingForOperator,
+    Runnable,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -63,7 +65,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<ListWorkItemsArgs>(
             NAME,
-            "List recent work items with explicit current, open, completed, queued, and blocked views. Use this before relying on memory briefs for work-item focus.",
+            "List recent work items with explicit current, open, completed, queued, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.",
         )?,
     })
 }
@@ -130,11 +132,16 @@ fn matches_filter(
             !is_current
                 && super::work_item_query::focus_view(record, is_current)
                     == WorkItemFocusView::Queued
+                && record.readiness() == WorkItemReadiness::Runnable
         }
         ListWorkItemsFilter::Blocked => {
             !is_current
                 && super::work_item_query::focus_view(record, is_current)
                     == WorkItemFocusView::Blocked
         }
+        ListWorkItemsFilter::WaitingForOperator => {
+            record.readiness() == WorkItemReadiness::WaitingForOperator
+        }
+        ListWorkItemsFilter::Runnable => record.readiness() == WorkItemReadiness::Runnable,
     }
 }

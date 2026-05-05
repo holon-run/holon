@@ -232,6 +232,7 @@ Working memory updated since the last prompt:
 Current work item:
 - Id: work_prompt
 - State: Open
+- Readiness: Blocked
 - Objective: Ship prompt snapshot coverage
 - Plan status: draft
 - Todo list:
@@ -559,6 +560,7 @@ Working memory:
 Current work item:
 - Id: work_active
 - State: Open
+- Readiness: Blocked
 - Objective: Complete snapshot coverage expansion
 - Plan status: draft
 - Todo list:
@@ -648,6 +650,7 @@ Working memory:
 Current work item:
 - Id: work_no_delta
 - State: Open
+- Readiness: Blocked
 - Objective: Test delta absence
 - Plan status: draft
 - Todo list:
@@ -771,6 +774,7 @@ Working memory updated since the last prompt:
 Current work item:
 - Id: work_ci
 - State: Open
+- Readiness: Blocked
 - Objective: Handle CI callback
 - Plan status: draft
 - Todo list:
@@ -888,6 +892,7 @@ Working memory:
 Current work item:
 - Id: work_waiting
 - State: Open
+- Readiness: Blocked
 - Objective: External service integration
 - Plan status: draft
 - Todo list:
@@ -1031,6 +1036,7 @@ Working memory updated since the last prompt:
 Current work item:
 - Id: work_compaction
 - State: Open
+- Readiness: Blocked
 - Objective: Long-running task with compaction
 - Plan status: draft
 - Todo list:
@@ -1177,6 +1183,7 @@ Working memory updated since the last prompt:
 Current work item:
 - Id: work_test
 - State: Open
+- Readiness: Blocked
 - Objective: Test execution and verification
 - Plan status: draft
 - Todo list:
