@@ -18,8 +18,9 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Local};
 use crossterm::{
     event::{
-        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -81,6 +82,9 @@ pub async fn run_tui(config: AppConfig, no_alt_screen: bool) -> Result<()> {
         execute!(stdout, EnterAlternateScreen)?;
         terminal_guard.alternate_screen_enabled = true;
     }
+    if execute!(stdout, EnableBracketedPaste).is_ok() {
+        terminal_guard.bracketed_paste_enabled = true;
+    }
     if execute!(
         stdout,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -134,12 +138,20 @@ async fn run_event_loop(
         }
 
         if event::poll(INPUT_POLL_INTERVAL)? {
-            if let Event::Key(key) = event::read()? {
-                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            match event::read()? {
+                Event::Key(key)
+                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                {
                     if let Err(err) = app.handle_key(key).await {
                         app.status_line = format!("Action failed: {err}");
                     }
                 }
+                Event::Paste(text) => {
+                    if let Err(err) = app.handle_paste(&text).await {
+                        app.status_line = format!("Paste failed: {err}");
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -792,6 +804,7 @@ fn is_cursor_too_old_error(err: &anyhow::Error) -> bool {
 struct TerminalCleanupGuard {
     raw_mode_enabled: bool,
     alternate_screen_enabled: bool,
+    bracketed_paste_enabled: bool,
     keyboard_enhancement_enabled: bool,
 }
 
@@ -800,6 +813,7 @@ impl TerminalCleanupGuard {
         Self {
             raw_mode_enabled: false,
             alternate_screen_enabled: false,
+            bracketed_paste_enabled: false,
             keyboard_enhancement_enabled: false,
         }
     }
@@ -810,6 +824,10 @@ impl Drop for TerminalCleanupGuard {
         if self.keyboard_enhancement_enabled {
             let mut stdout = io::stdout();
             let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+        }
+        if self.bracketed_paste_enabled {
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, DisableBracketedPaste);
         }
         if self.raw_mode_enabled {
             let _ = disable_raw_mode();
@@ -1188,6 +1206,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.composer.as_str(), "/de\n");
+    }
+
+    #[tokio::test]
+    async fn paste_inserts_multiline_text_without_submitting() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+
+        app.handle_paste("first\nsecond").await.unwrap();
+
+        assert_eq!(app.composer.as_str(), "first\nsecond");
     }
 
     #[tokio::test]

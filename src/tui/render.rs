@@ -73,8 +73,15 @@ fn draw_agent_state(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
 }
 
 fn draw_prompt_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_menu: &[Line<'static>]) {
+    let prompt_scroll = prompt_pane_scroll(
+        area,
+        app.composer.as_str(),
+        app.composer.cursor(),
+        slash_menu.len() as u16,
+    );
     let paragraph = Paragraph::new(render_prompt_text(app.composer.as_str(), slash_menu))
         .block(Block::default().borders(Borders::ALL))
+        .scroll((prompt_scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 
@@ -84,6 +91,7 @@ fn draw_prompt_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_menu:
             app.composer.as_str(),
             app.composer.cursor(),
             slash_menu.len() as u16,
+            prompt_scroll,
         );
         frame.set_cursor_position(ratatui::layout::Position { x, y });
     }
@@ -433,8 +441,37 @@ fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn prompt_cursor_position(area: Rect, buffer: &str, cursor: usize, hint_rows: u16) -> (u16, u16) {
+fn prompt_pane_scroll(area: Rect, buffer: &str, cursor: usize, hint_rows: u16) -> u16 {
     let input_width = area.width.saturating_sub(2).max(1);
+    let (_, cursor_row) = prompt_cursor_visual_position(buffer, cursor, input_width, hint_rows);
+    let viewport_rows = area.height.saturating_sub(2).max(1);
+    cursor_row.saturating_sub(viewport_rows.saturating_sub(1))
+}
+
+fn prompt_cursor_position(
+    area: Rect,
+    buffer: &str,
+    cursor: usize,
+    hint_rows: u16,
+    scroll: u16,
+) -> (u16, u16) {
+    let input_width = area.width.saturating_sub(2).max(1);
+    let (column, cursor_row) =
+        prompt_cursor_visual_position(buffer, cursor, input_width, hint_rows);
+    let max_x = area.x + area.width.saturating_sub(2);
+    let max_y = area.y + area.height.saturating_sub(2);
+    (
+        (area.x + 1 + column).min(max_x),
+        (area.y + 1 + cursor_row.saturating_sub(scroll)).min(max_y),
+    )
+}
+
+fn prompt_cursor_visual_position(
+    buffer: &str,
+    cursor: usize,
+    input_width: u16,
+    hint_rows: u16,
+) -> (u16, u16) {
     let rendered = render_prompt_buffer(&buffer[..cursor]);
     let lines = rendered.split('\n').collect::<Vec<_>>();
     let wrapped_rows_before = lines
@@ -454,12 +491,11 @@ fn prompt_cursor_position(area: Rect, buffer: &str, cursor: usize, hint_rows: u1
     } else {
         last_line_width - soft_wrap_row * input_width
     };
-    let max_x = area.x + area.width.saturating_sub(2);
-    let max_y = area.y + area.height.saturating_sub(2);
-    (
-        (area.x + 1 + column).min(max_x),
-        (area.y + 1 + hint_rows + 1 + wrapped_rows_before + soft_wrap_row).min(max_y),
-    )
+    let row = hint_rows
+        .saturating_add(1)
+        .saturating_add(wrapped_rows_before)
+        .saturating_add(soft_wrap_row);
+    (column, row)
 }
 
 fn wrapped_prompt_rows(line: &str, visible_line_width: u16) -> u16 {
@@ -869,9 +905,9 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        prompt_cursor_position, prompt_pane_height, render_header, render_model_status,
-        render_prompt_buffer, render_prompt_text, render_summary, render_task_detail,
-        status_bar_height, todo_summary_work_item,
+        prompt_cursor_position, prompt_pane_height, prompt_pane_scroll, render_header,
+        render_model_status, render_prompt_buffer, render_prompt_text, render_summary,
+        render_task_detail, status_bar_height, todo_summary_work_item,
     };
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::types::{
@@ -1123,7 +1159,7 @@ mod tests {
     fn prompt_cursor_tracks_multiline_end_position() {
         let area = Rect::new(10, 5, 40, 6);
         assert_eq!(
-            prompt_cursor_position(area, "first\nsecond", "first\nsecond".len(), 0),
+            prompt_cursor_position(area, "first\nsecond", "first\nsecond".len(), 0, 0),
             (19, 8)
         );
     }
@@ -1132,7 +1168,7 @@ mod tests {
     fn prompt_cursor_tracks_soft_wrapped_long_lines() {
         let area = Rect::new(10, 5, 10, 6);
         assert_eq!(
-            prompt_cursor_position(area, "abcdefgh", "abcdefgh".len(), 0),
+            prompt_cursor_position(area, "abcdefgh", "abcdefgh".len(), 0, 0),
             (13, 8)
         );
     }
@@ -1141,7 +1177,7 @@ mod tests {
     fn prompt_cursor_uses_display_width_for_wide_characters() {
         let area = Rect::new(10, 5, 10, 6);
         assert_eq!(
-            prompt_cursor_position(area, "你好你好", "你好你好".len(), 0),
+            prompt_cursor_position(area, "你好你好", "你好你好".len(), 0, 0),
             (13, 8)
         );
     }
@@ -1150,7 +1186,7 @@ mod tests {
     fn prompt_cursor_clamps_to_prompt_pane_height() {
         let area = Rect::new(10, 5, 10, 4);
         assert_eq!(
-            prompt_cursor_position(area, "abcdefgh\nabcdefgh", "abcdefgh\nabcdefgh".len(), 0),
+            prompt_cursor_position(area, "abcdefgh\nabcdefgh", "abcdefgh\nabcdefgh".len(), 0, 0),
             (13, 7)
         );
     }
@@ -1158,7 +1194,17 @@ mod tests {
     #[test]
     fn prompt_cursor_tracks_insert_position_inside_line() {
         let area = Rect::new(10, 5, 20, 6);
-        assert_eq!(prompt_cursor_position(area, "hello", 2, 0), (15, 7));
+        assert_eq!(prompt_cursor_position(area, "hello", 2, 0, 0), (15, 7));
+    }
+
+    #[test]
+    fn prompt_pane_scroll_keeps_multiline_cursor_visible() {
+        let area = Rect::new(10, 5, 20, 5);
+        let buffer = "first\n\nsecond\nthird\nfourth";
+        let scroll = prompt_pane_scroll(area, buffer, buffer.len(), 0);
+        assert!(scroll > 0);
+        let (_, y) = prompt_cursor_position(area, buffer, buffer.len(), 0, scroll);
+        assert!(y <= area.y + area.height.saturating_sub(2));
     }
 
     #[test]
@@ -1214,7 +1260,7 @@ mod tests {
     #[test]
     fn prompt_cursor_offsets_for_slash_menu_rows() {
         let area = Rect::new(10, 5, 20, 8);
-        assert_eq!(prompt_cursor_position(area, "/de", 3, 2), (16, 9));
+        assert_eq!(prompt_cursor_position(area, "/de", 3, 2, 0), (16, 9));
     }
 
     #[test]

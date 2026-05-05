@@ -280,6 +280,21 @@ fn slash_prompt_lines(buffer: &str) -> Option<Vec<String>> {
 }
 
 impl TuiApp {
+    pub(super) async fn handle_paste(&mut self, text: &str) -> Result<()> {
+        match &mut self.overlay {
+            OverlayState::None => {
+                let before = self.composer.as_str().to_string();
+                self.composer.insert_str(text);
+                self.sync_slash_menu_after_edit(before != self.composer.as_str());
+            }
+            OverlayState::DebugPromptInput { composer } => {
+                composer.insert_str(text);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(super) async fn move_agent_selection(&mut self, delta: i32) -> Result<()> {
         let Some(target_index) = self.next_agent_index(delta) else {
             return Ok(());
