@@ -1,0 +1,44 @@
+name: Release Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to smoke test.
+        required: false
+        default: v0.13.0
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/release-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-asset:
+    name: Linux asset
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version || 'v0.13.0' }}
+    steps:
+      - name: Download release asset
+        run: |
+          set -euo pipefail
+          mkdir -p dist smoke
+          curl -fsSL \
+            "https://github.com/holon-run/holon/releases/download/${RELEASE_VERSION}/holon-linux-amd64.tar.gz" \
+            -o dist/holon-linux-amd64.tar.gz
+          curl -fsSL \
+            "https://github.com/holon-run/holon/releases/download/${RELEASE_VERSION}/checksums.txt" \
+            -o dist/checksums.txt
+          (cd dist && shasum -a 256 -c checksums.txt --ignore-missing)
+          tar -xzf dist/holon-linux-amd64.tar.gz -C smoke
+
+      - name: Run release asset
+        run: |
+          set -euo pipefail
+          expected="${RELEASE_VERSION#v}"
+          actual="$(./smoke/holon --version)"
+          echo "$actual"
+          test "$actual" = "holon ${expected}"
