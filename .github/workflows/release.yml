@@ -85,7 +85,7 @@ jobs:
             rm -f ./*.sha256
             shasum -a 256 ./*.tar.gz | sort -k2 > checksums.txt
           )
-          scripts/generate-homebrew-formula.sh \
+          bash scripts/generate-homebrew-formula.sh \
             "$GITHUB_REF_NAME" \
             dist-artifacts/checksums.txt \
             homebrew-tap/Formula/holon.rb
