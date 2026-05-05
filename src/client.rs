@@ -21,6 +21,8 @@ use crate::{
     },
 };
 
+const UNIX_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Clone)]
 pub struct LocalClient {
     config: AppConfig,
@@ -578,14 +580,24 @@ impl LocalClient {
         }
         raw.push_str("\r\n");
 
-        stream.write_all(raw.as_bytes()).await?;
-        if let Some(body) = request.body.as_ref() {
-            stream.write_all(body).await?;
-        }
-        stream.flush().await?;
+        let response = tokio::time::timeout(UNIX_CONTROL_REQUEST_TIMEOUT, async {
+            stream.write_all(raw.as_bytes()).await?;
+            if let Some(body) = request.body.as_ref() {
+                stream.write_all(body).await?;
+            }
+            stream.flush().await?;
 
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await?;
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await?;
+            Ok::<Vec<u8>, anyhow::Error>(response)
+        })
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "timed out waiting for unix-socket response for {}",
+                request.path
+            )
+        })??;
         let parsed = parse_http_response(&response).with_context(|| {
             format!("failed to parse unix-socket response for {}", request.path)
         })?;
