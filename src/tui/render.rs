@@ -122,7 +122,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
         OverlayState::HelpView { .. } => "Help: Up/Down, PgUp/PgDn, Home/End, Esc",
     };
 
-    let connection = app.connection_label().to_string();
+    let connection = app.connection_label();
     let model = app
         .selected_agent_summary()
         .map(render_model_status)
