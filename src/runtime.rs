@@ -538,38 +538,65 @@ impl RuntimeHandle {
 
     async fn begin_interactive_turn(
         &self,
+        message: Option<&MessageEnvelope>,
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
     ) -> Result<()> {
-        let mut guard = self.inner.agent.lock().await;
-        guard.state.turn_index += 1;
-        guard.state.last_turn_terminal = None;
-        if guard.state.current_turn_work_item_id.is_none() {
-            guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
-        }
-        guard.state.current_turn_operator_binding_id = operator_binding_id.and_then(|binding_id| {
-            let binding_id = binding_id.trim();
-            if binding_id.is_empty() {
-                None
-            } else {
-                Some(binding_id.to_string())
+        let state = {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state.turn_index += 1;
+            guard.state.last_turn_terminal = None;
+            if guard.state.current_turn_work_item_id.is_none() {
+                guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
             }
-        });
-        guard.state.current_turn_operator_reply_route_id =
-            operator_reply_route_id.and_then(|route| {
-                let route = route.trim();
-                if route.is_empty() {
-                    None
-                } else {
-                    Some(route.to_string())
-                }
+            guard.state.current_turn_operator_binding_id =
+                operator_binding_id.and_then(|binding_id| {
+                    let binding_id = binding_id.trim();
+                    if binding_id.is_empty() {
+                        None
+                    } else {
+                        Some(binding_id.to_string())
+                    }
+                });
+            guard.state.current_turn_operator_reply_route_id =
+                operator_reply_route_id.and_then(|route| {
+                    let route = route.trim();
+                    if route.is_empty() {
+                        None
+                    } else {
+                        Some(route.to_string())
+                    }
+                });
+            guard.state.active_skills.retain(|skill| {
+                matches!(skill.activation_state, SkillActivationState::SessionActive)
             });
-        guard
-            .state
-            .active_skills
-            .retain(|skill| matches!(skill.activation_state, SkillActivationState::SessionActive));
-        self.inner.storage.write_agent(&guard.state)?;
+            self.inner.storage.write_agent(&guard.state)?;
+            guard.state.clone()
+        };
+        self.append_state_changed_events(&state)?;
+        if let Some(message) = message {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "turn_started",
+                serde_json::json!({
+                    "agent_id": message.agent_id.clone(),
+                    "message_id": message.id.clone(),
+                    "message_kind": message.kind.clone(),
+                    "run_id": state.current_run_id,
+                    "turn_index": state.turn_index,
+                }),
+            ))?;
+        }
         Ok(())
+    }
+
+    #[cfg(test)]
+    async fn begin_interactive_turn_for_test(
+        &self,
+        operator_binding_id: Option<&str>,
+        operator_reply_route_id: Option<&str>,
+    ) -> Result<()> {
+        self.begin_interactive_turn(None, operator_binding_id, operator_reply_route_id)
+            .await
     }
 
     fn operator_transport_from_message(
@@ -941,31 +968,24 @@ impl RuntimeHandle {
                     guard.state.status = AgentStatus::AwakeRunning;
                     guard.state.current_run_id = Some(run_id.clone());
                     guard.current_run_interrupt = Some(CurrentRunInterruptHandle {
-                        run_id,
+                        run_id: run_id.clone(),
                         token: interrupt_token,
                         reason: Arc::new(StdMutex::new("operator_interrupted".into())),
                     });
                     guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
                     self.inner.storage.write_agent(&guard.state)?;
-                    self.inner.storage.append_queue_entry(&QueueEntryRecord {
-                        message_id: message.id.clone(),
-                        agent_id: message.agent_id.clone(),
-                        priority: message.priority.clone(),
-                        status: QueueEntryStatus::Dequeued,
-                        created_at: message.created_at,
-                        updated_at: Utc::now(),
-                    })?;
-                    Some((message, prior_state))
+                    let running_state = guard.state.clone();
+                    Some((message, prior_state, running_state))
                 } else {
                     None
                 }
             };
 
-            let Some((message, prior_state)) = next_message else {
+            let Some((message, prior_state, running_state)) = next_message else {
                 if self.maybe_emit_pending_system_tick(None).await? {
                     continue;
                 }
-                {
+                let idle_state = {
                     let mut guard = self.inner.agent.lock().await;
                     if !matches!(
                         guard.state.status,
@@ -976,12 +996,27 @@ impl RuntimeHandle {
                         guard.state.current_run_id = None;
                         guard.state.sleeping_until = None;
                         self.inner.storage.write_agent(&guard.state)?;
-                        self.append_state_changed_events(&guard.state)?;
+                        Some(guard.state.clone())
+                    } else {
+                        None
                     }
+                };
+                if let Some(idle_state) = idle_state {
+                    self.append_state_changed_events(&idle_state)?;
                 }
                 self.inner.notify.notified().await;
                 continue;
             };
+
+            self.append_state_changed_events(&running_state)?;
+            self.inner.storage.append_queue_entry(&QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Dequeued,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            })?;
 
             let prior_closure = self.closure_decision_for_state(&prior_state, None).await?;
             if let Err(err) = self.process_message(message.clone(), prior_closure).await {
@@ -1020,31 +1055,37 @@ impl RuntimeHandle {
                     self.persist_runtime_failure_artifacts(&message, &err)
                         .await?;
                 }
-                let mut guard = self.inner.agent.lock().await;
-                if !matches!(
-                    guard.state.status,
-                    AgentStatus::Paused | AgentStatus::Stopped
-                ) {
-                    guard.state.status = if task_state_reducer::has_blocking_active_tasks(
-                        &self.inner.storage,
-                        &guard.state.active_task_ids,
-                    )? {
-                        AgentStatus::AwaitingTask
-                    } else {
-                        AgentStatus::AwakeIdle
-                    };
-                }
-                guard.state.current_run_id = None;
-                guard.current_run_interrupt = None;
-                self.inner.storage.write_agent(&guard.state)?;
-                drop(guard);
+                let failed_state = {
+                    let mut guard = self.inner.agent.lock().await;
+                    if !matches!(
+                        guard.state.status,
+                        AgentStatus::Paused | AgentStatus::Stopped
+                    ) {
+                        guard.state.status = if task_state_reducer::has_blocking_active_tasks(
+                            &self.inner.storage,
+                            &guard.state.active_task_ids,
+                        )? {
+                            AgentStatus::AwaitingTask
+                        } else {
+                            AgentStatus::AwakeIdle
+                        };
+                    }
+                    guard.state.current_run_id = None;
+                    guard.current_run_interrupt = None;
+                    self.inner.storage.write_agent(&guard.state)?;
+                    guard.state.clone()
+                };
+                self.append_state_changed_events(&failed_state)?;
                 self.maybe_commit_turn_end_work_item_transition().await?;
                 self.record_closure_decision_event(Some(true)).await?;
                 self.maybe_emit_pending_system_tick(None).await?;
             } else {
-                let mut guard = self.inner.agent.lock().await;
-                guard.current_run_interrupt = None;
-                drop(guard);
+                let processed_state = {
+                    let mut guard = self.inner.agent.lock().await;
+                    guard.current_run_interrupt = None;
+                    guard.state.clone()
+                };
+                self.append_state_changed_events(&processed_state)?;
                 self.inner.storage.append_queue_entry(&QueueEntryRecord {
                     message_id: message.id.clone(),
                     agent_id: message.agent_id.clone(),

@@ -437,6 +437,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
         "  /refresh re-bootstrap the selected agent from /state",
         "  /clear-status clear transient local status text",
         "  /debug-prompt open debug prompt dialog",
+        "  /display <3|4|5> set chat visibility level",
         "  //text send /text as normal chat input",
         "",
         "Overlays",

@@ -861,7 +861,10 @@ async fn reading_discovered_skill_marks_it_active_and_promotes_on_success() {
     )
     .unwrap();
 
-    runtime.begin_interactive_turn(None, None).await.unwrap();
+    runtime
+        .begin_interactive_turn_for_test(None, None)
+        .await
+        .unwrap();
     let prompt = runtime
         .preview_prompt(
             "use the demo skill".to_string(),

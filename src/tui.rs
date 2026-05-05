@@ -56,7 +56,7 @@ use logging::TuiLogWriter;
 #[cfg(test)]
 use overlay::centered_rect_rows;
 use overlay::OverlayState;
-use projection::{ProjectionSlice, TuiProjection};
+use projection::{OperatorVisibility, ProjectionSlice, TuiProjection};
 use render::draw;
 
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -183,6 +183,7 @@ struct TuiApp {
     overlay: OverlayState,
     last_refresh_at: Option<DateTime<Local>>,
     last_event_at: Option<DateTime<Local>>,
+    display_level: OperatorVisibility,
     pub(crate) status_line: String,
     should_quit: bool,
     chat_text_cache: RefCell<Option<CachedChatText>>,
@@ -247,6 +248,7 @@ impl TuiApp {
             overlay: OverlayState::None,
             last_refresh_at: None,
             last_event_at: None,
+            display_level: OperatorVisibility::DEFAULT_DISPLAY_LEVEL,
             status_line: "Connecting to local Holon runtime...".into(),
             should_quit: false,
             chat_text_cache: RefCell::new(None),
@@ -924,9 +926,10 @@ mod tests {
     use super::{
         build_chat_text, centered_rect_rows, chat_text, collect_chat_items,
         determine_alt_screen_mode_for_terminal, is_cursor_too_old_error, is_operator_origin_value,
-        paragraph_max_scroll, projection::TuiProjection, AgentListChange, ChatScrollState,
-        ComposerState, ConversationCell, OverlayState, TuiApp, TuiConnectionState,
-        TuiRuntimeMessage,
+        paragraph_max_scroll,
+        projection::{OperatorVisibility, TuiProjection},
+        AgentListChange, ChatScrollState, ComposerState, ConversationCell, OverlayState, TuiApp,
+        TuiConnectionState, TuiRuntimeMessage,
     };
     use crate::{
         client::{
@@ -1559,6 +1562,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slash_display_sets_chat_visibility_level() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/display 5");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.display_level, OperatorVisibility::Trace);
+        assert_eq!(app.overlay, OverlayState::None);
+        assert_eq!(app.composer.as_str(), "");
+        assert_eq!(app.status_line, "Display level set to 5");
+    }
+
+    #[tokio::test]
     async fn slash_menu_enter_runs_selected_prefix_command() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
@@ -1907,9 +1929,54 @@ mod tests {
             .into_iter()
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
-        assert!(!rendered.contains("System (work)"));
         assert!(rendered.contains("Assistant hidden provider partial"));
-        assert!(rendered.contains("Action    prepare rollout plan [Open]"));
+        assert!(rendered.contains("Action    Waiting for activity"));
+    }
+
+    #[test]
+    fn chat_display_level_five_shows_trace_events_without_working_row() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.display_level = OperatorVisibility::Trace;
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-tool".into(),
+                event: "tool_executed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-tool".into(),
+                    seq: 2,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    payload: json!({
+                        "tool_name": "ExecCommand",
+                        "exec_command_cmd": "cargo test tui"
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.projection = Some(projection);
+
+        let items = collect_chat_items(&app);
+        let rendered: String = build_chat_text(&items)
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(items.iter().any(|item| matches!(
+            item,
+            ConversationCell::SystemNotice { body, .. }
+                if body.contains("tool executed: ExecCommand")
+        )));
+        assert!(rendered.contains("tool executed: ExecCommand"));
+        assert!(!rendered.contains("Working"));
     }
 
     #[test]
@@ -2025,7 +2092,7 @@ mod tests {
         assert!(rendered.contains("Working"));
         assert!(rendered.contains("Current   Improve the Conversation working indicator"));
         assert!(rendered.contains("Assistant ..."));
-        assert!(rendered.contains("Action    Still working"));
+        assert!(rendered.contains("Action    Waiting for activity"));
     }
 
     #[test]
@@ -2373,6 +2440,44 @@ mod tests {
                 ..
             } if body == "persisted operator text"
         ));
+    }
+
+    #[test]
+    fn chat_text_omits_processing_and_processed_operator_status_labels() {
+        for status in [
+            OperatorMessageStatus::Processing,
+            OperatorMessageStatus::Processed,
+        ] {
+            let client = LocalClient::new(test_config()).unwrap();
+            let mut app = TuiApp::new(
+                client,
+                crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+            );
+            let ts = Utc::now();
+            let mut snapshot = sample_snapshot("default", "evt-0");
+            snapshot.operator_messages = vec![OperatorMessageRecord {
+                message_id: "message-1".into(),
+                agent_id: "default".into(),
+                status: status.clone(),
+                created_at: ts,
+                updated_at: ts,
+                body: MessageBody::Text {
+                    text: "operator text".into(),
+                },
+                error: None,
+            }];
+            app.projection = Some(TuiProjection::from_snapshot(snapshot));
+            app.apply_projection_view();
+
+            let rendered: String = build_chat_text(&collect_chat_items(&app))
+                .lines
+                .into_iter()
+                .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+                .collect();
+            assert!(rendered.contains("operator text"));
+            assert!(!rendered.contains("[processing]"));
+            assert!(!rendered.contains("[processed]"));
+        }
     }
 
     #[test]

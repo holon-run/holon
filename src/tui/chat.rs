@@ -171,15 +171,25 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     }
 
     if let Some(projection) = app.projection.as_ref() {
-        for event in projection.durable_conversation_events() {
-            if !is_chat_visible_conversation_event(&event.kind) {
+        for event in projection.visible_events(app.display_level) {
+            if event.kind == "message_enqueued" || event.kind == "brief_created" {
                 continue;
             }
-            cells.push(ConversationCell::SystemNotice {
-                created_at: event.ts,
-                speaker: conversation_event_speaker(&event.kind),
-                body: conversation_event_body(event),
-            });
+            if is_progress_event_kind(&event.kind) {
+                cells.push(ConversationCell::AssistantMarkdown(AssistantMarkdownCell {
+                    created_at: event.ts,
+                    agent_id: "Holon (progress)".to_string(),
+                    markdown: conversation_event_body(event),
+                }));
+            } else if is_chat_visible_conversation_event(&event.kind)
+                || projection.operator_visibility(event).display_level() >= 4
+            {
+                cells.push(ConversationCell::SystemNotice {
+                    created_at: event.ts,
+                    speaker: conversation_event_speaker(&event.kind),
+                    body: conversation_event_body(event),
+                });
+            }
         }
     }
 
@@ -415,8 +425,7 @@ fn operator_message_status_label(status: OperatorMessageStatus) -> Option<&'stat
         OperatorMessageStatus::Sending => Some("sending"),
         OperatorMessageStatus::Queued => Some("queued"),
         OperatorMessageStatus::WaitingForSafePoint => Some("waiting"),
-        OperatorMessageStatus::Processing => Some("processing"),
-        OperatorMessageStatus::Processed => Some("processed"),
+        OperatorMessageStatus::Processing | OperatorMessageStatus::Processed => None,
         OperatorMessageStatus::Failed => Some("failed"),
         OperatorMessageStatus::Dropped => Some("dropped"),
     }
@@ -526,6 +535,9 @@ fn active_activity_item(
     app: &TuiApp,
     fallback_ts: Option<DateTime<chrono::Utc>>,
 ) -> Option<ConversationCell> {
+    if app.display_level >= crate::tui::projection::OperatorVisibility::Trace {
+        return None;
+    }
     let projection = app.projection.as_ref();
     let agent = projection
         .map(|projection| &projection.agent)
@@ -534,8 +546,11 @@ fn active_activity_item(
         return None;
     }
 
-    let latest_action = projection.and_then(latest_action_event);
-    let latest_assistant = latest_assistant_message(app, projection);
+    let hidden_events = projection
+        .map(|projection| projection.hidden_current_turn_events(app.display_level))
+        .unwrap_or_default();
+    let latest_action = latest_action_event(hidden_events.as_slice());
+    let latest_assistant = latest_assistant_message(app, projection, hidden_events.as_slice());
     let latest_event_ts =
         projection.and_then(|projection| projection.event_log().last().map(|event| event.ts));
     let created_at = [
@@ -592,13 +607,13 @@ fn agent_has_active_activity(agent: &AgentSummary) -> bool {
         || active_child
 }
 
-fn latest_action_event(
-    projection: &crate::tui::projection::TuiProjection,
-) -> Option<&crate::tui::projection::ProjectionEventRecord> {
-    projection
-        .event_log()
+fn latest_action_event<'a>(
+    events: &'a [&'a crate::tui::projection::ProjectionEventRecord],
+) -> Option<&'a crate::tui::projection::ProjectionEventRecord> {
+    events
         .iter()
         .rev()
+        .copied()
         .find(|event| is_active_action_event_kind(&event.kind))
 }
 
@@ -639,16 +654,16 @@ fn is_active_action_event_kind(kind: &str) -> bool {
 fn latest_assistant_message(
     app: &TuiApp,
     projection: Option<&crate::tui::projection::TuiProjection>,
+    hidden_events: &[&crate::tui::projection::ProjectionEventRecord],
 ) -> Option<String> {
-    projection
-        .and_then(|projection| {
-            projection
-                .event_log()
-                .iter()
-                .rev()
-                .find_map(assistant_message_from_event)
-        })
+    hidden_events
+        .iter()
+        .rev()
+        .find_map(|event| assistant_message_from_event(event))
         .or_else(|| {
+            if projection.is_some_and(|projection| agent_has_active_activity(&projection.agent)) {
+                return None;
+            }
             app.transcript
                 .iter()
                 .rev()
@@ -663,6 +678,13 @@ fn assistant_message_from_event(
         return None;
     }
     event.payload.get("text_preview").and_then(non_empty_value)
+}
+
+fn is_progress_event_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "provider_round_completed" | "text_only_round_observed"
+    )
 }
 
 fn assistant_message_from_transcript(entry: &TranscriptEntry) -> Option<String> {
