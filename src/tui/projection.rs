@@ -1102,10 +1102,35 @@ mod tests {
                 "text_only_round_observed",
                 json!({ "round": 2, "text_preview": "still working" }),
             ),
-            ("max_output_tokens_recovery", json!({ "round": 3 })),
-            ("runtime_error", json!({ "message": "visible error" })),
-            ("message_admitted", json!({ "message_id": "message-1" })),
-            ("control_applied", json!({ "control": "interrupt" })),
+            (
+                "max_output_tokens_recovery",
+                json!({ "agent_id": "default", "attempt": 1 }),
+            ),
+            (
+                "runtime_error",
+                json!({
+                    "message_id": "message-1",
+                    "message_kind": "operator_prompt",
+                    "error": "visible error",
+                    "token_usage": null,
+                }),
+            ),
+            (
+                "message_admitted",
+                json!({
+                    "message_id": "message-1",
+                    "agent_id": "default",
+                    "kind": "operator_prompt",
+                    "origin": { "kind": "operator", "actor_id": null },
+                    "trust": "trusted_operator",
+                    "authority_class": "operator_instruction",
+                    "delivery_surface": "http_control_prompt",
+                    "admission_context": "local_process",
+                    "correlation_id": null,
+                    "causation_id": null,
+                }),
+            ),
+            ("control_applied", json!({ "action": "pause" })),
         ] {
             projection.apply_event(sample_event(kind, payload), &test_log_writer());
         }
