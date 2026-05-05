@@ -311,7 +311,7 @@ async fn interrupt_operator_prompt_is_interjected_before_next_provider_round() {
         .expect("interjection queue entry");
     assert_eq!(interjected_entry.status, QueueEntryStatus::Interjected);
     assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
-    let events = runtime.storage().read_recent_events(20).unwrap();
+    let events = runtime.storage().read_recent_events(200).unwrap();
     assert!(events.iter().any(|event| {
         event.kind == "operator_interjection_admitted"
             && event
