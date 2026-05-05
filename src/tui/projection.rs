@@ -17,7 +17,7 @@ use crate::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentState, AgentSummary, BriefRecord, ClosureDecision,
-        ExternalTriggerStateSnapshot, MessageEnvelope, OperatorMessageRecord,
+        ExternalTriggerStateSnapshot, MessageEnvelope, MessageOrigin, OperatorMessageRecord,
         OperatorMessageStatus, TaskRecord, TimerRecord, TimerStatus, TranscriptEntry,
         TranscriptEntryKind, WaitingIntentRecord, WorkItemRecord, WorkItemState, WorktreeSession,
     },
@@ -201,7 +201,9 @@ impl TuiProjection {
             }
             "message_enqueued" => {
                 if let Some(message) = decode_payload::<MessageEnvelope>(&event.data.payload) {
-                    self.upsert_operator_message(operator_message_from_enqueued(&message));
+                    if matches!(message.origin, MessageOrigin::Operator { .. }) {
+                        self.upsert_operator_message(operator_message_from_enqueued(&message));
+                    }
                     self.append_transcript_message(message);
                     self.stale_slices.remove(&ProjectionSlice::TranscriptTail);
                 } else {
@@ -1198,6 +1200,34 @@ mod tests {
         assert_eq!(
             lanes,
             vec![ProjectionEventLane::Timeline, ProjectionEventLane::Timeline]
+        );
+    }
+
+    #[test]
+    fn projection_does_not_show_task_rejoin_as_pending_operator_message() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let mut message = sample_message();
+        message.kind = MessageKind::TaskResult;
+        message.origin = MessageOrigin::Task {
+            task_id: "task-1".into(),
+        };
+        message.priority = Priority::Next;
+        message.body = MessageBody::Text {
+            text: "command task completed".into(),
+        };
+
+        projection.apply_event(
+            sample_event("message_enqueued", serde_json::to_value(&message).unwrap()),
+            &test_log_writer(),
+        );
+
+        assert!(projection.operator_messages.is_empty());
+        assert_eq!(
+            projection
+                .transcript_tail
+                .last()
+                .and_then(|entry| entry.related_message_id.as_deref()),
+            Some(message.id.as_str())
         );
     }
 
