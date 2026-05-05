@@ -129,13 +129,18 @@ impl RuntimeHandle {
                 &self.inner.storage.read_recent_briefs(64)?,
             ),
         };
+        let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
         Ok(derive_closure_decision(&ClosureFacts {
             runtime_error,
-            awaiting_operator_input: false,
+            awaiting_operator_input: super::memory_refresh::work_queue_waits_for_operator(
+                &work_queue_projection,
+            ),
             active_blocking_tasks: self.blocking_active_task_count().await?,
             active_waiting_intents,
             active_timers,
-            work_signal: self.current_work_reactivation_signal()?,
+            work_signal: super::memory_refresh::work_queue_reactivation_signal(
+                &work_queue_projection,
+            ),
             turn_started: state.turn_index > 0,
             turn_in_progress: state.current_run_id.is_some(),
             turn_terminal_kind: state
@@ -416,17 +421,20 @@ impl RuntimeHandle {
             .into_iter()
             .filter(|timer| timer.status == TimerStatus::Active)
             .count();
+        let work_queue_projection = storage.work_queue_prompt_projection()?;
         let closure = derive_closure_decision(&ClosureFacts {
             runtime_error: runtime_error_active(
                 &storage.read_recent_events(64)?,
                 &storage.read_recent_briefs(64)?,
             ),
-            awaiting_operator_input: false,
+            awaiting_operator_input: super::memory_refresh::work_queue_waits_for_operator(
+                &work_queue_projection,
+            ),
             active_blocking_tasks: blocking_task_count(&active_tasks),
             active_waiting_intents: active_waiting_intent_count,
             active_timers,
             work_signal: super::memory_refresh::work_queue_reactivation_signal(
-                &storage.work_queue_prompt_projection()?,
+                &work_queue_projection,
             ),
             turn_started: state.turn_index > 0,
             turn_in_progress: state.current_run_id.is_some(),

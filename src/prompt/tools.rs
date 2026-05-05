@@ -46,7 +46,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_notify_operator",
             PromptStability::Stable,
-            "Use NotifyOperator when something should be explicitly surfaced to the relevant operator without stopping the current turn. Provide a clear free-form `message`; Holon records an operator-facing notification and derives a short summary from the first non-empty line. NotifyOperator is non-terminal: keep working afterward when there is a reasonable default path, or call Sleep explicitly after notifying if the agent should wait. For private child agents, the notification routes to the parent/supervision boundary rather than creating an independent operator route.".to_string(),
+            "NotifyOperator is a constrained runtime-policy surface for operator delivery adapters, not a normal agent progress or completion channel. Prefer final responses, WorkItem plan_status/blocked_by/completion state, briefs, and runtime-derived activity for operator-facing communication; do not duplicate those facts through ad hoc notifications.".to_string(),
         ));
     }
     if names.contains(&"Enqueue") {
@@ -71,14 +71,14 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_work_item_write",
             PromptStability::Stable,
-            "Use CreateWorkItem to create a new open objective only for genuinely separate work, PickWorkItem to make an existing open item current, UpdateWorkItem to refine objective, plan_status, plan, todo_list, and/or blocked_by, and CompleteWorkItem only when the objective is actually complete. If the current task is not just a brief answer and there is no current work item yet, clarify the objective with the operator if it is still ambiguous; if bounded inspection is needed to make the objective concrete, do that inspection, then create or refresh the work item once the objective is stable enough to name. Do not create a new WorkItem just to refine or narrow the current objective; if the current WorkItem is still the same underlying task, update its objective, plan, and todo_list with UpdateWorkItem. If an old WorkItem should be replaced, complete it first or explicitly PickWorkItem for the intended item before creating genuinely independent work. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, maintain plan as durable prose and todo_list as the full current checklist snapshot rather than patching individual items. Before nontrivial file mutation or other high-commitment action, make sure the current work item has a durable plan and set plan_status=ready once the plan is stable; if task interpretation, scope, or acceptance changes, update objective or plan before continuing. Update todo_list after material progress such as a code change, verification result, blocker discovery, or completed inspection objective. Work-item updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current item remains open because progress is blocked, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Complete explicitly when complete; when using result_summary, include the result and any verification performed or why verification was not applicable.".to_string(),
+            "Use CreateWorkItem to create a new open objective only for genuinely separate work, PickWorkItem to make an existing open item current, UpdateWorkItem to refine objective, plan_status, plan, todo_list, and/or blocked_by, and CompleteWorkItem only when the objective is actually complete. If the current task is not just a brief answer and there is no current work item yet, clarify the objective with the operator if it is still ambiguous; if bounded inspection is needed to make the objective concrete, do that inspection, then create or refresh the work item once the objective is stable enough to name. Continuous discussion, planning threads, candidate issue screening, option comparison, and incremental decisions should normally reuse one WorkItem; record candidate issues, options, and decisions in that WorkItem's plan and todo_list. Create a new WorkItem only when the operator asks for independent execution or the objective has an independent lifecycle. Do not create a new WorkItem just to refine, narrow, or switch candidates inside the same planning thread; if the current WorkItem is still the same underlying task, update its objective, plan, and todo_list with UpdateWorkItem. If an old WorkItem should be replaced, complete it first or explicitly PickWorkItem for the intended item before creating genuinely independent work. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, maintain plan as durable prose and todo_list as the full current checklist snapshot rather than patching individual items. Before nontrivial file mutation or other high-commitment action, make sure the current work item has a durable plan and set plan_status=ready once the plan is stable; use plan_status=needs_input when the current open item is waiting for operator input and must not be scheduler-resumed as runnable work. If task interpretation, scope, or acceptance changes, update objective or plan before continuing. Update todo_list after material progress such as a code change, verification result, blocker discovery, or completed inspection objective. Work-item updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current item remains open because progress is blocked, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Complete explicitly when complete; when using result_summary, include the result and any verification performed or why verification was not applicable.".to_string(),
         ));
     }
     if names.contains(&"GetWorkItem") || names.contains(&"ListWorkItems") {
         sections.push(section(
             "tool_work_item_read",
             PromptStability::Stable,
-            "Use ListWorkItems with filter=current to inspect the current work-item focus before relying on memory briefs. Use GetWorkItem when you already know the id and need its open/completed state, focus flag, optional plan, and optional todo_list. Use ListWorkItems for queue inspection with filters such as open, completed, current, queued, and blocked. Treat current_work_item_id as focus, not lifecycle; open/completed describes completion, while current/queued/blocked is the scheduling view. Read the work-item surface before switching, completing, or expanding cross-turn work so the next action is anchored to the right objective.".to_string(),
+            "Use ListWorkItems with filter=current to inspect the current work-item focus before relying on memory briefs. Use GetWorkItem when you already know the id and need its open/completed state, focus flag, readiness, optional plan, and optional todo_list. Use ListWorkItems for queue inspection with filters such as open, completed, current, queued, blocked, waiting_for_operator, and runnable. Treat current_work_item_id as focus, not lifecycle; open/completed describes completion, current/queued/blocked describes focus, and readiness describes scheduler eligibility. Read the work-item surface before switching, completing, or expanding cross-turn work so the next action is anchored to the right objective.".to_string(),
         ));
     }
     if names.contains(&"TaskList")
@@ -210,8 +210,9 @@ mod tests {
             .iter()
             .find(|s| s.name == "tool_notify_operator")
             .expect("notify operator section");
-        assert!(section.content.contains("non-terminal"));
-        assert!(section.content.contains("Sleep"));
+        assert!(section.content.contains("runtime-policy surface"));
+        assert!(section.content.contains("not a normal agent progress"));
+        assert!(section.content.contains("WorkItem plan_status/blocked_by"));
     }
 
     #[test]
@@ -292,11 +293,26 @@ mod tests {
         assert!(section.content.contains("genuinely separate work"));
         assert!(section
             .content
-            .contains("Do not create a new WorkItem just to refine or narrow"));
+            .contains("Continuous discussion, planning threads"));
+        assert!(section.content.contains("candidate issue screening"));
+        assert!(section
+            .content
+            .contains("record candidate issues, options, and decisions"));
+        assert!(section.content.contains("independent lifecycle"));
+        assert!(section
+            .content
+            .contains("Do not create a new WorkItem just to refine"));
+        assert!(section
+            .content
+            .contains("switch candidates inside the same planning thread"));
         assert!(section
             .content
             .contains("update its objective, plan, and todo_list"));
         assert!(section.content.contains("plan_status=ready"));
+        assert!(section.content.contains("plan_status=needs_input"));
+        assert!(section
+            .content
+            .contains("must not be scheduler-resumed as runnable work"));
         assert!(section
             .content
             .contains("update objective or plan before continuing"));
@@ -337,6 +353,11 @@ mod tests {
             .expect("work item read section");
         assert!(section.content.contains("current_work_item_id as focus"));
         assert!(section.content.contains("open/completed"));
+        assert!(section.content.contains("waiting_for_operator"));
+        assert!(section.content.contains("runnable"));
+        assert!(section
+            .content
+            .contains("readiness describes scheduler eligibility"));
         assert!(section.content.contains("before relying on memory briefs"));
     }
 

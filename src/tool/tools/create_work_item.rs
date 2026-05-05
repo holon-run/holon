@@ -56,7 +56,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<CreateWorkItemArgs>(
             NAME,
-            "Create a new open work item for a genuinely separate objective. Use plan for durable task understanding and todo_list only for progress checklist items. Do not create a new work item just to refine the current task; use UpdateWorkItem.objective and UpdateWorkItem.plan for that.",
+            "Create a new open work item for a genuinely separate objective with an independent lifecycle. Use plan for durable task understanding and todo_list only for progress checklist items. Continuous discussion, planning, candidate screening, and option comparison should usually update the current work item instead. Do not create a new work item just to refine, narrow, or switch candidates inside the current task; use UpdateWorkItem.objective, UpdateWorkItem.plan, and UpdateWorkItem.todo_list for that.",
         )?,
     })
 }

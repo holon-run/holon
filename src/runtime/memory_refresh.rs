@@ -17,7 +17,7 @@ pub(super) fn work_queue_reactivation_signal(
     projection: &WorkQueuePromptProjection,
 ) -> Option<WorkReactivationSignal> {
     if let Some(current) = projection.current.as_ref() {
-        if current.blocked_by.is_none() {
+        if current.is_runnable() {
             return Some(WorkReactivationSignal {
                 work_item_id: current.id.clone(),
                 state: current.state.clone(),
@@ -28,12 +28,19 @@ pub(super) fn work_queue_reactivation_signal(
     projection
         .queued_blocked
         .iter()
-        .find(|item| item.blocked_by.is_none())
+        .find(|item| item.is_runnable())
         .map(|queued| WorkReactivationSignal {
             work_item_id: queued.id.clone(),
             state: queued.state.clone(),
             reactivation_mode: WorkReactivationMode::ActivateQueued,
         })
+}
+
+pub(super) fn work_queue_waits_for_operator(projection: &WorkQueuePromptProjection) -> bool {
+    projection
+        .current
+        .as_ref()
+        .is_some_and(|item| item.is_waiting_for_operator())
 }
 
 fn idle_tick_trigger_from_state(
@@ -44,14 +51,14 @@ fn idle_tick_trigger_from_state(
         Some(IdleTickTrigger::WakeHint(pending))
     } else {
         if let Some(current) = projection.current {
-            if current.blocked_by.is_none() {
+            if current.is_runnable() {
                 return Some(IdleTickTrigger::WorkQueueActive(current));
             }
         }
         projection
             .queued_blocked
             .into_iter()
-            .find(|item| item.blocked_by.is_none())
+            .find(|item| item.is_runnable())
             .map(IdleTickTrigger::WorkQueueQueued)
     }
 }
@@ -452,13 +459,6 @@ impl RuntimeHandle {
         ))?;
         let _ = self.enqueue(message).await?;
         Ok(())
-    }
-
-    pub(super) fn current_work_reactivation_signal(
-        &self,
-    ) -> Result<Option<WorkReactivationSignal>> {
-        let projection = self.inner.storage.work_queue_prompt_projection()?;
-        Ok(work_queue_reactivation_signal(&projection))
     }
 
     pub(super) async fn emit_system_tick_from_interrupted_tasks(

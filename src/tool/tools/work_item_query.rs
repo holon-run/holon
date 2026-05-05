@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     runtime::RuntimeHandle,
-    types::{TodoItem, WorkItemPlanStatus, WorkItemRecord, WorkItemState},
+    types::{TodoItem, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,7 +31,9 @@ pub(crate) struct WorkItemView {
     pub(crate) objective: String,
     pub(crate) state: WorkItemLifecycleView,
     pub(crate) focus: WorkItemFocusView,
+    pub(crate) readiness: WorkItemReadiness,
     pub(crate) is_current: bool,
+    pub(crate) is_runnable: bool,
     pub(crate) plan_status: WorkItemPlanStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) plan: Option<String>,
@@ -91,6 +93,7 @@ pub(crate) async fn view_for_record(
     };
     let state = lifecycle_view(&record.state);
     let focus = focus_view(&record, is_current);
+    let readiness = record.readiness();
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
@@ -98,7 +101,9 @@ pub(crate) async fn view_for_record(
         objective: record.objective,
         state,
         focus,
+        readiness,
         is_current,
+        is_runnable: readiness == WorkItemReadiness::Runnable,
         plan_status: record.plan_status,
         plan,
         todo_list,

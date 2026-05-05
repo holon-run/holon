@@ -142,6 +142,7 @@ pub(crate) enum ToolCapabilityFamily {
     AgentCreation,
     AuthorityExpanding,
     ExternalTrigger,
+    OperatorNotification,
 }
 
 impl ToolCapabilityFamily {
@@ -153,6 +154,7 @@ impl ToolCapabilityFamily {
             Self::AgentCreation => "agent_creation",
             Self::AuthorityExpanding => "authority_expanding",
             Self::ExternalTrigger => "external_trigger",
+            Self::OperatorNotification => "operator_notification",
         }
     }
 }
@@ -2332,6 +2334,15 @@ pub enum WorkItemPlanStatus {
     NeedsInput,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemReadiness {
+    Runnable,
+    WaitingForOperator,
+    Blocked,
+    Completed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemRecord {
     pub id: String,
@@ -2375,6 +2386,27 @@ impl WorkItemRecord {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    pub fn readiness(&self) -> WorkItemReadiness {
+        if self.state == WorkItemState::Completed {
+            return WorkItemReadiness::Completed;
+        }
+        if self.blocked_by.is_some() {
+            return WorkItemReadiness::Blocked;
+        }
+        if self.plan_status == WorkItemPlanStatus::NeedsInput {
+            return WorkItemReadiness::WaitingForOperator;
+        }
+        WorkItemReadiness::Runnable
+    }
+
+    pub fn is_runnable(&self) -> bool {
+        self.readiness() == WorkItemReadiness::Runnable
+    }
+
+    pub fn is_waiting_for_operator(&self) -> bool {
+        self.readiness() == WorkItemReadiness::WaitingForOperator
     }
 }
 
@@ -3099,6 +3131,8 @@ mod tests {
             .allows_tool_capability_family(ToolCapabilityFamily::AgentCreation));
         assert!(!AgentProfilePreset::PrivateChild
             .allows_tool_capability_family(ToolCapabilityFamily::AuthorityExpanding));
+        assert!(!AgentProfilePreset::PrivateChild
+            .allows_tool_capability_family(ToolCapabilityFamily::OperatorNotification));
         assert!(AgentProfilePreset::PrivateChild
             .allows_tool_capability_family(ToolCapabilityFamily::LocalEnvironment));
         assert!(AgentProfilePreset::PrivateChild
@@ -3106,7 +3140,7 @@ mod tests {
     }
 
     #[test]
-    fn public_named_enables_all_current_tool_capability_families() {
+    fn public_named_keeps_operator_notification_policy_owned_by_runtime() {
         for family in [
             ToolCapabilityFamily::CoreAgent,
             ToolCapabilityFamily::LocalEnvironment,
@@ -3116,5 +3150,7 @@ mod tests {
         ] {
             assert!(AgentProfilePreset::PublicNamed.allows_tool_capability_family(family));
         }
+        assert!(!AgentProfilePreset::PublicNamed
+            .allows_tool_capability_family(ToolCapabilityFamily::OperatorNotification));
     }
 }

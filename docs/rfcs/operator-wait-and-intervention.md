@@ -1,12 +1,23 @@
 ---
 title: RFC: Operator Notification and Intervention
 date: 2026-04-23
-status: draft
+status: superseded
 issue:
   - 375
 ---
 
 # RFC: Operator Notification and Intervention
+
+## 2026-05 Update
+
+The phase-1 `NotifyOperator` tool described below is no longer exposed to
+normal agent profiles. Operator delivery policy belongs to runtime, UI, and
+transport adapters. Agents should express operator-relevant facts through final
+responses, WorkItem `plan_status`, `blocked_by`, completion summaries, briefs,
+and structured runtime events instead of choosing ad hoc notification delivery.
+
+The lower-level operator notification record/event capability remains available
+for runtime policy and adapters.
 
 ## Summary
 

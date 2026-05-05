@@ -1,5 +1,6 @@
 use super::super::*;
 use super::support::*;
+use crate::types::WorkItemPlanStatus;
 
 #[tokio::test]
 async fn work_item_query_tools_return_current_open_done_views() {
@@ -71,7 +72,9 @@ async fn work_item_query_tools_return_current_open_done_views() {
     );
     assert_eq!(active_item["state"].as_str(), Some("open"));
     assert_eq!(active_item["focus"].as_str(), Some("current"));
+    assert_eq!(active_item["readiness"].as_str(), Some("runnable"));
     assert_eq!(active_item["is_current"].as_bool(), Some(true));
+    assert_eq!(active_item["is_runnable"].as_bool(), Some(true));
     assert_eq!(
         active_item["plan"].as_str(),
         Some("Inspect query surface behavior.")
@@ -130,6 +133,10 @@ async fn work_item_query_tools_return_current_open_done_views() {
         completed_payload["work_item"]["focus"].as_str(),
         Some("completed")
     );
+    assert_eq!(
+        completed_payload["work_item"]["readiness"].as_str(),
+        Some("completed")
+    );
 
     bind_turn_to_work_item(&runtime, completed.id.as_str()).await;
     let (fallback_result, _) = registry
@@ -153,6 +160,121 @@ async fn work_item_query_tools_return_current_open_done_views() {
     assert_eq!(
         fallback_payload["work_items"][0]["id"].as_str(),
         Some(active.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn work_item_query_tools_return_readiness_views() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let runnable = runtime
+        .create_work_item("runnable work".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let waiting = runtime
+        .create_work_item(
+            "waiting work".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let blocked = runtime
+        .create_work_item("blocked work".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime
+        .update_work_item_fields(
+            blocked.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("waiting for CI".into())),
+        )
+        .await
+        .unwrap();
+
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let list = |filter: &'static str| {
+        let registry = &registry;
+        let runtime = &runtime;
+        async move {
+            let (result, _) = registry
+                .execute(
+                    runtime,
+                    "default",
+                    &TrustLevel::TrustedOperator,
+                    &crate::tool::ToolCall {
+                        id: format!("list-{filter}"),
+                        name: "ListWorkItems".into(),
+                        input: serde_json::json!({"filter": filter}),
+                    },
+                )
+                .await
+                .unwrap();
+            result.envelope.result.unwrap()
+        }
+    };
+
+    let runnable_payload = list("runnable").await;
+    assert_eq!(runnable_payload["total_matching"].as_u64(), Some(1));
+    assert_eq!(
+        runnable_payload["work_items"][0]["id"].as_str(),
+        Some(runnable.id.as_str())
+    );
+    assert_eq!(
+        runnable_payload["work_items"][0]["readiness"].as_str(),
+        Some("runnable")
+    );
+
+    let waiting_payload = list("waiting_for_operator").await;
+    assert_eq!(waiting_payload["total_matching"].as_u64(), Some(1));
+    assert_eq!(
+        waiting_payload["work_items"][0]["id"].as_str(),
+        Some(waiting.id.as_str())
+    );
+    assert_eq!(
+        waiting_payload["work_items"][0]["readiness"].as_str(),
+        Some("waiting_for_operator")
+    );
+    assert_eq!(
+        waiting_payload["work_items"][0]["is_runnable"].as_bool(),
+        Some(false)
+    );
+
+    let queued_payload = list("queued").await;
+    assert_eq!(queued_payload["total_matching"].as_u64(), Some(2));
+    let queued_ids = queued_payload["work_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect::<Vec<_>>();
+    assert!(queued_ids.contains(&runnable.id.as_str()));
+    assert!(queued_ids.contains(&waiting.id.as_str()));
+
+    let blocked_payload = list("blocked").await;
+    assert_eq!(blocked_payload["total_matching"].as_u64(), Some(1));
+    assert_eq!(
+        blocked_payload["work_items"][0]["id"].as_str(),
+        Some(blocked.id.as_str())
+    );
+    assert_eq!(
+        blocked_payload["work_items"][0]["readiness"].as_str(),
+        Some("blocked")
     );
 }
 
@@ -1467,6 +1589,53 @@ async fn current_closure_reports_continuable_for_current_work_item() {
 }
 
 #[tokio::test]
+async fn current_needs_input_work_item_waits_for_operator_without_work_signal() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut active = WorkItemRecord::new(
+        "default",
+        "choose implementation direction",
+        WorkItemState::Open,
+    );
+    active.plan_status = WorkItemPlanStatus::NeedsInput;
+    let active_id = active.id.clone();
+    storage.append_work_item(&active).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some(active_id.clone());
+    storage.write_agent(&agent).unwrap();
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("tick done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let closure = runtime.current_closure_decision().await.unwrap();
+    assert_eq!(closure.outcome, ClosureOutcome::Waiting);
+    assert_eq!(
+        closure.waiting_reason,
+        Some(WaitingReason::AwaitingOperatorInput)
+    );
+    assert!(closure.work_signal.is_none());
+    assert!(closure
+        .evidence
+        .iter()
+        .any(|item| item == "awaiting_operator_input_signal"));
+
+    let emitted = runtime.maybe_emit_pending_system_tick(None).await.unwrap();
+    assert!(
+        !emitted,
+        "needs_input current work item must not auto-resume through work_queue"
+    );
+}
+
+#[tokio::test]
 async fn current_closure_reports_continuable_for_queued_work_item_without_active_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -1499,6 +1668,39 @@ async fn current_closure_reports_continuable_for_queued_work_item_without_active
     assert_eq!(
         signal.reactivation_mode,
         WorkReactivationMode::ActivateQueued
+    );
+}
+
+#[tokio::test]
+async fn queued_needs_input_work_item_is_not_runnable() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut queued =
+        WorkItemRecord::new("default", "waiting planning candidate", WorkItemState::Open);
+    queued.plan_status = WorkItemPlanStatus::NeedsInput;
+    storage.append_work_item(&queued).unwrap();
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("tick done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let closure = runtime.current_closure_decision().await.unwrap();
+    assert_eq!(closure.outcome, ClosureOutcome::Completed);
+    assert_eq!(closure.waiting_reason, None);
+    assert!(closure.work_signal.is_none());
+
+    let emitted = runtime.maybe_emit_pending_system_tick(None).await.unwrap();
+    assert!(
+        !emitted,
+        "queued needs_input work item should not emit queued_available"
     );
 }
 

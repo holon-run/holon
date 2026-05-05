@@ -1541,6 +1541,16 @@ item. Queued and blocked are derived views:
 - blocked: open work with `blocked_by`
 - completed: work whose state is `completed`
 
+Scheduler readiness is also a derived view:
+
+- runnable: open work with no `blocked_by` and `plan_status != needs_input`
+- waiting_for_operator: open work with `plan_status = needs_input`
+- blocked: open work with `blocked_by`
+- completed: completed work
+
+`open` is a lifecycle state only. It must not be used by itself as evidence
+that scheduler-owned continuation is allowed.
+
 The runtime persists a `DeliverySummaryRecord` when `CompleteWorkItem` receives
 an explicit `result_summary`. It is associated with the completed work item and
 is separate from raw terminal assistant text.
@@ -1688,11 +1698,12 @@ persisted work queue rather than raw message arrival.
 
 Rules:
 
-- if the runtime is idle and `current_work_item_id` points to an open,
-  unblocked work item, emit a system tick to continue that work item
+- if the runtime is idle and `current_work_item_id` points to a runnable work
+  item, emit a system tick to continue that work item
 - if the runtime is idle, no current runnable work item exists, and at least one
-  queued open work item exists, wake the agent so it can pick one
-- blocked and completed items do not participate in activation
+  queued runnable work item exists, wake the agent so it can pick one
+- blocked, waiting_for_operator, and completed items do not participate in
+  scheduler-owned activation
 - if no work items exist, preserve the existing message-driven idle path
 - work-queue ticks are runtime-owned system ticks, not external ingress
 - coalesced wake hints still participate in the idle path and should not be

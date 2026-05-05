@@ -481,6 +481,7 @@ fn render_current_work_item(work_item: &WorkItemRecord) -> String {
         "Current work item:".to_string(),
         format!("- Id: {}", work_item.id),
         format!("- State: {:?}", work_item.state),
+        format!("- Readiness: {:?}", work_item.readiness()),
         format!("- Objective: {}", work_item.objective),
         format!(
             "- Plan status: {}",
@@ -519,10 +520,11 @@ fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'st
 fn render_queued_blocked_work_items(items: &[&WorkItemRecord]) -> String {
     let mut lines = vec!["Queued and blocked work items:".to_string()];
     lines.extend(items.iter().map(|item| {
-        let view = if item.blocked_by.is_some() {
-            "blocked"
-        } else {
-            "queued"
+        let view = match item.readiness() {
+            crate::types::WorkItemReadiness::Runnable => "queued",
+            crate::types::WorkItemReadiness::WaitingForOperator => "waiting_for_operator",
+            crate::types::WorkItemReadiness::Blocked => "blocked",
+            crate::types::WorkItemReadiness::Completed => "completed",
         };
         let mut summary = format!("- [{view}] {} :: {}", item.id, item.objective);
         if let Some(blocked_by) = item.blocked_by.as_deref() {

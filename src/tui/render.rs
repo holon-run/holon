@@ -278,11 +278,7 @@ fn todo_summary_work_item<'a>(
         .as_deref()
         .or(agent.current_work_item_id.as_deref())
         .and_then(|current_id| work_items.iter().find(|item| item.id == current_id))
-        .or_else(|| {
-            work_items.iter().find(|item| {
-                item.state == crate::types::WorkItemState::Open && item.blocked_by.is_none()
-            })
-        })
+        .or_else(|| work_items.iter().find(|item| item.is_runnable()))
 }
 
 fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> u16 {

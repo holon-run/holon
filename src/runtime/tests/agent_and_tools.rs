@@ -274,6 +274,34 @@ async fn filtered_tool_specs_expose_no_public_task_creation_tool() {
 }
 
 #[tokio::test]
+async fn filtered_tool_specs_hide_notify_operator_for_normal_agents() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let identity = runtime.agent_identity_view().await.unwrap();
+    let public_tools = runtime.filtered_tool_specs(&identity).unwrap();
+    let private_tools = runtime
+        .filtered_tool_specs(&private_child_identity("tmp_child_demo"))
+        .unwrap();
+
+    assert!(!public_tools
+        .iter()
+        .any(|tool| tool.name == "NotifyOperator"));
+    assert!(!private_tools
+        .iter()
+        .any(|tool| tool.name == "NotifyOperator"));
+}
+
+#[tokio::test]
 async fn filtered_tool_specs_keep_spawn_agent_visible_without_host_bridge() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

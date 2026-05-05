@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(family_for("Sleep"), ToolCapabilityFamily::CoreAgent);
         assert_eq!(
             family_for("NotifyOperator"),
-            ToolCapabilityFamily::CoreAgent
+            ToolCapabilityFamily::OperatorNotification
         );
         assert_eq!(family_for("MemorySearch"), ToolCapabilityFamily::CoreAgent);
         assert_eq!(family_for("MemoryGet"), ToolCapabilityFamily::CoreAgent);
