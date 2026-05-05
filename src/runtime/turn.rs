@@ -1816,7 +1816,7 @@ impl RuntimeHandle {
             let request_diagnostics = response.request_diagnostics.clone();
             let model_attempt_state = provider_attempt_model_state(attempt_timeline.as_ref());
 
-            {
+            let (turn_index, run_id) = {
                 let mut guard = self.inner.agent.lock().await;
                 guard.state.total_input_tokens += response.input_tokens;
                 guard.state.total_output_tokens += response.output_tokens;
@@ -1828,7 +1828,8 @@ impl RuntimeHandle {
                 guard.state.last_requested_model = model_attempt_state.requested_model.clone();
                 guard.state.last_active_model = model_attempt_state.active_model.clone();
                 self.inner.storage.write_agent(&guard.state)?;
-            }
+                (guard.state.turn_index, guard.state.current_run_id.clone())
+            };
 
             let assistant_blocks = response.blocks.clone();
             let mut tool_calls = Vec::new();
@@ -1882,10 +1883,6 @@ impl RuntimeHandle {
                 }
             }
             let token_usage = TokenUsage::new(response.input_tokens, response.output_tokens);
-            let (turn_index, run_id) = {
-                let guard = self.inner.agent.lock().await;
-                (guard.state.turn_index, guard.state.current_run_id.clone())
-            };
 
             self.inner.storage.append_event(&AuditEvent::new(
                 "provider_round_completed",

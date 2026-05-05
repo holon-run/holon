@@ -980,14 +980,15 @@ impl RuntimeHandle {
             chrono::Utc::now()
                 + chrono::Duration::milliseconds(i64::try_from(duration_ms).unwrap_or(i64::MAX))
         });
-        {
+        let state = {
             let mut guard = self.inner.agent.lock().await;
             guard.state.status = AgentStatus::Asleep;
             guard.state.current_run_id = None;
             guard.state.sleeping_until = sleeping_until;
             self.inner.storage.write_agent(&guard.state)?;
-            self.append_state_changed_events(&guard.state)?;
-        }
+            guard.state.clone()
+        };
+        self.append_state_changed_events(&state)?;
         if let (Some(duration_ms), Some(sleeping_until)) = (duration_ms, sleeping_until) {
             self.spawn_session_sleep_wake(duration_ms, sleeping_until);
         }

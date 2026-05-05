@@ -437,9 +437,6 @@ impl TuiProjection {
     pub(crate) fn recent_activity_events(&self) -> Vec<&ProjectionEventRecord> {
         let mut events = Vec::new();
         for event in self.current_turn_events_rev() {
-            if is_activity_reset_kind(&event.kind) {
-                break;
-            }
             if is_ephemeral_activity_kind(&event.kind) {
                 events.push(event);
             }
