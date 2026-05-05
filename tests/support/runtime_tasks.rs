@@ -480,7 +480,7 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
     assert_eq!(value["items"][0]["result"]["exit_status"], 0);
     assert_eq!(
         value["items"][0]["result"]["command_diagnostics"]["effective_max_output_tokens"],
-        2_000
+        8_000
     );
     assert_eq!(value["items"][1]["status"], "failed");
     assert_eq!(value["items"][1]["result"]["exit_status"], 7);

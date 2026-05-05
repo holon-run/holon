@@ -3183,8 +3183,8 @@ mod tests {
             json!(6_000)
         );
 
-        set_config_key(&mut config, "runtime.default_tool_output_tokens", "50000").unwrap();
-        set_config_key(&mut config, "runtime.max_tool_output_tokens", "50000").unwrap();
+        set_config_key(&mut config, "runtime.default_tool_output_tokens", "100000").unwrap();
+        set_config_key(&mut config, "runtime.max_tool_output_tokens", "100000").unwrap();
         assert_eq!(
             get_config_key(&config, "runtime.default_tool_output_tokens").unwrap(),
             json!(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS)
