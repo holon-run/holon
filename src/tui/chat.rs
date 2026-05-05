@@ -442,6 +442,10 @@ fn render_active_activity_lines(speaker: &str, body: &str) -> Vec<Line<'static>>
         Span::styled(status, Style::default().add_modifier(Modifier::BOLD)),
     ])];
 
+    if body.trim().is_empty() {
+        return lines;
+    }
+
     let body = render_markdown_text(body);
     for line in body.lines {
         let mut spans = Vec::with_capacity(line.spans.len() + 1);
@@ -550,7 +554,7 @@ fn active_activity_item(
         .map(|projection| projection.hidden_current_turn_events(app.display_level))
         .unwrap_or_default();
     let latest_action = latest_action_event(hidden_events.as_slice());
-    let latest_assistant = latest_assistant_message(app, projection, hidden_events.as_slice());
+    let latest_assistant = latest_assistant_message(hidden_events.as_slice());
     let latest_event_ts =
         projection.and_then(|projection| projection.event_log().last().map(|event| event.ts));
     let created_at = [
@@ -572,12 +576,7 @@ fn active_activity_item(
     Some(ConversationCell::ActiveActivity {
         created_at,
         speaker: active_activity_speaker(agent),
-        body: active_activity_body(
-            agent,
-            projection.map(|projection| projection.tasks.as_slice()),
-            latest_assistant.as_deref(),
-            latest_action,
-        ),
+        body: active_activity_body(latest_assistant.as_deref(), latest_action),
     })
 }
 
@@ -652,23 +651,12 @@ fn is_active_action_event_kind(kind: &str) -> bool {
 }
 
 fn latest_assistant_message(
-    app: &TuiApp,
-    projection: Option<&crate::tui::projection::TuiProjection>,
     hidden_events: &[&crate::tui::projection::ProjectionEventRecord],
 ) -> Option<String> {
     hidden_events
         .iter()
         .rev()
         .find_map(|event| assistant_message_from_event(event))
-        .or_else(|| {
-            if projection.is_some_and(|projection| agent_has_active_activity(&projection.agent)) {
-                return None;
-            }
-            app.transcript
-                .iter()
-                .rev()
-                .find_map(assistant_message_from_transcript)
-        })
 }
 
 fn assistant_message_from_event(
@@ -685,24 +673,6 @@ fn is_progress_event_kind(kind: &str) -> bool {
         kind,
         "provider_round_completed" | "text_only_round_observed"
     )
-}
-
-fn assistant_message_from_transcript(entry: &TranscriptEntry) -> Option<String> {
-    if !matches!(
-        entry.kind,
-        TranscriptEntryKind::AssistantRound | TranscriptEntryKind::SubagentAssistantRound
-    ) {
-        return None;
-    }
-    let blocks = entry.data.get("blocks")?.as_array()?;
-    let text = blocks
-        .iter()
-        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .filter_map(|text| non_empty(Some(text)).map(ToString::to_string))
-        .collect::<Vec<_>>()
-        .join(" ");
-    non_empty(Some(&text)).map(ToString::to_string)
 }
 
 fn active_activity_speaker(agent: &AgentSummary) -> String {
@@ -726,43 +696,20 @@ fn active_activity_spinner() -> &'static str {
 }
 
 fn active_activity_body(
-    agent: &AgentSummary,
-    tasks: Option<&[TaskRecord]>,
     latest_assistant: Option<&str>,
     latest_action: Option<&crate::tui::projection::ProjectionEventRecord>,
 ) -> String {
-    let current = current_activity_summary(agent, tasks);
-    let assistant = latest_assistant
-        .map(|text| trim_activity_line(text, 120))
-        .unwrap_or_else(|| "...".into());
-    let action = latest_action
-        .map(|event| trim_activity_line(&action_event_body(event), 120))
-        .unwrap_or_else(|| "Waiting for activity".into());
-
-    [
-        format!("Current   {}", trim_activity_line(&current, 120)),
-        format!("Assistant {}", assistant),
-        format!("Action    {}", action),
-    ]
-    .join("\n")
-}
-
-fn current_activity_summary(agent: &AgentSummary, tasks: Option<&[TaskRecord]>) -> String {
-    let memory = &agent.agent.working_memory.current_working_memory;
-
-    non_empty(memory.work_summary.as_deref())
-        .map(ToString::to_string)
-        .or_else(|| active_task_summary(agent, tasks))
-        .or_else(|| active_child_summary(agent))
-        .unwrap_or_else(|| match agent.agent.status {
-            crate::types::AgentStatus::Booting => "Starting runtime".into(),
-            crate::types::AgentStatus::AwaitingTask => "Waiting for active task progress".into(),
-            crate::types::AgentStatus::AwakeRunning => "Working on the current turn".into(),
-            crate::types::AgentStatus::AwakeIdle if agent.agent.pending > 0 => {
-                "Queued work is waiting to run".into()
-            }
-            _ => "Work is still active".into(),
-        })
+    let mut lines = Vec::new();
+    if let Some(assistant) = latest_assistant {
+        lines.push(format!("Assistant {}", trim_activity_line(assistant, 120)));
+    }
+    if let Some(action) = latest_action {
+        lines.push(format!(
+            "Action    {}",
+            trim_activity_line(&action_event_body(action), 120)
+        ));
+    }
+    lines.join("\n")
 }
 
 fn action_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
@@ -771,26 +718,6 @@ fn action_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> S
     } else {
         event.summary.clone()
     }
-}
-
-fn active_task_summary(agent: &AgentSummary, tasks: Option<&[TaskRecord]>) -> Option<String> {
-    let tasks = tasks?;
-    agent.agent.active_task_ids.iter().find_map(|task_id| {
-        tasks
-            .iter()
-            .find(|task| task.id == *task_id)
-            .and_then(|task| task.summary.clone())
-    })
-}
-
-fn active_child_summary(agent: &AgentSummary) -> Option<String> {
-    agent.active_children.iter().find_map(|child| {
-        child
-            .observability
-            .work_summary
-            .clone()
-            .or_else(|| child.observability.last_progress_brief.clone())
-    })
 }
 
 fn trim_activity_line(input: &str, max_chars: usize) -> String {

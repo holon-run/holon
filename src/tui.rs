@@ -1930,7 +1930,8 @@ mod tests {
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
         assert!(rendered.contains("Assistant hidden provider partial"));
-        assert!(rendered.contains("Action    Waiting for activity"));
+        assert!(!rendered.contains("Action    Waiting for activity"));
+        assert!(!rendered.contains("Current   "));
     }
 
     #[test]
@@ -2090,9 +2091,9 @@ mod tests {
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
         assert!(rendered.contains("Working"));
-        assert!(rendered.contains("Current   Improve the Conversation working indicator"));
-        assert!(rendered.contains("Assistant ..."));
-        assert!(rendered.contains("Action    Waiting for activity"));
+        assert!(!rendered.contains("Current   "));
+        assert!(!rendered.contains("Assistant ..."));
+        assert!(!rendered.contains("Action    Waiting for activity"));
     }
 
     #[test]
@@ -2140,6 +2141,7 @@ mod tests {
             .collect();
         assert!(rendered.contains("Action    ExecCommand: cargo test tui"));
         assert!(!rendered.contains("Action    Waiting for activity"));
+        assert!(!rendered.contains("Current   "));
     }
 
     #[test]
@@ -2201,9 +2203,9 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("Queued"));
-        assert!(rendered.contains("Current   Queued work is waiting to run"));
-        assert!(rendered.contains("Assistant ..."));
-        assert!(rendered.contains("Action    Waiting for activity"));
+        assert!(!rendered.contains("Current   "));
+        assert!(!rendered.contains("Assistant ..."));
+        assert!(!rendered.contains("Action    Waiting for activity"));
         assert!(!rendered.contains("Queue: pending 1, active tasks 0"));
     }
 
