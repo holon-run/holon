@@ -279,7 +279,43 @@ fn slash_prompt_lines(buffer: &str) -> Option<Vec<String>> {
     ])
 }
 
+fn paste_inline_text(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !matches!(ch, '\r' | '\n'))
+        .collect()
+}
+
+fn paste_single_line_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| if matches!(ch, '\r' | '\n') { ' ' } else { ch })
+        .collect()
+}
+
 impl TuiApp {
+    pub(super) async fn handle_paste(&mut self, text: &str) -> Result<()> {
+        let selected_agent = self.selected_agent_summary().cloned();
+        match &mut self.overlay {
+            OverlayState::None => {
+                let before = self.composer.as_str().to_string();
+                self.composer.insert_str(text);
+                self.sync_slash_menu_after_edit(before != self.composer.as_str());
+            }
+            OverlayState::ModelPicker { filter, selected } => {
+                filter.push_str(&paste_inline_text(text));
+                *selected = crate::tui::model_picker::clamp_model_picker_selection(
+                    selected_agent.as_ref(),
+                    filter,
+                    *selected,
+                );
+            }
+            OverlayState::DebugPromptInput { composer } => {
+                composer.insert_str(&paste_single_line_text(text));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(super) async fn move_agent_selection(&mut self, delta: i32) -> Result<()> {
         let Some(target_index) = self.next_agent_index(delta) else {
             return Ok(());

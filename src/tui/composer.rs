@@ -31,6 +31,11 @@ impl ComposerState {
         self.cursor += ch.len_utf8();
     }
 
+    pub(super) fn insert_str(&mut self, text: &str) {
+        self.text.insert_str(self.cursor, text);
+        self.cursor += text.len();
+    }
+
     pub(super) fn insert_newline(&mut self) {
         self.insert_char('\n');
     }
@@ -179,6 +184,15 @@ mod tests {
         composer.insert_char('e');
         assert_eq!(composer.as_str(), "helo");
         assert_eq!(composer.cursor(), 2);
+    }
+
+    #[test]
+    fn inserts_pasted_text_at_cursor() {
+        let mut composer = ComposerState::from("ab");
+        composer.move_left();
+        composer.insert_str("x\ny");
+        assert_eq!(composer.as_str(), "ax\nyb");
+        assert_eq!(composer.cursor(), "ax\ny".len());
     }
 
     #[test]
