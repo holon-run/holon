@@ -20,6 +20,15 @@ impl RuntimeQueue {
         }
     }
 
+    pub fn push_front(&mut self, message: MessageEnvelope) {
+        match message.priority {
+            Priority::Interrupt => self.interrupt.push_front(message),
+            Priority::Next => self.next.push_front(message),
+            Priority::Normal => self.normal.push_front(message),
+            Priority::Background => self.background.push_front(message),
+        }
+    }
+
     pub fn pop(&mut self) -> Option<MessageEnvelope> {
         self.interrupt
             .pop_front()

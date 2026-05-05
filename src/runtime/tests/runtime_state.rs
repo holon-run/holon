@@ -319,6 +319,11 @@ async fn interrupt_operator_prompt_is_interjected_before_next_provider_round() {
                 .get("message_id")
                 .and_then(serde_json::Value::as_str)
                 == Some(interjection_id.as_str())
+            && event
+                .data
+                .get("boundary")
+                .and_then(serde_json::Value::as_str)
+                == Some("before_tool_execution")
     }));
 
     runner.abort();

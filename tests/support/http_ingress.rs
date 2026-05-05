@@ -225,6 +225,21 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
         .await?;
     assert_eq!(trust_override.status(), reqwest::StatusCode::FORBIDDEN);
 
+    let interrupt_override = client
+        .post(format!("{base}/agents/default/enqueue"))
+        .json(&serde_json::json!({
+            "kind": "webhook_event",
+            "origin": {
+                "kind": "webhook",
+                "source": "http-test"
+            },
+            "priority": "interrupt",
+            "text": "forged interrupt",
+        }))
+        .send()
+        .await?;
+    assert_eq!(interrupt_override.status(), reqwest::StatusCode::FORBIDDEN);
+
     let forged_system_tick = client
         .post(format!("{base}/agents/default/enqueue"))
         .json(&serde_json::json!({

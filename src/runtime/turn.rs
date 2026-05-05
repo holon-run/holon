@@ -1,6 +1,7 @@
 use std::{collections::HashSet, env, time::Instant};
 
 use anyhow::Result;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
@@ -20,15 +21,15 @@ use crate::{
         ToolCall, ToolError, ToolSpec,
     },
     types::{
-        AuditEvent, MessageBody, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
-        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel,
-        TurnTerminalCheckpointRecord, TurnTerminalKind, TurnTerminalRecord, WorkItemPlanStatus,
-        WorkItemRecord,
+        AuditEvent, MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TodoItemState, TokenUsage,
+        TranscriptEntry, TranscriptEntryKind, TrustLevel, TurnTerminalCheckpointRecord,
+        TurnTerminalKind, TurnTerminalRecord, WorkItemPlanStatus, WorkItemRecord,
     },
 };
 
 use super::{
-    combine_text_history, is_max_output_stop_reason, CurrentRunInterrupted, RuntimeHandle,
+    combine_text_history, is_max_output_stop_reason, message_dispatch::message_text,
+    CurrentRunInterrupted, RuntimeHandle,
 };
 
 pub(super) struct AgentLoopOutcome {
@@ -218,26 +219,25 @@ fn append_follow_up_user_texts(round: &mut TurnRoundRecord, texts: Vec<String>) 
     );
 }
 
-fn message_body_text(body: &MessageBody) -> String {
-    match body {
-        MessageBody::Text { text } => text.clone(),
-        MessageBody::Json { value } => {
-            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
-        }
-        MessageBody::Brief { title, text, .. } => title
-            .as_deref()
-            .map(|title| format!("{title}\n\n{text}"))
-            .unwrap_or_else(|| text.clone()),
+fn render_metadata_value<T: Serialize>(value: &T) -> String {
+    match serde_json::to_value(value) {
+        Ok(Value::String(label)) => label,
+        Ok(Value::Null) => "none".into(),
+        Ok(value) => value.to_string(),
+        Err(_) => "unavailable".into(),
     }
 }
 
 fn render_operator_interjection_text(message: &MessageEnvelope) -> String {
     format!(
-        "{OPERATOR_INTERJECTION_HEADER}\nmessage_id={}\norigin=operator\ntrust=trusted_operator\nauthority_class=operator_instruction\ndelivery_surface={}\nadmission_context={}\n\n{}",
+        "{OPERATOR_INTERJECTION_HEADER}\nmessage_id={}\norigin={}\ntrust={}\nauthority_class={}\ndelivery_surface={}\nadmission_context={}\n\n{}",
         message.id,
-        serde_json::to_string(&message.delivery_surface).unwrap_or_else(|_| format!("{:?}", message.delivery_surface)),
-        serde_json::to_string(&message.admission_context).unwrap_or_else(|_| format!("{:?}", message.admission_context)),
-        message_body_text(&message.body).trim(),
+        render_metadata_value(&message.origin),
+        render_metadata_value(&message.trust),
+        render_metadata_value(&message.authority_class),
+        render_metadata_value(&message.delivery_surface),
+        render_metadata_value(&message.admission_context),
+        message_text(&message.body).trim(),
     )
 }
 
@@ -1405,39 +1405,60 @@ impl RuntimeHandle {
                 messages.push(message);
             }
             if !messages.is_empty() {
-                self.inner.storage.write_agent(&guard.state)?;
+                if let Err(err) = self.inner.storage.write_agent(&guard.state) {
+                    for message in messages.iter().rev().cloned() {
+                        guard.queue.push_front(message);
+                    }
+                    guard.state.pending = guard.queue.len();
+                    return Err(err);
+                }
             }
         }
 
         let mut follow_up_texts = Vec::new();
-        for message in messages {
-            self.inner.storage.append_queue_entry(&QueueEntryRecord {
-                message_id: message.id.clone(),
-                agent_id: message.agent_id.clone(),
-                priority: message.priority.clone(),
-                status: QueueEntryStatus::Interjected,
-                created_at: message.created_at,
-                updated_at: chrono::Utc::now(),
-            })?;
-            self.record_incoming_transcript_entry(&message)?;
-            let text = render_operator_interjection_text(&message);
-            self.inner.storage.append_event(&AuditEvent::new(
-                "operator_interjection_admitted",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "round": round,
-                    "boundary": boundary,
-                    "message_id": message.id,
-                    "origin": message.origin,
-                    "trust": message.trust,
-                    "authority_class": message.authority_class,
-                    "priority": message.priority,
-                    "delivery_surface": message.delivery_surface,
-                    "admission_context": message.admission_context,
-                    "text_preview": truncate_preview(&message_body_text(&message.body), ROUND_TEXT_PREVIEW_LIMIT),
-                }),
-            ))?;
-            follow_up_texts.push(text);
+        for (index, message) in messages.iter().enumerate() {
+            let persist_result = (|| -> Result<String> {
+                self.inner.storage.append_queue_entry(&QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: message.agent_id.clone(),
+                    priority: message.priority.clone(),
+                    status: QueueEntryStatus::Interjected,
+                    created_at: message.created_at,
+                    updated_at: chrono::Utc::now(),
+                })?;
+                self.record_incoming_transcript_entry(message)?;
+                let text = render_operator_interjection_text(message);
+                self.inner.storage.append_event(&AuditEvent::new(
+                    "operator_interjection_admitted",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "round": round,
+                        "boundary": boundary,
+                        "message_id": message.id,
+                        "origin": message.origin,
+                        "trust": message.trust,
+                        "authority_class": message.authority_class,
+                        "priority": message.priority,
+                        "delivery_surface": message.delivery_surface,
+                        "admission_context": message.admission_context,
+                        "text_preview": truncate_preview(&message_text(&message.body), ROUND_TEXT_PREVIEW_LIMIT),
+                    }),
+                ))?;
+                Ok(text)
+            })();
+
+            match persist_result {
+                Ok(text) => follow_up_texts.push(text),
+                Err(err) => {
+                    let mut guard = self.inner.agent.lock().await;
+                    for message in messages[index..].iter().rev().cloned() {
+                        guard.queue.push_front(message);
+                    }
+                    guard.state.pending = guard.queue.len();
+                    let _ = self.inner.storage.write_agent(&guard.state);
+                    return Err(err);
+                }
+            }
         }
         Ok(follow_up_texts)
     }
@@ -2026,6 +2047,40 @@ impl RuntimeHandle {
                             &[],
                         ),
                         assistant_blocks: completed_round_assistant_blocks,
+                        text_blocks,
+                        tool_calls: Vec::new(),
+                        tool_results: Vec::new(),
+                        tool_result_envelopes: Vec::new(),
+                        follow_up_user_texts: Vec::new(),
+                    };
+                    append_follow_up_user_texts(&mut round_record, interjections);
+                    if round_invalidates_checkpoint_anchor(&round_record) {
+                        checkpoint_state.anchor_generation =
+                            checkpoint_state.anchor_generation.saturating_add(1);
+                    }
+                    completed_rounds.push(round_record);
+                    continue;
+                }
+            }
+
+            if !tool_calls.is_empty() {
+                let interjections = self
+                    .drain_operator_interjections(agent_id, round, "before_tool_execution")
+                    .await?;
+                if !interjections.is_empty() {
+                    let text_only_assistant_blocks = text_blocks
+                        .iter()
+                        .cloned()
+                        .map(|text| ModelBlock::Text { text })
+                        .collect::<Vec<_>>();
+                    let mut round_record = TurnRoundRecord {
+                        round,
+                        estimated_tokens: build_round_estimated_tokens(
+                            &text_only_assistant_blocks,
+                            &[],
+                            &[],
+                        ),
+                        assistant_blocks: text_only_assistant_blocks,
                         text_blocks,
                         tool_calls: Vec::new(),
                         tool_results: Vec::new(),
