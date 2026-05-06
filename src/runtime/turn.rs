@@ -1489,7 +1489,7 @@ impl RuntimeHandle {
     ) -> Result<AgentLoopOutcome> {
         TurnExecution {
             runtime: self,
-            agent_id: agent_id.to_string(),
+            agent_id,
             trust,
             effective_prompt,
             loop_control,
@@ -1501,7 +1501,7 @@ impl RuntimeHandle {
 
 struct TurnExecution<'a> {
     runtime: &'a RuntimeHandle,
-    agent_id: String,
+    agent_id: &'a str,
     trust: TrustLevel,
     effective_prompt: EffectivePrompt,
     loop_control: LoopControlOptions,
@@ -1516,7 +1516,6 @@ impl TurnExecution<'_> {
             effective_prompt,
             loop_control,
         } = self;
-        let agent_id = agent_id.as_str();
         let mut completed_rounds = Vec::<TurnRoundRecord>::new();
         let turn_started_at = Instant::now();
         let mut should_sleep = false;
