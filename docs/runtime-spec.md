@@ -1133,10 +1133,22 @@ type PromptContentBlock = {
 type ProviderPromptCache = {
   agentId: string
   promptCacheKey: string
+  contextFingerprint: string
   workingMemoryRevision: number
   compressionEpoch: number
 }
 ```
+
+`promptCacheKey` is the provider-facing continuation/cache scope. It must be
+stable across ordinary next-turn prompt changes such as current input, recent
+messages, recent tools, and other `turn_scoped` blocks. It may rotate when the
+stable or agent-scoped prompt surface changes, such as workspace identity,
+system guidance, tool catalog, or durable working memory.
+
+`contextFingerprint` is a diagnostic fingerprint of the full projected prompt
+context. It may change when turn-scoped context changes, but it must not be used
+as the top-level prompt cache key by transports whose continuation windows rely
+on stable key reuse.
 
 The provider turn request combines this frame with the full replayable
 conversation view and the current tool catalog. Initial turns and continuation
