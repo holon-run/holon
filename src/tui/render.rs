@@ -496,11 +496,13 @@ pub(super) fn render_header(agent: &AgentSummary) -> String {
 pub(super) fn render_projection_event_summary(
     event: &crate::tui::projection::ProjectionEventRecord,
 ) -> String {
-    let description = if event.presentation.title == event.summary {
-        event.summary.clone()
-    } else {
-        format!("{}: {}", event.presentation.title, event.summary)
-    };
+    let title_prefix = format!("{}:", event.presentation.title);
+    let description =
+        if event.presentation.title == event.summary || event.summary.starts_with(&title_prefix) {
+            event.summary.clone()
+        } else {
+            format!("{}: {}", event.presentation.title, event.summary)
+        };
     format!(
         "{} [{:?}] {}",
         event.ts.with_timezone(&Local).format("%H:%M:%S"),

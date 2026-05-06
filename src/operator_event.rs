@@ -59,7 +59,6 @@ pub struct OperatorEventPresentation {
     pub body: Option<String>,
     pub summary: String,
     pub source_event_kind: String,
-    pub debug_payload: Option<Value>,
 }
 
 #[derive(Debug, Default)]
@@ -117,14 +116,6 @@ pub fn present_operator_event(
     let category = event_category(kind);
     let visibility = event_visibility(kind, payload, category, context);
     let (title, body, summary) = event_text(kind, payload, fallback_summary, category);
-    let debug_payload = if matches!(
-        category,
-        OperatorEventCategory::StateSync | OperatorEventCategory::Trace
-    ) {
-        Some(payload.clone())
-    } else {
-        None
-    };
 
     OperatorEventPresentation {
         visibility,
@@ -133,7 +124,6 @@ pub fn present_operator_event(
         body,
         summary,
         source_event_kind: kind.to_string(),
-        debug_payload,
     }
 }
 
@@ -265,9 +255,9 @@ fn provider_round_text(payload: &Value) -> (String, Option<String>, String) {
     let text_preview = payload
         .get("text_preview")
         .and_then(Value::as_str)
-        .map(str::trim)
+        .map(collapse_whitespace)
         .filter(|text| !text.is_empty());
-    if let Some(text_preview) = text_preview {
+    if let Some(text_preview) = text_preview.as_deref() {
         let body = trim_summary(text_preview);
         return (
             "Assistant progress".into(),
@@ -370,6 +360,10 @@ fn trim_summary(value: &str) -> String {
     }
 }
 
+fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -390,6 +384,17 @@ mod tests {
         assert_eq!(text.visibility, OperatorVisibility::Progress);
         assert_eq!(text.category, OperatorEventCategory::AssistantProgress);
         assert_eq!(text.summary, "Assistant progress: thinking");
+
+        let multiline = present_operator_event(
+            "provider_round_completed",
+            &json!({ "text_preview": "thinking\n\nabout\ttools  now" }),
+            "fallback",
+            &context,
+        );
+        assert_eq!(
+            multiline.summary,
+            "Assistant progress: thinking about tools now"
+        );
 
         let tools = present_operator_event(
             "provider_round_completed",

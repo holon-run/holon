@@ -414,7 +414,6 @@ events. The presentation layer turns a raw event into:
 - `body`: optional detail text
 - `summary`: one-line human-facing summary
 - `source_event_kind`: the raw runtime event kind
-- `debug_payload`: optional payload retained only for debug/log surfaces
 
 Do not add `severity` or delivery-routing hints to the first version of this
 structure. Severity is contextual, and each surface should decide delivery from
