@@ -1582,6 +1582,13 @@ mod tests {
             },
             &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
+        app.projection = Some(previous_projection);
+        let before_switch: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(before_switch.contains("Action    ExecCommand: cargo test agent-a"));
 
         let mut switched_snapshot = sample_snapshot("agent-b", "evt-b-tool");
         switched_snapshot.agent.agent.status = AgentStatus::AwakeRunning;
