@@ -560,6 +560,14 @@ transfer of overall understanding.
 In the first stable model, private child creation should also return
 `task_handle`.
 
+`SpawnAgent` should expose one caller-provided spawn text field:
+`initial_message`. For `private_child`, `initial_message` is required, is
+delivered as the child's first delegation message, and is the source for the
+stable parent-visible task label. For `public_named`, `initial_message` is
+optional bootstrap input and must not imply parent-supervised task provenance.
+The spawn surface should not expose separate `summary`, `task_summary`,
+`prompt`, or `work_item` fields.
+
 The important rule is:
 
 - `agent_id` identifies the context-owning runtime object

@@ -400,6 +400,9 @@ mod tests {
             .find(|spec| spec.name == "SpawnAgent")
             .expect("SpawnAgent should be present");
         assert!(spawn_agent.input_schema["properties"]
+            .get("initial_message")
+            .is_some());
+        assert!(spawn_agent.input_schema["properties"]
             .get("preset")
             .is_some());
         assert!(spawn_agent.input_schema["properties"]
@@ -411,6 +414,18 @@ mod tests {
         assert!(spawn_agent.input_schema["properties"]["preset"]
             .to_string()
             .contains("public_named"));
+        assert!(spawn_agent.input_schema["properties"]
+            .get("summary")
+            .is_none());
+        assert!(spawn_agent.input_schema["properties"]
+            .get("task_summary")
+            .is_none());
+        assert!(spawn_agent.input_schema["properties"]
+            .get("prompt")
+            .is_none());
+        assert!(spawn_agent.input_schema["properties"]
+            .get("work_item")
+            .is_none());
 
         let all_of = spawn_agent
             .input_schema
@@ -465,6 +480,25 @@ mod tests {
                     .is_some()
         });
         assert!(rejects_agent_id_for_default_or_private);
+
+        let requires_initial_message_for_default_or_private =
+            contract_rules.iter().any(|variant| {
+                variant
+                    .get("if")
+                    .and_then(|value| value.get("not"))
+                    .is_some()
+                    && variant
+                        .get("then")
+                        .and_then(|value| value.get("required"))
+                        .and_then(Value::as_array)
+                        .and_then(|required| {
+                            required
+                                .iter()
+                                .find(|item| item.as_str() == Some("initial_message"))
+                        })
+                        .is_some()
+            });
+        assert!(requires_initial_message_for_default_or_private);
 
         let constrains_workspace_mode_for_public_named = contract_rules.iter().any(|variant| {
             variant

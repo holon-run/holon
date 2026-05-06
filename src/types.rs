@@ -2300,17 +2300,6 @@ pub struct SpawnAgentResult {
     pub child_work_item_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SpawnAgentWorkItemRequest {
-    pub parent_work_item_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_objective: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_plan: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub child_todo_list: Vec<TodoItem>,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplyPatchAction {

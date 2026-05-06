@@ -1063,8 +1063,7 @@ impl AgentProvider for DelegatedRunOnceProvider {
                     id: "task-1".into(),
                     name: "SpawnAgent".into(),
                     input: json!({
-                        "summary": "delegated boundary task",
-                        "prompt": "delegated-child",
+                        "initial_message": "delegated-child",
                         "workspace_mode": "inherit"
                     }),
                 }],
@@ -1214,8 +1213,7 @@ impl AgentProvider for WorktreeTaskProvider {
                     id: "task-1".into(),
                     name: "SpawnAgent".into(),
                     input: json!({
-                        "summary": "try worktree path",
-                        "prompt": "inspect this worktree",
+                        "initial_message": "inspect this worktree",
                         "workspace_mode": "worktree"
                     }),
                 }],

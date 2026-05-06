@@ -5,17 +5,18 @@ use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
     AgentProfilePreset, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot, DeliverySummaryRecord,
-    FailureArtifact, FailureArtifactCategory, SpawnAgentResult, SpawnAgentWorkItemRequest,
-    TaskHandle, TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult,
-    TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef,
-    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemPlanStatus, WorkItemRecord,
-    WorkItemState, CHILD_AGENT_TASK_KIND,
+    FailureArtifact, FailureArtifactCategory, SpawnAgentResult, TaskHandle, TaskInputResult,
+    TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot,
+    TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemDelegationRecord,
+    WorkItemDelegationState, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+    CHILD_AGENT_TASK_KIND,
 };
 use std::collections::BTreeMap;
 
 const TASK_OUTPUT_POLL_INTERVAL_MS: u64 = 100;
 const TASK_OUTPUT_MESSAGE_SCAN_LIMIT: usize = 200;
 const TASK_OUTPUT_PREVIEW_CHAR_BUDGET: usize = 8_000;
+const SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET: usize = 120;
 
 #[derive(Debug, Clone)]
 struct TaskMessageSnapshot {
@@ -28,6 +29,19 @@ fn child_agent_task_detail(workspace_mode: ChildAgentWorkspaceMode) -> serde_jso
         "wait_policy": crate::types::TaskWaitPolicy::Blocking,
         "workspace_mode": workspace_mode,
     })
+}
+
+fn spawn_agent_task_label(initial_message: &str) -> String {
+    let collapsed = initial_message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let label = if collapsed.is_empty() {
+        "delegated child agent task".to_string()
+    } else {
+        collapsed
+    };
+    crate::tool::helpers::truncate_text(&label, SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET)
 }
 
 impl RuntimeHandle {
@@ -216,14 +230,12 @@ impl RuntimeHandle {
 
     pub async fn spawn_agent(
         &self,
-        summary: String,
-        prompt: String,
+        initial_message: Option<String>,
         trust: TrustLevel,
         preset: AgentProfilePreset,
         agent_id: Option<String>,
         worktree: bool,
         template: Option<String>,
-        work_item: Option<SpawnAgentWorkItemRequest>,
     ) -> Result<SpawnAgentResult> {
         if !self.supports_child_agent_spawning() {
             return Err(anyhow::Error::from(
@@ -248,32 +260,28 @@ impl RuntimeHandle {
 
         match preset {
             AgentProfilePreset::PrivateChild => {
-                let parent_work_item = match work_item.as_ref() {
-                    Some(request) => {
-                        let parent_agent_id = self.agent_id().await?;
-                        let record = self.validate_owned_work_item(
-                            &parent_agent_id,
-                            &request.parent_work_item_id,
-                        )?;
-                        if record.state == WorkItemState::Completed {
-                            return Err(anyhow!(
-                                "cannot delegate from completed work item {}",
-                                request.parent_work_item_id
-                            ));
-                        }
-                        Some(record)
-                    }
-                    None => None,
-                };
+                let initial_message = initial_message
+                    .ok_or_else(|| anyhow!("private_child spawn requires initial_message"))?;
+                if initial_message.trim().is_empty() {
+                    return Err(anyhow!(
+                        "private_child spawn requires non-empty initial_message"
+                    ));
+                }
+                let task_label = spawn_agent_task_label(&initial_message);
                 let task = self
-                    .create_child_supervision_task(summary, prompt.clone(), trust.clone(), worktree)
+                    .create_child_supervision_task(
+                        task_label,
+                        initial_message.clone(),
+                        trust.clone(),
+                        worktree,
+                    )
                     .await?;
 
                 let spawned = match bridge
                     .spawn_child_task(
                         self.clone(),
                         &task,
-                        prompt,
+                        initial_message,
                         trust.clone(),
                         worktree,
                         template.clone(),
@@ -304,32 +312,6 @@ impl RuntimeHandle {
                     to_json_value(&queued_task),
                 ))?;
 
-                let delegation = if let (Some(request), Some(parent_work_item)) =
-                    (work_item, parent_work_item)
-                {
-                    let child_objective = request
-                        .child_objective
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or_else(|| {
-                            queued_task
-                                .summary
-                                .clone()
-                                .unwrap_or_else(|| parent_work_item.objective.clone())
-                        });
-                    Some(
-                        self.create_child_work_item_delegation(
-                            parent_work_item,
-                            spawned.child_agent_id.clone(),
-                            child_objective,
-                            request.child_plan,
-                            request.child_todo_list,
-                        )
-                        .await?,
-                    )
-                } else {
-                    None
-                };
-
                 let runtime = self.clone();
                 let task_record = queued_task.clone();
                 let task_id = queued_task.id.clone();
@@ -355,16 +337,8 @@ impl RuntimeHandle {
                     command_task::ManagedTaskHandle::Async(handle),
                 );
 
-                let child_supervision = crate::types::ChildSupervisionProjection::from_task_record(
-                    &queued_task,
-                )
-                .map(|projection| {
-                    if let Some(delegation) = delegation.as_ref() {
-                        projection.with_work_item_delegation(delegation)
-                    } else {
-                        projection
-                    }
-                });
+                let child_supervision =
+                    crate::types::ChildSupervisionProjection::from_task_record(&queued_task);
 
                 Ok(SpawnAgentResult {
                     agent_id: spawned.child_agent_id.clone(),
@@ -376,23 +350,12 @@ impl RuntimeHandle {
                         "delegated child {} started under supervision task {}",
                         spawned.child_agent_id, queued_task.id
                     )),
-                    delegation_id: delegation
-                        .as_ref()
-                        .map(|delegation| delegation.delegation_id.clone()),
-                    parent_work_item_id: delegation
-                        .as_ref()
-                        .map(|delegation| delegation.parent_work_item_id.clone()),
-                    child_work_item_id: delegation
-                        .as_ref()
-                        .map(|delegation| delegation.child_work_item_id.clone()),
+                    delegation_id: None,
+                    parent_work_item_id: None,
+                    child_work_item_id: None,
                 })
             }
             AgentProfilePreset::PublicNamed => {
-                if work_item.is_some() {
-                    return Err(anyhow!(
-                        "SpawnAgent public_named does not support work-item delegation"
-                    ));
-                }
                 let agent_id = agent_id
                     .ok_or_else(|| anyhow!("public_named spawn requires a stable agent id"))?;
                 if worktree {
@@ -402,7 +365,13 @@ impl RuntimeHandle {
                 }
 
                 let spawned_agent_id = bridge
-                    .spawn_public_named_agent(self.clone(), &agent_id, prompt, trust, template)
+                    .spawn_public_named_agent(
+                        self.clone(),
+                        &agent_id,
+                        initial_message,
+                        trust,
+                        template,
+                    )
                     .await?;
 
                 Ok(SpawnAgentResult {
@@ -2034,43 +2003,6 @@ impl RuntimeHandle {
             ));
         }
         Ok(record)
-    }
-
-    async fn create_child_work_item_delegation(
-        &self,
-        parent_work_item: WorkItemRecord,
-        child_agent_id: String,
-        child_objective: String,
-        child_plan: Option<String>,
-        child_todo_list: Vec<TodoItem>,
-    ) -> Result<WorkItemDelegationRecord> {
-        let bridge = self
-            .inner
-            .host_bridge
-            .clone()
-            .ok_or_else(|| anyhow!("runtime host is required for work-item delegation"))?;
-        let child_work_item = bridge
-            .create_child_work_item(
-                &child_agent_id,
-                child_objective,
-                child_plan,
-                child_todo_list,
-            )
-            .await?;
-        let delegation = WorkItemDelegationRecord::new(
-            parent_work_item.agent_id,
-            parent_work_item.id,
-            child_agent_id,
-            child_work_item.id,
-        );
-        self.inner
-            .storage
-            .append_work_item_delegation(&delegation)?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_delegation_created",
-            serde_json::to_value(&delegation)?,
-        ))?;
-        Ok(delegation)
     }
 }
 

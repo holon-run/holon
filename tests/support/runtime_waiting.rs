@@ -591,13 +591,11 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
 
     let spawned = default_runtime
         .spawn_agent(
-            "child summary".into(),
-            "child prompt".into(),
+            Some("child prompt".into()),
             TrustLevel::TrustedOperator,
             AgentProfilePreset::PrivateChild,
             None,
             false,
-            None,
             None,
         )
         .await?;

@@ -2,9 +2,8 @@ use anyhow::Result;
 
 use super::RuntimeHandle;
 use crate::types::{
-    AgentProfilePreset, CommandTaskSpec, ExecCommandResult, SpawnAgentResult,
-    SpawnAgentWorkItemRequest, TaskInputResult, TaskListEntry, TaskOutputResult, TaskRecord,
-    TaskStatusSnapshot, TrustLevel,
+    AgentProfilePreset, CommandTaskSpec, ExecCommandResult, SpawnAgentResult, TaskInputResult,
+    TaskListEntry, TaskOutputResult, TaskRecord, TaskStatusSnapshot, TrustLevel,
 };
 
 pub(crate) struct ManagedTaskSupervisor<'a> {
@@ -36,19 +35,15 @@ impl ManagedTaskSupervisor<'_> {
 
     pub(crate) async fn spawn_agent(
         &self,
-        summary: String,
-        prompt: String,
+        initial_message: Option<String>,
         trust: TrustLevel,
         preset: AgentProfilePreset,
         agent_id: Option<String>,
         worktree: bool,
         template: Option<String>,
-        work_item: Option<SpawnAgentWorkItemRequest>,
     ) -> Result<SpawnAgentResult> {
         self.runtime
-            .spawn_agent(
-                summary, prompt, trust, preset, agent_id, worktree, template, work_item,
-            )
+            .spawn_agent(initial_message, trust, preset, agent_id, worktree, template)
             .await
     }
 

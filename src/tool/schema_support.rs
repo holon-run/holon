@@ -53,6 +53,7 @@ fn enforce_public_named_spawn_contract(schema: &mut Value) {
                     }
                 },
                 "then": {
+                    "required": ["initial_message"],
                     "not": {
                         "required": ["agent_id"]
                     }

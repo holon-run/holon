@@ -7,17 +7,11 @@ use crate::{
     host_registry::validate_agent_id_format,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AgentProfilePreset, SpawnAgentWorkItemRequest, ToolCapabilityFamily, TrustLevel},
+    types::{AgentProfilePreset, ToolCapabilityFamily, TrustLevel},
 };
 
-use super::{
-    serialize_success,
-    work_item_action::{convert_todo_list, TodoItemArgs},
-    BuiltinToolDefinition,
-};
-use crate::tool::helpers::{
-    invalid_tool_input, normalize_optional_non_empty, parse_tool_args, validate_non_empty,
-};
+use super::{serialize_success, BuiltinToolDefinition};
+use crate::tool::helpers::{invalid_tool_input, normalize_optional_non_empty, parse_tool_args};
 
 pub(crate) const NAME: &str = "SpawnAgent";
 
@@ -40,26 +34,11 @@ pub(crate) enum SpawnAgentWorkspaceMode {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SpawnAgentArgs {
-    pub(crate) summary: String,
-    pub(crate) prompt: String,
+    pub(crate) initial_message: Option<String>,
     pub(crate) preset: Option<SpawnAgentPreset>,
     pub(crate) agent_id: Option<String>,
     pub(crate) template: Option<String>,
     pub(crate) workspace_mode: Option<SpawnAgentWorkspaceMode>,
-    #[serde(default)]
-    pub(crate) work_item: Option<SpawnAgentWorkItemArgs>,
-}
-
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SpawnAgentWorkItemArgs {
-    pub(crate) parent_work_item_id: String,
-    #[serde(default)]
-    pub(crate) child_objective: Option<String>,
-    #[serde(default)]
-    pub(crate) child_plan: Option<String>,
-    #[serde(default)]
-    pub(crate) child_todo_list: Option<Vec<TodoItemArgs>>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -67,7 +46,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::AgentCreation,
         spec: typed_spec::<SpawnAgentArgs>(
             NAME,
-            "Spawn a delegated agent from a small preset surface. The default `private_child` preset returns `agent_id` plus a supervising `task_handle`; `public_named` requires `agent_id` and returns only `agent_id`.",
+            "Spawn a delegated agent from a small preset surface. Use `initial_message` as the single caller text field: it is required for the default `private_child` preset and optional for `public_named`. Legacy caller text fields such as `summary`, `prompt`, `task_summary`, and `work_item` are not accepted. The default `private_child` preset returns `agent_id` plus a supervising `task_handle`; `public_named` requires `agent_id` and returns only `agent_id`.",
         )?,
     })
 }
@@ -79,8 +58,7 @@ pub(crate) async fn execute(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: SpawnAgentArgs = parse_tool_args(NAME, input)?;
-    let summary = validate_non_empty(args.summary, NAME, "summary")?;
-    let prompt = validate_non_empty(args.prompt, NAME, "prompt")?;
+    let initial_message = normalize_optional_non_empty(args.initial_message);
     let worktree = matches!(
         args.workspace_mode
             .unwrap_or(SpawnAgentWorkspaceMode::Inherit),
@@ -92,28 +70,21 @@ pub(crate) async fn execute(
     };
     let agent_id = normalize_optional_non_empty(args.agent_id);
     let template = normalize_optional_non_empty(args.template);
-    let work_item = args
-        .work_item
-        .map(|work_item| {
-            Ok::<_, anyhow::Error>(SpawnAgentWorkItemRequest {
-                parent_work_item_id: validate_non_empty(
-                    work_item.parent_work_item_id,
-                    NAME,
-                    "parent_work_item_id",
-                )?,
-                child_objective: normalize_optional_non_empty(work_item.child_objective),
-                child_plan: normalize_optional_non_empty(work_item.child_plan),
-                child_todo_list: work_item
-                    .child_todo_list
-                    .map(|items| convert_todo_list(NAME, items))
-                    .transpose()?
-                    .unwrap_or_default(),
-            })
-        })
-        .transpose()?;
 
     match preset {
         AgentProfilePreset::PrivateChild => {
+            if initial_message.is_none() {
+                return Err(invalid_tool_input(
+                    NAME,
+                    "SpawnAgent `private_child` requires a non-empty `initial_message`",
+                    json!({
+                        "field": "initial_message",
+                        "preset": "private_child",
+                        "validation_error": "must not be empty",
+                    }),
+                    "provide the delegation message in `initial_message` when using `private_child`",
+                ));
+            }
             if agent_id.is_some() {
                 return Err(invalid_tool_input(
                     NAME,
@@ -170,14 +141,12 @@ pub(crate) async fn execute(
     let result = runtime
         .managed_tasks()
         .spawn_agent(
-            summary,
-            prompt,
+            initial_message,
             trust.clone(),
             preset,
             agent_id,
             worktree,
             template,
-            work_item,
         )
         .await?;
     serialize_success(NAME, &result)

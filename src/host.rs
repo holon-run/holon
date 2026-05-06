@@ -33,9 +33,8 @@ use crate::{
         AgentIdentityRecord, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
         AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentVisibility,
         ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord, ExternalTriggerStatus,
-        OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord, TaskStatus, TodoItem,
-        TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkItemRecord, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord, TaskStatus, TranscriptEntry,
+        TranscriptEntryKind, TrustLevel, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -877,9 +876,12 @@ impl RuntimeHost {
             crate::types::AdmissionContext::RuntimeOwned,
         );
         message.metadata = Some(json!({
+            "spawn_preset": AgentProfilePreset::PrivateChild,
             "delegated_task_id": task.id,
+            "supervision_task_id": task.id,
             "parent_agent_id": parent_state.id,
             "child_agent_id": child_identity.agent_id,
+            "parent_supervised": true,
         }));
         child_runtime.enqueue(message).await?;
 
@@ -894,7 +896,7 @@ impl RuntimeHost {
         &self,
         parent_runtime: RuntimeHandle,
         agent_id: &str,
-        prompt: String,
+        initial_message: Option<String>,
         trust: TrustLevel,
         template: Option<String>,
     ) -> Result<String> {
@@ -909,9 +911,13 @@ impl RuntimeHost {
         let named_runtime = self.get_or_create_agent(&named_identity.agent_id).await?;
         if created {
             named_runtime
-                .inherit_from_parent_state(&parent_state)
+                .inherit_attached_workspaces_from_parent_state(&parent_state)
                 .await?;
         }
+
+        let Some(initial_message) = initial_message else {
+            return Ok(named_identity.agent_id);
+        };
 
         let mut message = crate::types::MessageEnvelope::new(
             named_identity.agent_id.clone(),
@@ -921,7 +927,9 @@ impl RuntimeHost {
             },
             trust,
             crate::types::Priority::Normal,
-            crate::types::MessageBody::Text { text: prompt },
+            crate::types::MessageBody::Text {
+                text: initial_message,
+            },
         )
         .with_admission(
             crate::types::MessageDeliverySurface::RuntimeSystem,
@@ -929,8 +937,9 @@ impl RuntimeHost {
         );
         message.metadata = Some(json!({
             "spawn_preset": AgentProfilePreset::PublicNamed,
-            "parent_agent_id": parent_state.id,
-            "child_agent_id": named_identity.agent_id,
+            "creator_agent_id": parent_state.id,
+            "spawned_agent_id": named_identity.agent_id,
+            "bootstrap": true,
         }));
         named_runtime.enqueue(message).await?;
         Ok(named_identity.agent_id)
@@ -1247,33 +1256,18 @@ impl RuntimeHostBridge {
         &self,
         parent_runtime: RuntimeHandle,
         agent_id: &str,
-        prompt: String,
+        initial_message: Option<String>,
         trust: TrustLevel,
         template: Option<String>,
     ) -> Result<String> {
         self.host()?
-            .spawn_public_named_agent(parent_runtime, agent_id, prompt, trust, template)
+            .spawn_public_named_agent(parent_runtime, agent_id, initial_message, trust, template)
             .await
     }
 
     pub(crate) async fn child_turn_index(&self, agent_id: &str) -> Result<u64> {
         let runtime = self.host()?.get_or_create_agent(agent_id).await?;
         Ok(runtime.agent_state().await?.turn_index)
-    }
-
-    pub(crate) async fn create_child_work_item(
-        &self,
-        agent_id: &str,
-        objective: String,
-        plan: Option<String>,
-        todo_list: Vec<TodoItem>,
-    ) -> Result<WorkItemRecord> {
-        let runtime = self.host()?.get_or_create_agent(agent_id).await?;
-        let work_item = runtime
-            .create_work_item(objective, None, plan, todo_list)
-            .await?;
-        let (_, current) = runtime.pick_work_item(work_item.id.clone()).await?;
-        Ok(current)
     }
 
     pub(crate) async fn record_operator_notification(
@@ -1426,6 +1420,7 @@ mod tests {
         provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse, StubProvider},
         runtime::RuntimeHandle,
         storage::AppStorage,
+        system::WorkspaceProjectionKind,
         types::{
             AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
             AgentVisibility, ControlAction, MessageBody, MessageEnvelope, MessageKind,
@@ -1657,7 +1652,7 @@ mod tests {
         host.spawn_public_named_agent(
             parent,
             "release-bot",
-            "continue release work".into(),
+            Some("continue release work".into()),
             TrustLevel::TrustedOperator,
             None,
         )
@@ -1679,7 +1674,7 @@ mod tests {
         host.spawn_public_named_agent(
             parent,
             "release-bot",
-            "coordinate release work".into(),
+            Some("coordinate release work".into()),
             TrustLevel::TrustedOperator,
             None,
         )
@@ -1704,6 +1699,200 @@ mod tests {
         assert_eq!(
             summary.identity.lineage_parent_agent_id.as_deref(),
             Some("default")
+        );
+    }
+
+    #[tokio::test]
+    async fn private_child_initial_message_sets_task_label_and_supervision_provenance() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let initial_message = "  investigate   remote\nTUI  access ".to_string();
+
+        let spawned = parent
+            .spawn_agent(
+                Some(initial_message.clone()),
+                TrustLevel::TrustedOperator,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let task_id = spawned
+            .supervision_task_id
+            .clone()
+            .expect("private child should return a supervision task");
+        let task = parent
+            .storage()
+            .latest_task_record(&task_id)
+            .unwrap()
+            .expect("supervision task should be persisted");
+        assert_eq!(
+            task.summary.as_deref(),
+            Some("investigate remote TUI access")
+        );
+
+        let child = host.get_or_create_agent(&spawned.agent_id).await.unwrap();
+        let messages = child.storage().read_recent_messages(10).unwrap();
+        let delegated = messages
+            .iter()
+            .find(|message| {
+                message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("delegated_task_id"))
+                    .and_then(|value| value.as_str())
+                    == Some(task_id.as_str())
+            })
+            .expect("child should receive the initial delegation message");
+        assert_eq!(
+            delegated.origin,
+            MessageOrigin::Task {
+                task_id: task_id.clone()
+            }
+        );
+        assert_eq!(
+            delegated.metadata.as_ref().unwrap()["parent_supervised"],
+            true
+        );
+        assert_eq!(
+            delegated.metadata.as_ref().unwrap()["supervision_task_id"],
+            task_id
+        );
+        assert_eq!(
+            delegated.body,
+            MessageBody::Text {
+                text: initial_message
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn private_child_runtime_spawn_rejects_blank_initial_message() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+
+        let error = parent
+            .spawn_agent(
+                Some("   \n\t  ".into()),
+                TrustLevel::TrustedOperator,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+            )
+            .await
+            .expect_err("blank private child initial_message should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("private_child spawn requires non-empty initial_message"));
+    }
+
+    #[tokio::test]
+    async fn public_named_initial_message_is_optional_and_inherits_only_attached_workspaces() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let workspace_home = tempdir().unwrap();
+        let workspace_path = workspace_home.path().to_path_buf();
+        let workspace = host.ensure_workspace_entry(workspace_path.clone()).unwrap();
+        parent.attach_workspace(&workspace).await.unwrap();
+        parent
+            .enter_workspace(
+                &workspace,
+                WorkspaceProjectionKind::CanonicalRoot,
+                WorkspaceAccessMode::SharedRead,
+                Some(workspace_path.clone()),
+                None,
+            )
+            .await
+            .unwrap();
+        let worktree_home = tempdir().unwrap();
+        parent
+            .enter_worktree(
+                workspace_path,
+                "main".into(),
+                worktree_home.path().to_path_buf(),
+                "feature/bootstrap".into(),
+            )
+            .await
+            .unwrap();
+        let parent_state = parent.agent_state().await.unwrap();
+        assert!(parent_state.active_workspace_entry.is_some());
+        assert!(parent_state.worktree_session.is_some());
+
+        host.spawn_public_named_agent(
+            parent.clone(),
+            "release-bot",
+            None,
+            TrustLevel::TrustedOperator,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let named = host.get_public_agent("release-bot").await.unwrap();
+        let named_state = named.agent_state().await.unwrap();
+        assert_eq!(
+            named_state.attached_workspaces,
+            parent_state.attached_workspaces
+        );
+        assert!(
+            named_state.active_workspace_entry.is_none(),
+            "public named creation should not inherit the caller's active workspace entry"
+        );
+        assert!(
+            named_state.worktree_session.is_none(),
+            "public named creation should not inherit the caller's worktree session"
+        );
+        assert!(
+            named.storage().read_recent_messages(10).unwrap().is_empty(),
+            "omitted initial_message should not enqueue a bootstrap message"
+        );
+
+        host.spawn_public_named_agent(
+            parent,
+            "release-bot",
+            Some("bootstrap release lane".into()),
+            TrustLevel::TrustedOperator,
+            None,
+        )
+        .await
+        .unwrap();
+        let messages = named.storage().read_recent_messages(10).unwrap();
+        let bootstrap = messages
+            .iter()
+            .find(|message| {
+                message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("bootstrap"))
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+            })
+            .expect("public named initial_message should enqueue bootstrap input");
+        assert_eq!(
+            bootstrap.origin,
+            MessageOrigin::System {
+                subsystem: "spawn_agent".into()
+            }
+        );
+        assert_eq!(
+            bootstrap.metadata.as_ref().unwrap()["creator_agent_id"],
+            "default"
+        );
+        assert!(bootstrap
+            .metadata
+            .as_ref()
+            .unwrap()
+            .get("delegated_task_id")
+            .is_none());
+        assert_eq!(
+            bootstrap.body,
+            MessageBody::Text {
+                text: "bootstrap release lane".into()
+            }
         );
     }
 
