@@ -642,7 +642,7 @@ fn assistant_message_from_event(
             .presentation
             .body
             .clone()
-            .or_else(|| event.payload.get("text").and_then(non_empty_value)),
+            .or_else(|| event.payload.get("text_preview").and_then(non_empty_value)),
         "provider_round_completed" => None,
         _ if is_progress_event(event) => event.presentation.body.clone(),
         _ => None,
@@ -988,7 +988,7 @@ mod tests {
         let assistant = event(
             "assistant_round_recorded",
             "assistant round",
-            json!({ "text": "I will inspect the event path first." }),
+            json!({ "text_preview": "I will inspect the event path first." }),
         );
 
         assert_eq!(

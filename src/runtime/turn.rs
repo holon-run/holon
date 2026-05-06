@@ -2065,12 +2065,11 @@ impl TurnExecution<'_> {
                     "run_id": run_id,
                     "round": round,
                     "stop_reason": stop_reason,
-                    "text": if combined_text.is_empty() {
+                    "text_preview": if combined_text.is_empty() {
                         None::<String>
                     } else {
-                        Some(combined_text.clone())
+                        Some(truncate_preview(&combined_text, ROUND_TEXT_PREVIEW_LIMIT))
                     },
-                    "text_blocks": text_blocks.clone(),
                     "text_block_count": text_blocks.len(),
                     "text_char_count": combined_text.chars().count(),
                     "tool_call_count": tool_calls.len(),

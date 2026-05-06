@@ -930,7 +930,7 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
         "assistant_round_recorded" => event
             .data
             .payload
-            .get("text")
+            .get("text_preview")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|text| !text.is_empty())
@@ -1205,7 +1205,7 @@ mod tests {
                     "run_id": "run-1",
                     "turn_index": 1,
                     "round": 1,
-                    "text": "previous turn"
+                    "text_preview": "previous turn"
                 }),
             ),
             &test_log_writer(),
@@ -1228,7 +1228,7 @@ mod tests {
                     "run_id": "run-2",
                     "turn_index": 2,
                     "round": 1,
-                    "text": "current turn"
+                    "text_preview": "current turn"
                 }),
             ),
             &test_log_writer(),

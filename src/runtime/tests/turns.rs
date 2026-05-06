@@ -82,7 +82,9 @@ async fn runtime_records_text_only_round_observations() {
     assert_eq!(assistant_event.data["round"], 1);
     assert_eq!(assistant_event.data["tool_call_count"], 0);
     assert_eq!(assistant_event.data["text_block_count"], 1);
-    assert!(assistant_event.data["text"]
+    assert!(assistant_event.data.get("text").is_none());
+    assert!(assistant_event.data.get("text_blocks").is_none());
+    assert!(assistant_event.data["text_preview"]
         .as_str()
         .unwrap()
         .contains("runtime split"));

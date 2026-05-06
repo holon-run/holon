@@ -1288,7 +1288,7 @@ mod tests {
                     event_type: "assistant_round_recorded".into(),
                     projection: None,
                     provenance: None,
-                    payload: json!({ "round": 1, "text": "hidden assistant partial" }),
+                    payload: json!({ "round": 1, "text_preview": "hidden assistant partial" }),
                 },
             },
             &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),

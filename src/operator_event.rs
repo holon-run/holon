@@ -764,7 +764,7 @@ fn process_execution_text(
 
 fn assistant_round_recorded_text(payload: &Value) -> (String, Option<String>, String) {
     let text = payload
-        .get("text")
+        .get("text_preview")
         .and_then(Value::as_str)
         .map(collapse_whitespace)
         .filter(|text| !text.is_empty());
@@ -780,9 +780,10 @@ fn assistant_round_recorded_text(payload: &Value) -> (String, Option<String>, St
     let tool_names = tool_names(payload);
     if !tool_names.is_empty() {
         let tools = tool_names.join(", ");
+        let body = format!("requested tools: {tools}");
         return (
             "Assistant requested tools".into(),
-            Some(tools.clone()),
+            Some(body),
             format!("Assistant requested tools: {tools}"),
         );
     }
@@ -1077,7 +1078,7 @@ mod tests {
         let context = OperatorPresentationContext::default();
         let text = present_operator_event(
             "assistant_round_recorded",
-            &json!({ "text": "thinking", "tool_names": ["ExecCommand"] }),
+            &json!({ "text_preview": "thinking", "tool_names": ["ExecCommand"] }),
             "fallback",
             &context,
         );
@@ -1087,7 +1088,7 @@ mod tests {
 
         let multiline = present_operator_event(
             "assistant_round_recorded",
-            &json!({ "text": "thinking\n\nabout\ttools  now" }),
+            &json!({ "text_preview": "thinking\n\nabout\ttools  now" }),
             "fallback",
             &context,
         );
@@ -1098,7 +1099,7 @@ mod tests {
 
         let tools = present_operator_event(
             "assistant_round_recorded",
-            &json!({ "text": null, "tool_names": ["ExecCommand", "ReadFile"] }),
+            &json!({ "text_preview": null, "tool_names": ["ExecCommand", "ReadFile"] }),
             "fallback",
             &context,
         );
@@ -1106,10 +1107,14 @@ mod tests {
             tools.summary,
             "Assistant requested tools: ExecCommand, ReadFile"
         );
+        assert_eq!(
+            tools.body.as_deref(),
+            Some("requested tools: ExecCommand, ReadFile")
+        );
 
         let empty = present_operator_event(
             "assistant_round_recorded",
-            &json!({ "text": null, "tool_names": [], "stop_reason": "end_turn" }),
+            &json!({ "text_preview": null, "tool_names": [], "stop_reason": "end_turn" }),
             "fallback",
             &context,
         );

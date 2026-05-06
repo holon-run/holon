@@ -641,8 +641,8 @@ Typical ephemeral items include:
 
 - `provider_round_completed` and `text_only_round_observed` classified as
   `progress`; `provider_round_completed` is provider telemetry, while
-  `assistant_round_recorded` carries assistant text/tool-request progress for
-  chat/activity rendering
+  `assistant_round_recorded` carries bounded assistant text previews and
+  tool-request progress for chat/activity rendering
 - `tool_executed` and `tool_execution_failed` classified as `trace`
 - lightweight task/workspace/worktree progress that is only relevant while the
   turn is in flight
