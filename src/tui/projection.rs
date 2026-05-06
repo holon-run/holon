@@ -338,7 +338,8 @@ impl TuiProjection {
                     self.mark_stale([ProjectionSlice::Session, ProjectionSlice::Agent]);
                 }
             }
-            "provider_round_completed"
+            "assistant_round_recorded"
+            | "provider_round_completed"
             | "text_only_round_observed"
             | "max_output_tokens_recovery"
             | "runtime_error" => {
@@ -926,15 +927,47 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
             .and_then(Value::as_str)
             .map(|branch| format!("exited worktree {branch}"))
             .unwrap_or_else(|| "exited worktree".into()),
-        "provider_round_completed" => event
+        "assistant_round_recorded" => event
             .data
             .payload
             .get("text_preview")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|text| !text.is_empty())
-            .map(|text| text.to_owned())
-            .unwrap_or_else(|| "provider round completed".into()),
+            .map(trim_summary)
+            .or_else(|| {
+                event
+                    .data
+                    .payload
+                    .get("tool_names")
+                    .and_then(Value::as_array)
+                    .map(|tools| {
+                        tools
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .filter(|tools| !tools.trim().is_empty())
+                    .map(|tools| format!("assistant requested tools: {tools}"))
+            })
+            .unwrap_or_else(|| "assistant round recorded".into()),
+        "provider_round_completed" => {
+            let round = event
+                .data
+                .payload
+                .get("round")
+                .and_then(Value::as_u64)
+                .map(|round| format!("round {round}"))
+                .unwrap_or_else(|| "round".into());
+            let stop = event
+                .data
+                .payload
+                .get("stop_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            format!("provider {round} completed: stop={stop}")
+        }
         "text_only_round_observed" => "text-only round observed".into(),
         "tool_executed" => event
             .data
@@ -1136,7 +1169,7 @@ mod tests {
         projection.apply_event(
             sample_event(
                 "provider_round_completed",
-                json!({ "round": 1, "text_preview": "" }),
+                json!({ "round": 1, "stop_reason": "end_turn" }),
             ),
             &test_log_writer(),
         );
@@ -1153,7 +1186,7 @@ mod tests {
                 .event_log()
                 .last()
                 .map(|event| event.summary.as_str()),
-            Some("Model returned no content")
+            Some("Provider round 1: model=model; stop=end_turn; tokens unavailable; tools=0")
         );
     }
 
@@ -1167,7 +1200,7 @@ mod tests {
 
         projection.apply_event(
             sample_event(
-                "provider_round_completed",
+                "assistant_round_recorded",
                 json!({
                     "run_id": "run-1",
                     "turn_index": 1,
@@ -1190,7 +1223,7 @@ mod tests {
         );
         projection.apply_event(
             sample_event(
-                "provider_round_completed",
+                "assistant_round_recorded",
                 json!({
                     "run_id": "run-2",
                     "turn_index": 2,
@@ -1217,10 +1250,7 @@ mod tests {
                 .iter()
                 .map(|event| event.summary.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "Assistant progress: current turn",
-                "ExecCommand: cargo test"
-            ]
+            vec!["Assistant round: current turn", "ExecCommand: cargo test"]
         );
     }
 

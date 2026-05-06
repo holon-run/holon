@@ -1285,17 +1285,17 @@ mod tests {
         );
         projection.apply_event(
             AgentStreamEvent {
-                id: "evt-provider".into(),
-                event: "provider_round_completed".into(),
+                id: "evt-assistant".into(),
+                event: "assistant_round_recorded".into(),
                 data: StreamEventEnvelope {
-                    id: "evt-provider".into(),
+                    id: "evt-assistant".into(),
                     seq: 3,
                     ts: Utc::now(),
                     agent_id: "default".into(),
-                    event_type: "provider_round_completed".into(),
+                    event_type: "assistant_round_recorded".into(),
                     projection: None,
                     provenance: None,
-                    payload: json!({ "round": 1, "text_preview": "hidden provider partial" }),
+                    payload: json!({ "round": 1, "text_preview": "hidden assistant partial" }),
                 },
             },
             &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
@@ -1307,7 +1307,7 @@ mod tests {
             .into_iter()
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
-        assert!(rendered.contains("Assistant hidden provider partial"));
+        assert!(rendered.contains("Assistant hidden assistant partial"));
         assert!(!rendered.contains("Action    Waiting for activity"));
         assert!(!rendered.contains("Current   "));
     }
@@ -1965,7 +1965,7 @@ mod tests {
                     event_type: "provider_round_completed".into(),
                     projection: None,
                     provenance: None,
-                    payload: json!({"text_preview":"older"}),
+                    payload: json!({"round": 1, "stop_reason": "end_turn"}),
                 },
             },
             &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
@@ -1989,7 +1989,7 @@ mod tests {
                         event_type: "provider_round_completed".into(),
                         projection: None,
                         provenance: None,
-                        payload: json!({"text_preview":"newer"}),
+                        payload: json!({"round": 2, "stop_reason": "end_turn"}),
                     },
                 },
                 &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),

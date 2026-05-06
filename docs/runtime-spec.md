@@ -191,6 +191,9 @@ Phase-1 token visibility rules:
   `output_tokens` fields and also mirror them under `data.token_usage`
 - `provider_round_completed` and `terminal_delivery_round_completed` audit
   events include `token_usage`
+- `provider_round_completed` is provider telemetry only; assistant-visible
+  bounded text previews and tool requests are emitted as
+  `assistant_round_recorded`
 - `runtime_error` and transcript `RuntimeFailure` entries include token usage
   only when provider diagnostics can aggregate it
 - `holon run --json` includes a top-level `token_usage`

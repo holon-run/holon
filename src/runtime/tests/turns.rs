@@ -73,7 +73,18 @@ async fn runtime_records_text_only_round_observations() {
     assert_eq!(provider_event.data["round"], 1);
     assert_eq!(provider_event.data["tool_call_count"], 0);
     assert_eq!(provider_event.data["text_block_count"], 1);
-    assert!(provider_event.data["text_preview"]
+    assert!(provider_event.data.get("text_preview").is_none());
+
+    let assistant_event = events
+        .iter()
+        .find(|event| event.kind == "assistant_round_recorded")
+        .expect("missing assistant_round_recorded");
+    assert_eq!(assistant_event.data["round"], 1);
+    assert_eq!(assistant_event.data["tool_call_count"], 0);
+    assert_eq!(assistant_event.data["text_block_count"], 1);
+    assert!(assistant_event.data.get("text").is_none());
+    assert!(assistant_event.data.get("text_blocks").is_none());
+    assert!(assistant_event.data["text_preview"]
         .as_str()
         .unwrap()
         .contains("runtime split"));

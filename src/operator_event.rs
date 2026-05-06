@@ -196,7 +196,8 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "task_worktree_cleanup_failed"
         | "task_worktree_branch_cleanup_retained" => OperatorEventCategory::Workspace,
         "runtime_error" | "turn_terminal" => OperatorEventCategory::Runtime,
-        "provider_round_completed"
+        "assistant_round_recorded"
+        | "provider_round_completed"
         | "text_only_round_observed"
         | "max_output_tokens_recovery"
         | "turn_local_compaction_applied"
@@ -224,6 +225,7 @@ fn event_visibility(
         ("work_item_written", _) if work_item_completed(payload) => OperatorVisibility::WorkDone,
         ("work_item_written", _) => OperatorVisibility::Trace,
         ("runtime_error", _) => OperatorVisibility::TurnResult,
+        ("turn_terminal", _) if turn_terminal_completed(payload) => OperatorVisibility::Trace,
         (_, OperatorEventCategory::AssistantProgress) => OperatorVisibility::Progress,
         (_, OperatorEventCategory::Tool)
         | (_, OperatorEventCategory::Task)
@@ -263,6 +265,13 @@ fn work_item_completed(payload: &Value) -> bool {
         .is_some_and(|record| record.state == WorkItemState::Completed)
 }
 
+fn turn_terminal_completed(payload: &Value) -> bool {
+    payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "completed")
+}
+
 fn event_text(
     kind: &str,
     payload: &Value,
@@ -296,6 +305,8 @@ fn event_text(
         "workspace_detached" => workspace_text(payload, fallback_summary, "Detached workspace"),
         "worktree_entered" => worktree_text(payload, fallback_summary, true),
         "worktree_exited" => worktree_text(payload, fallback_summary, false),
+        "turn_terminal" => turn_terminal_text(payload),
+        "assistant_round_recorded" => assistant_round_recorded_text(payload),
         "provider_round_completed" => provider_round_text(payload),
         "text_only_round_observed" => text_only_round_text(payload),
         "max_output_tokens_recovery" => max_output_recovery_text(payload),
@@ -714,7 +725,7 @@ fn work_item_delegation_text(payload: &Value, completed: bool) -> (String, Optio
 
 fn process_execution_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let surface = payload
         .get("surface")
@@ -743,60 +754,125 @@ fn process_execution_text(
             format!("{label}: {cmd_preview}"),
         );
     }
-    (label.into(), None, fallback_summary.to_string())
+    let body = match surface {
+        "ExecCommand" | "ExecCommandBatch" => "Command details are available in the event log.",
+        "command_task" => "Background command details are available in the task and event logs.",
+        _ => "Process details are available in the event log.",
+    };
+    (label.into(), Some(body.into()), label.into())
 }
 
-fn provider_round_text(payload: &Value) -> (String, Option<String>, String) {
-    let text_preview = payload
+fn assistant_round_recorded_text(payload: &Value) -> (String, Option<String>, String) {
+    let text = payload
         .get("text_preview")
         .and_then(Value::as_str)
         .map(collapse_whitespace)
         .filter(|text| !text.is_empty());
-    if let Some(text_preview) = text_preview.as_deref() {
-        let body = trim_summary(text_preview);
+    if let Some(text) = text {
+        let body = trim_summary(&text);
         return (
-            "Assistant progress".into(),
+            "Assistant round".into(),
             Some(body.clone()),
-            format!("Assistant progress: {body}"),
+            format!("Assistant round: {body}"),
         );
     }
 
-    let tool_names = payload
+    let tool_names = tool_names(payload);
+    if !tool_names.is_empty() {
+        let tools = tool_names.join(", ");
+        let body = format!("requested tools: {tools}");
+        return (
+            "Assistant requested tools".into(),
+            Some(body),
+            format!("Assistant requested tools: {tools}"),
+        );
+    }
+
+    let stop_reason = payload
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    (
+        "Assistant round".into(),
+        Some(format!("Stop reason: {stop_reason}")),
+        format!("Assistant round completed without text (stop={stop_reason})"),
+    )
+}
+
+fn tool_names(payload: &Value) -> Vec<String> {
+    payload
         .get("tool_names")
         .and_then(Value::as_array)
         .map(|tools| {
             tools
                 .iter()
                 .filter_map(Value::as_str)
-                .filter(|name| !name.trim().is_empty())
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
         })
-        .unwrap_or_default();
-    if !tool_names.is_empty() {
-        let tools = tool_names.join(", ");
-        return (
-            "Model requested tools".into(),
-            Some(tools.clone()),
-            format!("Model requested tools: {tools}"),
-        );
-    }
+        .unwrap_or_default()
+}
 
-    let stop_reason = payload.get("stop_reason").and_then(Value::as_str);
-    if stop_reason.is_some_and(is_max_output_stop_reason) {
-        return (
-            "Output limit reached".into(),
-            Some("Requesting continuation from the model.".into()),
-            "Output limit reached: requesting continuation".into(),
-        );
-    }
+fn provider_round_text(payload: &Value) -> (String, Option<String>, String) {
+    let round = payload
+        .get("round")
+        .and_then(Value::as_u64)
+        .map(|round| format!("round {round}"))
+        .unwrap_or_else(|| "round".into());
+    let model = payload
+        .get("active_model")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("requested_model").and_then(Value::as_str))
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or("model");
+    let stop = payload
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let input_tokens = payload.get("input_tokens").and_then(Value::as_u64);
+    let output_tokens = payload.get("output_tokens").and_then(Value::as_u64);
+    let tokens = match (input_tokens, output_tokens) {
+        (Some(input), Some(output)) => format!("{input}/{output} tokens"),
+        _ => "tokens unavailable".into(),
+    };
+    let tool_count = payload
+        .get("tool_call_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| tool_names(payload).len() as u64);
+    let body = format!("model={model}; stop={stop}; {tokens}; tools={tool_count}");
+    (
+        "Provider round completed".into(),
+        Some(body.clone()),
+        format!("Provider {round}: {body}"),
+    )
+}
 
-    let body = stop_reason.map(|reason| format!("Stop reason: {reason}"));
+fn turn_terminal_text(payload: &Value) -> (String, Option<String>, String) {
+    let kind = payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("terminal");
+    let duration = payload.get("duration_ms").and_then(Value::as_u64);
+    let last_message = payload
+        .get("last_assistant_message")
+        .and_then(Value::as_str)
+        .map(collapse_whitespace)
+        .filter(|message| !message.is_empty())
+        .map(|message| trim_summary(&message));
+    let title = match kind {
+        "completed" => "Turn completed",
+        "aborted" => "Turn aborted",
+        "baseline_over_budget" => "Turn stopped",
+        _ => "Turn terminal",
+    };
+    let body = last_message.or_else(|| duration.map(|ms| format!("{ms} ms")));
     let summary = body
         .as_deref()
-        .map(|body| format!("Model returned no content: no visible content ({body})"))
-        .unwrap_or_else(|| "Model returned no content".into());
-    ("Model returned no content".into(), body, summary)
+        .map(|body| format!("{title}: {body}"))
+        .unwrap_or_else(|| title.to_string());
+    (title.into(), body, summary)
 }
 
 fn text_only_round_text(payload: &Value) -> (String, Option<String>, String) {
@@ -989,14 +1065,6 @@ fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn is_max_output_stop_reason(reason: &str) -> bool {
-    matches!(
-        reason,
-        "max_tokens" | "max_output_tokens" | "length" | "output_limit"
-    ) || reason.contains("max_output")
-        || reason.contains("max_tokens")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1006,61 +1074,101 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn provider_round_distinguishes_text_from_tool_requests() {
+    fn assistant_round_recorded_distinguishes_text_from_tool_requests() {
         let context = OperatorPresentationContext::default();
         let text = present_operator_event(
-            "provider_round_completed",
+            "assistant_round_recorded",
             &json!({ "text_preview": "thinking", "tool_names": ["ExecCommand"] }),
             "fallback",
             &context,
         );
         assert_eq!(text.visibility, OperatorVisibility::Progress);
         assert_eq!(text.category, OperatorEventCategory::AssistantProgress);
-        assert_eq!(text.summary, "Assistant progress: thinking");
+        assert_eq!(text.summary, "Assistant round: thinking");
 
         let multiline = present_operator_event(
-            "provider_round_completed",
+            "assistant_round_recorded",
             &json!({ "text_preview": "thinking\n\nabout\ttools  now" }),
             "fallback",
             &context,
         );
         assert_eq!(
             multiline.summary,
-            "Assistant progress: thinking about tools now"
+            "Assistant round: thinking about tools now"
         );
 
         let tools = present_operator_event(
-            "provider_round_completed",
+            "assistant_round_recorded",
             &json!({ "text_preview": null, "tool_names": ["ExecCommand", "ReadFile"] }),
             "fallback",
             &context,
         );
         assert_eq!(
             tools.summary,
-            "Model requested tools: ExecCommand, ReadFile"
-        );
-
-        let max_output = present_operator_event(
-            "provider_round_completed",
-            &json!({ "text_preview": null, "tool_names": [], "stop_reason": "max_output_tokens" }),
-            "fallback",
-            &context,
+            "Assistant requested tools: ExecCommand, ReadFile"
         );
         assert_eq!(
-            max_output.summary,
-            "Output limit reached: requesting continuation"
+            tools.body.as_deref(),
+            Some("requested tools: ExecCommand, ReadFile")
         );
 
         let empty = present_operator_event(
-            "provider_round_completed",
+            "assistant_round_recorded",
             &json!({ "text_preview": null, "tool_names": [], "stop_reason": "end_turn" }),
             "fallback",
             &context,
         );
         assert_eq!(
             empty.summary,
-            "Model returned no content: no visible content (Stop reason: end_turn)"
+            "Assistant round completed without text (stop=end_turn)"
         );
+    }
+
+    #[test]
+    fn provider_round_completed_presents_provider_telemetry() {
+        let context = OperatorPresentationContext::default();
+        let provider = present_operator_event(
+            "provider_round_completed",
+            &json!({
+                "round": 2,
+                "active_model": "deepseek-chat",
+                "stop_reason": "tool_use",
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "tool_call_count": 1
+            }),
+            "fallback",
+            &context,
+        );
+        assert_eq!(provider.visibility, OperatorVisibility::Progress);
+        assert_eq!(provider.category, OperatorEventCategory::AssistantProgress);
+        assert_eq!(
+            provider.summary,
+            "Provider round 2: model=deepseek-chat; stop=tool_use; 12/7 tokens; tools=1"
+        );
+        assert_eq!(provider.title, "Provider round completed");
+    }
+
+    #[test]
+    fn completed_turn_terminal_is_trace_but_failures_are_turn_results() {
+        let context = OperatorPresentationContext::default();
+        let completed = present_operator_event(
+            "turn_terminal",
+            &json!({ "kind": "completed", "duration_ms": 42 }),
+            "turn completed",
+            &context,
+        );
+        assert_eq!(completed.visibility, OperatorVisibility::Trace);
+        assert_eq!(completed.summary, "Turn completed: 42 ms");
+
+        let aborted = present_operator_event(
+            "turn_terminal",
+            &json!({ "kind": "aborted", "last_assistant_message": "need more input" }),
+            "turn aborted",
+            &context,
+        );
+        assert_eq!(aborted.visibility, OperatorVisibility::TurnResult);
+        assert_eq!(aborted.summary, "Turn aborted: need more input");
     }
 
     #[test]
@@ -1175,6 +1283,18 @@ mod tests {
         assert_eq!(
             presentation.summary,
             "Command started: cargo test -q tui::chat"
+        );
+
+        let background = present_operator_event(
+            "process_execution_requested",
+            &json!({ "surface": "command_task" }),
+            "process_execution_requested",
+            &OperatorPresentationContext::default(),
+        );
+        assert_eq!(background.summary, "Background command started");
+        assert_eq!(
+            background.body.as_deref(),
+            Some("Background command details are available in the task and event logs.")
         );
     }
 }

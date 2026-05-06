@@ -486,7 +486,7 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
 
     wait_until(|| {
         let messages = runtime.storage().read_recent_messages(10)?;
-        let events = runtime.storage().read_recent_events(20)?;
+        let events = runtime.storage().read_recent_events(200)?;
         Ok(messages.iter().any(|message| {
             message.kind == MessageKind::OperatorPrompt
                 && message.delivery_surface == Some(MessageDeliverySurface::HttpControlPrompt)

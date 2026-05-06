@@ -637,14 +637,16 @@ fn latest_assistant_message(
 fn assistant_message_from_event(
     event: &crate::tui::projection::ProjectionEventRecord,
 ) -> Option<String> {
-    if !is_progress_event(event) {
-        return None;
+    match event.kind.as_str() {
+        "assistant_round_recorded" => event
+            .presentation
+            .body
+            .clone()
+            .or_else(|| event.payload.get("text_preview").and_then(non_empty_value)),
+        "provider_round_completed" => None,
+        _ if is_progress_event(event) => event.presentation.body.clone(),
+        _ => None,
     }
-    event
-        .presentation
-        .body
-        .clone()
-        .or_else(|| event.payload.get("text_preview").and_then(non_empty_value))
 }
 
 fn is_progress_event(event: &crate::tui::projection::ProjectionEventRecord) -> bool {
@@ -962,7 +964,7 @@ mod tests {
         let empty_round = event(
             "provider_round_completed",
             "provider round completed",
-            json!({ "text_preview": "" }),
+            json!({ "round": 1, "stop_reason": "end_turn" }),
         );
         let command = event(
             "process_execution_requested",
@@ -978,6 +980,20 @@ mod tests {
         assert_eq!(
             latest_action_event(events.as_slice()).map(|event| event.summary.as_str()),
             Some("Command started: cargo test tui::chat")
+        );
+    }
+
+    #[test]
+    fn assistant_round_recorded_is_activity_content() {
+        let assistant = event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({ "text_preview": "I will inspect the event path first." }),
+        );
+
+        assert_eq!(
+            assistant_message_from_event(&assistant).as_deref(),
+            Some("I will inspect the event path first.")
         );
     }
 }

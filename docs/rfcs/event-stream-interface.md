@@ -311,6 +311,7 @@ Important first-party event families currently include:
 ### Turn and model execution
 
 - `provider_round_completed`
+- `assistant_round_recorded`
 - `text_only_round_observed`
 - `max_output_tokens_recovery`
 - `turn_terminal`
@@ -639,7 +640,9 @@ the durable conversation history.
 Typical ephemeral items include:
 
 - `provider_round_completed` and `text_only_round_observed` classified as
-  `progress`
+  `progress`; `provider_round_completed` is provider telemetry, while
+  `assistant_round_recorded` carries bounded assistant text previews and
+  tool-request progress for chat/activity rendering
 - `tool_executed` and `tool_execution_failed` classified as `trace`
 - lightweight task/workspace/worktree progress that is only relevant while the
   turn is in flight

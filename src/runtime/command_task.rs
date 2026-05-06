@@ -475,6 +475,7 @@ impl RuntimeHandle {
             None,
             false,
         );
+        let diagnostics = self.command_cost_diagnostics_for(&resolved.spec);
         let task = TaskRecord {
             id: task_id.clone(),
             agent_id: agent_id.clone(),
@@ -498,6 +499,8 @@ impl RuntimeHandle {
                 "surface": "command_task",
                 "task_id": task_id,
                 "trust": trust,
+                "cmd_preview": diagnostics.cmd_preview.clone(),
+                "command_cost": diagnostics,
                 "execution": resolved.execution.clone(),
                 "boundary": crate::system::HostLocalBoundary::from_snapshot(&resolved.execution).audit_metadata(),
                 "workdir": resolved.workdir.clone(),
