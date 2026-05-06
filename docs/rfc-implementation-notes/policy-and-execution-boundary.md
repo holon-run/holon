@@ -44,6 +44,8 @@ admission and execution checks consistently gate sensitive actions.
 5. Preserve provenance when instructions come from system/developer,
    agent-home, workspace `AGENTS.md`, operator input, or external channels.
 
+Tracked by #921 for host-local execution limitations and operator projection.
+
 ## Verification direction
 
 Useful checks should exercise real runtime surfaces:

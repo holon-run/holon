@@ -32,3 +32,5 @@ knowledge.
    one trust class.
 5. Keep agent-home `AGENTS.md` as durable agent behavior guidance, not a cache
    for project notes or task plans.
+
+Tracked by #924 for the memory and compaction governance boundary.

@@ -34,3 +34,5 @@ still relies on loaded instructions for some discipline:
    never confused with private child delegation.
 4. Keep agent-home template initialization separate from later agent-local
    durable edits.
+
+Tracked by #923 for child supervision projection and related delegation state.

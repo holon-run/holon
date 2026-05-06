@@ -34,3 +34,5 @@ are audited as one tool plane.
 5. Add contract tests for rejected invalid shapes, not only happy paths.
 6. Ensure new tools identify which layer they belong to: control plane,
    workspace plane, task plane, waiting plane, or web/external plane.
+
+Tracked by #913 for task result envelopes and artifact references.

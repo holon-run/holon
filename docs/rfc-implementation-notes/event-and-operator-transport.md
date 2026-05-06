@@ -46,3 +46,6 @@ The v0.14 replay/projection minimum is:
 3. Keep closure result delivery separate from internal traces and task output.
 4. Add verification that replayed remote events cannot elevate trust or
    overwrite operator-origin input provenance.
+
+Tracked by #912 for event ingress and provenance, #919 for operator-facing
+event presentation, and #922 for replay/provenance verification.

@@ -32,6 +32,8 @@ runtime state transitions.
 5. Add verification for reactivation edge cases: queued continuation, external
    trigger callback, operator interruption, and completed-work re-entry.
 
+Tracked by #914 for external trigger lifecycle and stale-trigger cleanup.
+
 ## Verification direction
 
 Useful tests should prove that:
