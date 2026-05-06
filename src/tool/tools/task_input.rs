@@ -40,6 +40,7 @@ pub(crate) async fn execute(
     let args: TaskInputArgs = parse_tool_args(NAME, input)?;
     let task_id = validate_non_empty(args.task_id, NAME, "task_id")?;
     let result: TaskInputResult = runtime
+        .managed_tasks()
         .task_input_with_trust(&task_id, &args.input, trust)
         .await?;
     serialize_success(NAME, &result)

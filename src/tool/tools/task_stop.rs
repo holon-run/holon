@@ -38,7 +38,7 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: TaskStopArgs = parse_tool_args(NAME, input)?;
     let task_id = validate_non_empty(args.task_id, NAME, "task_id")?;
-    let task = runtime.stop_task(&task_id, trust).await?;
+    let task = runtime.managed_tasks().stop_task(&task_id, trust).await?;
     let force_stop_requested = task
         .detail
         .as_ref()

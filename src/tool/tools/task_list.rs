@@ -35,6 +35,6 @@ pub(crate) async fn execute(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let _: TaskListArgs = parse_tool_args(NAME, input)?;
-    let tasks = runtime.latest_task_list_entries().await?;
+    let tasks = runtime.managed_tasks().latest_task_list_entries().await?;
     serialize_success(NAME, &tasks)
 }

@@ -62,7 +62,10 @@ pub(crate) async fn execute(
         accepts_input: args.accepts_input.unwrap_or(tty),
         continue_on_result: args.continue_on_result.unwrap_or(false),
     };
-    let result: ExecCommandResult = runtime.execute_exec_command(spec, trust).await?;
+    let result: ExecCommandResult = runtime
+        .managed_tasks()
+        .execute_exec_command(spec, trust)
+        .await?;
     serialize_success(NAME, &result)
 }
 

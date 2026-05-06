@@ -189,7 +189,11 @@ async fn execute_batch_item(
         continue_on_result: false,
     };
 
-    match runtime.execute_exec_command_once(spec, trust).await {
+    match runtime
+        .managed_tasks()
+        .execute_exec_command_once(spec, trust)
+        .await
+    {
         Ok(result) => {
             let status = match result.outcome {
                 ExecCommandOutcome::Completed { exit_status, .. } if exit_status == Some(0) => {
