@@ -32,9 +32,9 @@ use holon::{
         FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TodoItem, TodoItemState,
-        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus,
-        WaitingReason, WorkItemState,
+        OperatorTransportDeliveryAuthKind, Priority, QueueEntryStatus, TaskStatus, TodoItem,
+        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        WaitingIntentStatus, WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -62,6 +62,80 @@ use crate::support::{
 
 // ============================================================================
 // Runtime waiting and reactivation domain test support
+pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(
+        test_config(),
+        Arc::new(StubProvider::new("turn boundary result")),
+    )?;
+    let runtime = host.default_runtime().await?;
+
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "exercise the turn boundary".into(),
+            },
+        ))
+        .await?;
+
+    wait_until(|| {
+        let queue_entries = runtime.storage().read_recent_queue_entries(20)?;
+        Ok(queue_entries.iter().any(|entry| {
+            entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
+        }))
+    })
+    .await?;
+
+    let queue_entries = runtime.storage().read_recent_queue_entries(20)?;
+    let statuses = queue_entries
+        .iter()
+        .filter(|entry| entry.message_id == message.id)
+        .map(|entry| entry.status.clone())
+        .collect::<Vec<_>>();
+    assert!(statuses.contains(&QueueEntryStatus::Queued));
+    assert!(statuses.contains(&QueueEntryStatus::Dequeued));
+    assert!(statuses.contains(&QueueEntryStatus::Processed));
+
+    let transcript = runtime.storage().read_recent_transcript(20)?;
+    assert!(transcript.iter().any(|entry| {
+        entry.kind == TranscriptEntryKind::IncomingMessage
+            && entry.related_message_id.as_deref() == Some(message.id.as_str())
+            && entry.data["body"]["text"].as_str() == Some("exercise the turn boundary")
+    }));
+    assert!(transcript.iter().any(|entry| {
+        entry.kind == TranscriptEntryKind::AssistantRound && entry.round == Some(1)
+    }));
+
+    let briefs = runtime.recent_briefs(10).await?;
+    assert!(briefs.iter().any(|brief| {
+        brief.kind == BriefKind::Ack
+            && brief.related_message_id.as_deref() == Some(message.id.as_str())
+            && brief.text == "Queued work: exercise the turn boundary"
+    }));
+    assert!(briefs.iter().any(|brief| {
+        brief.kind == BriefKind::Result
+            && brief.related_message_id.as_deref() == Some(message.id.as_str())
+            && brief.text == "turn boundary result"
+    }));
+
+    let events = runtime.recent_events(20).await?;
+    let terminal_event = events
+        .iter()
+        .find(|event| event.kind == "turn_terminal")
+        .expect("turn terminal event should be recorded");
+    assert_eq!(terminal_event.data["kind"].as_str(), Some("completed"));
+    assert_eq!(
+        terminal_event.data["last_assistant_message"].as_str(),
+        Some("turn boundary result")
+    );
+
+    Ok(())
+}
+
 pub async fn message_processing_creates_briefs_and_sleeps() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("stub result")))?;
