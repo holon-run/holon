@@ -2003,6 +2003,12 @@ impl RuntimeHandle {
         if record.state == WorkItemState::Completed {
             return Err(anyhow!("cannot pick completed work item {}", work_item_id));
         }
+        if current_id.as_deref().is_some_and(|id| id != record.id) {
+            if let Some(previous_id) = current_id.as_deref() {
+                self.cancel_work_item_waiting_intents(previous_id, "active_work_item_switched")
+                    .await?;
+            }
+        }
         {
             let mut guard = self.inner.agent.lock().await;
             guard.state.current_work_item_id = Some(record.id.clone());
@@ -2122,6 +2128,8 @@ impl RuntimeHandle {
                     None,
                 ))?;
         }
+        self.cancel_work_item_waiting_intents(&record.id, "work_item_completed")
+            .await?;
         {
             let mut guard = self.inner.agent.lock().await;
             if guard.state.current_work_item_id.as_deref() == Some(record.id.as_str()) {

@@ -1228,6 +1228,221 @@ async fn agent_scoped_wake_hint_preserves_external_trigger_provenance() {
 }
 
 #[tokio::test]
+async fn completing_work_item_cancels_work_item_scoped_external_trigger() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("wait for external review".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let capability = runtime
+        .create_external_trigger(
+            "wait for review".into(),
+            "github".into(),
+            ExternalTriggerScope::WorkItem,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    runtime
+        .complete_work_item(work.id.clone(), Some("review no longer needed".into()))
+        .await
+        .unwrap();
+
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    let descriptor = runtime
+        .latest_external_triggers()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.external_trigger_id == capability.external_trigger_id)
+        .expect("external trigger descriptor should exist");
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].id, capability.waiting_intent_id);
+    assert_eq!(waiting[0].status, WaitingIntentStatus::Cancelled);
+    assert_eq!(descriptor.status, ExternalTriggerStatus::Revoked);
+
+    let result = runtime
+        .deliver_callback(
+            &capability.external_trigger_id,
+            CallbackDeliveryPayload {
+                body: Some(MessageBody::Text {
+                    text: "late callback".into(),
+                }),
+                content_type: Some("text/plain".into()),
+                correlation_id: None,
+                causation_id: None,
+            },
+        )
+        .await;
+    assert!(result.unwrap_err().to_string().contains("not active"));
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_waiting_intents_cancelled"
+            && event.data["reason"] == "work_item_completed"
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn replacing_work_item_trigger_revokes_previous_waiting_condition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("replace external condition".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let old_capability = runtime
+        .create_external_trigger(
+            "wait for CI".into(),
+            "github".into(),
+            ExternalTriggerScope::WorkItem,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let new_capability = runtime
+        .create_external_trigger(
+            "wait for review approval".into(),
+            "github".into(),
+            ExternalTriggerScope::WorkItem,
+            CallbackDeliveryMode::EnqueueMessage,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    let descriptors = runtime.latest_external_triggers().await.unwrap();
+    assert_eq!(
+        waiting
+            .iter()
+            .filter(|record| record.status == WaitingIntentStatus::Active)
+            .count(),
+        1
+    );
+    assert!(waiting.iter().any(|record| {
+        record.id == old_capability.waiting_intent_id
+            && record.status == WaitingIntentStatus::Cancelled
+    }));
+    assert!(waiting.iter().any(|record| {
+        record.id == new_capability.waiting_intent_id
+            && record.status == WaitingIntentStatus::Active
+    }));
+    assert!(descriptors.iter().any(|record| {
+        record.external_trigger_id == old_capability.external_trigger_id
+            && record.status == ExternalTriggerStatus::Revoked
+    }));
+    assert!(descriptors.iter().any(|record| {
+        record.external_trigger_id == new_capability.external_trigger_id
+            && record.status == ExternalTriggerStatus::Active
+    }));
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_waiting_intents_cancelled"
+            && event.data["reason"] == "waiting_condition_replaced"
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn picking_new_work_item_cancels_previous_work_item_scoped_trigger_only() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let old_work = runtime
+        .create_work_item("old waiting condition".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(old_work.id.clone()).await.unwrap();
+    let old_work_trigger = runtime
+        .create_external_trigger(
+            "wait for old work event".into(),
+            "github".into(),
+            ExternalTriggerScope::WorkItem,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let agent_trigger = runtime
+        .create_external_trigger(
+            "watch durable inbox".into(),
+            "agentinbox".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let new_work = runtime
+        .create_work_item("new active condition".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+
+    runtime.pick_work_item(new_work.id.clone()).await.unwrap();
+
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    assert!(waiting.iter().any(|record| {
+        record.id == old_work_trigger.waiting_intent_id
+            && record.status == WaitingIntentStatus::Cancelled
+    }));
+    assert!(waiting.iter().any(|record| {
+        record.id == agent_trigger.waiting_intent_id
+            && record.scope == ExternalTriggerScope::Agent
+            && record.status == WaitingIntentStatus::Active
+    }));
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_waiting_intents_cancelled"
+            && event.data["reason"] == "active_work_item_switched"
+            && event.data["work_item_id"].as_str() == Some(old_work.id.as_str())
+    }));
+}
+
+#[tokio::test]
 async fn reconcile_waiting_contract_cancels_old_waits_after_active_work_switch() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -1316,9 +1531,11 @@ async fn reconcile_waiting_contract_cancels_old_waits_after_active_work_switch()
         Some(new_work.id.as_str())
     );
     let events = runtime.storage().read_recent_events(20).unwrap();
-    assert!(events
-        .iter()
-        .any(|event| event.kind == "stale_waiting_intents_cancelled"));
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_waiting_intents_cancelled"
+            && event.data["reason"] == "work_item_completed"
+            && event.data["work_item_id"].as_str() == Some(old_work.id.as_str())
+    }));
 }
 
 #[tokio::test]
