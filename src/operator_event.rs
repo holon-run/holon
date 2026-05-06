@@ -160,15 +160,31 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         "message_enqueued" | "turn_started" | "operator_interjection_admitted" => {
             OperatorEventCategory::Message
         }
-        "work_item_written" => OperatorEventCategory::WorkItem,
-        "task_created" | "task_status_updated" | "task_result_received" => {
-            OperatorEventCategory::Task
+        "work_item_written" | "work_item_delegation_created" | "work_item_delegation_completed" => {
+            OperatorEventCategory::WorkItem
         }
+        "task_created"
+        | "task_status_updated"
+        | "task_result_received"
+        | "task_child_spawned"
+        | "task_input_delivered" => OperatorEventCategory::Task,
         "waiting_intent_created" | "waiting_intent_cancelled" | "callback_delivered" => {
             OperatorEventCategory::Waiting
         }
-        "workspace_entered" | "workspace_exited" | "workspace_detached" | "worktree_entered"
-        | "worktree_exited" => OperatorEventCategory::Workspace,
+        "workspace_entered"
+        | "workspace_exited"
+        | "workspace_detached"
+        | "worktree_entered"
+        | "worktree_exited"
+        | "worktree_created_for_task"
+        | "task_worktree_metadata_recorded"
+        | "worktree_retained_for_review"
+        | "worktree_auto_cleaned_up"
+        | "worktree_auto_cleanup_failed"
+        | "task_worktree_cleanup_already_removed"
+        | "task_worktree_cleanup_retained"
+        | "task_worktree_cleanup_failed"
+        | "task_worktree_branch_cleanup_retained" => OperatorEventCategory::Workspace,
         "runtime_error" | "turn_terminal" => OperatorEventCategory::Runtime,
         "provider_round_completed" | "text_only_round_observed" => {
             OperatorEventCategory::AssistantProgress
@@ -237,6 +253,11 @@ fn event_text(
     category: OperatorEventCategory,
 ) -> (String, Option<String>, String) {
     match kind {
+        "operator_notification_requested" => operator_notification_text(payload, fallback_summary),
+        "task_child_spawned" => task_child_spawned_text(payload, fallback_summary),
+        "task_input_delivered" => task_input_delivered_text(payload, fallback_summary),
+        "work_item_delegation_created" => work_item_delegation_text(payload, false),
+        "work_item_delegation_completed" => work_item_delegation_text(payload, true),
         "provider_round_completed" => provider_round_text(payload),
         "text_only_round_observed" => (
             "Assistant progress".into(),
@@ -248,6 +269,119 @@ fn event_text(
             let title = category_title(category, kind);
             (title, None, fallback_summary.to_string())
         }
+    }
+}
+
+fn operator_notification_text(
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let summary = payload
+        .get("summary")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("message").and_then(Value::as_str))
+        .map(trim_summary)
+        .unwrap_or_else(|| fallback_summary.to_string());
+    let boundary = payload
+        .get("target_operator_boundary")
+        .and_then(Value::as_str)
+        .unwrap_or("primary_operator");
+    if boundary == "parent_supervisor" {
+        let requested_by = payload
+            .get("requested_by_agent_id")
+            .and_then(Value::as_str)
+            .unwrap_or("child");
+        return (
+            "Parent supervision needed".into(),
+            Some(summary.clone()),
+            format!("Child {requested_by} needs parent supervision: {summary}"),
+        );
+    }
+    (
+        "Operator attention".into(),
+        Some(summary.clone()),
+        format!("Operator attention needed: {summary}"),
+    )
+}
+
+fn task_child_spawned_text(
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let task_id = payload.get("id").and_then(Value::as_str);
+    let child_agent_id = payload
+        .get("detail")
+        .and_then(|detail| detail.get("child_agent_id"))
+        .and_then(Value::as_str);
+    let workspace_mode = payload
+        .get("detail")
+        .and_then(|detail| detail.get("workspace_mode"))
+        .and_then(Value::as_str);
+    let summary = match (child_agent_id, task_id) {
+        (Some(child), Some(task)) => {
+            let mut text = format!("Delegated child {child} started under supervision task {task}");
+            if let Some(mode) = workspace_mode {
+                text.push_str(&format!(" ({mode})"));
+            }
+            text
+        }
+        _ => fallback_summary.to_string(),
+    };
+    (
+        "Delegated child started".into(),
+        child_agent_id.map(ToString::to_string),
+        summary,
+    )
+}
+
+fn task_input_delivered_text(
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let child_agent_id = payload.get("child_agent_id").and_then(Value::as_str);
+    let task_id = payload.get("task_id").and_then(Value::as_str);
+    let input_target = payload.get("input_target").and_then(Value::as_str);
+    if input_target == Some("child_followup") {
+        if let (Some(child), Some(task)) = (child_agent_id, task_id) {
+            return (
+                "Parent follow-up delivered".into(),
+                Some(child.to_string()),
+                format!("Parent follow-up delivered to child {child} via supervision task {task}"),
+            );
+        }
+    }
+    (
+        "Task input delivered".into(),
+        task_id.map(ToString::to_string),
+        fallback_summary.to_string(),
+    )
+}
+
+fn work_item_delegation_text(payload: &Value, completed: bool) -> (String, Option<String>, String) {
+    let parent = payload
+        .get("parent_work_item_id")
+        .and_then(Value::as_str)
+        .unwrap_or("parent work item");
+    let child = payload
+        .get("child_work_item_id")
+        .and_then(Value::as_str)
+        .unwrap_or("child work item");
+    let child_agent = payload
+        .get("child_agent_id")
+        .and_then(Value::as_str)
+        .unwrap_or("child");
+    if completed {
+        (
+            "Delegated work completed".into(),
+            Some(child_agent.to_string()),
+            format!("Delegated work from {parent} completed by child {child_agent} ({child})"),
+        )
+    } else {
+        (
+            "Delegated work linked".into(),
+            Some(child_agent.to_string()),
+            format!("Delegated work from {parent} linked to child {child_agent} ({child})"),
+        )
     }
 }
 
@@ -419,5 +553,61 @@ mod tests {
         assert_eq!(presentation.category, OperatorEventCategory::StateSync);
         assert_eq!(presentation.visibility, OperatorVisibility::Trace);
         assert!(!presentation.is_conversation_candidate());
+    }
+
+    #[test]
+    fn delegated_child_events_use_supervision_vocabulary() {
+        let context = OperatorPresentationContext::default();
+        let spawned = present_operator_event(
+            "task_child_spawned",
+            &json!({
+                "id": "task-1",
+                "detail": {
+                    "child_agent_id": "child-1",
+                    "workspace_mode": "worktree"
+                }
+            }),
+            "fallback",
+            &context,
+        );
+        assert_eq!(spawned.category, OperatorEventCategory::Task);
+        assert_eq!(spawned.title, "Delegated child started");
+        assert_eq!(
+            spawned.summary,
+            "Delegated child child-1 started under supervision task task-1 (worktree)"
+        );
+
+        let followup = present_operator_event(
+            "task_input_delivered",
+            &json!({
+                "task_id": "task-1",
+                "child_agent_id": "child-1",
+                "input_target": "child_followup"
+            }),
+            "fallback",
+            &context,
+        );
+        assert_eq!(followup.title, "Parent follow-up delivered");
+        assert_eq!(
+            followup.summary,
+            "Parent follow-up delivered to child child-1 via supervision task task-1"
+        );
+
+        let notification = present_operator_event(
+            "operator_notification_requested",
+            &json!({
+                "requested_by_agent_id": "child-1",
+                "target_operator_boundary": "parent_supervisor",
+                "summary": "need parent decision"
+            }),
+            "fallback",
+            &context,
+        );
+        assert_eq!(notification.visibility, OperatorVisibility::ActionRequired);
+        assert_eq!(notification.title, "Parent supervision needed");
+        assert_eq!(
+            notification.summary,
+            "Child child-1 needs parent supervision: need parent decision"
+        );
     }
 }

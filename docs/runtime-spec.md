@@ -835,6 +835,9 @@ Delegation rules:
 - omitted `preset` defaults to `private_child`
 - `private_child` returns `agent_id` plus a task handle that maps onto internal
   `child_agent_task` supervision state
+- `private_child` also returns `child_agent_id`, `supervision_task_id`, and a
+  `child_supervision` projection; `child_agent_id` names the private context,
+  while `supervision_task_id` names the parent-visible control handle
 - `public_named` requires an explicit `agent_id` and returns only `agent_id`
 - spawning a new `public_named` agent may record lineage provenance without
   placing that agent under parent supervision
@@ -868,6 +871,9 @@ Agent inspection rules:
 - parent-visible child summaries should expose a compact observability snapshot
   together with the same identity semantics, rather than forcing parent agents
   to infer progress from raw output polling or changed files alone
+- parent-visible child supervision should use the same projection shape in
+  `SpawnAgent`, `TaskStatus`, and `TaskOutput` so UI, logs, and delivery messages
+  do not invent competing names for the same boundary
 
 ## Core Runtime Model
 
@@ -2270,6 +2276,22 @@ Phase-1 envelope rules:
   - `last_result_brief`: recent terminal brief
 - an `interrupted` supervision task may still carry live `child_observability`
   after daemon restart when the parent-supervised private child remains active
+- for `child_agent_task`, `TaskStatus.task.child_supervision` and
+  `TaskOutputResult.task.child_supervision` expose the operator-facing
+  supervision projection:
+  - `parent_agent_id`: the supervising parent agent
+  - `child_agent_id`: the private delegated child context
+  - `supervision_task_id`: the parent-visible task handle for status, output,
+    stop, and follow-up delivery
+  - `parent_work_item_id`, `child_work_item_id`, and `delegation_id` when the
+    child is linked through work-item delegation
+  - `workspace_mode` and `worktree` when the child uses inherited workspace or a
+    task-owned worktree artifact
+  - `cleanup_owner = supervision_task`; worktree cleanup state belongs to the
+    supervising task, not to the child identity
+  - `followup_target = parent_supervisor`; child `notify_operator`, blocked
+    posture, and parent follow-up are projected to the supervising parent
+    boundary, not to ordinary user/operator message channels
 - `AgentGet.active_children` should expose the same child observability fields
   alongside child identity and lifecycle metadata so parents can inspect
   in-flight delegated work without collapsing agent-plane and task-plane
@@ -2284,6 +2306,8 @@ Phase-1 envelope rules:
   - `input_target = stdin` means pipe-backed command continuation
   - `input_target = tty` means managed PTY-backed continuation for a
     `tty = true` command task
+  - `input_target = child_followup` means parent follow-up delivered to a
+    supervised private child through the supervising task handle
 - `TaskOutput` remains the heavyweight output envelope:
   - `TaskOutputResult { retrieval_status, task }`
   - `TaskOutputResult.task` is the canonical v0.14 task-result envelope for
@@ -2299,6 +2323,7 @@ Phase-1 envelope rules:
     - `result_summary`
     - `exit_status`
     - `failure_artifact`
+    - `child_supervision`
   - `output_preview` is a bounded model-facing preview, never the promise of
     full task output
   - `output_truncated = true` means `output_preview` was clipped at the
@@ -2316,8 +2341,9 @@ Phase-1 envelope rules:
     one combined stream rather than a guaranteed stdout/stderr split
   - for `child_agent_task`, this same envelope is a compatible subset:
     `task_id`, `kind`, `status`, `summary`, `output_preview`,
-    `output_truncated`, and `result_summary` are meaningful; command-only fields
-    such as `exit_status` and command-output artifact indices may be absent
+    `output_truncated`, `result_summary`, and `child_supervision` are meaningful;
+    command-only fields such as `exit_status` and command-output artifact
+    indices may be absent
 - `TaskStop` returns a stable structured stop receipt:
   - updated `task` snapshot
   - whether stop was requested
@@ -2418,6 +2444,10 @@ delegated work that is currently supervised through an internal
    audit event instead of blocking task completion
 
 This supports parallel experimentation without polluting the parent workspace.
+The operator-facing projection presents the worktree as a supervising-task
+artifact: retained worktrees mean review or cleanup is pending on that
+supervision handle, not that the private child has become a durable public
+agent.
 
 ### Recovery
 

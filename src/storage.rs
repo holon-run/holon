@@ -609,6 +609,17 @@ impl AppStorage {
             .max_by(|left, right| left.updated_at.cmp(&right.updated_at)))
     }
 
+    pub fn latest_work_item_delegation_for_child(
+        &self,
+        child_agent_id: &str,
+    ) -> Result<Option<WorkItemDelegationRecord>> {
+        Ok(self
+            .latest_work_item_delegations()?
+            .into_iter()
+            .filter(|record| record.child_agent_id == child_agent_id)
+            .max_by(|left, right| left.updated_at.cmp(&right.updated_at)))
+    }
+
     pub fn latest_timer_records(&self) -> Result<Vec<TimerRecord>> {
         let records = self.read_recent_timers(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();

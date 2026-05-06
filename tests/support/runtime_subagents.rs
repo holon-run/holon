@@ -108,6 +108,62 @@ pub async fn task_output_returns_subagent_result_text() -> Result<()> {
         .as_str()
         .expect("subagent output should be text")
         .contains("subagent final result"));
+    let supervision = &value["task"]["child_supervision"];
+    assert_eq!(supervision["parent_agent_id"], "default");
+    assert!(supervision["child_agent_id"].as_str().is_some());
+    assert_eq!(supervision["supervision_task_id"], task.id);
+    assert_eq!(supervision["workspace_mode"], "inherit");
+    assert_eq!(supervision["cleanup_owner"], "supervision_task");
+    assert_eq!(supervision["followup_target"], "parent_supervisor");
+    Ok(())
+}
+
+pub async fn spawn_agent_receipt_projects_child_supervision_boundary() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(
+        test_config(),
+        Arc::new(StubProvider::new("child completed")),
+    )?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-spawn-agent-supervision".into(),
+                name: "SpawnAgent".into(),
+                input: json!({
+                    "summary": "delegate focused work",
+                    "prompt": "finish delegated work",
+                    "preset": "private_child"
+                }),
+            },
+        )
+        .await?;
+
+    let value = parse_tool_result_payload(&result)?;
+    assert_eq!(value["child_agent_id"], value["agent_id"]);
+    assert_eq!(
+        value["supervision_task_id"],
+        value["task_handle"]["task_id"]
+    );
+    assert_eq!(value["task_handle"]["task_kind"], "child_agent_task");
+
+    let supervision = &value["child_supervision"];
+    assert_eq!(supervision["parent_agent_id"], "default");
+    assert_eq!(supervision["child_agent_id"], value["child_agent_id"]);
+    assert_eq!(
+        supervision["supervision_task_id"],
+        value["supervision_task_id"]
+    );
+    assert_eq!(supervision["workspace_mode"], "inherit");
+    assert_eq!(supervision["cleanup_owner"], "supervision_task");
+    assert_eq!(supervision["followup_target"], "parent_supervisor");
+    assert!(result
+        .summary_text()
+        .is_some_and(|text| text.contains("supervision task")));
     Ok(())
 }
 
@@ -138,6 +194,10 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
                 saw_child_summary = true;
                 assert_eq!(child.identity.kind, AgentKind::Child);
                 assert_eq!(child.identity.parent_agent_id.as_deref(), Some("default"));
+                assert_eq!(
+                    child.identity.delegated_from_task_id.as_deref(),
+                    Some(task.id.as_str())
+                );
                 assert_eq!(child.observability.phase, ChildAgentPhase::Running);
                 assert!(child.observability.last_result_brief.is_none());
                 break;
@@ -205,6 +265,22 @@ pub async fn subagent_task_status_exposes_live_and_terminal_child_observability(
     let running_snapshot = runtime.task_status_snapshot(&task.id).await?;
 
     assert_eq!(running_snapshot.status, TaskStatus::Running);
+    let supervision = running_snapshot
+        .child_supervision
+        .as_ref()
+        .expect("running child task should project supervision boundary");
+    assert_eq!(supervision.parent_agent_id, "default");
+    assert_eq!(
+        supervision.child_agent_id,
+        running_snapshot.child_agent_id.clone().unwrap()
+    );
+    assert_eq!(supervision.supervision_task_id, task.id);
+    assert_eq!(
+        supervision.workspace_mode,
+        Some(holon::types::ChildAgentWorkspaceMode::Inherit)
+    );
+    assert_eq!(supervision.cleanup_owner, "supervision_task");
+    assert_eq!(supervision.followup_target, "parent_supervisor");
     let live_child = running_snapshot
         .child_observability
         .as_ref()

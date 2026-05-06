@@ -171,6 +171,11 @@ That means:
 The task handle is therefore not the child agent itself.
 
 It is a parent-visible supervision capability for a managed execution unit.
+Receipts and task snapshots should keep that distinction explicit by exposing
+both `child_agent_id` and `supervision_task_id` when the task is a supervised
+private child. The shared `child_supervision` projection is the operator-facing
+shape for that boundary; it is not a raw child transcript and it should not be
+treated as an alternate agent identity.
 
 ## `TaskStatus` Instead Of `TaskGet`
 
@@ -243,6 +248,8 @@ worktree should be treated as task-owned artifact state:
 - completion of the child turn does not automatically transfer ownership to the
   child agent
 - cleanup responsibility belongs to task cleanup or later artifact GC
+- operator-facing cleanup state is projected under `child_supervision` with
+  `cleanup_owner=supervision_task`
 
 This means `worktree_subagent_task` should not remain a runtime-created task
 kind. Holon now uses a unified `child_agent_task` plus
