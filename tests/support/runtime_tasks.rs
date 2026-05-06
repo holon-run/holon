@@ -1544,7 +1544,7 @@ pub async fn command_task_output_truncation_preserves_path_artifact_reference() 
         .schedule_command_task(
             "large task output".into(),
             holon::types::CommandTaskSpec {
-                cmd: "python3 -c 'print(\"x\" * 9000, end=\"\")'".into(),
+                cmd: "i=0; while [ \"$i\" -lt 9000 ]; do printf x; i=$((i + 1)); done".into(),
                 workdir: None,
                 shell: Some("sh".into()),
                 login: false,

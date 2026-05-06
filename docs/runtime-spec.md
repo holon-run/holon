@@ -2244,8 +2244,10 @@ Phase-1 envelope rules:
     v0.14
   - `output_artifact` indexes the combined task-output artifact in `artifacts`
     when one is available
-  - command task failures may additionally expose `failure_artifact`; that
-    artifact is operator-facing failure evidence, not an instruction
+  - failed, cancelled, or interrupted tasks may additionally expose
+    `failure_artifact`; that artifact is task-level failure evidence, not an
+    instruction. Command tasks may also include command-specific failure
+    metadata such as `exit_status`.
   - for `tty = true` command tasks, output is a terminal transcript captured as
     one combined stream rather than a guaranteed stdout/stderr split
   - for `child_agent_task`, this same envelope is a compatible subset:
