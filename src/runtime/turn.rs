@@ -1944,11 +1944,6 @@ impl TurnExecution<'_> {
                     "tool_names": tool_calls.iter().map(|call| call.name.clone()).collect::<Vec<_>>(),
                     "text_block_count": text_blocks.len(),
                     "text_char_count": combined_text.chars().count(),
-                    "text_preview": if combined_text.is_empty() {
-                        None::<String>
-                    } else {
-                        Some(truncate_preview(&combined_text, ROUND_TEXT_PREVIEW_LIMIT))
-                    },
                     "only_sleep_tools": only_sleep_tools,
                     "provider_cache_usage": cache_usage,
                     "prompt_cache_key": effective_prompt.cache_identity.prompt_cache_key.clone(),
@@ -2062,6 +2057,28 @@ impl TurnExecution<'_> {
                         }),
                     )
                 })?;
+            runtime.inner.storage.append_event(&AuditEvent::new(
+                "assistant_round_recorded",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "turn_index": turn_index,
+                    "run_id": run_id,
+                    "round": round,
+                    "stop_reason": stop_reason,
+                    "text": if combined_text.is_empty() {
+                        None::<String>
+                    } else {
+                        Some(combined_text.clone())
+                    },
+                    "text_blocks": text_blocks.clone(),
+                    "text_block_count": text_blocks.len(),
+                    "text_char_count": combined_text.chars().count(),
+                    "tool_call_count": tool_calls.len(),
+                    "tool_names": tool_calls.iter().map(|call| call.name.clone()).collect::<Vec<_>>(),
+                    "has_text": !combined_text.is_empty(),
+                    "has_tool_calls": !tool_calls.is_empty(),
+                }),
+            ))?;
 
             if tool_calls.is_empty() {
                 runtime.inner.storage.append_event(&AuditEvent::new(
