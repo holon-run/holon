@@ -46,7 +46,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::AgentCreation,
         spec: typed_spec::<SpawnAgentArgs>(
             NAME,
-            "Spawn a delegated agent from a small preset surface. The default `private_child` preset returns `agent_id` plus a supervising `task_handle`; `public_named` requires `agent_id` and returns only `agent_id`.",
+            "Spawn a delegated agent from a small preset surface. Use `initial_message` as the single caller text field: it is required for the default `private_child` preset and optional for `public_named`. Legacy caller text fields such as `summary`, `prompt`, `task_summary`, and `work_item` are not accepted. The default `private_child` preset returns `agent_id` plus a supervising `task_handle`; `public_named` requires `agent_id` and returns only `agent_id`.",
         )?,
     })
 }
