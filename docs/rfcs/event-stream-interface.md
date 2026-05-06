@@ -177,7 +177,8 @@ replaying arbitrary historical events.
 The event endpoint provides the incremental updates after snapshot bootstrap.
 
 The stream is per-agent. It should emit Holon's raw events relevant to the
-requested agent.
+requested agent through an authorized replay projection, not by exposing the
+append-only internal log as a public API.
 
 ### Replay Behavior
 
@@ -189,6 +190,38 @@ requested agent.
 
 Replay failure must be explicit and deterministic. A client must know when it
 has to discard its local projection and rebuild from `/state`.
+
+Replay is historical projection/state recovery only. Replayed records must not
+be treated as new ingress, must not synthesize operator intent, and must not
+trigger tool execution.
+
+### Replay Projection Boundary
+
+The replay surface authorizes and projects events before delivery. Presentation
+visibility and replay authorization are related but separate concerns:
+
+- `OperatorVisibility` tells a client how prominently an already-authorized
+  event-derived item should be displayed.
+- replay projection decides which payload fields a client is allowed to
+  receive.
+
+Every replay envelope should preserve safe provenance needed for recovery and
+audit, including event cursor/id, sequence, timestamp, event kind, agent id,
+and any available origin, trust, authority class, delivery surface, admission
+context, transport/source, reply route, message id, task id, work item id,
+correlation id, and causation id.
+
+Payloads that contain trace/internal detail require an explicit projection
+capability or must be redacted before replay. This includes raw tool output,
+raw external payloads, internal diagnostics, local paths, and artifact
+references. Redaction should keep enough stable summary/provenance fields for a
+client to reconcile state without receiving the raw internal detail.
+
+The default replay projection is the operator projection. Operator replay may
+include raw payloads only for explicit schema-stable allowlisted event kinds;
+all other payloads must be redacted regardless of their presentation
+visibility. A local debug projection may expose raw payloads, but it requires
+control authorization and is not the public default.
 
 ## Event Envelope
 
@@ -203,6 +236,17 @@ Every stream event should use one canonical envelope.
   "ts": "2026-04-18T14:00:00Z",
   "agent_id": "default",
   "type": "task_status_updated",
+  "projection": {
+    "name": "operator",
+    "raw_payload_included": false,
+    "redactions": ["internal_detail_payload"]
+  },
+  "provenance": {
+    "origin": {"kind": "operator"},
+    "trust": "trusted_operator",
+    "authority_class": "operator_instruction",
+    "delivery_surface": "http_control_prompt"
+  },
   "payload": {}
 }
 ```
@@ -220,8 +264,16 @@ Every stream event should use one canonical envelope.
   - agent identity
 - `type`
   - raw runtime event kind
+- `projection`
+  - the replay projection applied to this envelope
+  - `raw_payload_included=false` means the payload is a safe projection, not
+    the raw event data
+- `provenance`
+  - provenance fields that survive replay projection independently of payload
+    redaction
 - `payload`
-  - raw event payload
+  - authorized projected payload
+  - may be raw only when the selected replay projection permits it
 
 ### SSE Projection
 

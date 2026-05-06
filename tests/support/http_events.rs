@@ -19,7 +19,7 @@ use holon::{
     provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse, StubProvider},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
+        AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
         OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel, WaitingIntentStatus,
@@ -125,6 +125,150 @@ pub async fn events_route_supports_last_event_id_header_and_rfc3339_ts() -> Resu
         replayed.data["ts"].as_str().expect("ts should be a string")
     )
     .is_ok());
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn events_route_preserves_replay_provenance() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/control/agents/default/prompt"))
+        .json(&serde_json::json!({ "text": "provenance bootstrap" }))
+        .send()
+        .await?;
+    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+
+    let bootstrap: serde_json::Value = client
+        .get(format!("{base}/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let cursor = bootstrap["cursor"]
+        .as_str()
+        .expect("cursor should be present")
+        .to_string();
+
+    client
+        .post(format!("{base}/control/agents/default/prompt"))
+        .json(&serde_json::json!({ "text": "provenance replay" }))
+        .send()
+        .await?;
+
+    let mut stream = client
+        .get(format!("{base}/agents/default/events?since={cursor}"))
+        .send()
+        .await?;
+    let replayed =
+        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    assert_eq!(replayed.event, "message_admitted");
+    assert_eq!(replayed.data["type"], "message_admitted");
+    assert_eq!(replayed.data["provenance"]["origin"]["kind"], "operator");
+    assert_eq!(replayed.data["provenance"]["trust"], "trusted_operator");
+    assert_eq!(
+        replayed.data["provenance"]["authority_class"],
+        "operator_instruction"
+    );
+    assert_eq!(
+        replayed.data["provenance"]["delivery_surface"],
+        "http_control_prompt"
+    );
+    assert_eq!(
+        replayed.data["projection"]["name"],
+        serde_json::json!("operator")
+    );
+    assert_eq!(
+        replayed.data["projection"]["raw_payload_included"],
+        serde_json::json!(true)
+    );
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn events_route_operator_projection_redacts_trace_payload() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/control/agents/default/prompt"))
+        .json(&serde_json::json!({ "text": "operator projection bootstrap" }))
+        .send()
+        .await?;
+    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+
+    let bootstrap: serde_json::Value = client
+        .get(format!("{base}/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let cursor = bootstrap["cursor"]
+        .as_str()
+        .expect("cursor should be present")
+        .to_string();
+
+    runtime.storage().append_event(&AuditEvent::new(
+        "tool_executed",
+        serde_json::json!({
+            "agent_id": "default",
+            "tool_name": "ExecCommand",
+            "task_id": "task-secret",
+            "exec_command_cmd": "cat /private/tmp/secret-command.txt",
+            "raw_output": "secret command output",
+            "local_path": "/private/tmp/secret-output.txt",
+            "artifact_ref": "artifact://secret",
+        }),
+    ))?;
+
+    let mut stream = client
+        .get(format!(
+            "{base}/agents/default/events?since={cursor}&projection=operator"
+        ))
+        .send()
+        .await?;
+    let replayed =
+        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    assert_eq!(replayed.event, "tool_executed");
+    assert_eq!(replayed.data["type"], "tool_executed");
+    assert_eq!(replayed.data["projection"]["name"], "operator");
+    assert_eq!(replayed.data["projection"]["raw_payload_included"], false);
+    assert_eq!(replayed.data["payload"]["redacted"], true);
+    assert_eq!(replayed.data["payload"]["tool_name"], "ExecCommand");
+    assert_eq!(replayed.data["payload"]["task_id"], "task-secret");
+
+    let replayed_text = serde_json::to_string(&replayed.data)?;
+    assert!(!replayed_text.contains("secret-command"));
+    assert!(!replayed_text.contains("secret command output"));
+    assert!(!replayed_text.contains("/private/tmp/secret-output.txt"));
+    assert!(!replayed_text.contains("artifact://secret"));
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn events_route_local_debug_projection_requires_control_auth() -> Result<()> {
+    let config = test_config_with_paths(
+        tempdir()?.keep(),
+        tempdir()?.keep(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    let (_host, base, server) = spawn_server_with_config(config).await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(format!(
+            "{base}/agents/default/events?projection=local_debug"
+        ))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
 
     server.abort();
     Ok(())

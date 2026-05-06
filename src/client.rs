@@ -117,6 +117,7 @@ pub struct EventStreamRequest {
     pub since: Option<String>,
     pub last_event_id: Option<String>,
     pub limit: Option<usize>,
+    pub projection: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -127,6 +128,10 @@ pub struct StreamEventEnvelope {
     pub agent_id: String,
     #[serde(rename = "type")]
     pub event_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Value>,
     pub payload: Value,
 }
 
@@ -865,6 +870,9 @@ fn event_stream_path(agent_id: &str, request: &EventStreamRequest) -> Result<Str
         if let Some(since) = request.since.as_deref() {
             query.append_pair("since", since);
         }
+        if let Some(projection) = request.projection.as_deref() {
+            query.append_pair("projection", projection);
+        }
     }
 
     let mut path = url.path().to_string();
@@ -1169,10 +1177,14 @@ mod tests {
                 since: Some("evt_123".into()),
                 last_event_id: Some("evt_122".into()),
                 limit: Some(20),
+                projection: Some("local_debug".into()),
             },
         )
         .unwrap();
-        assert_eq!(path, "/agents/default/events?limit=20&since=evt_123");
+        assert_eq!(
+            path,
+            "/agents/default/events?limit=20&since=evt_123&projection=local_debug"
+        );
     }
 
     #[test]
@@ -1183,6 +1195,7 @@ mod tests {
                 since: Some("evt?x=1&y=2".into()),
                 last_event_id: None,
                 limit: None,
+                projection: None,
             },
         )
         .unwrap();

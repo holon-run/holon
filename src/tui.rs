@@ -1889,6 +1889,8 @@ mod tests {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "work_item_written".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({
                         "action": "created",
                         "record": {
@@ -1917,6 +1919,8 @@ mod tests {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "provider_round_completed".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({ "round": 1, "text_preview": "hidden provider partial" }),
                 },
             },
@@ -1955,6 +1959,8 @@ mod tests {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "tool_executed".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({
                         "tool_name": "ExecCommand",
                         "exec_command_cmd": "cargo test tui"
@@ -1973,6 +1979,8 @@ mod tests {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "agent_state_changed".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({ "status": "AwakeRunning" }),
                 },
             },
@@ -2014,6 +2022,8 @@ mod tests {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "task_result_received".into(),
+                projection: None,
+                provenance: None,
                 payload: json!({
                     "id": "task-1",
                     "agent_id": "default",
@@ -2066,6 +2076,8 @@ mod tests {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "tool_executed".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({
                         "tool_name": "ExecCommand",
                         "exec_command_cmd": "cargo test tui"
@@ -2084,6 +2096,8 @@ mod tests {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "brief_created".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({
                         "id": "brief-1",
                         "agent_id": "default",
@@ -2139,6 +2153,8 @@ mod tests {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "tool_executed".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({
                         "tool_name": "ExecCommand",
                         "exec_command_cmd": "cargo test tui"
@@ -2182,6 +2198,8 @@ mod tests {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "tool_executed".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({
                         "tool_name": "ExecCommand",
                         "exec_command_cmd": "cargo test stale"
@@ -2259,6 +2277,8 @@ mod tests {
                     ts,
                     agent_id: "default".into(),
                     event_type: "tool_executed".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({
                         "tool_name": "ExecCommand",
                         "exec_command_cmd": "cargo test tui"
@@ -2569,6 +2589,8 @@ mod tests {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "provider_round_completed".into(),
+                    projection: None,
+                    provenance: None,
                     payload: json!({"text_preview":"older"}),
                 },
             },
@@ -2591,6 +2613,8 @@ mod tests {
                         ts: Utc::now(),
                         agent_id: "default".into(),
                         event_type: "provider_round_completed".into(),
+                        projection: None,
+                        provenance: None,
                         payload: json!({"text_preview":"newer"}),
                     },
                 },
@@ -2837,6 +2861,8 @@ mod tests {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "waiting_intent_created".into(),
+                projection: None,
+                provenance: None,
                 payload: json!({
                     "waiting_intent_id": "wait-2",
                     "external_trigger_id": "cb-2",
