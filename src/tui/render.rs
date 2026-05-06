@@ -867,8 +867,17 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
     ));
     lines.push(String::new());
     lines.push(format!(
-        "Execution backend: {:?}",
-        agent.execution.policy.backend
+        "Execution backend: {}",
+        crate::system::execution_backend_label(agent.execution.policy.backend)
+    ));
+    lines.push(format!(
+        "Process execution: {}",
+        crate::system::execution_guarantee_label(
+            agent.execution.policy.resource_authority.process_execution
+        )
+    ));
+    lines.push(crate::system::execution_confinement_summary_line(
+        &agent.execution,
     ));
     lines.join("\n")
 }
@@ -1067,6 +1076,11 @@ mod tests {
         assert!(
             rendered.contains("child_1:AwakeRunning[private/parent_supervised (private_child)]")
         );
+        assert!(rendered.contains("Execution backend: host_local"));
+        assert!(rendered.contains("Process execution: runtime_shaped"));
+        assert!(rendered.contains(
+            "Confinement: path_confinement=not_enforced, write_confinement=not_enforced, network_confinement=not_enforced, secret_isolation=not_enforced, child_process_containment=not_enforced"
+        ));
     }
 
     #[test]
