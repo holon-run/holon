@@ -355,12 +355,26 @@ impl RuntimeHandle {
                     command_task::ManagedTaskHandle::Async(handle),
                 );
 
+                let child_supervision = crate::types::ChildSupervisionProjection::from_task_record(
+                    &queued_task,
+                )
+                .map(|projection| {
+                    if let Some(delegation) = delegation.as_ref() {
+                        projection.with_work_item_delegation(delegation)
+                    } else {
+                        projection
+                    }
+                });
+
                 Ok(SpawnAgentResult {
                     agent_id: spawned.child_agent_id.clone(),
+                    child_agent_id: Some(spawned.child_agent_id.clone()),
                     task_handle: Some(TaskHandle::from_task_record(&queued_task, None)),
+                    supervision_task_id: Some(queued_task.id.clone()),
+                    child_supervision,
                     summary_text: Some(format!(
-                        "spawned private child agent {} with supervising task handle",
-                        spawned.child_agent_id
+                        "delegated child {} started under supervision task {}",
+                        spawned.child_agent_id, queued_task.id
                     )),
                     delegation_id: delegation
                         .as_ref()
@@ -393,7 +407,10 @@ impl RuntimeHandle {
 
                 Ok(SpawnAgentResult {
                     agent_id: spawned_agent_id.clone(),
+                    child_agent_id: None,
                     task_handle: None,
+                    supervision_task_id: None,
+                    child_supervision: None,
                     summary_text: Some(format!(
                         "spawned public named agent {} without a supervising task handle",
                         spawned_agent_id
@@ -1272,6 +1289,19 @@ impl RuntimeHandle {
                 }
             }
         }
+        if let Some(projection) = snapshot.child_supervision.take() {
+            snapshot.child_supervision = Some(
+                if let Ok(Some(delegation)) = self
+                    .inner
+                    .storage
+                    .latest_work_item_delegation_for_child(&projection.child_agent_id)
+                {
+                    projection.with_work_item_delegation(&delegation)
+                } else {
+                    projection
+                },
+            );
+        }
 
         Ok(snapshot)
     }
@@ -1364,6 +1394,19 @@ impl RuntimeHandle {
             exit_status,
         );
 
+        let child_supervision = crate::types::ChildSupervisionProjection::from_task_record(&task)
+            .map(|projection| {
+                if let Ok(Some(delegation)) = self
+                    .inner
+                    .storage
+                    .latest_work_item_delegation_for_child(&projection.child_agent_id)
+                {
+                    projection.with_work_item_delegation(&delegation)
+                } else {
+                    projection
+                }
+            });
+
         Ok(TaskOutputSnapshot {
             task_id: task.id,
             kind: task.kind.as_str().to_string(),
@@ -1376,6 +1419,7 @@ impl RuntimeHandle {
             result_summary,
             exit_status,
             failure_artifact,
+            child_supervision,
         })
     }
 
@@ -1868,7 +1912,10 @@ impl RuntimeHandle {
             accepted_input: true,
             input_target: Some(input_target.into()),
             bytes_written: Some(bytes_written),
-            summary_text: Some(format!("delivered input to task {}", task.id)),
+            summary_text: Some(format!(
+                "delivered parent follow-up to child {} via supervision task {}",
+                child_agent_id, task.id
+            )),
         })
     }
 

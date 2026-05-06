@@ -150,6 +150,19 @@ private child delegation. Worktree isolation is represented with metadata:
 - worktree path and branch metadata
 - artifact cleanup state
 
+The operator-facing projection for that task is `child_supervision`. It is
+returned by `SpawnAgent(private_child, ...)` and repeated by `TaskStatus` and
+`TaskOutput` so every surface uses the same names:
+
+- `child_agent_id` is the delegated private context
+- `supervision_task_id` is the parent-visible handle for status, output, stop,
+  and follow-up delivery
+- `parent_agent_id` and optional work-item delegation ids preserve ownership
+- `cleanup_owner=supervision_task` keeps worktree artifacts attached to the
+  supervising task rather than to the child identity
+- `followup_target=parent_supervisor` keeps child blocked/notify/follow-up
+  traffic inside the parent-supervisor boundary
+
 ## Migration Direction
 
 The safest migration path is:

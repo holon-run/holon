@@ -2017,6 +2017,63 @@ pub struct CommandTaskStatusSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChildSupervisionProjection {
+    pub parent_agent_id: String,
+    pub child_agent_id: String,
+    pub supervision_task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_mode: Option<ChildAgentWorkspaceMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<Value>,
+    pub cleanup_owner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_status: Option<String>,
+    pub followup_target: String,
+}
+
+impl ChildSupervisionProjection {
+    pub fn from_task_record(task: &TaskRecord) -> Option<Self> {
+        if !task.is_child_agent_task() {
+            return None;
+        }
+        let child_agent_id = task_detail_string(&task.detail, "child_agent_id")?;
+        let worktree = task_detail_value(&task.detail, "worktree").cloned();
+        let cleanup_status = worktree
+            .as_ref()
+            .and_then(|worktree| worktree.get("cleanup_status"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+
+        Some(Self {
+            parent_agent_id: task.agent_id.clone(),
+            child_agent_id,
+            supervision_task_id: task.id.clone(),
+            parent_work_item_id: None,
+            child_work_item_id: None,
+            delegation_id: None,
+            workspace_mode: task.child_agent_workspace_mode(),
+            worktree,
+            cleanup_owner: "supervision_task".into(),
+            cleanup_status,
+            followup_target: "parent_supervisor".into(),
+        })
+    }
+
+    pub fn with_work_item_delegation(mut self, delegation: &WorkItemDelegationRecord) -> Self {
+        self.parent_work_item_id = Some(delegation.parent_work_item_id.clone());
+        self.child_work_item_id = Some(delegation.child_work_item_id.clone());
+        self.delegation_id = Some(delegation.delegation_id.clone());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskStatusSnapshot {
     pub task_id: String,
     pub kind: String,
@@ -2034,6 +2091,8 @@ pub struct TaskStatusSnapshot {
     pub child_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_observability: Option<ChildAgentObservabilitySnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_supervision: Option<ChildSupervisionProjection>,
 }
 
 impl TaskStatusSnapshot {
@@ -2058,6 +2117,7 @@ impl TaskStatusSnapshot {
         let child_agent_id = task_detail_string(&task.detail, "child_agent_id");
         let child_observability = task_detail_value(&task.detail, "child_observability")
             .and_then(|value| serde_json::from_value(value.clone()).ok());
+        let child_supervision = ChildSupervisionProjection::from_task_record(task);
 
         Self {
             task_id: task.id.clone(),
@@ -2071,6 +2131,7 @@ impl TaskStatusSnapshot {
             command,
             child_agent_id,
             child_observability,
+            child_supervision,
         }
     }
 }
@@ -2099,6 +2160,8 @@ pub struct TaskOutputSnapshot {
     pub exit_status: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_artifact: Option<FailureArtifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_supervision: Option<ChildSupervisionProjection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2220,7 +2283,13 @@ pub struct AgentGetResult {
 pub struct SpawnAgentResult {
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_handle: Option<TaskHandle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supervision_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_supervision: Option<ChildSupervisionProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

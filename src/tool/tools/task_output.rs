@@ -127,6 +127,7 @@ mod tests {
                     result_summary: Some("done".into()),
                     exit_status: Some(0),
                     failure_artifact: None,
+                    child_supervision: None,
                 },
             },
         )
