@@ -1153,7 +1153,7 @@ mod tests {
                 .event_log()
                 .last()
                 .map(|event| event.summary.as_str()),
-            Some("Model returned no visible content")
+            Some("Model returned no content")
         );
     }
 

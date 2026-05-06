@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use crate::types::{
-    BriefRecord, TaskRecord, TimerRecord, WaitingIntentRecord, WorkItemRecord, WorkItemState,
-    WorktreeSession,
+    BriefRecord, TaskRecord, TaskStatus, TimerRecord, WaitingIntentRecord, WorkItemRecord,
+    WorkItemState, WorktreeSession,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -274,6 +274,11 @@ fn event_text(
         "task_created" | "task_status_updated" | "task_result_received" => {
             task_record_text(kind, payload, fallback_summary)
         }
+        "command_task_runner_failed" => command_task_runner_failed_text(payload, fallback_summary),
+        "command_task_running_persisted" => command_task_running_persisted_text(payload),
+        "command_task_result_enqueue_failed" => {
+            command_task_result_enqueue_failed_text(payload, fallback_summary)
+        }
         "task_child_spawned" => task_child_spawned_text(payload, fallback_summary),
         "task_input_delivered" => task_input_delivered_text(payload, fallback_summary),
         "waiting_intent_created" => waiting_intent_text(payload, fallback_summary, false),
@@ -282,6 +287,8 @@ fn event_text(
         "timer_created" => timer_text(payload, fallback_summary, false),
         "timer_fired" => timer_text(payload, fallback_summary, true),
         "work_item_written" => work_item_text(payload, fallback_summary),
+        "work_item_stale_reminder_injected" => work_item_stale_reminder_text(payload, false),
+        "work_item_stale_reminder_skipped" => work_item_stale_reminder_text(payload, true),
         "work_item_delegation_created" => work_item_delegation_text(payload, false),
         "work_item_delegation_completed" => work_item_delegation_text(payload, true),
         "workspace_entered" => workspace_text(payload, fallback_summary, "Entered workspace"),
@@ -321,23 +328,8 @@ fn task_record_text(
         .trim();
     let label = match kind {
         "task_created" => "Task queued",
-        "task_status_updated" => match format!("{:?}", task.status).as_str() {
-            "Queued" => "Task queued",
-            "Running" => "Task running",
-            "Cancelling" => "Task cancelling",
-            "Completed" => "Task completed",
-            "Failed" => "Task failed",
-            "Cancelled" => "Task cancelled",
-            "Interrupted" => "Task interrupted",
-            _ => "Task updated",
-        },
-        "task_result_received" => match format!("{:?}", task.status).as_str() {
-            "Completed" => "Task completed",
-            "Failed" => "Task failed",
-            "Cancelled" => "Task cancelled",
-            "Interrupted" => "Task interrupted",
-            _ => "Task result received",
-        },
+        "task_status_updated" => task_status_update_label(&task.status),
+        "task_result_received" => task_result_label(&task.status),
         _ => "Task updated",
     };
     let body = (!summary.is_empty()).then(|| summary.to_string());
@@ -347,6 +339,77 @@ fn task_record_text(
         format!("{label}: {summary}")
     };
     (label.into(), body, summary)
+}
+
+fn task_status_update_label(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Queued => "Task queued",
+        TaskStatus::Running => "Task running",
+        TaskStatus::Cancelling => "Task cancelling",
+        TaskStatus::Completed => "Task completed",
+        TaskStatus::Failed => "Task failed",
+        TaskStatus::Cancelled => "Task cancelled",
+        TaskStatus::Interrupted => "Task interrupted",
+    }
+}
+
+fn task_result_label(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Completed => "Task completed",
+        TaskStatus::Failed => "Task failed",
+        TaskStatus::Cancelled => "Task cancelled",
+        TaskStatus::Interrupted => "Task interrupted",
+        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling => "Task result received",
+    }
+}
+
+fn command_task_runner_failed_text(
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let task_id = payload.get("task_id").and_then(Value::as_str);
+    let error = payload
+        .get("error")
+        .and_then(Value::as_str)
+        .map(trim_summary);
+    let body = error.clone().or_else(|| task_id.map(ToString::to_string));
+    let summary = match (task_id, error) {
+        (Some(task_id), Some(error)) => format!("Command task runner failed: {task_id}: {error}"),
+        (Some(task_id), None) => format!("Command task runner failed: {task_id}"),
+        (None, Some(error)) => format!("Command task runner failed: {error}"),
+        (None, None) => fallback_summary.to_string(),
+    };
+    ("Command task runner failed".into(), body, summary)
+}
+
+fn command_task_running_persisted_text(payload: &Value) -> (String, Option<String>, String) {
+    let task_id = payload.get("task_id").and_then(Value::as_str);
+    let body = task_id.map(ToString::to_string);
+    let summary = task_id
+        .map(|task_id| format!("Command task running: {task_id}"))
+        .unwrap_or_else(|| "Command task running".into());
+    ("Command task running".into(), body, summary)
+}
+
+fn command_task_result_enqueue_failed_text(
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let task_id = payload.get("task_id").and_then(Value::as_str);
+    let error = payload
+        .get("error")
+        .and_then(Value::as_str)
+        .map(trim_summary);
+    let body = error.clone().or_else(|| task_id.map(ToString::to_string));
+    let summary = match (task_id, error) {
+        (Some(task_id), Some(error)) => {
+            format!("Command task result enqueue failed: {task_id}: {error}")
+        }
+        (Some(task_id), None) => format!("Command task result enqueue failed: {task_id}"),
+        (None, Some(error)) => format!("Command task result enqueue failed: {error}"),
+        (None, None) => fallback_summary.to_string(),
+    };
+    ("Command task result enqueue failed".into(), body, summary)
 }
 
 fn operator_notification_text(
@@ -482,6 +545,43 @@ fn work_item_text(payload: &Value, fallback_summary: &str) -> (String, Option<St
         format!("Work item {state}: {objective}")
     };
     (title.into(), Some(objective), summary)
+}
+
+fn work_item_stale_reminder_text(
+    payload: &Value,
+    skipped: bool,
+) -> (String, Option<String>, String) {
+    let work_item_id = payload.get("work_item_id").and_then(Value::as_str);
+    let reason = payload.get("reason").and_then(Value::as_str);
+    if skipped {
+        let summary = match (work_item_id, reason) {
+            (Some(work_item_id), Some(reason)) => {
+                format!("Work reminder skipped: {work_item_id} ({reason})")
+            }
+            (Some(work_item_id), None) => format!("Work reminder skipped: {work_item_id}"),
+            (None, Some(reason)) => format!("Work reminder skipped: {reason}"),
+            (None, None) => "Work reminder skipped".into(),
+        };
+        return (
+            "Work reminder skipped".into(),
+            reason.map(ToString::to_string),
+            summary,
+        );
+    }
+
+    let text_preview = payload
+        .get("text_preview")
+        .and_then(Value::as_str)
+        .map(trim_summary);
+    let summary = match (work_item_id, text_preview.clone()) {
+        (Some(work_item_id), Some(text)) => {
+            format!("Work reminder injected: {work_item_id}: {text}")
+        }
+        (Some(work_item_id), None) => format!("Work reminder injected: {work_item_id}"),
+        (None, Some(text)) => format!("Work reminder injected: {text}"),
+        (None, None) => "Work reminder injected".into(),
+    };
+    ("Work reminder injected".into(), text_preview, summary)
 }
 
 fn task_child_spawned_text(
@@ -687,15 +787,15 @@ fn provider_round_text(payload: &Value) -> (String, Option<String>, String) {
         return (
             "Output limit reached".into(),
             Some("Requesting continuation from the model.".into()),
-            "Output limit reached; requesting continuation".into(),
+            "Output limit reached: requesting continuation".into(),
         );
     }
 
     let body = stop_reason.map(|reason| format!("Stop reason: {reason}"));
     let summary = body
         .as_deref()
-        .map(|body| format!("Model returned no visible content ({body})"))
-        .unwrap_or_else(|| "Model returned no visible content".into());
+        .map(|body| format!("Model returned no content: no visible content ({body})"))
+        .unwrap_or_else(|| "Model returned no content".into());
     ("Model returned no content".into(), body, summary)
 }
 
@@ -714,8 +814,8 @@ fn text_only_round_text(payload: &Value) -> (String, Option<String>, String) {
             "Output limit recovery".into(),
             text_preview.clone(),
             text_preview
-                .map(|text| format!("Output limit reached; continuing after: {text}"))
-                .unwrap_or_else(|| "Output limit reached; requesting continuation".into()),
+                .map(|text| format!("Output limit recovery: continuing after {text}"))
+                .unwrap_or_else(|| "Output limit recovery: requesting continuation".into()),
         );
     }
     if let Some(text_preview) = text_preview {
@@ -723,13 +823,13 @@ fn text_only_round_text(payload: &Value) -> (String, Option<String>, String) {
         return (
             "Model text observed".into(),
             Some(body.clone()),
-            format!("Model produced text: {body}"),
+            format!("Model text observed: {body}"),
         );
     }
     (
         "Model returned no content".into(),
         None,
-        "Model returned no visible content".into(),
+        "Model returned no content".into(),
     )
 }
 
@@ -740,8 +840,8 @@ fn max_output_recovery_text(payload: &Value) -> (String, Option<String>, String)
         .map(|attempt| format!("attempt {attempt}"));
     let summary = attempt
         .as_deref()
-        .map(|attempt| format!("Continuing after output limit ({attempt})"))
-        .unwrap_or_else(|| "Continuing after output limit".into());
+        .map(|attempt| format!("Output limit recovery: continuing ({attempt})"))
+        .unwrap_or_else(|| "Output limit recovery: continuing".into());
     ("Output limit recovery".into(), attempt, summary)
 }
 
@@ -948,7 +1048,7 @@ mod tests {
         );
         assert_eq!(
             max_output.summary,
-            "Output limit reached; requesting continuation"
+            "Output limit reached: requesting continuation"
         );
 
         let empty = present_operator_event(
@@ -959,7 +1059,7 @@ mod tests {
         );
         assert_eq!(
             empty.summary,
-            "Model returned no visible content (Stop reason: end_turn)"
+            "Model returned no content: no visible content (Stop reason: end_turn)"
         );
     }
 
@@ -985,7 +1085,7 @@ mod tests {
         );
         assert_eq!(
             recovery.summary,
-            "Continuing after output limit (attempt 2)"
+            "Output limit recovery: continuing (attempt 2)"
         );
     }
 
