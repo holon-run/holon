@@ -2065,6 +2065,9 @@ type ExternalTriggerCapability = {
    - A `ExternalTriggerRecord` with a secure token
    - A signed callback URL for external delivery
 
+   `work_item` scope requires a current work item. Creation fails if there is no
+   current work item to anchor the waiting intent.
+
 3. Agent passes the callback capability to an external tool/service
 
 4. External system registers the watch and calls back on completion
@@ -2088,7 +2091,12 @@ Agents should cancel waiting intents when:
 - The agent completes work regardless of the external condition
 - Cleanup is needed to avoid accumulating abandoned callbacks
 
-Cancellation revokes the external trigger and marks the waiting intent as cancelled.
+Cancellation revokes the external trigger and marks the waiting intent as
+cancelled. Runtime cleanup also cancels work-item-scoped waiting intents when
+the bound work item completes, when active work switches away from that item, or
+when a new work-item-scoped trigger replaces the previous waiting condition for
+the same work item. Agent-scoped triggers are not removed by ordinary work-item
+cleanup.
 
 ## Background Task Recovery
 

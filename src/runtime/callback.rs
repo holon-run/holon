@@ -73,6 +73,10 @@ impl RuntimeHandle {
             ),
             ExternalTriggerScope::Agent => None,
         };
+        if let Some(work_item_id) = work_item_id.as_deref() {
+            self.cancel_work_item_waiting_intents(work_item_id, "waiting_condition_replaced")
+                .await?;
+        }
         let waiting = WaitingIntentRecord {
             id: waiting_intent_id.clone(),
             agent_id: agent_id.clone(),
@@ -513,6 +517,37 @@ impl RuntimeHandle {
             }),
         ))?;
         Ok(())
+    }
+
+    pub(super) async fn cancel_work_item_waiting_intents(
+        &self,
+        work_item_id: &str,
+        reason: &'static str,
+    ) -> Result<Vec<String>> {
+        let waiting_intent_ids = self
+            .latest_waiting_intents()
+            .await?
+            .into_iter()
+            .filter(|record| record.status == WaitingIntentStatus::Active)
+            .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
+            .filter(|record| record.work_item_id.as_deref() == Some(work_item_id))
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        if waiting_intent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let cancelled_ids = self.cancel_waiting_intents(waiting_intent_ids).await?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_waiting_intents_cancelled",
+            serde_json::json!({
+                "agent_id": self.agent_id().await?,
+                "work_item_id": work_item_id,
+                "reason": reason,
+                "waiting_intent_ids": cancelled_ids,
+            }),
+        ))?;
+        Ok(cancelled_ids)
     }
 
     async fn cancel_waiting_intents(&self, waiting_intent_ids: Vec<String>) -> Result<Vec<String>> {

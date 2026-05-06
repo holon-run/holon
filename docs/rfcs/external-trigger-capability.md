@@ -350,8 +350,17 @@ For `work_item` scope, the agent or runtime should cancel obsolete triggers when
 
 - the relevant external condition is no longer needed
 - the active work item changes
+- the current work item completes
+- a new work-item-scoped trigger replaces the previous waiting condition for
+  the same work item
 - the waiting intent becomes stale
 - the user or runtime explicitly cancels it
+
+A work-item-scoped trigger requires a current work-item anchor at creation time.
+The runtime should fail creation rather than minting an unanchored work-item
+wait. Work-item cleanup should revoke the external trigger descriptor and mark
+the waiting intent cancelled, so later callback delivery fails without waking or
+enqueueing work.
 
 For `agent` scope, the trigger is a long-running integration entry point. It
 should not be cancelled by work-item cleanup or by the absence of an active work
