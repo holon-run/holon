@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -613,11 +613,10 @@ impl AppStorage {
         &self,
         child_agent_id: &str,
     ) -> Result<Option<WorkItemDelegationRecord>> {
-        Ok(self
-            .latest_work_item_delegations()?
-            .into_iter()
-            .filter(|record| record.child_agent_id == child_agent_id)
-            .max_by(|left, right| left.updated_at.cmp(&right.updated_at)))
+        read_latest_jsonl_matching(
+            &self.work_item_delegations_path,
+            |record: &WorkItemDelegationRecord| record.child_agent_id == child_agent_id,
+        )
     }
 
     pub fn latest_timer_records(&self) -> Result<Vec<TimerRecord>> {
@@ -840,6 +839,68 @@ fn read_jsonl_from<T: DeserializeOwned>(
     Ok(lines)
 }
 
+fn read_latest_jsonl_matching<T, F>(path: &Path, mut matches: F) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+    F: FnMut(&T) -> bool,
+{
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    const CHUNK_SIZE: u64 = 8192;
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut cursor = file.seek(SeekFrom::End(0))?;
+    let mut prefix = Vec::new();
+
+    while cursor > 0 {
+        let read_len = cursor.min(CHUNK_SIZE);
+        cursor -= read_len;
+        file.seek(SeekFrom::Start(cursor))?;
+
+        let mut chunk = vec![0; read_len as usize];
+        file.read_exact(&mut chunk)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        chunk.extend_from_slice(&prefix);
+
+        let mut line_end = chunk.len();
+        for idx in (0..chunk.len()).rev() {
+            if chunk[idx] != b'\n' {
+                continue;
+            }
+            if let Some(record) =
+                parse_jsonl_match(&chunk[(idx + 1)..line_end], path, &mut matches)?
+            {
+                return Ok(Some(record));
+            }
+            line_end = idx;
+        }
+        prefix = chunk[..line_end].to_vec();
+    }
+
+    parse_jsonl_match(&prefix, path, &mut matches)
+}
+
+fn parse_jsonl_match<T, F>(line: &[u8], path: &Path, matches: &mut F) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+    F: FnMut(&T) -> bool,
+{
+    let line = std::str::from_utf8(line)
+        .with_context(|| format!("failed to decode UTF-8 from {}", path.display()))?;
+    if line.trim().is_empty() {
+        return Ok(None);
+    }
+    let record: T = serde_json::from_str(line)
+        .with_context(|| format!("failed to decode line from {}", path.display()))?;
+    if matches(&record) {
+        Ok(Some(record))
+    } else {
+        Ok(None)
+    }
+}
+
 fn compare_queue_display_order(
     left: &WorkItemRecord,
     right: &WorkItemRecord,
@@ -972,6 +1033,48 @@ mod tests {
         let entries = read_recent_jsonl::<TranscriptEntry>(&path, 1).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].related_message_id.as_deref(), Some("newer"));
+    }
+
+    #[test]
+    fn latest_work_item_delegation_for_child_scans_from_tail() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        fs::write(
+            &storage.work_item_delegations_path,
+            "{not valid json and should not be parsed}\n",
+        )
+        .unwrap();
+
+        let other = WorkItemDelegationRecord::new(
+            "parent-agent",
+            "parent-work-other",
+            "other-child",
+            "child-work-other",
+        );
+        let older = WorkItemDelegationRecord::new(
+            "parent-agent",
+            "parent-work-1",
+            "target-child",
+            "child-work-1",
+        );
+        let latest = WorkItemDelegationRecord {
+            state: WorkItemDelegationState::Completed,
+            result_summary: Some("done".into()),
+            updated_at: Utc::now(),
+            ..older.clone()
+        };
+
+        storage.append_work_item_delegation(&other).unwrap();
+        storage.append_work_item_delegation(&older).unwrap();
+        storage.append_work_item_delegation(&latest).unwrap();
+
+        let found = storage
+            .latest_work_item_delegation_for_child("target-child")
+            .unwrap()
+            .expect("target child delegation should be found");
+        assert_eq!(found.delegation_id, older.delegation_id);
+        assert_eq!(found.state, WorkItemDelegationState::Completed);
+        assert_eq!(found.result_summary.as_deref(), Some("done"));
     }
 
     #[test]
