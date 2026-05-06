@@ -372,10 +372,6 @@ impl RuntimeHandle {
         })
     }
 
-    pub async fn recent_briefs(&self, limit: usize) -> Result<Vec<BriefRecord>> {
-        self.inner.storage.read_recent_briefs(limit)
-    }
-
     pub async fn recent_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
         self.inner.storage.read_recent_events(limit)
     }
@@ -1050,31 +1046,6 @@ impl RuntimeHandle {
             ));
             let _ = runtime.enqueue(message).await;
         });
-    }
-
-    pub(super) async fn persist_brief(&self, brief: &BriefRecord) -> Result<()> {
-        let mut bound_brief = brief.clone();
-        {
-            let guard = self.inner.agent.lock().await;
-            bound_brief.workspace_id = guard
-                .state
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.workspace_id.clone())
-                .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
-            if bound_brief.work_item_id.is_none() {
-                bound_brief.work_item_id = guard.state.current_turn_work_item_id.clone();
-            }
-        }
-        self.inner.storage.append_brief(&bound_brief)?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "brief_created",
-            to_json_value(&bound_brief),
-        ))?;
-        let mut guard = self.inner.agent.lock().await;
-        guard.state.last_brief_at = Some(bound_brief.created_at);
-        self.inner.storage.write_agent(&guard.state)?;
-        Ok(())
     }
 
     pub(super) async fn agent_id(&self) -> Result<String> {
