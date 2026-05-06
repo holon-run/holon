@@ -1408,6 +1408,8 @@ impl RuntimeHostBridge {
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
+        path::Path,
         path::PathBuf,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -1434,6 +1436,14 @@ mod tests {
 
     use super::*;
 
+    fn write_test_model_config(home: &Path) {
+        fs::write(
+            home.join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+    }
+
     struct ProviderConfigFixture {
         _home: tempfile::TempDir,
         _workspace: tempfile::TempDir,
@@ -1442,6 +1452,7 @@ mod tests {
 
     fn test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
+        write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
@@ -2363,6 +2374,7 @@ mod tests {
     #[tokio::test]
     async fn host_shutdown_interrupts_active_run_with_daemon_shutdown_reason() {
         let home = tempdir().unwrap();
+        write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
         let agent_id = config.default_agent_id.clone();
         let started = Arc::new(Notify::new());

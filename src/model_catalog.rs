@@ -167,6 +167,13 @@ impl BuiltInModelCatalog {
         entries
     }
 
+    pub fn preferred_model_for_provider(&self, provider: &ProviderId) -> Option<ModelRef> {
+        built_in_entries()
+            .into_iter()
+            .find(|entry| entry.model_ref.provider == *provider)
+            .map(|entry| entry.model_ref)
+    }
+
     pub fn resolve_policy(
         &self,
         model_ref: &ModelRef,

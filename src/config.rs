@@ -10,6 +10,7 @@ use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize, Serializ
 use serde_json::{json, Value};
 
 use crate::{
+    auth::load_codex_cli_credential,
     context::ContextConfig,
     model_catalog::{
         BuiltInModelCatalog, BuiltInModelMetadata, ModelRuntimeOverride, ResolvedRuntimeModelPolicy,
@@ -514,16 +515,14 @@ impl AppConfig {
             .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32)
             .max(default_tool_output_tokens);
 
-        let anthropic_default_model = "claude-sonnet-4-6".to_string();
-        let default_model = resolve_default_model(&stored_config)?;
         let disable_provider_fallback = resolve_disable_provider_fallback(&stored_config)?;
-        let fallback_models =
-            resolve_fallback_models(&stored_config, &anthropic_default_model, &default_model)?;
         let validated_model_overrides = resolve_model_catalog(&stored_config)?;
         let validated_unknown_model_fallback =
             validate_optional_model_runtime_override(stored_config.model.unknown_fallback.clone())?;
         let providers =
             resolve_provider_registry(&stored_config, &settings_env, &credential_store)?;
+        let (default_model, fallback_models) =
+            resolve_model_selection(&stored_config, &providers, &validated_model_overrides)?;
         let tui_alternate_screen = env::var("HOLON_TUI_ALTERNATE_SCREEN")
             .ok()
             .map(|value| AltScreenMode::parse(&value))
@@ -1176,16 +1175,16 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "model.default",
             kind: "model_ref",
-            description: "Default provider/model ref used by the runtime.",
-            default: json!("openai/gpt-5.4"),
+            description: "Explicit default provider/model ref. When unset, the runtime derives one from authenticated providers.",
+            default: Value::Null,
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "model.fallbacks",
             kind: "model_ref_list",
             description:
-                "Fallback provider/model refs tried when earlier candidates are unavailable.",
-            default: json!(["openai/gpt-5.4", "anthropic/claude-sonnet-4-6"]),
+                "Explicit fallback provider/model refs. When unset, the runtime derives fallbacks from authenticated providers.",
+            default: json!([]),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -2480,38 +2479,147 @@ pub fn provider_registry_for_tests(
     registry
 }
 
-fn resolve_default_model(stored_config: &HolonConfigFile) -> Result<ModelRef> {
-    if let Ok(value) = env::var("HOLON_MODEL") {
-        return ModelRef::parse(&value);
-    }
-    if let Some(value) = &stored_config.model.default {
-        return ModelRef::parse(value);
-    }
-    ModelRef::parse("openai/gpt-5.4")
+fn resolve_model_selection(
+    stored_config: &HolonConfigFile,
+    providers: &ProviderRegistry,
+    model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+) -> Result<(ModelRef, Vec<ModelRef>)> {
+    resolve_model_selection_from_explicit(
+        resolve_default_model(stored_config)?,
+        resolve_fallback_models(stored_config)?,
+        providers,
+        model_overrides,
+    )
 }
 
-fn resolve_fallback_models(
-    stored_config: &HolonConfigFile,
-    anthropic_default_model: &str,
-    default_model: &ModelRef,
-) -> Result<Vec<ModelRef>> {
-    let configured = if let Ok(value) = env::var("HOLON_MODEL_FALLBACKS") {
-        parse_model_ref_list(&value)?
-    } else if !stored_config.model.fallbacks.is_empty() {
-        stored_config
-            .model
-            .fallbacks
-            .iter()
-            .map(|value| ModelRef::parse(value))
-            .collect::<Result<Vec<_>>>()?
+fn resolve_model_selection_from_explicit(
+    explicit_default: Option<ModelRef>,
+    explicit_fallbacks: Option<Vec<ModelRef>>,
+    providers: &ProviderRegistry,
+    model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+) -> Result<(ModelRef, Vec<ModelRef>)> {
+    let auth_candidates = if explicit_default.is_none() || explicit_fallbacks.is_none() {
+        authenticated_model_candidates(providers, model_overrides)
     } else {
-        vec![
-            ModelRef::parse("openai/gpt-5.4")?,
-            ModelRef::parse(&format!("anthropic/{anthropic_default_model}"))?,
-        ]
+        Vec::new()
     };
 
-    Ok(configured
+    let default_model = explicit_default
+        .or_else(|| auth_candidates.first().cloned())
+        .ok_or_else(|| {
+            anyhow!(
+                "no default model configured and no authenticated provider with a known model is available; set HOLON_MODEL or model.default, or configure provider credentials"
+            )
+        })?;
+    let fallback_models = explicit_fallbacks.unwrap_or_else(|| {
+        auth_candidates
+            .into_iter()
+            .filter(|model| model != &default_model)
+            .collect()
+    });
+
+    Ok((
+        default_model.clone(),
+        dedupe_fallback_models(fallback_models, &default_model),
+    ))
+}
+
+fn resolve_default_model(stored_config: &HolonConfigFile) -> Result<Option<ModelRef>> {
+    if let Ok(value) = env::var("HOLON_MODEL") {
+        return ModelRef::parse(&value).map(Some);
+    }
+    if let Some(value) = &stored_config.model.default {
+        return ModelRef::parse(value).map(Some);
+    }
+    Ok(None)
+}
+
+fn resolve_fallback_models(stored_config: &HolonConfigFile) -> Result<Option<Vec<ModelRef>>> {
+    if let Ok(value) = env::var("HOLON_MODEL_FALLBACKS") {
+        Ok(Some(parse_model_ref_list(&value)?))
+    } else if !stored_config.model.fallbacks.is_empty() {
+        Ok(Some(
+            stored_config
+                .model
+                .fallbacks
+                .iter()
+                .map(|value| ModelRef::parse(value))
+                .collect::<Result<Vec<_>>>()?,
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+fn authenticated_model_candidates(
+    providers: &ProviderRegistry,
+    model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+) -> Vec<ModelRef> {
+    let catalog = BuiltInModelCatalog::default();
+    let mut provider_ids = providers
+        .values()
+        .filter(|provider| provider_has_usable_auth(provider))
+        .map(|provider| provider.id.clone())
+        .collect::<Vec<_>>();
+    provider_ids.sort_by(|left, right| {
+        provider_auth_priority(left)
+            .cmp(&provider_auth_priority(right))
+            .then_with(|| left.as_str().cmp(right.as_str()))
+    });
+
+    let mut candidates = provider_ids
+        .into_iter()
+        .filter_map(|provider| {
+            catalog
+                .preferred_model_for_provider(&provider)
+                .or_else(|| preferred_override_model_for_provider(&provider, model_overrides))
+        })
+        .collect::<Vec<_>>();
+    candidates.dedup();
+    candidates
+}
+
+fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool {
+    match provider.auth.source {
+        CredentialSource::Env | CredentialSource::AuthProfile => {
+            provider.has_configured_credential()
+        }
+        CredentialSource::ExternalCli => {
+            provider.auth.external.as_deref() == Some("codex_cli")
+                && provider
+                    .codex_home
+                    .as_deref()
+                    .map(|home| load_codex_cli_credential(home).is_ok())
+                    .unwrap_or(false)
+        }
+        CredentialSource::None | CredentialSource::CredentialProcess => false,
+    }
+}
+
+fn provider_auth_priority(provider: &ProviderId) -> usize {
+    match provider.as_str() {
+        ProviderId::OPENAI_CODEX => 0,
+        ProviderId::OPENAI => 1,
+        ProviderId::ANTHROPIC => 2,
+        _ => 100,
+    }
+}
+
+fn preferred_override_model_for_provider(
+    provider: &ProviderId,
+    model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+) -> Option<ModelRef> {
+    let mut models = model_overrides
+        .keys()
+        .filter(|model| model.provider == *provider)
+        .cloned()
+        .collect::<Vec<_>>();
+    models.sort_by_key(ModelRef::as_string);
+    models.into_iter().next()
+}
+
+fn dedupe_fallback_models(configured: Vec<ModelRef>, default_model: &ModelRef) -> Vec<ModelRef> {
+    configured
         .into_iter()
         .filter(|model| model != default_model)
         .fold(Vec::new(), |mut acc, model| {
@@ -2519,7 +2627,7 @@ fn resolve_fallback_models(
                 acc.push(model);
             }
             acc
-        }))
+        })
 }
 
 fn resolve_disable_provider_fallback(stored_config: &HolonConfigFile) -> Result<bool> {
@@ -2934,8 +3042,9 @@ mod tests {
         resolve_anthropic_context_management_config, save_persisted_config_at, set_config_key,
         set_credential_profile_at, unset_config_key, AnthropicCacheStrategy,
         AnthropicContextManagementConfig, AppConfig, ControlAuthMode, CredentialKind,
-        CredentialSource, CredentialStoreFile, HolonConfigFile, ModelRef, ProviderAuthConfig,
-        ProviderConfigFile, ProviderId, ProviderTransportKind, RuntimeModelCatalog,
+        CredentialSource, CredentialStoreFile, HolonConfigFile, ModelConfigFile, ModelRef,
+        ProviderAuthConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
+        ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog,
     };
 
     struct EnvVarGuard {
@@ -3497,6 +3606,17 @@ mod tests {
     #[test]
     fn app_config_ignores_bad_credential_store_permissions_until_profile_auth_is_used() {
         let dir = tempdir().unwrap();
+        save_persisted_config_at(
+            &persisted_config_path(dir.path()),
+            &HolonConfigFile {
+                model: ModelConfigFile {
+                    default: Some("openai/gpt-5.4".into()),
+                    ..ModelConfigFile::default()
+                },
+                ..HolonConfigFile::default()
+            },
+        )
+        .unwrap();
         let store_path = credential_store_path(dir.path());
         fs::write(&store_path, r#"{"profiles":{}}"#).unwrap();
         #[cfg(unix)]
@@ -3507,8 +3627,7 @@ mod tests {
 
         AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap();
 
-        let config_path = persisted_config_path(dir.path());
-        let mut config = HolonConfigFile::default();
+        let mut config = load_persisted_config_at(&persisted_config_path(dir.path())).unwrap();
         config.providers.insert(
             ProviderId::parse("openrouter").unwrap(),
             ProviderConfigFile {
@@ -3524,7 +3643,7 @@ mod tests {
                 reasoning_effort: None,
             },
         );
-        save_persisted_config_at(&config_path, &config).unwrap();
+        save_persisted_config_at(&persisted_config_path(dir.path()), &config).unwrap();
 
         #[cfg(unix)]
         {
@@ -3836,6 +3955,112 @@ mod tests {
         assert!(runtime.codex_home.is_some());
         assert_eq!(runtime.originator.as_deref(), Some("codex_cli_rs"));
         assert_eq!(runtime.reasoning_effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn model_selection_explicit_config_wins() {
+        let providers = provider_registry_for_tests(
+            Some("openai-key"),
+            Some("anthropic-token"),
+            tempdir().unwrap().path().join("codex-home"),
+        );
+
+        let (default_model, fallback_models) = super::resolve_model_selection_from_explicit(
+            Some(ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap()),
+            Some(vec![
+                ModelRef::parse("openai/gpt-5.4").unwrap(),
+                ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            ]),
+            &providers,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(default_model.as_string(), "anthropic/claude-sonnet-4-6");
+        assert_eq!(
+            fallback_models
+                .into_iter()
+                .map(|model| model.as_string())
+                .collect::<Vec<_>>(),
+            vec!["openai/gpt-5.4"]
+        );
+    }
+
+    #[test]
+    fn model_selection_derives_from_authenticated_providers() {
+        let providers = provider_registry_for_tests(
+            Some("openai-key"),
+            Some("anthropic-token"),
+            tempdir().unwrap().path().join("codex-home"),
+        );
+
+        let (default_model, fallback_models) =
+            super::resolve_model_selection_from_explicit(None, None, &providers, &HashMap::new())
+                .unwrap();
+
+        assert_eq!(default_model.as_string(), "openai/gpt-5.4");
+        assert_eq!(
+            fallback_models
+                .into_iter()
+                .map(|model| model.as_string())
+                .collect::<Vec<_>>(),
+            vec!["anthropic/claude-sonnet-4-6"]
+        );
+    }
+
+    #[test]
+    fn model_selection_fails_without_explicit_config_or_auth() {
+        let providers =
+            provider_registry_for_tests(None, None, tempdir().unwrap().path().join("codex-home"));
+
+        let err =
+            super::resolve_model_selection_from_explicit(None, None, &providers, &HashMap::new())
+                .unwrap_err();
+
+        assert!(err.to_string().contains("no default model configured"));
+        assert!(err.to_string().contains("configure provider credentials"));
+    }
+
+    #[test]
+    fn model_selection_derives_custom_provider_from_catalog_override() {
+        let mut providers = ProviderRegistry::new();
+        let id = ProviderId::parse("custom-openai").unwrap();
+        providers.insert(
+            id.clone(),
+            ProviderRuntimeConfig {
+                id: id.clone(),
+                transport: ProviderTransportKind::OpenAiChatCompletions,
+                base_url: "https://custom.example/v1".into(),
+                auth: ProviderAuthConfig {
+                    source: CredentialSource::Env,
+                    kind: CredentialKind::ApiKey,
+                    env: Some("CUSTOM_API_KEY".into()),
+                    profile: None,
+                    external: None,
+                },
+                credential: Some("custom-key".into()),
+                codex_home: None,
+                originator: None,
+                reasoning_effort: None,
+                context_management: Default::default(),
+            },
+        );
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            ModelRef::parse("custom-openai/model-b").unwrap(),
+            ModelRuntimeOverride::default(),
+        );
+        overrides.insert(
+            ModelRef::parse("custom-openai/model-a").unwrap(),
+            ModelRuntimeOverride::default(),
+        );
+
+        let (default_model, fallback_models) =
+            super::resolve_model_selection_from_explicit(None, None, &providers, &overrides)
+                .unwrap();
+
+        assert_eq!(default_model.as_string(), "custom-openai/model-a");
+        assert!(fallback_models.is_empty());
     }
 
     #[test]
