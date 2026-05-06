@@ -403,9 +403,25 @@ The phase-1 TUI is expected to surface:
 - terminal alternate-screen behavior that can stay in normal scrollback mode
   when the operator environment makes full-screen TUI awkward
 
-The TUI should derive operator-visible presentation from raw runtime events
-through a shared operator visibility classifier. Levels are ordered from most
-operator-facing to most diagnostic:
+Operator-facing surfaces must derive human-visible event text from the shared
+operator event presentation layer before rendering or logging raw runtime
+events. The presentation layer turns a raw event into:
+
+- `visibility`: the operator visibility level
+- `category`: operator notification, brief, message, work item, task, waiting,
+  workspace, runtime, assistant progress, tool, state sync, or trace
+- `title`: short surface label
+- `body`: optional detail text
+- `summary`: one-line human-facing summary
+- `source_event_kind`: the raw runtime event kind
+- `debug_payload`: optional payload retained only for debug/log surfaces
+
+Do not add `severity` or delivery-routing hints to the first version of this
+structure. Severity is contextual, and each surface should decide delivery from
+visibility, category, and runtime context rather than from hard-coded transport
+hints.
+
+Visibility levels are ordered from most operator-facing to most diagnostic:
 
 1. `action_required`: the agent is awaiting operator input and emits an
    operator-facing brief
@@ -420,6 +436,19 @@ The default TUI display level is `3`. The main conversation shows items with
 current-turn items with `operator_visibility > display_level`. When the display
 level is `5`, the Working/activity area should be hidden because progress and
 trace items are already visible.
+
+State-sync events such as `agent_state_changed` and `session_state_changed`
+are projection refresh signals. They may be present in raw/debug event views,
+but they are not conversation messages by themselves. Provider round events
+should distinguish assistant text progress from tool requests:
+
+- text preview present: `Assistant progress: <preview>`
+- tools requested and no text preview: `Model requested tools: ExecCommand,
+  ReadFile`
+- no visible text or tools: concise provider-round progress wording
+
+Tool execution events are trace-level activity and may be shown in the
+Conversation only when the operator raises the display level to `5`.
 
 Working/activity summaries are scoped to the current turn, run, or message
 boundary. A newly submitted operator message must not inherit the previous

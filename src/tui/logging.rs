@@ -53,7 +53,7 @@ impl TuiLogWriter {
             )?;
         }
 
-        if is_chat_visible_conversation_event(&event.kind) {
+        if is_chat_visible_conversation_event(event) {
             append_jsonl(
                 &self.root.join("conversation.jsonl"),
                 &PersistedConversationLogRecord::from_event(event),
@@ -105,20 +105,10 @@ impl<'a> PersistedConversationLogRecord<'a> {
             event_id: &event.id,
             seq: event.seq,
             kind: &event.kind,
-            speaker: conversation_log_speaker(&event.kind),
+            speaker: event.presentation.title.clone(),
             body: conversation_event_body(event),
             payload: &event.payload,
         }
-    }
-}
-
-fn conversation_log_speaker(kind: &str) -> String {
-    match kind {
-        "runtime_error" | "turn_terminal" => "System (runtime)".into(),
-        "provider_round_completed" | "text_only_round_observed" | "max_output_tokens_recovery" => {
-            "System".into()
-        }
-        _ => "System".into(),
     }
 }
 

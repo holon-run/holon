@@ -1963,6 +1963,21 @@ mod tests {
             },
             &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-state".into(),
+                event: "agent_state_changed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-state".into(),
+                    seq: 3,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "agent_state_changed".into(),
+                    payload: json!({ "status": "AwakeRunning" }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
         app.projection = Some(projection);
 
         let items = collect_chat_items(&app);
@@ -1974,9 +1989,11 @@ mod tests {
         assert!(items.iter().any(|item| matches!(
             item,
             ConversationCell::SystemNotice { body, .. }
-                if body.contains("tool executed: ExecCommand")
+                if body.contains("ExecCommand: cargo test tui")
         )));
-        assert!(rendered.contains("tool executed: ExecCommand"));
+        assert!(rendered.contains("ExecCommand: cargo test tui"));
+        assert!(!rendered.contains("State sync"));
+        assert!(!rendered.contains("agent_state_changed"));
         assert!(!rendered.contains("Working"));
     }
 

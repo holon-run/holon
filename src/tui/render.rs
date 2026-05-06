@@ -496,10 +496,10 @@ pub(super) fn render_header(agent: &AgentSummary) -> String {
 pub(super) fn render_projection_event_summary(
     event: &crate::tui::projection::ProjectionEventRecord,
 ) -> String {
-    let description = if event.summary == event.kind {
+    let description = if event.presentation.title == event.summary {
         event.summary.clone()
     } else {
-        format!("{}: {}", event.kind, event.summary)
+        format!("{}: {}", event.presentation.title, event.summary)
     };
     format!(
         "{} [{:?}] {}",

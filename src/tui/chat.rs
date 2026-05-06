@@ -175,18 +175,21 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             if event.kind == "message_enqueued" || event.kind == "brief_created" {
                 continue;
             }
-            if is_progress_event_kind(&event.kind) {
+            if is_progress_event(event) {
                 cells.push(ConversationCell::AssistantMarkdown(AssistantMarkdownCell {
                     created_at: event.ts,
                     agent_id: "Holon (progress)".to_string(),
                     markdown: conversation_event_body(event),
                 }));
-            } else if is_chat_visible_conversation_event(&event.kind)
-                || projection.operator_visibility(event).display_level() >= 4
+            } else if !matches!(
+                event.presentation.category,
+                crate::operator_event::OperatorEventCategory::StateSync
+            ) && (is_chat_visible_conversation_event(event)
+                || projection.operator_visibility(event).display_level() >= 4)
             {
                 cells.push(ConversationCell::SystemNotice {
                     created_at: event.ts,
-                    speaker: conversation_event_speaker(&event.kind),
+                    speaker: conversation_event_speaker(event),
                     body: conversation_event_body(event),
                 });
             }
@@ -239,8 +242,16 @@ fn push_pending_operator_message_cell(
     });
 }
 
-pub(super) fn is_chat_visible_conversation_event(kind: &str) -> bool {
-    matches!(kind, "operator_notification_requested" | "runtime_error")
+pub(super) fn is_chat_visible_conversation_event(
+    event: &crate::tui::projection::ProjectionEventRecord,
+) -> bool {
+    event.presentation.is_conversation_candidate()
+        && matches!(
+            event.presentation.visibility,
+            crate::operator_event::OperatorVisibility::ActionRequired
+                | crate::operator_event::OperatorVisibility::TurnResult
+                | crate::operator_event::OperatorVisibility::WorkDone
+        )
 }
 
 impl ConversationCell {
@@ -613,41 +624,7 @@ fn latest_action_event<'a>(
         .iter()
         .rev()
         .copied()
-        .find(|event| is_active_action_event_kind(&event.kind))
-}
-
-fn is_active_action_event_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "tool_executed"
-            | "tool_execution_failed"
-            | "task_created"
-            | "task_status_updated"
-            | "task_result_received"
-            | "work_item_written"
-            | "waiting_intent_created"
-            | "waiting_intent_cancelled"
-            | "callback_delivered"
-            | "operator_notification_requested"
-            | "workspace_entered"
-            | "workspace_exited"
-            | "workspace_detached"
-            | "worktree_entered"
-            | "worktree_exited"
-            | "worktree_auto_cleaned_up"
-            | "worktree_auto_cleanup_failed"
-            | "task_worktree_branch_cleanup_retained"
-            | "skill_activated"
-            | "system_tick_emitted"
-            | "message_admitted"
-            | "message_processing_started"
-            | "control_applied"
-            | "brief_created"
-            | "turn_terminal"
-            | "runtime_error"
-            | "max_output_tokens_recovery"
-            | "turn_local_checkpoint_recorded"
-    )
+        .find(|event| event.presentation.is_current_activity_candidate())
 }
 
 fn latest_assistant_message(
@@ -662,16 +639,20 @@ fn latest_assistant_message(
 fn assistant_message_from_event(
     event: &crate::tui::projection::ProjectionEventRecord,
 ) -> Option<String> {
-    if event.kind != "provider_round_completed" && event.kind != "text_only_round_observed" {
+    if !is_progress_event(event) {
         return None;
     }
-    event.payload.get("text_preview").and_then(non_empty_value)
+    event
+        .presentation
+        .body
+        .clone()
+        .or_else(|| event.payload.get("text_preview").and_then(non_empty_value))
 }
 
-fn is_progress_event_kind(kind: &str) -> bool {
+fn is_progress_event(event: &crate::tui::projection::ProjectionEventRecord) -> bool {
     matches!(
-        kind,
-        "provider_round_completed" | "text_only_round_observed"
+        event.presentation.category,
+        crate::operator_event::OperatorEventCategory::AssistantProgress
     )
 }
 
@@ -787,18 +768,13 @@ fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<invalid json>".into())
 }
 
-fn conversation_event_speaker(kind: &str) -> String {
-    match kind {
-        "task_created" | "task_status_updated" | "task_result_received" | "work_item_written" => {
-            "System (work)".into()
-        }
-        "waiting_intent_created" | "waiting_intent_cancelled" | "callback_delivered" => {
-            "System (waiting)".into()
-        }
-        "workspace_entered" | "workspace_exited" | "worktree_entered" | "worktree_exited" => {
-            "System (workspace)".into()
-        }
-        "runtime_error" | "turn_terminal" => "System (runtime)".into(),
+fn conversation_event_speaker(event: &crate::tui::projection::ProjectionEventRecord) -> String {
+    match event.presentation.category {
+        crate::operator_event::OperatorEventCategory::Task
+        | crate::operator_event::OperatorEventCategory::WorkItem => "System (work)".into(),
+        crate::operator_event::OperatorEventCategory::Waiting => "System (waiting)".into(),
+        crate::operator_event::OperatorEventCategory::Workspace => "System (workspace)".into(),
+        crate::operator_event::OperatorEventCategory::Runtime => "System (runtime)".into(),
         _ => "System".into(),
     }
 }
@@ -806,50 +782,31 @@ fn conversation_event_speaker(kind: &str) -> String {
 pub(super) fn conversation_event_body(
     event: &crate::tui::projection::ProjectionEventRecord,
 ) -> String {
-    let prefix = match event.kind.as_str() {
-        "task_created" => "[task] ",
-        "task_status_updated" => "[task] ",
-        "task_result_received" => "[task] ",
-        "work_item_written" => "[work-item] ",
-        "waiting_intent_created" => "[external-trigger] ",
-        "waiting_intent_cancelled" => "[external-trigger] ",
-        "callback_delivered" => "[external-trigger] ",
-        "workspace_entered" => "[workspace] ",
-        "workspace_exited" => "[workspace] ",
-        "worktree_entered" => "[worktree] ",
-        "worktree_exited" => "[worktree] ",
-        "runtime_error" => "[runtime-error] ",
-        "turn_terminal" => "[turn] ",
+    let prefix = match event.presentation.category {
+        crate::operator_event::OperatorEventCategory::Task => "[task] ",
+        crate::operator_event::OperatorEventCategory::WorkItem => "[work-item] ",
+        crate::operator_event::OperatorEventCategory::Waiting => "[external-trigger] ",
+        crate::operator_event::OperatorEventCategory::Workspace
+            if event.kind.starts_with("worktree_") =>
+        {
+            "[worktree] "
+        }
+        crate::operator_event::OperatorEventCategory::Workspace => "[workspace] ",
+        crate::operator_event::OperatorEventCategory::Runtime if event.kind == "runtime_error" => {
+            "[runtime-error] "
+        }
+        crate::operator_event::OperatorEventCategory::Runtime => "[turn] ",
         _ => "",
     };
     format!("{prefix}{}", event.summary)
 }
 
 fn progress_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
-    if event.kind == "tool_executed" || event.kind == "tool_execution_failed" {
-        return event
-            .payload
-            .get("tool_name")
-            .and_then(serde_json::Value::as_str)
-            .map(|tool_name| {
-                if tool_name == "ExecCommand" {
-                    event
-                        .payload
-                        .get("exec_command_cmd")
-                        .and_then(serde_json::Value::as_str)
-                        .map(|cmd| {
-                            if event.kind == "tool_execution_failed" {
-                                format!("ExecCommand failed: {cmd}")
-                            } else {
-                                format!("ExecCommand: {cmd}")
-                            }
-                        })
-                        .unwrap_or_else(|| event.summary.clone())
-                } else {
-                    event.summary.clone()
-                }
-            })
-            .unwrap_or_else(|| event.summary.clone());
+    if matches!(
+        event.presentation.category,
+        crate::operator_event::OperatorEventCategory::Tool
+    ) {
+        return event.summary.clone();
     }
     conversation_event_body(event)
 }
@@ -892,42 +849,54 @@ fn trim_preview(input: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{is_chat_visible_conversation_event, progress_event_body};
+    use crate::operator_event::{present_operator_event, OperatorPresentationContext};
     use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
     use chrono::Utc;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
-    #[test]
-    fn progress_event_body_shows_full_exec_command() {
-        let event = ProjectionEventRecord {
+    fn event(kind: &str, summary: &str, payload: Value) -> ProjectionEventRecord {
+        let presentation = present_operator_event(
+            kind,
+            &payload,
+            summary,
+            &OperatorPresentationContext::default(),
+        );
+        ProjectionEventRecord {
             id: "evt-1".into(),
             seq: 1,
             ts: Utc::now(),
             lane: ProjectionEventLane::Debug,
-            kind: "tool_executed".into(),
-            summary: "tool executed: ExecCommand".into(),
-            payload: json!({
+            kind: kind.into(),
+            summary: presentation.summary.clone(),
+            presentation,
+            payload,
+        }
+    }
+
+    #[test]
+    fn progress_event_body_shows_full_exec_command() {
+        let event = event(
+            "tool_executed",
+            "tool executed: ExecCommand",
+            json!({
                 "tool_name": "ExecCommand",
                 "exec_command_cmd": "git status --short --branch"
             }),
-        };
+        );
         let rendered = progress_event_body(&event);
         assert_eq!(rendered, "ExecCommand: git status --short --branch");
     }
 
     #[test]
     fn progress_event_body_marks_failed_exec_command() {
-        let event = ProjectionEventRecord {
-            id: "evt-2".into(),
-            seq: 2,
-            ts: Utc::now(),
-            lane: ProjectionEventLane::Debug,
-            kind: "tool_execution_failed".into(),
-            summary: "tool execution failed: ExecCommand".into(),
-            payload: json!({
+        let event = event(
+            "tool_execution_failed",
+            "tool execution failed: ExecCommand",
+            json!({
                 "tool_name": "ExecCommand",
                 "exec_command_cmd": "cargo test tui"
             }),
-        };
+        );
 
         let rendered = progress_event_body(&event);
 
@@ -936,39 +905,39 @@ mod tests {
 
     #[test]
     fn progress_event_body_uses_summary_for_non_command_tools() {
-        let event = ProjectionEventRecord {
-            id: "evt-2".into(),
-            seq: 2,
-            ts: Utc::now(),
-            lane: ProjectionEventLane::Debug,
-            kind: "tool_executed".into(),
-            summary: "tool executed: Sleep".into(),
-            payload: json!({
+        let event = event(
+            "tool_executed",
+            "tool executed: Sleep",
+            json!({
                 "tool_name": "Sleep"
             }),
-        };
+        );
         let rendered = progress_event_body(&event);
-        assert_eq!(rendered, "tool executed: Sleep");
+        assert_eq!(rendered, "Tool executed: Sleep");
     }
 
     #[test]
     fn chat_visible_conversation_events_are_user_facing_only() {
-        assert!(is_chat_visible_conversation_event(
-            "operator_notification_requested"
-        ));
-        assert!(is_chat_visible_conversation_event("runtime_error"));
+        assert!(is_chat_visible_conversation_event(&event(
+            "operator_notification_requested",
+            "needs input",
+            json!({})
+        )));
+        assert!(is_chat_visible_conversation_event(&event(
+            "runtime_error",
+            "runtime error",
+            json!({})
+        )));
 
-        assert!(!is_chat_visible_conversation_event("work_item_written"));
-        assert!(!is_chat_visible_conversation_event(
-            "waiting_intent_created"
-        ));
-        assert!(!is_chat_visible_conversation_event(
-            "waiting_intent_cancelled"
-        ));
-        assert!(!is_chat_visible_conversation_event("callback_delivered"));
-        assert!(!is_chat_visible_conversation_event("workspace_attached"));
-        assert!(!is_chat_visible_conversation_event(
-            "provider_round_completed"
-        ));
+        assert!(!is_chat_visible_conversation_event(&event(
+            "workspace_attached",
+            "workspace",
+            json!({})
+        )));
+        assert!(!is_chat_visible_conversation_event(&event(
+            "provider_round_completed",
+            "round",
+            json!({})
+        )));
     }
 }

@@ -12,8 +12,13 @@ use serde_json::{json, Value};
 
 use super::logging::TuiLogWriter;
 
+pub(crate) use crate::operator_event::OperatorVisibility;
 use crate::{
     client::{AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StateWorkspaceSnapshot},
+    operator_event::{
+        is_activity_reset_event_kind, is_durable_operator_event_kind, present_operator_event,
+        OperatorEventCategory, OperatorEventPresentation, OperatorPresentationContext,
+    },
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentState, AgentSummary, BriefRecord, ClosureDecision,
@@ -53,37 +58,6 @@ pub(crate) enum ProjectionEventLane {
     Debug,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum OperatorVisibility {
-    /// Operator attention is required before the agent can continue.
-    ActionRequired = 1,
-    /// A work item reached a durable completion point.
-    WorkDone = 2,
-    /// Default operator-facing turn result or durable conversation event.
-    TurnResult = 3,
-    /// In-turn assistant progress that is useful while the agent is active.
-    Progress = 4,
-    /// Tool and internal trace events for detailed inspection.
-    Trace = 5,
-}
-
-impl OperatorVisibility {
-    pub(crate) const DEFAULT_DISPLAY_LEVEL: Self = Self::TurnResult;
-
-    pub(crate) fn from_display_level(level: u8) -> Option<Self> {
-        match level {
-            3 => Some(Self::TurnResult),
-            4 => Some(Self::Progress),
-            5 => Some(Self::Trace),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn display_level(self) -> u8 {
-        self as u8
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProjectionEventRecord {
     pub(crate) id: String,
@@ -92,6 +66,7 @@ pub(crate) struct ProjectionEventRecord {
     pub(crate) kind: String,
     pub(crate) lane: ProjectionEventLane,
     pub(crate) summary: String,
+    pub(crate) presentation: OperatorEventPresentation,
     pub(crate) payload: Value,
 }
 
@@ -153,13 +128,22 @@ impl TuiProjection {
     }
 
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
+        let fallback_summary = summarize_event(&event);
+        let presentation_context = self.operator_presentation_context();
+        let presentation = present_operator_event(
+            &event.data.event_type,
+            &event.data.payload,
+            &fallback_summary,
+            &presentation_context,
+        );
         let record = ProjectionEventRecord {
             id: event.id.clone(),
             seq: event.data.seq,
             ts: event.data.ts,
             kind: event.data.event_type.clone(),
-            lane: classify_event_lane(&event.data.event_type),
-            summary: summarize_event(&event),
+            lane: classify_event_lane(&presentation),
+            summary: presentation.summary.clone(),
+            presentation,
             payload: event.data.payload.clone(),
         };
         push_limited(&mut self.event_log, record.clone(), EVENT_LOG_LIMIT);
@@ -439,7 +423,7 @@ impl TuiProjection {
     pub(crate) fn recent_activity_events(&self) -> Vec<&ProjectionEventRecord> {
         let mut events = Vec::new();
         for event in self.current_turn_events_rev() {
-            if is_ephemeral_activity_kind(&event.kind) {
+            if event.presentation.is_current_activity_candidate() {
                 events.push(event);
             }
             if events.len() >= 4 {
@@ -473,40 +457,20 @@ impl TuiProjection {
     }
 
     pub(crate) fn operator_visibility(&self, event: &ProjectionEventRecord) -> OperatorVisibility {
-        match event.kind.as_str() {
-            "operator_notification_requested" => OperatorVisibility::ActionRequired,
-            "brief_created" => self.brief_visibility(event),
-            "work_item_written" if work_item_event_completed(event) => OperatorVisibility::WorkDone,
-            "runtime_error" => OperatorVisibility::TurnResult,
-            "provider_round_completed" | "text_only_round_observed" => OperatorVisibility::Progress,
-            "tool_executed"
-            | "tool_execution_failed"
-            | "max_output_tokens_recovery"
-            | "turn_local_checkpoint_recorded" => OperatorVisibility::Trace,
-            _ if is_ephemeral_activity_kind(&event.kind) => OperatorVisibility::Trace,
-            _ if is_durable_conversation_kind(&event.kind) => OperatorVisibility::TurnResult,
-            _ => OperatorVisibility::Trace,
-        }
+        event.presentation.visibility
     }
 
-    fn brief_visibility(&self, event: &ProjectionEventRecord) -> OperatorVisibility {
-        if self.agent.closure.waiting_reason
-            == Some(crate::types::WaitingReason::AwaitingOperatorInput)
-        {
-            return OperatorVisibility::ActionRequired;
-        }
-        let Some(brief) = decode_payload::<BriefRecord>(&event.payload) else {
-            return OperatorVisibility::TurnResult;
-        };
-        if brief
-            .work_item_id
-            .as_deref()
-            .and_then(|work_item_id| self.work_items.iter().find(|item| item.id == work_item_id))
-            .is_some_and(|item| item.state == WorkItemState::Completed)
-        {
-            OperatorVisibility::WorkDone
-        } else {
-            OperatorVisibility::TurnResult
+    fn operator_presentation_context(&self) -> OperatorPresentationContext {
+        let completed_work_item_ids = self
+            .work_items
+            .iter()
+            .filter(|item| item.state == WorkItemState::Completed)
+            .map(|item| item.id.clone())
+            .collect();
+        OperatorPresentationContext {
+            awaiting_operator_input: self.agent.closure.waiting_reason
+                == Some(crate::types::WaitingReason::AwaitingOperatorInput),
+            completed_work_item_ids,
         }
     }
 
@@ -536,7 +500,7 @@ impl TuiProjection {
         self.event_log
             .iter()
             .rev()
-            .filter(|event| is_loggable_event_kind(&event.kind))
+            .filter(|event| event.presentation.is_loggable())
             .take(limit)
             .collect::<Vec<_>>()
             .into_iter()
@@ -837,89 +801,22 @@ fn operator_message_from_enqueued(message: &MessageEnvelope) -> OperatorMessageR
 }
 
 pub(crate) fn is_durable_conversation_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "message_enqueued"
-            | "turn_started"
-            | "operator_interjection_admitted"
-            | "brief_created"
-            | "runtime_error"
-            | "turn_terminal"
-            | "task_created"
-            | "task_status_updated"
-            | "task_result_received"
-            | "work_item_written"
-            | "waiting_intent_created"
-            | "waiting_intent_cancelled"
-            | "callback_delivered"
-            | "operator_notification_requested"
-            | "workspace_entered"
-            | "workspace_exited"
-            | "workspace_detached"
-            | "worktree_entered"
-            | "worktree_exited"
-    )
-}
-
-pub(crate) fn is_ephemeral_activity_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "provider_round_completed"
-            | "text_only_round_observed"
-            | "tool_executed"
-            | "tool_execution_failed"
-            | "skill_activated"
-            | "system_tick_emitted"
-            | "workspace_attached"
-            | "worktree_auto_cleaned_up"
-            | "worktree_auto_cleanup_failed"
-            | "task_worktree_branch_cleanup_retained"
-    )
-}
-
-fn is_loggable_event_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "message_enqueued"
-            | "turn_started"
-            | "provider_round_completed"
-            | "text_only_round_observed"
-            | "tool_executed"
-            | "tool_execution_failed"
-            | "task_created"
-            | "task_status_updated"
-            | "task_result_received"
-            | "work_item_written"
-            | "waiting_intent_created"
-            | "waiting_intent_cancelled"
-            | "callback_delivered"
-            | "operator_notification_requested"
-            | "workspace_entered"
-            | "workspace_exited"
-            | "worktree_entered"
-            | "worktree_exited"
-            | "runtime_error"
-            | "operator_interjection_admitted"
-            | "turn_terminal"
-    )
+    is_durable_operator_event_kind(kind)
 }
 
 fn is_activity_reset_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "turn_started"
-            | "message_processing_started"
-            | "operator_interjection_admitted"
-            | "brief_created"
-            | "turn_terminal"
-            | "runtime_error"
-    )
+    is_activity_reset_event_kind(kind)
 }
 
-fn classify_event_lane(kind: &str) -> ProjectionEventLane {
-    if is_durable_conversation_kind(kind) {
+fn classify_event_lane(presentation: &OperatorEventPresentation) -> ProjectionEventLane {
+    if presentation.is_conversation_candidate() {
         ProjectionEventLane::Timeline
-    } else if is_ephemeral_activity_kind(kind) {
+    } else if matches!(
+        presentation.category,
+        OperatorEventCategory::AssistantProgress
+            | OperatorEventCategory::Tool
+            | OperatorEventCategory::Trace
+    ) {
         ProjectionEventLane::Debug
     } else {
         ProjectionEventLane::State
@@ -1093,6 +990,7 @@ mod tests {
             AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StateWorkspaceSnapshot,
             StreamEventEnvelope,
         },
+        operator_event::{present_operator_event, OperatorPresentationContext},
         system::{
             ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind,
         },
@@ -1255,7 +1153,7 @@ mod tests {
                 .event_log()
                 .last()
                 .map(|event| event.summary.as_str()),
-            Some("provider round completed")
+            Some("Provider round completed")
         );
     }
 
@@ -1319,7 +1217,10 @@ mod tests {
                 .iter()
                 .map(|event| event.summary.as_str())
                 .collect::<Vec<_>>(),
-            vec!["current turn", "tool executed: ExecCommand"]
+            vec![
+                "Assistant progress: current turn",
+                "ExecCommand: cargo test"
+            ]
         );
     }
 
@@ -1327,7 +1228,50 @@ mod tests {
     fn brief_visibility_marks_operator_wait_and_completed_work() {
         let mut snapshot = sample_snapshot();
         snapshot.agent.closure.waiting_reason = Some(WaitingReason::AwaitingOperatorInput);
-        let projection = TuiProjection::from_snapshot(snapshot);
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        let wait_brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Need operator input",
+            None,
+            None,
+        );
+        assert_eq!(
+            {
+                projection.apply_event(
+                    sample_event("brief_created", serde_json::to_value(&wait_brief).unwrap()),
+                    &test_log_writer(),
+                );
+                projection
+                    .event_log()
+                    .last()
+                    .map(|event| projection.operator_visibility(event))
+            },
+            Some(OperatorVisibility::ActionRequired)
+        );
+
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let mut completed = WorkItemRecord::new("default", "finish docs", WorkItemState::Completed);
+        completed.id = "work-done".into();
+        projection.work_items = vec![completed];
+        let mut work_brief =
+            BriefRecord::new("default", BriefKind::Result, "Work done", None, None);
+        work_brief.work_item_id = Some("work-done".into());
+        projection.apply_event(
+            sample_event("brief_created", serde_json::to_value(&work_brief).unwrap()),
+            &test_log_writer(),
+        );
+        assert_eq!(
+            projection
+                .event_log()
+                .last()
+                .map(|event| projection.operator_visibility(event)),
+            Some(OperatorVisibility::WorkDone)
+        );
+    }
+
+    #[test]
+    fn projection_event_record_helper_uses_default_context() {
         let wait_brief = BriefRecord::new(
             "default",
             BriefKind::Result,
@@ -1338,22 +1282,8 @@ mod tests {
         let wait_event =
             projection_event_record("brief_created", serde_json::to_value(&wait_brief).unwrap());
         assert_eq!(
-            projection.operator_visibility(&wait_event),
-            OperatorVisibility::ActionRequired
-        );
-
-        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
-        let mut completed = WorkItemRecord::new("default", "finish docs", WorkItemState::Completed);
-        completed.id = "work-done".into();
-        projection.work_items = vec![completed];
-        let mut work_brief =
-            BriefRecord::new("default", BriefKind::Result, "Work done", None, None);
-        work_brief.work_item_id = Some("work-done".into());
-        let work_event =
-            projection_event_record("brief_created", serde_json::to_value(&work_brief).unwrap());
-        assert_eq!(
-            projection.operator_visibility(&work_event),
-            OperatorVisibility::WorkDone
+            wait_event.presentation.visibility,
+            OperatorVisibility::TurnResult
         );
     }
 
@@ -1833,13 +1763,20 @@ mod tests {
     }
 
     fn projection_event_record(kind: &str, payload: Value) -> super::ProjectionEventRecord {
+        let presentation = present_operator_event(
+            kind,
+            &payload,
+            kind,
+            &OperatorPresentationContext::default(),
+        );
         super::ProjectionEventRecord {
             id: format!("evt-{kind}"),
             seq: 1,
             ts: Utc::now(),
             kind: kind.to_string(),
-            lane: super::classify_event_lane(kind),
-            summary: kind.to_string(),
+            lane: super::classify_event_lane(&presentation),
+            summary: presentation.summary.clone(),
+            presentation,
             payload,
         }
     }
