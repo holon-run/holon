@@ -723,9 +723,22 @@ fn non_empty_value(value: &Value) -> Option<String> {
         .map(ToString::to_string)
 }
 
+#[cfg(test)]
 pub(super) fn paragraph_max_scroll(text: &Text<'_>, area: Rect) -> u16 {
-    let inner_width = area.width.saturating_sub(2).max(1);
-    let inner_height = area.height.saturating_sub(2) as usize;
+    paragraph_max_scroll_for_size(
+        text,
+        area.width.saturating_sub(2).max(1),
+        area.height.saturating_sub(2),
+    )
+}
+
+pub(super) fn paragraph_max_scroll_unframed(text: &Text<'_>, area: Rect) -> u16 {
+    paragraph_max_scroll_for_size(text, area.width.max(1), area.height)
+}
+
+fn paragraph_max_scroll_for_size(text: &Text<'_>, width: u16, height: u16) -> u16 {
+    let inner_width = width.max(1);
+    let inner_height = height as usize;
     if inner_height == 0 {
         return 0;
     }

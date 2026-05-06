@@ -8,6 +8,7 @@ enum SlashCommand {
     Model,
     Tasks,
     Transcript,
+    State,
     Refresh,
     ClearStatus,
     DebugPrompt,
@@ -40,7 +41,7 @@ pub(super) struct SlashCommandSpec {
     command: SlashCommand,
 }
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 15] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -82,6 +83,13 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 15] = [
         usage: "/transcript",
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Transcript,
+    },
+    SlashCommandSpec {
+        name: "/state",
+        description: "open agent state overlay",
+        usage: "/state",
+        arg_rule: SlashArgRule::None,
+        command: SlashCommand::State,
     },
     SlashCommandSpec {
         name: "/refresh",
@@ -455,6 +463,10 @@ impl TuiApp {
                 self.overlay = OverlayState::Transcript { scroll: 0 };
                 self.status_line = "Opened transcript overlay".into();
             }
+            SlashCommand::State => {
+                self.overlay = OverlayState::AgentState { scroll: 0 };
+                self.status_line = "Opened agent state overlay".into();
+            }
             SlashCommand::Refresh => {
                 self.overlay = OverlayState::None;
                 self.status_line = "Refreshing selected agent from /state".into();
@@ -635,6 +647,13 @@ impl TuiApp {
                 if key.code != KeyCode::Esc {
                     scroll = adjust_scroll_for_key(scroll, key.code);
                     self.overlay = OverlayState::Transcript { scroll };
+                }
+                Ok(())
+            }
+            OverlayState::AgentState { mut scroll } => {
+                if key.code != KeyCode::Esc {
+                    scroll = adjust_scroll_for_key(scroll, key.code);
+                    self.overlay = OverlayState::AgentState { scroll };
                 }
                 Ok(())
             }

@@ -27,19 +27,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
 }
 
 fn draw_main_panels(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
-    let layout = if area.width >= 110 {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
-            .split(area)
-    };
-    draw_chat(frame, layout[0], app);
-    draw_agent_state(frame, layout[1], app);
+    draw_chat(frame, area, app);
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
@@ -54,20 +42,12 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
 }
 
 fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
-    let body = chat_text_for_width(app, area.width.saturating_sub(2).max(1));
-    let max_scroll = paragraph_max_scroll(&body, area);
+    let body = chat_text_for_width(app, area.width.max(1));
+    let max_scroll = paragraph_max_scroll_unframed(&body, area);
     app.chat_max_scroll = max_scroll;
     let scroll = app.chat_scroll.effective_scroll(max_scroll);
     let paragraph = Paragraph::new(body)
-        .block(Block::default().title("Conversation").borders(Borders::ALL))
         .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
-}
-
-fn draw_agent_state(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-    let paragraph = Paragraph::new(render_agent_state_text(app))
-        .block(Block::default().title("Agent State").borders(Borders::ALL))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
@@ -103,11 +83,12 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
             "Slash: Up/Down select  Tab complete  Enter run  Esc close"
         }
         OverlayState::None => {
-            "/help commands  Up/Down history (empty)  PgUp/PgDn scroll  Ctrl+A/E edit  ? help  Ctrl+C quit"
+            "/help commands  /state agent state  /transcript  PgUp/PgDn scroll  Ctrl+A/E edit  Ctrl+C quit"
         }
         OverlayState::Agents => "Agents: Up/Down, Esc",
         OverlayState::Events { .. } => "Events: Up/Down, PgUp/PgDn, Home/End, Esc",
         OverlayState::Transcript { .. } => "Transcript: Up/Down, PgUp/PgDn, Home/End, Esc",
+        OverlayState::AgentState { .. } => "Agent state: Up/Down, PgUp/PgDn, Home/End, Esc",
         OverlayState::Tasks { .. } => {
             "Tasks: Up/Down, PgUp/PgDn, Home/End, Esc"
         }
@@ -136,7 +117,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_agent_state_text(app: &TuiApp) -> String {
+pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
     let Some(projection) = app.projection.as_ref() else {
         return "Projection not initialized yet.".into();
     };
