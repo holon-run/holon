@@ -252,6 +252,93 @@ pub async fn events_route_operator_projection_redacts_trace_payload() -> Result<
     Ok(())
 }
 
+pub async fn events_route_operator_projection_preserves_assistant_round_progress() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/control/agents/default/prompt"))
+        .json(&serde_json::json!({ "text": "assistant round projection bootstrap" }))
+        .send()
+        .await?;
+    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+
+    let bootstrap: serde_json::Value = client
+        .get(format!("{base}/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let cursor = bootstrap["cursor"]
+        .as_str()
+        .expect("cursor should be present")
+        .to_string();
+
+    runtime.storage().append_event(&AuditEvent::new(
+        "assistant_round_recorded",
+        serde_json::json!({
+            "agent_id": "default",
+            "run_id": "run-1",
+            "turn_index": 7,
+            "round": 2,
+            "stop_reason": "tool_use",
+            "text_preview": "I will inspect the files.",
+            "text_block_count": 1,
+            "text_char_count": 25,
+            "tool_call_count": 2,
+            "tool_names": ["ExecCommand", "ReadFile"],
+            "has_text": true,
+            "has_tool_calls": true,
+            "raw_text": "full assistant text should stay out of operator replay",
+            "provider_trace": { "secret": "debug-only" },
+        }),
+    ))?;
+
+    let mut stream = client
+        .get(format!(
+            "{base}/agents/default/events?since={cursor}&projection=operator"
+        ))
+        .send()
+        .await?;
+    let replayed =
+        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+
+    assert_eq!(replayed.event, "assistant_round_recorded");
+    assert_eq!(replayed.data["type"], "assistant_round_recorded");
+    assert_eq!(replayed.data["projection"]["name"], "operator");
+    assert_eq!(
+        replayed.data["projection"]["raw_payload_included"],
+        serde_json::json!(false)
+    );
+    assert_eq!(replayed.data["payload"]["redacted"], true);
+    assert_eq!(replayed.data["payload"]["agent_id"], "default");
+    assert_eq!(replayed.data["payload"]["run_id"], "run-1");
+    assert_eq!(replayed.data["payload"]["turn_index"], 7);
+    assert_eq!(replayed.data["payload"]["round"], 2);
+    assert_eq!(replayed.data["payload"]["stop_reason"], "tool_use");
+    assert_eq!(
+        replayed.data["payload"]["text_preview"],
+        "I will inspect the files."
+    );
+    assert_eq!(replayed.data["payload"]["text_block_count"], 1);
+    assert_eq!(replayed.data["payload"]["text_char_count"], 25);
+    assert_eq!(replayed.data["payload"]["tool_call_count"], 2);
+    assert_eq!(
+        replayed.data["payload"]["tool_names"],
+        serde_json::json!(["ExecCommand", "ReadFile"])
+    );
+    assert_eq!(replayed.data["payload"]["has_text"], true);
+    assert_eq!(replayed.data["payload"]["has_tool_calls"], true);
+
+    let replayed_text = serde_json::to_string(&replayed.data)?;
+    assert!(!replayed_text.contains("full assistant text"));
+    assert!(!replayed_text.contains("debug-only"));
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn events_route_local_debug_projection_requires_control_auth() -> Result<()> {
     let config = test_config_with_paths(
         tempdir()?.keep(),

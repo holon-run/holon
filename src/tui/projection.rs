@@ -1318,6 +1318,56 @@ mod tests {
     }
 
     #[test]
+    fn assistant_round_operator_projection_renders_progress_fields() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+
+        projection.apply_event(
+            sample_event(
+                "assistant_round_recorded",
+                json!({
+                    "redacted": true,
+                    "stop_reason": "tool_use",
+                    "text_preview": null,
+                    "tool_names": ["ExecCommand", "ReadFile"],
+                    "tool_call_count": 2,
+                    "has_tool_calls": true,
+                }),
+            ),
+            &test_log_writer(),
+        );
+        assert_eq!(
+            projection
+                .event_log()
+                .last()
+                .map(|event| event.summary.as_str()),
+            Some("Assistant requested tools: ExecCommand, ReadFile")
+        );
+
+        projection.apply_event(
+            sample_event(
+                "assistant_round_recorded",
+                json!({
+                    "redacted": true,
+                    "stop_reason": "end_turn",
+                    "text_preview": null,
+                    "tool_names": [],
+                    "tool_call_count": 0,
+                    "has_text": false,
+                    "has_tool_calls": false,
+                }),
+            ),
+            &test_log_writer(),
+        );
+        assert_eq!(
+            projection
+                .event_log()
+                .last()
+                .map(|event| event.summary.as_str()),
+            Some("Assistant round completed without text (stop=end_turn)")
+        );
+    }
+
+    #[test]
     fn transient_activity_events_do_not_force_state_refresh() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
 
