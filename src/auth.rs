@@ -54,6 +54,10 @@ pub fn load_codex_cli_credential(codex_home: &Path) -> Result<CodexCliCredential
     ))
 }
 
+pub fn codex_cli_auth_file_exists(codex_home: &Path) -> bool {
+    auth_file_path(&canonical_or_original(codex_home)).is_file()
+}
+
 fn load_auth_from_file(codex_home: &Path) -> Result<AuthDotJson> {
     let path = auth_file_path(codex_home);
     let content =

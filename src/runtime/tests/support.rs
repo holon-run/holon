@@ -46,6 +46,11 @@ pub(crate) fn context_config() -> ContextConfig {
 
 pub(crate) async fn host_backed_test_runtime() -> (TempDir, RuntimeHost, RuntimeHandle) {
     let home = tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
     let config = crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
     let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
     let runtime = host.default_runtime().await.unwrap();
