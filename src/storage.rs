@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, ContextEpisodeRecord,
     DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope, OperatorDeliveryRecord,
-    OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, TaskRecord,
+    OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, TaskRecord, TaskStatus,
     TimerRecord, ToolExecutionRecord, TranscriptEntry, WaitingIntentRecord,
     WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkItemState,
     WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
@@ -430,6 +430,45 @@ impl AppStorage {
         Ok(latest.into_values().collect())
     }
 
+    pub fn latest_active_task_records(&self, limit: usize) -> Result<Vec<TaskRecord>> {
+        if limit == 0 || !self.tasks_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut seen = std::collections::BTreeSet::<String>::new();
+        let mut pending_recovery = std::collections::BTreeMap::<String, usize>::new();
+        let mut records = Vec::<TaskRecord>::new();
+
+        scan_jsonl_reverse::<TaskRecord, _>(&self.tasks_path, |record| {
+            if let Some(index) = pending_recovery.get(&record.id).copied() {
+                if records[index].recovery.is_none() {
+                    records[index].recovery = record.recovery.clone();
+                }
+                if records[index].recovery.is_some() {
+                    pending_recovery.remove(&record.id);
+                }
+            }
+
+            if seen.contains(&record.id) {
+                return records.len() < limit || !pending_recovery.is_empty();
+            }
+            seen.insert(record.id.clone());
+
+            if records.len() < limit && is_active_task_status(&record.status) {
+                records.push(record);
+                let index = records.len() - 1;
+                if records[index].recovery.is_none() {
+                    pending_recovery.insert(records[index].id.clone(), index);
+                }
+            }
+
+            records.len() < limit || !pending_recovery.is_empty()
+        })?;
+
+        records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(records)
+    }
+
     pub fn latest_task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
         if !self.tasks_path.exists() {
             return Ok(None);
@@ -723,18 +762,7 @@ impl AppStorage {
             .collect::<Vec<_>>();
         replay_messages.sort_by(|left, right| left.created_at.cmp(&right.created_at));
 
-        let active_tasks = self
-            .latest_task_records()?
-            .into_iter()
-            .filter(|record| {
-                matches!(
-                    record.status,
-                    crate::types::TaskStatus::Queued
-                        | crate::types::TaskStatus::Running
-                        | crate::types::TaskStatus::Cancelling
-                )
-            })
-            .collect();
+        let active_tasks = self.latest_active_task_records(usize::MAX)?;
         let active_timers = self
             .latest_timer_records()?
             .into_iter()
@@ -789,6 +817,13 @@ fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let line = serde_json::to_string(value)?;
     writeln!(file, "{line}")?;
     Ok(())
+}
+
+pub(crate) fn is_active_task_status(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+    )
 }
 
 fn read_recent_jsonl<T: DeserializeOwned>(path: &Path, limit: usize) -> Result<Vec<T>> {
@@ -882,6 +917,63 @@ where
     parse_jsonl_match(&prefix, path, &mut matches)
 }
 
+fn scan_jsonl_reverse<T, F>(path: &Path, mut visit: F) -> Result<()>
+where
+    T: DeserializeOwned,
+    F: FnMut(T) -> bool,
+{
+    if !path.exists() {
+        return Ok(());
+    }
+
+    const CHUNK_SIZE: u64 = 8192;
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut cursor = file.seek(SeekFrom::End(0))?;
+    let mut prefix = Vec::new();
+
+    while cursor > 0 {
+        let read_len = cursor.min(CHUNK_SIZE);
+        cursor -= read_len;
+        file.seek(SeekFrom::Start(cursor))?;
+
+        let mut chunk = vec![0; read_len as usize];
+        file.read_exact(&mut chunk)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        chunk.extend_from_slice(&prefix);
+
+        let mut line_end = chunk.len();
+        for idx in (0..chunk.len()).rev() {
+            if chunk[idx] != b'\n' {
+                continue;
+            }
+            if !parse_jsonl_visit(&chunk[(idx + 1)..line_end], path, &mut visit)? {
+                return Ok(());
+            }
+            line_end = idx;
+        }
+        prefix = chunk[..line_end].to_vec();
+    }
+
+    let _ = parse_jsonl_visit(&prefix, path, &mut visit)?;
+    Ok(())
+}
+
+fn parse_jsonl_visit<T, F>(line: &[u8], path: &Path, visit: &mut F) -> Result<bool>
+where
+    T: DeserializeOwned,
+    F: FnMut(T) -> bool,
+{
+    let line = std::str::from_utf8(line)
+        .with_context(|| format!("failed to decode UTF-8 from {}", path.display()))?;
+    if line.trim().is_empty() {
+        return Ok(true);
+    }
+    let record: T = serde_json::from_str(line)
+        .with_context(|| format!("failed to decode line from {}", path.display()))?;
+    Ok(visit(record))
+}
+
 fn parse_jsonl_match<T, F>(line: &[u8], path: &Path, matches: &mut F) -> Result<Option<T>>
 where
     T: DeserializeOwned,
@@ -957,8 +1049,8 @@ mod tests {
 
     use crate::types::{
         AgentState, AgentStatus, EpisodeBoundaryReason, Priority, QueueEntryRecord,
-        QueueEntryStatus, TodoItem, TodoItemState, TranscriptEntry, TranscriptEntryKind,
-        WorkItemState,
+        QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem,
+        TodoItemState, TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkItemState,
     };
 
     use super::*;
@@ -975,6 +1067,119 @@ mod tests {
         assert_eq!(restored.status, AgentStatus::Asleep);
         assert!(dir.path().join(".holon/state/agent.json").is_file());
         assert!(!dir.path().join("agent.json").exists());
+    }
+
+    #[test]
+    fn latest_active_task_records_reduce_by_id_and_filter_terminal_tasks() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let task = |id: &str, status: TaskStatus, offset: i64| TaskRecord {
+            id: id.into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: status.clone(),
+            created_at: now + chrono::Duration::seconds(offset),
+            updated_at: now + chrono::Duration::seconds(offset),
+            parent_message_id: None,
+            summary: Some(format!("{id} {status:?}")),
+            detail: None,
+            recovery: None,
+        };
+
+        storage
+            .append_task(&task("completed-after-queue", TaskStatus::Queued, 0))
+            .unwrap();
+        storage
+            .append_task(&task("running", TaskStatus::Running, 1))
+            .unwrap();
+        storage
+            .append_task(&task("completed-after-queue", TaskStatus::Completed, 2))
+            .unwrap();
+        storage
+            .append_task(&task("cancelling", TaskStatus::Cancelling, 3))
+            .unwrap();
+
+        let active = storage.latest_active_task_records(10).unwrap();
+        let rendered = active
+            .iter()
+            .map(|task| (task.id.as_str(), task.status.clone()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                ("cancelling", TaskStatus::Cancelling),
+                ("running", TaskStatus::Running)
+            ]
+        );
+    }
+
+    #[test]
+    fn latest_active_task_records_applies_limit_after_reverse_reduction() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+
+        for index in 0..5 {
+            storage
+                .append_task(&TaskRecord {
+                    id: format!("task-{index}"),
+                    agent_id: "default".into(),
+                    kind: TaskKind::CommandTask,
+                    status: TaskStatus::Running,
+                    created_at: now + chrono::Duration::seconds(index),
+                    updated_at: now + chrono::Duration::seconds(index),
+                    parent_message_id: None,
+                    summary: None,
+                    detail: None,
+                    recovery: None,
+                })
+                .unwrap();
+        }
+
+        let active = storage.latest_active_task_records(2).unwrap();
+        let ids = active
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["task-4", "task-3"]);
+    }
+
+    #[test]
+    fn latest_active_task_records_preserves_recovery_from_older_snapshot() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let mut task = TaskRecord {
+            id: "task-recovery".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            summary: None,
+            detail: None,
+            recovery: Some(TaskRecoverySpec::SubagentTask {
+                summary: "recover".into(),
+                prompt: "resume with artifact".into(),
+                trust: TrustLevel::TrustedOperator,
+            }),
+        };
+        storage.append_task(&task).unwrap();
+
+        task.updated_at = now + chrono::Duration::seconds(1);
+        task.recovery = None;
+        storage.append_task(&task).unwrap();
+
+        let active = storage.latest_active_task_records(1).unwrap();
+        assert_eq!(active.len(), 1);
+        assert!(matches!(
+            active[0].recovery,
+            Some(TaskRecoverySpec::SubagentTask { .. })
+        ));
     }
 
     #[test]

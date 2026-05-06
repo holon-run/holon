@@ -95,11 +95,12 @@ impl TuiProjection {
         let external_triggers = snapshot.external_triggers;
         let operator_notifications = snapshot.operator_notifications;
         let events_tail = snapshot.events_tail;
+        let tasks = active_tasks_for_projection(snapshot.tasks);
 
         let mut projection = Self {
             agent: snapshot.agent,
             session: snapshot.session,
-            tasks: snapshot.tasks,
+            tasks,
             transcript_tail: snapshot.transcript_tail,
             operator_messages: snapshot.operator_messages,
             briefs_tail: snapshot.briefs_tail,
@@ -196,9 +197,7 @@ impl TuiProjection {
             }
             "task_created" | "task_status_updated" | "task_result_received" => {
                 if let Some(task) = decode_payload::<TaskRecord>(&event.data.payload) {
-                    push_limited_sorted(&mut self.tasks, task, TASK_TAIL_LIMIT, |left, right| {
-                        left.updated_at.cmp(&right.updated_at)
-                    });
+                    upsert_active_task(&mut self.tasks, task);
                     self.stale_slices.remove(&ProjectionSlice::Tasks);
                 } else {
                     self.mark_stale([ProjectionSlice::Tasks]);
@@ -752,6 +751,28 @@ where
     }
 }
 
+fn upsert_active_task(tasks: &mut Vec<TaskRecord>, task: TaskRecord) {
+    tasks.retain(|existing| existing.id != task.id);
+    if crate::storage::is_active_task_status(&task.status) {
+        push_limited_sorted(tasks, task, TASK_TAIL_LIMIT, |left, right| {
+            left.updated_at.cmp(&right.updated_at)
+        });
+    }
+}
+
+fn active_tasks_for_projection(tasks: Vec<TaskRecord>) -> Vec<TaskRecord> {
+    let mut tasks = tasks
+        .into_iter()
+        .filter(|task| crate::storage::is_active_task_status(&task.status))
+        .collect::<Vec<_>>();
+    // TUI keeps tasks oldest-first internally because the overlay reverses them for display.
+    tasks.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+    if tasks.len() > TASK_TAIL_LIMIT {
+        tasks.drain(0..(tasks.len() - TASK_TAIL_LIMIT));
+    }
+    tasks
+}
+
 fn upsert_work_item(items: &mut Vec<WorkItemRecord>, item: WorkItemRecord) {
     if let Some(index) = items.iter().position(|existing| existing.id == item.id) {
         items[index] = item;
@@ -1045,7 +1066,9 @@ fn trim_summary(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{OperatorVisibility, ProjectionEventLane, ProjectionSlice, TuiProjection};
+    use super::{
+        OperatorVisibility, ProjectionEventLane, ProjectionSlice, TuiProjection, TASK_TAIL_LIMIT,
+    };
     use crate::{
         client::{
             AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StateWorkspaceSnapshot,
@@ -1756,7 +1779,7 @@ mod tests {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
         let mut task = sample_task();
         task.id = "task-stream".into();
-        task.status = TaskStatus::Completed;
+        task.status = TaskStatus::Running;
         task.updated_at = Utc::now();
 
         let mut work_item = WorkItemRecord::new("default", "queued delivery", WorkItemState::Open);
@@ -1785,6 +1808,100 @@ mod tests {
             .work_items
             .iter()
             .any(|record| record.id == "work-stream" && record.state == WorkItemState::Open));
+    }
+
+    #[test]
+    fn projection_upserts_active_tasks_and_removes_terminal_updates() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        projection.tasks.clear();
+        let mut task = sample_task();
+        task.id = "task-active".into();
+        task.status = TaskStatus::Queued;
+
+        projection.apply_event(
+            sample_event("task_created", serde_json::to_value(&task).unwrap()),
+            &test_log_writer(),
+        );
+        assert_eq!(projection.tasks.len(), 1);
+        assert_eq!(projection.tasks[0].status, TaskStatus::Queued);
+
+        task.status = TaskStatus::Running;
+        task.summary = Some("running latest".into());
+        task.updated_at = task.updated_at + chrono::Duration::seconds(1);
+        projection.apply_event(
+            sample_event("task_status_updated", serde_json::to_value(&task).unwrap()),
+            &test_log_writer(),
+        );
+        assert_eq!(projection.tasks.len(), 1);
+        assert_eq!(
+            projection.tasks[0].summary.as_deref(),
+            Some("running latest")
+        );
+        assert_eq!(projection.tasks[0].status, TaskStatus::Running);
+
+        task.status = TaskStatus::Completed;
+        task.updated_at = task.updated_at + chrono::Duration::seconds(1);
+        projection.apply_event(
+            sample_event("task_result_received", serde_json::to_value(&task).unwrap()),
+            &test_log_writer(),
+        );
+        assert!(projection.tasks.is_empty());
+    }
+
+    #[test]
+    fn projection_bootstrap_keeps_only_active_tasks_in_chronological_order() {
+        let mut old_running = sample_task();
+        old_running.id = "old-running".into();
+        old_running.status = TaskStatus::Running;
+        old_running.updated_at = Utc::now() - chrono::Duration::seconds(10);
+
+        let mut completed = sample_task();
+        completed.id = "completed".into();
+        completed.status = TaskStatus::Completed;
+        completed.updated_at = Utc::now() - chrono::Duration::seconds(5);
+
+        let mut new_running = sample_task();
+        new_running.id = "new-running".into();
+        new_running.status = TaskStatus::Running;
+        new_running.updated_at = Utc::now();
+
+        let mut snapshot = sample_snapshot();
+        snapshot.tasks = vec![new_running, completed, old_running];
+
+        let projection = TuiProjection::from_snapshot(snapshot);
+        let task_ids = projection
+            .tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(task_ids, vec!["old-running", "new-running"]);
+    }
+
+    #[test]
+    fn projection_bootstrap_bounds_active_tasks() {
+        let now = Utc::now();
+        let mut snapshot = sample_snapshot();
+        snapshot.tasks = (0..(TASK_TAIL_LIMIT + 5))
+            .map(|index| {
+                let mut task = sample_task();
+                task.id = format!("task-{index}");
+                task.status = TaskStatus::Running;
+                task.updated_at = now + chrono::Duration::seconds(index as i64);
+                task
+            })
+            .collect();
+
+        let projection = TuiProjection::from_snapshot(snapshot);
+        let task_ids = projection
+            .tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(projection.tasks.len(), TASK_TAIL_LIMIT);
+        assert_eq!(task_ids.first().copied(), Some("task-5"));
+        assert_eq!(task_ids.last().copied(), Some("task-54"));
     }
 
     #[test]

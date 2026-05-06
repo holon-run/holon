@@ -262,7 +262,7 @@ fn draw_tasks_overlay(frame: &mut Frame<'_>, app: &TuiApp, selected: usize, deta
     frame.render_widget(Clear, popup);
 
     let items = if app.tasks.is_empty() {
-        vec![ListItem::new("No tasks")]
+        vec![ListItem::new("No active tasks")]
     } else {
         app.tasks
             .iter()
@@ -287,7 +287,7 @@ fn draw_tasks_overlay(frame: &mut Frame<'_>, app: &TuiApp, selected: usize, deta
         .rev()
         .nth(selected)
         .map(render::render_task_detail)
-        .unwrap_or_else(|| "No task selected.".to_string());
+        .unwrap_or_else(|| "No active task selected.".to_string());
     let detail = Paragraph::new(detail_text)
         .block(Block::default().title("Task Detail").borders(Borders::ALL))
         .scroll((detail_scroll, 0))

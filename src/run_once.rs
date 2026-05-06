@@ -610,18 +610,11 @@ async fn active_new_task_ids(
     let mut active = Vec::new();
     for task_id in task_ids {
         let snapshot = runtime.task_output(task_id, false, 0).await?;
-        if is_active_task_status(&snapshot.task.status) {
+        if crate::storage::is_active_task_status(&snapshot.task.status) {
             active.push(task_id.clone());
         }
     }
     Ok(active)
-}
-
-fn is_active_task_status(state: &TaskStatus) -> bool {
-    matches!(
-        state,
-        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
-    )
 }
 
 async fn settle_stopped_tasks(
@@ -636,7 +629,7 @@ async fn settle_stopped_tasks(
                 break;
             };
             let snapshot = runtime.task_output(task_id, false, 0).await?;
-            if !is_active_task_status(&snapshot.task.status) {
+            if !crate::storage::is_active_task_status(&snapshot.task.status) {
                 break;
             }
 
@@ -653,7 +646,7 @@ async fn settle_stopped_tasks(
             }
 
             let waited = runtime.task_output(task_id, true, remaining_ms).await?;
-            if !is_active_task_status(&waited.task.status) {
+            if !crate::storage::is_active_task_status(&waited.task.status) {
                 break;
             }
         }
