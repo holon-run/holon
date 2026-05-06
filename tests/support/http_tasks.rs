@@ -22,8 +22,8 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel, WaitingIntentStatus,
-        WorkItemState,
+        OperatorDeliveryStatus, TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState,
+        TrustLevel, WaitingIntentStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -152,6 +152,69 @@ pub async fn create_command_task_route_accepts_command_request() -> Result<()> {
     let detail = task.detail.unwrap_or_default();
     assert_eq!(detail["cmd"], "printf route_command_ok");
     assert!(detail["output_path"].as_str().is_some());
+    server.abort();
+    Ok(())
+}
+
+pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+    let now = chrono::Utc::now();
+    let task = |id: &str, status: TaskStatus, offset: i64| TaskRecord {
+        id: id.into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: status.clone(),
+        created_at: now + chrono::Duration::seconds(offset),
+        updated_at: now + chrono::Duration::seconds(offset),
+        parent_message_id: None,
+        summary: Some(format!("{id} {status:?}")),
+        detail: None,
+        recovery: None,
+    };
+
+    runtime
+        .storage()
+        .append_task(&task("task-terminal", TaskStatus::Queued, 0))?;
+    runtime
+        .storage()
+        .append_task(&task("task-running", TaskStatus::Running, 1))?;
+    runtime
+        .storage()
+        .append_task(&task("task-terminal", TaskStatus::Completed, 2))?;
+    runtime
+        .storage()
+        .append_task(&task("task-cancelling", TaskStatus::Cancelling, 3))?;
+
+    let tasks: serde_json::Value = client
+        .get(format!("{base}/agents/default/tasks"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let task_ids = tasks
+        .as_array()
+        .expect("/tasks should return an array")
+        .iter()
+        .map(|task| task["id"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(task_ids, vec!["task-cancelling", "task-running"]);
+
+    let snapshot: serde_json::Value = client
+        .get(format!("{base}/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let state_task_ids = snapshot["tasks"]
+        .as_array()
+        .expect("/state.tasks should return an array")
+        .iter()
+        .map(|task| task["id"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(state_task_ids, vec!["task-cancelling", "task-running"]);
+
     server.abort();
     Ok(())
 }

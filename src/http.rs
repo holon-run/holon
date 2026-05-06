@@ -863,7 +863,7 @@ pub async fn agent_state(
         })
         .collect();
     let agent = runtime.agent_summary().await.map_err(error_response)?;
-    let tasks = runtime.recent_tasks(50).await.map_err(error_response)?;
+    let tasks = runtime.active_tasks(50).await.map_err(error_response)?;
     let transcript_tail = runtime
         .recent_transcript(100)
         .await
@@ -1458,7 +1458,7 @@ pub async fn tasks(
         .map_err(agent_access_error)?;
     Ok(Json(
         runtime
-            .recent_tasks(query.limit.unwrap_or(50))
+            .active_tasks(query.limit.unwrap_or(50))
             .await
             .map_err(error_response)?,
     ))

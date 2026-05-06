@@ -380,6 +380,10 @@ impl RuntimeHandle {
         self.inner.storage.read_recent_tasks(limit)
     }
 
+    pub async fn active_tasks(&self, limit: usize) -> Result<Vec<TaskRecord>> {
+        self.inner.storage.latest_active_task_records(limit)
+    }
+
     pub async fn recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
         self.inner.storage.read_recent_transcript(limit)
     }
