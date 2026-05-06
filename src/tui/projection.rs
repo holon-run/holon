@@ -94,8 +94,9 @@ impl TuiProjection {
     pub(crate) fn from_snapshot(snapshot: AgentStateSnapshot) -> Self {
         let external_triggers = snapshot.external_triggers;
         let operator_notifications = snapshot.operator_notifications;
+        let events_tail = snapshot.events_tail;
 
-        Self {
+        let mut projection = Self {
             agent: snapshot.agent,
             session: snapshot.session,
             tasks: snapshot.tasks,
@@ -112,7 +113,9 @@ impl TuiProjection {
             stale_slices: BTreeSet::new(),
             event_log: Vec::new(),
             durable_conversation_log: Vec::new(),
-        }
+        };
+        projection.seed_event_log(events_tail);
+        projection
     }
 
     pub(crate) fn reset_from_snapshot(&mut self, snapshot: AgentStateSnapshot) {
@@ -128,24 +131,8 @@ impl TuiProjection {
     }
 
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
-        let fallback_summary = summarize_event(&event);
         let presentation_context = self.operator_presentation_context();
-        let presentation = present_operator_event(
-            &event.data.event_type,
-            &event.data.payload,
-            &fallback_summary,
-            &presentation_context,
-        );
-        let record = ProjectionEventRecord {
-            id: event.id.clone(),
-            seq: event.data.seq,
-            ts: event.data.ts,
-            kind: event.data.event_type.clone(),
-            lane: classify_event_lane(&presentation),
-            summary: presentation.summary.clone(),
-            presentation,
-            payload: event.data.payload.clone(),
-        };
+        let record = projection_event_record_from_stream_event(&event, &presentation_context);
         push_limited(&mut self.event_log, record.clone(), EVENT_LOG_LIMIT);
         if is_durable_conversation_kind(&record.kind) {
             push_limited(
@@ -402,6 +389,24 @@ impl TuiProjection {
             }
             "message_admitted" | "control_applied" => {}
             _ => {}
+        }
+    }
+
+    fn seed_event_log(&mut self, events_tail: Vec<crate::client::StreamEventEnvelope>) {
+        for envelope in events_tail {
+            let event = AgentStreamEvent {
+                id: envelope.id.clone(),
+                event: envelope.event_type.clone(),
+                data: envelope,
+            };
+            let presentation_context = self.operator_presentation_context();
+            let record = projection_event_record_from_stream_event(&event, &presentation_context);
+            push_limited(&mut self.event_log, record, EVENT_LOG_LIMIT);
+        }
+        if let Some(last_event) = self.event_log.last() {
+            if self.cursor.is_none() {
+                self.cursor = Some(last_event.id.clone());
+            }
         }
     }
 
@@ -824,6 +829,29 @@ fn classify_event_lane(presentation: &OperatorEventPresentation) -> ProjectionEv
     }
 }
 
+fn projection_event_record_from_stream_event(
+    event: &AgentStreamEvent,
+    presentation_context: &OperatorPresentationContext,
+) -> ProjectionEventRecord {
+    let fallback_summary = summarize_event(event);
+    let presentation = present_operator_event(
+        &event.data.event_type,
+        &event.data.payload,
+        &fallback_summary,
+        presentation_context,
+    );
+    ProjectionEventRecord {
+        id: event.id.clone(),
+        seq: event.data.seq,
+        ts: event.data.ts,
+        kind: event.data.event_type.clone(),
+        lane: classify_event_lane(&presentation),
+        summary: presentation.summary.clone(),
+        presentation,
+        payload: event.data.payload.clone(),
+    }
+}
+
 fn summarize_event(event: &AgentStreamEvent) -> String {
     match event.data.event_type.as_str() {
         "message_enqueued" => decode_payload::<MessageEnvelope>(&event.data.payload)
@@ -1077,6 +1105,48 @@ mod tests {
         assert_eq!(
             projection.external_triggers.len(),
             snapshot.external_triggers.len()
+        );
+    }
+
+    #[test]
+    fn projection_bootstrap_seeds_raw_event_log_from_snapshot_tail() {
+        let mut snapshot = sample_snapshot();
+        snapshot.events_tail = vec![StreamEventEnvelope {
+            id: "evt-tail-1".into(),
+            seq: 0,
+            ts: Utc::now(),
+            agent_id: "default".into(),
+            event_type: "assistant_round_recorded".into(),
+            projection: Some(json!({
+                "name": "operator",
+                "raw_payload_included": false,
+                "redactions": ["internal_detail_payload"],
+            })),
+            provenance: None,
+            payload: json!({
+                "redacted": true,
+                "stop_reason": "tool_use",
+                "tool_names": ["ExecCommand"],
+                "tool_call_count": 1,
+                "has_tool_calls": true,
+            }),
+        }];
+        snapshot.cursor = Some("evt-tail-1".into());
+
+        let projection = TuiProjection::from_snapshot(snapshot);
+
+        assert_eq!(projection.event_log().len(), 1);
+        assert_eq!(
+            projection
+                .event_log()
+                .last()
+                .map(|event| event.summary.as_str()),
+            Some("Assistant requested tools: ExecCommand")
+        );
+        assert_eq!(projection.cursor.as_deref(), Some("evt-tail-1"));
+        assert!(
+            projection.durable_conversation_events().next().is_none(),
+            "events_tail should seed the raw inspector, not durable conversation history"
         );
     }
 
@@ -1987,6 +2057,7 @@ mod tests {
             },
             execution: None,
             brief: None,
+            events_tail: Vec::new(),
             cursor: Some("evt-bootstrap".into()),
         }
     }

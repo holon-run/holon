@@ -339,6 +339,87 @@ pub async fn events_route_operator_projection_preserves_assistant_round_progress
     Ok(())
 }
 
+pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after_cursor(
+) -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    runtime.storage().append_event(&AuditEvent::new(
+        "assistant_round_recorded",
+        serde_json::json!({
+            "agent_id": "default",
+            "run_id": "run-state",
+            "turn_index": 3,
+            "round": 1,
+            "stop_reason": "tool_use",
+            "text_preview": null,
+            "tool_names": ["ExecCommand"],
+            "tool_call_count": 1,
+            "has_text": false,
+            "has_tool_calls": true,
+            "raw_text": "debug-only assistant body",
+        }),
+    ))?;
+
+    let snapshot: serde_json::Value = client
+        .get(format!("{base}/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let events_tail = snapshot["events_tail"]
+        .as_array()
+        .expect("events_tail should be an array");
+    let tail_cursor = events_tail
+        .last()
+        .and_then(|event| event["id"].as_str())
+        .expect("events_tail should include at least one event");
+    assert_eq!(snapshot["cursor"], tail_cursor);
+    let assistant_tail = events_tail
+        .iter()
+        .find(|event| event["type"] == "assistant_round_recorded")
+        .expect("events_tail should include the appended assistant round");
+    assert_eq!(assistant_tail["projection"]["name"], "operator");
+    assert_eq!(
+        assistant_tail["projection"]["raw_payload_included"],
+        serde_json::json!(false)
+    );
+    assert_eq!(assistant_tail["payload"]["stop_reason"], "tool_use");
+    assert_eq!(
+        assistant_tail["payload"]["tool_names"],
+        serde_json::json!(["ExecCommand"])
+    );
+    assert!(!serde_json::to_string(assistant_tail)?.contains("debug-only assistant body"));
+
+    let cursor = snapshot["cursor"]
+        .as_str()
+        .expect("cursor should be present")
+        .to_string();
+    runtime.storage().append_event(&AuditEvent::new(
+        "tool_executed",
+        serde_json::json!({
+            "agent_id": "default",
+            "tool_name": "ReadFile",
+            "task_id": "task-tail",
+        }),
+    ))?;
+
+    let mut stream = client
+        .get(format!(
+            "{base}/agents/default/events?since={cursor}&projection=operator"
+        ))
+        .send()
+        .await?;
+    let replayed =
+        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    assert_eq!(replayed.event, "tool_executed");
+    assert_ne!(replayed._id, cursor);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn events_route_local_debug_projection_requires_control_auth() -> Result<()> {
     let config = test_config_with_paths(
         tempdir()?.keep(),

@@ -393,6 +393,7 @@ mod tests {
             workspace: StateWorkspaceSnapshot::default(),
             execution: None,
             brief: None,
+            events_tail: Vec::new(),
             cursor: Some(cursor.into()),
         }
     }

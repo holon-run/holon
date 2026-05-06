@@ -109,6 +109,8 @@ pub struct AgentStateSnapshot {
     pub execution: Option<ExecutionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<BriefRecord>,
+    #[serde(default)]
+    pub events_tail: Vec<StreamEventEnvelope>,
     pub cursor: Option<String>,
 }
 
