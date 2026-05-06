@@ -75,6 +75,7 @@ pub struct AppState {
 
 const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
 const DEFAULT_EVENT_STREAM_WINDOW: usize = 128;
+const DEFAULT_STATE_EVENTS_TAIL_LIMIT: usize = DEFAULT_EVENT_STREAM_WINDOW;
 const MAX_EVENT_STREAM_WINDOW: usize = 512;
 const EVENT_STREAM_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -409,6 +410,7 @@ struct AgentStateSnapshot {
     execution: Option<ExecutionSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     brief: Option<BriefRecord>,
+    events_tail: Vec<StreamEventEnvelope>,
     cursor: Option<String>,
 }
 
@@ -843,13 +845,23 @@ pub async fn agent_state(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let cursor = runtime
-        .recent_events(1)
+    let events_tail_raw = runtime
+        .recent_events(DEFAULT_STATE_EVENTS_TAIL_LIMIT)
         .await
-        .map_err(error_response)?
-        .into_iter()
-        .next()
-        .map(|event| event.id);
+        .map_err(error_response)?;
+    let cursor = events_tail_raw.last().map(|event| event.id.clone());
+    let events_tail = events_tail_raw
+        .iter()
+        .enumerate()
+        .map(|(seq, event)| {
+            stream_event_envelope(
+                seq as u64,
+                &agent_id,
+                event,
+                EventReplayProjection::Operator,
+            )
+        })
+        .collect();
     let agent = runtime.agent_summary().await.map_err(error_response)?;
     let tasks = runtime.recent_tasks(50).await.map_err(error_response)?;
     let transcript_tail = runtime
@@ -902,6 +914,7 @@ pub async fn agent_state(
         execution: Some(execution),
         workspace,
         brief,
+        events_tail,
         cursor,
     }))
 }
