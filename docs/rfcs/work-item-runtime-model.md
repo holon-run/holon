@@ -575,40 +575,33 @@ The ordinary WorkItem model should stay flat:
 - same-agent decomposition is represented in `todo_list`;
 - cross-agent delegation is represented by a structured delegation record.
 
-### SpawnAgent WorkItem Delegation
+### SpawnAgent And WorkItem Delegation
 
-`SpawnAgent` may accept optional WorkItem delegation metadata:
+`SpawnAgent` does not accept WorkItem delegation metadata.
+
+The spawn surface has one caller-provided text field:
 
 ```text
 SpawnAgent(
-  summary,
-  prompt,
+  initial_message,
   preset?,
   agent_id?,
   template?,
-  workspace_mode?,
-  work_item?: {
-    parent_work_item_id: string,
-    child_objective?: string,
-    child_plan?: string,
-    child_todo_list?: TodoItem[]
-  }
+  workspace_mode?
 )
 ```
 
-If `work_item` is omitted, `SpawnAgent` behaves as a normal child-agent spawn
-without WorkItem delegation semantics.
+For `private_child`, `initial_message` is required. The runtime delivers it as
+the child agent's first delegation message and derives the stable
+parent-supervised task label from it at spawn time.
 
-If `work_item` is present, the runtime should:
+For `public_named`, `initial_message` is optional bootstrap input and does not
+create a parent-supervised task.
 
-- validate that `parent_work_item_id` belongs to the parent agent;
-- create a child WorkItem for the spawned child agent;
-- set the child agent's `current_work_item_id` to the child WorkItem;
-- create a delegation record linking parent and child;
-- return the child WorkItem id and delegation id in the `SpawnAgent` result.
-
-The child objective may be provided explicitly. If omitted, the runtime may
-derive it from the spawn summary or prompt.
+Spawned agents create or update WorkItems through normal child-side message
+handling, for example with `CreateWorkItem`, `PickWorkItem`, and
+`UpdateWorkItem`. The parent spawn API must not inject a child WorkItem or set a
+child agent's `current_work_item_id`.
 
 ### Delegation Record
 
@@ -685,7 +678,8 @@ This RFC currently assumes:
 - runtime does not silently switch current work;
 - progress narration remains in transcript, brief, tool, issue, PR, and final
   message records associated back to WorkItems by runtime binding;
-- child-agent delegation is expressed through `SpawnAgent` WorkItem metadata
+- child-agent delegation starts with `SpawnAgent(initial_message=...)`, while
+  child WorkItems are created or updated through normal child-side tool calls
   and delegation records, not `WorkItem.parent_id`;
 - external systems may own queues, but agent-facing WorkItem is the durable
   current-work anchor.

@@ -222,6 +222,9 @@ The first-pass spawn result rule should be simple:
 - `SpawnAgent` always returns `agent_id`
 - private spawned agents must also return `task_handle`
 - public named agents should return `agent_id` without `task_handle`
+- `SpawnAgent` uses `initial_message` as its only caller-provided spawn text
+  field; it does not expose separate `summary`, `task_summary`, `prompt`, or
+  WorkItem-injection fields
 
 The reason is lifecycle ownership.
 
@@ -283,6 +286,9 @@ This means:
 - they may not expand authority boundaries such as attaching a new workspace by
   default
 - `SpawnAgent` should return a `task_handle` for these children
+- `SpawnAgent.initial_message` is required for these children, is delivered as
+  the first child delegation message with parent-supervised task provenance,
+  and is used to derive the stable parent-side task label
 - while that `task_handle` is live, the child must remain restart-safe
 - normal terminal cleanup is driven by the supervising task contract, not by a
   separate lifetime flag
@@ -323,6 +329,11 @@ This means:
 - the agent has the full first-pass capability family set
 - `SpawnAgent` should return `agent_id` without `task_handle` when this profile
   is created as a public named agent
+- `SpawnAgent.initial_message` is optional bootstrap input for this profile and
+  carries creator/bootstrap provenance rather than parent-supervised task
+  provenance
+- newly created public named agents inherit the caller's attached workspace set
+  only, not the caller's active workspace entry or worktree session
 
 For the first pass, `public_named` is intentionally broad rather than split into
 multiple public presets.

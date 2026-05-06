@@ -130,8 +130,10 @@ That should be described in agent-plane terms, not only task-plane terms.
 
 The intended public model is:
 
-- `SpawnAgent(private_child, workspace_mode=worktree)` creates the delegated
-  child context
+- `SpawnAgent(private_child, initial_message=..., workspace_mode=worktree)`
+  creates the delegated child context
+- `initial_message` is delivered as the child agent's first delegation message
+  and is used to derive the stable parent-visible task label
 - the spawned child uses the task-created worktree as its active execution
   projection
 - the supervising task owns the task-created worktree artifact
@@ -151,8 +153,8 @@ private child delegation. Worktree isolation is represented with metadata:
 - artifact cleanup state
 
 The operator-facing projection for that task is `child_supervision`. It is
-returned by `SpawnAgent(private_child, ...)` and repeated by `TaskStatus` and
-`TaskOutput` so every surface uses the same names:
+returned by `SpawnAgent(private_child, initial_message=...)` and repeated by
+`TaskStatus` and `TaskOutput` so every surface uses the same names:
 
 - `child_agent_id` is the delegated private context
 - `supervision_task_id` is the parent-visible handle for status, output, stop,
@@ -171,7 +173,7 @@ The safest migration path is:
 2. document legacy subagent task kinds as transitional forms
 3. introduce agent-plane wording in prompts and docs
 4. add an explicit `SpawnAgent` agent-plane tool
-5. route worktree-isolated delegation through `SpawnAgent(...,
+5. route worktree-isolated delegation through `SpawnAgent(initial_message=...,
    workspace_mode=worktree)`
 6. retire subagent task wording once the new surface is stable
 7. merge `worktree_subagent_task` into the unified `child_agent_task`

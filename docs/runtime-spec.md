@@ -835,13 +835,25 @@ Delegation rules:
 
 - `SpawnAgent` is the public delegation primitive for bounded child contexts
 - `SpawnAgent` accepts a small `preset` surface
+- `SpawnAgent` exposes `initial_message` as the single caller-provided spawn
+  text field; it does not accept `summary`, `task_summary`, `prompt`, or
+  `work_item`
 - omitted `preset` defaults to `private_child`
+- for `private_child`, `initial_message` is required, is delivered as the
+  child's first delegation message, and is used to derive the stable
+  parent-visible `child_agent_task` label at spawn time
 - `private_child` returns `agent_id` plus a task handle that maps onto internal
   `child_agent_task` supervision state
 - `private_child` also returns `child_agent_id`, `supervision_task_id`, and a
   `child_supervision` projection; `child_agent_id` names the private context,
   while `supervision_task_id` names the parent-visible control handle
-- `public_named` requires an explicit `agent_id` and returns only `agent_id`
+- `public_named` requires an explicit `agent_id`, accepts optional
+  `initial_message` bootstrap input, and returns only `agent_id`
+- `public_named` bootstrap input carries creator/bootstrap provenance, not
+  parent-supervised task provenance
+- newly created `public_named` agents inherit the caller's attached workspace
+  set only; they do not inherit the caller's active workspace entry or worktree
+  session
 - spawning a new `public_named` agent may record lineage provenance without
   placing that agent under parent supervision
 - `Sleep` is the public primitive for resting; optional `duration_ms` is only
@@ -2294,8 +2306,6 @@ Phase-1 envelope rules:
   - `child_agent_id`: the private delegated child context
   - `supervision_task_id`: the parent-visible task handle for status, output,
     stop, and follow-up delivery
-  - `parent_work_item_id`, `child_work_item_id`, and `delegation_id` when the
-    child is linked through work-item delegation
   - `workspace_mode` and `worktree` when the child uses inherited workspace or a
     task-owned worktree artifact
   - `cleanup_owner = supervision_task`; worktree cleanup state belongs to the
@@ -2441,7 +2451,7 @@ agent's durable `attachedWorkspaces` set:
 
 ### Worktree-Isolated Child Delegation
 
-`SpawnAgent(preset=private_child, workspace_mode=worktree)` creates isolated
+`SpawnAgent(preset=private_child, initial_message=..., workspace_mode=worktree)` creates isolated
 delegated work that is currently supervised through an internal
 `child_agent_task` handle with `workspace_mode = worktree`:
 

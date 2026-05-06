@@ -135,8 +135,7 @@ pub async fn spawn_agent_receipt_projects_child_supervision_boundary() -> Result
                 id: "tool-spawn-agent-supervision".into(),
                 name: "SpawnAgent".into(),
                 input: json!({
-                    "summary": "delegate focused work",
-                    "prompt": "finish delegated work",
+                    "initial_message": "finish delegated work",
                     "preset": "private_child"
                 }),
             },

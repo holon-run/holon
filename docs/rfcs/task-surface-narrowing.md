@@ -141,7 +141,7 @@ pub struct TaskHandle {
 }
 ```
 
-Both `ExecCommand` promotion and `SpawnAgent(private_child, ...)` should return
+Both `ExecCommand` promotion and `SpawnAgent(private_child, initial_message=...)` should return
 this shape under the `task_handle` field. For `ExecCommand`, the model-visible
 receipt is typed by the `disposition` discriminant: direct completion uses
 `disposition = completed`, while promotion uses
@@ -237,7 +237,7 @@ The medium-term direction should be:
 
 `Task` should not remain the public creation word for child agents, but the
 task plane may still expose a supervision handle returned as a side effect of
-`SpawnAgent(private_child, ...)`.
+`SpawnAgent(private_child, initial_message=...)`.
 
 When that child is spawned with `workspace_mode=worktree`, the runtime-created
 worktree should be treated as task-owned artifact state:

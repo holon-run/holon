@@ -416,6 +416,24 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    pub(crate) async fn inherit_attached_workspaces_from_parent_state(
+        &self,
+        parent_state: &AgentState,
+    ) -> Result<()> {
+        let next_state = {
+            let guard = self.inner.agent.lock().await;
+            let mut next_state = guard.state.clone();
+            next_state.attached_workspaces = parent_state.attached_workspaces.clone();
+            next_state.active_workspace_entry = None;
+            next_state.worktree_session = None;
+            next_state
+        };
+        let mut guard = self.inner.agent.lock().await;
+        guard.state = next_state;
+        self.inner.storage.write_agent(&guard.state)?;
+        Ok(())
+    }
+
     pub(crate) async fn workspace_view(&self) -> Result<WorkspaceView> {
         let guard = self.inner.agent.lock().await;
         self.workspace_view_from_state(&guard.state)
