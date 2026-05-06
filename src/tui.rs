@@ -66,8 +66,15 @@ use runtime::{is_cursor_too_old_error, AgentListChange};
 use runtime::{TuiConnectionState, TuiRuntimeMessage};
 
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-pub async fn run_tui(config: AppConfig, no_alt_screen: bool) -> Result<()> {
-    let client = LocalClient::new(config.clone())?;
+pub async fn run_tui(
+    config: AppConfig,
+    no_alt_screen: bool,
+    client: Option<LocalClient>,
+) -> Result<()> {
+    let client = match client {
+        Some(client) => client,
+        None => LocalClient::new(config.clone())?,
+    };
     let log_writer = TuiLogWriter::new(config.agent_root_dir())?;
     let mut app = TuiApp::new(client, log_writer);
     app.initialize().await;

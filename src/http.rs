@@ -70,6 +70,7 @@ pub struct AppState {
     pub host: RuntimeHost,
     pub require_control_token: bool,
     pub runtime_service: Option<RuntimeServiceHandle>,
+    pub advertise_url: Option<String>,
 }
 
 const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
@@ -93,6 +94,7 @@ impl AppState {
             host,
             require_control_token,
             runtime_service,
+            advertise_url: None,
         }
     }
 
@@ -111,13 +113,20 @@ impl AppState {
             host,
             require_control_token,
             runtime_service,
+            advertise_url: None,
         }
+    }
+
+    pub fn with_advertise_url(mut self, advertise_url: Option<String>) -> Self {
+        self.advertise_url = advertise_url;
+        self
     }
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
+        .route("/handshake", get(handshake))
         .route("/agents", get(list_agents))
         .route("/agents/:agent_id/enqueue", post(enqueue))
         .route("/agents/:agent_id/status", get(status))
@@ -511,16 +520,53 @@ pub struct CreateAgentRequest {
 
 pub async fn root(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     Ok(Json(json!({
         "ok": true,
         "default_agent": state.host.config().default_agent_id,
     })))
 }
 
+pub async fn handshake(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let config = state.host.config();
+    Ok(Json(json!({
+        "ok": true,
+        "protocol": {
+            "name": "holon-control",
+            "version": 1,
+        },
+        "auth": {
+            "mode": if state.require_control_token { "bearer" } else { "local" },
+            "required": state.require_control_token,
+        },
+        "capabilities": [
+            "agents.list",
+            "agents.state",
+            "agents.events",
+            "agents.control",
+            "tui.remote"
+        ],
+        "runtime": {
+            "default_agent": config.default_agent_id,
+            "workspace_dir": config.workspace_dir,
+            "home_dir": config.home_dir,
+            "listen": config.http_addr,
+            "advertise_url": state.advertise_url,
+        }
+    })))
+}
+
 pub async fn list_agents(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let agents = state.host.list_agents().await.map_err(error_response)?;
     Ok(Json(agents))
 }
@@ -588,8 +634,10 @@ pub async fn runtime_shutdown(
 
 pub async fn enqueue_default(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(request): Json<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let agent_id = state.host.config().default_agent_id.clone();
     enqueue_internal(state, agent_id, request, EnqueueIngress::Public).await
 }
@@ -597,8 +645,10 @@ pub async fn enqueue_default(
 pub async fn enqueue(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(request): Json<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     enqueue_internal(state, agent_id, request, EnqueueIngress::Public).await
 }
 
@@ -745,10 +795,12 @@ async fn enqueue_internal(
 
 pub async fn status_default(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     status(
         Path(state.host.config().default_agent_id.clone()),
         State(state),
+        headers,
     )
     .await
 }
@@ -756,7 +808,9 @@ pub async fn status_default(
 pub async fn status(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -768,10 +822,12 @@ pub async fn status(
 
 pub async fn state_default(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     agent_state(
         Path(state.host.config().default_agent_id.clone()),
         State(state),
+        headers,
     )
     .await
 }
@@ -779,7 +835,9 @@ pub async fn state_default(
 pub async fn agent_state(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -938,11 +996,13 @@ mod tests {
 
 pub async fn briefs_default(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     briefs(
         Path(state.host.config().default_agent_id.clone()),
         State(state),
+        headers,
         Query(query),
     )
     .await
@@ -951,8 +1011,10 @@ pub async fn briefs_default(
 pub async fn briefs(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -981,11 +1043,13 @@ pub async fn events_default(
 
 pub async fn transcript_default(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     transcript(
         Path(state.host.config().default_agent_id.clone()),
         State(state),
+        headers,
         Query(query),
     )
     .await
@@ -993,10 +1057,12 @@ pub async fn transcript_default(
 
 pub async fn worktree_summary_default(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     worktree_summary(
         Path(state.host.config().default_agent_id.clone()),
         State(state),
+        headers,
     )
     .await
 }
@@ -1026,7 +1092,7 @@ pub async fn events(
         .await
         .map_err(agent_access_error)?;
     let projection = query.projection.unwrap_or(EventReplayProjection::Operator);
-    if projection == EventReplayProjection::LocalDebug {
+    if state.require_control_token || projection == EventReplayProjection::LocalDebug {
         authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     }
     let initial_event_marker = runtime
@@ -1295,8 +1361,10 @@ fn cursor_too_old(cursor: String) -> (StatusCode, Json<Value>) {
 pub async fn transcript(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -1312,7 +1380,9 @@ pub async fn transcript(
 pub async fn worktree_summary(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -1331,8 +1401,10 @@ pub async fn worktree_summary(
 pub async fn tasks(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -1440,8 +1512,10 @@ pub async fn create_work_item(
 pub async fn timers(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -1494,7 +1568,9 @@ pub async fn create_timer(
 pub async fn list_skills(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2391,6 +2467,13 @@ fn authorize_control(headers: &HeaderMap, state: &AppState) -> Result<()> {
     let token = &provided[prefix.len()..];
     if token != expected_token {
         return Err(anyhow!("invalid control token"));
+    }
+    Ok(())
+}
+
+fn authorize_remote_access(headers: &HeaderMap, state: &AppState) -> Result<()> {
+    if state.require_control_token {
+        authorize_control(headers, state)?;
     }
     Ok(())
 }
