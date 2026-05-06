@@ -22,6 +22,21 @@ operator contract:
 - how operator intervention attaches to an existing work item or waiting
   posture.
 
+The v0.14 replay/projection minimum is:
+
+- `/events` is a recent replay projection surface, not the raw append-only log
+  as a public API.
+- replay preserves safe provenance outside the event payload: cursor/id,
+  sequence, timestamp, event kind, agent id, origin, trust, authority class,
+  delivery surface, admission context, transport/source, reply route, message
+  id, task id, work item id, correlation id, and causation id when available.
+- operator replay is the default projection and only includes raw payloads for
+  explicitly allowlisted event kinds.
+- local first-party debug replay may include raw payloads only after control
+  authorization.
+- cursor expiry remains a deterministic `/state` refresh path rather than a
+  client-side history reconstruction guess.
+
 ## Open gaps
 
 1. Define the remote operator delivery envelope before treating a transport as

@@ -320,6 +320,51 @@ pub struct LimitQuery {
 pub struct EventsQuery {
     limit: Option<usize>,
     since: Option<String>,
+    projection: Option<EventReplayProjection>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum EventReplayProjection {
+    LocalDebug,
+    Operator,
+}
+
+#[derive(Debug, Serialize)]
+struct EventReplayProjectionRecord {
+    name: EventReplayProjection,
+    raw_payload_included: bool,
+    redactions: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct EventReplayProvenance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trust: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authority_class: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery_surface: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    admission_context: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_route: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_item_id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    correlation_id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    causation_id: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -366,6 +411,8 @@ struct StreamEventEnvelope {
     agent_id: String,
     #[serde(rename = "type")]
     event_type: String,
+    projection: EventReplayProjectionRecord,
+    provenance: EventReplayProvenance,
     payload: Value,
 }
 
@@ -373,6 +420,7 @@ struct EventStreamState {
     runtime: crate::runtime::RuntimeHandle,
     runtime_id: String,
     event_window_limit: usize,
+    projection: EventReplayProjection,
     event_marker: FileActivityMarker,
     last_seen_cursor: Option<String>,
     next_seq: u64,
@@ -977,6 +1025,10 @@ pub async fn events(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
+    let projection = query.projection.unwrap_or(EventReplayProjection::Operator);
+    if projection == EventReplayProjection::LocalDebug {
+        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    }
     let initial_event_marker = runtime
         .storage()
         .poll_activity_marker()
@@ -994,6 +1046,7 @@ pub async fn events(
             runtime,
             runtime_id: agent_id,
             event_window_limit,
+            projection,
             event_marker: initial_event_marker,
             last_seen_cursor,
             next_seq: 0,
@@ -1001,7 +1054,12 @@ pub async fn events(
         };
         loop {
             if let Some(event) = state.buffered.pop_front() {
-                let envelope = stream_event_envelope(state.next_seq, &state.runtime_id, &event);
+                let envelope = stream_event_envelope(
+                    state.next_seq,
+                    &state.runtime_id,
+                    &event,
+                    state.projection,
+                );
                 state.next_seq += 1;
                 state.last_seen_cursor = Some(event.id.clone());
                 let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
@@ -1094,15 +1152,132 @@ fn refresh_buffered_events(
     Ok(())
 }
 
-fn stream_event_envelope(seq: u64, agent_id: &str, event: &AuditEvent) -> StreamEventEnvelope {
+fn stream_event_envelope(
+    seq: u64,
+    agent_id: &str,
+    event: &AuditEvent,
+    projection: EventReplayProjection,
+) -> StreamEventEnvelope {
+    let projected = project_event_payload_for_replay(event, projection);
     StreamEventEnvelope {
         id: event.id.clone(),
         seq,
         ts: event.created_at,
         agent_id: agent_id.to_string(),
         event_type: event.kind.clone(),
-        payload: event.data.clone(),
+        projection: projected.projection,
+        provenance: projected.provenance,
+        payload: projected.payload,
     }
+}
+
+struct ProjectedReplayEvent {
+    payload: Value,
+    projection: EventReplayProjectionRecord,
+    provenance: EventReplayProvenance,
+}
+
+fn project_event_payload_for_replay(
+    event: &AuditEvent,
+    projection: EventReplayProjection,
+) -> ProjectedReplayEvent {
+    let provenance = event_replay_provenance(&event.data);
+    match projection {
+        EventReplayProjection::LocalDebug => ProjectedReplayEvent {
+            payload: event.data.clone(),
+            projection: EventReplayProjectionRecord {
+                name: projection,
+                raw_payload_included: true,
+                redactions: Vec::new(),
+            },
+            provenance,
+        },
+        EventReplayProjection::Operator => {
+            if is_raw_operator_replay_allowed(&event.kind) {
+                return ProjectedReplayEvent {
+                    payload: event.data.clone(),
+                    projection: EventReplayProjectionRecord {
+                        name: projection,
+                        raw_payload_included: true,
+                        redactions: Vec::new(),
+                    },
+                    provenance,
+                };
+            }
+            ProjectedReplayEvent {
+                payload: redacted_operator_replay_payload(event),
+                projection: EventReplayProjectionRecord {
+                    name: projection,
+                    raw_payload_included: false,
+                    redactions: vec!["internal_detail_payload".to_string()],
+                },
+                provenance,
+            }
+        }
+    }
+}
+
+fn is_raw_operator_replay_allowed(event_kind: &str) -> bool {
+    matches!(
+        event_kind,
+        "message_admitted"
+            | "brief_created"
+            | "waiting_intent_created"
+            | "waiting_intent_cancelled"
+            | "work_item_written"
+            | "work_item_completed"
+            | "workspace_entered"
+            | "workspace_exited"
+    )
+}
+
+fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {
+    EventReplayProvenance {
+        origin: clone_payload_field(payload, "origin"),
+        trust: clone_payload_field(payload, "trust"),
+        authority_class: clone_payload_field(payload, "authority_class"),
+        delivery_surface: clone_payload_field(payload, "delivery_surface"),
+        admission_context: clone_payload_field(payload, "admission_context"),
+        transport: clone_payload_field(payload, "transport"),
+        source: clone_payload_field(payload, "source"),
+        reply_route: clone_payload_field(payload, "reply_route"),
+        message_id: clone_payload_field(payload, "message_id"),
+        task_id: clone_payload_field(payload, "task_id"),
+        work_item_id: clone_payload_field(payload, "work_item_id"),
+        correlation_id: clone_payload_field(payload, "correlation_id"),
+        causation_id: clone_payload_field(payload, "causation_id"),
+    }
+}
+
+fn redacted_operator_replay_payload(event: &AuditEvent) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("redacted".to_string(), Value::Bool(true));
+    payload.insert(
+        "redaction_reason".to_string(),
+        Value::String("internal_detail_requires_trace_projection".to_string()),
+    );
+    payload.insert("summary".to_string(), Value::String(event.kind.clone()));
+    for field in [
+        "agent_id",
+        "message_id",
+        "task_id",
+        "work_item_id",
+        "run_id",
+        "turn_index",
+        "round",
+        "status",
+        "kind",
+        "tool_name",
+    ] {
+        if let Some(value) = clone_payload_field(&event.data, field) {
+            payload.insert(field.to_string(), value);
+        }
+    }
+    Value::Object(payload)
+}
+
+fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
+    payload.get(field).filter(|value| !value.is_null()).cloned()
 }
 
 fn cursor_too_old(cursor: String) -> (StatusCode, Json<Value>) {

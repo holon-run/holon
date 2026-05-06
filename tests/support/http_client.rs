@@ -119,6 +119,24 @@ pub async fn local_client_over_http_can_stream_events_with_since_query() -> Resu
     let first_event = tokio::time::timeout(Duration::from_secs(5), stream.next_event()).await??;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
+    assert_eq!(
+        first_event
+            .data
+            .projection
+            .as_ref()
+            .and_then(|projection| projection.get("name"))
+            .and_then(|name| name.as_str()),
+        Some("operator")
+    );
+    assert_eq!(
+        first_event
+            .data
+            .provenance
+            .as_ref()
+            .and_then(|provenance| provenance.get("trust"))
+            .and_then(|trust| trust.as_str()),
+        Some("trusted_operator")
+    );
 
     server.abort();
     Ok(())

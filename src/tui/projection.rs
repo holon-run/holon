@@ -1528,6 +1528,8 @@ mod tests {
                         ts: Utc::now(),
                         agent_id: "default".into(),
                         event_type: "provider_round_completed".into(),
+                        projection: None,
+                        provenance: None,
                         payload: json!({ "text_preview": format!("partial-{index}") }),
                     },
                 },
@@ -1757,6 +1759,8 @@ mod tests {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: kind.to_string(),
+                projection: None,
+                provenance: None,
                 payload,
             },
         }
