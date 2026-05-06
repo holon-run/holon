@@ -168,6 +168,7 @@ pub(crate) async fn execute(
     }
 
     let result = runtime
+        .managed_tasks()
         .spawn_agent(
             summary,
             prompt,

@@ -45,7 +45,10 @@ pub(crate) async fn execute(
     let task_id = validate_non_empty(args.task_id, NAME, "task_id")?;
     let block = args.block.unwrap_or(true);
     let timeout_ms = args.timeout_ms.unwrap_or(30_000);
-    let result: TaskOutputResult = runtime.task_output(&task_id, block, timeout_ms).await?;
+    let result: TaskOutputResult = runtime
+        .managed_tasks()
+        .task_output(&task_id, block, timeout_ms)
+        .await?;
     serialize_success(NAME, &result)
 }
 

@@ -12,6 +12,7 @@ mod operator_dispatch;
 mod provider_turn;
 mod subagent;
 mod task_state_reducer;
+mod task_supervisor;
 mod tasks;
 #[cfg(test)]
 mod test_util;

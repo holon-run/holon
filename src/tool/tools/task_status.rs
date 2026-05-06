@@ -35,7 +35,10 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: TaskStatusArgs = parse_tool_args(NAME, input)?;
     let task_id = validate_non_empty(args.task_id, NAME, "task_id")?;
-    let snapshot = runtime.task_status_snapshot(&task_id).await?;
+    let snapshot = runtime
+        .managed_tasks()
+        .task_status_snapshot(&task_id)
+        .await?;
     serialize_success(
         NAME,
         &TaskStatusResult {
