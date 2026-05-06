@@ -1316,6 +1316,10 @@ fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {
 }
 
 fn redacted_operator_replay_payload(event: &AuditEvent) -> Value {
+    if event.kind == "assistant_round_recorded" {
+        return redacted_assistant_round_replay_payload(event);
+    }
+
     let mut payload = serde_json::Map::new();
     payload.insert("redacted".to_string(), Value::Bool(true));
     payload.insert(
@@ -1334,6 +1338,35 @@ fn redacted_operator_replay_payload(event: &AuditEvent) -> Value {
         "status",
         "kind",
         "tool_name",
+    ] {
+        if let Some(value) = clone_payload_field(&event.data, field) {
+            payload.insert(field.to_string(), value);
+        }
+    }
+    Value::Object(payload)
+}
+
+fn redacted_assistant_round_replay_payload(event: &AuditEvent) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("redacted".to_string(), Value::Bool(true));
+    payload.insert(
+        "redaction_reason".to_string(),
+        Value::String("assistant_round_operator_projection".to_string()),
+    );
+    payload.insert("summary".to_string(), Value::String(event.kind.clone()));
+    for field in [
+        "agent_id",
+        "run_id",
+        "turn_index",
+        "round",
+        "stop_reason",
+        "text_preview",
+        "text_block_count",
+        "text_char_count",
+        "tool_call_count",
+        "tool_names",
+        "has_text",
+        "has_tool_calls",
     ] {
         if let Some(value) = clone_payload_field(&event.data, field) {
             payload.insert(field.to_string(), value);
