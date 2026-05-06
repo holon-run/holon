@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use crate::types::{BriefRecord, WorkItemState};
+use crate::types::{
+    BriefRecord, TaskRecord, TaskStatus, TimerRecord, WaitingIntentRecord, WorkItemRecord,
+    WorkItemState, WorktreeSession,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OperatorVisibility {
@@ -160,17 +163,24 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         "message_enqueued" | "turn_started" | "operator_interjection_admitted" => {
             OperatorEventCategory::Message
         }
-        "work_item_written" | "work_item_delegation_created" | "work_item_delegation_completed" => {
-            OperatorEventCategory::WorkItem
-        }
+        "work_item_written"
+        | "work_item_delegation_created"
+        | "work_item_delegation_completed"
+        | "work_item_stale_reminder_injected"
+        | "work_item_stale_reminder_skipped" => OperatorEventCategory::WorkItem,
         "task_created"
         | "task_status_updated"
         | "task_result_received"
         | "task_child_spawned"
-        | "task_input_delivered" => OperatorEventCategory::Task,
-        "waiting_intent_created" | "waiting_intent_cancelled" | "callback_delivered" => {
-            OperatorEventCategory::Waiting
-        }
+        | "task_input_delivered"
+        | "command_task_runner_failed"
+        | "command_task_running_persisted"
+        | "command_task_result_enqueue_failed" => OperatorEventCategory::Task,
+        "waiting_intent_created"
+        | "waiting_intent_cancelled"
+        | "callback_delivered"
+        | "timer_created"
+        | "timer_fired" => OperatorEventCategory::Waiting,
         "workspace_entered"
         | "workspace_exited"
         | "workspace_detached"
@@ -186,10 +196,17 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "task_worktree_cleanup_failed"
         | "task_worktree_branch_cleanup_retained" => OperatorEventCategory::Workspace,
         "runtime_error" | "turn_terminal" => OperatorEventCategory::Runtime,
-        "provider_round_completed" | "text_only_round_observed" => {
-            OperatorEventCategory::AssistantProgress
+        "provider_round_completed"
+        | "text_only_round_observed"
+        | "max_output_tokens_recovery"
+        | "turn_local_compaction_applied"
+        | "turn_local_checkpoint_requested"
+        | "turn_local_checkpoint_recorded"
+        | "turn_local_checkpoint_resume_requested"
+        | "turn_local_baseline_over_budget" => OperatorEventCategory::AssistantProgress,
+        "process_execution_requested" | "tool_executed" | "tool_execution_failed" => {
+            OperatorEventCategory::Tool
         }
-        "tool_executed" | "tool_execution_failed" => OperatorEventCategory::Tool,
         "agent_state_changed" | "session_state_changed" => OperatorEventCategory::StateSync,
         _ => OperatorEventCategory::Trace,
     }
@@ -254,22 +271,145 @@ fn event_text(
 ) -> (String, Option<String>, String) {
     match kind {
         "operator_notification_requested" => operator_notification_text(payload, fallback_summary),
+        "task_created" | "task_status_updated" | "task_result_received" => {
+            task_record_text(kind, payload, fallback_summary)
+        }
+        "command_task_runner_failed" => command_task_runner_failed_text(payload, fallback_summary),
+        "command_task_running_persisted" => command_task_running_persisted_text(payload),
+        "command_task_result_enqueue_failed" => {
+            command_task_result_enqueue_failed_text(payload, fallback_summary)
+        }
         "task_child_spawned" => task_child_spawned_text(payload, fallback_summary),
         "task_input_delivered" => task_input_delivered_text(payload, fallback_summary),
+        "waiting_intent_created" => waiting_intent_text(payload, fallback_summary, false),
+        "waiting_intent_cancelled" => waiting_intent_text(payload, fallback_summary, true),
+        "callback_delivered" => callback_delivered_text(payload, fallback_summary),
+        "timer_created" => timer_text(payload, fallback_summary, false),
+        "timer_fired" => timer_text(payload, fallback_summary, true),
+        "work_item_written" => work_item_text(payload, fallback_summary),
+        "work_item_stale_reminder_injected" => work_item_stale_reminder_text(payload, false),
+        "work_item_stale_reminder_skipped" => work_item_stale_reminder_text(payload, true),
         "work_item_delegation_created" => work_item_delegation_text(payload, false),
         "work_item_delegation_completed" => work_item_delegation_text(payload, true),
+        "workspace_entered" => workspace_text(payload, fallback_summary, "Entered workspace"),
+        "workspace_exited" => workspace_text(payload, fallback_summary, "Exited workspace"),
+        "workspace_detached" => workspace_text(payload, fallback_summary, "Detached workspace"),
+        "worktree_entered" => worktree_text(payload, fallback_summary, true),
+        "worktree_exited" => worktree_text(payload, fallback_summary, false),
         "provider_round_completed" => provider_round_text(payload),
-        "text_only_round_observed" => (
-            "Assistant progress".into(),
-            None,
-            "Text-only model round observed".into(),
-        ),
+        "text_only_round_observed" => text_only_round_text(payload),
+        "max_output_tokens_recovery" => max_output_recovery_text(payload),
+        "turn_local_compaction_applied" => turn_local_compaction_text(payload),
+        "turn_local_checkpoint_requested" => turn_local_checkpoint_requested_text(payload),
+        "turn_local_checkpoint_recorded" => turn_local_checkpoint_recorded_text(payload),
+        "turn_local_checkpoint_resume_requested" => turn_local_checkpoint_resume_text(payload),
+        "turn_local_baseline_over_budget" => turn_local_baseline_over_budget_text(payload),
+        "process_execution_requested" => process_execution_text(payload, fallback_summary),
         "tool_executed" | "tool_execution_failed" => tool_text(kind, payload, fallback_summary),
         _ => {
             let title = category_title(category, kind);
             (title, None, fallback_summary.to_string())
         }
     }
+}
+
+fn task_record_text(
+    kind: &str,
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let Some(task) = decode_value::<TaskRecord>(payload.clone()) else {
+        return ("Task".into(), None, fallback_summary.to_string());
+    };
+    let summary = task
+        .summary
+        .as_deref()
+        .unwrap_or_else(|| task.kind.as_str())
+        .trim();
+    let label = match kind {
+        "task_created" => "Task queued",
+        "task_status_updated" => task_status_update_label(&task.status),
+        "task_result_received" => task_result_label(&task.status),
+        _ => "Task updated",
+    };
+    let body = (!summary.is_empty()).then(|| summary.to_string());
+    let summary = if summary.is_empty() {
+        format!("{label}: {}", task.id)
+    } else {
+        format!("{label}: {summary}")
+    };
+    (label.into(), body, summary)
+}
+
+fn task_status_update_label(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Queued => "Task queued",
+        TaskStatus::Running => "Task running",
+        TaskStatus::Cancelling => "Task cancelling",
+        TaskStatus::Completed => "Task completed",
+        TaskStatus::Failed => "Task failed",
+        TaskStatus::Cancelled => "Task cancelled",
+        TaskStatus::Interrupted => "Task interrupted",
+    }
+}
+
+fn task_result_label(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Completed => "Task completed",
+        TaskStatus::Failed => "Task failed",
+        TaskStatus::Cancelled => "Task cancelled",
+        TaskStatus::Interrupted => "Task interrupted",
+        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling => "Task result received",
+    }
+}
+
+fn command_task_runner_failed_text(
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let task_id = payload.get("task_id").and_then(Value::as_str);
+    let error = payload
+        .get("error")
+        .and_then(Value::as_str)
+        .map(trim_summary);
+    let body = error.clone().or_else(|| task_id.map(ToString::to_string));
+    let summary = match (task_id, error) {
+        (Some(task_id), Some(error)) => format!("Command task runner failed: {task_id}: {error}"),
+        (Some(task_id), None) => format!("Command task runner failed: {task_id}"),
+        (None, Some(error)) => format!("Command task runner failed: {error}"),
+        (None, None) => fallback_summary.to_string(),
+    };
+    ("Command task runner failed".into(), body, summary)
+}
+
+fn command_task_running_persisted_text(payload: &Value) -> (String, Option<String>, String) {
+    let task_id = payload.get("task_id").and_then(Value::as_str);
+    let body = task_id.map(ToString::to_string);
+    let summary = task_id
+        .map(|task_id| format!("Command task running: {task_id}"))
+        .unwrap_or_else(|| "Command task running".into());
+    ("Command task running".into(), body, summary)
+}
+
+fn command_task_result_enqueue_failed_text(
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let task_id = payload.get("task_id").and_then(Value::as_str);
+    let error = payload
+        .get("error")
+        .and_then(Value::as_str)
+        .map(trim_summary);
+    let body = error.clone().or_else(|| task_id.map(ToString::to_string));
+    let summary = match (task_id, error) {
+        (Some(task_id), Some(error)) => {
+            format!("Command task result enqueue failed: {task_id}: {error}")
+        }
+        (Some(task_id), None) => format!("Command task result enqueue failed: {task_id}"),
+        (None, Some(error)) => format!("Command task result enqueue failed: {error}"),
+        (None, None) => fallback_summary.to_string(),
+    };
+    ("Command task result enqueue failed".into(), body, summary)
 }
 
 fn operator_notification_text(
@@ -302,6 +442,146 @@ fn operator_notification_text(
         Some(summary.clone()),
         format!("Operator attention needed: {summary}"),
     )
+}
+
+fn waiting_intent_text(
+    payload: &Value,
+    fallback_summary: &str,
+    cancelled: bool,
+) -> (String, Option<String>, String) {
+    let Some(waiting) = decode_value::<WaitingIntentRecord>(payload.clone()) else {
+        let title = if cancelled {
+            "Stopped waiting"
+        } else {
+            "Waiting"
+        };
+        return (title.into(), None, fallback_summary.to_string());
+    };
+    let description = trim_summary(&waiting.description);
+    if cancelled {
+        return (
+            "Stopped waiting".into(),
+            Some(description.clone()),
+            format!("Stopped waiting: {description}"),
+        );
+    }
+    (
+        "Waiting".into(),
+        Some(description.clone()),
+        format!("Waiting: {description}"),
+    )
+}
+
+fn callback_delivered_text(
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let waiting_id = payload.get("waiting_intent_id").and_then(Value::as_str);
+    let source = payload.get("source").and_then(Value::as_str);
+    let summary = match (source, waiting_id) {
+        (Some(source), Some(waiting_id)) => {
+            format!("External event received from {source} for wait {waiting_id}")
+        }
+        (Some(source), None) => format!("External event received from {source}"),
+        (None, Some(waiting_id)) => format!("External event received for wait {waiting_id}"),
+        (None, None) => fallback_summary.to_string(),
+    };
+    (
+        "External event received".into(),
+        source.map(str::to_string),
+        summary,
+    )
+}
+
+fn timer_text(
+    payload: &Value,
+    fallback_summary: &str,
+    fired: bool,
+) -> (String, Option<String>, String) {
+    let Some(timer) = decode_value::<TimerRecord>(payload.clone()) else {
+        let title = if fired {
+            "Timer fired"
+        } else {
+            "Timer scheduled"
+        };
+        return (title.into(), None, fallback_summary.to_string());
+    };
+    let body = timer.summary.clone();
+    let label = if fired {
+        "Timer fired"
+    } else {
+        "Timer scheduled"
+    };
+    let summary = body
+        .as_deref()
+        .map(|summary| format!("{label}: {}", trim_summary(summary)))
+        .unwrap_or_else(|| format!("{label}: {}", timer.id));
+    (label.into(), body, summary)
+}
+
+fn work_item_text(payload: &Value, fallback_summary: &str) -> (String, Option<String>, String) {
+    let Some(record) = payload
+        .get("record")
+        .cloned()
+        .and_then(decode_value::<WorkItemRecord>)
+    else {
+        return ("Work item".into(), None, fallback_summary.to_string());
+    };
+    let objective = trim_summary(&record.objective);
+    let state = format!("{:?}", record.state);
+    let title = if record.state == WorkItemState::Completed {
+        "Work completed"
+    } else {
+        "Work item updated"
+    };
+    let summary = if record.state == WorkItemState::Completed {
+        record
+            .result_summary
+            .as_deref()
+            .map(trim_summary)
+            .map(|result| format!("Work completed: {result}"))
+            .unwrap_or_else(|| format!("Work completed: {objective}"))
+    } else {
+        format!("Work item {state}: {objective}")
+    };
+    (title.into(), Some(objective), summary)
+}
+
+fn work_item_stale_reminder_text(
+    payload: &Value,
+    skipped: bool,
+) -> (String, Option<String>, String) {
+    let work_item_id = payload.get("work_item_id").and_then(Value::as_str);
+    let reason = payload.get("reason").and_then(Value::as_str);
+    if skipped {
+        let summary = match (work_item_id, reason) {
+            (Some(work_item_id), Some(reason)) => {
+                format!("Work reminder skipped: {work_item_id} ({reason})")
+            }
+            (Some(work_item_id), None) => format!("Work reminder skipped: {work_item_id}"),
+            (None, Some(reason)) => format!("Work reminder skipped: {reason}"),
+            (None, None) => "Work reminder skipped".into(),
+        };
+        return (
+            "Work reminder skipped".into(),
+            reason.map(ToString::to_string),
+            summary,
+        );
+    }
+
+    let text_preview = payload
+        .get("text_preview")
+        .and_then(Value::as_str)
+        .map(trim_summary);
+    let summary = match (work_item_id, text_preview.clone()) {
+        (Some(work_item_id), Some(text)) => {
+            format!("Work reminder injected: {work_item_id}: {text}")
+        }
+        (Some(work_item_id), None) => format!("Work reminder injected: {work_item_id}"),
+        (None, Some(text)) => format!("Work reminder injected: {text}"),
+        (None, None) => "Work reminder injected".into(),
+    };
+    ("Work reminder injected".into(), text_preview, summary)
 }
 
 fn task_child_spawned_text(
@@ -357,6 +637,53 @@ fn task_input_delivered_text(
     )
 }
 
+fn workspace_text(
+    payload: &Value,
+    fallback_summary: &str,
+    label: &'static str,
+) -> (String, Option<String>, String) {
+    let workspace_id = payload.get("workspace_id").and_then(Value::as_str);
+    if let Some(workspace_id) = workspace_id {
+        return (
+            label.into(),
+            Some(workspace_id.to_string()),
+            format!("{label}: {workspace_id}"),
+        );
+    }
+    (label.into(), None, fallback_summary.to_string())
+}
+
+fn worktree_text(
+    payload: &Value,
+    fallback_summary: &str,
+    entered: bool,
+) -> (String, Option<String>, String) {
+    let label = if entered {
+        "Entered worktree"
+    } else {
+        "Exited worktree"
+    };
+    let branch = payload
+        .get("worktree")
+        .cloned()
+        .and_then(decode_value::<WorktreeSession>)
+        .map(|worktree| worktree.worktree_branch)
+        .or_else(|| {
+            payload
+                .get("worktree_branch")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        });
+    if let Some(branch) = branch {
+        return (
+            label.into(),
+            Some(branch.clone()),
+            format!("{label}: {branch}"),
+        );
+    }
+    (label.into(), None, fallback_summary.to_string())
+}
+
 fn work_item_delegation_text(payload: &Value, completed: bool) -> (String, Option<String>, String) {
     let parent = payload
         .get("parent_work_item_id")
@@ -383,6 +710,40 @@ fn work_item_delegation_text(payload: &Value, completed: bool) -> (String, Optio
             format!("Delegated work from {parent} linked to child {child_agent} ({child})"),
         )
     }
+}
+
+fn process_execution_text(
+    payload: &Value,
+    fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    let surface = payload
+        .get("surface")
+        .and_then(Value::as_str)
+        .unwrap_or("process");
+    let cmd_preview = payload
+        .get("cmd_preview")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            payload
+                .get("command_cost")
+                .and_then(|value| value.get("cmd_preview"))
+                .and_then(Value::as_str)
+        })
+        .map(collapse_whitespace)
+        .filter(|cmd| !cmd.is_empty());
+    let label = match surface {
+        "ExecCommand" | "ExecCommandBatch" => "Command started",
+        "command_task" => "Background command started",
+        _ => "Process started",
+    };
+    if let Some(cmd_preview) = cmd_preview {
+        return (
+            label.into(),
+            Some(cmd_preview.clone()),
+            format!("{label}: {cmd_preview}"),
+        );
+    }
+    (label.into(), None, fallback_summary.to_string())
 }
 
 fn provider_round_text(payload: &Value) -> (String, Option<String>, String) {
@@ -421,10 +782,140 @@ fn provider_round_text(payload: &Value) -> (String, Option<String>, String) {
         );
     }
 
+    let stop_reason = payload.get("stop_reason").and_then(Value::as_str);
+    if stop_reason.is_some_and(is_max_output_stop_reason) {
+        return (
+            "Output limit reached".into(),
+            Some("Requesting continuation from the model.".into()),
+            "Output limit reached: requesting continuation".into(),
+        );
+    }
+
+    let body = stop_reason.map(|reason| format!("Stop reason: {reason}"));
+    let summary = body
+        .as_deref()
+        .map(|body| format!("Model returned no content: no visible content ({body})"))
+        .unwrap_or_else(|| "Model returned no content".into());
+    ("Model returned no content".into(), body, summary)
+}
+
+fn text_only_round_text(payload: &Value) -> (String, Option<String>, String) {
+    let text_preview = payload
+        .get("text_preview")
+        .and_then(Value::as_str)
+        .map(collapse_whitespace)
+        .filter(|text| !text.is_empty());
+    if payload
+        .get("triggered_recovery")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return (
+            "Output limit recovery".into(),
+            text_preview.clone(),
+            text_preview
+                .map(|text| format!("Output limit recovery: continuing after {text}"))
+                .unwrap_or_else(|| "Output limit recovery: requesting continuation".into()),
+        );
+    }
+    if let Some(text_preview) = text_preview {
+        let body = trim_summary(&text_preview);
+        return (
+            "Model text observed".into(),
+            Some(body.clone()),
+            format!("Model text observed: {body}"),
+        );
+    }
     (
-        "Assistant progress".into(),
+        "Model returned no content".into(),
         None,
-        "Provider round completed".into(),
+        "Model returned no content".into(),
+    )
+}
+
+fn max_output_recovery_text(payload: &Value) -> (String, Option<String>, String) {
+    let attempt = payload
+        .get("attempt")
+        .and_then(Value::as_u64)
+        .map(|attempt| format!("attempt {attempt}"));
+    let summary = attempt
+        .as_deref()
+        .map(|attempt| format!("Output limit recovery: continuing ({attempt})"))
+        .unwrap_or_else(|| "Output limit recovery: continuing".into());
+    ("Output limit recovery".into(), attempt, summary)
+}
+
+fn turn_local_compaction_text(payload: &Value) -> (String, Option<String>, String) {
+    let compacted = payload.get("compacted_rounds").and_then(Value::as_u64);
+    let exact_tail = payload.get("exact_tail_rounds").and_then(Value::as_u64);
+    let body = match (compacted, exact_tail) {
+        (Some(compacted), Some(exact_tail)) => {
+            format!("Compacted {compacted} rounds; keeping {exact_tail} recent rounds exact.")
+        }
+        (Some(compacted), None) => format!("Compacted {compacted} older rounds."),
+        _ => "Compressed local conversation context.".into(),
+    };
+    (
+        "Context compacted".into(),
+        Some(body.clone()),
+        format!("Context compacted: {body}"),
+    )
+}
+
+fn turn_local_checkpoint_requested_text(payload: &Value) -> (String, Option<String>, String) {
+    let mode = payload
+        .get("checkpoint_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("checkpoint");
+    (
+        "Context checkpoint requested".into(),
+        Some(mode.to_string()),
+        format!("Context checkpoint requested: {mode}"),
+    )
+}
+
+fn turn_local_checkpoint_recorded_text(payload: &Value) -> (String, Option<String>, String) {
+    let recorded = payload
+        .get("checkpoint_recorded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let text_preview = payload
+        .get("text_preview")
+        .and_then(Value::as_str)
+        .map(trim_summary);
+    if recorded {
+        return (
+            "Context checkpoint recorded".into(),
+            text_preview.clone(),
+            text_preview
+                .map(|text| format!("Context checkpoint recorded: {text}"))
+                .unwrap_or_else(|| "Context checkpoint recorded".into()),
+        );
+    }
+    (
+        "Context checkpoint empty".into(),
+        None,
+        "Context checkpoint produced no visible text".into(),
+    )
+}
+
+fn turn_local_checkpoint_resume_text(_payload: &Value) -> (String, Option<String>, String) {
+    (
+        "Context checkpoint resume".into(),
+        Some("Asking the model to continue after refreshing local context.".into()),
+        "Refreshing local context; asking the model to continue".into(),
+    )
+}
+
+fn turn_local_baseline_over_budget_text(payload: &Value) -> (String, Option<String>, String) {
+    let reason = payload
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("prompt budget");
+    (
+        "Prompt budget exceeded".into(),
+        Some(reason.to_string()),
+        format!("Prompt budget exceeded before provider request: {reason}"),
     )
 }
 
@@ -498,6 +989,14 @@ fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn is_max_output_stop_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "max_tokens" | "max_output_tokens" | "length" | "output_limit"
+    ) || reason.contains("max_output")
+        || reason.contains("max_tokens")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -539,6 +1038,54 @@ mod tests {
         assert_eq!(
             tools.summary,
             "Model requested tools: ExecCommand, ReadFile"
+        );
+
+        let max_output = present_operator_event(
+            "provider_round_completed",
+            &json!({ "text_preview": null, "tool_names": [], "stop_reason": "max_output_tokens" }),
+            "fallback",
+            &context,
+        );
+        assert_eq!(
+            max_output.summary,
+            "Output limit reached: requesting continuation"
+        );
+
+        let empty = present_operator_event(
+            "provider_round_completed",
+            &json!({ "text_preview": null, "tool_names": [], "stop_reason": "end_turn" }),
+            "fallback",
+            &context,
+        );
+        assert_eq!(
+            empty.summary,
+            "Model returned no content: no visible content (Stop reason: end_turn)"
+        );
+    }
+
+    #[test]
+    fn turn_local_events_explain_context_management() {
+        let context = OperatorPresentationContext::default();
+        let checkpoint = present_operator_event(
+            "turn_local_checkpoint_resume_requested",
+            &json!({ "round": 3 }),
+            "turn_local_checkpoint_resume_requested",
+            &context,
+        );
+        assert_eq!(
+            checkpoint.summary,
+            "Refreshing local context; asking the model to continue"
+        );
+
+        let recovery = present_operator_event(
+            "max_output_tokens_recovery",
+            &json!({ "attempt": 2 }),
+            "max_output_tokens_recovery",
+            &context,
+        );
+        assert_eq!(
+            recovery.summary,
+            "Output limit recovery: continuing (attempt 2)"
         );
     }
 
@@ -608,6 +1155,26 @@ mod tests {
         assert_eq!(
             notification.summary,
             "Child child-1 needs parent supervision: need parent decision"
+        );
+    }
+
+    #[test]
+    fn process_execution_requested_uses_command_vocabulary() {
+        let presentation = present_operator_event(
+            "process_execution_requested",
+            &json!({
+                "surface": "ExecCommand",
+                "cmd_preview": "cargo test -q tui::chat",
+            }),
+            "process_execution_requested",
+            &OperatorPresentationContext::default(),
+        );
+
+        assert_eq!(presentation.category, OperatorEventCategory::Tool);
+        assert_eq!(presentation.visibility, OperatorVisibility::Trace);
+        assert_eq!(
+            presentation.summary,
+            "Command started: cargo test -q tui::chat"
         );
     }
 }

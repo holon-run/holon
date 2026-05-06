@@ -175,7 +175,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             if event.kind == "message_enqueued" || event.kind == "brief_created" {
                 continue;
             }
-            if is_progress_event(event) {
+            if is_progress_event(event) && assistant_message_from_event(event).is_some() {
                 cells.push(ConversationCell::AssistantMarkdown(AssistantMarkdownCell {
                     created_at: event.ts,
                     agent_id: "Holon (progress)".to_string(),
@@ -620,11 +620,9 @@ fn agent_has_active_activity(agent: &AgentSummary) -> bool {
 fn latest_action_event<'a>(
     events: &'a [&'a crate::tui::projection::ProjectionEventRecord],
 ) -> Option<&'a crate::tui::projection::ProjectionEventRecord> {
-    events
-        .iter()
-        .rev()
-        .copied()
-        .find(|event| event.presentation.is_current_activity_candidate())
+    events.iter().rev().copied().find(|event| {
+        event.presentation.is_current_activity_candidate() && !action_event_body(event).is_empty()
+    })
 }
 
 fn latest_assistant_message(
@@ -696,6 +694,8 @@ fn active_activity_body(
 fn action_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
     if event.kind == "tool_executed" || event.kind == "tool_execution_failed" {
         progress_event_body(event)
+    } else if is_progress_event(event) {
+        assistant_message_from_event(event).unwrap_or_default()
     } else {
         event.summary.clone()
     }
@@ -848,7 +848,10 @@ fn trim_preview(input: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_chat_visible_conversation_event, progress_event_body};
+    use super::{
+        assistant_message_from_event, is_chat_visible_conversation_event, latest_action_event,
+        progress_event_body,
+    };
     use crate::operator_event::{present_operator_event, OperatorPresentationContext};
     use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
     use chrono::Utc;
@@ -939,5 +942,29 @@ mod tests {
             "round",
             json!({})
         )));
+    }
+
+    #[test]
+    fn empty_provider_round_is_not_activity_content() {
+        let empty_round = event(
+            "provider_round_completed",
+            "provider round completed",
+            json!({ "text_preview": "" }),
+        );
+        let command = event(
+            "process_execution_requested",
+            "process_execution_requested",
+            json!({
+                "surface": "ExecCommand",
+                "cmd_preview": "cargo test tui::chat"
+            }),
+        );
+        let events = vec![&empty_round, &command];
+
+        assert!(assistant_message_from_event(&empty_round).is_none());
+        assert_eq!(
+            latest_action_event(events.as_slice()).map(|event| event.summary.as_str()),
+            Some("Command started: cargo test tui::chat")
+        );
     }
 }

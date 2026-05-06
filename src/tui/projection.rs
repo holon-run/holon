@@ -1153,7 +1153,7 @@ mod tests {
                 .event_log()
                 .last()
                 .map(|event| event.summary.as_str()),
-            Some("Provider round completed")
+            Some("Model returned no content")
         );
     }
 
@@ -1542,7 +1542,7 @@ mod tests {
                 .durable_conversation_events()
                 .last()
                 .map(|event| event.summary.as_str()),
-            Some("operator [Open]")
+            Some("Work item Open: operator")
         );
         assert!(projection
             .event_log()
