@@ -1330,9 +1330,14 @@ Rules:
 - `exclusive_write` means only one writer is coordinated for a root; readers may still enter.
 - under `host_local`, process execution is projected and attributed, but path,
   write, network, secret, and child-process confinement are not hard guarantees.
+- operator-visible runtime projections should render these limitations
+  explicitly as `not_enforced`; they must not imply denied-operation sandbox
+  behavior while the backend remains `host_local`.
 - under `host_local`, process execution, background-task scheduling, and
   worktree projection are all gated through the effective execution-policy
   boundary rather than through scattered per-surface checks.
+- hard filesystem, network, secret, and child-process sandbox enforcement is
+  deferred to #920 / `v0.15.0`.
 - task-owned worktree artifact cleanup is runtime-owned lifecycle work driven
   by task detail metadata, not by a model-facing destructive tool.
 

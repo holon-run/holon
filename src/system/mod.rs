@@ -8,7 +8,8 @@ pub mod workspace;
 pub use file::FileHost;
 pub use host_local_policy::{
     ensure_background_task_allowed, ensure_process_execution_allowed,
-    ensure_workspace_projection_allowed, execution_policy_summary_lines, HostLocalBoundary,
+    ensure_workspace_projection_allowed, execution_confinement_summary_line,
+    execution_policy_summary_lines, HostLocalBoundary,
 };
 pub use local::LocalSystem;
 pub use process::{ProcessHost, RunningProcess};

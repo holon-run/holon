@@ -2461,6 +2461,18 @@ mod tests {
         assert!(execution_section
             .content
             .contains("path_confinement: not_enforced"));
+        assert!(execution_section
+            .content
+            .contains("write_confinement: not_enforced"));
+        assert!(execution_section
+            .content
+            .contains("network_confinement: not_enforced"));
+        assert!(execution_section
+            .content
+            .contains("secret_isolation: not_enforced"));
+        assert!(execution_section
+            .content
+            .contains("child_process_containment: not_enforced"));
     }
 
     #[test]
