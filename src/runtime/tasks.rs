@@ -1011,35 +1011,6 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub async fn schedule_timer(
-        &self,
-        duration_ms: u64,
-        interval_ms: Option<u64>,
-        summary: Option<String>,
-    ) -> Result<TimerRecord> {
-        let created_at = Utc::now();
-        let timer = TimerRecord {
-            id: Uuid::new_v4().to_string(),
-            agent_id: self.agent_id().await?,
-            created_at,
-            duration_ms,
-            interval_ms,
-            repeat: interval_ms.is_some(),
-            status: TimerStatus::Active,
-            summary,
-            next_fire_at: Some(advance_time(created_at, duration_ms)?),
-            last_fired_at: None,
-            fire_count: 0,
-        };
-        self.inner.storage.append_timer(&timer)?;
-        self.inner
-            .storage
-            .append_event(&AuditEvent::new("timer_created", to_json_value(&timer)))?;
-        self.spawn_timer_loop(timer.clone());
-
-        Ok(timer)
-    }
-
     pub(crate) async fn interrupt_active_tasks(
         &self,
         tasks: Vec<TaskRecord>,
@@ -1109,45 +1080,6 @@ impl RuntimeHandle {
         }
 
         Ok((reattached, remaining))
-    }
-
-    pub(crate) async fn recover_active_timers(&self, timers: Vec<TimerRecord>) -> Result<()> {
-        for timer in timers {
-            self.recover_timer(timer).await?;
-        }
-        Ok(())
-    }
-
-    fn spawn_timer_loop(&self, timer: TimerRecord) {
-        let runtime = self.clone();
-        tokio::spawn(async move {
-            let mut timer = timer;
-            loop {
-                let Some(next_fire_at) = timer.next_fire_at else {
-                    break;
-                };
-                let now = Utc::now();
-                if next_fire_at > now {
-                    let wait = (next_fire_at - now)
-                        .to_std()
-                        .unwrap_or_else(|_| Duration::from_millis(0));
-                    tokio::time::sleep(wait).await;
-                }
-                if let Err(err) = runtime.fire_timer_record(&mut timer).await {
-                    let _ = runtime.inner.storage.append_event(&AuditEvent::new(
-                        "timer_fire_failed",
-                        serde_json::json!({
-                            "timer_id": timer.id,
-                            "error": err.to_string(),
-                        }),
-                    ));
-                    break;
-                }
-                if timer.status != TimerStatus::Active {
-                    break;
-                }
-            }
-        });
     }
 
     pub async fn latest_task_records(&self) -> Result<Vec<TaskRecord>> {
@@ -1480,72 +1412,6 @@ impl RuntimeHandle {
                 max_output_tokens,
             )),
         }
-    }
-
-    async fn recover_timer(&self, timer: TimerRecord) -> Result<()> {
-        let timer = normalize_recovered_timer(timer);
-        let now = Utc::now();
-        if timer
-            .next_fire_at
-            .is_some_and(|next_fire_at| next_fire_at <= now)
-        {
-            let mut overdue = timer.clone();
-            self.fire_timer_record(&mut overdue).await?;
-            if overdue.status == TimerStatus::Active {
-                self.spawn_timer_loop(overdue);
-            }
-        } else {
-            self.spawn_timer_loop(timer);
-        }
-        Ok(())
-    }
-
-    async fn fire_timer_record(&self, timer: &mut TimerRecord) -> Result<()> {
-        let message = MessageEnvelope {
-            metadata: Some(serde_json::json!({ "timer_id": timer.id })),
-            ..MessageEnvelope::new(
-                timer.agent_id.clone(),
-                MessageKind::TimerTick,
-                MessageOrigin::Timer {
-                    timer_id: timer.id.clone(),
-                },
-                TrustLevel::TrustedSystem,
-                Priority::Next,
-                MessageBody::Text {
-                    text: timer
-                        .summary
-                        .clone()
-                        .unwrap_or_else(|| format!("timer {} fired", timer.id)),
-                },
-            )
-            .with_admission(
-                MessageDeliverySurface::TimerScheduler,
-                AdmissionContext::RuntimeOwned,
-            )
-        };
-        self.enqueue(message).await?;
-
-        let fired_at = Utc::now();
-        timer.last_fired_at = Some(fired_at);
-        timer.fire_count += 1;
-        if let Some(interval_ms) = timer.interval_ms {
-            timer.status = TimerStatus::Active;
-            timer.next_fire_at = Some(advance_time(fired_at, interval_ms)?);
-        } else {
-            timer.status = TimerStatus::Completed;
-            timer.next_fire_at = None;
-        }
-        self.inner.storage.append_timer(timer)?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "timer_fired",
-            serde_json::json!({
-                "timer_id": timer.id,
-                "status": timer.status,
-                "fire_count": timer.fire_count,
-                "next_fire_at": timer.next_fire_at,
-            }),
-        ))?;
-        Ok(())
     }
 
     pub async fn stop_task(&self, task_id: &str, trust: &TrustLevel) -> Result<TaskRecord> {
@@ -2218,24 +2084,6 @@ fn task_status_name(state: &TaskStatus) -> &'static str {
         TaskStatus::Cancelled => "cancelled",
         TaskStatus::Interrupted => "interrupted",
     }
-}
-
-fn advance_time(base: chrono::DateTime<Utc>, delta_ms: u64) -> Result<chrono::DateTime<Utc>> {
-    let delta_ms = i64::try_from(delta_ms).context("duration_ms exceeds supported timer range")?;
-    let delta = chrono::Duration::try_milliseconds(delta_ms)
-        .ok_or_else(|| anyhow!("duration_ms exceeds supported timer range"))?;
-    Ok(base + delta)
-}
-
-fn normalize_recovered_timer(mut timer: TimerRecord) -> TimerRecord {
-    if timer.next_fire_at.is_some() {
-        return timer;
-    }
-
-    let anchor = timer.last_fired_at.unwrap_or(timer.created_at);
-    let fallback_ms = timer.interval_ms.unwrap_or(timer.duration_ms);
-    timer.next_fire_at = advance_time(anchor, fallback_ms).ok().or(Some(Utc::now()));
-    timer
 }
 
 fn append_task_owned_worktree_cleanup_note(
