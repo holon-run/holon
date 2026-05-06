@@ -10,7 +10,7 @@ use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize, Serializ
 use serde_json::{json, Value};
 
 use crate::{
-    auth::load_codex_cli_credential,
+    auth::{codex_cli_auth_file_exists, load_codex_cli_credential},
     context::ContextConfig,
     model_catalog::{
         BuiltInModelCatalog, BuiltInModelMetadata, ModelRuntimeOverride, ResolvedRuntimeModelPolicy,
@@ -420,6 +420,21 @@ impl AppConfig {
     }
 
     pub fn load_with_home(home_override: Option<PathBuf>) -> Result<Self> {
+        Self::load_with_home_and_mode(home_override, ConfigLoadMode::Runtime)
+    }
+
+    pub fn load_for_config_inspection() -> Result<Self> {
+        Self::load_with_home_for_config_inspection(None)
+    }
+
+    pub fn load_with_home_for_config_inspection(home_override: Option<PathBuf>) -> Result<Self> {
+        Self::load_with_home_and_mode(home_override, ConfigLoadMode::ConfigInspection)
+    }
+
+    fn load_with_home_and_mode(
+        home_override: Option<PathBuf>,
+        mode: ConfigLoadMode,
+    ) -> Result<Self> {
         let settings_env = load_settings_env().unwrap_or_default();
         let home_dir = home_override.unwrap_or_else(|| {
             env::var("HOLON_HOME")
@@ -521,8 +536,21 @@ impl AppConfig {
             validate_optional_model_runtime_override(stored_config.model.unknown_fallback.clone())?;
         let providers =
             resolve_provider_registry(&stored_config, &settings_env, &credential_store)?;
-        let (default_model, fallback_models) =
-            resolve_model_selection(&stored_config, &providers, &validated_model_overrides)?;
+        let explicit_default = resolve_default_model(&stored_config)?;
+        let explicit_fallbacks = resolve_fallback_models(&stored_config)?;
+        let (default_model, fallback_models) = match resolve_model_selection_from_explicit(
+            explicit_default,
+            explicit_fallbacks,
+            &providers,
+            &validated_model_overrides,
+        ) {
+            Ok(selection) => selection,
+            Err(error) if mode.allow_unresolved_model() => {
+                tracing::debug!(error = %error, "using unresolved diagnostic model for config inspection");
+                (ModelRef::new(ProviderId::openai(), "unknown"), Vec::new())
+            }
+            Err(error) => return Err(error),
+        };
         let tui_alternate_screen = env::var("HOLON_TUI_ALTERNATE_SCREEN")
             .ok()
             .map(|value| AltScreenMode::parse(&value))
@@ -604,6 +632,18 @@ impl AppConfig {
             .parse::<std::net::SocketAddr>()
             .map(|addr| addr.ip().is_loopback())
             .unwrap_or(false)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigLoadMode {
+    Runtime,
+    ConfigInspection,
+}
+
+impl ConfigLoadMode {
+    fn allow_unresolved_model(self) -> bool {
+        matches!(self, Self::ConfigInspection)
     }
 }
 
@@ -1183,8 +1223,8 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "model.fallbacks",
             kind: "model_ref_list",
             description:
-                "Explicit fallback provider/model refs. When unset, the runtime derives fallbacks from authenticated providers.",
-            default: json!([]),
+                "Explicit fallback provider/model refs. Null or an empty persisted list means unset; when unset, the runtime derives fallbacks from authenticated providers.",
+            default: Value::Null,
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -2479,19 +2519,6 @@ pub fn provider_registry_for_tests(
     registry
 }
 
-fn resolve_model_selection(
-    stored_config: &HolonConfigFile,
-    providers: &ProviderRegistry,
-    model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-) -> Result<(ModelRef, Vec<ModelRef>)> {
-    resolve_model_selection_from_explicit(
-        resolve_default_model(stored_config)?,
-        resolve_fallback_models(stored_config)?,
-        providers,
-        model_overrides,
-    )
-}
-
 fn resolve_model_selection_from_explicit(
     explicit_default: Option<ModelRef>,
     explicit_fallbacks: Option<Vec<ModelRef>>,
@@ -2589,7 +2616,9 @@ fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool {
                 && provider
                     .codex_home
                     .as_deref()
-                    .map(|home| load_codex_cli_credential(home).is_ok())
+                    .map(|home| {
+                        codex_cli_auth_file_exists(home) && load_codex_cli_credential(home).is_ok()
+                    })
                     .unwrap_or(false)
         }
         CredentialSource::None | CredentialSource::CredentialProcess => false,
@@ -3024,7 +3053,7 @@ fn unknown_config_key(key: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -3053,6 +3082,12 @@ mod tests {
     }
 
     impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
         fn unset(key: &'static str) -> Self {
             let original = std::env::var_os(key);
             std::env::remove_var(key);
@@ -4019,6 +4054,55 @@ mod tests {
 
         assert!(err.to_string().contains("no default model configured"));
         assert!(err.to_string().contains("configure provider credentials"));
+    }
+
+    #[test]
+    fn config_inspection_loads_provider_state_without_resolved_model() {
+        let home = tempdir().unwrap();
+        let _home_guard = EnvVarGuard::set("HOME", home.path());
+        let _model_guard = EnvVarGuard::unset("HOLON_MODEL");
+        let _fallback_guard = EnvVarGuard::unset("HOLON_MODEL_FALLBACKS");
+        let _openai_guard = EnvVarGuard::unset("OPENAI_API_KEY");
+        let _anthropic_guard = EnvVarGuard::unset("ANTHROPIC_AUTH_TOKEN");
+        let provider_id = ProviderId::parse("custom-openai").unwrap();
+        save_persisted_config_at(
+            &persisted_config_path(home.path()),
+            &HolonConfigFile {
+                providers: BTreeMap::from([(
+                    provider_id.clone(),
+                    ProviderConfigFile {
+                        transport: ProviderTransportKind::OpenAiChatCompletions,
+                        base_url: "https://custom.example/v1".into(),
+                        auth: ProviderAuthConfig {
+                            source: CredentialSource::Env,
+                            kind: CredentialKind::ApiKey,
+                            env: Some("HOLON_TEST_MISSING_CUSTOM_OPENAI_API_KEY".into()),
+                            profile: None,
+                            external: None,
+                        },
+                        reasoning_effort: None,
+                    },
+                )]),
+                ..HolonConfigFile::default()
+            },
+        )
+        .unwrap();
+
+        let runtime_error = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap_err();
+        assert!(runtime_error
+            .to_string()
+            .contains("no default model configured"));
+
+        let config =
+            AppConfig::load_with_home_for_config_inspection(Some(home.path().to_path_buf()))
+                .unwrap();
+        let provider = config.providers.get(&provider_id).unwrap();
+        let view = super::provider_config_view(&config, provider);
+
+        assert_eq!(view.id, "custom-openai");
+        assert!(view.configured_in_config);
+        assert!(!view.credential_configured);
+        assert_eq!(config.default_model.as_string(), "openai/unknown");
     }
 
     #[test]

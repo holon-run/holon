@@ -970,7 +970,7 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
         }
         ConfigCommands::Schema => print_json(&serde_json::to_value(config_schema())?),
         ConfigCommands::Doctor => {
-            let config = AppConfig::load()?;
+            let config = AppConfig::load_for_config_inspection()?;
             print_json(&provider_doctor(&config))
         }
     }
@@ -979,7 +979,7 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
 async fn handle_config_models_command(command: ConfigModelCommands) -> Result<()> {
     match command {
         ConfigModelCommands::List => {
-            let config = AppConfig::load()?;
+            let config = AppConfig::load_for_config_inspection()?;
             print_json(&serde_json::to_value(resolved_model_availability(&config))?)
         }
     }
@@ -1053,7 +1053,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
             config.providers.insert(id.clone(), provider_config);
             save_persisted_config_at(&path, &config)?;
 
-            let effective = AppConfig::load()?;
+            let effective = AppConfig::load_for_config_inspection()?;
             let provider = effective.providers.get(&id).with_context(|| {
                 format!("provider {} was saved but did not resolve", id.as_str())
             })?;
@@ -1064,7 +1064,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
         }
         ConfigProviderCommands::Get { provider } => {
             let id = ProviderId::parse(&provider)?;
-            let config = AppConfig::load()?;
+            let config = AppConfig::load_for_config_inspection()?;
             let provider = config
                 .providers
                 .get(&id)
@@ -1074,7 +1074,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
             ))?)
         }
         ConfigProviderCommands::List => {
-            let config = AppConfig::load()?;
+            let config = AppConfig::load_for_config_inspection()?;
             print_json(&serde_json::to_value(provider_config_views(&config))?)
         }
         ConfigProviderCommands::Remove { provider } => {
@@ -1091,7 +1091,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
         }
         ConfigProviderCommands::Doctor { provider } => {
             let id = ProviderId::parse(&provider)?;
-            let config = AppConfig::load()?;
+            let config = AppConfig::load_for_config_inspection()?;
             let provider_cfg = config
                 .providers
                 .get(&id)

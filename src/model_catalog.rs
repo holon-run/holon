@@ -142,15 +142,23 @@ impl Default for ResolvedRuntimeModelPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltInModelCatalog {
     entries: HashMap<ModelRef, BuiltInModelMetadata>,
+    preferred_models: HashMap<ProviderId, ModelRef>,
 }
 
 impl BuiltInModelCatalog {
     pub fn new() -> Self {
-        let entries = built_in_entries()
-            .into_iter()
-            .map(|entry| (entry.model_ref.clone(), entry))
-            .collect();
-        Self { entries }
+        let mut entries = HashMap::new();
+        let mut preferred_models = HashMap::new();
+        for entry in built_in_entries() {
+            preferred_models
+                .entry(entry.model_ref.provider.clone())
+                .or_insert_with(|| entry.model_ref.clone());
+            entries.insert(entry.model_ref.clone(), entry);
+        }
+        Self {
+            entries,
+            preferred_models,
+        }
     }
 
     pub fn get(&self, model_ref: &ModelRef) -> Option<&BuiltInModelMetadata> {
@@ -168,10 +176,7 @@ impl BuiltInModelCatalog {
     }
 
     pub fn preferred_model_for_provider(&self, provider: &ProviderId) -> Option<ModelRef> {
-        built_in_entries()
-            .into_iter()
-            .find(|entry| entry.model_ref.provider == *provider)
-            .map(|entry| entry.model_ref)
+        self.preferred_models.get(provider).cloned()
     }
 
     pub fn resolve_policy(
