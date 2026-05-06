@@ -1487,6 +1487,35 @@ impl RuntimeHandle {
         effective_prompt: EffectivePrompt,
         loop_control: LoopControlOptions,
     ) -> Result<AgentLoopOutcome> {
+        TurnExecution {
+            runtime: self,
+            agent_id,
+            trust,
+            effective_prompt,
+            loop_control,
+        }
+        .run()
+        .await
+    }
+}
+
+struct TurnExecution<'a> {
+    runtime: &'a RuntimeHandle,
+    agent_id: &'a str,
+    trust: TrustLevel,
+    effective_prompt: EffectivePrompt,
+    loop_control: LoopControlOptions,
+}
+
+impl TurnExecution<'_> {
+    async fn run(self) -> Result<AgentLoopOutcome> {
+        let TurnExecution {
+            runtime,
+            agent_id,
+            trust,
+            effective_prompt,
+            loop_control,
+        } = self;
         let mut completed_rounds = Vec::<TurnRoundRecord>::new();
         let turn_started_at = Instant::now();
         let mut should_sleep = false;
@@ -1498,20 +1527,21 @@ impl RuntimeHandle {
         let mut rounds_since_work_item_update = 0usize;
         let mut rounds_since_work_item_reminder = work_item_stale_reminder_cooldown_rounds();
         let mut checkpoint_state = {
-            let guard = self.inner.agent.lock().await;
+            let guard = runtime.inner.agent.lock().await;
             checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
         };
 
         loop {
-            if let Err(err) = self.ensure_not_interrupted().await {
+            if let Err(err) = runtime.ensure_not_interrupted().await {
                 if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
-                    self.persist_turn_interrupted_record(
-                        &interrupted.run_id,
-                        &interrupted.reason,
-                        last_assistant_message.clone(),
-                        turn_started_at.elapsed().as_millis() as u64,
-                    )
-                    .await?;
+                    runtime
+                        .persist_turn_interrupted_record(
+                            &interrupted.run_id,
+                            &interrupted.reason,
+                            last_assistant_message.clone(),
+                            turn_started_at.elapsed().as_millis() as u64,
+                        )
+                        .await?;
                 }
                 return Err(err);
             }
@@ -1521,13 +1551,14 @@ impl RuntimeHandle {
                     let final_text = format!(
                         "Stopped after reaching the maximum tool loop depth ({max_tool_rounds})."
                     );
-                    self.persist_turn_terminal_record(
-                        TurnTerminalKind::Aborted,
-                        Some(final_text.clone()),
-                        turn_started_at.elapsed().as_millis() as u64,
-                        None,
-                    )
-                    .await?;
+                    runtime
+                        .persist_turn_terminal_record(
+                            TurnTerminalKind::Aborted,
+                            Some(final_text.clone()),
+                            turn_started_at.elapsed().as_millis() as u64,
+                            None,
+                        )
+                        .await?;
                     return Ok(AgentLoopOutcome {
                         final_text,
                         should_sleep: false,
@@ -1537,17 +1568,18 @@ impl RuntimeHandle {
                 }
             }
             if round > 1 {
-                self.append_operator_interjections_to_last_round(
-                    agent_id,
-                    round,
-                    "before_provider_continuation",
-                    &mut completed_rounds,
-                )
-                .await?;
+                runtime
+                    .append_operator_interjections_to_last_round(
+                        agent_id,
+                        round,
+                        "before_provider_continuation",
+                        &mut completed_rounds,
+                    )
+                    .await?;
             }
 
-            let identity = self.agent_identity_view().await?;
-            let available_tools = self.filtered_tool_specs(&identity)?;
+            let identity = runtime.agent_identity_view().await?;
+            let available_tools = runtime.filtered_tool_specs(&identity)?;
             let allowed_tool_names = available_tools
                 .iter()
                 .map(|tool| tool.name.clone())
@@ -1555,24 +1587,28 @@ impl RuntimeHandle {
 
             let (response, attempt_timeline, context_management) = if round == 1 {
                 let request = build_provider_turn_request(&effective_prompt, available_tools);
-                let provider = self.current_provider().await;
+                let provider = runtime.current_provider().await;
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
-                match self.complete_turn_with_interrupt(provider, request).await {
+                match runtime
+                    .complete_turn_with_interrupt(provider, request)
+                    .await
+                {
                     Ok((response, attempt_timeline)) => {
                         (response, attempt_timeline, context_management)
                     }
                     Err(err) => {
                         if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
-                            self.persist_turn_interrupted_record(
-                                &interrupted.run_id,
-                                &interrupted.reason,
-                                last_assistant_message.clone(),
-                                turn_started_at.elapsed().as_millis() as u64,
-                            )
-                            .await?;
+                            runtime
+                                .persist_turn_interrupted_record(
+                                    &interrupted.run_id,
+                                    &interrupted.reason,
+                                    last_assistant_message.clone(),
+                                    turn_started_at.elapsed().as_millis() as u64,
+                                )
+                                .await?;
                             return Err(err);
                         }
-                        if let Some(outcome) = self
+                        if let Some(outcome) = runtime
                             .maybe_handle_context_length_exceeded(
                                 agent_id,
                                 round,
@@ -1583,20 +1619,21 @@ impl RuntimeHandle {
                         {
                             return Ok(outcome);
                         }
-                        self.persist_turn_terminal_record(
-                            TurnTerminalKind::Aborted,
-                            last_assistant_message.clone(),
-                            turn_started_at.elapsed().as_millis() as u64,
-                            None,
-                        )
-                        .await?;
+                        runtime
+                            .persist_turn_terminal_record(
+                                TurnTerminalKind::Aborted,
+                                last_assistant_message.clone(),
+                                turn_started_at.elapsed().as_millis() as u64,
+                                None,
+                            )
+                            .await?;
                         return Err(err);
                     }
                 }
             } else {
-                let context_config = self.current_context_config().await;
+                let context_config = runtime.current_context_config().await;
                 let turn_index = {
-                    let guard = self.inner.agent.lock().await;
+                    let guard = runtime.inner.agent.lock().await;
                     guard.state.turn_index
                 };
                 let checkpoint_request_id =
@@ -1608,12 +1645,12 @@ impl RuntimeHandle {
                     && rounds_since_work_item_reminder >= reminder_cooldown_rounds
                 {
                     let current_work_item_id = {
-                        let guard = self.inner.agent.lock().await;
+                        let guard = runtime.inner.agent.lock().await;
                         guard.state.current_work_item_id.clone()
                     };
                     current_work_item_id
                         .as_deref()
-                        .and_then(|id| self.inner.storage.latest_work_item(id).ok().flatten())
+                        .and_then(|id| runtime.inner.storage.latest_work_item(id).ok().flatten())
                         .map(|work_item| {
                             let reminder = build_work_item_stale_reminder(
                                 &work_item,
@@ -1624,17 +1661,18 @@ impl RuntimeHandle {
                 } else {
                     None
                 };
-                let stale_work_item_reminder =
-                    if let Some((work_item, reminder)) = stale_work_item_reminder {
-                        if runtime_reminder_fits_baseline(
-                            &prompt_frame,
-                            &available_tools,
-                            context_config.prompt_budget_estimated_tokens,
-                            &reminder,
-                        ) {
-                            Some((work_item, reminder))
-                        } else {
-                            self.inner.storage.append_event(&AuditEvent::new(
+                let stale_work_item_reminder = if let Some((work_item, reminder)) =
+                    stale_work_item_reminder
+                {
+                    if runtime_reminder_fits_baseline(
+                        &prompt_frame,
+                        &available_tools,
+                        context_config.prompt_budget_estimated_tokens,
+                        &reminder,
+                    ) {
+                        Some((work_item, reminder))
+                    } else {
+                        let event = AuditEvent::new(
                             "work_item_stale_reminder_skipped",
                             serde_json::json!({
                                 "agent_id": agent_id,
@@ -1645,14 +1683,15 @@ impl RuntimeHandle {
                                 "cooldown_rounds": reminder_cooldown_rounds,
                                 "reason": "baseline_budget",
                             }),
-                        ))?;
-                            None
-                        }
-                    } else {
+                        );
+                        runtime.inner.storage.append_event(&event)?;
                         None
-                    };
+                    }
+                } else {
+                    None
+                };
                 if let Some((work_item, reminder)) = stale_work_item_reminder.as_ref() {
-                    self.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::new(
                         "work_item_stale_reminder_injected",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -1683,7 +1722,7 @@ impl RuntimeHandle {
                 ) {
                     TurnLocalProjectionOutcome::Projection(projection) => projection,
                     TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
-                        self.inner.storage.append_event(&AuditEvent::new(
+                        runtime.inner.storage.append_event(&AuditEvent::new(
                             "turn_local_baseline_over_budget",
                             serde_json::json!({
                                 "agent_id": agent_id,
@@ -1706,13 +1745,14 @@ impl RuntimeHandle {
                             diagnostics.effective_budget_estimated_tokens,
                             diagnostics.tool_overhead_estimated_tokens,
                         );
-                        self.persist_turn_terminal_record(
-                            TurnTerminalKind::BaselineOverBudget,
-                            Some(final_text.clone()),
-                            turn_started_at.elapsed().as_millis() as u64,
-                            None,
-                        )
-                        .await?;
+                        runtime
+                            .persist_turn_terminal_record(
+                                TurnTerminalKind::BaselineOverBudget,
+                                Some(final_text.clone()),
+                                turn_started_at.elapsed().as_millis() as u64,
+                                None,
+                            )
+                            .await?;
                         return Ok(AgentLoopOutcome {
                             final_text,
                             should_sleep: false,
@@ -1722,7 +1762,7 @@ impl RuntimeHandle {
                     }
                 };
                 if let Some(compaction) = projection.compaction.as_ref() {
-                    self.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::new(
                         "turn_local_compaction_applied",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -1754,7 +1794,7 @@ impl RuntimeHandle {
                             base_round: compaction.checkpoint_base_round,
                             text_fragments: Vec::new(),
                         });
-                        self.inner.storage.append_event(&AuditEvent::new(
+                        runtime.inner.storage.append_event(&AuditEvent::new(
                             "turn_local_checkpoint_requested",
                             serde_json::json!({
                                 "agent_id": agent_id,
@@ -1772,24 +1812,28 @@ impl RuntimeHandle {
                     projection.conversation,
                     available_tools,
                 );
-                let provider = self.current_provider().await;
+                let provider = runtime.current_provider().await;
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
-                match self.complete_turn_with_interrupt(provider, request).await {
+                match runtime
+                    .complete_turn_with_interrupt(provider, request)
+                    .await
+                {
                     Ok((response, attempt_timeline)) => {
                         (response, attempt_timeline, context_management)
                     }
                     Err(err) => {
                         if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
-                            self.persist_turn_interrupted_record(
-                                &interrupted.run_id,
-                                &interrupted.reason,
-                                last_assistant_message.clone(),
-                                turn_started_at.elapsed().as_millis() as u64,
-                            )
-                            .await?;
+                            runtime
+                                .persist_turn_interrupted_record(
+                                    &interrupted.run_id,
+                                    &interrupted.reason,
+                                    last_assistant_message.clone(),
+                                    turn_started_at.elapsed().as_millis() as u64,
+                                )
+                                .await?;
                             return Err(err);
                         }
-                        if let Some(outcome) = self
+                        if let Some(outcome) = runtime
                             .maybe_handle_context_length_exceeded(
                                 agent_id,
                                 round,
@@ -1800,13 +1844,14 @@ impl RuntimeHandle {
                         {
                             return Ok(outcome);
                         }
-                        self.persist_turn_terminal_record(
-                            TurnTerminalKind::Aborted,
-                            last_assistant_message.clone(),
-                            turn_started_at.elapsed().as_millis() as u64,
-                            None,
-                        )
-                        .await?;
+                        runtime
+                            .persist_turn_terminal_record(
+                                TurnTerminalKind::Aborted,
+                                last_assistant_message.clone(),
+                                turn_started_at.elapsed().as_millis() as u64,
+                                None,
+                            )
+                            .await?;
                         return Err(err);
                     }
                 }
@@ -1817,7 +1862,7 @@ impl RuntimeHandle {
             let model_attempt_state = provider_attempt_model_state(attempt_timeline.as_ref());
 
             let (turn_index, run_id) = {
-                let mut guard = self.inner.agent.lock().await;
+                let mut guard = runtime.inner.agent.lock().await;
                 guard.state.total_input_tokens += response.input_tokens;
                 guard.state.total_output_tokens += response.output_tokens;
                 guard.state.total_model_rounds += 1;
@@ -1827,7 +1872,7 @@ impl RuntimeHandle {
                 ));
                 guard.state.last_requested_model = model_attempt_state.requested_model.clone();
                 guard.state.last_active_model = model_attempt_state.active_model.clone();
-                self.inner.storage.write_agent(&guard.state)?;
+                runtime.inner.storage.write_agent(&guard.state)?;
                 (guard.state.turn_index, guard.state.current_run_id.clone())
             };
 
@@ -1884,7 +1929,7 @@ impl RuntimeHandle {
             }
             let token_usage = TokenUsage::new(response.input_tokens, response.output_tokens);
 
-            self.inner.storage.append_event(&AuditEvent::new(
+            runtime.inner.storage.append_event(&AuditEvent::new(
                 "provider_round_completed",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -1960,7 +2005,7 @@ impl RuntimeHandle {
                         anchor_generation: pending_checkpoint.anchor_generation,
                     });
                 }
-                self.inner.storage.append_event(&AuditEvent::new(
+                runtime.inner.storage.append_event(&AuditEvent::new(
                     "turn_local_checkpoint_recorded",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -1981,7 +2026,7 @@ impl RuntimeHandle {
                     }),
                 ))?;
             }
-            self.inner
+            runtime.inner
                 .storage
                 .append_transcript_entry(&TranscriptEntry {
                     stop_reason: stop_reason.clone(),
@@ -2019,7 +2064,7 @@ impl RuntimeHandle {
                 })?;
 
             if tool_calls.is_empty() {
-                self.inner.storage.append_event(&AuditEvent::new(
+                runtime.inner.storage.append_event(&AuditEvent::new(
                     "text_only_round_observed",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -2040,7 +2085,7 @@ impl RuntimeHandle {
             }
 
             if tool_calls.is_empty() {
-                let interjections = self
+                let interjections = runtime
                     .drain_operator_interjections(agent_id, round, "after_provider_round")
                     .await?;
                 if !interjections.is_empty() {
@@ -2069,7 +2114,7 @@ impl RuntimeHandle {
             }
 
             if !tool_calls.is_empty() {
-                let interjections = self
+                let interjections = runtime
                     .drain_operator_interjections(agent_id, round, "before_tool_execution")
                     .await?;
                 if !interjections.is_empty() {
@@ -2124,7 +2169,8 @@ impl RuntimeHandle {
                         tool_result_envelopes: Vec::new(),
                         follow_up_user_texts: vec![continuation_text.clone()],
                     });
-                    self.inner
+                    runtime
+                        .inner
                         .storage
                         .append_transcript_entry(&TranscriptEntry::new(
                             agent_id.to_string(),
@@ -2136,7 +2182,7 @@ impl RuntimeHandle {
                                 "reason": "max_output_tokens",
                             }),
                         ))?;
-                    self.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::new(
                         "max_output_tokens_recovery",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -2153,7 +2199,8 @@ impl RuntimeHandle {
                     completed_round_assistant_blocks,
                     text_blocks,
                 ));
-                self.inner
+                runtime
+                    .inner
                     .storage
                     .append_transcript_entry(&TranscriptEntry::new(
                         agent_id.to_string(),
@@ -2165,7 +2212,7 @@ impl RuntimeHandle {
                             "reason": "turn_local_checkpoint",
                         }),
                     ))?;
-                self.inner.storage.append_event(&AuditEvent::new(
+                runtime.inner.storage.append_event(&AuditEvent::new(
                     "turn_local_checkpoint_resume_requested",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -2177,13 +2224,14 @@ impl RuntimeHandle {
 
             if tool_calls.is_empty() {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
-                self.persist_turn_terminal_record(
-                    TurnTerminalKind::Completed,
-                    last_assistant_message.clone(),
-                    turn_started_at.elapsed().as_millis() as u64,
-                    Some(&checkpoint_state),
-                )
-                .await?;
+                runtime
+                    .persist_turn_terminal_record(
+                        TurnTerminalKind::Completed,
+                        last_assistant_message.clone(),
+                        turn_started_at.elapsed().as_millis() as u64,
+                        Some(&checkpoint_state),
+                    )
+                    .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
                     should_sleep,
@@ -2196,15 +2244,16 @@ impl RuntimeHandle {
             let mut tool_results = Vec::new();
             let mut tool_result_envelopes = Vec::new();
             for call in tool_calls {
-                if let Err(err) = self.ensure_not_interrupted().await {
+                if let Err(err) = runtime.ensure_not_interrupted().await {
                     if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
-                        self.persist_turn_interrupted_record(
-                            &interrupted.run_id,
-                            &interrupted.reason,
-                            last_assistant_message.clone(),
-                            turn_started_at.elapsed().as_millis() as u64,
-                        )
-                        .await?;
+                        runtime
+                            .persist_turn_interrupted_record(
+                                &interrupted.run_id,
+                                &interrupted.reason,
+                                last_assistant_message.clone(),
+                                turn_started_at.elapsed().as_millis() as u64,
+                            )
+                            .await?;
                     }
                     return Err(err);
                 }
@@ -2224,10 +2273,10 @@ impl RuntimeHandle {
                     .with_retryable(false);
                     let message = error.render();
                     let (turn_index, run_id) = {
-                        let guard = self.inner.agent.lock().await;
+                        let guard = runtime.inner.agent.lock().await;
                         (guard.state.turn_index, guard.state.current_run_id.clone())
                     };
-                    self.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::new(
                         "tool_execution_failed",
                         serde_json::json!({
                             "tool_call_id": tool_call_id,
@@ -2237,8 +2286,8 @@ impl RuntimeHandle {
                             "exec_command_cmd": command_preview_field(&call),
                             "exec_command_cost": command_cost_field(
                                 &call,
-                                self.inner.default_tool_output_tokens,
-                                self.inner.max_tool_output_tokens
+                                runtime.inner.default_tool_output_tokens,
+                                runtime.inner.max_tool_output_tokens
                             ),
                             "error": message,
                             "error_kind": error.kind.clone(),
@@ -2276,7 +2325,7 @@ impl RuntimeHandle {
                     .with_retryable(true);
                     let result = crate::tool::ToolResult::error(&tool_name, error.clone());
                     let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
-                    self.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::new(
                         "truncated_mutation_tool_call_rejected",
                         serde_json::json!({
                             "tool_call_id": tool_call_id.clone(),
@@ -2297,19 +2346,20 @@ impl RuntimeHandle {
                     continue;
                 }
                 let tool_execution = if let Some(snapshot) =
-                    self.current_run_interrupt_token().await
+                    runtime.current_run_interrupt_token().await
                 {
                     tokio::select! {
-                        result = self.inner.tools.execute(self, agent_id, &trust, &call) => result,
+                        result = runtime.inner.tools.execute(runtime, agent_id, &trust, &call) => result,
                         _ = snapshot.token.cancelled() => Err(CurrentRunInterrupted {
                             run_id: snapshot.run_id.clone(),
                             reason: snapshot.reason(),
                         }.into()),
                     }
                 } else {
-                    self.inner
+                    runtime
+                        .inner
                         .tools
-                        .execute(self, agent_id, &trust, &call)
+                        .execute(runtime, agent_id, &trust, &call)
                         .await
                 };
                 match tool_execution {
@@ -2318,7 +2368,7 @@ impl RuntimeHandle {
                             crate::tool::tools::render_tool_result_for_model(&result)?;
                         let duration_ms = record.duration_ms;
                         let (turn_index, run_id, work_item_id) = {
-                            let guard = self.inner.agent.lock().await;
+                            let guard = runtime.inner.agent.lock().await;
                             (
                                 guard.state.turn_index,
                                 guard.state.current_run_id.clone(),
@@ -2334,13 +2384,14 @@ impl RuntimeHandle {
                             should_sleep = true;
                             sleep_duration_ms = result.sleep_duration_ms;
                         }
-                        self.inner.storage.append_tool_execution(&record)?;
+                        runtime.inner.storage.append_tool_execution(&record)?;
                         if matches!(record.status, crate::types::ToolExecutionStatus::Success) {
-                            self.record_skill_tool_activation(&record.tool_name, &record.input)
+                            runtime
+                                .record_skill_tool_activation(&record.tool_name, &record.input)
                                 .await?;
                         }
 
-                        self.inner.storage.append_event(&AuditEvent::new(
+                        runtime.inner.storage.append_event(&AuditEvent::new(
                             "tool_executed",
                             serde_json::json!({
                                 "tool_call_id": tool_call_id,
@@ -2350,8 +2401,8 @@ impl RuntimeHandle {
                                 "exec_command_cmd": command_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
                                     &call,
-                                    self.inner.default_tool_output_tokens,
-                                    self.inner.max_tool_output_tokens
+                                    runtime.inner.default_tool_output_tokens,
+                                    runtime.inner.max_tool_output_tokens
                                 ),
                                 "status": record.status,
                                 "duration_ms": duration_ms,
@@ -2371,22 +2422,23 @@ impl RuntimeHandle {
                     }
                     Err(err) => {
                         if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
-                            self.persist_turn_interrupted_record(
-                                &interrupted.run_id,
-                                &interrupted.reason,
-                                last_assistant_message.clone(),
-                                turn_started_at.elapsed().as_millis() as u64,
-                            )
-                            .await?;
+                            runtime
+                                .persist_turn_interrupted_record(
+                                    &interrupted.run_id,
+                                    &interrupted.reason,
+                                    last_assistant_message.clone(),
+                                    turn_started_at.elapsed().as_millis() as u64,
+                                )
+                                .await?;
                             return Err(err);
                         }
                         let error = ToolError::from_anyhow(&err);
                         let message = error.render();
                         let (turn_index, run_id) = {
-                            let guard = self.inner.agent.lock().await;
+                            let guard = runtime.inner.agent.lock().await;
                             (guard.state.turn_index, guard.state.current_run_id.clone())
                         };
-                        self.inner.storage.append_event(&AuditEvent::new(
+                        runtime.inner.storage.append_event(&AuditEvent::new(
                             "tool_execution_failed",
                             serde_json::json!({
                                 "tool_call_id": tool_call_id,
@@ -2396,8 +2448,8 @@ impl RuntimeHandle {
                                 "exec_command_cmd": command_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
                                     &call,
-                                    self.inner.default_tool_output_tokens,
-                                    self.inner.max_tool_output_tokens
+                                    runtime.inner.default_tool_output_tokens,
+                                    runtime.inner.max_tool_output_tokens
                                 ),
                                 "error": message,
                                 "error_kind": error.kind.clone(),
@@ -2414,7 +2466,8 @@ impl RuntimeHandle {
                     }
                 }
             }
-            self.inner
+            runtime
+                .inner
                 .storage
                 .append_transcript_entry(&TranscriptEntry::new(
                     agent_id.to_string(),
@@ -2425,7 +2478,7 @@ impl RuntimeHandle {
                         "results": tool_results.clone(),
                     }),
                 ))?;
-            let interjections = self
+            let interjections = runtime
                 .drain_operator_interjections(agent_id, round, "after_tool_results")
                 .await?;
             let has_operator_interjections = !interjections.is_empty();
@@ -2458,13 +2511,14 @@ impl RuntimeHandle {
 
             if only_sleep_tools && !has_operator_interjections {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
-                self.persist_turn_terminal_record(
-                    TurnTerminalKind::Completed,
-                    last_assistant_message.clone(),
-                    turn_started_at.elapsed().as_millis() as u64,
-                    Some(&checkpoint_state),
-                )
-                .await?;
+                runtime
+                    .persist_turn_terminal_record(
+                        TurnTerminalKind::Completed,
+                        last_assistant_message.clone(),
+                        turn_started_at.elapsed().as_millis() as u64,
+                        Some(&checkpoint_state),
+                    )
+                    .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
                     should_sleep: true,
