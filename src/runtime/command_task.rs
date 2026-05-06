@@ -698,7 +698,7 @@ impl RuntimeHandle {
                 MessageOrigin::Task {
                     task_id: task_record.id.clone(),
                 },
-                trust.clone(),
+                TrustLevel::TrustedSystem,
                 Priority::Next,
                 MessageBody::Text { text: result_text },
             )

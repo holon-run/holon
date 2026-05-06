@@ -93,6 +93,17 @@ pub async fn task_output_returns_subagent_result_text() -> Result<()> {
     let value: serde_json::Value = parse_tool_result_payload(&result)?;
     assert_eq!(value["retrieval_status"], "success");
     assert_eq!(value["task"]["kind"], "child_agent_task");
+    assert_eq!(value["task"]["status"], "completed");
+    assert_eq!(value["task"]["output_truncated"], false);
+    assert!(value["task"]
+        .get("exit_status")
+        .is_none_or(serde_json::Value::is_null));
+    assert!(value["task"].get("output_artifact").is_none());
+    assert!(value["task"].get("failure_artifact").is_none());
+    assert!(value["task"]
+        .get("artifacts")
+        .and_then(|value| value.as_array())
+        .is_none_or(|artifacts| artifacts.is_empty()));
     assert!(value["task"]["output_preview"]
         .as_str()
         .expect("subagent output should be text")
