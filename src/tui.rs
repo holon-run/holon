@@ -1553,6 +1553,77 @@ mod tests {
     }
 
     #[test]
+    fn chat_text_uses_selected_agent_events_tail_after_switch() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut previous_projection =
+            TuiProjection::from_snapshot(sample_snapshot("agent-a", "a0"));
+        previous_projection.agent.agent.status = AgentStatus::AwakeRunning;
+        previous_projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-a-tool".into(),
+                event: "tool_executed".into(),
+                data: StreamEventEnvelope {
+                    id: "evt-a-tool".into(),
+                    seq: 2,
+                    ts: Utc::now(),
+                    agent_id: "agent-a".into(),
+                    event_type: "tool_executed".into(),
+                    projection: None,
+                    provenance: None,
+                    payload: json!({
+                        "tool_name": "ExecCommand",
+                        "exec_command_cmd": "cargo test agent-a"
+                    }),
+                },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.projection = Some(previous_projection);
+        let before_switch: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(before_switch.contains("Action    ExecCommand: cargo test agent-a"));
+
+        let mut switched_snapshot = sample_snapshot("agent-b", "evt-b-tool");
+        switched_snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        switched_snapshot.events_tail = vec![StreamEventEnvelope {
+            id: "evt-b-tool".into(),
+            seq: 0,
+            ts: Utc::now(),
+            agent_id: "agent-b".into(),
+            event_type: "tool_executed".into(),
+            projection: Some(json!({
+                "name": "operator",
+                "raw_payload_included": false,
+            })),
+            provenance: None,
+            payload: json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo test agent-b"
+            }),
+        }];
+
+        // Switching agents must use the selected agent's snapshot tail rather
+        // than inheriting the previous agent's event log.
+        app.projection = Some(TuiProjection::from_snapshot(switched_snapshot));
+
+        let rendered: String = build_chat_text(&collect_chat_items(&app))
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+            .collect();
+        assert!(rendered.contains("Working"));
+        assert!(rendered.contains("Action    ExecCommand: cargo test agent-b"));
+        assert!(!rendered.contains("cargo test agent-a"));
+    }
+
+    #[test]
     fn chat_text_does_not_show_stale_activity_when_agent_is_idle() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
