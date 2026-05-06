@@ -207,7 +207,7 @@ pub fn execution_policy_summary_lines(execution: &ExecutionSnapshot) -> Vec<Stri
 
 pub fn execution_confinement_summary_line(execution: &ExecutionSnapshot) -> String {
     format!(
-        "Confinement: path={}, write={}, network={}, secrets={}, child_process={}",
+        "Confinement: path_confinement={}, write_confinement={}, network_confinement={}, secret_isolation={}, child_process_containment={}",
         execution_guarantee_label(execution.policy.process_execution.path_confinement),
         execution_guarantee_label(execution.policy.process_execution.write_confinement),
         execution_guarantee_label(execution.policy.process_execution.network_confinement),

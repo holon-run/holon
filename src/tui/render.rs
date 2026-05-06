@@ -1079,7 +1079,7 @@ mod tests {
         assert!(rendered.contains("Execution backend: host_local"));
         assert!(rendered.contains("Process execution: runtime_shaped"));
         assert!(rendered.contains(
-            "Confinement: path=not_enforced, write=not_enforced, network=not_enforced, secrets=not_enforced, child_process=not_enforced"
+            "Confinement: path_confinement=not_enforced, write_confinement=not_enforced, network_confinement=not_enforced, secret_isolation=not_enforced, child_process_containment=not_enforced"
         ));
     }
 
