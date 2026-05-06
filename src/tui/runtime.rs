@@ -610,7 +610,7 @@ impl TuiApp {
     }
 
     pub(super) fn connection_label(&self) -> String {
-        match &self.connection_state {
+        let state = match &self.connection_state {
             TuiConnectionState::Bootstrapping => "bootstrapping".into(),
             TuiConnectionState::Streaming => "streaming".into(),
             TuiConnectionState::Reconnecting { attempt, .. } => {
@@ -618,7 +618,8 @@ impl TuiApp {
             }
             TuiConnectionState::RefreshRequired { .. } => "refresh-required".into(),
             TuiConnectionState::Disconnected { .. } => "disconnected".into(),
-        }
+        };
+        format!("{state} via {}", self.client.connection_summary())
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

@@ -324,6 +324,74 @@ pub async fn control_prompt_requires_bearer_token_when_required() -> Result<()> 
     Ok(())
 }
 
+pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<()> {
+    let config = test_config_with_paths(
+        tempdir().unwrap().keep(),
+        tempdir().unwrap().keep(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    let (_host, base, server) = spawn_server_with_config(config).await?;
+    let client = reqwest::Client::new();
+
+    for path in [
+        "/handshake",
+        "/",
+        "/agents",
+        "/agents/default/status",
+        "/agents/default/state",
+        "/agents/default/briefs",
+        "/agents/default/transcript",
+        "/agents/default/tasks",
+        "/agents/default/timers",
+        "/agents/default/worktree-summary",
+        "/agents/default/skills",
+        "/events",
+    ] {
+        let denied = client.get(format!("{base}{path}")).send().await?;
+        assert_eq!(
+            denied.status(),
+            reqwest::StatusCode::FORBIDDEN,
+            "{path} should require bearer auth"
+        );
+    }
+
+    let handshake: serde_json::Value = client
+        .get(format!("{base}/handshake"))
+        .bearer_auth("secret")
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(handshake["protocol"]["version"], 1);
+    assert_eq!(handshake["auth"]["mode"], "bearer");
+    assert_eq!(handshake["runtime"]["default_agent"], "default");
+
+    let agents = client
+        .get(format!("{base}/agents"))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert!(agents.status().is_success());
+
+    let denied_enqueue = client
+        .post(format!("{base}/enqueue"))
+        .json(&serde_json::json!({ "text": "hello" }))
+        .send()
+        .await?;
+    assert_eq!(denied_enqueue.status(), reqwest::StatusCode::FORBIDDEN);
+    let allowed_enqueue = client
+        .post(format!("{base}/enqueue"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({ "text": "hello" }))
+        .send()
+        .await?;
+    assert!(allowed_enqueue.status().is_success());
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_wake_records_liveness_only_system_tick_on_loopback_auto() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;

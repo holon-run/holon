@@ -1,20 +1,21 @@
 use std::{
     io::Write,
+    net::SocketAddr,
     path::{Path, PathBuf},
 };
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use holon::{
-    client::LocalClient,
+    client::{normalize_control_base_url, LocalClient},
     config::{
         built_in_provider_default_config, config_schema, credential_store_path, default_holon_home,
-        get_config_key, list_credential_profiles_at, load_persisted_config_at,
-        persisted_config_path, provider_config_view, provider_config_views,
-        remove_credential_profile_at, save_persisted_config_at, set_config_key,
-        set_credential_profile_at, unset_config_key, validate_provider_config, AppConfig,
-        CredentialKind, CredentialSource, ProviderAuthConfig, ProviderConfigFile, ProviderId,
-        ProviderTransportKind,
+        get_config_key, list_credential_profiles_at, load_credential_store_at,
+        load_persisted_config_at, persisted_config_path, provider_config_view,
+        provider_config_views, remove_credential_profile_at, save_persisted_config_at,
+        set_config_key, set_credential_profile_at, unset_config_key, validate_provider_config,
+        AppConfig, ControlAuthMode, CredentialKind, CredentialSource, ProviderAuthConfig,
+        ProviderConfigFile, ProviderId, ProviderTransportKind,
     },
     daemon::{
         daemon_logs, daemon_restart, daemon_start, daemon_status, daemon_stop,
@@ -61,7 +62,20 @@ impl ControlCommandAction {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    Serve,
+    Serve {
+        #[arg(long, value_enum, default_value_t = ServeAccess::Local)]
+        access: ServeAccess,
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        listen: Option<String>,
+        #[arg(long)]
+        advertise: Option<String>,
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+    },
     Daemon {
         #[command(subcommand)]
         command: DaemonCommands,
@@ -201,11 +215,37 @@ enum Commands {
     Tui {
         #[arg(long)]
         no_alt_screen: bool,
+        #[arg(long)]
+        connect: Option<String>,
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        #[arg(long)]
+        token_profile: Option<String>,
     },
     Debug {
         #[command(subcommand)]
         command: DebugCommands,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ServeAccess {
+    Local,
+    Tunnel,
+    Lan,
+    Tailnet,
+}
+
+#[derive(Debug)]
+struct ServeOptions {
+    access: ServeAccess,
+    host: Option<String>,
+    listen: Option<String>,
+    advertise: Option<String>,
+    token: Option<String>,
+    token_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -463,9 +503,44 @@ async fn main() -> Result<()> {
 }
 
 async fn run_runtime_command(command: Commands) -> Result<()> {
+    if let Commands::Tui {
+        no_alt_screen,
+        connect: Some(connect),
+        token,
+        token_file,
+        token_profile,
+    } = command
+    {
+        let config = AppConfig::load_for_config_inspection()?;
+        let token = resolve_remote_token(&config, token, token_file, token_profile)?;
+        let client = LocalClient::remote(config.clone(), connect, token)?;
+        client.handshake().await?;
+        return run_tui(config, no_alt_screen, Some(client)).await;
+    }
+
     let config = AppConfig::load()?;
     match command {
-        Commands::Serve => serve(config).await,
+        Commands::Serve {
+            access,
+            host,
+            listen,
+            advertise,
+            token,
+            token_file,
+        } => {
+            serve(
+                config,
+                ServeOptions {
+                    access,
+                    host,
+                    listen,
+                    advertise,
+                    token,
+                    token_file,
+                },
+            )
+            .await
+        }
         Commands::Daemon { command } => handle_daemon_command(config, command).await,
         Commands::Prompt { text, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
@@ -572,7 +647,14 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Agents { command } => handle_agents_command(&config, command).await,
         Commands::Skills { command } => handle_skills_command(&config, command).await,
         Commands::Workspace { command } => handle_workspace_command(&config, command).await,
-        Commands::Tui { no_alt_screen } => run_tui(config, no_alt_screen).await,
+        Commands::Tui {
+            no_alt_screen,
+            connect: None,
+            ..
+        } => run_tui(config, no_alt_screen, None).await,
+        Commands::Tui {
+            connect: Some(_), ..
+        } => unreachable!("remote tui is handled before runtime config load"),
         Commands::Run { .. } => unreachable!("run command is handled separately"),
         Commands::Solve { .. } => unreachable!("solve command is handled separately"),
         Commands::Debug { command } => handle_debug_command(config, command).await,
@@ -670,7 +752,205 @@ async fn run_solve_command(
     Ok(())
 }
 
-async fn serve(config: AppConfig) -> Result<()> {
+fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<Option<String>> {
+    let token = resolve_inline_or_file_token(options.token, options.token_file)?;
+    if let Some(token) = token {
+        config.control_token = Some(token);
+    }
+
+    if let Some(listen) = options.listen {
+        config.http_addr = listen;
+    } else if options.access == ServeAccess::Tunnel {
+        config.http_addr = loopback_with_configured_port(&config.http_addr);
+    } else if matches!(options.access, ServeAccess::Lan | ServeAccess::Tailnet) {
+        config.http_addr = default_remote_listen_addr(options.host.as_deref(), &config.http_addr);
+    }
+
+    let advertise_url = match options.advertise {
+        Some(url) => Some(validate_client_visible_url("advertise URL", &url)?),
+        None => match options.access {
+            ServeAccess::Local | ServeAccess::Tunnel => None,
+            ServeAccess::Lan | ServeAccess::Tailnet => {
+                let Some(host) = options
+                    .host
+                    .as_deref()
+                    .filter(|host| !host.trim().is_empty())
+                else {
+                    return Err(anyhow!(
+                        "--access {:?} requires --host or --advertise",
+                        options.access
+                    ));
+                };
+                Some(format!(
+                    "http://{}",
+                    client_visible_host_port(host, &config.http_addr)?
+                ))
+            }
+        },
+    };
+    if let Some(url) = &advertise_url {
+        config.callback_base_url = url.clone();
+    }
+    config.callback_base_url =
+        validate_client_visible_url("callback base URL", &config.callback_base_url)?;
+
+    let non_loopback_tcp = !config.tcp_listener_is_local();
+    if non_loopback_tcp
+        && config
+            .control_token
+            .as_deref()
+            .is_none_or(|token| token.trim().is_empty())
+    {
+        return Err(anyhow!(
+            "non-loopback TCP listen address {} requires --token, --token-file, or HOLON_CONTROL_TOKEN",
+            config.http_addr
+        ));
+    }
+    if matches!(options.access, ServeAccess::Lan | ServeAccess::Tailnet)
+        && config
+            .control_token
+            .as_deref()
+            .is_none_or(|token| token.trim().is_empty())
+    {
+        return Err(anyhow!(
+            "--access {:?} requires --token, --token-file, or HOLON_CONTROL_TOKEN",
+            options.access
+        ));
+    }
+    if non_loopback_tcp || matches!(options.access, ServeAccess::Lan | ServeAccess::Tailnet) {
+        config.control_auth_mode = ControlAuthMode::Required;
+    }
+
+    Ok(advertise_url)
+}
+
+fn default_remote_listen_addr(host: Option<&str>, current: &str) -> String {
+    let port = current
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .unwrap_or(7878);
+    if let Some(host) = host {
+        if let Ok(addr) = host.parse::<SocketAddr>() {
+            return addr.to_string();
+        }
+        if host.parse::<std::net::IpAddr>().is_ok() {
+            return format!("{host}:{port}");
+        }
+    }
+    format!("0.0.0.0:{port}")
+}
+
+fn loopback_with_configured_port(current: &str) -> String {
+    let port = current
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .unwrap_or(7878);
+    format!("127.0.0.1:{port}")
+}
+
+fn client_visible_host_port(host: &str, listen: &str) -> Result<String> {
+    let host = host.trim();
+    let listen_port = listen
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .unwrap_or(7878);
+    let host_port = if host
+        .rsplit_once(':')
+        .is_some_and(|(_, tail)| tail.parse::<u16>().is_ok())
+    {
+        host.to_string()
+    } else {
+        format!("{host}:{listen_port}")
+    };
+    let url = validate_client_visible_url("host URL", &format!("http://{host_port}"))?;
+    let Some(host) = reqwest::Url::parse(&url)
+        .ok()
+        .and_then(|url| url.host_str().map(ToString::to_string))
+    else {
+        return Err(anyhow!("client-visible host must include a host"));
+    };
+    if matches!(host.as_str(), "0.0.0.0" | "::") {
+        return Err(anyhow!(
+            "0.0.0.0/:: is only valid for --listen; provide a client-reachable --host or --advertise"
+        ));
+    }
+    Ok(url.trim_start_matches("http://").to_string())
+}
+
+fn validate_client_visible_url(label: &str, value: &str) -> Result<String> {
+    let normalized = normalize_control_base_url(value.to_string(), label)
+        .with_context(|| format!("invalid {label}"))?;
+    Ok(normalized)
+}
+
+fn resolve_remote_token(
+    config: &AppConfig,
+    token: Option<String>,
+    token_file: Option<PathBuf>,
+    token_profile: Option<String>,
+) -> Result<String> {
+    let token = match (token, token_file, token_profile) {
+        (Some(token), None, None) => token,
+        (None, Some(path), None) => read_token_file(&path)?,
+        (None, None, Some(profile)) => read_token_profile(config, &profile)?,
+        (None, None, None) => {
+            return Err(anyhow!(
+                "remote TUI requires explicit --token, --token-file, or --token-profile"
+            ))
+        }
+        _ => {
+            return Err(anyhow!(
+                "use exactly one of --token, --token-file, or --token-profile for remote TUI"
+            ))
+        }
+    };
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err(anyhow!("remote TUI token must not be empty"));
+    }
+    Ok(token)
+}
+
+fn resolve_inline_or_file_token(
+    token: Option<String>,
+    token_file: Option<PathBuf>,
+) -> Result<Option<String>> {
+    match (token, token_file) {
+        (Some(_), Some(_)) => Err(anyhow!("use only one of --token or --token-file")),
+        (Some(token), None) => Ok(Some(non_empty_token(token)?)),
+        (None, Some(path)) => Ok(Some(non_empty_token(read_token_file(&path)?)?)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn read_token_file(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read token file {}", path.display()))
+}
+
+fn read_token_profile(config: &AppConfig, profile: &str) -> Result<String> {
+    let profile = profile.trim();
+    if profile.is_empty() {
+        return Err(anyhow!("token profile must not be empty"));
+    }
+    let store = load_credential_store_at(&credential_store_path(&config.home_dir))?;
+    store
+        .profiles
+        .get(profile)
+        .map(|entry| entry.material.clone())
+        .ok_or_else(|| anyhow!("token profile {profile:?} was not found"))
+}
+
+fn non_empty_token(token: String) -> Result<String> {
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err(anyhow!("control token must not be empty"));
+    }
+    Ok(token)
+}
+
+async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
+    let advertise_url = apply_serve_options(&mut config, options)?;
     std::fs::create_dir_all(config.agent_root_dir())
         .with_context(|| format!("failed to create {}", config.agent_root_dir().display()))?;
     std::fs::create_dir_all(config.run_dir())
@@ -681,14 +961,17 @@ async fn serve(config: AppConfig) -> Result<()> {
     host.default_runtime().await?;
     let runtime_service = RuntimeServiceHandle::new(&config)?;
 
-    let tcp_router = http::router(AppState::for_tcp_with_runtime_service(
-        host.clone(),
-        Some(runtime_service.clone()),
-    ));
+    let tcp_router = http::router(
+        AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+            .with_advertise_url(advertise_url.clone()),
+    );
     let listener = TcpListener::bind(&config.http_addr)
         .await
         .with_context(|| format!("failed to bind {}", config.http_addr))?;
     println!("Holon listening on {}", listener.local_addr()?);
+    if let Some(advertise_url) = &advertise_url {
+        println!("Holon advertised at {advertise_url}");
+    }
 
     #[cfg(unix)]
     {
@@ -755,6 +1038,115 @@ async fn dump_prompt(
     let prompt = runtime.preview_prompt(text, trust).await?;
     println!("{}", prompt.render_dump());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use holon::config::{provider_registry_for_tests, AltScreenMode, ModelRef};
+
+    fn test_config() -> AppConfig {
+        let home = tempfile::tempdir().unwrap().keep();
+        let workspace = tempfile::tempdir().unwrap().keep();
+        AppConfig {
+            default_agent_id: "default".into(),
+            http_addr: "127.0.0.1:7878".into(),
+            callback_base_url: "http://127.0.0.1:7878".into(),
+            home_dir: home.clone(),
+            data_dir: home.clone(),
+            socket_path: home.join("run").join("holon.sock"),
+            workspace_dir: workspace,
+            context_window_messages: 8,
+            context_window_briefs: 8,
+            compaction_trigger_messages: 10,
+            compaction_keep_recent_messages: 4,
+            prompt_budget_estimated_tokens: 16_384,
+            compaction_trigger_estimated_tokens: 8_192,
+            compaction_keep_recent_estimated_tokens: 2_048,
+            recent_episode_candidates: 12,
+            max_relevant_episodes: 3,
+            control_token: Some("secret".into()),
+            control_auth_mode: ControlAuthMode::Auto,
+            config_file_path: home.join("config.json"),
+            stored_config: Default::default(),
+            default_model: ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            fallback_models: Vec::new(),
+            runtime_max_output_tokens: 8192,
+            default_tool_output_tokens: 8_000,
+            max_tool_output_tokens: 64_000,
+            disable_provider_fallback: false,
+            tui_alternate_screen: AltScreenMode::Auto,
+            validated_model_overrides: Default::default(),
+            validated_unknown_model_fallback: None,
+            providers: provider_registry_for_tests(None, Some("dummy"), home.join(".codex")),
+        }
+    }
+
+    #[test]
+    fn tailnet_host_is_client_visible_not_listen_socket() {
+        let mut config = test_config();
+        let advertise = apply_serve_options(
+            &mut config,
+            ServeOptions {
+                access: ServeAccess::Tailnet,
+                host: Some("lab.tailnet.ts.net".into()),
+                listen: None,
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "0.0.0.0:7878");
+        assert_eq!(advertise.as_deref(), Some("http://lab.tailnet.ts.net:7878"));
+        assert_eq!(config.callback_base_url, "http://lab.tailnet.ts.net:7878");
+        assert_eq!(config.control_auth_mode, ControlAuthMode::Required);
+    }
+
+    #[test]
+    fn unspecified_listen_accepts_explicit_advertise_url() {
+        let mut config = test_config();
+        let advertise = apply_serve_options(
+            &mut config,
+            ServeOptions {
+                access: ServeAccess::Lan,
+                host: None,
+                listen: Some("0.0.0.0:7878".into()),
+                advertise: Some("http://lab.example.test:7878".into()),
+                token: None,
+                token_file: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "0.0.0.0:7878");
+        assert_eq!(advertise.as_deref(), Some("http://lab.example.test:7878"));
+        assert_eq!(config.callback_base_url, "http://lab.example.test:7878");
+        assert_eq!(config.control_auth_mode, ControlAuthMode::Required);
+    }
+
+    #[test]
+    fn callback_base_url_is_normalized_when_validated() {
+        let mut config = test_config();
+        config.callback_base_url = "http://lab.example.test:7878/#fragment".into();
+
+        let advertise = apply_serve_options(
+            &mut config,
+            ServeOptions {
+                access: ServeAccess::Local,
+                host: None,
+                listen: None,
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(advertise, None);
+        assert_eq!(config.callback_base_url, "http://lab.example.test:7878");
+    }
 }
 
 async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Result<()> {

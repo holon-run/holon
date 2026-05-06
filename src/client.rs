@@ -27,6 +27,13 @@ const UNIX_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct LocalClient {
     config: AppConfig,
     http: reqwest::Client,
+    remote: Option<RemoteConnection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteConnection {
+    base_url: String,
+    token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,11 +220,47 @@ impl LocalClient {
             .connect_timeout(Duration::from_secs(2))
             .build()
             .context("failed to build local control client")?;
-        Ok(Self { config, http })
+        Ok(Self {
+            config,
+            http,
+            remote: None,
+        })
+    }
+
+    pub fn remote(
+        config: AppConfig,
+        base_url: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Result<Self> {
+        let base_url = normalize_remote_base_url(base_url.into())?;
+        let token = token.into();
+        if token.trim().is_empty() {
+            return Err(anyhow!("remote TUI token must not be empty"));
+        }
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .context("failed to build remote control client")?;
+        Ok(Self {
+            config,
+            http,
+            remote: Some(RemoteConnection { base_url, token }),
+        })
+    }
+
+    pub fn connection_summary(&self) -> String {
+        match &self.remote {
+            Some(remote) => format!("remote {} auth=bearer", remote.base_url),
+            None => "local runtime".into(),
+        }
     }
 
     pub async fn list_agents(&self) -> Result<Vec<AgentSummary>> {
         self.get_json("/agents").await
+    }
+
+    pub async fn handshake(&self) -> Result<Value> {
+        self.get_json("/handshake").await
     }
 
     pub async fn runtime_status(&self) -> Result<RuntimeStatusResponse> {
@@ -424,7 +467,7 @@ impl LocalClient {
         let path = event_stream_path(agent_id, &request)?;
 
         #[cfg(unix)]
-        if self.config.socket_path.exists() {
+        if self.remote.is_none() && self.config.socket_path.exists() {
             let socket_error = match self
                 .stream_unix_events(&path, false, request.last_event_id.as_deref())
                 .await
@@ -445,8 +488,12 @@ impl LocalClient {
                 });
         }
 
-        self.stream_http_events(&path, false, request.last_event_id.as_deref())
-            .await
+        self.stream_http_events(
+            &path,
+            self.remote.is_some(),
+            request.last_event_id.as_deref(),
+        )
+        .await
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
@@ -475,7 +522,7 @@ impl LocalClient {
 
     async fn send(&self, request: RequestSpec, include_control_auth: bool) -> Result<Vec<u8>> {
         #[cfg(unix)]
-        if self.config.socket_path.exists() {
+        if self.remote.is_none() && self.config.socket_path.exists() {
             let socket_error = match self.send_unix(request.clone(), include_control_auth).await {
                 Ok(body) => return Ok(body),
                 Err(err) => err,
@@ -541,14 +588,12 @@ impl LocalClient {
         include_control_auth: bool,
     ) -> reqwest::RequestBuilder {
         let mut builder = match request.method {
-            HttpMethod::Get => self
-                .http
-                .get(format!("http://{}{}", self.config.http_addr, request.path)),
-            HttpMethod::Post => self
-                .http
-                .post(format!("http://{}{}", self.config.http_addr, request.path)),
+            HttpMethod::Get => self.http.get(self.http_url_for(&request.path)),
+            HttpMethod::Post => self.http.post(self.http_url_for(&request.path)),
         };
-        if include_control_auth {
+        if let Some(remote) = &self.remote {
+            builder = builder.bearer_auth(&remote.token);
+        } else if include_control_auth {
             if let Some(token) = &self.config.control_token {
                 builder = builder.bearer_auth(token);
             }
@@ -559,6 +604,14 @@ impl LocalClient {
                 .body(body);
         }
         builder
+    }
+
+    fn http_url_for(&self, path: &str) -> String {
+        if let Some(remote) = &self.remote {
+            format!("{}{}", remote.base_url, path)
+        } else {
+            format!("http://{}{}", self.config.http_addr, path)
+        }
     }
 
     #[cfg(unix)]
@@ -689,6 +742,44 @@ impl LocalClient {
             eof: false,
         })
     }
+}
+
+pub fn normalize_remote_base_url(value: String) -> Result<String> {
+    normalize_http_base_url(value, "remote connect URL")
+}
+
+pub fn normalize_control_base_url(value: String, label: &str) -> Result<String> {
+    normalize_http_base_url(value, label)
+}
+
+fn normalize_http_base_url(value: String, label: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("{label} must not be empty"));
+    }
+    let url =
+        reqwest::Url::parse(trimmed).with_context(|| format!("invalid {label} {trimmed:?}"))?;
+    match url.scheme() {
+        "http" | "https" => {}
+        scheme => return Err(anyhow!("{label} must use http or https, got {scheme}")),
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("{label} must include a host"))?;
+    if url.query().is_some() {
+        return Err(anyhow!("{label} must not include a query string"));
+    }
+    if host == "0.0.0.0" || host == "::" || host.eq_ignore_ascii_case("[::]") {
+        return Err(anyhow!(
+            "{label} must use a client-reachable host, not {host}"
+        ));
+    }
+    let mut normalized = url;
+    normalized.set_fragment(None);
+    if normalized.path() == "/" {
+        normalized.set_path("");
+    }
+    Ok(normalized.as_str().trim_end_matches('/').to_string())
 }
 
 #[derive(Clone)]
@@ -1117,9 +1208,23 @@ fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>> {
 mod tests {
     use super::{
         authorization_header_value, decode_chunked_body, decode_or_error, event_stream_path,
-        parse_http_response, parse_sse_frame, take_next_sse_frame, validate_header_value,
-        validate_unix_request_target, EventStreamRequest, LocalHttpError,
+        normalize_remote_base_url, parse_http_response, parse_sse_frame, take_next_sse_frame,
+        validate_header_value, validate_unix_request_target, EventStreamRequest, LocalHttpError,
     };
+
+    #[test]
+    fn remote_connect_url_rejects_unspecified_hosts() {
+        assert!(normalize_remote_base_url("http://0.0.0.0:7878".into()).is_err());
+        assert!(normalize_remote_base_url("http://[::]:7878".into()).is_err());
+    }
+
+    #[test]
+    fn remote_connect_url_normalizes_trailing_slash() {
+        assert_eq!(
+            normalize_remote_base_url("http://example.test:7878/".into()).unwrap(),
+            "http://example.test:7878"
+        );
+    }
 
     #[test]
     fn parse_http_response_decodes_chunked_body() {

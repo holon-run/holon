@@ -17,6 +17,7 @@ http_async_tests!(
     agent_state_route_includes_bootstrap_projection_fields_when_present,
     control_agent_model_override_set_and_clear_updates_status,
     control_prompt_requires_bearer_token_when_required,
+    remote_tcp_surfaces_require_bearer_token_when_required,
     control_wake_records_liveness_only_system_tick_on_loopback_auto,
     control_prompt_requires_bearer_token_for_non_loopback_auto,
     control_prompt_records_message_admission_fields,

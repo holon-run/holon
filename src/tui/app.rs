@@ -38,6 +38,7 @@ pub(super) struct TuiApp {
 
 impl TuiApp {
     pub(crate) fn new(client: LocalClient, log_writer: TuiLogWriter) -> Self {
+        let connection_summary = client.connection_summary();
         Self {
             client,
             agents: Vec::new(),
@@ -63,7 +64,7 @@ impl TuiApp {
             last_refresh_at: None,
             last_event_at: None,
             display_level: OperatorVisibility::DEFAULT_DISPLAY_LEVEL,
-            status_line: "Connecting to local Holon runtime...".into(),
+            status_line: format!("Connecting to {connection_summary}..."),
             should_quit: false,
             chat_text_cache: RefCell::new(None),
             input_history: Vec::new(),
