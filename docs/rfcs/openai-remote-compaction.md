@@ -41,6 +41,11 @@ That creates three design constraints:
 Holon should therefore treat remote compaction as a provider-window optimization,
 not as Holon's source of semantic memory.
 
+This boundary is also a governance rule: OpenAI remote compaction cannot mutate
+or redefine Holon's local durable memory contract. The encrypted provider item
+may be stored and replayed as provider transport state, but it is not
+`agent_home` memory, runtime evidence, or an authority for `MemoryGet`.
+
 ## 2. External API Facts
 
 This design relies on the public OpenAI Responses API documentation:
@@ -107,6 +112,12 @@ It keeps provider-shaped history bounded:
 
 This layer is not inspectable. Holon should store metadata about it, not infer
 meaning from it.
+
+Provider-window compaction metadata should be observability metadata. It may
+point at the covered provider item range and local evidence checkpoints, but it
+must not be indexed as curated durable memory or exposed as the same
+trust/provenance class as briefs, work items, context episodes, or
+`agent_home/memory/*.md`.
 
 Suggested metadata:
 

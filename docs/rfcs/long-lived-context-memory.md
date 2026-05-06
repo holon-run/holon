@@ -30,6 +30,11 @@ The core design is:
 - keep provider prompt-cache identity aligned with slow-changing memory
   revisions
 
+This RFC uses "memory" in the runtime-continuity sense. Curated durable memory,
+loaded guidance, runtime evidence, working-memory projection, and compaction
+output remain separate governance surfaces; see
+`agent-and-workspace-memory.md` for the durable memory and retrieval boundary.
+
 ## Problem
 
 Long-lived coding agents accumulate context quickly:
@@ -91,6 +96,10 @@ Examples include:
 The ledger is not prompt-bounded. Compression changes the model-visible
 projection, not the audit trail.
 
+Ledger records are runtime evidence. Indexing selected ledger records for
+`MemorySearch` does not promote them to curated durable memory; they must keep
+runtime-evidence provenance.
+
 ### Hot Turn Context
 
 Hot turn context is rebuilt every prompt assembly.
@@ -130,6 +139,10 @@ monotonic `working_memory_revision`.
 
 Working memory is derived from durable runtime state, not authored as a
 free-form model summary.
+
+Working memory is a request and continuity projection. Updating working memory
+does not write curated durable memory, and compaction output must not be used as
+independent authority to update curated memory.
 
 ### Episode Memory
 
@@ -276,6 +289,12 @@ The primary compaction path is:
 
 Fallback message compaction may still exist for migration or empty-memory cases,
 but it must not be the primary continuity mechanism.
+
+Compaction output is governed as projection-level state. It can affect what is
+rendered into a bounded request window, and any facts retained through
+compaction should remain traceable to durable ledger evidence, but compaction
+does not create `agent_home/memory/*.md` content or a new durable memory
+authority.
 
 ## Model Calls
 

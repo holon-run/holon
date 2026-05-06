@@ -526,7 +526,12 @@ fn agent_memory_document(
         title: title.into(),
         sanitized_excerpt: excerpt(&body),
         body,
-        metadata: json!({ "memory_name": name }),
+        metadata: json!({
+            "memory_name": name,
+            "governance_surface": "curated_durable_memory",
+            "provenance_class": "agent_home_memory_markdown",
+            "trust_class": "agent_curated",
+        }),
         updated_at: file_updated_at(path),
     }))
 }
@@ -559,7 +564,12 @@ fn workspace_profile_documents(storage: &AppStorage) -> Result<Vec<MemoryDocumen
                 title,
                 sanitized_excerpt: excerpt(&body),
                 body,
-                metadata: json!({ "workspace_anchor": entry.workspace_anchor }),
+                metadata: json!({
+                    "workspace_anchor": entry.workspace_anchor,
+                    "governance_surface": "workspace_profile_projection",
+                    "provenance_class": "workspace_registry",
+                    "trust_class": "runtime_projection",
+                }),
                 updated_at: entry.updated_at,
             }
         })
@@ -591,6 +601,9 @@ fn brief_document(storage: &AppStorage, brief: BriefRecord) -> MemoryDocument {
             "related_message_id": brief.related_message_id,
             "related_task_id": brief.related_task_id,
             "agent_home": storage.data_dir(),
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "brief_record",
+            "trust_class": "runtime_evidence",
         }),
         updated_at: brief.created_at,
     }
@@ -636,6 +649,9 @@ fn episode_document(episode: ContextEpisodeRecord) -> MemoryDocument {
             "current_work_item_id": episode.current_work_item_id,
             "boundary_reason": episode.boundary_reason,
             "working_set_files": episode.working_set_files,
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "context_episode_record",
+            "trust_class": "runtime_evidence",
         }),
         updated_at: episode.finalized_at,
     }
@@ -665,6 +681,9 @@ fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
             "work_item_id": item.id,
             "state": item.state,
             "blocked_by": item.blocked_by,
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "work_item_record",
+            "trust_class": "runtime_evidence",
         }),
         updated_at: item.updated_at,
     }
@@ -843,6 +862,14 @@ mod tests {
         rebuild_memory_index(&storage, None).unwrap();
         let results = search_memory(&storage, "release", 10, None, false).unwrap();
         assert_eq!(results[0].kind, "agent_memory_markdown");
+        assert_eq!(
+            results[0].metadata["governance_surface"].as_str(),
+            Some("curated_durable_memory")
+        );
+        assert_eq!(
+            results[0].metadata["trust_class"].as_str(),
+            Some("agent_curated")
+        );
 
         fs::write(
             agent_memory_self_path(dir.path()),
@@ -1023,7 +1050,18 @@ mod tests {
         assert!(results
             .iter()
             .any(|result| result.kind == "workspace_profile"));
-        assert!(results.iter().any(|result| result.kind == "brief"));
+        let brief_result = results
+            .iter()
+            .find(|result| result.kind == "brief")
+            .expect("brief memory result");
+        assert_eq!(
+            brief_result.metadata["governance_surface"].as_str(),
+            Some("runtime_evidence")
+        );
+        assert_eq!(
+            brief_result.metadata["provenance_class"].as_str(),
+            Some("brief_record")
+        );
         let results = search_memory(&storage, "SQLite", 10, Some("ws-holon"), false).unwrap();
         assert!(results
             .iter()
@@ -1163,5 +1201,52 @@ mod tests {
         assert!(results
             .iter()
             .any(|result| result.source_ref == "agent_memory:operator"));
+    }
+
+    #[test]
+    fn ordinary_workspace_markdown_is_not_indexed_as_memory() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join("README.md"),
+            "ordinary workspace markdown should not become Holon memory",
+        )
+        .unwrap();
+        storage
+            .append_workspace_entry(&WorkspaceEntry::new(
+                "ws-markdown",
+                workspace,
+                Some("markdown workspace".into()),
+            ))
+            .unwrap();
+
+        rebuild_memory_index(&storage, Some("ws-markdown")).unwrap();
+        let results = search_memory(
+            &storage,
+            "ordinary workspace markdown",
+            10,
+            Some("ws-markdown"),
+            false,
+        )
+        .unwrap();
+
+        assert!(results
+            .iter()
+            .all(|result| result.kind != "agent_memory_markdown"
+                || result.source_ref.starts_with("agent_memory:")));
+        assert!(!results.iter().any(|result| {
+            result
+                .source_path
+                .as_deref()
+                .is_some_and(|path| path.ends_with("README.md"))
+        }));
+        assert!(results
+            .iter()
+            .all(|result| result.metadata["governance_surface"].as_str()
+                != Some("ordinary_workspace_markdown")));
     }
 }

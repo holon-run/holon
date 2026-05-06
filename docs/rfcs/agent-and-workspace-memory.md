@@ -92,6 +92,21 @@ state:
 An item can move between these layers over time, but the runtime should not
 collapse them into one file or one prompt blob.
 
+For v0.14 the boundary is:
+
+- `agent_home/AGENTS.md` is loaded durable behavior guidance. It shapes every
+  run, but it is not a searchable memory source returned by `MemorySearch`.
+- `agent_home/memory/self.md` and `agent_home/memory/operator.md` are curated
+  durable memory. They are explicit Markdown memory sources with
+  agent-scoped provenance.
+- runtime evidence such as briefs, work items, and context episodes is indexed
+  as evidence. It can be searched and retrieved, but it keeps runtime-evidence
+  provenance and must not be treated as curated durable memory.
+- working memory and request projections are model-facing continuity
+  projections derived from runtime state. They are not durable memory writes.
+- local, turn-local, or provider remote compaction output may bound a request
+  window. It cannot silently write or redefine durable memory.
+
 ### Workspace identity comes from the runtime
 
 Workspace-scoped memory must be keyed by `workspace_id`, not by a transient
@@ -112,6 +127,18 @@ They should be rebuildable from stronger sources:
 - runtime ledger records;
 - briefs, work items, and episodes;
 - explicit operator or agent notes.
+
+Ordinary workspace Markdown is not Holon memory merely because it lives under a
+workspace root. Agents should inspect workspace files through filesystem tools
+or explicit workspace profiles. A Markdown file becomes a Holon memory source
+only through a governed memory surface such as curated agent memory, a future
+explicit workspace-memory authoring flow, or runtime-indexed evidence with
+preserved provenance.
+
+Durable memory writes must be explicit and scoped. A runtime compaction summary,
+tool trace, implementation plan, or provider-owned opaque compaction item must
+not be copied into curated durable memory unless a future memory-writing
+contract names the target scope, authority, and source evidence.
 
 ## Memory Surfaces
 
