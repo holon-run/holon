@@ -17,6 +17,7 @@ mod tasks;
 #[cfg(test)]
 mod test_util;
 mod turn;
+mod waiting;
 mod workspace;
 mod worktree;
 
@@ -50,7 +51,7 @@ use crate::{
     config::RuntimeModelCatalog,
     context::{maybe_compact_agent, ContextConfig},
     host::RuntimeHostBridge,
-    ingress::{WakeDisposition, WakeHint},
+    ingress::WakeDisposition,
     memory::{mark_working_memory_prompted, refresh_episode_memory, refresh_working_memory},
     prompt::{build_effective_prompt, EffectivePrompt},
     provider::{provider_attempt_timeline, AgentProvider, ModelBlock},
@@ -863,86 +864,6 @@ impl RuntimeHandle {
             .append_event(&AuditEvent::new(kind, data))
     }
 
-    pub async fn submit_wake_hint(&self, hint: WakeHint) -> Result<WakeDisposition> {
-        let runtime_agent_id = self.agent_id().await?;
-        let pending = PendingWakeHint {
-            reason: hint.reason.clone(),
-            description: hint.description.clone(),
-            source: hint.source.clone(),
-            scope: hint.scope.clone(),
-            waiting_intent_id: hint.waiting_intent_id.clone(),
-            external_trigger_id: hint.external_trigger_id.clone(),
-            resource: hint.resource.clone(),
-            body: hint.body.clone(),
-            content_type: hint.content_type.clone(),
-            correlation_id: hint.correlation_id.clone(),
-            causation_id: hint.causation_id.clone(),
-            created_at: Utc::now(),
-        };
-
-        let mut trigger_now = false;
-        let disposition = {
-            let mut guard = self.inner.agent.lock().await;
-            match guard.state.status {
-                AgentStatus::Paused | AgentStatus::Stopped => WakeDisposition::Ignored,
-                AgentStatus::AwakeRunning | AgentStatus::AwaitingTask => {
-                    guard.state.pending_wake_hint = Some(pending.clone());
-                    self.inner.storage.write_agent(&guard.state)?;
-                    WakeDisposition::Coalesced
-                }
-                AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep => {
-                    if guard.queue.is_empty() {
-                        if guard.state.pending_wake_hint.take().is_some() {
-                            self.inner.storage.write_agent(&guard.state)?;
-                        }
-                        trigger_now = true;
-                        WakeDisposition::Triggered
-                    } else {
-                        guard.state.pending_wake_hint = Some(pending.clone());
-                        self.inner.storage.write_agent(&guard.state)?;
-                        WakeDisposition::Coalesced
-                    }
-                }
-            }
-        };
-
-        let event_kind = match disposition {
-            WakeDisposition::Triggered => "wake_hint_triggered",
-            WakeDisposition::Coalesced => "wake_hint_coalesced",
-            WakeDisposition::Ignored => "wake_hint_ignored",
-        };
-        self.inner.storage.append_event(&AuditEvent::new(
-            event_kind,
-            serde_json::json!({
-                "agent_id": runtime_agent_id,
-                "reason": hint.reason,
-                "description": hint.description,
-                "source": hint.source,
-                "scope": hint.scope,
-                "waiting_intent_id": hint.waiting_intent_id,
-                "external_trigger_id": hint.external_trigger_id,
-                "resource": hint.resource,
-                "body": hint.body,
-                "content_type": hint.content_type,
-                "correlation_id": hint.correlation_id,
-                "causation_id": hint.causation_id,
-            }),
-        ))?;
-
-        if trigger_now {
-            if let Err(err) = self.emit_system_tick_from_wake_hint(&pending).await {
-                let mut guard = self.inner.agent.lock().await;
-                if guard.state.pending_wake_hint.is_none() {
-                    guard.state.pending_wake_hint = Some(pending);
-                    self.inner.storage.write_agent(&guard.state)?;
-                }
-                return Err(err);
-            }
-        }
-
-        Ok(disposition)
-    }
-
     pub async fn run(self) -> Result<()> {
         self.bootstrap_recovery().await?;
         {
@@ -1126,18 +1047,7 @@ impl RuntimeHandle {
         if let Some(timers) = self.inner.recovered_timers.lock().await.take() {
             self.recover_active_timers(timers).await?;
         }
-        let pending_wake = {
-            let guard = self.inner.agent.lock().await;
-            guard.state.pending_wake_hint.clone()
-        };
-        if let Some(pending) = pending_wake {
-            self.emit_system_tick_from_wake_hint(&pending).await?;
-            let mut guard = self.inner.agent.lock().await;
-            if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
-                guard.state.pending_wake_hint = None;
-                self.inner.storage.write_agent(&guard.state)?;
-            }
-        }
+        self.emit_recovered_pending_wake_hint().await?;
         Ok(())
     }
 }
