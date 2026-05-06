@@ -47,7 +47,7 @@ const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 2;
 const ROUND_TEXT_PREVIEW_LIMIT: usize = 600;
 const RECAP_TEXT_PREVIEW_LIMIT: usize = 160;
 const MIN_EXACT_TAIL_ROUNDS: usize = 2;
-const CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS: usize = 256;
+pub(super) const CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS: usize = 256;
 const WORK_ITEM_STALE_REMINDER_ROUNDS: usize = 10;
 const WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS: usize = 10;
 const WORK_ITEM_STALE_REMINDER_MAX_TOKENS: usize = 512;
@@ -349,7 +349,7 @@ fn estimate_round_tokens(round: &TurnRoundRecord) -> usize {
     round.estimated_tokens
 }
 
-fn estimate_tool_specs_tokens(available_tools: &[ToolSpec]) -> usize {
+pub(super) fn estimate_tool_specs_tokens(available_tools: &[ToolSpec]) -> usize {
     available_tools
         .iter()
         .map(|tool| {

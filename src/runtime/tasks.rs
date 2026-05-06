@@ -262,6 +262,11 @@ impl RuntimeHandle {
             AgentProfilePreset::PrivateChild => {
                 let initial_message = initial_message
                     .ok_or_else(|| anyhow!("private_child spawn requires initial_message"))?;
+                if initial_message.trim().is_empty() {
+                    return Err(anyhow!(
+                        "private_child spawn requires non-empty initial_message"
+                    ));
+                }
                 let task_label = spawn_agent_task_label(&initial_message);
                 let task = self
                     .create_child_supervision_task(

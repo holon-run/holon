@@ -436,6 +436,19 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         calls: Mutex::new(0),
         requests: Mutex::new(Vec::new()),
     });
+    let available_tools = crate::tool::ToolRegistry::new(workspace.path().to_path_buf())
+        .tool_specs_with_families()
+        .unwrap()
+        .into_iter()
+        .filter(|(family, _)| {
+            AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
+        })
+        .map(|(_, tool)| tool)
+        .collect::<Vec<_>>();
+    let continuation_effective_budget = 1_000;
+    let prompt_budget_estimated_tokens = turn::estimate_tool_specs_tokens(&available_tools)
+        + turn::CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+        + continuation_effective_budget;
     let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
@@ -444,7 +457,7 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         provider.clone(),
         "default".into(),
         ContextConfig {
-            prompt_budget_estimated_tokens: 4000,
+            prompt_budget_estimated_tokens,
             compaction_keep_recent_estimated_tokens: 180,
             ..context_config()
         },

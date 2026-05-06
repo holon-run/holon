@@ -426,8 +426,13 @@ impl RuntimeHandle {
             next_state.attached_workspaces = parent_state.attached_workspaces.clone();
             next_state.active_workspace_entry = None;
             next_state.worktree_session = None;
+            next_state.execution_profile = parent_state.execution_profile.clone();
+            next_state.model_override = parent_state.model_override.clone();
             next_state
         };
+        if self.inner.provider_reconfig.is_some() {
+            self.reconfigure_provider_for_state(&next_state).await?;
+        }
         let mut guard = self.inner.agent.lock().await;
         guard.state = next_state;
         self.inner.storage.write_agent(&guard.state)?;

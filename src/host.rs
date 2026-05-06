@@ -1769,6 +1769,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_child_runtime_spawn_rejects_blank_initial_message() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+
+        let error = parent
+            .spawn_agent(
+                Some("   \n\t  ".into()),
+                TrustLevel::TrustedOperator,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+            )
+            .await
+            .expect_err("blank private child initial_message should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("private_child spawn requires non-empty initial_message"));
+    }
+
+    #[tokio::test]
     async fn public_named_initial_message_is_optional_and_inherits_only_attached_workspaces() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();

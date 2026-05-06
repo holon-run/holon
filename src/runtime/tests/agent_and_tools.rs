@@ -24,6 +24,70 @@ impl AgentProvider for FreeformPromptProvider {
 }
 
 #[tokio::test]
+async fn attached_workspace_inheritance_preserves_execution_boundary() {
+    let parent_home = tempdir().unwrap();
+    let parent_workspace = tempdir().unwrap();
+    let parent = RuntimeHandle::new(
+        "default",
+        parent_home.path().to_path_buf(),
+        parent_workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = parent.inner.agent.lock().await;
+        guard.state.attached_workspaces = vec!["repo-a".into()];
+        guard.state.active_workspace_entry = Some(ActiveWorkspaceEntry {
+            workspace_id: "repo-a".into(),
+            workspace_anchor: parent_workspace.path().to_path_buf(),
+            execution_root_id: "repo-a:canonical".into(),
+            execution_root: parent_workspace.path().to_path_buf(),
+            cwd: parent_workspace.path().to_path_buf(),
+            projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+            projection_metadata: None,
+            occupancy_id: None,
+            access_mode: WorkspaceAccessMode::SharedRead,
+        });
+        guard.state.execution_profile.process_execution_exposed = false;
+        guard.state.model_override =
+            Some(crate::config::ModelRef::parse("anthropic/claude-haiku-4-5").unwrap());
+        parent.inner.storage.write_agent(&guard.state).unwrap();
+    }
+    let parent_state = parent.agent_state().await.unwrap();
+
+    let child_home = tempdir().unwrap();
+    let child_workspace = tempdir().unwrap();
+    let child = RuntimeHandle::new(
+        "release-bot",
+        child_home.path().to_path_buf(),
+        child_workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    child
+        .inherit_attached_workspaces_from_parent_state(&parent_state)
+        .await
+        .unwrap();
+    let child_state = child.agent_state().await.unwrap();
+
+    assert_eq!(child_state.attached_workspaces, vec!["repo-a".to_string()]);
+    assert!(child_state.active_workspace_entry.is_none());
+    assert!(child_state.worktree_session.is_none());
+    assert_eq!(
+        child_state.execution_profile,
+        parent_state.execution_profile
+    );
+    assert_eq!(child_state.model_override, parent_state.model_override);
+}
+
+#[tokio::test]
 async fn agent_summary_reports_agents_md_sources_without_content() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
