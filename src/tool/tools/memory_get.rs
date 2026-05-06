@@ -99,6 +99,15 @@ fn validate_source_ref(source_ref: String) -> Result<String> {
             "missing source_ref identifier",
         ));
     }
+    if !suffix
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        return Err(invalid_source_ref_error(
+            &source_ref,
+            "source_ref identifier must be an opaque id, not a path, URL, or query",
+        ));
+    }
 
     let prefix = format!("{prefix}:");
     if !ALLOWED_SOURCE_REF_PREFIXES.contains(&prefix.as_str()) {
@@ -181,6 +190,10 @@ mod tests {
             "skill.md:/Users/jolestar/.agents/skills/agentinbox/SKILL.md",
             "agentinbox:///SKILL.md",
             "memory:invalid-ref-123",
+            "brief:/Users/jolestar/project/README.md",
+            "brief:https://example.com/memory",
+            "episode:../ledger/episode-1",
+            "work_item:work_123?raw=true",
         ] {
             let error = tool_error(validate_source_ref(source_ref.to_string()).unwrap_err());
             assert_eq!(error.kind, "invalid_tool_input");
