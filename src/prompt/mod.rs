@@ -200,6 +200,13 @@ pub fn build_effective_prompt(
         &context_sections,
         available_tools,
     );
+    let cache_scope_fingerprint = prompt_cache_scope_fingerprint(
+        session,
+        execution,
+        &system_sections,
+        &context_sections,
+        available_tools,
+    );
 
     Ok(EffectivePrompt {
         agent_home: agent_home.to_path_buf(),
@@ -208,7 +215,7 @@ pub fn build_effective_prompt(
         loaded_agents_md,
         cache_identity: PromptCacheIdentity {
             agent_id: session.id.clone(),
-            prompt_cache_key: prompt_cache_key(&session.id, &context_fingerprint),
+            prompt_cache_key: prompt_cache_key(&session.id, &cache_scope_fingerprint),
             context_fingerprint,
             working_memory_revision: session.working_memory.working_memory_revision,
             compression_epoch: session.working_memory.compression_epoch,
@@ -225,6 +232,32 @@ fn prompt_cache_key(agent_id: &str, context_fingerprint: &str) -> String {
     format!("{agent_id}:ctx:{short_fingerprint}")
 }
 
+fn prompt_cache_scope_fingerprint(
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    system_sections: &[PromptSection],
+    context_sections: &[PromptSection],
+    available_tools: &[ToolSpec],
+) -> String {
+    let stable_context_sections = context_sections
+        .iter()
+        .filter(|section| section.stability != PromptStability::TurnScoped)
+        .collect::<Vec<_>>();
+    let payload = json!({
+        "agent_id": session.id,
+        "workspace_id": execution.workspace_id,
+        "execution_root_id": execution.execution_root_id,
+        "workspace_anchor": execution.workspace_anchor,
+        "execution_root": execution.execution_root,
+        "system_sections": system_sections,
+        "stable_context_sections": stable_context_sections,
+        "tools": available_tools,
+    });
+    let canonical =
+        serde_json::to_vec(&payload).expect("prompt cache scope fingerprint should serialize");
+    format!("{:x}", Sha256::digest(canonical))
+}
+
 fn prompt_context_fingerprint(
     session: &AgentState,
     execution: &ExecutionSnapshot,
@@ -234,7 +267,6 @@ fn prompt_context_fingerprint(
 ) -> String {
     let payload = json!({
         "agent_id": session.id,
-        "turn_index": session.turn_index,
         "compacted_message_count": session.compacted_message_count,
         "working_memory_revision": session.working_memory.working_memory_revision,
         "compression_epoch": session.working_memory.compression_epoch,
@@ -598,6 +630,143 @@ mod tests {
             working_memory_revision: 3,
             compression_epoch: 1,
         }
+    }
+
+    fn sample_execution_snapshot() -> ExecutionSnapshot {
+        ExecutionSnapshot {
+            profile: crate::system::ExecutionProfile::default(),
+            policy: crate::system::ExecutionProfile::default().policy_snapshot(),
+            attached_workspaces: vec![],
+            workspace_id: Some("workspace-1".into()),
+            workspace_anchor: PathBuf::from("/repo"),
+            execution_root: PathBuf::from("/repo"),
+            cwd: PathBuf::from("/repo/src"),
+            execution_root_id: Some("canonical_root:workspace-1".into()),
+            projection_kind: Some(crate::system::types::WorkspaceProjectionKind::CanonicalRoot),
+            access_mode: Some(crate::system::types::WorkspaceAccessMode::SharedRead),
+            worktree_root: None,
+        }
+    }
+
+    #[test]
+    fn prompt_cache_key_ignores_turn_scoped_context_changes() {
+        let mut session = AgentState::new("default");
+        session.turn_index = 1;
+        let execution = sample_execution_snapshot();
+        let system_sections = vec![section(
+            "identity",
+            PromptStability::Stable,
+            "stable system".into(),
+        )];
+        let first_context_sections = vec![
+            section(
+                "working_memory",
+                PromptStability::AgentScoped,
+                "durable plan".into(),
+            ),
+            section(
+                "current_input",
+                PromptStability::TurnScoped,
+                "first operator prompt".into(),
+            ),
+        ];
+        let tools = vec![ToolSpec {
+            name: "ExecCommand".into(),
+            description: "Run a command".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            freeform_grammar: None,
+        }];
+        let first_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &system_sections,
+            &first_context_sections,
+            &tools,
+        );
+        let first_context = prompt_context_fingerprint(
+            &session,
+            &execution,
+            &system_sections,
+            &first_context_sections,
+            &tools,
+        );
+
+        session.turn_index = 2;
+        let second_context_sections = vec![
+            section(
+                "working_memory",
+                PromptStability::AgentScoped,
+                "durable plan".into(),
+            ),
+            section(
+                "current_input",
+                PromptStability::TurnScoped,
+                "second operator prompt".into(),
+            ),
+        ];
+        let second_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &system_sections,
+            &second_context_sections,
+            &tools,
+        );
+        let second_context = prompt_context_fingerprint(
+            &session,
+            &execution,
+            &system_sections,
+            &second_context_sections,
+            &tools,
+        );
+
+        assert_ne!(first_context, second_context);
+        assert_eq!(first_scope, second_scope);
+        assert_eq!(
+            prompt_cache_key(&session.id, &first_scope),
+            prompt_cache_key(&session.id, &second_scope)
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_changes_when_agent_scoped_context_changes() {
+        let session = AgentState::new("default");
+        let execution = sample_execution_snapshot();
+        let system_sections = vec![section(
+            "identity",
+            PromptStability::Stable,
+            "stable system".into(),
+        )];
+        let first_context_sections = vec![section(
+            "working_memory",
+            PromptStability::AgentScoped,
+            "durable plan one".into(),
+        )];
+        let second_context_sections = vec![section(
+            "working_memory",
+            PromptStability::AgentScoped,
+            "durable plan two".into(),
+        )];
+        let tools = Vec::new();
+
+        let first_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &system_sections,
+            &first_context_sections,
+            &tools,
+        );
+        let second_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &system_sections,
+            &second_context_sections,
+            &tools,
+        );
+
+        assert_ne!(
+            prompt_cache_key(&session.id, &first_scope),
+            prompt_cache_key(&session.id, &second_scope)
+        );
     }
 
     #[test]

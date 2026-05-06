@@ -1438,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cache_identity_changes_when_projected_context_lineage_changes() {
+    fn context_fingerprint_changes_when_projected_context_lineage_changes() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         for idx in 0..6 {
@@ -1558,7 +1558,7 @@ mod tests {
             first_prompt.cache_identity.context_fingerprint,
             second_prompt.cache_identity.context_fingerprint
         );
-        assert_ne!(
+        assert_eq!(
             first_prompt.cache_identity.prompt_cache_key,
             second_prompt.cache_identity.prompt_cache_key
         );
