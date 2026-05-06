@@ -239,6 +239,10 @@ fn prompt_cache_scope_fingerprint(
     context_sections: &[PromptSection],
     available_tools: &[ToolSpec],
 ) -> String {
+    let stable_system_sections = system_sections
+        .iter()
+        .filter(|section| section.stability != PromptStability::TurnScoped)
+        .collect::<Vec<_>>();
     let stable_context_sections = context_sections
         .iter()
         .filter(|section| section.stability != PromptStability::TurnScoped)
@@ -249,7 +253,7 @@ fn prompt_cache_scope_fingerprint(
         "execution_root_id": execution.execution_root_id,
         "workspace_anchor": execution.workspace_anchor,
         "execution_root": execution.execution_root,
-        "system_sections": system_sections,
+        "stable_system_sections": stable_system_sections,
         "stable_context_sections": stable_context_sections,
         "tools": available_tools,
     });
@@ -653,11 +657,14 @@ mod tests {
         let mut session = AgentState::new("default");
         session.turn_index = 1;
         let execution = sample_execution_snapshot();
-        let system_sections = vec![section(
-            "identity",
-            PromptStability::Stable,
-            "stable system".into(),
-        )];
+        let first_system_sections = vec![
+            section("identity", PromptStability::Stable, "stable system".into()),
+            section(
+                "constrained_repair",
+                PromptStability::TurnScoped,
+                "fix only file: src/lib.rs".into(),
+            ),
+        ];
         let first_context_sections = vec![
             section(
                 "working_memory",
@@ -679,19 +686,27 @@ mod tests {
         let first_scope = prompt_cache_scope_fingerprint(
             &session,
             &execution,
-            &system_sections,
+            &first_system_sections,
             &first_context_sections,
             &tools,
         );
         let first_context = prompt_context_fingerprint(
             &session,
             &execution,
-            &system_sections,
+            &first_system_sections,
             &first_context_sections,
             &tools,
         );
 
         session.turn_index = 2;
+        let second_system_sections = vec![
+            section("identity", PromptStability::Stable, "stable system".into()),
+            section(
+                "constrained_repair",
+                PromptStability::TurnScoped,
+                "fix only file: src/main.rs".into(),
+            ),
+        ];
         let second_context_sections = vec![
             section(
                 "working_memory",
@@ -707,14 +722,14 @@ mod tests {
         let second_scope = prompt_cache_scope_fingerprint(
             &session,
             &execution,
-            &system_sections,
+            &second_system_sections,
             &second_context_sections,
             &tools,
         );
         let second_context = prompt_context_fingerprint(
             &session,
             &execution,
-            &system_sections,
+            &second_system_sections,
             &second_context_sections,
             &tools,
         );
