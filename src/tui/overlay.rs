@@ -16,6 +16,9 @@ pub(super) enum OverlayState {
     Transcript {
         scroll: u16,
     },
+    AgentState {
+        scroll: u16,
+    },
     Tasks {
         selected: usize,
         detail_scroll: u16,
@@ -52,6 +55,7 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
             detail_scroll,
         } => draw_events_overlay(frame, app, selected_event_id.as_deref(), *detail_scroll),
         OverlayState::Transcript { scroll } => draw_transcript_overlay(frame, app, *scroll),
+        OverlayState::AgentState { scroll } => draw_agent_state_overlay(frame, app, *scroll),
         OverlayState::Tasks {
             selected,
             detail_scroll,
@@ -228,6 +232,20 @@ fn draw_transcript_overlay(frame: &mut Frame<'_>, app: &TuiApp, scroll: u16) {
         .block(
             Block::default()
                 .title("Transcript (Esc closes)")
+                .borders(Borders::ALL),
+        )
+        .scroll((scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(widget, popup);
+}
+
+fn draw_agent_state_overlay(frame: &mut Frame<'_>, app: &TuiApp, scroll: u16) {
+    let popup = centered_rect(92, 82, frame.area());
+    frame.render_widget(Clear, popup);
+    let widget = Paragraph::new(render::render_agent_state_text(app))
+        .block(
+            Block::default()
+                .title("Agent State (Esc closes)")
                 .borders(Borders::ALL),
         )
         .scroll((scroll, 0))
@@ -434,6 +452,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
         "  /model open model picker for the selected agent",
         "  /tasks open task overlay",
         "  /transcript open transcript overlay",
+        "  /state open agent state overlay",
         "  /refresh re-bootstrap the selected agent from /state",
         "  /clear-status clear transient local status text",
         "  /debug-prompt open debug prompt dialog",

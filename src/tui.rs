@@ -48,10 +48,12 @@ mod runtime;
 
 use app::TuiApp;
 #[cfg(test)]
+use chat::paragraph_max_scroll;
+#[cfg(test)]
 use chat::{
     build_chat_text, chat_text, collect_chat_items, is_operator_origin_value, ConversationCell,
 };
-use chat::{chat_text_for_width, paragraph_max_scroll, ChatScrollState};
+use chat::{chat_text_for_width, paragraph_max_scroll_unframed, ChatScrollState};
 use composer::ComposerState;
 use logging::TuiLogWriter;
 #[cfg(test)]
@@ -202,8 +204,8 @@ mod tests {
 
     use super::{
         build_chat_text, centered_rect_rows, chat_text, collect_chat_items,
-        determine_alt_screen_mode_for_terminal, is_cursor_too_old_error, is_operator_origin_value,
-        paragraph_max_scroll,
+        determine_alt_screen_mode_for_terminal, draw, is_cursor_too_old_error,
+        is_operator_origin_value, paragraph_max_scroll, paragraph_max_scroll_unframed,
         projection::{OperatorVisibility, TuiProjection},
         AgentListChange, ChatScrollState, ComposerState, ConversationCell, OverlayState, TuiApp,
         TuiConnectionState, TuiRuntimeMessage,
@@ -224,8 +226,8 @@ mod tests {
             TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingIntentSummary,
         },
     };
-    use ratatui::layout::Rect;
     use ratatui::text::{Line, Text};
+    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 
     fn test_config() -> AppConfig {
         let temp = tempfile::tempdir().unwrap().keep();
@@ -386,6 +388,26 @@ mod tests {
             brief: None,
             cursor: Some(cursor.into()),
         }
+    }
+
+    fn rendered_buffer_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    fn rendered_buffer_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect()
     }
 
     #[test]
@@ -839,6 +861,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slash_state_opens_agent_state_overlay() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/state");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.overlay, OverlayState::AgentState { scroll: 0 });
+        assert_eq!(app.composer.as_str(), "");
+        assert_eq!(app.status_line, "Opened agent state overlay");
+    }
+
+    #[tokio::test]
+    async fn agent_state_overlay_scrolls_and_esc_closes() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.overlay = OverlayState::AgentState { scroll: 0 };
+
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.overlay, OverlayState::AgentState { scroll: 10 });
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.overlay, OverlayState::None);
+    }
+
+    #[tokio::test]
     async fn slash_display_sets_chat_visibility_level() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
@@ -980,6 +1038,38 @@ mod tests {
         let area = Rect::new(0, 0, 6, 3);
         let text = Text::from(vec![Line::from("abcd      ")]);
         assert_eq!(paragraph_max_scroll(&text, area), 1);
+    }
+
+    #[test]
+    fn paragraph_max_scroll_unframed_uses_full_area() {
+        let area = Rect::new(0, 0, 12, 2);
+        let text = Text::from("one\ntwo\nthree");
+        assert_eq!(paragraph_max_scroll_unframed(&text, area), 1);
+        assert_eq!(paragraph_max_scroll(&text, area), 0);
+    }
+
+    #[test]
+    fn default_tui_render_omits_agent_state_panel_and_box_borders() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
+            "default", "evt-0",
+        )));
+        app.apply_projection_view();
+
+        let backend = TestBackend::new(100, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let rendered = rendered_buffer_text(&terminal);
+        assert!(!rendered.contains("Agent State"));
+        assert!(!rendered.contains("Conversation"));
+        let rows = rendered_buffer_rows(&terminal);
+        let main_rows = &rows[2..22];
+        assert!(!main_rows.iter().any(|row| row.contains('│')));
     }
 
     #[test]
