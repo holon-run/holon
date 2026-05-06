@@ -1211,9 +1211,10 @@ mod tests {
         ensure_agent_home_layout(dir.path()).unwrap();
         let workspace = dir.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
+        let readme_marker = "governance_sentinel_924_workspace_markdown";
         fs::write(
             workspace.join("README.md"),
-            "ordinary workspace markdown should not become Holon memory",
+            format!("ordinary workspace markdown {readme_marker} should not become Holon memory"),
         )
         .unwrap();
         storage
@@ -1225,28 +1226,12 @@ mod tests {
             .unwrap();
 
         rebuild_memory_index(&storage, Some("ws-markdown")).unwrap();
-        let results = search_memory(
-            &storage,
-            "ordinary workspace markdown",
-            10,
-            Some("ws-markdown"),
-            false,
-        )
-        .unwrap();
+        let results =
+            search_memory(&storage, readme_marker, 10, Some("ws-markdown"), false).unwrap();
 
-        assert!(results
-            .iter()
-            .all(|result| result.kind != "agent_memory_markdown"
-                || result.source_ref.starts_with("agent_memory:")));
-        assert!(!results.iter().any(|result| {
-            result
-                .source_path
-                .as_deref()
-                .is_some_and(|path| path.ends_with("README.md"))
-        }));
-        assert!(results
-            .iter()
-            .all(|result| result.metadata["governance_surface"].as_str()
-                != Some("ordinary_workspace_markdown")));
+        assert!(
+            results.is_empty(),
+            "workspace README marker must not be searchable as Holon memory: {results:?}"
+        );
     }
 }
