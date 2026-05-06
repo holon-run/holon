@@ -6,7 +6,7 @@ pub(super) const MODEL_REASONING_EFFORT_OPTIONS: [&str; 5] =
     ["inherit", "low", "medium", "high", "xhigh"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum OverlayState {
+pub(crate) enum OverlayState {
     None,
     Agents,
     Events {

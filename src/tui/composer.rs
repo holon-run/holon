@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct ComposerState {
+pub(crate) struct ComposerState {
     text: String,
     cursor: usize,
 }

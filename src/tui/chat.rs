@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ChatScrollState {
+pub(crate) struct ChatScrollState {
     follow_tail: bool,
     offset_from_bottom: u16,
 }
@@ -102,7 +102,7 @@ pub(super) enum ConversationCell {
 }
 
 #[derive(Clone)]
-pub(super) struct CachedChatText {
+pub(crate) struct CachedChatText {
     pub(super) cells: Vec<ConversationCell>,
     pub(super) width: u16,
     pub(super) text: Text<'static>,
