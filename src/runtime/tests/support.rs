@@ -460,7 +460,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
             1 => ProviderTurnResponse {
                 blocks: vec![
                     ModelBlock::Text {
-                        text: format!("Round 1 planning {}", "very detailed preamble ".repeat(120)),
+                        text: format!("Round 1 planning {}", "very detailed preamble ".repeat(150)),
                     },
                     ModelBlock::ToolUse {
                         id: "exec-round-1".into(),
