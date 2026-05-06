@@ -2151,13 +2151,17 @@ Phase-1 envelope rules:
   - direct completion uses fields such as:
     - `disposition = completed`
     - `exit_status`
-    - `stdout`
-    - `stderr`
+    - `stdout_preview`
+    - `stderr_preview`
     - `truncated`
+    - `artifacts`
+    - `stdout_artifact`
+    - `stderr_artifact`
   - promotion to managed execution uses fields such as:
     - `disposition = promoted_to_task`
     - `task_handle`
-    - `initial_output`
+    - `initial_output_preview`
+    - `initial_output_truncated`
   - `disposition` is the stable discriminant; completion-only fields and
     promotion-only fields should not be mixed in the same outcome
   - `tty = true` remains an explicit startup choice made by the agent; the
@@ -2182,6 +2186,10 @@ Phase-1 envelope rules:
     the number of actual command items in the batch
 - `TaskStatus` returns a stable lifecycle envelope with a compact `task`
   snapshot rather than exposing a bare internal record or raw detail blob
+  - `TaskStatus` is lifecycle and coordination state, not an output channel
+  - `TaskStatus.task.command.output_path` may identify where command output is
+    stored, but the status snapshot must not include raw output preview bytes or
+    artifact arrays
 - for `child_agent_task`, the `task` detail carries
   `workspace_mode = inherit | worktree`; in worktree mode, worktree artifact
   metadata is reported under task detail/result metadata when available
@@ -2214,8 +2222,36 @@ Phase-1 envelope rules:
     `tty = true` command task
 - `TaskOutput` remains the heavyweight output envelope:
   - `TaskOutputResult { retrieval_status, task }`
+  - `TaskOutputResult.task` is the canonical v0.14 task-result envelope for
+    output reads:
+    - `task_id`
+    - `kind`
+    - `status`
+    - `summary`
+    - `output_preview`
+    - `output_truncated`
+    - `artifacts`
+    - `output_artifact`
+    - `result_summary`
+    - `exit_status`
+    - `failure_artifact`
+  - `output_preview` is a bounded model-facing preview, never the promise of
+    full task output
+  - `output_truncated = true` means `output_preview` was clipped at the
+    TaskOutput preview boundary
+  - `artifacts` is the v0.14 minimum artifact contract: path-only references to
+    runtime-retained task output; there is no general artifact retrieval API in
+    v0.14
+  - `output_artifact` indexes the combined task-output artifact in `artifacts`
+    when one is available
+  - command task failures may additionally expose `failure_artifact`; that
+    artifact is operator-facing failure evidence, not an instruction
   - for `tty = true` command tasks, output is a terminal transcript captured as
     one combined stream rather than a guaranteed stdout/stderr split
+  - for `child_agent_task`, this same envelope is a compatible subset:
+    `task_id`, `kind`, `status`, `summary`, `output_preview`,
+    `output_truncated`, and `result_summary` are meaningful; command-only fields
+    such as `exit_status` and command-output artifact indices may be absent
 - `TaskStop` returns a stable structured stop receipt:
   - updated `task` snapshot
   - whether stop was requested
@@ -2228,6 +2264,12 @@ Phase-1 envelope rules:
 
 Human-readable summary text may still appear in these envelopes, but it is
 secondary to the machine-readable fields.
+
+Task-result messages that rejoin the main runtime are runtime-owned evidence.
+They must use `MessageOrigin::Task`, `TrustLevel::TrustedSystem`, and runtime
+instruction authority. A task result may resume a wait for task completion, but
+its output text is not operator approval and must not be treated as
+operator-equivalent instruction authority.
 
 ## Worktree Session
 

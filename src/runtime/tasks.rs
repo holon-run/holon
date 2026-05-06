@@ -188,7 +188,7 @@ impl RuntimeHandle {
                     MessageOrigin::Task {
                         task_id: task_record.id.clone(),
                     },
-                    trust,
+                    TrustLevel::TrustedSystem,
                     Priority::Next,
                     MessageBody::Text { text },
                 )
@@ -566,7 +566,7 @@ impl RuntimeHandle {
                     MessageOrigin::Task {
                         task_id: task_record.id.clone(),
                     },
-                    trust,
+                    TrustLevel::TrustedSystem,
                     Priority::Next,
                     MessageBody::Text { text },
                 )
@@ -682,7 +682,7 @@ impl RuntimeHandle {
                             MessageOrigin::Task {
                                 task_id: task_record.id.clone(),
                             },
-                            trust.clone(),
+                            TrustLevel::TrustedSystem,
                             Priority::Next,
                             MessageBody::Text {
                                 text: format!("child agent failed: {err:#}"),
@@ -981,7 +981,7 @@ impl RuntimeHandle {
                 MessageOrigin::Task {
                     task_id: task_record.id.clone(),
                 },
-                trust,
+                TrustLevel::TrustedSystem,
                 Priority::Next,
                 MessageBody::Text { text },
             )
@@ -1876,7 +1876,7 @@ impl RuntimeHandle {
         &self,
         agent_id: String,
         stopped: TaskRecord,
-        trust: &TrustLevel,
+        _trust: &TrustLevel,
     ) -> Result<TaskRecord> {
         if stopped.kind != TaskKind::CommandTask {
             let message = MessageEnvelope {
@@ -1894,7 +1894,7 @@ impl RuntimeHandle {
                     MessageOrigin::Task {
                         task_id: stopped.id.clone(),
                     },
-                    trust.clone(),
+                    TrustLevel::TrustedSystem,
                     Priority::Next,
                     MessageBody::Text {
                         text: "task cancelled by operator".into(),
