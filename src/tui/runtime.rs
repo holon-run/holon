@@ -140,9 +140,22 @@ impl TuiApp {
                 return;
             }
         };
+        let selected_projection_agent = self.projection.as_ref().and_then(|projection| {
+            let selected_agent_id = self.selected_agent_id()?;
+            (projection.agent.identity.agent_id == selected_agent_id)
+                .then(|| projection.agent.clone())
+        });
         let agents = entries
             .into_iter()
-            .map(AgentListEntry::into_agent_summary_placeholder)
+            .map(|entry| {
+                let agent = entry.into_agent_summary_placeholder();
+                if let Some(selected) = selected_projection_agent.as_ref() {
+                    if selected.identity.agent_id == agent.identity.agent_id {
+                        return selected.clone();
+                    }
+                }
+                agent
+            })
             .collect();
         match self.apply_agent_list(agents) {
             AgentListChange::Ready => {}

@@ -224,10 +224,10 @@ mod tests {
         config::{AltScreenMode, AppConfig},
         system::{ExecutionProfile, ExecutionSnapshot},
         types::{
-            AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
-            AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus, AgentSummary,
-            AgentTokenUsageSummary, AgentVisibility, BriefKind, BriefRecord, ChildAgentSummary,
-            ClosureDecision, ClosureOutcome, LoadedAgentsMdView, MessageBody,
+            AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry, AgentModelSource,
+            AgentModelState, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
+            AgentSummary, AgentTokenUsageSummary, AgentVisibility, BriefKind, BriefRecord,
+            ChildAgentSummary, ClosureDecision, ClosureOutcome, LoadedAgentsMdView, MessageBody,
             OperatorMessageRecord, OperatorMessageStatus, RuntimePosture, SkillsRuntimeView,
             TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingIntentSummary,
         },
@@ -2655,6 +2655,32 @@ mod tests {
 
         assert_eq!(change, AgentListChange::Ready);
         assert_eq!(app.selected_agent_id(), Some("beta"));
+        assert!(app.projection.is_some());
+    }
+
+    #[test]
+    fn slim_agent_list_refresh_preserves_selected_projection_summary() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.agents = vec![sample_agent_summary("alpha"), sample_agent_summary("beta")];
+        app.selected_agent = 1;
+        app.projection = Some(crate::tui::projection::TuiProjection::from_snapshot(
+            sample_snapshot("beta", "cursor-1"),
+        ));
+
+        let beta_entry = AgentListEntry::from_summary(&sample_agent_summary("beta"));
+        app.apply_loaded_agents(Ok(vec![
+            AgentListEntry::from_summary(&sample_agent_summary("alpha")),
+            beta_entry,
+        ]));
+
+        let selected = app.selected_agent_summary().unwrap();
+        assert_eq!(selected.identity.agent_id, "beta");
+        assert_eq!(selected.recent_event_count, 1);
+        assert_eq!(selected.model.resolved_policy.description, "Sample policy");
         assert!(app.projection.is_some());
     }
 
