@@ -91,6 +91,19 @@ pub fn find_skill_by_entrypoint<'a>(
     skills.iter().find(|entry| entry.path == path)
 }
 
+pub fn find_skill_by_script_path<'a>(
+    skills: &'a [SkillCatalogEntry],
+    path: &Path,
+) -> Option<&'a SkillCatalogEntry> {
+    skills.iter().find(|entry| {
+        entry
+            .path
+            .parent()
+            .map(|skill_root| path.starts_with(skill_root.join("scripts")))
+            .unwrap_or(false)
+    })
+}
+
 fn select_skill_root(base: Option<&Path>, suffixes: &[&str]) -> Option<PathBuf> {
     let base = base?;
     for suffix in suffixes {

@@ -49,11 +49,31 @@ Skill discovery should not drift with shell cwd.
 
 ## Activation Model
 
-Phase-1 activation should be explicit and inspectable. Holon should record:
+Phase-1 activation should be explicit and inspectable. Discovery alone only
+means a skill's catalog metadata is available to prompt context; it must not
+emit activation events or mark the skill active.
+
+Holon records one user-visible activation event, `skill_activated`, when a
+discovered skill is touched in a way that loads or uses the skill:
 
 - which skill ids were activated
+- which skill name was activated
 - which source path each one came from
 - whether activation came from agent scope or workspace scope
+- why the skill was loaded (`read_skill_md`, `run_skill_script`, or the
+  reserved `prompt_injection`)
+- the turn index and current run id when available
+
+The v1 runtime monitors:
+
+- tool reads of a discovered skill's `SKILL.md`
+- successful shell commands that reference a discovered skill's `SKILL.md`
+- successful shell commands, including command batches, that reference
+  `scripts/*` under a discovered skill root
+
+Successful turn completion promotes current `turn_active` skills to
+`session_active` in state only; it does not emit a second user-visible
+promotion event.
 
 ## Prompt And Resume Behavior
 

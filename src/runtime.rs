@@ -54,7 +54,10 @@ use crate::{
     prompt::{build_effective_prompt, EffectivePrompt},
     provider::{provider_attempt_timeline, AgentProvider, ModelBlock},
     queue::RuntimeQueue,
-    skills::{find_skill_by_entrypoint, load_skills_runtime_view, SkillVisibility},
+    skills::{
+        find_skill_by_entrypoint, find_skill_by_script_path, load_skills_runtime_view,
+        SkillVisibility,
+    },
     storage::{to_json_value, AppStorage, PollActivityMarker},
     system::{
         EffectiveExecution, ExecutionScopeKind, ExecutionSnapshot, LocalSystem,
@@ -71,9 +74,9 @@ use crate::{
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
         Priority, QueueEntryRecord, QueueEntryStatus, ResolvedModelAvailability,
         RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture, SkillActivationSource,
-        SkillActivationState, SkillsRuntimeView, TaskKind, TaskRecord, TaskRecoverySpec,
-        TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
+        SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
+        TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
+        TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
         WaitingIntentSummary, WorkItemState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::WebConfig,
@@ -664,9 +667,10 @@ impl RuntimeHandle {
         input: &serde_json::Value,
     ) -> Result<()> {
         match tool_name {
-            "Read" => {
+            "Read" | "ReadFile" => {
                 if let Some(file_path) = input.get("file_path").and_then(|value| value.as_str()) {
-                    self.record_skill_read_activation(file_path).await?;
+                    self.record_skill_read_activation(file_path, SkillLoadReason::ReadSkillMd)
+                        .await?;
                 }
             }
             "ExecCommand" => {
@@ -674,12 +678,25 @@ impl RuntimeHandle {
                     self.record_skill_command_activation(command).await?;
                 }
             }
+            "ExecCommandBatch" => {
+                if let Some(items) = input.get("items").and_then(|value| value.as_array()) {
+                    for item in items {
+                        if let Some(command) = item.get("cmd").and_then(|value| value.as_str()) {
+                            self.record_skill_command_activation(command).await?;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
     }
 
-    pub(crate) async fn record_skill_read_activation(&self, file_path: &str) -> Result<()> {
+    pub(crate) async fn record_skill_read_activation(
+        &self,
+        file_path: &str,
+        load_reason: SkillLoadReason,
+    ) -> Result<()> {
         let execution = self
             .effective_execution(ExecutionScopeKind::AgentTurn)
             .await?;
@@ -690,15 +707,16 @@ impl RuntimeHandle {
         };
         let identity = self.agent_identity_view().await?;
         let skills = self.skills_runtime_view_for_state(&state_snapshot, &identity)?;
-        let Some(skill) = find_skill_by_entrypoint(&skills.discoverable_skills, &resolved_path)
+        let Some(skill) = skill_for_activation_path(&skills.discoverable_skills, &resolved_path)
         else {
             return Ok(());
         };
         let mut guard = self.inner.agent.lock().await;
         let turn_index = guard.state.turn_index;
         let agent_id = guard.state.id.clone();
+        let run_id = guard.state.current_run_id.clone();
 
-        if let Some(existing) = guard
+        let repeated = if let Some(existing) = guard
             .state
             .active_skills
             .iter_mut()
@@ -707,6 +725,7 @@ impl RuntimeHandle {
             existing.activation_state = SkillActivationState::TurnActive;
             existing.activation_source = SkillActivationSource::ImplicitFromCatalog;
             existing.activated_at_turn = turn_index;
+            true
         } else {
             guard
                 .state
@@ -721,18 +740,23 @@ impl RuntimeHandle {
                     activation_state: SkillActivationState::TurnActive,
                     activated_at_turn: turn_index,
                 });
-        }
+            false
+        };
         self.inner.storage.write_agent(&guard.state)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "skill_activated",
             serde_json::json!({
                 "agent_id": agent_id,
                 "skill_id": skill.skill_id,
+                "skill_name": skill.name,
                 "path": skill.path,
                 "scope": skill.scope,
                 "activation_source": SkillActivationSource::ImplicitFromCatalog,
                 "activation_state": SkillActivationState::TurnActive,
+                "load_reason": load_reason,
                 "turn_index": turn_index,
+                "run_id": run_id,
+                "repeated": repeated,
             }),
         ))?;
         Ok(())
@@ -752,7 +776,8 @@ impl RuntimeHandle {
         for skill in skills.discoverable_skills {
             if command_mentions_path(command, &skill.path) {
                 let skill_path = skill.path.to_string_lossy().into_owned();
-                self.record_skill_read_activation(&skill_path).await?;
+                self.record_skill_read_activation(&skill_path, SkillLoadReason::ReadSkillMd)
+                    .await?;
                 continue;
             }
 
@@ -762,7 +787,34 @@ impl RuntimeHandle {
             {
                 if command_mentions_path(command, relative_to_workspace) {
                     let skill_path = skill.path.to_string_lossy().into_owned();
-                    self.record_skill_read_activation(&skill_path).await?;
+                    self.record_skill_read_activation(&skill_path, SkillLoadReason::ReadSkillMd)
+                        .await?;
+                    continue;
+                }
+            }
+
+            if let Some(skill_root) = skill.path.parent() {
+                let scripts_root = skill_root.join("scripts");
+                if command_mentions_path(command, &scripts_root) {
+                    let script_path = scripts_root.to_string_lossy().into_owned();
+                    self.record_skill_read_activation(
+                        &script_path,
+                        SkillLoadReason::RunSkillScript,
+                    )
+                    .await?;
+                    continue;
+                }
+                if let Ok(relative_to_workspace) =
+                    scripts_root.strip_prefix(execution.workspace.workspace_anchor())
+                {
+                    if command_mentions_path(command, relative_to_workspace) {
+                        let script_path = scripts_root.to_string_lossy().into_owned();
+                        self.record_skill_read_activation(
+                            &script_path,
+                            SkillLoadReason::RunSkillScript,
+                        )
+                        .await?;
+                    }
                 }
             }
         }
@@ -1020,6 +1072,13 @@ impl RuntimeHandle {
 fn command_mentions_path(command: &str, path: &Path) -> bool {
     let display = path.to_string_lossy();
     command.contains(display.as_ref())
+}
+
+fn skill_for_activation_path<'a>(
+    skills: &'a [SkillCatalogEntry],
+    path: &Path,
+) -> Option<&'a SkillCatalogEntry> {
+    find_skill_by_entrypoint(skills, path).or_else(|| find_skill_by_script_path(skills, path))
 }
 
 #[cfg(test)]

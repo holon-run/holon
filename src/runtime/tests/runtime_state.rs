@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use crate::types::AuthorityClass;
+use crate::types::{AuthorityClass, SkillLoadReason};
 
 struct BlockingProvider {
     started: Arc<tokio::sync::Notify>,
@@ -1321,9 +1321,141 @@ async fn reading_discovered_skill_marks_it_active_and_promotes_on_success() {
     assert_eq!(skill.activated_at_turn, state.turn_index);
 
     let events = runtime.storage().read_recent_events(20).unwrap();
-    assert!(events.iter().any(|event| {
-        event.kind == "skill_activated" && event.data["skill_id"] == "workspace:demo"
-    }));
+    let activation = events
+        .iter()
+        .find(|event| event.kind == "skill_activated" && event.data["skill_id"] == "workspace:demo")
+        .expect("skill_activated event should be recorded");
+    assert_eq!(activation.data["skill_name"], "demo");
+    assert_eq!(activation.data["load_reason"], "read_skill_md");
+    assert_eq!(
+        activation.data["activation_source"],
+        "implicit_from_catalog"
+    );
+    assert_eq!(activation.data["repeated"], false);
+    assert!(activation.data.get("run_id").is_some());
+}
+
+#[tokio::test]
+async fn batch_command_reading_discovered_skill_marks_it_active() {
+    let (_dir, _workspace, runtime) = run_skill_activation_probe(
+        Arc::new(SkillActivationCommandProvider::new(
+            "ExecCommandBatch",
+            serde_json::json!({
+                "items": [
+                    {
+                        "cmd": "sed -n '1,8p' .agents/skills/demo/SKILL.md",
+                        "workdir": "."
+                    }
+                ]
+            }),
+        )),
+        false,
+    )
+    .await;
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.active_skills.len(), 1);
+    assert_eq!(state.active_skills[0].skill_id, "workspace:demo");
+
+    let activation = skill_activation_event(&runtime, "workspace:demo");
+    assert_eq!(activation.data["skill_name"], "demo");
+    assert_eq!(activation.data["load_reason"], "read_skill_md");
+}
+
+#[tokio::test]
+async fn command_running_skill_script_marks_it_active_with_script_reason() {
+    let (_dir, _workspace, runtime) = run_skill_activation_probe(
+        Arc::new(SkillActivationCommandProvider::new(
+            "ExecCommand",
+            serde_json::json!({
+                "cmd": "sh .agents/skills/demo/scripts/run.sh",
+                "workdir": "."
+            }),
+        )),
+        true,
+    )
+    .await;
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.active_skills.len(), 1);
+    assert_eq!(state.active_skills[0].skill_id, "workspace:demo");
+
+    let activation = skill_activation_event(&runtime, "workspace:demo");
+    assert_eq!(activation.data["skill_name"], "demo");
+    assert_eq!(
+        activation.data["load_reason"],
+        serde_json::json!(SkillLoadReason::RunSkillScript)
+    );
+}
+
+async fn run_skill_activation_probe(
+    provider: Arc<dyn AgentProvider>,
+    include_script: bool,
+) -> (TempDir, TempDir, RuntimeHandle) {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let skill_dir = workspace.path().join(".agents/skills/demo");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: demo\ndescription: demo skill\n---\nFollow the demo workflow.",
+    )
+    .unwrap();
+    if include_script {
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        std::fs::write(skill_dir.join("scripts/run.sh"), "printf script-ran\n").unwrap();
+    }
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        ContextConfig {
+            prompt_budget_estimated_tokens: 65536,
+            compaction_keep_recent_estimated_tokens: 4096,
+            ..context_config()
+        },
+    )
+    .unwrap();
+
+    runtime
+        .begin_interactive_turn_for_test(None, None)
+        .await
+        .unwrap();
+    let prompt = runtime
+        .preview_prompt(
+            "use the demo skill".to_string(),
+            TrustLevel::TrustedOperator,
+        )
+        .await
+        .unwrap();
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            TrustLevel::TrustedOperator,
+            prompt,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+    runtime.promote_turn_active_skills().await.unwrap();
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
+    (dir, workspace, runtime)
+}
+
+fn skill_activation_event(runtime: &RuntimeHandle, skill_id: &str) -> AuditEvent {
+    runtime
+        .storage()
+        .read_recent_events(20)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == "skill_activated" && event.data["skill_id"] == skill_id)
+        .expect("skill_activated event should be recorded")
 }
 
 #[test]

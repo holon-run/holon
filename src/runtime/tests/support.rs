@@ -774,6 +774,12 @@ pub(crate) struct SkillReadProvider {
     pub(crate) calls: Mutex<usize>,
 }
 
+pub(crate) struct SkillActivationCommandProvider {
+    pub(crate) calls: Mutex<usize>,
+    pub(crate) tool_name: &'static str,
+    pub(crate) input: serde_json::Value,
+}
+
 pub(crate) struct CountingProvider {
     pub(crate) calls: Mutex<usize>,
     pub(crate) reply: &'static str,
@@ -791,6 +797,16 @@ impl SkillReadProvider {
     pub(crate) fn new() -> Self {
         Self {
             calls: Mutex::new(0),
+        }
+    }
+}
+
+impl SkillActivationCommandProvider {
+    pub(crate) fn new(tool_name: &'static str, input: serde_json::Value) -> Self {
+        Self {
+            calls: Mutex::new(0),
+            tool_name,
+            input,
         }
     }
 }
@@ -881,6 +897,34 @@ impl AgentProvider for SkillReadProvider {
             }],
             _ => vec![ModelBlock::Text {
                 text: "Skill loaded and applied.".into(),
+            }],
+        };
+
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 20,
+            output_tokens: 20,
+            cache_usage: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentProvider for SkillActivationCommandProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+
+        let blocks = match *calls {
+            1 => vec![ModelBlock::ToolUse {
+                id: "activate-skill".into(),
+                name: self.tool_name.into(),
+                input: self.input.clone(),
+            }],
+            _ => vec![ModelBlock::Text {
+                text: "Skill activation observed.".into(),
             }],
         };
 
