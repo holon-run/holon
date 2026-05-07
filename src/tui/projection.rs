@@ -848,29 +848,46 @@ fn is_verbose_event(event: &ProjectionEventRecord) -> bool {
         | "turn_local_compaction_applied"
         | "turn_local_checkpoint_resume_requested"
         | "turn_local_baseline_over_budget" => true,
-        "process_execution_requested" | "tool_executed" | "tool_execution_failed" => true,
+        "process_execution_requested" => process_execution_has_preview(event),
+        "tool_executed" | "tool_execution_failed" => true,
+        "truncated_mutation_tool_call_rejected" => true,
         "task_result_received"
         | "task_child_spawned"
+        | "supervised_child_task_recovery_failed"
         | "command_task_runner_failed"
         | "command_task_result_enqueue_failed" => true,
         "task_status_updated" => task_status_is_terminal(event),
         "work_item_written" => work_item_event_completed(event),
         "work_item_delegation_completed"
+        | "work_item_waiting_intents_cancelled"
+        | "missing_current_work_item_before_wait"
         | "waiting_intent_created"
+        | "stale_waiting_intents_cancelled"
         | "callback_delivered"
         | "timer_fired"
+        | "timer_fire_failed"
+        | "workspace_attached"
         | "workspace_entered"
         | "workspace_exited"
+        | "workspace_detached"
         | "worktree_entered"
         | "worktree_exited"
+        | "worktree_created_for_task"
         | "worktree_retained_for_review"
         | "worktree_auto_cleaned_up"
         | "worktree_auto_cleanup_failed"
         | "task_worktree_cleanup_failed"
         | "skill_installed"
         | "skill_uninstalled"
+        | "agent_created"
         | "agent_model_override_set"
-        | "agent_model_override_cleared" => true,
+        | "agent_model_override_cleared"
+        | "current_run_interrupted"
+        | "control_applied"
+        | "runtime_service_shutdown_requested"
+        | "turn_context_length_exceeded"
+        | "recovery_cleared_missing_worktree_session"
+        | "operator_notification_mirror_failed" => true,
         _ => false,
     }
 }
@@ -878,12 +895,48 @@ fn is_verbose_event(event: &ProjectionEventRecord) -> bool {
 fn is_debug_event(event: &ProjectionEventRecord) -> bool {
     match event.kind.as_str() {
         "provider_round_completed" => provider_round_has_useful_telemetry(event),
-        "task_created" | "task_status_updated" | "task_input_delivered" => true,
-        "work_item_delegation_created"
+        "message_processing_interrupted"
+        | "operator_interjection_admitted"
+        | "task_created"
+        | "task_status_updated"
+        | "task_input_delivered"
+        | "task_create_requested"
+        | "supervised_child_task_monitor_reattached"
+        | "work_item_picked"
+        | "work_item_enqueue_requested"
+        | "work_item_turn_end_committed"
+        | "work_item_turn_end_commit_skipped"
+        | "work_item_stale_reminder_injected"
+        | "work_item_stale_reminder_skipped"
+        | "work_item_delegation_created"
         | "waiting_intent_cancelled"
+        | "timer_create_requested"
         | "timer_created"
+        | "workspace_attach_requested"
+        | "workspace_exit_requested"
+        | "workspace_detach_requested"
+        | "workspace_used"
+        | "task_worktree_metadata_recorded"
+        | "task_worktree_cleanup_already_removed"
+        | "task_worktree_cleanup_retained"
+        | "task_worktree_branch_cleanup_retained"
+        | "skill_activated"
+        | "agent_model_override_requested"
+        | "agent_model_override_clear_requested"
+        | "control_request_admitted"
+        | "wake_requested"
+        | "continuation_trigger_received"
+        | "continuation_resolved"
+        | "closure_decided"
+        | "debug_prompt_requested"
+        | "turn_context_built"
         | "turn_local_checkpoint_requested"
         | "turn_local_checkpoint_recorded"
+        | "episode_memory_finalized"
+        | "working_memory_updated"
+        | "operator_delivery_submitted"
+        | "operator_delivery_completed"
+        | "operator_transport_binding_upserted"
         | "command_task_running_persisted" => true,
         _ => false,
     }
@@ -944,6 +997,20 @@ fn provider_round_has_useful_telemetry(event: &ProjectionEventRecord) -> bool {
         .and_then(Value::as_u64)
         .is_some_and(|count| count > 0);
     model || stop || tokens || tools
+}
+
+fn process_execution_has_preview(event: &ProjectionEventRecord) -> bool {
+    event
+        .payload
+        .get("cmd_preview")
+        .and_then(Value::as_str)
+        .is_some_and(|cmd| !cmd.trim().is_empty())
+        || event
+            .payload
+            .get("command_cost")
+            .and_then(|value| value.get("cmd_preview"))
+            .and_then(Value::as_str)
+            .is_some_and(|cmd| !cmd.trim().is_empty())
 }
 
 fn task_status_is_terminal(event: &ProjectionEventRecord) -> bool {
@@ -1495,7 +1562,10 @@ mod tests {
                 .iter()
                 .map(|event| event.summary.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Assistant round: current turn", "ExecCommand: cargo test"]
+            vec![
+                "Assistant round: current turn",
+                "Command finished: cargo test"
+            ]
         );
     }
 

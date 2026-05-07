@@ -1630,9 +1630,9 @@ mod tests {
         assert!(items.iter().any(|item| matches!(
             item,
             ConversationCell::SystemNotice { body, .. }
-                if body.contains("ExecCommand: cargo test tui")
+                if body.contains("Command finished: cargo test tui")
         )));
-        assert!(rendered.contains("ExecCommand: cargo test tui"));
+        assert!(rendered.contains("Command finished: cargo test tui"));
         assert!(!rendered.contains("State sync"));
         assert!(!rendered.contains("agent_state_changed"));
         assert!(rendered.contains("Working"));
@@ -1805,7 +1805,7 @@ mod tests {
             .into_iter()
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
-        assert!(rendered.contains("Action    ExecCommand: cargo test tui"));
+        assert!(rendered.contains("Action    Command finished: cargo test tui"));
         assert!(!rendered.contains("Action    Waiting for activity"));
         assert!(!rendered.contains("Current   "));
     }
@@ -1846,7 +1846,7 @@ mod tests {
             .into_iter()
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
-        assert!(before_switch.contains("Action    ExecCommand: cargo test agent-a"));
+        assert!(before_switch.contains("Action    Command finished: cargo test agent-a"));
 
         let mut switched_snapshot = sample_snapshot("agent-b", "evt-b-tool");
         switched_snapshot.agent.agent.status = AgentStatus::AwakeRunning;
@@ -1877,7 +1877,7 @@ mod tests {
             .flat_map(|line| line.spans.into_iter().map(|span| span.content))
             .collect();
         assert!(rendered.contains("Working"));
-        assert!(rendered.contains("Action    ExecCommand: cargo test agent-b"));
+        assert!(rendered.contains("Action    Command finished: cargo test agent-b"));
         assert!(!rendered.contains("cargo test agent-a"));
     }
 

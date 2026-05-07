@@ -803,6 +803,11 @@ pub(super) fn conversation_event_body(
             "[worktree] "
         }
         crate::operator_event::OperatorEventCategory::Workspace => "[workspace] ",
+        crate::operator_event::OperatorEventCategory::Skill => "[skill] ",
+        crate::operator_event::OperatorEventCategory::Configuration => "[agent] ",
+        crate::operator_event::OperatorEventCategory::Control => "[control] ",
+        crate::operator_event::OperatorEventCategory::Context => "[context] ",
+        crate::operator_event::OperatorEventCategory::Delivery => "[delivery] ",
         crate::operator_event::OperatorEventCategory::Runtime if event.kind == "runtime_error" => {
             "[runtime-error] "
         }
@@ -898,7 +903,7 @@ mod tests {
             }),
         );
         let rendered = progress_event_body(&event);
-        assert_eq!(rendered, "ExecCommand: git status --short --branch");
+        assert_eq!(rendered, "Command finished: git status --short --branch");
     }
 
     #[test]
@@ -914,7 +919,7 @@ mod tests {
 
         let rendered = progress_event_body(&event);
 
-        assert_eq!(rendered, "ExecCommand failed: cargo test tui");
+        assert_eq!(rendered, "Command failed: cargo test tui");
     }
 
     #[test]
@@ -927,7 +932,7 @@ mod tests {
             }),
         );
         let rendered = progress_event_body(&event);
-        assert_eq!(rendered, "Tool executed: Sleep");
+        assert_eq!(rendered, "Slept");
     }
 
     #[test]
