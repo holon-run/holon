@@ -1,5 +1,7 @@
 use super::overlay::draw_overlay;
-use super::view_model::{render_header_line, HeaderViewModel, StatusbarViewModel};
+use super::view_model::{
+    render_header_line, render_model_detail, HeaderViewModel, StatusbarViewModel,
+};
 use super::*;
 use crate::tui::input::slash_menu_specs;
 use crate::types::{TaskKind, TaskStatus};
@@ -23,7 +25,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
     draw_header(frame, outer[0], app);
     draw_main_panels(frame, outer[1], app);
     draw_prompt_pane(frame, outer[2], app, &slash_menu);
-    draw_status_bar(frame, outer[3], app);
+    draw_status_bar(frame, outer[3], app, !slash_menu.is_empty());
     draw_overlay(frame, app);
 }
 
@@ -75,8 +77,8 @@ fn draw_prompt_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_menu:
     }
 }
 
-fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-    let view_model = StatusbarViewModel::from_app(app);
+fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_visible: bool) {
+    let view_model = StatusbarViewModel::from_app(app, slash_visible);
     let text = format!("{}\n{}", view_model.context_line, view_model.status_line);
     let paragraph = Paragraph::new(text).block(Block::default().borders(Borders::TOP));
     frame.render_widget(paragraph, area);
@@ -653,34 +655,7 @@ pub(super) fn render_task_detail(task: &TaskRecord) -> String {
 }
 
 pub(super) fn render_model_status(agent: &AgentSummary) -> String {
-    let model = agent
-        .model
-        .active_model
-        .as_ref()
-        .unwrap_or(&agent.model.effective_model);
-    if agent.model.fallback_active {
-        let requested = agent
-            .model
-            .requested_model
-            .as_ref()
-            .unwrap_or(&agent.model.effective_model);
-        return format!(
-            "model: {} (fallback from {})",
-            model.as_string(),
-            requested.as_string()
-        );
-    }
-    if agent.model.override_model.is_some() {
-        if let Some(effort) = agent.model.override_reasoning_effort.as_deref() {
-            return format!(
-                "model: {} (agent override, effort={})",
-                model.as_string(),
-                effort
-            );
-        }
-        return format!("model: {} (agent override)", model.as_string());
-    }
-    format!("model: {}", model.as_string())
+    format!("model: {}", render_model_detail(agent))
 }
 
 pub(super) fn render_summary(agent: &AgentSummary) -> String {
@@ -1189,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_status_line_uses_compact_status_bar_height() {
+    fn status_bar_uses_fixed_two_line_height() {
         assert_eq!(status_bar_height(), 3);
     }
 

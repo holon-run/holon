@@ -28,9 +28,9 @@ pub(super) struct StatusbarViewModel {
 }
 
 impl StatusbarViewModel {
-    pub(super) fn from_app(app: &TuiApp) -> Self {
+    pub(super) fn from_app(app: &TuiApp, slash_visible: bool) -> Self {
         let context_line = format!("{} · {}", execution_root_summary(app), model_summary(app));
-        let status_line = statusbar_detail(app);
+        let status_line = statusbar_detail(app, slash_visible);
         Self {
             context_line,
             status_line,
@@ -111,11 +111,11 @@ fn shorten_home_path_with_home(path: &Path, home: Option<&Path>) -> String {
 
 fn model_summary(app: &TuiApp) -> String {
     app.selected_agent_summary()
-        .map(agent_model_summary)
+        .map(render_model_detail)
         .unwrap_or_else(|| "<no model>".into())
 }
 
-fn agent_model_summary(agent: &AgentSummary) -> String {
+pub(super) fn render_model_detail(agent: &AgentSummary) -> String {
     let model = agent
         .model
         .active_model
@@ -142,20 +142,18 @@ fn agent_model_summary(agent: &AgentSummary) -> String {
     model.as_string()
 }
 
-fn statusbar_detail(app: &TuiApp) -> String {
+fn statusbar_detail(app: &TuiApp, slash_visible: bool) -> String {
     let status_line = app.status_line.trim();
-    let detail = (!status_line.is_empty())
-        .then(|| status_line.to_string())
+    let detail = overlay_hint(app, slash_visible)
+        .map(ToString::to_string)
+        .or_else(|| (!status_line.is_empty()).then(|| status_line.to_string()))
         .or_else(|| app.connection_detail().map(ToString::to_string))
-        .or_else(|| overlay_hint(app).map(ToString::to_string))
         .or_else(|| active_tasks_hint(app))
         .unwrap_or_else(|| "Type / for commands · /help for shortcuts".into());
     format!("{} · {}", app.connection_label(), detail)
 }
 
-fn overlay_hint(app: &TuiApp) -> Option<&'static str> {
-    let slash_visible = matches!(app.overlay, OverlayState::None)
-        && !super::render::slash_menu_lines(app).is_empty();
+fn overlay_hint(app: &TuiApp, slash_visible: bool) -> Option<&'static str> {
     if slash_visible {
         return Some(status_hint(KeyContext::SlashMenu, true));
     }

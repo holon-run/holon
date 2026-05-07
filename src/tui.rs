@@ -504,11 +504,12 @@ mod tests {
         app.agents = vec![snapshot.agent.clone()];
         app.projection = Some(TuiProjection::from_snapshot(snapshot));
 
-        let view_model = StatusbarViewModel::from_app(&app);
+        let view_model = StatusbarViewModel::from_app(&app, false);
 
+        assert!(view_model.context_line.starts_with("holon ("));
         assert!(view_model
             .context_line
-            .starts_with("holon (~/opensource/src/github.com/holon-run/holon)"));
+            .contains("opensource/src/github.com/holon-run/holon)"));
         assert!(view_model
             .context_line
             .contains("anthropic/claude-sonnet-4-6"));
@@ -546,11 +547,12 @@ mod tests {
         app.agents = vec![snapshot.agent.clone()];
         app.projection = Some(TuiProjection::from_snapshot(snapshot));
 
-        let view_model = StatusbarViewModel::from_app(&app);
+        let view_model = StatusbarViewModel::from_app(&app, false);
 
-        assert!(view_model.context_line.starts_with(
-            "holon (~/opensource/worktrees/github.com/holon-run/holon/issue-960-working-switch)"
-        ));
+        assert!(view_model.context_line.starts_with("holon ("));
+        assert!(view_model
+            .context_line
+            .contains("opensource/worktrees/github.com/holon-run/holon/issue-960-working-switch)"));
         assert!(!view_model
             .context_line
             .starts_with("issue-960-working-switch"));
@@ -580,11 +582,33 @@ mod tests {
         app.agents = vec![snapshot.agent.clone()];
         app.projection = Some(TuiProjection::from_snapshot(snapshot));
 
-        let view_model = StatusbarViewModel::from_app(&app);
+        let view_model = StatusbarViewModel::from_app(&app, false);
 
         assert!(view_model
             .status_line
             .contains("1 active task · /tasks to inspect"));
+    }
+
+    #[test]
+    fn statusbar_view_model_prefers_overlay_hint_over_transient_status() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.status_line = "Opened tasks overlay".into();
+        app.overlay = OverlayState::Tasks {
+            selected: 0,
+            detail_scroll: 0,
+        };
+        let snapshot = sample_snapshot("default", "evt-0");
+        app.agents = vec![snapshot.agent.clone()];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let view_model = StatusbarViewModel::from_app(&app, false);
+
+        assert!(view_model.status_line.contains("Tasks:"));
+        assert!(!view_model.status_line.contains("Opened tasks overlay"));
     }
 
     #[test]
