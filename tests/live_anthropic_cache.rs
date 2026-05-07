@@ -145,7 +145,7 @@ fn base_system(nonce: &str, cache: bool) -> Value {
     )])
 }
 
-fn claude_cli_system(nonce: &str) -> Value {
+fn claude_code_system(nonce: &str) -> Value {
     Value::Array(vec![
         text_block("x-anthropic-billing-header: claude-code", false),
         text_block(
@@ -376,9 +376,9 @@ fn large_tool_marker_request(nonce: &str, model: &str) -> Value {
     )
 }
 
-fn claude_cli_like_request_1(nonce: &str, model: &str) -> Value {
+fn claude_code_prompt_cache_request_1(nonce: &str, model: &str) -> Value {
     let mut body = request_body(
-        claude_cli_system(nonce),
+        claude_code_system(nonce),
         vec![turn1_message(nonce, true)],
         vec![probe_tool(false)],
         model,
@@ -390,9 +390,9 @@ fn claude_cli_like_request_1(nonce: &str, model: &str) -> Value {
     body
 }
 
-fn claude_cli_like_request_2(nonce: &str, model: &str) -> Value {
+fn claude_code_prompt_cache_request_2(nonce: &str, model: &str) -> Value {
     let mut body = request_body(
-        claude_cli_system(nonce),
+        claude_code_system(nonce),
         vec![
             turn1_message(nonce, false),
             assistant_reply(),
@@ -584,9 +584,9 @@ fn strategy_cases() -> Vec<StrategyCase> {
             second: large_tool_marker_request,
         },
         StrategyCase {
-            name: "claude_cli_like",
-            first: claude_cli_like_request_1,
-            second: claude_cli_like_request_2,
+            name: "claude_code_prompt_cache",
+            first: claude_code_prompt_cache_request_1,
+            second: claude_code_prompt_cache_request_2,
         },
     ]
 }

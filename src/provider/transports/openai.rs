@@ -812,7 +812,7 @@ pub(crate) fn build_chat_completion_messages(
                                 }
                             }));
                         }
-                        ModelBlock::Thinking { .. } => {}
+                        ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
                     }
                 }
 
@@ -2367,7 +2367,7 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
                                 }));
                             }
                         }
-                        ModelBlock::Thinking { .. } => {}
+                        ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
                     }
                 }
                 flush_assistant_text(&mut items, &mut pending_text);

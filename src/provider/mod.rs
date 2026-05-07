@@ -282,6 +282,11 @@ pub enum ModelBlock {
         /// Must be passed back verbatim in subsequent requests.
         signature: String,
     },
+    RedactedThinking {
+        /// Opaque encrypted/redacted thinking payload returned by the provider.
+        /// Must be passed back verbatim in subsequent requests.
+        data: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

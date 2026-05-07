@@ -332,7 +332,7 @@ impl RuntimeHandle {
                 .filter_map(|block| match block {
                     ModelBlock::Text { text } => Some(text),
                     ModelBlock::ToolUse { .. } => None,
-                    ModelBlock::Thinking { .. } => None,
+                    ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n"),

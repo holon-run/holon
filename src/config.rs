@@ -181,7 +181,7 @@ impl Default for AnthropicContextManagementConfig {
             trigger_input_tokens: 100_000,
             keep_recent_tool_uses: 3,
             clear_at_least_input_tokens: None,
-            cache_strategy: AnthropicCacheStrategy::Current,
+            cache_strategy: AnthropicCacheStrategy::MessagesNative,
             betas: Vec::new(),
         }
     }
@@ -189,22 +189,22 @@ impl Default for AnthropicContextManagementConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnthropicCacheStrategy {
-    Current,
-    ClaudeCliLike,
+    MessagesNative,
+    ClaudeCodePromptCache,
 }
 
 impl AnthropicCacheStrategy {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Current => "current",
-            Self::ClaudeCliLike => "claude_cli_like",
+            Self::MessagesNative => "messages_native",
+            Self::ClaudeCodePromptCache => "claude_code_prompt_cache",
         }
     }
 }
 
 impl Default for AnthropicCacheStrategy {
     fn default() -> Self {
-        Self::Current
+        Self::MessagesNative
     }
 }
 
@@ -1895,14 +1895,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["CHUTES_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "deepseek",
         "https://api.deepseek.com/anthropic",
         &["DEEPSEEK_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "deepseek-anthropic",
         "https://api.deepseek.com/anthropic",
@@ -2007,7 +2007,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["STEPFUN_PLAN_API_KEY", "STEPFUN_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "synthetic",
         "https://api.synthetic.new/anthropic",
@@ -2060,14 +2060,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         ],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "xiaomi",
         "https://api.xiaomimimo.com/anthropic",
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "xiaomi-anthropic",
         "https://api.xiaomimimo.com/anthropic",
@@ -2081,14 +2081,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "xiaomi-token-plan",
         "https://token-plan-cn.xiaomimimo.com/anthropic",
         &["XIAOMI_TOKEN_PLAN_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "xiaomi-token-plan-anthropic",
         "https://token-plan-cn.xiaomimimo.com/anthropic",
@@ -2109,14 +2109,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["XAI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "zai",
         "https://api.z.ai/api/anthropic",
         &["ZAI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "zai-anthropic",
         "https://api.z.ai/api/anthropic",
@@ -2130,14 +2130,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["ZAI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "bigmodel",
         "https://open.bigmodel.cn/api/anthropic",
         &["BIGMODEL_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "bigmodel-anthropic",
         "https://open.bigmodel.cn/api/anthropic",
@@ -2151,21 +2151,21 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["BIGMODEL_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "minimax",
         "https://api.minimax.io/anthropic",
         &["MINIMAX_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "minimax-portal",
         "https://api.minimax.io/anthropic",
         &["MINIMAX_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider_lite(
+    insert_anthropic_compatible_provider(
         &mut registry,
         "vercel-ai-gateway",
         "https://ai-gateway.vercel.sh",
@@ -2192,11 +2192,10 @@ fn insert_openai_compatible_provider(
     )
 }
 
-/// Insert an Anthropic-compatible provider with a "lite" context management config
-/// that avoids Claude-specific features (no betas, Current cache strategy).
-/// Use this for non-Anthropic providers that expose an Anthropic-compatible API
-/// but may not support Claude-specific betas or prompt caching extensions.
-fn insert_anthropic_compatible_provider_lite(
+/// Insert an Anthropic-compatible provider using Claude Code-like prompt-cache
+/// lowering while avoiding implicit Claude-specific beta injection. Operators can
+/// still override cache strategy and betas explicitly with env config.
+fn insert_anthropic_compatible_provider(
     registry: &mut ProviderRegistry,
     provider: &str,
     default_base_url: &str,
@@ -2750,77 +2749,23 @@ fn parse_bool_value(raw_value: &str) -> Result<Option<bool>> {
 }
 
 fn resolve_anthropic_context_management_config() -> Result<AnthropicContextManagementConfig> {
-    let enabled = match env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT").ok() {
-        Some(value) => parse_bool_value(&value)
-            .map_err(|_| anyhow!("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT expects a boolean"))?
-            .ok_or_else(|| anyhow!("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT expects a boolean"))?,
-        None => false,
-    };
-    let trigger_input_tokens = env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_TRIGGER_INPUT_TOKENS")
-        .ok()
-        .map(|value| {
-            parse_positive_u32_key(
-                "HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_TRIGGER_INPUT_TOKENS",
-                &value,
-            )
-        })
-        .transpose()?
-        .unwrap_or(100_000);
-    let keep_recent_tool_uses =
-        env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_KEEP_RECENT_TOOL_USES")
-            .ok()
-            .map(|value| {
-                parse_positive_u32_key(
-                    "HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_KEEP_RECENT_TOOL_USES",
-                    &value,
-                )
-            })
-            .transpose()?
-            .unwrap_or(3);
-    let clear_at_least_input_tokens =
-        env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_CLEAR_AT_LEAST_INPUT_TOKENS")
-            .ok()
-            .map(|value| {
-                parse_positive_u32_key(
-                    "HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_CLEAR_AT_LEAST_INPUT_TOKENS",
-                    &value,
-                )
-            })
-            .transpose()?;
-    let cache_strategy = env::var("HOLON_ANTHROPIC_CACHE_STRATEGY")
-        .ok()
-        .map(|value| parse_anthropic_cache_strategy_env(&value))
-        .transpose()?
-        .unwrap_or_else(default_anthropic_runtime_cache_strategy);
-    let betas_env = env::var("HOLON_ANTHROPIC_BETAS").ok();
-    let betas = match betas_env {
-        Some(value) => parse_comma_separated_values(&value),
-        None if cache_strategy == AnthropicCacheStrategy::ClaudeCliLike => vec![
-            "claude-code-20250219".to_string(),
-            "prompt-caching-scope-2026-01-05".to_string(),
-        ],
-        None => Vec::new(),
-    };
-
-    Ok(AnthropicContextManagementConfig {
-        enabled,
-        trigger_input_tokens,
-        keep_recent_tool_uses,
-        clear_at_least_input_tokens,
-        cache_strategy,
-        betas,
-    })
+    resolve_anthropic_context_management_config_with_defaults(
+        default_anthropic_runtime_cache_strategy(),
+        true,
+    )
 }
 
-fn default_anthropic_runtime_cache_strategy() -> AnthropicCacheStrategy {
-    AnthropicCacheStrategy::ClaudeCliLike
-}
-
-/// Resolve context management config for non-Anthropic providers that expose
-/// an Anthropic-compatible API. Uses "Current" cache strategy by default and
-/// omits Claude-specific betas, avoiding 400 errors from providers that do not
-/// support Claude-specific protocol extensions.
 fn resolve_anthropic_compatible_context_management_config(
+) -> Result<AnthropicContextManagementConfig> {
+    resolve_anthropic_context_management_config_with_defaults(
+        default_anthropic_runtime_cache_strategy(),
+        false,
+    )
+}
+
+fn resolve_anthropic_context_management_config_with_defaults(
+    default_cache_strategy: AnthropicCacheStrategy,
+    auto_prompt_cache_betas: bool,
 ) -> Result<AnthropicContextManagementConfig> {
     let enabled = match env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT").ok() {
         Some(value) => parse_bool_value(&value)
@@ -2859,18 +2804,24 @@ fn resolve_anthropic_compatible_context_management_config(
                 )
             })
             .transpose()?;
-    // Use "Current" cache strategy by default for compatible providers,
-    // which avoids sending Claude-specific betas and cache_control markers.
     let cache_strategy = env::var("HOLON_ANTHROPIC_CACHE_STRATEGY")
         .ok()
         .map(|value| parse_anthropic_cache_strategy_env(&value))
         .transpose()?
-        .unwrap_or(AnthropicCacheStrategy::Current);
-    // Only use betas if explicitly set via env; never auto-inject Claude-specific betas.
-    let betas = env::var("HOLON_ANTHROPIC_BETAS")
-        .ok()
-        .map(|value| parse_comma_separated_values(&value))
-        .unwrap_or_default();
+        .unwrap_or(default_cache_strategy);
+    let betas_env = env::var("HOLON_ANTHROPIC_BETAS").ok();
+    let betas = match betas_env {
+        Some(value) => parse_comma_separated_values(&value),
+        None if auto_prompt_cache_betas
+            && cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache =>
+        {
+            vec![
+                "claude-code-20250219".to_string(),
+                "prompt-caching-scope-2026-01-05".to_string(),
+            ]
+        }
+        None => Vec::new(),
+    };
 
     Ok(AnthropicContextManagementConfig {
         enabled,
@@ -2882,6 +2833,10 @@ fn resolve_anthropic_compatible_context_management_config(
     })
 }
 
+fn default_anthropic_runtime_cache_strategy() -> AnthropicCacheStrategy {
+    AnthropicCacheStrategy::ClaudeCodePromptCache
+}
+
 fn parse_anthropic_cache_strategy_env(raw_value: &str) -> Result<AnthropicCacheStrategy> {
     if raw_value.trim().is_empty() {
         return Ok(default_anthropic_runtime_cache_strategy());
@@ -2891,12 +2846,18 @@ fn parse_anthropic_cache_strategy_env(raw_value: &str) -> Result<AnthropicCacheS
 
 fn parse_anthropic_cache_strategy(raw_value: &str) -> Result<AnthropicCacheStrategy> {
     match raw_value.trim().to_ascii_lowercase().as_str() {
-        "current" => Ok(AnthropicCacheStrategy::Current),
-        "claude_cli_like" | "claude-cli-like" | "claude" => {
-            Ok(AnthropicCacheStrategy::ClaudeCliLike)
+        "messages_native" | "messages-native" | "native" | "current" => {
+            Ok(AnthropicCacheStrategy::MessagesNative)
+        }
+        "claude_code_prompt_cache"
+        | "claude-code-prompt-cache"
+        | "claude_cli_like"
+        | "claude-cli-like"
+        | "claude" => {
+            Ok(AnthropicCacheStrategy::ClaudeCodePromptCache)
         }
         _ => Err(anyhow!(
-            "HOLON_ANTHROPIC_CACHE_STRATEGY expects current, claude_cli_like, claude-cli-like, or claude"
+            "HOLON_ANTHROPIC_CACHE_STRATEGY expects messages_native, claude_code_prompt_cache, or a legacy alias"
         )),
     }
 }
@@ -3315,28 +3276,39 @@ mod tests {
     #[test]
     fn anthropic_cache_strategy_parses_supported_values() {
         assert_eq!(
+            parse_anthropic_cache_strategy("messages_native").unwrap(),
+            AnthropicCacheStrategy::MessagesNative
+        );
+        assert_eq!(
+            parse_anthropic_cache_strategy("claude-code-prompt-cache").unwrap(),
+            AnthropicCacheStrategy::ClaudeCodePromptCache
+        );
+        assert_eq!(
             parse_anthropic_cache_strategy("current").unwrap(),
-            AnthropicCacheStrategy::Current
+            AnthropicCacheStrategy::MessagesNative
         );
         assert_eq!(
             parse_anthropic_cache_strategy("claude-cli-like").unwrap(),
-            AnthropicCacheStrategy::ClaudeCliLike
+            AnthropicCacheStrategy::ClaudeCodePromptCache
         );
         let err = parse_anthropic_cache_strategy("unknown")
             .err()
             .expect("unknown strategy should fail");
-        assert!(err.to_string().contains("claude-cli-like"));
-        assert!(err.to_string().contains("claude"));
+        assert!(err.to_string().contains("messages_native"));
+        assert!(err.to_string().contains("claude_code_prompt_cache"));
     }
 
     #[test]
-    fn anthropic_runtime_cache_strategy_defaults_to_claude_cli_like() {
+    fn anthropic_runtime_cache_strategy_defaults_to_claude_code_prompt_cache() {
         let _strategy_guard = EnvVarGuard::unset("HOLON_ANTHROPIC_CACHE_STRATEGY");
         let _betas_guard = EnvVarGuard::unset("HOLON_ANTHROPIC_BETAS");
 
         let config = resolve_anthropic_context_management_config().unwrap();
 
-        assert_eq!(config.cache_strategy, AnthropicCacheStrategy::ClaudeCliLike);
+        assert_eq!(
+            config.cache_strategy,
+            AnthropicCacheStrategy::ClaudeCodePromptCache
+        );
         assert_eq!(
             config.betas,
             vec![
@@ -3350,11 +3322,11 @@ mod tests {
     fn anthropic_runtime_cache_strategy_empty_env_uses_default() {
         assert_eq!(
             parse_anthropic_cache_strategy_env("").unwrap(),
-            AnthropicCacheStrategy::ClaudeCliLike
+            AnthropicCacheStrategy::ClaudeCodePromptCache
         );
         assert_eq!(
             parse_anthropic_cache_strategy_env("  ").unwrap(),
-            AnthropicCacheStrategy::ClaudeCliLike
+            AnthropicCacheStrategy::ClaudeCodePromptCache
         );
     }
 
@@ -3362,7 +3334,7 @@ mod tests {
     fn anthropic_context_management_struct_default_stays_neutral() {
         assert_eq!(
             AnthropicContextManagementConfig::default().cache_strategy,
-            AnthropicCacheStrategy::Current
+            AnthropicCacheStrategy::MessagesNative
         );
         assert!(AnthropicContextManagementConfig::default().betas.is_empty());
     }
@@ -3869,7 +3841,7 @@ mod tests {
         );
         assert_eq!(
             deepseek_anthropic.context_management.cache_strategy,
-            AnthropicCacheStrategy::Current
+            AnthropicCacheStrategy::ClaudeCodePromptCache
         );
 
         let deepseek_openai = providers
@@ -3890,7 +3862,7 @@ mod tests {
         assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
         assert_eq!(
             xiaomi.context_management.cache_strategy,
-            AnthropicCacheStrategy::Current
+            AnthropicCacheStrategy::ClaudeCodePromptCache
         );
 
         let xiaomi_anthropic = providers
@@ -3933,7 +3905,7 @@ mod tests {
         );
         assert_eq!(
             xiaomi_token_plan.context_management.cache_strategy,
-            AnthropicCacheStrategy::Current
+            AnthropicCacheStrategy::ClaudeCodePromptCache
         );
 
         let xiaomi_token_plan_anthropic = providers
@@ -4048,6 +4020,36 @@ mod tests {
         let vllm = providers.get(&ProviderId::parse("vllm").unwrap()).unwrap();
         assert_eq!(vllm.auth.source, CredentialSource::None);
         assert_eq!(vllm.credential, None);
+
+        for provider in [
+            "deepseek",
+            "deepseek-anthropic",
+            "xiaomi",
+            "xiaomi-anthropic",
+            "xiaomi-token-plan",
+            "xiaomi-token-plan-anthropic",
+            "zai",
+            "zai-anthropic",
+            "bigmodel",
+            "bigmodel-anthropic",
+            "minimax",
+            "minimax-portal",
+            "synthetic",
+            "vercel-ai-gateway",
+        ] {
+            let config = providers
+                .get(&ProviderId::parse(provider).unwrap())
+                .unwrap();
+            assert_eq!(
+                config.context_management.cache_strategy,
+                AnthropicCacheStrategy::ClaudeCodePromptCache,
+                "{provider} should use Claude Code-like prompt-cache lowering by default"
+            );
+            assert!(
+                config.context_management.betas.is_empty(),
+                "{provider} should not auto-inject Claude-specific betas"
+            );
+        }
     }
 
     #[test]

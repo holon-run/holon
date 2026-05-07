@@ -104,6 +104,7 @@ struct ApiResponseBlock {
     text: Option<String>,
     thinking: Option<String>,
     signature: Option<String>,
+    data: Option<String>,
     id: Option<String>,
     name: Option<String>,
     input: Option<Value>,
@@ -185,7 +186,8 @@ impl AgentProvider for AnthropicProvider {
                 .collect(),
             betas: self.context_management.betas.clone(),
             metadata: build_anthropic_metadata(&request, cache_strategy),
-            temperature: (cache_strategy == AnthropicCacheStrategy::ClaudeCliLike).then_some(1.0),
+            temperature: (cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache)
+                .then_some(1.0),
             context_management: build_context_management_request(&self.context_management),
         };
         let request_payload = serde_json::to_value(&request_body)?;
@@ -328,8 +330,8 @@ fn build_anthropic_wire_conversation(
     cache_strategy: AnthropicCacheStrategy,
 ) -> Vec<ConversationMessage> {
     match cache_strategy {
-        AnthropicCacheStrategy::Current => request.conversation.clone(),
-        AnthropicCacheStrategy::ClaudeCliLike => strip_initial_context_message(request),
+        AnthropicCacheStrategy::MessagesNative => request.conversation.clone(),
+        AnthropicCacheStrategy::ClaudeCodePromptCache => strip_initial_context_message(request),
     }
 }
 
@@ -361,8 +363,10 @@ fn build_anthropic_system(
     cache_strategy: AnthropicCacheStrategy,
 ) -> Value {
     match cache_strategy {
-        AnthropicCacheStrategy::Current => current_anthropic_system(request),
-        AnthropicCacheStrategy::ClaudeCliLike => claude_cli_like_anthropic_system(request),
+        AnthropicCacheStrategy::MessagesNative => current_anthropic_system(request),
+        AnthropicCacheStrategy::ClaudeCodePromptCache => {
+            claude_code_prompt_cache_anthropic_system(request)
+        }
     }
 }
 
@@ -381,7 +385,7 @@ fn current_anthropic_system(request: &ProviderTurnRequest) -> Value {
     }
 }
 
-fn claude_cli_like_anthropic_system(request: &ProviderTurnRequest) -> Value {
+fn claude_code_prompt_cache_anthropic_system(request: &ProviderTurnRequest) -> Value {
     let mut system = vec![json!({
         "type": "text",
         "text": "x-anthropic-billing-header: holon",
@@ -417,7 +421,7 @@ fn build_anthropic_metadata(
     request: &ProviderTurnRequest,
     cache_strategy: AnthropicCacheStrategy,
 ) -> Option<Value> {
-    if cache_strategy != AnthropicCacheStrategy::ClaudeCliLike {
+    if cache_strategy != AnthropicCacheStrategy::ClaudeCodePromptCache {
         return None;
     }
     let session_id = normalize_anthropic_session_id(
@@ -507,11 +511,13 @@ fn anthropic_request_lowering_mode(
     cache_strategy: AnthropicCacheStrategy,
 ) -> &'static str {
     match cache_strategy {
-        AnthropicCacheStrategy::ClaudeCliLike => "claude_cli_like_prompt_cache",
-        AnthropicCacheStrategy::Current if request.prompt_frame.has_structured_system_blocks() => {
+        AnthropicCacheStrategy::ClaudeCodePromptCache => "claude_code_prompt_cache",
+        AnthropicCacheStrategy::MessagesNative
+            if request.prompt_frame.has_structured_system_blocks() =>
+        {
             "prompt_cache_blocks"
         }
-        AnthropicCacheStrategy::Current => "plain_system",
+        AnthropicCacheStrategy::MessagesNative => "plain_system",
     }
 }
 
@@ -616,6 +622,10 @@ fn conversation_message_to_api(
                                     }
                                     v
                                 }
+                                ModelBlock::RedactedThinking { data } => json!({
+                                    "type": "redacted_thinking",
+                                    "data": data,
+                                }),
                             },
                             rolling_cache_block_index == Some(block_index),
                         )
@@ -675,16 +685,20 @@ fn last_cacheable_content_index(
         ConversationMessage::UserText(_) => Some(0),
         ConversationMessage::UserBlocks(blocks) => (!blocks.is_empty()).then_some(blocks.len() - 1),
         ConversationMessage::AssistantBlocks(blocks) => match cache_strategy {
-            AnthropicCacheStrategy::Current => (!blocks.is_empty()).then_some(blocks.len() - 1),
-            AnthropicCacheStrategy::ClaudeCliLike => {
+            AnthropicCacheStrategy::MessagesNative => {
+                (!blocks.is_empty()).then_some(blocks.len() - 1)
+            }
+            AnthropicCacheStrategy::ClaudeCodePromptCache => {
                 blocks.iter().enumerate().rev().find_map(|(index, block)| {
                     matches!(block, ModelBlock::Text { .. }).then_some(index)
                 })
             }
         },
         ConversationMessage::UserToolResults(results) => match cache_strategy {
-            AnthropicCacheStrategy::Current => (!results.is_empty()).then_some(results.len() - 1),
-            AnthropicCacheStrategy::ClaudeCliLike => None,
+            AnthropicCacheStrategy::MessagesNative => {
+                (!results.is_empty()).then_some(results.len() - 1)
+            }
+            AnthropicCacheStrategy::ClaudeCodePromptCache => None,
         },
     }
 }
@@ -713,6 +727,9 @@ fn api_response_block_to_model(block: ApiResponseBlock) -> Option<ModelBlock> {
         "thinking" => Some(ModelBlock::Thinking {
             text: block.thinking.unwrap_or_default(),
             signature: block.signature.unwrap_or_default(),
+        }),
+        "redacted_thinking" => Some(ModelBlock::RedactedThinking {
+            data: block.data.unwrap_or_default(),
         }),
         _ => None,
     }
@@ -1040,7 +1057,7 @@ fn system_cache_breakpoint_metadata(
     cache_strategy: AnthropicCacheStrategy,
     idx: usize,
 ) -> (String, String) {
-    if cache_strategy == AnthropicCacheStrategy::Current {
+    if cache_strategy == AnthropicCacheStrategy::MessagesNative {
         if let Some(block) = request.prompt_frame.system_blocks.get(idx) {
             return (
                 format!("system_blocks[{}]", idx),
@@ -1149,6 +1166,7 @@ fn model_block_kind(block: &ModelBlock) -> &'static str {
         ModelBlock::Text { .. } => "assistant_text",
         ModelBlock::ToolUse { .. } => "tool_use",
         ModelBlock::Thinking { .. } => "thinking",
+        ModelBlock::RedactedThinking { .. } => "redacted_thinking",
     }
 }
 
@@ -1161,6 +1179,10 @@ fn hash_model_block(block: &ModelBlock) -> String {
         ModelBlock::Thinking { text, .. } => {
             // Include a stable prefix so thinking blocks hash differently from text blocks
             let value = json!({ "type": "thinking", "thinking": text });
+            sha256_hex(canonical_json(&value).as_bytes())
+        }
+        ModelBlock::RedactedThinking { data } => {
+            let value = json!({ "type": "redacted_thinking", "data": data });
             sha256_hex(canonical_json(&value).as_bytes())
         }
         ModelBlock::ToolUse { id, name, input } => {
@@ -1190,6 +1212,7 @@ fn estimate_model_block_tokens(block: &ModelBlock) -> u64 {
         ModelBlock::Text { text } => estimate_tokens_from_chars(text.len()),
         ModelBlock::ToolUse { .. } => 50,
         ModelBlock::Thinking { text, .. } => estimate_tokens_from_chars(text.len()),
+        ModelBlock::RedactedThinking { data } => estimate_tokens_from_chars(data.len()),
     }
 }
 
@@ -1296,7 +1319,10 @@ mod tests {
 
         let messages = build_anthropic_messages(
             &conversation,
-            rolling_conversation_cache_marker(&conversation, AnthropicCacheStrategy::Current),
+            rolling_conversation_cache_marker(
+                &conversation,
+                AnthropicCacheStrategy::MessagesNative,
+            ),
         );
 
         assert_eq!(
@@ -1317,7 +1343,10 @@ mod tests {
 
         let messages = build_anthropic_messages(
             &conversation,
-            rolling_conversation_cache_marker(&conversation, AnthropicCacheStrategy::Current),
+            rolling_conversation_cache_marker(
+                &conversation,
+                AnthropicCacheStrategy::MessagesNative,
+            ),
         );
 
         assert_eq!(
@@ -1337,7 +1366,10 @@ mod tests {
 
         let messages = build_anthropic_messages(
             &conversation,
-            rolling_conversation_cache_marker(&conversation, AnthropicCacheStrategy::Current),
+            rolling_conversation_cache_marker(
+                &conversation,
+                AnthropicCacheStrategy::MessagesNative,
+            ),
         );
 
         assert_eq!(
@@ -1420,11 +1452,11 @@ mod tests {
             &request.conversation,
             rolling_conversation_cache_marker(
                 &request.conversation,
-                AnthropicCacheStrategy::Current,
+                AnthropicCacheStrategy::MessagesNative,
             ),
             &request_payload,
             "claude-sonnet-4-6",
-            AnthropicCacheStrategy::Current,
+            AnthropicCacheStrategy::MessagesNative,
             &[],
         );
 
@@ -1502,11 +1534,11 @@ mod tests {
             &request.conversation,
             rolling_conversation_cache_marker(
                 &request.conversation,
-                AnthropicCacheStrategy::Current,
+                AnthropicCacheStrategy::MessagesNative,
             ),
             &request_payload,
             "claude-sonnet-4-6",
-            AnthropicCacheStrategy::Current,
+            AnthropicCacheStrategy::MessagesNative,
             &[],
         );
 
@@ -1530,7 +1562,7 @@ mod tests {
     fn anthropic_request_payload_for_test(request: &ProviderTurnRequest) -> Value {
         let rolling_cache_marker = rolling_conversation_cache_marker(
             &request.conversation,
-            AnthropicCacheStrategy::Current,
+            AnthropicCacheStrategy::MessagesNative,
         );
         let body = MessagesRequest {
             model: "claude-sonnet-4-6",
@@ -1747,10 +1779,10 @@ mod tests {
             &request.conversation,
             rolling_conversation_cache_marker(
                 &request.conversation,
-                AnthropicCacheStrategy::Current,
+                AnthropicCacheStrategy::MessagesNative,
             ),
             &request_payload,
-            AnthropicCacheStrategy::Current,
+            AnthropicCacheStrategy::MessagesNative,
         );
         let (before, after) =
             estimate_token_distribution_from_payload(&request_payload, &breakpoints);
@@ -1791,7 +1823,7 @@ mod tests {
             &request.conversation,
             None,
             &request_payload,
-            AnthropicCacheStrategy::Current,
+            AnthropicCacheStrategy::MessagesNative,
         );
 
         // Should be bounded by MAX_BREAKPOINTS (10)

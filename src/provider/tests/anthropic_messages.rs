@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use super::support::*;
 use super::*;
 use crate::config::{AnthropicCacheStrategy, ProviderId};
-use axum::{http::HeaderMap, response::IntoResponse, routing::post, Json, Router};
+use axum::{http::HeaderMap, routing::post, Json, Router};
 use serde_json::{json, Value};
 
 #[tokio::test]
@@ -177,7 +177,7 @@ async fn anthropic_continuation_request_retains_cache_control_prompt_anchors() {
 }
 
 #[tokio::test]
-async fn anthropic_claude_cli_like_strategy_moves_context_to_system_prefix() {
+async fn anthropic_claude_code_prompt_cache_strategy_moves_context_to_system_prefix() {
     let captured_body = Arc::new(Mutex::new(None::<serde_json::Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url = spawn_test_server(Router::new().route(
@@ -208,7 +208,7 @@ async fn anthropic_claude_cli_like_strategy_moves_context_to_system_prefix() {
         .get_mut(&ProviderId::anthropic())
         .unwrap();
     anthropic.base_url = base_url;
-    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCliLike;
+    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCodePromptCache;
     anthropic.context_management.betas = vec![
         "claude-code-20250219".into(),
         "prompt-caching-scope-2026-01-05".into(),
@@ -230,10 +230,10 @@ async fn anthropic_claude_cli_like_strategy_moves_context_to_system_prefix() {
     let diagnostics = response.request_diagnostics.as_ref().unwrap();
     assert_eq!(
         diagnostics.request_lowering_mode,
-        "claude_cli_like_prompt_cache"
+        "claude_code_prompt_cache"
     );
     let cache_diagnostics = diagnostics.anthropic_cache.as_ref().unwrap();
-    assert_eq!(cache_diagnostics.cache_strategy, "claude_cli_like");
+    assert_eq!(cache_diagnostics.cache_strategy, "claude_code_prompt_cache");
     assert_eq!(cache_diagnostics.system_cache_control_count, 2);
     assert_eq!(cache_diagnostics.message_cache_control_count, 1);
     assert_eq!(cache_diagnostics.conversation_message_count, 1);
@@ -390,7 +390,7 @@ async fn anthropic_request_emits_context_management_when_enabled() {
 }
 
 #[tokio::test]
-async fn anthropic_claude_cli_like_strategy_uses_valid_default_session_id() {
+async fn anthropic_response_preserves_thinking_blocks_for_round_trip() {
     let captured_body = Arc::new(Mutex::new(None::<Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url = spawn_test_server(Router::new().route(
@@ -421,7 +421,213 @@ async fn anthropic_claude_cli_like_strategy_uses_valid_default_session_id() {
         .get_mut(&ProviderId::anthropic())
         .unwrap();
     anthropic.base_url = base_url;
-    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCliLike;
+    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::MessagesNative;
+    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+
+    let mut request = provider_turn_request_with_prompt_frame();
+    request.conversation.extend([
+        ConversationMessage::AssistantBlocks(vec![
+            ModelBlock::Thinking {
+                text: "I need to inspect the repository.".into(),
+                signature: "opaque-signature".into(),
+            },
+            ModelBlock::ToolUse {
+                id: "tool-1".into(),
+                name: "ProbeTool".into(),
+                input: json!({ "reason": "round-trip" }),
+            },
+        ]),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "tool-1".into(),
+            content: "probe_result=OK".into(),
+            is_error: false,
+            error: None,
+        }]),
+    ]);
+
+    provider.complete_turn(request).await.unwrap();
+
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("server should capture request body");
+    let assistant_content = body["messages"][1]["content"].as_array().unwrap();
+    assert_eq!(assistant_content[0]["type"], json!("thinking"));
+    assert_eq!(
+        assistant_content[0]["thinking"],
+        json!("I need to inspect the repository.")
+    );
+    assert_eq!(assistant_content[0]["signature"], json!("opaque-signature"));
+    assert_eq!(assistant_content[1]["type"], json!("tool_use"));
+}
+
+#[tokio::test]
+async fn anthropic_response_parses_thinking_and_redacted_thinking_blocks() {
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |Json(_body): Json<Value>| async move {
+            Json(json!({
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "I should use the tool.",
+                        "signature": "opaque-signature"
+                    },
+                    {
+                        "type": "redacted_thinking",
+                        "data": "opaque-redacted-data"
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "ProbeTool",
+                        "input": { "reason": "parse" }
+                    }
+                ],
+                "stop_reason": "tool_use",
+                "usage": { "input_tokens": 4, "output_tokens": 2 }
+            }))
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    let anthropic = fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap();
+    anthropic.base_url = base_url;
+    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::MessagesNative;
+    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+
+    let response = provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        &response.blocks[0],
+        ModelBlock::Thinking { text, signature }
+            if text == "I should use the tool." && signature == "opaque-signature"
+    ));
+    assert!(matches!(
+        &response.blocks[1],
+        ModelBlock::RedactedThinking { data } if data == "opaque-redacted-data"
+    ));
+    assert!(matches!(
+        &response.blocks[2],
+        ModelBlock::ToolUse { id, name, .. } if id == "tool-1" && name == "ProbeTool"
+    ));
+}
+
+#[tokio::test]
+async fn anthropic_response_preserves_redacted_thinking_blocks_for_round_trip() {
+    let captured_body = Arc::new(Mutex::new(None::<Value>));
+    let captured_body_for_server = captured_body.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let captured_body = captured_body_for_server.clone();
+            async move {
+                *captured_body.lock().unwrap() = Some(body);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    let anthropic = fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap();
+    anthropic.base_url = base_url;
+    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::MessagesNative;
+    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+
+    let mut request = provider_turn_request_with_prompt_frame();
+    request.conversation.extend([
+        ConversationMessage::AssistantBlocks(vec![
+            ModelBlock::RedactedThinking {
+                data: "opaque-redacted-data".into(),
+            },
+            ModelBlock::ToolUse {
+                id: "tool-1".into(),
+                name: "ProbeTool".into(),
+                input: json!({ "reason": "round-trip" }),
+            },
+        ]),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "tool-1".into(),
+            content: "probe_result=OK".into(),
+            is_error: false,
+            error: None,
+        }]),
+    ]);
+
+    provider.complete_turn(request).await.unwrap();
+
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("server should capture request body");
+    let assistant_content = body["messages"][1]["content"].as_array().unwrap();
+    assert_eq!(assistant_content[0]["type"], json!("redacted_thinking"));
+    assert_eq!(assistant_content[0]["data"], json!("opaque-redacted-data"));
+    assert_eq!(assistant_content[1]["type"], json!("tool_use"));
+}
+
+#[tokio::test]
+async fn anthropic_claude_code_prompt_cache_strategy_uses_valid_default_session_id() {
+    let captured_body = Arc::new(Mutex::new(None::<Value>));
+    let captured_body_for_server = captured_body.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let captured_body = captured_body_for_server.clone();
+            async move {
+                *captured_body.lock().unwrap() = Some(body);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    let anthropic = fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap();
+    anthropic.base_url = base_url;
+    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCodePromptCache;
     let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
 
     provider
@@ -444,7 +650,7 @@ async fn anthropic_claude_cli_like_strategy_uses_valid_default_session_id() {
 }
 
 #[tokio::test]
-async fn anthropic_claude_cli_like_strategy_keeps_non_empty_initial_messages() {
+async fn anthropic_claude_code_prompt_cache_strategy_keeps_non_empty_initial_messages() {
     let captured_body = Arc::new(Mutex::new(None::<Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url = spawn_test_server(Router::new().route(
@@ -475,7 +681,7 @@ async fn anthropic_claude_cli_like_strategy_keeps_non_empty_initial_messages() {
         .get_mut(&ProviderId::anthropic())
         .unwrap();
     anthropic.base_url = base_url;
-    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCliLike;
+    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCodePromptCache;
     let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
 
     provider
@@ -501,7 +707,7 @@ async fn anthropic_claude_cli_like_strategy_keeps_non_empty_initial_messages() {
 }
 
 #[tokio::test]
-async fn anthropic_claude_cli_like_strategy_does_not_cache_mark_tool_results() {
+async fn anthropic_claude_code_prompt_cache_strategy_does_not_cache_mark_tool_results() {
     let captured_body = Arc::new(Mutex::new(None::<Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url = spawn_test_server(Router::new().route(
@@ -532,7 +738,7 @@ async fn anthropic_claude_cli_like_strategy_does_not_cache_mark_tool_results() {
         .get_mut(&ProviderId::anthropic())
         .unwrap();
     anthropic.base_url = base_url;
-    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCliLike;
+    anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCodePromptCache;
     let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
 
     let mut request = provider_turn_request_with_prompt_frame();

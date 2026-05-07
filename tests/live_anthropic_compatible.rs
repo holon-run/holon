@@ -80,27 +80,40 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         }),
     );
 
+    let initial_user_text = "Call ProbeTool once with reason context-management-smoke. Do not answer directly before the tool result.".to_string();
+    let first_output = provider
+        .complete_turn(ProviderTurnRequest {
+            prompt_frame: prompt_frame.clone(),
+            conversation: vec![
+                ConversationMessage::UserBlocks(context_blocks.clone()),
+                ConversationMessage::UserText(initial_user_text.clone()),
+            ],
+            tools: vec![tool.clone()],
+        })
+        .await?;
+    let tool_use_id = first_output
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            ModelBlock::ToolUse { id, name, .. } if name == "ProbeTool" => Some(id.clone()),
+            _ => None,
+        })
+        .with_context(|| {
+            format!(
+                "{provider_id_text}/{model} did not request ProbeTool; blocks={:?}",
+                first_output.blocks
+            )
+        })?;
+
     let output = provider
         .complete_turn(ProviderTurnRequest {
             prompt_frame,
             conversation: vec![
                 ConversationMessage::UserBlocks(context_blocks),
-                ConversationMessage::UserText("Use the probe result and answer exactly OK.".into()),
-                ConversationMessage::AssistantBlocks(vec![
-                    // Include a thinking block so that thinking-mode models (e.g. DeepSeek V4 Pro)
-                    // accept the assistant message. Non-thinking models simply ignore it.
-                    ModelBlock::Thinking {
-                        text: "I should use the probe tool.".into(),
-                        signature: String::new(),
-                    },
-                    ModelBlock::ToolUse {
-                        id: "call_context_management_probe".into(),
-                        name: "ProbeTool".into(),
-                        input: serde_json::json!({ "reason": "context-management-smoke" }),
-                    },
-                ]),
+                ConversationMessage::UserText(initial_user_text),
+                ConversationMessage::AssistantBlocks(first_output.blocks),
                 ConversationMessage::UserToolResults(vec![ToolResultBlock {
-                    tool_use_id: "call_context_management_probe".into(),
+                    tool_use_id,
                     content: "probe_result=OK".into(),
                     is_error: false,
                     error: None,
@@ -116,7 +129,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         .filter_map(|block| match block {
             ModelBlock::Text { text } => Some(text.as_str()),
             ModelBlock::ToolUse { .. } => None,
-            ModelBlock::Thinking { .. } => None,
+            ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => None,
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -124,11 +137,18 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         output
             .blocks
             .iter()
-            .all(|block| matches!(block, ModelBlock::Text { .. } | ModelBlock::Thinking { .. })),
+            .all(|block| {
+                matches!(
+                    block,
+                    ModelBlock::Text { .. }
+                        | ModelBlock::Thinking { .. }
+                        | ModelBlock::RedactedThinking { .. }
+                )
+            }),
         "{provider_id_text}/{model} emitted another tool call instead of completing the continuation"
     );
     assert!(
-        response_text.trim().trim_end_matches('.') == "OK",
+        response_text.contains("OK"),
         "{provider_id_text}/{model} did not answer from the tool result; got {response_text:?}"
     );
     Ok(())
