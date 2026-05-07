@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use crate::runtime::closure::{derive_closure_decision, runtime_error_active, ClosureFacts};
 use crate::storage::AppStorage;
 use crate::types::{
-    AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason, ChildAgentObservabilitySnapshot,
-    ChildAgentPhase, TaskRecord, TaskStatus, TokenUsage, WaitingReason, WorkItemState,
-    WorktreeSession,
+    AgentListEntry, AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason,
+    ChildAgentObservabilitySnapshot, ChildAgentPhase, TaskRecord, TaskStatus, TokenUsage,
+    WaitingReason, WorkItemState, WorktreeSession,
 };
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
@@ -369,6 +369,28 @@ impl RuntimeHandle {
             recent_operator_notifications: self.recent_operator_notifications(10).await?,
             recent_brief_count: self.inner.storage.read_recent_briefs(50)?.len(),
             recent_event_count: self.inner.storage.read_recent_events(100)?.len(),
+        })
+    }
+
+    pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {
+        let agent = self.agent_state().await?;
+        let model = self.model_state_for(&agent);
+        let closure = self.current_closure_decision().await?;
+        let identity = self.agent_identity_view().await?;
+        Ok(AgentListEntry {
+            identity,
+            lifecycle: crate::types::AgentLifecycleHint::from_status(
+                &agent.id,
+                agent.status.clone(),
+            ),
+            status: agent.status,
+            pending: agent.pending,
+            current_run_id: agent.current_run_id,
+            waiting_reason: closure.waiting_reason,
+            model: (&model).into(),
+            active_workspace_entry: agent
+                .active_workspace_entry
+                .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
         })
     }
 

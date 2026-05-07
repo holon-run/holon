@@ -15,10 +15,10 @@ use crate::{
     },
     system::ExecutionSnapshot,
     types::{
-        ActiveWorkspaceEntry, AgentSummary, BriefRecord, ExternalTriggerStateSnapshot,
-        OperatorMessageRecord, OperatorNotificationRecord, TaskRecord, TimerRecord,
-        TranscriptEntry, TrustLevel, TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord,
-        WorkspaceOccupancyRecord, WorktreeSession,
+        ActiveWorkspaceEntry, AgentListEntry, AgentSummary, BriefRecord,
+        ExternalTriggerStateSnapshot, OperatorMessageRecord, OperatorNotificationRecord,
+        TaskRecord, TimerRecord, TranscriptEntry, TrustLevel, TurnTerminalRecord,
+        WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -275,6 +275,10 @@ impl LocalClient {
 
     pub async fn list_agents(&self) -> Result<Vec<AgentSummary>> {
         self.get_json("/agents").await
+    }
+
+    pub async fn list_agent_entries(&self) -> Result<Vec<AgentListEntry>> {
+        self.get_json("/agents/list").await
     }
 
     pub async fn handshake(&self) -> Result<Value> {
@@ -564,7 +568,11 @@ impl LocalClient {
             .await
             .with_context(|| format!("failed to send {}", request.path))?;
         let status = response.status();
-        let bytes = response.bytes().await?.to_vec();
+        let bytes = response
+            .bytes()
+            .await
+            .with_context(|| format!("failed to read response body for {}", request.path))?
+            .to_vec();
         decode_or_error(status.as_u16(), bytes, &request.path)
     }
 

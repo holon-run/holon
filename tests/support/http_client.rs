@@ -60,6 +60,82 @@ pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> R
     Ok(())
 }
 
+pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let original_cwd = tempdir()?.keep();
+    let worktree_path = tempdir()?.keep();
+    runtime
+        .enter_worktree(
+            original_cwd,
+            "main".into(),
+            worktree_path,
+            "slim-list-test".into(),
+        )
+        .await?;
+    let state = runtime.agent_state().await?;
+    assert!(
+        state
+            .active_workspace_entry
+            .as_ref()
+            .and_then(|entry| entry.projection_metadata.as_ref())
+            .is_some(),
+        "test setup should seed nested projection metadata"
+    );
+
+    let client = reqwest::Client::new();
+    let payload: serde_json::Value = client
+        .get(format!("{base}/agents/list"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let entry = payload
+        .as_array()
+        .and_then(|entries| entries.first())
+        .expect("agent list should contain default agent");
+    assert_eq!(entry["identity"]["agent_id"], "default");
+    assert!(entry.get("status").is_some());
+    assert!(entry.get("model").is_some());
+    let workspace_entry = entry
+        .get("active_workspace_entry")
+        .expect("active workspace entry should be present");
+    assert!(
+        workspace_entry.get("projection_metadata").is_none(),
+        "projection metadata should not be present in /agents/list"
+    );
+
+    for heavy_field in [
+        "skills",
+        "active_children",
+        "active_waiting_intents",
+        "active_external_triggers",
+        "recent_operator_notifications",
+        "loaded_agents_md",
+        "recent_brief_count",
+        "recent_event_count",
+    ] {
+        assert!(
+            entry.get(heavy_field).is_none(),
+            "{heavy_field} should not be present in /agents/list"
+        );
+    }
+
+    let mut config = test_config();
+    config.http_addr = base.trim_start_matches("http://").to_string();
+    let local_client = LocalClient::new(config)?;
+    let entries = local_client.list_agent_entries().await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].identity.agent_id, "default");
+    assert!(entries[0]
+        .active_workspace_entry
+        .as_ref()
+        .is_some_and(|entry| entry.projection_metadata.is_none()));
+
+    server.abort();
+    Ok(())
+}
+
 #[cfg(unix)]
 pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()> {
     let mut config = test_config();

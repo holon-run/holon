@@ -12,6 +12,7 @@ macro_rules! http_async_tests {
 }
 
 http_async_tests!(
+    agent_list_entries_are_slim_for_tui_bootstrap,
     local_client_over_http_can_read_agent_state_snapshot,
     local_client_over_http_can_stream_events_with_since_query,
     local_client_over_http_can_stream_events_with_last_event_id_header,

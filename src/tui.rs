@@ -10,8 +10,8 @@ use crate::{
     system::{workspace_access_mode_label, workspace_projection_label},
     tui_markdown::{render_markdown_text, render_markdown_text_spaced},
     types::{
-        AgentSummary, BriefRecord, MessageBody, OperatorMessageRecord, OperatorMessageStatus,
-        TaskRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        AgentListEntry, AgentSummary, BriefRecord, MessageBody, OperatorMessageRecord,
+        OperatorMessageStatus, TaskRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
     },
 };
 use anyhow::{anyhow, Result};
@@ -224,10 +224,10 @@ mod tests {
         config::{AltScreenMode, AppConfig},
         system::{ExecutionProfile, ExecutionSnapshot},
         types::{
-            AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
-            AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus, AgentSummary,
-            AgentTokenUsageSummary, AgentVisibility, BriefKind, BriefRecord, ChildAgentSummary,
-            ClosureDecision, ClosureOutcome, LoadedAgentsMdView, MessageBody,
+            AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry, AgentModelSource,
+            AgentModelState, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
+            AgentSummary, AgentTokenUsageSummary, AgentVisibility, BriefKind, BriefRecord,
+            ChildAgentSummary, ClosureDecision, ClosureOutcome, LoadedAgentsMdView, MessageBody,
             OperatorMessageRecord, OperatorMessageStatus, RuntimePosture, SkillsRuntimeView,
             TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingIntentSummary,
         },
@@ -2676,6 +2676,32 @@ mod tests {
     }
 
     #[test]
+    fn slim_agent_list_refresh_preserves_selected_projection_summary() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.agents = vec![sample_agent_summary("alpha"), sample_agent_summary("beta")];
+        app.selected_agent = 1;
+        app.projection = Some(crate::tui::projection::TuiProjection::from_snapshot(
+            sample_snapshot("beta", "cursor-1"),
+        ));
+
+        let beta_entry = AgentListEntry::from_summary(&sample_agent_summary("beta"));
+        app.apply_loaded_agents(Ok(vec![
+            AgentListEntry::from_summary(&sample_agent_summary("alpha")),
+            beta_entry,
+        ]));
+
+        let selected = app.selected_agent_summary().unwrap();
+        assert_eq!(selected.identity.agent_id, "beta");
+        assert_eq!(selected.recent_event_count, 1);
+        assert_eq!(selected.model.resolved_policy.description, "Sample policy");
+        assert!(app.projection.is_some());
+    }
+
+    #[test]
     fn apply_agent_list_clears_stale_projection_when_selected_agent_disappears() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
@@ -2742,7 +2768,7 @@ mod tests {
 
         tokio::time::timeout(std::time::Duration::from_millis(50), app.tick())
             .await
-            .expect("tick should not wait for slow /agents")
+            .expect("tick should not wait for slow /agents/list")
             .unwrap();
 
         assert!(app.agent_list_refresh_in_flight);

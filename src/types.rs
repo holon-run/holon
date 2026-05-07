@@ -60,6 +60,13 @@ pub struct ActiveWorkspaceEntry {
     pub projection_metadata: Option<Value>,
 }
 
+impl ActiveWorkspaceEntry {
+    pub fn without_projection_metadata(mut self) -> Self {
+        self.projection_metadata = None;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceOccupancyRecord {
     pub occupancy_id: String,
@@ -3096,6 +3103,175 @@ pub struct AgentSummary {
     pub recent_operator_notifications: Vec<OperatorNotificationRecord>,
     pub recent_brief_count: usize,
     pub recent_event_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentListModelSummary {
+    pub source: AgentModelSource,
+    pub runtime_default_model: ModelRef,
+    pub effective_model: ModelRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<ModelRef>,
+    #[serde(default)]
+    pub fallback_active: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effective_fallback_models: Vec<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_reasoning_effort: Option<String>,
+}
+
+impl From<&AgentModelState> for AgentListModelSummary {
+    fn from(value: &AgentModelState) -> Self {
+        Self {
+            source: value.source.clone(),
+            runtime_default_model: value.runtime_default_model.clone(),
+            effective_model: value.effective_model.clone(),
+            requested_model: value.requested_model.clone(),
+            active_model: value.active_model.clone(),
+            fallback_active: value.fallback_active,
+            effective_fallback_models: value.effective_fallback_models.clone(),
+            override_model: value.override_model.clone(),
+            override_reasoning_effort: value.override_reasoning_effort.clone(),
+        }
+    }
+}
+
+impl AgentListModelSummary {
+    pub fn into_model_state(self) -> AgentModelState {
+        AgentModelState {
+            source: self.source,
+            runtime_default_model: self.runtime_default_model,
+            effective_model: self.effective_model,
+            requested_model: self.requested_model,
+            active_model: self.active_model,
+            fallback_active: self.fallback_active,
+            effective_fallback_models: self.effective_fallback_models,
+            override_model: self.override_model,
+            override_reasoning_effort: self.override_reasoning_effort,
+            resolved_policy: ResolvedRuntimeModelPolicy::default(),
+            available_models: Vec::new(),
+            model_availability: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentListEntry {
+    pub identity: AgentIdentityView,
+    pub status: AgentStatus,
+    #[serde(default)]
+    pub lifecycle: AgentLifecycleHint,
+    #[serde(default)]
+    pub pending: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_reason: Option<WaitingReason>,
+    pub model: AgentListModelSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_workspace_entry: Option<ActiveWorkspaceEntry>,
+}
+
+impl AgentListEntry {
+    pub fn from_summary(summary: &AgentSummary) -> Self {
+        Self {
+            identity: summary.identity.clone(),
+            status: summary.agent.status.clone(),
+            lifecycle: summary.lifecycle.clone(),
+            pending: summary.agent.pending,
+            current_run_id: summary.agent.current_run_id.clone(),
+            waiting_reason: summary.closure.waiting_reason,
+            model: (&summary.model).into(),
+            active_workspace_entry: summary
+                .agent
+                .active_workspace_entry
+                .clone()
+                .map(ActiveWorkspaceEntry::without_projection_metadata),
+        }
+    }
+
+    pub fn into_agent_summary_placeholder(self) -> AgentSummary {
+        let mut agent = AgentState::new(self.identity.agent_id.clone());
+        agent.status = self.status;
+        agent.pending = self.pending;
+        agent.current_run_id = self.current_run_id;
+        agent.active_workspace_entry = self.active_workspace_entry.clone();
+        agent.model_override = self.model.override_model.clone();
+        agent.model_override_reasoning_effort = self.model.override_reasoning_effort.clone();
+
+        let runtime_posture = if agent.status == AgentStatus::Asleep {
+            RuntimePosture::Sleeping
+        } else {
+            RuntimePosture::Awake
+        };
+        let closure = ClosureDecision {
+            outcome: if self.waiting_reason.is_some() {
+                ClosureOutcome::Waiting
+            } else {
+                ClosureOutcome::Completed
+            },
+            waiting_reason: self.waiting_reason,
+            work_signal: None,
+            runtime_posture,
+            evidence: Vec::new(),
+        };
+        let execution = if let Some(entry) = agent.active_workspace_entry.as_ref() {
+            ExecutionSnapshot {
+                profile: ExecutionProfile::default(),
+                policy: ExecutionProfile::default().policy_snapshot(),
+                attached_workspaces: Vec::new(),
+                workspace_id: Some(entry.workspace_id.clone()),
+                workspace_anchor: entry.workspace_anchor.clone(),
+                execution_root: entry.execution_root.clone(),
+                cwd: entry.cwd.clone(),
+                execution_root_id: Some(entry.execution_root_id.clone()),
+                projection_kind: Some(entry.projection_kind),
+                access_mode: Some(entry.access_mode),
+                worktree_root: None,
+            }
+        } else {
+            ExecutionSnapshot {
+                profile: ExecutionProfile::default(),
+                policy: ExecutionProfile::default().policy_snapshot(),
+                attached_workspaces: Vec::new(),
+                workspace_id: None,
+                workspace_anchor: PathBuf::new(),
+                execution_root: PathBuf::new(),
+                cwd: PathBuf::new(),
+                execution_root_id: None,
+                projection_kind: None,
+                access_mode: None,
+                worktree_root: None,
+            }
+        };
+
+        AgentSummary {
+            identity: self.identity,
+            lifecycle: self.lifecycle,
+            model: self.model.into_model_state(),
+            token_usage: AgentTokenUsageSummary {
+                total: TokenUsage::new(0, 0),
+                total_model_rounds: 0,
+                last_turn: None,
+            },
+            closure,
+            execution,
+            agent,
+            active_workspace_occupancy: None,
+            loaded_agents_md: LoadedAgentsMdView::default(),
+            skills: SkillsRuntimeView::default(),
+            active_children: Vec::new(),
+            active_waiting_intents: Vec::new(),
+            active_external_triggers: Vec::new(),
+            recent_operator_notifications: Vec::new(),
+            recent_brief_count: 0,
+            recent_event_count: 0,
+        }
+    }
 }
 
 #[cfg(test)]
