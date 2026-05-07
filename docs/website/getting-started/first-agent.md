@@ -52,7 +52,7 @@ Holon can run in two modes:
 Run a single command:
 
 ```bash
-cargo run -- ask "What is Holon?"
+cargo run -- run "What is Holon?"
 ```
 
 This executes one turn and exits. Great for quick tasks, but not ideal for interactive sessions.
@@ -74,7 +74,7 @@ This starts Holon as a background service with:
 #### Verify the daemon is running
 
 ```bash
-cargo run -- status
+cargo run -- daemon status
 ```
 
 You should see runtime status including the default agent.
@@ -124,7 +124,7 @@ cargo run -- serve --access lan --host 192.168.1.10 --token-file ~/.config/holon
 cargo run -- tui --connect http://192.168.1.10:7878 --token-file ~/.config/holon/remote.token
 ```
 
-See [Remote TUI Access RFC](/rfcs/remote-tui-access.md) for details.
+See [Remote TUI Access RFC](https://github.com/holon-run/holon/blob/main/docs/rfcs/remote-tui-access.md) for details.
 
 ## Step 4: Create an agent
 
@@ -132,7 +132,7 @@ Holon supports different agent types for different use cases.
 
 ### The default agent
 
-When you start Holon, it automatically creates a **default agent** in `~/.holon/agents/default/`. This agent:
+When you start Holon, it automatically creates a **default agent** in `~/.holon/agents/main/`. This agent:
 
 - Has its own `agent_home` with `AGENTS.md`
 - Can have agent-local skills
@@ -143,10 +143,10 @@ When you start Holon, it automatically creates a **default agent** in `~/.holon/
 Create a specialized agent for a specific role:
 
 ```bash
-cargo run -- agent create --agent-id reviewer --template reviewer
+cargo run -- agents create reviewer --template holon-reviewer
 ```
 
-This creates a new agent in `~/.holon/agents/reviewer/` initialized with the reviewer template.
+This creates a new agent in `~/.holon/agents/reviewer/` initialized with the holon-reviewer template.
 
 ### Use a template
 
@@ -154,19 +154,19 @@ Templates provide reusable agent configurations:
 
 ```bash
 # Use a builtin template by ID
-cargo run -- agent create --agent-id docs-helper --template documentation
+cargo run -- agents create docs-helper --template holon-developer
 
 # Use a local template path
-cargo run -- agent create --agent-id custom --template /path/to/template
+cargo run -- agents create custom --template /path/to/template
 
 # Use a GitHub template URL
-cargo run -- agent create --agent-id github-agent --template https://github.com/owner/repo/tree/main/template-path
+cargo run -- agents create github-agent --template https://github.com/owner/repo/tree/main/template-path
 ```
 
 ### List agents
 
 ```bash
-cargo run -- agent list
+cargo run -- agents
 ```
 
 ### Switch agents in the TUI
@@ -185,7 +185,7 @@ Holon uses three configuration layers:
 2. **Runtime configuration** (`config.json`)
 3. **Agent state** (per-agent overrides)
 
-See [Runtime Configuration Surface RFC](/rfcs/runtime-configuration-surface.md) for details.
+See [Runtime Configuration Surface RFC](https://github.com/holon-run/holon/blob/main/docs/rfcs/runtime-configuration-surface.md) for details.
 
 ### Set provider credentials
 
@@ -193,7 +193,7 @@ See [Runtime Configuration Surface RFC](/rfcs/runtime-configuration-surface.md) 
 
 ```bash
 # Anthropic
-export ANTHROPIC_API_KEY="your-api-key"
+export ANTHROPIC_AUTH_TOKEN="your-api-key"
 
 # OpenAI
 export OPENAI_API_KEY="your-api-key"
@@ -209,14 +209,10 @@ Create or edit `~/.holon/config.json`:
 ```json
 {
   "model": {
-    "default_model": "anthropic/claude-sonnet-4-20250514",
-    "providers": {
-      "anthropic": {
-        "api_key": "your-api-key"
-      },
-      "openai": {
-        "api_key": "your-api-key"
-      }
+    "default": "anthropic/claude-sonnet-4-6"
+  },
+  "providers": {
+    "anthropic": {
     }
   }
 }
@@ -226,7 +222,7 @@ Create or edit `~/.holon/config.json`:
 
 ```bash
 # Via CLI
-cargo run -- config set model.default_model "anthropic/claude-sonnet-4-20250514"
+cargo run -- config set model.default "anthropic/claude-sonnet-4-6"
 
 # Or edit config.json directly
 ```
@@ -236,15 +232,28 @@ cargo run -- config set model.default_model "anthropic/claude-sonnet-4-20250514"
 An agent can override the default model:
 
 ```bash
-cargo run -- agent set-model --agent-id reviewer --model "anthropic/claude-sonnet-4-20250514"
+cargo run -- agents model set "anthropic/claude-sonnet-4-6" --agent reviewer
 ```
 
-Or edit the agent's `agent_home/AGENTS.md` to specify a preferred model.
+See [Configuration reference](/reference/configuration.md) for more details on agent model overrides.
+
+> **Note**: For security, Holon uses a credential store to manage API keys. Set credentials via:
+> ```bash
+> cargo run -- config credentials set anthropic
+> # Paste your ANTHROPIC_AUTH_TOKEN when prompted
+> ```
+> See [Configuration reference](/reference/configuration.md) for details.
 
 ### Verify model configuration
+```bash
+cargo run -- config get model.default
+cargo run -- config list
+```
+
+To see available models:
 
 ```bash
-cargo run -- config get model
+cargo run -- config models list
 ```
 
 ## Next steps
@@ -254,7 +263,7 @@ Now that you have your first agent running:
 - **Explore concepts**: Read [Runtime model](/concepts/runtime-model.md) and [Trust boundaries](/concepts/trust-boundaries.md)
 - **Try examples**: See [Quick examples](/guides/quick-examples.md) for common tasks
 - **Build integrations**: Check the [Integration guide](/guides/integration.md)
-- **Reference documentation**: See [CLI reference](/reference/cli.md) and [HTTP control plane](/reference/http-control-plane.md)
+- **Reference documentation**: See [CLI reference](/reference/cli.md), [HTTP control plane](/reference/http-control-plane.md), and [Configuration reference](/reference/configuration.md)
 
 ## Troubleshooting
 
@@ -263,7 +272,7 @@ Now that you have your first agent running:
 Check if another instance is running:
 
 ```bash
-cargo run -- status
+cargo run -- daemon status
 cargo run -- daemon stop
 cargo run -- daemon start
 ```
@@ -274,7 +283,7 @@ Verify the daemon is running and the socket exists:
 
 ```bash
 ls ~/.holon/run/holon.sock
-cargo run -- status
+cargo run -- daemon status
 ```
 
 ### Model errors
@@ -282,7 +291,7 @@ cargo run -- status
 Verify your credentials:
 
 ```bash
-echo $ANTHROPIC_API_KEY
+echo $ANTHROPIC_AUTH_TOKEN
 cargo run -- config get model
 ```
 
