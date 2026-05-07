@@ -71,6 +71,11 @@ pub enum OperatorEventCategory {
     Task,
     Waiting,
     Workspace,
+    Skill,
+    Configuration,
+    Control,
+    Context,
+    Delivery,
     Runtime,
     AssistantProgress,
     Tool,
@@ -115,6 +120,11 @@ impl OperatorEventPresentation {
                 | OperatorEventCategory::WorkItem
                 | OperatorEventCategory::Waiting
                 | OperatorEventCategory::Workspace
+                | OperatorEventCategory::Skill
+                | OperatorEventCategory::Configuration
+                | OperatorEventCategory::Control
+                | OperatorEventCategory::Context
+                | OperatorEventCategory::Delivery
                 | OperatorEventCategory::Runtime
                 | OperatorEventCategory::OperatorNotification
                 | OperatorEventCategory::Brief
@@ -164,6 +174,11 @@ pub fn is_durable_operator_event_kind(kind: &str) -> bool {
             | OperatorEventCategory::Task
             | OperatorEventCategory::Waiting
             | OperatorEventCategory::Workspace
+            | OperatorEventCategory::Skill
+            | OperatorEventCategory::Configuration
+            | OperatorEventCategory::Control
+            | OperatorEventCategory::Context
+            | OperatorEventCategory::Delivery
             | OperatorEventCategory::Runtime
     )
 }
@@ -184,30 +199,50 @@ fn event_category(kind: &str) -> OperatorEventCategory {
     match kind {
         "operator_notification_requested" => OperatorEventCategory::OperatorNotification,
         "brief_created" => OperatorEventCategory::Brief,
-        "message_enqueued" | "turn_started" | "operator_interjection_admitted" => {
-            OperatorEventCategory::Message
-        }
+        "operator_interjection_admitted"
+        | "message_enqueued"
+        | "message_admitted"
+        | "message_processing_started"
+        | "message_processing_interrupted"
+        | "turn_started" => OperatorEventCategory::Message,
         "work_item_written"
+        | "work_item_picked"
+        | "work_item_enqueue_requested"
+        | "work_item_turn_end_committed"
+        | "work_item_turn_end_commit_skipped"
         | "work_item_delegation_created"
         | "work_item_delegation_completed"
         | "work_item_stale_reminder_injected"
-        | "work_item_stale_reminder_skipped" => OperatorEventCategory::WorkItem,
+        | "work_item_stale_reminder_skipped"
+        | "work_item_waiting_intents_cancelled"
+        | "missing_current_work_item_before_wait" => OperatorEventCategory::WorkItem,
         "task_created"
         | "task_status_updated"
         | "task_result_received"
         | "task_child_spawned"
         | "task_input_delivered"
+        | "task_create_requested"
+        | "supervised_child_task_monitor_reattached"
+        | "supervised_child_task_recovery_failed"
         | "command_task_runner_failed"
         | "command_task_running_persisted"
         | "command_task_result_enqueue_failed" => OperatorEventCategory::Task,
         "waiting_intent_created"
         | "waiting_intent_cancelled"
+        | "stale_waiting_intents_cancelled"
         | "callback_delivered"
+        | "timer_create_requested"
         | "timer_created"
-        | "timer_fired" => OperatorEventCategory::Waiting,
-        "workspace_entered"
+        | "timer_fired"
+        | "timer_fire_failed" => OperatorEventCategory::Waiting,
+        "workspace_attach_requested"
+        | "workspace_attached"
+        | "workspace_entered"
+        | "workspace_exit_requested"
         | "workspace_exited"
+        | "workspace_detach_requested"
         | "workspace_detached"
+        | "workspace_used"
         | "worktree_entered"
         | "worktree_exited"
         | "worktree_created_for_task"
@@ -219,20 +254,49 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "task_worktree_cleanup_retained"
         | "task_worktree_cleanup_failed"
         | "task_worktree_branch_cleanup_retained" => OperatorEventCategory::Workspace,
-        "runtime_error" | "turn_terminal" => OperatorEventCategory::Runtime,
-        "assistant_round_recorded"
-        | "provider_round_completed"
-        | "text_only_round_observed"
-        | "max_output_tokens_recovery"
+        "skill_activated" | "skill_installed" | "skill_uninstalled" => OperatorEventCategory::Skill,
+        "agent_created"
+        | "agent_model_override_requested"
+        | "agent_model_override_set"
+        | "agent_model_override_clear_requested"
+        | "agent_model_override_cleared" => OperatorEventCategory::Configuration,
+        "agent_state_changed" | "state_changed" | "session_state_changed" => {
+            OperatorEventCategory::StateSync
+        }
+        "control_request_admitted"
+        | "control_applied"
+        | "current_run_interrupted"
+        | "wake_requested"
+        | "continuation_trigger_received"
+        | "continuation_resolved"
+        | "closure_decided"
+        | "system_tick_emitted"
+        | "system_tick_suppressed"
+        | "runtime_service_shutdown_requested" => OperatorEventCategory::Control,
+        "debug_prompt_requested"
+        | "turn_context_built"
+        | "turn_context_length_exceeded"
+        | "turn_local_baseline_over_budget"
         | "turn_local_compaction_applied"
         | "turn_local_checkpoint_requested"
         | "turn_local_checkpoint_recorded"
         | "turn_local_checkpoint_resume_requested"
-        | "turn_local_baseline_over_budget" => OperatorEventCategory::AssistantProgress,
-        "process_execution_requested" | "tool_executed" | "tool_execution_failed" => {
-            OperatorEventCategory::Tool
+        | "episode_memory_finalized"
+        | "working_memory_updated"
+        | "recovery_cleared_missing_worktree_session"
+        | "max_output_tokens_recovery" => OperatorEventCategory::Context,
+        "operator_delivery_submitted"
+        | "operator_delivery_completed"
+        | "operator_notification_mirror_failed"
+        | "operator_transport_binding_upserted" => OperatorEventCategory::Delivery,
+        "runtime_error" | "turn_terminal" => OperatorEventCategory::Runtime,
+        "assistant_round_recorded" | "provider_round_completed" | "text_only_round_observed" => {
+            OperatorEventCategory::AssistantProgress
         }
-        "agent_state_changed" | "session_state_changed" => OperatorEventCategory::StateSync,
+        "process_execution_requested"
+        | "tool_executed"
+        | "tool_execution_failed"
+        | "truncated_mutation_tool_call_rejected" => OperatorEventCategory::Tool,
         _ => OperatorEventCategory::Trace,
     }
 }
@@ -255,6 +319,11 @@ fn event_visibility(
         | (_, OperatorEventCategory::Task)
         | (_, OperatorEventCategory::Waiting)
         | (_, OperatorEventCategory::Workspace)
+        | (_, OperatorEventCategory::Skill)
+        | (_, OperatorEventCategory::Configuration)
+        | (_, OperatorEventCategory::Control)
+        | (_, OperatorEventCategory::Context)
+        | (_, OperatorEventCategory::Delivery)
         | (_, OperatorEventCategory::Message)
         | (_, OperatorEventCategory::StateSync)
         | (_, OperatorEventCategory::Trace) => OperatorVisibility::Trace,
@@ -304,8 +373,28 @@ fn event_text(
 ) -> (String, Option<String>, String) {
     match kind {
         "operator_notification_requested" => operator_notification_text(payload, fallback_summary),
+        "brief_created" => brief_text(payload),
+        "message_enqueued" => simple_event_text("Message queued", message_body_preview(payload)),
+        "message_admitted" => simple_event_text("Message admitted", message_id_body(payload)),
+        "message_processing_started" => {
+            simple_event_text("Message processing started", message_id_body(payload))
+        }
+        "message_processing_interrupted" => {
+            simple_event_text("Message interrupted", error_or_message_body(payload))
+        }
+        "operator_interjection_admitted" => {
+            simple_event_text("Operator message admitted", message_id_body(payload))
+        }
+        "turn_started" => simple_event_text("Turn started", turn_body(payload)),
         "task_created" | "task_status_updated" | "task_result_received" => {
             task_record_text(kind, payload, fallback_summary)
+        }
+        "task_create_requested" => simple_event_text("Task creation requested", task_body(payload)),
+        "supervised_child_task_monitor_reattached" => {
+            simple_event_text("Child task monitor reattached", task_body(payload))
+        }
+        "supervised_child_task_recovery_failed" => {
+            simple_event_text("Child task recovery failed", error_or_task_body(payload))
         }
         "command_task_runner_failed" => command_task_runner_failed_text(payload, fallback_summary),
         "command_task_running_persisted" => command_task_running_persisted_text(payload),
@@ -314,21 +403,133 @@ fn event_text(
         }
         "task_child_spawned" => task_child_spawned_text(payload, fallback_summary),
         "task_input_delivered" => task_input_delivered_text(payload, fallback_summary),
+        "work_item_picked" => simple_event_text("Work item picked", work_item_body(payload)),
+        "work_item_enqueue_requested" => {
+            simple_event_text("Work item enqueue requested", work_item_body(payload))
+        }
+        "work_item_turn_end_committed" => {
+            simple_event_text("Work item turn committed", work_item_body(payload))
+        }
+        "work_item_turn_end_commit_skipped" => simple_event_text(
+            "Work item turn commit skipped",
+            reason_or_work_item_body(payload),
+        ),
         "waiting_intent_created" => waiting_intent_text(payload, fallback_summary, false),
         "waiting_intent_cancelled" => waiting_intent_text(payload, fallback_summary, true),
+        "stale_waiting_intents_cancelled" => {
+            simple_event_text("Stale waits cancelled", count_or_reason_body(payload))
+        }
         "callback_delivered" => callback_delivered_text(payload, fallback_summary),
+        "timer_create_requested" => simple_event_text("Timer requested", timer_body(payload)),
         "timer_created" => timer_text(payload, fallback_summary, false),
         "timer_fired" => timer_text(payload, fallback_summary, true),
+        "timer_fire_failed" => simple_event_text("Timer failed", error_or_timer_body(payload)),
         "work_item_written" => work_item_text(payload, fallback_summary),
         "work_item_stale_reminder_injected" => work_item_stale_reminder_text(payload, false),
         "work_item_stale_reminder_skipped" => work_item_stale_reminder_text(payload, true),
+        "work_item_waiting_intents_cancelled" => {
+            simple_event_text("Work item waits cancelled", work_item_body(payload))
+        }
+        "missing_current_work_item_before_wait" => simple_event_text(
+            "Missing current work item before wait",
+            reason_or_work_item_body(payload),
+        ),
         "work_item_delegation_created" => work_item_delegation_text(payload, false),
         "work_item_delegation_completed" => work_item_delegation_text(payload, true),
+        "workspace_attach_requested" => {
+            workspace_text(payload, fallback_summary, "Workspace attach requested")
+        }
+        "workspace_attached" => workspace_text(payload, fallback_summary, "Workspace attached"),
         "workspace_entered" => workspace_text(payload, fallback_summary, "Entered workspace"),
+        "workspace_exit_requested" => {
+            workspace_text(payload, fallback_summary, "Workspace exit requested")
+        }
         "workspace_exited" => workspace_text(payload, fallback_summary, "Exited workspace"),
+        "workspace_detach_requested" => {
+            workspace_text(payload, fallback_summary, "Workspace detach requested")
+        }
         "workspace_detached" => workspace_text(payload, fallback_summary, "Detached workspace"),
+        "workspace_used" => workspace_text(payload, fallback_summary, "Workspace used"),
         "worktree_entered" => worktree_text(payload, fallback_summary, true),
         "worktree_exited" => worktree_text(payload, fallback_summary, false),
+        "worktree_created_for_task" => {
+            worktree_event_text(payload, "Worktree created for task", fallback_summary)
+        }
+        "task_worktree_metadata_recorded" => {
+            worktree_event_text(payload, "Task worktree recorded", fallback_summary)
+        }
+        "worktree_retained_for_review" => {
+            worktree_event_text(payload, "Worktree retained for review", fallback_summary)
+        }
+        "worktree_auto_cleaned_up" => {
+            worktree_event_text(payload, "Worktree cleaned up", fallback_summary)
+        }
+        "worktree_auto_cleanup_failed" => {
+            worktree_event_text(payload, "Worktree cleanup failed", fallback_summary)
+        }
+        "task_worktree_cleanup_already_removed" => {
+            worktree_event_text(payload, "Task worktree already removed", fallback_summary)
+        }
+        "task_worktree_cleanup_retained" => {
+            worktree_event_text(payload, "Task worktree retained", fallback_summary)
+        }
+        "task_worktree_cleanup_failed" => {
+            worktree_event_text(payload, "Task worktree cleanup failed", fallback_summary)
+        }
+        "task_worktree_branch_cleanup_retained" => {
+            worktree_event_text(payload, "Task worktree branch retained", fallback_summary)
+        }
+        "skill_activated" => skill_text(payload, "Loaded skill"),
+        "skill_installed" => skill_text(payload, "Installed skill"),
+        "skill_uninstalled" => skill_text(payload, "Uninstalled skill"),
+        "agent_created" => simple_event_text("Agent created", agent_body(payload)),
+        "agent_model_override_requested" => {
+            simple_event_text("Model override requested", model_body(payload))
+        }
+        "agent_model_override_set" => simple_event_text("Model override set", model_body(payload)),
+        "agent_model_override_clear_requested" => {
+            simple_event_text("Model override clear requested", agent_body(payload))
+        }
+        "agent_model_override_cleared" => {
+            simple_event_text("Model override cleared", agent_body(payload))
+        }
+        "agent_state_changed" | "state_changed" => {
+            simple_event_text("Agent state updated", state_body(payload))
+        }
+        "session_state_changed" => simple_event_text("Session state updated", state_body(payload)),
+        "control_request_admitted" => {
+            simple_event_text("Control request admitted", control_body(payload))
+        }
+        "control_applied" => simple_event_text("Control applied", control_body(payload)),
+        "current_run_interrupted" => {
+            simple_event_text("Current run interrupted", reason_or_message_body(payload))
+        }
+        "wake_requested" => simple_event_text("Wake requested", reason_or_message_body(payload)),
+        "continuation_trigger_received" => {
+            simple_event_text("Continuation trigger received", continuation_body(payload))
+        }
+        "continuation_resolved" => {
+            simple_event_text("Continuation resolved", continuation_body(payload))
+        }
+        "closure_decided" => simple_event_text("Closure updated", closure_body(payload)),
+        "system_tick_emitted" => {
+            simple_event_text("System tick emitted", reason_or_message_body(payload))
+        }
+        "system_tick_suppressed" => {
+            simple_event_text("System tick suppressed", reason_or_message_body(payload))
+        }
+        "runtime_service_shutdown_requested" => simple_event_text(
+            "Runtime shutdown requested",
+            reason_or_message_body(payload),
+        ),
+        "debug_prompt_requested" => {
+            simple_event_text("Debug prompt requested", reason_or_message_body(payload))
+        }
+        "turn_context_built" => simple_event_text("Turn context built", context_body(payload)),
+        "turn_context_length_exceeded" => {
+            simple_event_text("Context length exceeded", context_body(payload))
+        }
+        "runtime_error" => runtime_error_text(payload),
         "turn_terminal" => turn_terminal_text(payload),
         "assistant_round_recorded" => assistant_round_recorded_text(payload),
         "provider_round_completed" => provider_round_text(payload),
@@ -339,8 +540,34 @@ fn event_text(
         "turn_local_checkpoint_recorded" => turn_local_checkpoint_recorded_text(payload),
         "turn_local_checkpoint_resume_requested" => turn_local_checkpoint_resume_text(payload),
         "turn_local_baseline_over_budget" => turn_local_baseline_over_budget_text(payload),
+        "episode_memory_finalized" => {
+            simple_event_text("Episode memory finalized", memory_body(payload))
+        }
+        "working_memory_updated" => {
+            simple_event_text("Working memory updated", memory_body(payload))
+        }
+        "recovery_cleared_missing_worktree_session" => {
+            simple_event_text("Recovered missing worktree session", worktree_body(payload))
+        }
+        "operator_delivery_submitted" => {
+            simple_event_text("Operator delivery submitted", delivery_body(payload))
+        }
+        "operator_delivery_completed" => {
+            simple_event_text("Operator delivery completed", delivery_body(payload))
+        }
+        "operator_notification_mirror_failed" => simple_event_text(
+            "Operator notification mirror failed",
+            error_or_delivery_body(payload),
+        ),
+        "operator_transport_binding_upserted" => {
+            simple_event_text("Operator transport binding updated", delivery_body(payload))
+        }
         "process_execution_requested" => process_execution_text(payload, fallback_summary),
         "tool_executed" | "tool_execution_failed" => tool_text(kind, payload, fallback_summary),
+        "truncated_mutation_tool_call_rejected" => simple_event_text(
+            "Mutation tool call rejected",
+            error_or_message_body(payload),
+        ),
         _ => {
             let title = category_title(category, kind);
             (title, None, fallback_summary.to_string())
@@ -348,13 +575,247 @@ fn event_text(
     }
 }
 
+fn simple_event_text(
+    title: &'static str,
+    body: Option<String>,
+) -> (String, Option<String>, String) {
+    let summary = body
+        .as_deref()
+        .map(|body| format!("{title}: {body}"))
+        .unwrap_or_else(|| title.to_string());
+    (title.into(), body, summary)
+}
+
+fn brief_text(payload: &Value) -> (String, Option<String>, String) {
+    let text = payload
+        .get("text")
+        .and_then(Value::as_str)
+        .map(collapse_whitespace)
+        .filter(|text| !text.is_empty())
+        .map(|text| trim_summary(&text));
+    simple_event_text("Brief", text)
+}
+
+fn string_field(payload: &Value, field: &str) -> Option<String> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn nested_string_field(payload: &Value, object: &str, field: &str) -> Option<String> {
+    payload
+        .get(object)
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn numeric_field(payload: &Value, field: &str) -> Option<String> {
+    payload
+        .get(field)
+        .and_then(Value::as_u64)
+        .map(|value| value.to_string())
+}
+
+fn first_string_field(payload: &Value, fields: &[&str]) -> Option<String> {
+    fields.iter().find_map(|field| string_field(payload, field))
+}
+
+fn message_id_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["message_id", "id"]).map(|id| format!("message {id}"))
+}
+
+fn message_body_preview(payload: &Value) -> Option<String> {
+    payload
+        .get("body")
+        .and_then(|body| {
+            body.get("text")
+                .or_else(|| body.get("message"))
+                .or_else(|| body.get("summary"))
+        })
+        .and_then(Value::as_str)
+        .map(collapse_whitespace)
+        .filter(|text| !text.is_empty())
+        .map(|text| trim_summary(&text))
+        .or_else(|| message_id_body(payload))
+}
+
+fn task_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["task_id", "id"])
+        .map(|id| format!("task {id}"))
+        .or_else(|| first_string_field(payload, &["summary", "task_kind", "kind"]))
+}
+
+fn work_item_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["work_item_id", "current_work_item_id", "id"])
+        .map(|id| format!("work item {id}"))
+        .or_else(|| {
+            payload
+                .get("record")
+                .and_then(|record| record.get("objective"))
+                .and_then(Value::as_str)
+                .map(trim_summary)
+        })
+}
+
+fn timer_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["timer_id", "id", "summary"])
+        .map(|value| format!("timer {value}"))
+}
+
+fn worktree_body(payload: &Value) -> Option<String> {
+    first_string_field(
+        payload,
+        &[
+            "worktree_branch",
+            "branch",
+            "worktree_path",
+            "path",
+            "task_id",
+        ],
+    )
+    .or_else(|| nested_string_field(payload, "worktree", "worktree_branch"))
+    .or_else(|| nested_string_field(payload, "worktree", "worktree_path"))
+}
+
+fn error_or_message_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["error", "message", "summary", "reason"]).map(|text| {
+        let text = collapse_whitespace(&text);
+        trim_summary(&text)
+    })
+}
+
+fn reason_or_message_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["reason", "message", "summary"]).map(|text| {
+        let text = collapse_whitespace(&text);
+        trim_summary(&text)
+    })
+}
+
+fn reason_or_work_item_body(payload: &Value) -> Option<String> {
+    reason_or_message_body(payload).or_else(|| work_item_body(payload))
+}
+
+fn error_or_task_body(payload: &Value) -> Option<String> {
+    error_or_message_body(payload).or_else(|| task_body(payload))
+}
+
+fn error_or_timer_body(payload: &Value) -> Option<String> {
+    error_or_message_body(payload).or_else(|| timer_body(payload))
+}
+
+fn error_or_delivery_body(payload: &Value) -> Option<String> {
+    error_or_message_body(payload).or_else(|| delivery_body(payload))
+}
+
+fn count_or_reason_body(payload: &Value) -> Option<String> {
+    numeric_field(payload, "count")
+        .or_else(|| numeric_field(payload, "cancelled_count"))
+        .map(|count| format!("{count} item(s)"))
+        .or_else(|| reason_or_message_body(payload))
+}
+
+fn turn_body(payload: &Value) -> Option<String> {
+    let turn = numeric_field(payload, "turn_index").map(|turn| format!("turn {turn}"));
+    let run = string_field(payload, "run_id").map(|run| format!("run {run}"));
+    match (turn, run) {
+        (Some(turn), Some(run)) => Some(format!("{turn}, {run}")),
+        (Some(turn), None) => Some(turn),
+        (None, Some(run)) => Some(run),
+        (None, None) => message_id_body(payload),
+    }
+}
+
+fn agent_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["agent_id", "id", "agent"]).map(|id| format!("agent {id}"))
+}
+
+fn model_body(payload: &Value) -> Option<String> {
+    first_string_field(
+        payload,
+        &["model", "override_model", "requested_model", "active_model"],
+    )
+    .map(|model| format!("model {model}"))
+    .or_else(|| agent_body(payload))
+}
+
+fn state_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["status", "state", "agent_id", "session_id"])
+}
+
+fn control_body(payload: &Value) -> Option<String> {
+    first_string_field(
+        payload,
+        &["action", "control", "request", "reason", "message"],
+    )
+}
+
+fn continuation_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["kind", "reason", "trigger", "status"])
+        .or_else(|| numeric_field(payload, "round").map(|round| format!("round {round}")))
+}
+
+fn closure_body(payload: &Value) -> Option<String> {
+    payload
+        .get("closure")
+        .and_then(|closure| {
+            closure
+                .get("outcome")
+                .or_else(|| closure.get("runtime_posture"))
+                .or_else(|| closure.get("waiting_reason"))
+        })
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| first_string_field(payload, &["outcome", "runtime_posture", "waiting_reason"]))
+}
+
+fn context_body(payload: &Value) -> Option<String> {
+    let tokens = numeric_field(payload, "estimated_tokens")
+        .or_else(|| numeric_field(payload, "token_count"))
+        .or_else(|| numeric_field(payload, "context_tokens"));
+    let reason = first_string_field(payload, &["reason", "mode", "checkpoint_mode"]);
+    match (tokens, reason) {
+        (Some(tokens), Some(reason)) => Some(format!("{tokens} tokens; {reason}")),
+        (Some(tokens), None) => Some(format!("{tokens} tokens")),
+        (None, Some(reason)) => Some(reason),
+        (None, None) => numeric_field(payload, "round").map(|round| format!("round {round}")),
+    }
+}
+
+fn memory_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["summary", "memory_id", "work_item_id", "reason"])
+}
+
+fn delivery_body(payload: &Value) -> Option<String> {
+    first_string_field(
+        payload,
+        &["target", "route", "transport", "status", "binding_id"],
+    )
+}
+
+fn skill_text(payload: &Value, title: &'static str) -> (String, Option<String>, String) {
+    let body = first_string_field(payload, &["name", "skill_name", "skill", "path", "scope"]);
+    simple_event_text(title, body)
+}
+
 fn task_record_text(
     kind: &str,
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let Some(task) = decode_value::<TaskRecord>(payload.clone()) else {
-        return ("Task".into(), None, fallback_summary.to_string());
+        let label = match kind {
+            "task_created" => "Task queued",
+            "task_status_updated" => "Task updated",
+            "task_result_received" => "Task result received",
+            _ => "Task updated",
+        };
+        return (label.into(), None, label.into());
     };
     let summary = task
         .summary
@@ -400,7 +861,7 @@ fn task_result_label(status: &TaskStatus) -> &'static str {
 
 fn command_task_runner_failed_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let task_id = payload.get("task_id").and_then(Value::as_str);
     let error = payload
@@ -412,7 +873,7 @@ fn command_task_runner_failed_text(
         (Some(task_id), Some(error)) => format!("Command task runner failed: {task_id}: {error}"),
         (Some(task_id), None) => format!("Command task runner failed: {task_id}"),
         (None, Some(error)) => format!("Command task runner failed: {error}"),
-        (None, None) => fallback_summary.to_string(),
+        (None, None) => "Command task runner failed".into(),
     };
     ("Command task runner failed".into(), body, summary)
 }
@@ -428,7 +889,7 @@ fn command_task_running_persisted_text(payload: &Value) -> (String, Option<Strin
 
 fn command_task_result_enqueue_failed_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let task_id = payload.get("task_id").and_then(Value::as_str);
     let error = payload
@@ -442,21 +903,21 @@ fn command_task_result_enqueue_failed_text(
         }
         (Some(task_id), None) => format!("Command task result enqueue failed: {task_id}"),
         (None, Some(error)) => format!("Command task result enqueue failed: {error}"),
-        (None, None) => fallback_summary.to_string(),
+        (None, None) => "Command task result enqueue failed".into(),
     };
     ("Command task result enqueue failed".into(), body, summary)
 }
 
 fn operator_notification_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let summary = payload
         .get("summary")
         .and_then(Value::as_str)
         .or_else(|| payload.get("message").and_then(Value::as_str))
         .map(trim_summary)
-        .unwrap_or_else(|| fallback_summary.to_string());
+        .unwrap_or_else(|| "Operator attention requested".into());
     let boundary = payload
         .get("target_operator_boundary")
         .and_then(Value::as_str)
@@ -481,7 +942,7 @@ fn operator_notification_text(
 
 fn waiting_intent_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
     cancelled: bool,
 ) -> (String, Option<String>, String) {
     let Some(waiting) = decode_value::<WaitingIntentRecord>(payload.clone()) else {
@@ -490,7 +951,7 @@ fn waiting_intent_text(
         } else {
             "Waiting"
         };
-        return (title.into(), None, fallback_summary.to_string());
+        return (title.into(), None, title.into());
     };
     let description = trim_summary(&waiting.description);
     if cancelled {
@@ -509,7 +970,7 @@ fn waiting_intent_text(
 
 fn callback_delivered_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let waiting_id = payload.get("waiting_intent_id").and_then(Value::as_str);
     let source = payload.get("source").and_then(Value::as_str);
@@ -519,7 +980,7 @@ fn callback_delivered_text(
         }
         (Some(source), None) => format!("External event received from {source}"),
         (None, Some(waiting_id)) => format!("External event received for wait {waiting_id}"),
-        (None, None) => fallback_summary.to_string(),
+        (None, None) => "External event received".into(),
     };
     (
         "External event received".into(),
@@ -530,7 +991,7 @@ fn callback_delivered_text(
 
 fn timer_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
     fired: bool,
 ) -> (String, Option<String>, String) {
     let Some(timer) = decode_value::<TimerRecord>(payload.clone()) else {
@@ -539,7 +1000,7 @@ fn timer_text(
         } else {
             "Timer scheduled"
         };
-        return (title.into(), None, fallback_summary.to_string());
+        return (title.into(), None, title.into());
     };
     let body = timer.summary.clone();
     let label = if fired {
@@ -554,13 +1015,13 @@ fn timer_text(
     (label.into(), body, summary)
 }
 
-fn work_item_text(payload: &Value, fallback_summary: &str) -> (String, Option<String>, String) {
+fn work_item_text(payload: &Value, _fallback_summary: &str) -> (String, Option<String>, String) {
     let Some(record) = payload
         .get("record")
         .cloned()
         .and_then(decode_value::<WorkItemRecord>)
     else {
-        return ("Work item".into(), None, fallback_summary.to_string());
+        return ("Work item updated".into(), None, "Work item updated".into());
     };
     let objective = trim_summary(&record.objective);
     let state = format!("{:?}", record.state);
@@ -621,7 +1082,7 @@ fn work_item_stale_reminder_text(
 
 fn task_child_spawned_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let task_id = payload.get("id").and_then(Value::as_str);
     let child_agent_id = payload
@@ -640,7 +1101,9 @@ fn task_child_spawned_text(
             }
             text
         }
-        _ => fallback_summary.to_string(),
+        (Some(child), None) => format!("Delegated child {child} started"),
+        (None, Some(task)) => format!("Delegated child started under supervision task {task}"),
+        (None, None) => "Delegated child started".into(),
     };
     (
         "Delegated child started".into(),
@@ -651,7 +1114,7 @@ fn task_child_spawned_text(
 
 fn task_input_delivered_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let child_agent_id = payload.get("child_agent_id").and_then(Value::as_str);
     let task_id = payload.get("task_id").and_then(Value::as_str);
@@ -668,13 +1131,15 @@ fn task_input_delivered_text(
     (
         "Task input delivered".into(),
         task_id.map(ToString::to_string),
-        fallback_summary.to_string(),
+        task_id
+            .map(|task_id| format!("Task input delivered: {task_id}"))
+            .unwrap_or_else(|| "Task input delivered".into()),
     )
 }
 
 fn workspace_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
     label: &'static str,
 ) -> (String, Option<String>, String) {
     let workspace_id = payload.get("workspace_id").and_then(Value::as_str);
@@ -685,12 +1150,12 @@ fn workspace_text(
             format!("{label}: {workspace_id}"),
         );
     }
-    (label.into(), None, fallback_summary.to_string())
+    (label.into(), None, label.into())
 }
 
 fn worktree_text(
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
     entered: bool,
 ) -> (String, Option<String>, String) {
     let label = if entered {
@@ -716,7 +1181,15 @@ fn worktree_text(
             format!("{label}: {branch}"),
         );
     }
-    (label.into(), None, fallback_summary.to_string())
+    (label.into(), None, label.into())
+}
+
+fn worktree_event_text(
+    payload: &Value,
+    label: &'static str,
+    _fallback_summary: &str,
+) -> (String, Option<String>, String) {
+    simple_event_text(label, worktree_body(payload))
 }
 
 fn work_item_delegation_text(payload: &Value, completed: bool) -> (String, Option<String>, String) {
@@ -769,7 +1242,7 @@ fn process_execution_text(
     let label = match surface {
         "ExecCommand" | "ExecCommandBatch" => "Command started",
         "command_task" => "Background command started",
-        _ => "Process started",
+        _ => "Process execution requested",
     };
     if let Some(cmd_preview) = cmd_preview {
         return (
@@ -778,12 +1251,7 @@ fn process_execution_text(
             format!("{label}: {cmd_preview}"),
         );
     }
-    let body = match surface {
-        "ExecCommand" | "ExecCommandBatch" => "Command details are available in the event log.",
-        "command_task" => "Background command details are available in the task and event logs.",
-        _ => "Process details are available in the event log.",
-    };
-    (label.into(), Some(body.into()), label.into())
+    (label.into(), None, label.into())
 }
 
 fn assistant_round_recorded_text(payload: &Value) -> (String, Option<String>, String) {
@@ -804,9 +1272,9 @@ fn assistant_round_recorded_text(payload: &Value) -> (String, Option<String>, St
     let tool_names = tool_names(payload);
     if !tool_names.is_empty() {
         let tools = tool_names.join(", ");
-        let body = format!("requested tools: {tools}");
+        let body = format!("tools: {tools}");
         return (
-            "Assistant requested tools".into(),
+            "Assistant tool request".into(),
             Some(body),
             format!("Assistant requested tools: {tools}"),
         );
@@ -897,6 +1365,11 @@ fn turn_terminal_text(payload: &Value) -> (String, Option<String>, String) {
         .map(|body| format!("{title}: {body}"))
         .unwrap_or_else(|| title.to_string());
     (title.into(), body, summary)
+}
+
+fn runtime_error_text(payload: &Value) -> (String, Option<String>, String) {
+    let body = error_or_message_body(payload);
+    simple_event_text("Runtime error", body)
 }
 
 fn text_only_round_text(payload: &Value) -> (String, Option<String>, String) {
@@ -1022,32 +1495,53 @@ fn turn_local_baseline_over_budget_text(payload: &Value) -> (String, Option<Stri
 fn tool_text(
     kind: &str,
     payload: &Value,
-    fallback_summary: &str,
+    _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let title = if kind == "tool_execution_failed" {
         "Tool failed"
     } else {
-        "Tool executed"
+        "Tool finished"
     };
     let Some(tool_name) = payload.get("tool_name").and_then(Value::as_str) else {
-        return (title.into(), None, fallback_summary.to_string());
+        return (title.into(), None, title.into());
     };
+    let friendly = tool_friendly_label(tool_name);
     if tool_name == "ExecCommand" {
         if let Some(cmd) = payload.get("exec_command_cmd").and_then(Value::as_str) {
             let summary = if kind == "tool_execution_failed" {
-                format!("ExecCommand failed: {cmd}")
+                format!("Command failed: {cmd}")
             } else {
-                format!("ExecCommand: {cmd}")
+                format!("Command finished: {cmd}")
             };
-            return (title.into(), Some(cmd.to_string()), summary);
+            return (friendly.into(), Some(cmd.to_string()), summary);
         }
     }
     let summary = if kind == "tool_execution_failed" {
-        format!("Tool failed: {tool_name}")
+        format!("{friendly} failed")
     } else {
-        format!("Tool executed: {tool_name}")
+        friendly.to_string()
     };
-    (title.into(), Some(tool_name.to_string()), summary)
+    (friendly.into(), Some(tool_name.to_string()), summary)
+}
+
+fn tool_friendly_label(tool_name: &str) -> &'static str {
+    match tool_name {
+        "ApplyPatch" => "Applied patch",
+        "ExecCommand" => "Command finished",
+        "ExecCommandBatch" => "Command batch finished",
+        "ListWorkItems" => "Listed work items",
+        "CreateWorkItem" => "Created work item",
+        "UpdateWorkItem" => "Updated work item",
+        "CompleteWorkItem" => "Completed work item",
+        "TaskList" => "Listed tasks",
+        "TaskOutput" => "Read task output",
+        "SpawnAgent" => "Started child agent",
+        "Sleep" => "Slept",
+        "ReadSkill" => "Read skill",
+        "WebFetch" => "Fetched web page",
+        "WebSearch" => "Searched web",
+        _ => "Tool finished",
+    }
 }
 
 fn category_title(category: OperatorEventCategory, kind: &str) -> String {
@@ -1059,6 +1553,11 @@ fn category_title(category: OperatorEventCategory, kind: &str) -> String {
         OperatorEventCategory::Task => "Task".into(),
         OperatorEventCategory::Waiting => "External trigger".into(),
         OperatorEventCategory::Workspace => "Workspace".into(),
+        OperatorEventCategory::Skill => "Skill".into(),
+        OperatorEventCategory::Configuration => "Configuration".into(),
+        OperatorEventCategory::Control => "Control".into(),
+        OperatorEventCategory::Context => "Context".into(),
+        OperatorEventCategory::Delivery => "Operator delivery".into(),
         OperatorEventCategory::Runtime => "Runtime".into(),
         OperatorEventCategory::AssistantProgress => "Assistant progress".into(),
         OperatorEventCategory::Tool => "Tool".into(),
@@ -1096,6 +1595,131 @@ mod tests {
         OperatorPresentationContext, OperatorVisibility,
     };
     use serde_json::json;
+
+    const RFC_OPERATOR_EVENT_KINDS: &[&str] = &[
+        "operator_notification_requested",
+        "brief_created",
+        "operator_interjection_admitted",
+        "message_enqueued",
+        "message_admitted",
+        "message_processing_started",
+        "message_processing_interrupted",
+        "turn_started",
+        "assistant_round_recorded",
+        "text_only_round_observed",
+        "provider_round_completed",
+        "process_execution_requested",
+        "tool_executed",
+        "tool_execution_failed",
+        "truncated_mutation_tool_call_rejected",
+        "work_item_written",
+        "work_item_picked",
+        "work_item_enqueue_requested",
+        "work_item_turn_end_committed",
+        "work_item_turn_end_commit_skipped",
+        "work_item_stale_reminder_injected",
+        "work_item_stale_reminder_skipped",
+        "work_item_waiting_intents_cancelled",
+        "missing_current_work_item_before_wait",
+        "work_item_delegation_created",
+        "work_item_delegation_completed",
+        "task_created",
+        "task_status_updated",
+        "task_result_received",
+        "task_child_spawned",
+        "task_input_delivered",
+        "task_create_requested",
+        "supervised_child_task_monitor_reattached",
+        "supervised_child_task_recovery_failed",
+        "command_task_runner_failed",
+        "command_task_running_persisted",
+        "command_task_result_enqueue_failed",
+        "waiting_intent_created",
+        "waiting_intent_cancelled",
+        "stale_waiting_intents_cancelled",
+        "callback_delivered",
+        "timer_create_requested",
+        "timer_created",
+        "timer_fired",
+        "timer_fire_failed",
+        "workspace_attach_requested",
+        "workspace_attached",
+        "workspace_entered",
+        "workspace_exit_requested",
+        "workspace_exited",
+        "workspace_detach_requested",
+        "workspace_detached",
+        "workspace_used",
+        "worktree_entered",
+        "worktree_exited",
+        "worktree_created_for_task",
+        "task_worktree_metadata_recorded",
+        "worktree_retained_for_review",
+        "worktree_auto_cleaned_up",
+        "worktree_auto_cleanup_failed",
+        "task_worktree_cleanup_already_removed",
+        "task_worktree_cleanup_retained",
+        "task_worktree_cleanup_failed",
+        "task_worktree_branch_cleanup_retained",
+        "skill_activated",
+        "skill_installed",
+        "skill_uninstalled",
+        "agent_created",
+        "agent_model_override_requested",
+        "agent_model_override_set",
+        "agent_model_override_clear_requested",
+        "agent_model_override_cleared",
+        "agent_state_changed",
+        "state_changed",
+        "session_state_changed",
+        "control_request_admitted",
+        "control_applied",
+        "current_run_interrupted",
+        "wake_requested",
+        "continuation_trigger_received",
+        "continuation_resolved",
+        "closure_decided",
+        "system_tick_emitted",
+        "system_tick_suppressed",
+        "runtime_service_shutdown_requested",
+        "debug_prompt_requested",
+        "turn_context_built",
+        "turn_context_length_exceeded",
+        "turn_local_baseline_over_budget",
+        "turn_local_compaction_applied",
+        "turn_local_checkpoint_requested",
+        "turn_local_checkpoint_recorded",
+        "turn_local_checkpoint_resume_requested",
+        "episode_memory_finalized",
+        "working_memory_updated",
+        "recovery_cleared_missing_worktree_session",
+        "max_output_tokens_recovery",
+        "operator_delivery_submitted",
+        "operator_delivery_completed",
+        "operator_notification_mirror_failed",
+        "operator_transport_binding_upserted",
+    ];
+
+    #[test]
+    fn rfc_operator_events_have_friendly_default_presentations() {
+        let context = OperatorPresentationContext::default();
+        for kind in RFC_OPERATOR_EVENT_KINDS {
+            let presentation = present_operator_event(kind, &json!({}), kind, &context);
+            assert_ne!(
+                presentation.title, *kind,
+                "{kind} should not render its raw event kind as title"
+            );
+            assert_ne!(
+                presentation.summary, *kind,
+                "{kind} should not render its raw event kind as summary"
+            );
+            assert!(
+                !presentation.title.contains('_'),
+                "{kind} title should be human readable: {}",
+                presentation.title
+            );
+        }
+    }
 
     #[test]
     fn operator_display_mode_parse_accepts_names_and_numeric_aliases() {
@@ -1152,10 +1776,7 @@ mod tests {
             tools.summary,
             "Assistant requested tools: ExecCommand, ReadFile"
         );
-        assert_eq!(
-            tools.body.as_deref(),
-            Some("requested tools: ExecCommand, ReadFile")
-        );
+        assert_eq!(tools.body.as_deref(), Some("tools: ExecCommand, ReadFile"));
 
         let empty = present_operator_event(
             "assistant_round_recorded",
@@ -1337,9 +1958,27 @@ mod tests {
             &OperatorPresentationContext::default(),
         );
         assert_eq!(background.summary, "Background command started");
-        assert_eq!(
-            background.body.as_deref(),
-            Some("Background command details are available in the task and event logs.")
-        );
+        assert_eq!(background.body.as_deref(), None);
+    }
+
+    #[test]
+    fn tool_executed_uses_friendly_tool_labels() {
+        let context = OperatorPresentationContext::default();
+        let samples = [
+            ("ExecCommandBatch", "Command batch finished"),
+            ("TaskList", "Listed tasks"),
+            ("TaskOutput", "Read task output"),
+            ("SpawnAgent", "Started child agent"),
+            ("Sleep", "Slept"),
+        ];
+        for (tool_name, expected) in samples {
+            let presentation = present_operator_event(
+                "tool_executed",
+                &json!({ "tool_name": tool_name }),
+                "tool_executed",
+                &context,
+            );
+            assert_eq!(presentation.summary, expected);
+        }
     }
 }
