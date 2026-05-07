@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     process::{Child, Command, Stdio},
     time::Duration,
@@ -113,7 +114,8 @@ pub async fn daemon_status(config: &AppConfig) -> Result<DaemonStatusView> {
 
 pub async fn daemon_start(
     config: &AppConfig,
-    serve_args: &[String],
+    serve_args: &[OsString],
+    control_token_env: Option<&str>,
 ) -> Result<DaemonLifecycleResult> {
     let current_fingerprint = config_fingerprint(config)?;
     match probe_runtime(config).await {
@@ -170,14 +172,17 @@ pub async fn daemon_start(
         .try_clone()
         .with_context(|| format!("failed to clone {}", log_path.display()))?;
     let exe = std::env::current_exe().context("failed to resolve current holon executable")?;
-    let mut child = Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .arg("serve")
         .args(serve_args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err))
-        .spawn()
-        .context("failed to spawn 'holon serve'")?;
+        .stderr(Stdio::from(log_err));
+    if let Some(token) = control_token_env {
+        command.env("HOLON_CONTROL_TOKEN", token);
+    }
+    let mut child = command.spawn().context("failed to spawn 'holon serve'")?;
 
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
     loop {
@@ -400,10 +405,11 @@ Probe error: {details}",
 
 pub async fn daemon_restart(
     config: &AppConfig,
-    serve_args: &[String],
+    serve_args: &[OsString],
+    control_token_env: Option<&str>,
 ) -> Result<DaemonLifecycleResult> {
     let _ = daemon_stop(config).await?;
-    let started = daemon_start(config, serve_args).await?;
+    let started = daemon_start(config, serve_args, control_token_env).await?;
     Ok(DaemonLifecycleResult {
         ok: true,
         action: DaemonLifecycleAction::Restart,

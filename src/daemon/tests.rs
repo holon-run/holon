@@ -237,6 +237,36 @@ fn runtime_status_response_decodes_without_activity_field() {
 }
 
 #[test]
+fn runtime_status_response_decodes_startup_surface_without_callback_base_url() {
+    let payload = serde_json::json!({
+        "ok": true,
+        "healthy": true,
+        "pid": 42,
+        "home_dir": "/tmp/holon",
+        "socket_path": "/tmp/holon.sock",
+        "http_addr": "127.0.0.1:1234",
+        "started_at": "2026-04-15T00:00:00Z",
+        "config_fingerprint": "abc123",
+        "startup_surface": {
+            "home_dir": "/tmp/holon",
+            "socket_path": "/tmp/holon.sock",
+            "workspace_dir": "/tmp/workspace",
+            "default_agent_id": "main",
+            "control_token_configured": false,
+            "control_auth_mode": "auto"
+        }
+    });
+    let decoded: RuntimeStatusResponse = serde_json::from_value(payload).unwrap();
+    assert_eq!(
+        decoded
+            .startup_surface
+            .expect("startup surface should decode")
+            .callback_base_url,
+        ""
+    );
+}
+
+#[test]
 fn effective_config_mismatch_summary_lists_actionable_differences() {
     let mut expected = test_config();
     expected.http_addr = "0.0.0.0:7878".into();

@@ -520,6 +520,9 @@ Current contract:
 - `daemon restart` is an explicit stop/start cycle using the supplied access
   options; if no options are supplied, it restarts with the configured local
   defaults
+- `daemon restart` performs full process replacement; durable runtime state is
+  recovered through storage, but in-flight provider turns and transient process
+  state are interrupted
 - socket-path takeover by an unrelated process fails closed
 - `daemon stop` prefers graceful runtime shutdown through the control surface
   before falling back to process termination

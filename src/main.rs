@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -743,7 +744,9 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
     }
 
     if options.listen.is_some() && options.port.is_some() {
-        return Err(anyhow!("use only one of --listen or --port"));
+        return Err(anyhow!(
+            "use only one of --listen or --port; use --listen ADDRESS:PORT for full control or --port with --host for a port-only override"
+        ));
     }
 
     if let Some(listen) = options.listen {
@@ -950,35 +953,45 @@ fn non_empty_token(token: String) -> Result<String> {
     Ok(token)
 }
 
-fn serve_args_for_options(options: &ServeOptions) -> Vec<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonServeLaunchOptions {
+    args: Vec<OsString>,
+    control_token_env: Option<String>,
+}
+
+fn serve_args_for_options(options: &ServeOptions) -> DaemonServeLaunchOptions {
     let mut args = vec![
-        "--access".into(),
-        options
-            .access
-            .to_possible_value()
-            .expect("serve access should have clap value")
-            .get_name()
-            .to_string(),
+        OsString::from("--access"),
+        OsString::from(
+            options
+                .access
+                .to_possible_value()
+                .expect("serve access should have clap value")
+                .get_name(),
+        ),
     ];
     if let Some(host) = &options.host {
-        args.extend(["--host".into(), host.clone()]);
+        args.extend([OsString::from("--host"), OsString::from(host)]);
     }
     if let Some(listen) = &options.listen {
-        args.extend(["--listen".into(), listen.clone()]);
+        args.extend([OsString::from("--listen"), OsString::from(listen)]);
     }
     if let Some(port) = options.port {
-        args.extend(["--port".into(), port.to_string()]);
+        args.extend([OsString::from("--port"), OsString::from(port.to_string())]);
     }
     if let Some(advertise) = &options.advertise {
-        args.extend(["--advertise".into(), advertise.clone()]);
-    }
-    if let Some(token) = &options.token {
-        args.extend(["--token".into(), token.clone()]);
+        args.extend([OsString::from("--advertise"), OsString::from(advertise)]);
     }
     if let Some(token_file) = &options.token_file {
-        args.extend(["--token-file".into(), token_file.display().to_string()]);
+        args.extend([
+            OsString::from("--token-file"),
+            token_file.as_os_str().to_os_string(),
+        ]);
     }
-    args
+    DaemonServeLaunchOptions {
+        args,
+        control_token_env: options.token.clone(),
+    }
 }
 
 async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
@@ -1183,19 +1196,46 @@ mod tests {
         };
 
         assert_eq!(options.access, ServeAccess::Lan);
+        let serve_launch = serve_args_for_options(&options);
         assert_eq!(
-            serve_args_for_options(&options),
+            serve_launch.args,
             vec![
-                "--access",
-                "lan",
-                "--host",
-                "192.168.1.10",
-                "--port",
-                "8787",
-                "--token-file",
-                "/tmp/holon.token",
+                OsString::from("--access"),
+                OsString::from("lan"),
+                OsString::from("--host"),
+                OsString::from("192.168.1.10"),
+                OsString::from("--port"),
+                OsString::from("8787"),
+                OsString::from("--token-file"),
+                OsString::from("/tmp/holon.token"),
             ]
         );
+        assert_eq!(serve_launch.control_token_env, None);
+    }
+
+    #[test]
+    fn daemon_start_passes_inline_token_through_env_not_argv() {
+        let options = ServeOptions {
+            access: ServeAccess::Lan,
+            host: Some("192.168.1.10".into()),
+            listen: None,
+            port: None,
+            advertise: None,
+            token: Some("secret-token".into()),
+            token_file: None,
+        };
+
+        let serve_launch = serve_args_for_options(&options);
+        assert_eq!(
+            serve_launch.control_token_env.as_deref(),
+            Some("secret-token")
+        );
+        let token_flag = OsString::from("--token");
+        let token_value = OsString::from("secret-token");
+        assert!(!serve_launch
+            .args
+            .iter()
+            .any(|arg| arg == &token_flag || arg == &token_value));
     }
 
     #[test]
@@ -1257,17 +1297,31 @@ async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Re
     let value = match command {
         DaemonCommands::Start { options } => {
             let mut config = config;
-            let serve_args = serve_args_for_options(&options);
+            let serve_launch = serve_args_for_options(&options);
             apply_serve_options(&mut config, options)?;
-            serde_json::to_value(daemon_start(&config, &serve_args).await?)?
+            serde_json::to_value(
+                daemon_start(
+                    &config,
+                    &serve_launch.args,
+                    serve_launch.control_token_env.as_deref(),
+                )
+                .await?,
+            )?
         }
         DaemonCommands::Stop => serde_json::to_value(daemon_stop(&config).await?)?,
         DaemonCommands::Status => serde_json::to_value(daemon_status(&config).await?)?,
         DaemonCommands::Restart { options } => {
             let mut config = config;
-            let serve_args = serve_args_for_options(&options);
+            let serve_launch = serve_args_for_options(&options);
             apply_serve_options(&mut config, options)?;
-            serde_json::to_value(daemon_restart(&config, &serve_args).await?)?
+            serde_json::to_value(
+                daemon_restart(
+                    &config,
+                    &serve_launch.args,
+                    serve_launch.control_token_env.as_deref(),
+                )
+                .await?,
+            )?
         }
         DaemonCommands::Logs { tail } => serde_json::to_value(daemon_logs(&config, tail)?)?,
     };
