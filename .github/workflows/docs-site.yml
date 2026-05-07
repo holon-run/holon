@@ -31,19 +31,19 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
-          cache-dependency-path: docs/website/package-lock.json
+          cache-dependency-path: docs/website/.tools/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --prefix .tools
 
       - name: Build directory indexes
-        run: npm run build:index
+        run: npm --prefix .tools run build:index
 
       - name: Build search index
-        run: npm run build:search
+        run: npm --prefix .tools run build:search
 
       - name: Build Cloudflare bundle
-        run: npm run build:cloudflare
+        run: npm --prefix .tools run build:cloudflare
 
       - name: Upload docs artifact
         uses: actions/upload-artifact@v4
@@ -55,4 +55,4 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npm run deploy
+        run: npm --prefix .tools run deploy
