@@ -22,19 +22,43 @@ pub enum OperatorVisibility {
 }
 
 impl OperatorVisibility {
-    pub const DEFAULT_DISPLAY_LEVEL: Self = Self::TurnResult;
+    pub fn display_level(self) -> u8 {
+        self as u8
+    }
+}
 
-    pub fn from_display_level(level: u8) -> Option<Self> {
-        match level {
-            3 => Some(Self::TurnResult),
-            4 => Some(Self::Progress),
-            5 => Some(Self::Trace),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OperatorDisplayMode {
+    /// Result-oriented operator view.
+    Info = 3,
+    /// Codex-like activity view.
+    Verbose = 4,
+    /// Detailed but still curated operator view.
+    Debug = 5,
+}
+
+impl OperatorDisplayMode {
+    pub const DEFAULT: Self = Self::Info;
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "3" | "info" => Some(Self::Info),
+            "4" | "verbose" => Some(Self::Verbose),
+            "5" | "debug" => Some(Self::Debug),
             _ => None,
         }
     }
 
     pub fn display_level(self) -> u8 {
         self as u8
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Verbose => "verbose",
+            Self::Debug => "debug",
+        }
     }
 }
 

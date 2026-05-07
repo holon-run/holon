@@ -185,8 +185,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             } else if !matches!(
                 event.presentation.category,
                 crate::operator_event::OperatorEventCategory::StateSync
-            ) && (is_chat_visible_conversation_event(event)
-                || projection.operator_visibility(event).display_level() >= 4)
+            ) && projection.is_visible_in_display_mode(event, app.display_level)
             {
                 cells.push(ConversationCell::SystemNotice {
                     created_at: event.ts,
@@ -551,9 +550,6 @@ fn active_activity_item(
     app: &TuiApp,
     fallback_ts: Option<DateTime<chrono::Utc>>,
 ) -> Option<ConversationCell> {
-    if app.display_level >= crate::tui::projection::OperatorVisibility::Trace {
-        return None;
-    }
     let projection = app.projection.as_ref();
     let agent = projection
         .map(|projection| &projection.agent)

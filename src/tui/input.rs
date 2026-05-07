@@ -119,7 +119,7 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
     SlashCommandSpec {
         name: "/display",
         description: "set chat display level",
-        usage: "/display <3|4|5>",
+        usage: "/display <info|verbose|debug|3|4|5>",
         arg_rule: SlashArgRule::ExactlyOne,
         command: SlashCommand::Display,
     },
@@ -490,15 +490,17 @@ impl TuiApp {
                 let level = args
                     .into_iter()
                     .next()
-                    .expect("slash command /display requires one argument")
-                    .parse::<u8>()
-                    .map_err(|_| anyhow!("/display expects 3, 4, or 5"))?;
-                let display_level = OperatorVisibility::from_display_level(level)
-                    .ok_or_else(|| anyhow!("/display expects 3, 4, or 5"))?;
+                    .expect("slash command /display requires one argument");
+                let display_level = OperatorDisplayMode::parse(&level)
+                    .ok_or_else(|| anyhow!("/display expects info, verbose, debug, or 3, 4, 5"))?;
                 self.display_level = display_level;
                 self.chat_text_cache.borrow_mut().take();
                 self.overlay = OverlayState::None;
-                self.status_line = format!("Display level set to {level}");
+                self.status_line = format!(
+                    "Display mode set to {} ({})",
+                    display_level.name(),
+                    display_level.display_level()
+                );
             }
             SlashCommand::Interrupt => {
                 let agent_id = match self.selected_agent_id() {

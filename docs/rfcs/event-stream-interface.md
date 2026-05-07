@@ -610,19 +610,22 @@ event feed:
 
 These projections have different retention and presentation rules.
 
-The TUI should expose an operator display level, defaulting to `3`. The display
-level means:
+Historical implementation note:
+
+The old TUI exposed an operator display level, defaulting to `3`, where the
+display level meant:
 
 - durable conversation shows projected items with
   `operator_visibility <= display_level`
 - the Working/activity area summarizes current-turn projected items with
   `operator_visibility > display_level`
-- when `display_level = 5`, the Working/activity area is hidden because the
-  visible timeline already includes progress and trace items
+- when `display_level = 5`, the Working/activity area was hidden because the
+  visible timeline already included progress and trace items
 
-The Working/activity area is therefore not a separate message class. It is a
-current-turn summary of lower-visibility items that the current display level
-chooses not to show as durable conversation.
+The implemented presentation model no longer uses that direct threshold in the
+main conversation. `/display 3|4|5` now maps to `info|verbose|debug`; raw
+`trace` remains available through `/events`, and the Working/activity area may
+still summarize current-turn items that are hidden by the selected display mode.
 
 ### Durable conversation projection
 

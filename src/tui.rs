@@ -61,7 +61,7 @@ use logging::TuiLogWriter;
 #[cfg(test)]
 use overlay::centered_rect_rows;
 use overlay::OverlayState;
-use projection::{OperatorVisibility, TuiProjection};
+use projection::{OperatorDisplayMode, TuiProjection};
 use render::draw;
 #[cfg(test)]
 use runtime::{is_cursor_too_old_error, AgentListChange};
@@ -210,7 +210,7 @@ mod tests {
         build_chat_text, centered_rect_rows, chat_text, collect_chat_items,
         determine_alt_screen_mode_for_terminal, draw, is_cursor_too_old_error,
         is_operator_origin_value, paragraph_max_scroll, paragraph_max_scroll_unframed,
-        projection::{OperatorVisibility, TuiProjection},
+        projection::{OperatorDisplayMode, TuiProjection},
         state::{tui_state_path, TuiClientState},
         view_model::{HeaderViewModel, StatusbarViewModel},
         AgentListChange, ChatScrollState, ComposerState, ConversationCell, OverlayState, TuiApp,
@@ -1158,10 +1158,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(app.display_level, OperatorVisibility::Trace);
+        assert_eq!(app.display_level, OperatorDisplayMode::Debug);
         assert_eq!(app.overlay, OverlayState::None);
         assert_eq!(app.composer.as_str(), "");
-        assert_eq!(app.status_line, "Display level set to 5");
+        assert_eq!(app.status_line, "Display mode set to debug (5)");
     }
 
     #[tokio::test]
@@ -1555,13 +1555,13 @@ mod tests {
     }
 
     #[test]
-    fn chat_display_level_five_shows_trace_events_without_working_row() {
+    fn chat_display_level_five_shows_debug_events_and_keeps_working_row() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
             client,
             crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
-        app.display_level = OperatorVisibility::Trace;
+        app.display_level = OperatorDisplayMode::Debug;
         let mut snapshot = sample_snapshot("default", "evt-0");
         snapshot.agent.agent.status = AgentStatus::AwakeRunning;
         let mut projection = TuiProjection::from_snapshot(snapshot);
@@ -1618,7 +1618,7 @@ mod tests {
         assert!(rendered.contains("ExecCommand: cargo test tui"));
         assert!(!rendered.contains("State sync"));
         assert!(!rendered.contains("agent_state_changed"));
-        assert!(!rendered.contains("Working"));
+        assert!(rendered.contains("Working"));
     }
 
     #[test]

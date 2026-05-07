@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use super::logging::TuiLogWriter;
 
-pub(crate) use crate::operator_event::OperatorVisibility;
+pub(crate) use crate::operator_event::{OperatorDisplayMode, OperatorVisibility};
 use crate::{
     client::{AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StateWorkspaceSnapshot},
     operator_event::{
@@ -441,20 +441,21 @@ impl TuiProjection {
 
     pub(crate) fn visible_events(
         &self,
-        display_level: OperatorVisibility,
+        display_mode: OperatorDisplayMode,
     ) -> impl Iterator<Item = &ProjectionEventRecord> {
         self.event_log
             .iter()
-            .filter(move |event| self.operator_visibility(event) <= display_level)
+            .filter(move |event| self.is_visible_in_display_mode(event, display_mode))
     }
 
     pub(crate) fn hidden_current_turn_events(
         &self,
-        display_level: OperatorVisibility,
+        display_mode: OperatorDisplayMode,
     ) -> Vec<&ProjectionEventRecord> {
         let mut events = self
             .current_turn_events_rev()
-            .filter(|event| self.operator_visibility(event) > display_level)
+            .filter(|event| !self.is_visible_in_display_mode(event, display_mode))
+            .filter(|event| self.is_visible_in_display_mode(event, OperatorDisplayMode::Debug))
             .take(8)
             .collect::<Vec<_>>();
         events.reverse();
@@ -463,6 +464,20 @@ impl TuiProjection {
 
     pub(crate) fn operator_visibility(&self, event: &ProjectionEventRecord) -> OperatorVisibility {
         event.presentation.visibility
+    }
+
+    pub(crate) fn is_visible_in_display_mode(
+        &self,
+        event: &ProjectionEventRecord,
+        display_mode: OperatorDisplayMode,
+    ) -> bool {
+        match display_mode {
+            OperatorDisplayMode::Info => is_info_event(event),
+            OperatorDisplayMode::Verbose => is_info_event(event) || is_verbose_event(event),
+            OperatorDisplayMode::Debug => {
+                is_info_event(event) || is_verbose_event(event) || is_debug_event(event)
+            }
+        }
     }
 
     fn operator_presentation_context(&self) -> OperatorPresentationContext {
@@ -815,6 +830,135 @@ fn work_item_event_completed(event: &ProjectionEventRecord) -> bool {
         .is_some_and(|record| record.state == WorkItemState::Completed)
 }
 
+fn is_info_event(event: &ProjectionEventRecord) -> bool {
+    event.presentation.is_conversation_candidate()
+        && matches!(
+            event.presentation.visibility,
+            OperatorVisibility::ActionRequired
+                | OperatorVisibility::TurnResult
+                | OperatorVisibility::WorkDone
+        )
+}
+
+fn is_verbose_event(event: &ProjectionEventRecord) -> bool {
+    match event.kind.as_str() {
+        "assistant_round_recorded" => assistant_round_has_text(event),
+        "text_only_round_observed" => text_only_round_has_useful_text(event),
+        "max_output_tokens_recovery"
+        | "turn_local_compaction_applied"
+        | "turn_local_checkpoint_resume_requested"
+        | "turn_local_baseline_over_budget" => true,
+        "process_execution_requested" | "tool_executed" | "tool_execution_failed" => true,
+        "task_result_received"
+        | "task_child_spawned"
+        | "command_task_runner_failed"
+        | "command_task_result_enqueue_failed" => true,
+        "task_status_updated" => task_status_is_terminal(event),
+        "work_item_written" => work_item_event_completed(event),
+        "work_item_delegation_completed"
+        | "waiting_intent_created"
+        | "callback_delivered"
+        | "timer_fired"
+        | "workspace_entered"
+        | "workspace_exited"
+        | "worktree_entered"
+        | "worktree_exited"
+        | "worktree_retained_for_review"
+        | "worktree_auto_cleaned_up"
+        | "worktree_auto_cleanup_failed"
+        | "task_worktree_cleanup_failed"
+        | "skill_installed"
+        | "skill_uninstalled"
+        | "agent_model_override_set"
+        | "agent_model_override_cleared" => true,
+        _ => false,
+    }
+}
+
+fn is_debug_event(event: &ProjectionEventRecord) -> bool {
+    match event.kind.as_str() {
+        "provider_round_completed" => provider_round_has_useful_telemetry(event),
+        "task_created" | "task_status_updated" | "task_input_delivered" => true,
+        "work_item_delegation_created"
+        | "waiting_intent_cancelled"
+        | "timer_created"
+        | "turn_local_checkpoint_requested"
+        | "turn_local_checkpoint_recorded"
+        | "command_task_running_persisted" => true,
+        _ => false,
+    }
+}
+
+fn assistant_round_has_text(event: &ProjectionEventRecord) -> bool {
+    event
+        .payload
+        .get("text_preview")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+}
+
+fn text_only_round_has_useful_text(event: &ProjectionEventRecord) -> bool {
+    event
+        .payload
+        .get("text_preview")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+        || event
+            .payload
+            .get("triggered_recovery")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
+fn provider_round_has_useful_telemetry(event: &ProjectionEventRecord) -> bool {
+    let model = event
+        .payload
+        .get("active_model")
+        .and_then(Value::as_str)
+        .or_else(|| event.payload.get("requested_model").and_then(Value::as_str))
+        .is_some_and(|model| {
+            let model = model.trim();
+            !model.is_empty() && model != "model"
+        });
+    let stop = event
+        .payload
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .is_some_and(|stop| {
+            let stop = stop.trim();
+            !stop.is_empty() && stop != "unknown"
+        });
+    let tokens = event
+        .payload
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .is_some()
+        || event
+            .payload
+            .get("output_tokens")
+            .and_then(Value::as_u64)
+            .is_some();
+    let tools = event
+        .payload
+        .get("tool_call_count")
+        .and_then(Value::as_u64)
+        .is_some_and(|count| count > 0);
+    model || stop || tokens || tools
+}
+
+fn task_status_is_terminal(event: &ProjectionEventRecord) -> bool {
+    event
+        .payload
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| {
+            matches!(
+                status,
+                "Completed" | "completed" | "Failed" | "failed" | "Cancelled" | "cancelled"
+            )
+        })
+}
+
 fn operator_message_from_enqueued(message: &MessageEnvelope) -> OperatorMessageRecord {
     OperatorMessageRecord {
         message_id: message.id.clone(),
@@ -1067,7 +1211,8 @@ fn trim_summary(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OperatorVisibility, ProjectionEventLane, ProjectionSlice, TuiProjection, TASK_TAIL_LIMIT,
+        OperatorDisplayMode, OperatorVisibility, ProjectionEventLane, ProjectionSlice,
+        TuiProjection, TASK_TAIL_LIMIT,
     };
     use crate::{
         client::{
@@ -1337,7 +1482,7 @@ mod tests {
             &test_log_writer(),
         );
 
-        let events = projection.hidden_current_turn_events(OperatorVisibility::TurnResult);
+        let events = projection.hidden_current_turn_events(OperatorDisplayMode::Info);
         assert_eq!(
             events
                 .iter()
