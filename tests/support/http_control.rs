@@ -831,6 +831,10 @@ pub async fn runtime_status_route_reports_runtime_metadata() -> Result<()> {
         payload["startup_surface"]["default_agent_id"],
         config.default_agent_id
     );
+    assert_eq!(
+        payload["startup_surface"]["callback_base_url"],
+        config.callback_base_url
+    );
     assert_eq!(payload["startup_surface"]["control_token_configured"], true);
     assert_eq!(payload["startup_surface"]["control_auth_mode"], "auto");
     assert_eq!(

@@ -38,11 +38,16 @@ authentication:
 
 ```sh
 holon serve --access lan --host 192.168.1.10 --token-file ~/.config/holon/remote.token
+holon daemon start --access lan --host 192.168.1.10 --token-file ~/.config/holon/remote.token
 holon tui --connect http://192.168.1.10:7878 --token-file ~/.config/holon/remote.token
 
 holon serve --access tailnet --host lab.tailnet.ts.net --token-file ~/.config/holon/remote.token
+holon daemon start --access tailnet --host lab.tailnet.ts.net --token-file ~/.config/holon/remote.token
 holon tui --connect http://lab.tailnet.ts.net:7878 --token-file ~/.config/holon/remote.token
 ```
+
+`holon daemon restart` accepts the same access options as `daemon start` and
+uses them for the replacement background `serve` process.
 
 The lower-level form separates bind and client-visible URLs:
 

@@ -166,6 +166,19 @@ Use `holon serve` directly when:
 Do not treat `serve` as a different product mode. It is the same long-lived
 runtime that `daemon` manages in the background.
 
+For LAN or tailnet access, prefer `--token-file` over putting a token directly
+on the command line:
+
+```bash
+holon serve --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
+holon daemon start --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
+holon daemon restart --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
+```
+
+`daemon restart` is an explicit stop/start cycle. It accepts the same access
+options as `daemon start`; if no options are supplied, it restarts with the
+configured local defaults.
+
 ## Safe Local Recovery
 
 If the local runtime state seems stale:

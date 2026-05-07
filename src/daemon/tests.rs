@@ -1,4 +1,4 @@
-use super::lifecycle::{probe_runtime, ProbeRuntime};
+use super::lifecycle::{effective_config_mismatch_summary, probe_runtime, ProbeRuntime};
 use super::state::{
     persist_last_runtime_failure, DAEMON_LOG_TAIL_LINE_CHAR_LIMIT, DAEMON_LOG_TAIL_READ_BYTE_LIMIT,
 };
@@ -6,7 +6,8 @@ use super::{
     clear_persisted_daemon_lifecycle_failures, config_fingerprint, daemon_log_hint, daemon_logs,
     daemon_paths, daemon_status, daemon_stop, load_last_runtime_failure,
     persist_daemon_lifecycle_failure, runtime_activity_summary, DaemonLifecycleState,
-    RuntimeActivityState, RuntimeServiceMetadata, RuntimeStatusResponse,
+    RuntimeActivityState, RuntimeConfigSurface, RuntimeControlAuthMode, RuntimeServiceMetadata,
+    RuntimeStartupSurface, RuntimeStatusResponse,
 };
 use crate::config::{provider_registry_for_tests, AppConfig, ModelRef, ProviderId};
 use crate::{
@@ -233,6 +234,49 @@ fn runtime_status_response_decodes_without_activity_field() {
     let decoded: RuntimeStatusResponse = serde_json::from_value(payload).unwrap();
     assert_eq!(decoded.pid, 42);
     assert!(decoded.activity.is_none());
+}
+
+#[test]
+fn effective_config_mismatch_summary_lists_actionable_differences() {
+    let mut expected = test_config();
+    expected.http_addr = "0.0.0.0:7878".into();
+    expected.callback_base_url = "http://192.168.1.10:7878".into();
+    expected.control_auth_mode = crate::config::ControlAuthMode::Required;
+
+    let mut actual_surface = RuntimeConfigSurface::new(&expected);
+    actual_surface.runtime_max_output_tokens = expected.runtime_max_output_tokens;
+    let status = RuntimeStatusResponse {
+        ok: true,
+        healthy: true,
+        pid: 42,
+        home_dir: expected.home_dir.clone(),
+        socket_path: expected.socket_path.clone(),
+        http_addr: "127.0.0.1:7878".into(),
+        started_at: Utc::now(),
+        config_fingerprint: "actual".into(),
+        activity: None,
+        startup_surface: Some(RuntimeStartupSurface {
+            home_dir: expected.home_dir.clone(),
+            socket_path: expected.socket_path.clone(),
+            workspace_dir: expected.workspace_dir.clone(),
+            default_agent_id: expected.default_agent_id.clone(),
+            callback_base_url: "http://127.0.0.1:7878".into(),
+            control_token_configured: false,
+            control_auth_mode: RuntimeControlAuthMode::Auto,
+        }),
+        runtime_surface: Some(actual_surface),
+        agent_model_overrides: Vec::new(),
+        last_failure: None,
+    };
+
+    let summary = effective_config_mismatch_summary(&expected, &status);
+    assert!(summary.contains("http_addr expected=\"0.0.0.0:7878\" actual=\"127.0.0.1:7878\""));
+    assert!(summary.contains(
+        "callback_base_url expected=\"http://192.168.1.10:7878\" actual=\"http://127.0.0.1:7878\""
+    ));
+    assert!(summary.contains("control_auth_mode expected=\"Required\" actual=\"Auto\""));
+    assert!(summary.contains("control_token_configured expected=\"true\" actual=\"false\""));
+    assert!(!summary.contains("secret"));
 }
 
 #[tokio::test]

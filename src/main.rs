@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use holon::{
     client::{normalize_control_base_url, LocalClient},
     config::{
@@ -63,18 +63,8 @@ impl ControlCommandAction {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Serve {
-        #[arg(long, value_enum, default_value_t = ServeAccess::Local)]
-        access: ServeAccess,
-        #[arg(long)]
-        host: Option<String>,
-        #[arg(long)]
-        listen: Option<String>,
-        #[arg(long)]
-        advertise: Option<String>,
-        #[arg(long)]
-        token: Option<String>,
-        #[arg(long)]
-        token_file: Option<PathBuf>,
+        #[command(flatten)]
+        options: ServeOptions,
     },
     Daemon {
         #[command(subcommand)]
@@ -238,13 +228,21 @@ enum ServeAccess {
     Tailnet,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Args)]
 struct ServeOptions {
+    #[arg(long, value_enum, default_value_t = ServeAccess::Local)]
     access: ServeAccess,
+    #[arg(long)]
     host: Option<String>,
+    #[arg(long)]
     listen: Option<String>,
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+    port: Option<u16>,
+    #[arg(long)]
     advertise: Option<String>,
+    #[arg(long)]
     token: Option<String>,
+    #[arg(long)]
     token_file: Option<PathBuf>,
 }
 
@@ -335,10 +333,16 @@ enum ConfigCredentialCommands {
 
 #[derive(Debug, Subcommand)]
 enum DaemonCommands {
-    Start,
+    Start {
+        #[command(flatten)]
+        options: ServeOptions,
+    },
     Stop,
     Status,
-    Restart,
+    Restart {
+        #[command(flatten)]
+        options: ServeOptions,
+    },
     Logs {
         #[arg(long, default_value_t = 80)]
         tail: usize,
@@ -520,27 +524,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
 
     let config = AppConfig::load()?;
     match command {
-        Commands::Serve {
-            access,
-            host,
-            listen,
-            advertise,
-            token,
-            token_file,
-        } => {
-            serve(
-                config,
-                ServeOptions {
-                    access,
-                    host,
-                    listen,
-                    advertise,
-                    token,
-                    token_file,
-                },
-            )
-            .await
-        }
+        Commands::Serve { options } => serve(config, options).await,
         Commands::Daemon { command } => handle_daemon_command(config, command).await,
         Commands::Prompt { text, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
@@ -758,12 +742,19 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
         config.control_token = Some(token);
     }
 
+    if options.listen.is_some() && options.port.is_some() {
+        return Err(anyhow!("use only one of --listen or --port"));
+    }
+
     if let Some(listen) = options.listen {
         config.http_addr = listen;
     } else if options.access == ServeAccess::Tunnel {
-        config.http_addr = loopback_with_configured_port(&config.http_addr);
+        config.http_addr = loopback_with_configured_port(&config.http_addr, options.port);
     } else if matches!(options.access, ServeAccess::Lan | ServeAccess::Tailnet) {
-        config.http_addr = default_remote_listen_addr(options.host.as_deref(), &config.http_addr);
+        config.http_addr =
+            default_remote_listen_addr(options.host.as_deref(), &config.http_addr, options.port);
+    } else if options.port.is_some() {
+        config.http_addr = loopback_with_configured_port(&config.http_addr, options.port);
     }
 
     let advertise_url = match options.advertise {
@@ -824,10 +815,17 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
     Ok(advertise_url)
 }
 
-fn default_remote_listen_addr(host: Option<&str>, current: &str) -> String {
-    let port = current
-        .rsplit_once(':')
-        .and_then(|(_, port)| port.parse::<u16>().ok())
+fn default_remote_listen_addr(
+    host: Option<&str>,
+    current: &str,
+    explicit_port: Option<u16>,
+) -> String {
+    let port = explicit_port
+        .or_else(|| {
+            current
+                .rsplit_once(':')
+                .and_then(|(_, port)| port.parse::<u16>().ok())
+        })
         .unwrap_or(7878);
     if let Some(host) = host {
         if let Ok(addr) = host.parse::<SocketAddr>() {
@@ -840,10 +838,13 @@ fn default_remote_listen_addr(host: Option<&str>, current: &str) -> String {
     format!("0.0.0.0:{port}")
 }
 
-fn loopback_with_configured_port(current: &str) -> String {
-    let port = current
-        .rsplit_once(':')
-        .and_then(|(_, port)| port.parse::<u16>().ok())
+fn loopback_with_configured_port(current: &str, explicit_port: Option<u16>) -> String {
+    let port = explicit_port
+        .or_else(|| {
+            current
+                .rsplit_once(':')
+                .and_then(|(_, port)| port.parse::<u16>().ok())
+        })
         .unwrap_or(7878);
     format!("127.0.0.1:{port}")
 }
@@ -947,6 +948,37 @@ fn non_empty_token(token: String) -> Result<String> {
         return Err(anyhow!("control token must not be empty"));
     }
     Ok(token)
+}
+
+fn serve_args_for_options(options: &ServeOptions) -> Vec<String> {
+    let mut args = vec![
+        "--access".into(),
+        options
+            .access
+            .to_possible_value()
+            .expect("serve access should have clap value")
+            .get_name()
+            .to_string(),
+    ];
+    if let Some(host) = &options.host {
+        args.extend(["--host".into(), host.clone()]);
+    }
+    if let Some(listen) = &options.listen {
+        args.extend(["--listen".into(), listen.clone()]);
+    }
+    if let Some(port) = options.port {
+        args.extend(["--port".into(), port.to_string()]);
+    }
+    if let Some(advertise) = &options.advertise {
+        args.extend(["--advertise".into(), advertise.clone()]);
+    }
+    if let Some(token) = &options.token {
+        args.extend(["--token".into(), token.clone()]);
+    }
+    if let Some(token_file) = &options.token_file {
+        args.extend(["--token-file".into(), token_file.display().to_string()]);
+    }
+    args
 }
 
 async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
@@ -1091,6 +1123,7 @@ mod tests {
                 access: ServeAccess::Tailnet,
                 host: Some("lab.tailnet.ts.net".into()),
                 listen: None,
+                port: None,
                 advertise: None,
                 token: None,
                 token_file: None,
@@ -1105,6 +1138,67 @@ mod tests {
     }
 
     #[test]
+    fn lan_port_updates_listen_and_advertise_urls() {
+        let mut config = test_config();
+        let advertise = apply_serve_options(
+            &mut config,
+            ServeOptions {
+                access: ServeAccess::Lan,
+                host: Some("192.168.1.10".into()),
+                listen: None,
+                port: Some(8787),
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "192.168.1.10:8787");
+        assert_eq!(advertise.as_deref(), Some("http://192.168.1.10:8787"));
+        assert_eq!(config.callback_base_url, "http://192.168.1.10:8787");
+        assert_eq!(config.control_auth_mode, ControlAuthMode::Required);
+    }
+
+    #[test]
+    fn daemon_start_accepts_and_forwards_serve_options() {
+        let cli = Cli::parse_from([
+            "holon",
+            "daemon",
+            "start",
+            "--access",
+            "lan",
+            "--host",
+            "192.168.1.10",
+            "--port",
+            "8787",
+            "--token-file",
+            "/tmp/holon.token",
+        ]);
+        let Commands::Daemon {
+            command: DaemonCommands::Start { options },
+        } = cli.command
+        else {
+            panic!("expected daemon start command");
+        };
+
+        assert_eq!(options.access, ServeAccess::Lan);
+        assert_eq!(
+            serve_args_for_options(&options),
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--port",
+                "8787",
+                "--token-file",
+                "/tmp/holon.token",
+            ]
+        );
+    }
+
+    #[test]
     fn unspecified_listen_accepts_explicit_advertise_url() {
         let mut config = test_config();
         let advertise = apply_serve_options(
@@ -1113,6 +1207,7 @@ mod tests {
                 access: ServeAccess::Lan,
                 host: None,
                 listen: Some("0.0.0.0:7878".into()),
+                port: None,
                 advertise: Some("http://lab.example.test:7878".into()),
                 token: None,
                 token_file: None,
@@ -1137,6 +1232,7 @@ mod tests {
                 access: ServeAccess::Local,
                 host: None,
                 listen: None,
+                port: None,
                 advertise: None,
                 token: None,
                 token_file: None,
@@ -1159,10 +1255,20 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
 
 async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Result<()> {
     let value = match command {
-        DaemonCommands::Start => serde_json::to_value(daemon_start(&config).await?)?,
+        DaemonCommands::Start { options } => {
+            let mut config = config;
+            let serve_args = serve_args_for_options(&options);
+            apply_serve_options(&mut config, options)?;
+            serde_json::to_value(daemon_start(&config, &serve_args).await?)?
+        }
         DaemonCommands::Stop => serde_json::to_value(daemon_stop(&config).await?)?,
         DaemonCommands::Status => serde_json::to_value(daemon_status(&config).await?)?,
-        DaemonCommands::Restart => serde_json::to_value(daemon_restart(&config).await?)?,
+        DaemonCommands::Restart { options } => {
+            let mut config = config;
+            let serve_args = serve_args_for_options(&options);
+            apply_serve_options(&mut config, options)?;
+            serde_json::to_value(daemon_restart(&config, &serve_args).await?)?
+        }
         DaemonCommands::Logs { tail } => serde_json::to_value(daemon_logs(&config, tail)?)?,
     };
     print_json(&value)
