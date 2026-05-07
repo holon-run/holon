@@ -126,6 +126,8 @@ pub struct AppConfig {
     pub providers: ProviderRegistry,
 }
 
+pub const DEFAULT_LOCAL_AGENT_ID: &str = "main";
+
 pub type ProviderRegistry = BTreeMap<ProviderId, ProviderRuntimeConfig>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,7 +460,8 @@ impl AppConfig {
         let workspace_dir = env::var("HOLON_WORKSPACE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let default_agent_id = env::var("HOLON_AGENT_ID").unwrap_or_else(|_| "default".into());
+        let default_agent_id =
+            env::var("HOLON_AGENT_ID").unwrap_or_else(|_| DEFAULT_LOCAL_AGENT_ID.into());
         let context_window_messages = env::var("HOLON_CONTEXT_WINDOW_MESSAGES")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -3073,7 +3076,7 @@ mod tests {
         AnthropicContextManagementConfig, AppConfig, ControlAuthMode, CredentialKind,
         CredentialSource, CredentialStoreFile, HolonConfigFile, ModelConfigFile, ModelRef,
         ProviderAuthConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
-        ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog,
+        ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
     };
 
     struct EnvVarGuard {
@@ -3160,6 +3163,48 @@ mod tests {
             _workspace_dir: workspace_dir,
             config,
         }
+    }
+
+    #[test]
+    fn app_config_defaults_unset_agent_env_to_main_agent() {
+        let dir = tempdir().unwrap();
+        let _agent_guard = EnvVarGuard::unset("HOLON_AGENT_ID");
+        save_persisted_config_at(
+            &persisted_config_path(dir.path()),
+            &HolonConfigFile {
+                model: ModelConfigFile {
+                    default: Some("openai/gpt-5.4".into()),
+                    ..ModelConfigFile::default()
+                },
+                ..HolonConfigFile::default()
+            },
+        )
+        .unwrap();
+
+        let config = AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap();
+
+        assert_eq!(config.default_agent_id, DEFAULT_LOCAL_AGENT_ID);
+    }
+
+    #[test]
+    fn app_config_honors_explicit_default_agent_env() {
+        let dir = tempdir().unwrap();
+        let _agent_guard = EnvVarGuard::set("HOLON_AGENT_ID", "release-bot");
+        save_persisted_config_at(
+            &persisted_config_path(dir.path()),
+            &HolonConfigFile {
+                model: ModelConfigFile {
+                    default: Some("openai/gpt-5.4".into()),
+                    ..ModelConfigFile::default()
+                },
+                ..HolonConfigFile::default()
+            },
+        )
+        .unwrap();
+
+        let config = AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap();
+
+        assert_eq!(config.default_agent_id, "release-bot");
     }
 
     #[test]

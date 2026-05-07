@@ -281,13 +281,7 @@ fn latest_public_runtime_failure(config: &AppConfig) -> Result<Option<RuntimeFai
                 && record.visibility == AgentVisibility::Public
         })
     {
-        let primary = config.agent_root_dir().join(&identity.agent_id);
-        let legacy = config.data_dir.join("sessions").join(&identity.agent_id);
-        let storage = AppStorage::new(if primary.exists() || !legacy.exists() {
-            primary
-        } else {
-            legacy
-        })?;
+        let storage = AppStorage::new(config.agent_root_dir().join(&identity.agent_id))?;
         let failure = storage
             .read_agent()?
             .and_then(|agent| agent.last_runtime_failure);
