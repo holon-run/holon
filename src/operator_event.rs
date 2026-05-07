@@ -1092,10 +1092,31 @@ fn collapse_whitespace(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        present_operator_event, OperatorEventCategory, OperatorPresentationContext,
-        OperatorVisibility,
+        present_operator_event, OperatorDisplayMode, OperatorEventCategory,
+        OperatorPresentationContext, OperatorVisibility,
     };
     use serde_json::json;
+
+    #[test]
+    fn operator_display_mode_parse_accepts_names_and_numeric_aliases() {
+        assert_eq!(
+            OperatorDisplayMode::parse("3"),
+            Some(OperatorDisplayMode::Info)
+        );
+        assert_eq!(
+            OperatorDisplayMode::parse(" info "),
+            Some(OperatorDisplayMode::Info)
+        );
+        assert_eq!(
+            OperatorDisplayMode::parse("VERBOSE"),
+            Some(OperatorDisplayMode::Verbose)
+        );
+        assert_eq!(
+            OperatorDisplayMode::parse("5"),
+            Some(OperatorDisplayMode::Debug)
+        );
+        assert_eq!(OperatorDisplayMode::parse("trace"), None);
+    }
 
     #[test]
     fn assistant_round_recorded_distinguishes_text_from_tool_requests() {

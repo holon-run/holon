@@ -1146,7 +1146,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slash_display_sets_chat_visibility_level() {
+    async fn slash_display_sets_chat_display_mode() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
             client,
@@ -1158,10 +1158,27 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(app.display_level, OperatorDisplayMode::Debug);
+        assert_eq!(app.display_mode, OperatorDisplayMode::Debug);
         assert_eq!(app.overlay, OverlayState::None);
         assert_eq!(app.composer.as_str(), "");
         assert_eq!(app.status_line, "Display mode set to debug (5)");
+    }
+
+    #[tokio::test]
+    async fn slash_display_accepts_named_modes() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.composer = ComposerState::from("/display VERBOSE");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.display_mode, OperatorDisplayMode::Verbose);
+        assert_eq!(app.status_line, "Display mode set to verbose (4)");
     }
 
     #[tokio::test]
@@ -1555,13 +1572,13 @@ mod tests {
     }
 
     #[test]
-    fn chat_display_level_five_shows_debug_events_and_keeps_working_row() {
+    fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
             client,
             crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
-        app.display_level = OperatorDisplayMode::Debug;
+        app.display_mode = OperatorDisplayMode::Debug;
         let mut snapshot = sample_snapshot("default", "evt-0");
         snapshot.agent.agent.status = AgentStatus::AwakeRunning;
         let mut projection = TuiProjection::from_snapshot(snapshot);

@@ -954,7 +954,14 @@ fn task_status_is_terminal(event: &ProjectionEventRecord) -> bool {
         .is_some_and(|status| {
             matches!(
                 status,
-                "Completed" | "completed" | "Failed" | "failed" | "Cancelled" | "cancelled"
+                "Completed"
+                    | "completed"
+                    | "Failed"
+                    | "failed"
+                    | "Cancelled"
+                    | "cancelled"
+                    | "Interrupted"
+                    | "interrupted"
             )
         })
 }
