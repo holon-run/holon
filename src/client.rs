@@ -584,10 +584,9 @@ impl LocalClient {
         if let Some(last_event_id) = last_event_id {
             builder = builder.header("Last-Event-ID", last_event_id);
         }
-        let response = builder
-            .timeout(self.http_request_timeout())
-            .send()
+        let response = tokio::time::timeout(self.http_request_timeout(), builder.send())
             .await
+            .map_err(|_| anyhow!("timed out opening event stream {}", path))?
             .with_context(|| format!("failed to open event stream {}", path))?;
         let status = response.status();
         if !status.is_success() {

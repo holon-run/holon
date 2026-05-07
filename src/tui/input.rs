@@ -474,7 +474,6 @@ impl TuiApp {
             }
             SlashCommand::Refresh => {
                 self.overlay = OverlayState::None;
-                self.status_line = "Refreshing selected agent from /state".into();
                 self.begin_bootstrap_selected_agent();
             }
             SlashCommand::ClearStatus => {

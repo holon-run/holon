@@ -358,9 +358,9 @@ impl TuiApp {
                     self.restore_runtime_checkpoint(checkpoint);
                     self.status_line = format!("Failed to switch to agent {agent_id}: {err}");
                 } else {
-                    self.schedule_refresh(format!(
-                        "failed to bootstrap {agent_id} from /state: {err}"
-                    ));
+                    let reason = format!("failed to bootstrap {agent_id} from /state: {err}");
+                    self.schedule_refresh(reason.clone());
+                    self.status_line = format!("Snapshot refresh failed for {agent_id}: {err}");
                 }
                 return;
             }
@@ -371,6 +371,7 @@ impl TuiApp {
             if let Some(previous) = self.projection.as_mut() {
                 projection.inherit_recent_event_logs_from(previous);
             }
+            merge_transcript_tail(&mut projection.transcript_tail, &self.transcript);
         }
         let cursor = projection.cursor.clone();
 
@@ -798,6 +799,18 @@ fn transcript_merge_key(entry: &TranscriptEntry) -> &str {
         .related_message_id
         .as_deref()
         .unwrap_or(entry.id.as_str())
+}
+
+fn merge_transcript_tail(persisted: &mut Vec<TranscriptEntry>, streamed: &[TranscriptEntry]) {
+    for entry in streamed {
+        let key = transcript_merge_key(entry);
+        if !persisted
+            .iter()
+            .any(|persisted| transcript_merge_key(persisted) == key)
+        {
+            persisted.push(entry.clone());
+        }
+    }
 }
 
 fn find_agent_index(agents: &[AgentSummary], agent_id: &str) -> Option<usize> {

@@ -2364,6 +2364,71 @@ mod tests {
         assert_eq!(app.transcript[0].id, "persisted-transcript-entry");
     }
 
+    #[tokio::test]
+    async fn snapshot_refresh_preserves_sse_only_transcript_entries() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.agents = vec![sample_agent_summary("default")];
+        app.selected_agent = 0;
+        app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
+            "default", "cursor-1",
+        )));
+        app.transcript = vec![TranscriptEntry {
+            id: "stream-only-entry".into(),
+            agent_id: "default".into(),
+            created_at: Utc::now(),
+            kind: TranscriptEntryKind::AssistantRound,
+            round: Some(1),
+            related_message_id: None,
+            stop_reason: None,
+            input_tokens: None,
+            output_tokens: None,
+            data: json!({
+                "body": { "type": "text", "text": "streamed only" }
+            }),
+        }];
+        app.snapshot_refresh_request_id = 1;
+
+        app.apply_snapshot_result(
+            1,
+            0,
+            "default".into(),
+            None,
+            Ok(sample_snapshot("default", "cursor-2")),
+        );
+
+        assert!(app
+            .transcript
+            .iter()
+            .any(|entry| entry.id == "stream-only-entry"));
+    }
+
+    #[test]
+    fn snapshot_refresh_failure_updates_status_line() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.agents = vec![sample_agent_summary("default")];
+        app.selected_agent = 0;
+        app.snapshot_refresh_request_id = 7;
+
+        app.apply_snapshot_result(7, 0, "default".into(), None, Err("network down".into()));
+
+        assert_eq!(
+            app.status_line,
+            "Snapshot refresh failed for default: network down"
+        );
+        assert!(matches!(
+            app.connection_state,
+            TuiConnectionState::RefreshRequired { .. }
+        ));
+    }
+
     #[test]
     fn chat_text_keeps_long_brief_content() {
         let client = LocalClient::new(test_config()).unwrap();
