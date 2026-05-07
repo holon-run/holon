@@ -610,10 +610,12 @@ fn conversation_message_to_api(
                                         "thinking": text,
                                     });
                                     if !signature.is_empty() {
-                                        v.as_object_mut().unwrap().insert("signature".into(), json!(signature));
+                                        v.as_object_mut()
+                                            .unwrap()
+                                            .insert("signature".into(), json!(signature));
                                     }
                                     v
-                                },
+                                }
                             },
                             rolling_cache_block_index == Some(block_index),
                         )

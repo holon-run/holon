@@ -89,7 +89,10 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
                 ConversationMessage::AssistantBlocks(vec![
                     // Include a thinking block so that thinking-mode models (e.g. DeepSeek V4 Pro)
                     // accept the assistant message. Non-thinking models simply ignore it.
-                    ModelBlock::Thinking { text: "I should use the probe tool.".into(), signature: String::new() },
+                    ModelBlock::Thinking {
+                        text: "I should use the probe tool.".into(),
+                        signature: String::new(),
+                    },
                     ModelBlock::ToolUse {
                         id: "call_context_management_probe".into(),
                         name: "ProbeTool".into(),
