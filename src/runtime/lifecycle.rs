@@ -388,7 +388,9 @@ impl RuntimeHandle {
             current_run_id: agent.current_run_id,
             waiting_reason: closure.waiting_reason,
             model: (&model).into(),
-            active_workspace_entry: agent.active_workspace_entry,
+            active_workspace_entry: agent
+                .active_workspace_entry
+                .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
         })
     }
 

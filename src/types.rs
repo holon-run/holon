@@ -60,6 +60,13 @@ pub struct ActiveWorkspaceEntry {
     pub projection_metadata: Option<Value>,
 }
 
+impl ActiveWorkspaceEntry {
+    pub fn without_projection_metadata(mut self) -> Self {
+        self.projection_metadata = None;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceOccupancyRecord {
     pub occupancy_id: String,
@@ -3179,7 +3186,11 @@ impl AgentListEntry {
             current_run_id: summary.agent.current_run_id.clone(),
             waiting_reason: summary.closure.waiting_reason,
             model: (&summary.model).into(),
-            active_workspace_entry: summary.agent.active_workspace_entry.clone(),
+            active_workspace_entry: summary
+                .agent
+                .active_workspace_entry
+                .clone()
+                .map(ActiveWorkspaceEntry::without_projection_metadata),
         }
     }
 
