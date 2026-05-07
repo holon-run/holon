@@ -3890,7 +3890,7 @@ mod tests {
         assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
         assert_eq!(
             xiaomi.context_management.cache_strategy,
-            AnthropicCacheStrategy::ClaudeCliLike
+            AnthropicCacheStrategy::Current
         );
 
         let xiaomi_anthropic = providers
@@ -3933,7 +3933,7 @@ mod tests {
         );
         assert_eq!(
             xiaomi_token_plan.context_management.cache_strategy,
-            AnthropicCacheStrategy::ClaudeCliLike
+            AnthropicCacheStrategy::Current
         );
 
         let xiaomi_token_plan_anthropic = providers
