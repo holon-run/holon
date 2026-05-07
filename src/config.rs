@@ -2192,25 +2192,6 @@ fn insert_openai_compatible_provider(
     )
 }
 
-#[allow(dead_code)]
-fn insert_anthropic_compatible_provider(
-    registry: &mut ProviderRegistry,
-    provider: &str,
-    default_base_url: &str,
-    env_names: &[&str],
-    settings_env: &HashMap<String, String>,
-) -> Result<()> {
-    insert_builtin_http_provider_with_context_management(
-        registry,
-        provider,
-        ProviderTransportKind::AnthropicMessages,
-        default_base_url,
-        env_names,
-        settings_env,
-        resolve_anthropic_context_management_config()?,
-    )
-}
-
 /// Insert an Anthropic-compatible provider with a "lite" context management config
 /// that avoids Claude-specific features (no betas, Current cache strategy).
 /// Use this for non-Anthropic providers that expose an Anthropic-compatible API
