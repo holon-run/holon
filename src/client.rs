@@ -23,6 +23,9 @@ use crate::{
 };
 
 const UNIX_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const LOCAL_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const REMOTE_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const REMOTE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub struct LocalClient {
@@ -241,7 +244,7 @@ impl LocalClient {
             return Err(anyhow!("remote TUI token must not be empty"));
         }
         let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(5))
+            .connect_timeout(REMOTE_HTTP_CONNECT_TIMEOUT)
             .build()
             .context("failed to build remote control client")?;
         Ok(Self {
@@ -556,7 +559,7 @@ impl LocalClient {
     async fn send_http(&self, request: RequestSpec, include_control_auth: bool) -> Result<Vec<u8>> {
         let response = self
             .build_http_request(&request, include_control_auth)
-            .timeout(Duration::from_secs(10))
+            .timeout(self.http_request_timeout())
             .send()
             .await
             .with_context(|| format!("failed to send {}", request.path))?;
@@ -582,6 +585,7 @@ impl LocalClient {
             builder = builder.header("Last-Event-ID", last_event_id);
         }
         let response = builder
+            .timeout(self.http_request_timeout())
             .send()
             .await
             .with_context(|| format!("failed to open event stream {}", path))?;
@@ -626,6 +630,14 @@ impl LocalClient {
             format!("{}{}", remote.base_url, path)
         } else {
             format!("http://{}{}", self.config.http_addr, path)
+        }
+    }
+
+    fn http_request_timeout(&self) -> Duration {
+        if self.remote.is_some() {
+            REMOTE_HTTP_REQUEST_TIMEOUT
+        } else {
+            LOCAL_HTTP_REQUEST_TIMEOUT
         }
     }
 

@@ -88,3 +88,25 @@ Remote clients should call `GET /handshake` first. The response reports:
 
 Auth mismatch, unsupported URLs, missing tokens, and invalid advertise/connect
 URLs should fail before silently falling back to local runtime state.
+
+## Client Responsiveness
+
+The first-party TUI must keep terminal input and drawing local. Remote
+control-plane refreshes are allowed to update local connection state, but they
+must not be awaited by the main input/render loop.
+
+In remote mode, the TUI treats these operations as background work:
+
+- public agent list refreshes
+- selected-agent `/state` bootstrap and forced refresh
+- SSE open and reconnect attempts
+
+The main loop consumes completed background results and stream events from a
+local runtime channel. A slow LAN, tailnet hop, unavailable server, or stalled
+SSE connect should therefore surface as loading, stale, reconnecting, or
+disconnected state instead of freezing text entry, cursor movement, or basic
+redraws.
+
+Remote HTTP request setup should use shorter connect and request-open timeouts
+than same-host local control requests. Long-lived SSE reads may remain open
+after the initial response has been established.

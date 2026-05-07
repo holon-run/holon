@@ -3,7 +3,10 @@ use super::state::{tui_state_path, TuiClientState};
 use super::*;
 use std::cell::RefCell;
 use std::path::PathBuf;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+};
 
 pub(super) struct TuiApp {
     pub(super) client: LocalClient,
@@ -14,11 +17,17 @@ pub(super) struct TuiApp {
     pub(super) tasks: Vec<TaskRecord>,
     pub(super) projection: Option<TuiProjection>,
     pub(super) connection_state: TuiConnectionState,
-    pub(super) stream_messages: Option<mpsc::UnboundedReceiver<TuiRuntimeMessage>>,
+    pub(super) runtime_tx: UnboundedSender<TuiRuntimeMessage>,
+    pub(super) runtime_messages: UnboundedReceiver<TuiRuntimeMessage>,
     pub(super) stream_task: Option<JoinHandle<()>>,
     pub(super) agent_list_refresh_deadline: Option<Instant>,
     pub(super) reconnect_deadline: Option<Instant>,
     pub(super) refresh_deadline: Option<Instant>,
+    pub(super) agent_list_refresh_in_flight: bool,
+    pub(super) snapshot_refresh_in_flight: bool,
+    pub(super) stream_connect_in_flight: bool,
+    pub(super) snapshot_refresh_request_id: u64,
+    pub(super) stream_connect_request_id: u64,
     pub(super) reconnect_attempt: u32,
     pub(super) selected_agent: usize,
     pub(super) preferred_agent_id: Option<String>,
@@ -47,6 +56,7 @@ impl TuiApp {
         let preferred_agent_id = TuiClientState::load(&state_path)
             .ok()
             .map(|state| state.last_selected_agent_id);
+        let (runtime_tx, runtime_messages) = mpsc::unbounded_channel();
         Self {
             client,
             agents: Vec::new(),
@@ -56,11 +66,17 @@ impl TuiApp {
             tasks: Vec::new(),
             projection: None,
             connection_state: TuiConnectionState::Bootstrapping,
-            stream_messages: None,
+            runtime_tx,
+            runtime_messages,
             stream_task: None,
             agent_list_refresh_deadline: None,
             reconnect_deadline: None,
             refresh_deadline: None,
+            agent_list_refresh_in_flight: false,
+            snapshot_refresh_in_flight: false,
+            stream_connect_in_flight: false,
+            snapshot_refresh_request_id: 0,
+            stream_connect_request_id: 0,
             reconnect_attempt: 0,
             selected_agent: 0,
             preferred_agent_id,

@@ -206,12 +206,6 @@ impl Drop for TerminalCleanupGuard {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use serde_json::json;
-    use std::path::PathBuf;
-    use tokio::sync::mpsc;
-
     use super::{
         build_chat_text, centered_rect_rows, chat_text, collect_chat_items,
         determine_alt_screen_mode_for_terminal, draw, is_cursor_too_old_error,
@@ -238,8 +232,12 @@ mod tests {
             TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingIntentSummary,
         },
     };
+    use chrono::Utc;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::text::{Line, Text};
     use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+    use serde_json::json;
+    use std::path::PathBuf;
 
     fn test_config() -> AppConfig {
         let temp = tempfile::tempdir().unwrap().keep();
@@ -931,7 +929,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_overlay_enter_keeps_open_on_failed_switch() {
+    async fn agent_overlay_enter_starts_switch_without_awaiting_snapshot() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
             client,
@@ -942,16 +940,13 @@ mod tests {
         app.overlay = OverlayState::Agents;
         app.connection_state = TuiConnectionState::Streaming;
 
-        let err = app
-            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(app.overlay, OverlayState::Agents);
-        assert_eq!(
-            app.status_line,
-            format!("Failed to switch to agent beta: {err}")
-        );
+        assert_eq!(app.overlay, OverlayState::None);
+        assert_eq!(app.status_line, "Bootstrapping agent beta from /state");
+        assert!(app.snapshot_refresh_in_flight);
     }
 
     #[tokio::test]
@@ -2477,9 +2472,8 @@ mod tests {
             client,
             crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
-        let (tx, rx) = mpsc::unbounded_channel();
+        let tx = app.runtime_tx.clone();
         app.connection_state = TuiConnectionState::Streaming;
-        app.stream_messages = Some(rx);
 
         tx.send(TuiRuntimeMessage::Disconnected {
             error: "socket closed".into(),
@@ -2541,8 +2535,7 @@ mod tests {
             "default", "cursor-1",
         )));
         app.connection_state = TuiConnectionState::Streaming;
-        let (tx, rx) = mpsc::unbounded_channel();
-        app.stream_messages = Some(rx);
+        let tx = app.runtime_tx.clone();
 
         tx.send(TuiRuntimeMessage::Event(AgentStreamEvent {
             id: "evt-stale".into(),
@@ -2634,7 +2627,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_agent_switch_keeps_existing_selection() {
+    async fn agent_switch_starts_snapshot_refresh_without_awaiting_network() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
             client,
@@ -2645,18 +2638,93 @@ mod tests {
         app.connection_state = TuiConnectionState::Streaming;
         app.status_line = "Streaming native events for agent alpha".into();
 
-        let err = app.move_agent_selection(1).await.unwrap_err();
+        app.move_agent_selection(1).await.unwrap();
 
-        assert!(err.to_string().contains("/agents/beta/state"));
         assert_eq!(app.selected_agent_id(), Some("alpha"));
         assert!(matches!(
             app.connection_state,
-            TuiConnectionState::Streaming
+            TuiConnectionState::Bootstrapping
         ));
-        assert_eq!(
-            app.status_line,
-            format!("Failed to switch to agent beta: {err}")
+        assert!(app.snapshot_refresh_in_flight);
+        assert_eq!(app.status_line, "Bootstrapping agent beta from /state");
+    }
+
+    #[tokio::test]
+    async fn remote_tick_does_not_await_slow_agent_list_refresh() {
+        let client = slow_remote_client().await;
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
+        app.agent_list_refresh_deadline = Some(std::time::Instant::now());
+
+        tokio::time::timeout(std::time::Duration::from_millis(50), app.tick())
+            .await
+            .expect("tick should not wait for slow /agents")
+            .unwrap();
+
+        assert!(app.agent_list_refresh_in_flight);
+    }
+
+    #[tokio::test]
+    async fn remote_tick_does_not_await_slow_snapshot_refresh() {
+        let client = slow_remote_client().await;
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.agents = vec![sample_agent_summary("default")];
+        app.selected_agent = 0;
+        app.schedule_refresh("test refresh".into());
+        app.refresh_deadline = Some(std::time::Instant::now());
+
+        tokio::time::timeout(std::time::Duration::from_millis(50), app.tick())
+            .await
+            .expect("tick should not wait for slow /state")
+            .unwrap();
+
+        assert!(app.snapshot_refresh_in_flight);
+        assert!(matches!(
+            app.connection_state,
+            TuiConnectionState::Bootstrapping
+        ));
+    }
+
+    #[tokio::test]
+    async fn remote_tick_does_not_await_slow_event_stream_reconnect() {
+        let client = slow_remote_client().await;
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.agents = vec![sample_agent_summary("default")];
+        app.selected_agent = 0;
+        app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
+            "default", "cursor-1",
+        )));
+        app.schedule_reconnect("test reconnect".into());
+        app.reconnect_deadline = Some(std::time::Instant::now());
+
+        tokio::time::timeout(std::time::Duration::from_millis(50), app.tick())
+            .await
+            .expect("tick should not wait for slow event stream reconnect")
+            .unwrap();
+
+        assert!(app.stream_connect_in_flight);
+    }
+
+    async fn slow_remote_client() -> LocalClient {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((socket, _peer)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _socket = socket;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                });
+            }
+        });
+        LocalClient::remote(test_config(), format!("http://{addr}"), "secret").unwrap()
     }
 
     fn test_app() -> TuiApp {
