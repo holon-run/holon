@@ -595,6 +595,25 @@ runtime-level and reusable.
 
 Existing event kinds remain valid.
 
+This RFC intentionally changes the meaning of the numeric main-conversation
+display aliases.
+
+Current code and older docs use `3`, `4`, and `5` as direct numeric projections
+of `OperatorVisibility::{TurnResult, Progress, Trace}`. Under that model,
+`/display 5` means "show trace-level items in the main conversation."
+
+This RFC replaces that model for operator-facing conversation surfaces:
+
+- `3` remains the default result-oriented mode, now named `info`
+- `4` becomes the Codex-like activity mode, now named `verbose`
+- `5` becomes a curated detailed mode, now named `debug`
+- raw trace inspection moves out of the main conversation and into `/events` or
+  equivalent trace inspectors
+
+The old `5=trace` behavior should not remain a main-conversation display mode.
+Operators who need raw event kinds, raw payloads, replay provenance, or
+redaction diagnostics should use `/events` rather than `/display 5`.
+
 Historical replay should be rendered through the new presentation rules where
 possible. If a historical event lacks fields required for a polished item, the
 renderer should prefer hiding it over showing a low-value fallback such as
@@ -606,7 +625,8 @@ Raw event inspection remains available through trace surfaces.
 
 1. Introduce display mode names: `info`, `verbose`, `debug`, and reserve `trace`
    for raw inspectors.
-2. Keep numeric aliases for compatibility: `3=info`, `4=verbose`, `5=debug`.
+2. Migrate numeric aliases to the named modes: `3=info`, `4=verbose`,
+   `5=debug`.
 3. Split event classification from final rendering.
 4. Add a reduced operator item model for command, tool, task, work item,
    assistant message, notice, error, and model-call metadata.

@@ -588,7 +588,18 @@ That means:
 The event-stream migration changes the data source and projection model, not
 the core operator interaction goal.
 
-### Projection density
+### Projection Density
+
+The older projection-density model below describes the current implementation,
+where the numeric TUI display level maps directly to raw event visibility.
+The newer cross-surface presentation direction is defined in
+[Operator Display Levels and Event Presentation](./operator-display-levels-and-event-presentation.md).
+
+Under that RFC, `3`, `4`, and `5` become aliases for `info`, `verbose`, and
+`debug`, while raw `trace` inspection is reserved for `/events` or equivalent
+event inspectors. Clients should therefore treat the numeric model in this
+section as historical implementation context, not the target presentation
+contract.
 
 The TUI should derive at least three different projections from the same raw
 event feed:

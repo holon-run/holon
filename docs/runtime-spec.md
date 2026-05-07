@@ -464,6 +464,18 @@ control authorization. A client may still decide how to display an authorized
 event from `visibility`, but display level is not the same as replay
 authorization.
 
+The visibility model below describes the current implementation. The target
+cross-surface display contract is defined by
+[RFC: Operator Display Levels and Event Presentation](rfcs/operator-display-levels-and-event-presentation.md).
+That RFC keeps raw audit events canonical, but changes main conversation display
+from direct `OperatorVisibility` rendering to named display modes:
+
+- `info` (`3`): result-oriented operator view
+- `verbose` (`4`): Codex-like activity view
+- `debug` (`5`): curated detailed execution view
+- `trace`: raw event inspection through `/events` or equivalent inspectors,
+  not a main conversation display mode
+
 Visibility levels are ordered from most operator-facing to most diagnostic:
 
 1. `action_required`: the agent is awaiting operator input and emits an
@@ -474,11 +486,9 @@ Visibility levels are ordered from most operator-facing to most diagnostic:
 4. `progress`: in-turn assistant progress such as provider text previews
 5. `trace`: tool execution, tool results, and internal runtime diagnostics
 
-The default TUI display level is `3`. The main conversation shows items with
-`operator_visibility <= display_level`. The Working/activity area summarizes
-current-turn items with `operator_visibility > display_level`. When the display
-level is `5`, the Working/activity area should be hidden because progress and
-trace items are already visible.
+The current TUI implementation still uses numeric visibility filtering. The
+target presentation model should migrate `/display 3|4|5` to
+`info|verbose|debug` aliases and move raw trace inspection to `/events`.
 
 State-sync events such as `agent_state_changed` and `session_state_changed`
 are projection refresh signals. They may be present in raw/debug event views,
