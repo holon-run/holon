@@ -172,7 +172,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     }
 
     if let Some(projection) = app.projection.as_ref() {
-        for event in projection.visible_events(app.display_level) {
+        for event in projection.visible_events(app.display_mode) {
             if event.kind == "message_enqueued" || event.kind == "brief_created" {
                 continue;
             }
@@ -185,9 +185,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             } else if !matches!(
                 event.presentation.category,
                 crate::operator_event::OperatorEventCategory::StateSync
-            ) && (is_chat_visible_conversation_event(event)
-                || projection.operator_visibility(event).display_level() >= 4)
-            {
+            ) {
                 cells.push(ConversationCell::SystemNotice {
                     created_at: event.ts,
                     speaker: conversation_event_speaker(event),
@@ -551,9 +549,6 @@ fn active_activity_item(
     app: &TuiApp,
     fallback_ts: Option<DateTime<chrono::Utc>>,
 ) -> Option<ConversationCell> {
-    if app.display_level >= crate::tui::projection::OperatorVisibility::Trace {
-        return None;
-    }
     let projection = app.projection.as_ref();
     let agent = projection
         .map(|projection| &projection.agent)
@@ -563,7 +558,7 @@ fn active_activity_item(
     }
 
     let hidden_events = projection
-        .map(|projection| projection.hidden_current_turn_events(app.display_level))
+        .map(|projection| projection.hidden_current_turn_events(app.display_mode))
         .unwrap_or_default();
     let latest_action = latest_action_event(hidden_events.as_slice());
     let latest_assistant = latest_assistant_message(hidden_events.as_slice());

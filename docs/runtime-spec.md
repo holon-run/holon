@@ -486,9 +486,10 @@ Visibility levels are ordered from most operator-facing to most diagnostic:
 4. `progress`: in-turn assistant progress such as provider text previews
 5. `trace`: tool execution, tool results, and internal runtime diagnostics
 
-The current TUI implementation still uses numeric visibility filtering. The
-target presentation model should migrate `/display 3|4|5` to
-`info|verbose|debug` aliases and move raw trace inspection to `/events`.
+The TUI main conversation uses these named display modes. `/display` accepts
+both names and numeric aliases: `3=info`, `4=verbose`, and `5=debug`. Raw trace
+inspection is exposed through `/events`, not through the main conversation
+display mode.
 
 State-sync events such as `agent_state_changed` and `session_state_changed`
 are projection refresh signals. They may be present in raw/debug event views,
@@ -500,8 +501,8 @@ should distinguish assistant text progress from tool requests:
   ReadFile`
 - no visible text or tools: concise provider-round progress wording
 
-Tool execution events are trace-level activity and may be shown in the
-Conversation only when the operator raises the display level to `5`.
+Tool execution events remain trace-level raw events, but the main conversation
+may render curated command/tool activity rows in `verbose` and `debug`.
 
 Working/activity summaries are scoped to the current turn, run, or message
 boundary. A newly submitted operator message must not inherit the previous

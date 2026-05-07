@@ -22,19 +22,43 @@ pub enum OperatorVisibility {
 }
 
 impl OperatorVisibility {
-    pub const DEFAULT_DISPLAY_LEVEL: Self = Self::TurnResult;
+    pub fn display_level(self) -> u8 {
+        self as u8
+    }
+}
 
-    pub fn from_display_level(level: u8) -> Option<Self> {
-        match level {
-            3 => Some(Self::TurnResult),
-            4 => Some(Self::Progress),
-            5 => Some(Self::Trace),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OperatorDisplayMode {
+    /// Result-oriented operator view.
+    Info = 3,
+    /// Codex-like activity view.
+    Verbose = 4,
+    /// Detailed but still curated operator view.
+    Debug = 5,
+}
+
+impl OperatorDisplayMode {
+    pub const DEFAULT: Self = Self::Info;
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "3" | "info" => Some(Self::Info),
+            "4" | "verbose" => Some(Self::Verbose),
+            "5" | "debug" => Some(Self::Debug),
             _ => None,
         }
     }
 
     pub fn display_level(self) -> u8 {
         self as u8
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Verbose => "verbose",
+            Self::Debug => "debug",
+        }
     }
 }
 
@@ -1068,10 +1092,31 @@ fn collapse_whitespace(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        present_operator_event, OperatorEventCategory, OperatorPresentationContext,
-        OperatorVisibility,
+        present_operator_event, OperatorDisplayMode, OperatorEventCategory,
+        OperatorPresentationContext, OperatorVisibility,
     };
     use serde_json::json;
+
+    #[test]
+    fn operator_display_mode_parse_accepts_names_and_numeric_aliases() {
+        assert_eq!(
+            OperatorDisplayMode::parse("3"),
+            Some(OperatorDisplayMode::Info)
+        );
+        assert_eq!(
+            OperatorDisplayMode::parse(" info "),
+            Some(OperatorDisplayMode::Info)
+        );
+        assert_eq!(
+            OperatorDisplayMode::parse("VERBOSE"),
+            Some(OperatorDisplayMode::Verbose)
+        );
+        assert_eq!(
+            OperatorDisplayMode::parse("5"),
+            Some(OperatorDisplayMode::Debug)
+        );
+        assert_eq!(OperatorDisplayMode::parse("trace"), None);
+    }
 
     #[test]
     fn assistant_round_recorded_distinguishes_text_from_tool_requests() {

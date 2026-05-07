@@ -1,7 +1,7 @@
 ---
 title: RFC: Operator Display Levels and Event Presentation
 date: 2026-05-07
-status: draft
+status: implemented
 ---
 
 # RFC: Operator Display Levels and Event Presentation
