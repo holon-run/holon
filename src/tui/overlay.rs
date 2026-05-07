@@ -421,7 +421,7 @@ fn draw_large_text_overlay(frame: &mut Frame<'_>, title: &str, text: &str, scrol
 fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
     let popup = centered_rect(88, 80, frame.area());
     frame.render_widget(Clear, popup);
-    let help = [
+    let mut help_lines = [
         "Main View",
         "  Type directly into the composer",
         "  Enter sends the current draft",
@@ -472,7 +472,23 @@ fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
         "Exit",
         "  Ctrl+C quit",
     ]
-    .join("\n");
+    .into_iter()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    help_lines.extend(["".into(), "Default Keymap".into()]);
+    help_lines.extend(
+        crate::tui::keymap::DEFAULT_BINDING_HINTS
+            .iter()
+            .map(|hint| {
+                format!(
+                    "  {}: {} ({})",
+                    hint.context.label(),
+                    hint.action,
+                    hint.keys
+                )
+            }),
+    );
+    let help = help_lines.join("\n");
     let widget = Paragraph::new(help)
         .block(Block::default().title("Help").borders(Borders::ALL))
         .scroll((scroll, 0))
