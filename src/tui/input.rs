@@ -312,12 +312,28 @@ fn paste_single_line_text(text: &str) -> String {
 }
 
 impl TuiApp {
+    fn should_treat_enter_as_paste_newline(&self, key: KeyEvent) -> bool {
+        const PASTE_NEWLINE_GUARD: Duration = Duration::from_millis(35);
+
+        let trimmed = self.composer.as_str().trim_start();
+        if key.code != KeyCode::Enter
+            || !key.modifiers.is_empty()
+            || trimmed.is_empty()
+            || trimmed.starts_with('/')
+        {
+            return false;
+        }
+        self.last_composer_key_edit_at
+            .is_some_and(|last_edit| last_edit.elapsed() <= PASTE_NEWLINE_GUARD)
+    }
+
     pub(super) async fn handle_paste(&mut self, text: &str) -> Result<()> {
         let selected_agent = self.selected_agent_summary().cloned();
         match &mut self.overlay {
             OverlayState::None => {
                 let before = self.composer.as_str().to_string();
                 self.composer.insert_str(text);
+                self.last_composer_key_edit_at = None;
                 self.sync_slash_menu_after_edit(before != self.composer.as_str());
             }
             OverlayState::ModelPicker { filter, selected } => {
@@ -918,15 +934,32 @@ impl TuiApp {
             }
             action => {
                 let before = self.composer.as_str().to_string();
+                let action = if matches!(action, TuiKeyAction::Composer(ComposerAction::Submit))
+                    && self.should_treat_enter_as_paste_newline(key)
+                {
+                    TuiKeyAction::Composer(ComposerAction::InsertNewline)
+                } else {
+                    action
+                };
                 match apply_composer_key_action(action, &mut self.composer) {
-                    Some(BufferAction::Submit) => self.submit_prompt_buffer().await?,
+                    Some(BufferAction::Submit) => {
+                        self.last_composer_key_edit_at = None;
+                        self.submit_prompt_buffer().await?;
+                    }
                     Some(BufferAction::Cancel) => {
                         self.composer.clear();
+                        self.last_composer_key_edit_at = None;
                         self.history_index = None;
                         self.slash_menu_selected = 0;
                         self.slash_menu_dismissed_for = None;
                     }
-                    None => self.sync_slash_menu_after_edit(before != self.composer.as_str()),
+                    None => {
+                        let changed = before != self.composer.as_str();
+                        if changed {
+                            self.last_composer_key_edit_at = Some(Instant::now());
+                        }
+                        self.sync_slash_menu_after_edit(changed);
+                    }
                 }
             }
         }

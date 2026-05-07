@@ -853,6 +853,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rapid_enter_after_text_inserts_newline_for_paste_fallback() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+
+        for ch in "first".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        for ch in "second".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(app.composer.as_str(), "first\nsecond");
+    }
+
+    #[tokio::test]
     async fn paste_updates_model_picker_filter() {
         let client = LocalClient::new(test_config()).unwrap();
         let mut app = TuiApp::new(
