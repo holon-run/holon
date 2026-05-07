@@ -108,13 +108,23 @@ pub(super) const DEFAULT_BINDING_HINTS: &[DefaultBindingHint] = &[
     },
     DefaultBindingHint {
         context: KeyContext::Main,
-        action: "help",
+        action: "help when composer is empty",
         keys: "?",
     },
     DefaultBindingHint {
         context: KeyContext::Main,
+        action: "history when composer is empty",
+        keys: "Up/Down",
+    },
+    DefaultBindingHint {
+        context: KeyContext::Main,
+        action: "scroll chat when composer has content",
+        keys: "Up/Down",
+    },
+    DefaultBindingHint {
+        context: KeyContext::Main,
         action: "scroll chat",
-        keys: "Up/Down/PgUp/PgDn",
+        keys: "PgUp/PgDn",
     },
     DefaultBindingHint {
         context: KeyContext::Composer,
