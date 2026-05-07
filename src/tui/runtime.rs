@@ -1,7 +1,9 @@
 use super::projection::ProjectionSlice;
 use super::state::TuiClientState;
 use super::*;
-use crate::client::{AgentStreamEvent, EventStreamRequest, LocalEventStream, LocalHttpError};
+use crate::client::{
+    AgentStateSnapshot, AgentStreamEvent, EventStreamRequest, LocalEventStream, LocalHttpError,
+};
 use tokio::sync::mpsc;
 
 const STREAM_RECONNECT_DELAY: Duration = Duration::from_secs(1);
@@ -22,10 +24,29 @@ pub(super) enum TuiConnectionState {
     Disconnected { reason: String },
 }
 
-#[derive(Debug)]
 pub(super) enum TuiRuntimeMessage {
     Event(AgentStreamEvent),
-    Disconnected { error: String },
+    Disconnected {
+        error: String,
+    },
+    AgentListLoaded(Result<Vec<AgentSummary>, String>),
+    SnapshotLoaded {
+        request_id: u64,
+        target_index: usize,
+        agent_id: String,
+        checkpoint: Option<TuiRuntimeCheckpoint>,
+        result: Result<AgentStateSnapshot, String>,
+    },
+    EventStreamOpened {
+        request_id: u64,
+        agent_id: String,
+        result: Result<LocalEventStream, EventStreamOpenError>,
+    },
+}
+
+pub(super) struct EventStreamOpenError {
+    message: String,
+    cursor_too_old: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +57,7 @@ pub(super) enum AgentListChange {
 }
 
 #[derive(Debug, Clone)]
-struct TuiRuntimeCheckpoint {
+pub(super) struct TuiRuntimeCheckpoint {
     connection_state: TuiConnectionState,
     reconnect_deadline: Option<Instant>,
     refresh_deadline: Option<Instant>,
@@ -46,15 +67,7 @@ struct TuiRuntimeCheckpoint {
 impl TuiApp {
     pub(super) async fn initialize(&mut self) {
         self.schedule_agent_list_refresh();
-        if let Err(err) = self.load_agents().await {
-            self.set_disconnected(format!("failed to list public agents: {err}"));
-            return;
-        }
-        if self.agents.is_empty() {
-            self.set_disconnected("no public agents are available".into());
-            return;
-        }
-        let _ = self.bootstrap_selected_agent().await;
+        self.begin_load_agents();
     }
 
     pub(super) async fn tick(&mut self) -> Result<()> {
@@ -64,14 +77,7 @@ impl TuiApp {
             .agent_list_refresh_deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
-            self.schedule_agent_list_refresh();
-            if let Err(err) = self.refresh_public_agents().await {
-                if self.agents.is_empty() {
-                    self.set_disconnected(format!("failed to refresh public agents: {err}"));
-                } else {
-                    self.status_line = format!("Public agent refresh failed: {err}");
-                }
-            }
+            self.begin_load_agents();
         }
 
         match self.connection_state.clone() {
@@ -80,9 +86,7 @@ impl TuiApp {
                     .refresh_deadline
                     .is_some_and(|deadline| Instant::now() >= deadline)
                 {
-                    if let Err(err) = self.bootstrap_selected_agent().await {
-                        self.schedule_refresh(format!("snapshot refresh failed: {err}"));
-                    }
+                    self.begin_bootstrap_selected_agent();
                 }
             }
             TuiConnectionState::Reconnecting { .. } => {
@@ -90,7 +94,7 @@ impl TuiApp {
                     .reconnect_deadline
                     .is_some_and(|deadline| Instant::now() >= deadline)
                 {
-                    self.connect_event_stream().await?;
+                    self.begin_connect_event_stream();
                 }
             }
             TuiConnectionState::Bootstrapping
@@ -101,20 +105,43 @@ impl TuiApp {
         Ok(())
     }
 
-    pub(super) async fn load_agents(&mut self) -> Result<()> {
-        let agents = self.client.list_agents().await?;
-        let _ = self.apply_agent_list(agents);
-        Ok(())
+    pub(super) fn begin_load_agents(&mut self) {
+        if self.agent_list_refresh_in_flight {
+            return;
+        }
+        self.agent_list_refresh_in_flight = true;
+        self.agent_list_refresh_deadline = None;
+        if self.agents.is_empty() {
+            self.connection_state = TuiConnectionState::Bootstrapping;
+            self.status_line = "Loading public agents".into();
+        }
+        let client = self.client.clone();
+        let tx = self.runtime_tx.clone();
+        tokio::spawn(async move {
+            let result = client.list_agents().await.map_err(|err| err.to_string());
+            let _ = tx.send(TuiRuntimeMessage::AgentListLoaded(result));
+        });
     }
 
-    pub(super) async fn refresh_public_agents(&mut self) -> Result<()> {
-        let agents = self.client.list_agents().await?;
+    pub(super) fn apply_loaded_agents(&mut self, result: Result<Vec<AgentSummary>, String>) {
+        self.agent_list_refresh_in_flight = false;
+        self.schedule_agent_list_refresh();
+        let agents = match result {
+            Ok(agents) => agents,
+            Err(err) => {
+                if self.agents.is_empty() {
+                    self.set_disconnected(format!("failed to list public agents: {err}"));
+                } else {
+                    self.status_line = format!("Public agent refresh failed: {err}");
+                }
+                return;
+            }
+        };
         match self.apply_agent_list(agents) {
-            AgentListChange::Ready => Ok(()),
-            AgentListChange::RequiresBootstrap => self.bootstrap_selected_agent().await,
+            AgentListChange::Ready => {}
+            AgentListChange::RequiresBootstrap => self.begin_bootstrap_selected_agent(),
             AgentListChange::Empty => {
                 self.set_disconnected("no public agents are available".into());
-                Ok(())
             }
         }
     }
@@ -264,26 +291,67 @@ impl TuiApp {
         self.refresh_deadline = None;
         self.reconnect_deadline = None;
         self.reconnect_attempt = 0;
+        self.snapshot_refresh_in_flight = false;
+        self.stream_connect_in_flight = false;
+        self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
+        self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
     }
 
-    pub(super) async fn bootstrap_selected_agent(&mut self) -> Result<()> {
-        self.bootstrap_agent_index(self.selected_agent).await
+    pub(super) fn begin_bootstrap_selected_agent(&mut self) {
+        self.begin_bootstrap_agent_index(self.selected_agent);
     }
 
-    pub(super) async fn bootstrap_agent_index(&mut self, target_index: usize) -> Result<()> {
-        let agent_id = self
+    pub(super) fn begin_bootstrap_agent_index(&mut self, target_index: usize) {
+        let Some(agent_id) = self
             .agents
             .get(target_index)
             .map(|agent| agent.identity.agent_id.clone())
-            .ok_or_else(|| anyhow!("no agent selected"))?;
+        else {
+            self.status_line = "No agent selected".into();
+            return;
+        };
         let switching_agents = target_index != self.selected_agent;
         let checkpoint = switching_agents.then(|| self.runtime_checkpoint());
         self.refresh_deadline = None;
         self.reconnect_deadline = None;
+        self.snapshot_refresh_in_flight = true;
+        self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
+        let request_id = self.snapshot_refresh_request_id;
         self.connection_state = TuiConnectionState::Bootstrapping;
         self.status_line = format!("Bootstrapping agent {agent_id} from /state");
+        let client = self.client.clone();
+        let tx = self.runtime_tx.clone();
+        tokio::spawn({
+            let agent_id = agent_id.clone();
+            async move {
+                let result = client
+                    .agent_state_snapshot(&agent_id)
+                    .await
+                    .map_err(|err| err.to_string());
+                let _ = tx.send(TuiRuntimeMessage::SnapshotLoaded {
+                    request_id,
+                    target_index,
+                    agent_id,
+                    checkpoint,
+                    result,
+                });
+            }
+        });
+    }
 
-        let snapshot = match self.client.agent_state_snapshot(&agent_id).await {
+    pub(super) fn apply_snapshot_result(
+        &mut self,
+        request_id: u64,
+        target_index: usize,
+        agent_id: String,
+        checkpoint: Option<TuiRuntimeCheckpoint>,
+        result: Result<AgentStateSnapshot, String>,
+    ) {
+        if request_id != self.snapshot_refresh_request_id {
+            return;
+        }
+        self.snapshot_refresh_in_flight = false;
+        let snapshot = match result {
             Ok(snapshot) => snapshot,
             Err(err) => {
                 if let Some(checkpoint) = checkpoint {
@@ -294,9 +362,10 @@ impl TuiApp {
                         "failed to bootstrap {agent_id} from /state: {err}"
                     ));
                 }
-                return Err(err);
+                return;
             }
         };
+        let switching_agents = target_index != self.selected_agent;
         let mut projection = TuiProjection::from_snapshot(snapshot);
         if !switching_agents {
             if let Some(previous) = self.projection.as_mut() {
@@ -316,31 +385,66 @@ impl TuiApp {
         self.reconnect_deadline = None;
         self.status_line = format!("Bootstrapped agent {agent_id} from /state");
 
-        self.connect_event_stream_for(agent_id, cursor).await
+        self.begin_connect_event_stream_for(agent_id, cursor);
     }
 
-    pub(super) async fn connect_event_stream(&mut self) -> Result<()> {
-        let agent_id = self
-            .selected_agent_id()
-            .ok_or_else(|| anyhow!("no agent selected"))?
-            .to_string();
+    pub(super) fn begin_connect_event_stream(&mut self) {
+        let Some(agent_id) = self.selected_agent_id().map(ToString::to_string) else {
+            self.status_line = "No agent selected".into();
+            return;
+        };
         let since = self
             .projection
             .as_ref()
             .and_then(|projection| projection.cursor.clone());
-        self.connect_event_stream_for(agent_id, since).await
+        self.begin_connect_event_stream_for(agent_id, since);
     }
 
-    pub(super) async fn connect_event_stream_for(
+    pub(super) fn begin_connect_event_stream_for(
         &mut self,
         agent_id: String,
         since: Option<String>,
-    ) -> Result<()> {
+    ) {
+        self.stream_connect_in_flight = true;
+        self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
+        let request_id = self.stream_connect_request_id;
+        self.reconnect_deadline = None;
         let request = EventStreamRequest {
             since,
             ..Default::default()
         };
-        match self.client.stream_agent_events(&agent_id, request).await {
+        let client = self.client.clone();
+        let tx = self.runtime_tx.clone();
+        tokio::spawn({
+            let agent_id = agent_id.clone();
+            async move {
+                let result = client
+                    .stream_agent_events(&agent_id, request)
+                    .await
+                    .map_err(|err| EventStreamOpenError {
+                        cursor_too_old: is_cursor_too_old_error(&err),
+                        message: err.to_string(),
+                    });
+                let _ = tx.send(TuiRuntimeMessage::EventStreamOpened {
+                    request_id,
+                    agent_id,
+                    result,
+                });
+            }
+        });
+    }
+
+    pub(super) fn apply_event_stream_opened(
+        &mut self,
+        request_id: u64,
+        agent_id: String,
+        result: Result<LocalEventStream, EventStreamOpenError>,
+    ) {
+        if request_id != self.stream_connect_request_id {
+            return;
+        }
+        self.stream_connect_in_flight = false;
+        match result {
             Ok(stream) => {
                 self.spawn_stream_task(stream);
                 self.connection_state = TuiConnectionState::Streaming;
@@ -348,24 +452,20 @@ impl TuiApp {
                 self.reconnect_deadline = None;
                 self.refresh_deadline = None;
                 self.status_line.clear();
-                Ok(())
+            }
+            Err(err) if err.cursor_too_old => {
+                self.schedule_refresh(format!(
+                    "replay cursor expired for {agent_id}; rebuilding from /state"
+                ));
+                self.status_line =
+                    format!("Replay cursor expired for {agent_id}; resetting from /state");
             }
             Err(err) => {
-                let message = err.to_string();
-                if is_cursor_too_old_error(&err) {
-                    self.schedule_refresh(format!(
-                        "replay cursor expired for {agent_id}; rebuilding from /state"
-                    ));
-                    self.status_line =
-                        format!("Replay cursor expired for {agent_id}; resetting from /state");
-                } else {
-                    self.schedule_reconnect(message.clone());
-                    self.status_line =
-                        format!("Event stream disconnected for {agent_id}: {message}");
-                }
-                Ok(())
+                self.schedule_reconnect(err.message.clone());
+                self.status_line =
+                    format!("Event stream disconnected for {agent_id}: {}", err.message);
             }
-        }
+        };
     }
 
     pub(super) fn record_selected_agent(&mut self, agent_id: &str) {
@@ -395,7 +495,7 @@ impl TuiApp {
 
     pub(super) fn spawn_stream_task(&mut self, mut stream: LocalEventStream) {
         self.stop_stream_task();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let tx = self.runtime_tx.clone();
         let task = tokio::spawn(async move {
             loop {
                 match stream.next_event().await {
@@ -413,7 +513,6 @@ impl TuiApp {
                 }
             }
         });
-        self.stream_messages = Some(rx);
         self.stream_task = Some(task);
     }
 
@@ -421,22 +520,18 @@ impl TuiApp {
         if let Some(task) = self.stream_task.take() {
             task.abort();
         }
-        self.stream_messages = None;
     }
 
     pub(super) fn process_runtime_messages(&mut self) -> bool {
         let mut disconnected = false;
         loop {
-            let message = match self.stream_messages.as_mut() {
-                Some(receiver) => match receiver.try_recv() {
-                    Ok(message) => Some(message),
-                    Err(mpsc::error::TryRecvError::Empty) => None,
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        None
-                    }
-                },
-                None => None,
+            let message = match self.runtime_messages.try_recv() {
+                Ok(message) => Some(message),
+                Err(mpsc::error::TryRecvError::Empty) => None,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    None
+                }
             };
 
             let Some(message) = message else {
@@ -450,6 +545,25 @@ impl TuiApp {
                     self.schedule_reconnect(error.clone());
                     self.status_line = format!("Event stream disconnected: {error}");
                 }
+                TuiRuntimeMessage::AgentListLoaded(result) => self.apply_loaded_agents(result),
+                TuiRuntimeMessage::SnapshotLoaded {
+                    request_id,
+                    target_index,
+                    agent_id,
+                    checkpoint,
+                    result,
+                } => self.apply_snapshot_result(
+                    request_id,
+                    target_index,
+                    agent_id,
+                    checkpoint,
+                    result,
+                ),
+                TuiRuntimeMessage::EventStreamOpened {
+                    request_id,
+                    agent_id,
+                    result,
+                } => self.apply_event_stream_opened(request_id, agent_id, result),
             }
         }
 
@@ -603,6 +717,10 @@ impl TuiApp {
         self.stop_stream_task();
         self.refresh_deadline = None;
         self.reconnect_deadline = None;
+        self.snapshot_refresh_in_flight = false;
+        self.stream_connect_in_flight = false;
+        self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
+        self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
         self.connection_state = TuiConnectionState::Disconnected {
             reason: reason.clone(),
         };

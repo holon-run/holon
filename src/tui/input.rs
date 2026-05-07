@@ -341,7 +341,8 @@ impl TuiApp {
             return Ok(());
         };
         self.chat_scroll.follow_tail();
-        self.bootstrap_agent_index(target_index).await
+        self.begin_bootstrap_agent_index(target_index);
+        Ok(())
     }
 
     async fn submit_prompt_buffer(&mut self) -> Result<()> {
@@ -474,7 +475,7 @@ impl TuiApp {
             SlashCommand::Refresh => {
                 self.overlay = OverlayState::None;
                 self.status_line = "Refreshing selected agent from /state".into();
-                self.bootstrap_selected_agent().await?;
+                self.begin_bootstrap_selected_agent();
             }
             SlashCommand::ClearStatus => {
                 self.overlay = OverlayState::None;
@@ -515,7 +516,7 @@ impl TuiApp {
                 self.client.interrupt_current_run(&agent_id, run_id).await?;
                 self.overlay = OverlayState::None;
                 self.status_line = format!("Interrupted current run for {agent_id}");
-                let _ = self.bootstrap_selected_agent().await;
+                self.begin_bootstrap_selected_agent();
             }
             SlashCommand::Agent => {
                 let requested_agent_id = args
@@ -532,8 +533,8 @@ impl TuiApp {
                         )
                     })?;
                 self.overlay = OverlayState::None;
-                self.bootstrap_agent_index(target_index).await?;
-                self.status_line = format!("Switched to agent {requested_agent_id}");
+                self.begin_bootstrap_agent_index(target_index);
+                self.status_line = format!("Switching to agent {requested_agent_id}");
             }
             SlashCommand::Skills => {
                 let agent_id = match self.selected_agent_id() {
@@ -1026,20 +1027,12 @@ impl TuiApp {
             TuiKeyAction::OverlayClose => Ok(()),
             TuiKeyAction::OverlayAccept => {
                 let agent_id = self.selected_agent_id().unwrap_or("").to_string();
-                match self.bootstrap_agent_index(self.selected_agent).await {
-                    Ok(()) => {
-                        self.overlay = OverlayState::None;
-                        Ok(())
-                    }
-                    Err(err) => {
-                        if !agent_id.is_empty() {
-                            self.status_line =
-                                format!("Failed to switch to agent {agent_id}: {err}");
-                        }
-                        self.overlay = OverlayState::Agents;
-                        Err(err)
-                    }
+                if !agent_id.is_empty() {
+                    self.status_line = format!("Switching to agent {agent_id}");
+                    self.begin_bootstrap_agent_index(self.selected_agent);
                 }
+                self.overlay = OverlayState::None;
+                Ok(())
             }
             TuiKeyAction::OverlayMoveUp => {
                 self.move_agent_selection(-1).await?;
@@ -1076,7 +1069,7 @@ impl TuiApp {
                 self.status_line =
                     format!("Cleared model override for {agent_id}; inheriting runtime default");
                 self.overlay = OverlayState::None;
-                self.bootstrap_selected_agent().await?;
+                self.begin_bootstrap_selected_agent();
             }
             crate::tui::model_picker::ModelPickerChoice::Model { model } => {
                 self.overlay = OverlayState::ModelEffortPicker {
@@ -1117,7 +1110,7 @@ impl TuiApp {
             .unwrap_or_default();
         self.status_line = format!("Set model override for {agent_id} to {model}{suffix}");
         self.overlay = OverlayState::None;
-        self.bootstrap_selected_agent().await?;
+        self.begin_bootstrap_selected_agent();
         Ok(())
     }
 
