@@ -308,6 +308,8 @@ fn estimate_model_block_tokens(block: &ModelBlock) -> usize {
         ModelBlock::ToolUse { id, name, input } => {
             estimate_text_tokens(id) + estimate_text_tokens(name) + estimate_json_tokens(input)
         }
+        ModelBlock::Thinking { text, .. } => estimate_text_tokens(text),
+        ModelBlock::RedactedThinking { data } => estimate_text_tokens(data),
     }
 }
 
@@ -1973,6 +1975,7 @@ impl TurnExecution<'_> {
                             input: input.clone(),
                         });
                     }
+                    ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
                 }
             }
 
@@ -2116,15 +2119,7 @@ impl TurnExecution<'_> {
                         Some(round),
                         None,
                         serde_json::json!({
-                            "blocks": text_blocks.iter().map(|text| serde_json::json!({
-                                "type": "text",
-                                "text": text,
-                            })).chain(tool_calls.iter().map(|call| serde_json::json!({
-                                "type": "tool_use",
-                                "id": call.id,
-                                "name": call.name,
-                                "input": call.input,
-                            }))).collect::<Vec<_>>(),
+                            "blocks": &completed_round_assistant_blocks,
                             "token_usage": token_usage,
                             "provider_cache_usage": cache_usage,
                             "prompt_cache_key": effective_prompt.cache_identity.prompt_cache_key.clone(),
