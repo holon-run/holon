@@ -71,7 +71,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_work_item_write",
             PromptStability::Stable,
-            "Use CreateWorkItem to create a new open objective only for genuinely separate work, PickWorkItem to make an existing open item current, UpdateWorkItem to refine objective, plan_status, plan, todo_list, and/or blocked_by, and CompleteWorkItem only when the objective is actually complete. If the current task is not just a brief answer and there is no current work item yet, clarify the objective with the operator if it is still ambiguous; if bounded inspection is needed to make the objective concrete, do that inspection, then create or refresh the work item once the objective is stable enough to name. Continuous discussion, planning threads, candidate issue screening, option comparison, and incremental decisions should normally reuse one WorkItem; record candidate issues, options, and decisions in that WorkItem's plan and todo_list. Create a new WorkItem only when the operator asks for independent execution or the objective has an independent lifecycle. Do not create a new WorkItem just to refine, narrow, or switch candidates inside the same planning thread; if the current WorkItem is still the same underlying task, update its objective, plan, and todo_list with UpdateWorkItem. If an old WorkItem should be replaced, complete it first or explicitly PickWorkItem for the intended item before creating genuinely independent work. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For genuine multi-step work, maintain plan as durable prose and todo_list as the full current checklist snapshot rather than patching individual items. Before nontrivial file mutation or other high-commitment action, make sure the current work item has a durable plan and set plan_status=ready once the plan is stable; use plan_status=needs_input when the current open item is waiting for operator input and must not be scheduler-resumed as runnable work. If task interpretation, scope, or acceptance changes, update objective or plan before continuing. Update todo_list after material progress such as a code change, verification result, blocker discovery, or completed inspection objective. Work-item updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current item remains open because progress is blocked, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Complete explicitly when complete; when using result_summary, include the result and any verification performed or why verification was not applicable.".to_string(),
+            "Use WorkItem write tools only for durable work state, not as a scratchpad, not for transient current-turn steps, and not as a default planning tool. Use CreateWorkItem to create a new open objective only for genuinely separate work with an independent lifecycle and completion criteria, PickWorkItem to make an existing open item current, UpdateWorkItem to refine objective, plan_status, plan, todo_list, and/or blocked_by, and CompleteWorkItem only when the objective is actually complete. Reuse the current WorkItem whenever the underlying tracked objective is the same; continuous discussion, planning threads, candidate issue screening, option comparison, and incremental decisions should normally update one WorkItem rather than create another. Create a new WorkItem only when the operator asks for independent execution or the objective has an independent lifecycle. Do not create a new WorkItem just to refine, narrow, or switch candidates inside the same planning thread; if the current WorkItem is still the same underlying task, update its objective, plan, and todo_list with UpdateWorkItem. If an old WorkItem should be replaced, complete it first or explicitly PickWorkItem for the intended item before creating genuinely independent work. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For tracked work, maintain plan as durable prose and todo_list as a durable progress checklist, not disposable current-turn steps. Before nontrivial file mutation or other high-commitment action on tracked work, make sure the current work item has a durable plan and set plan_status=ready once the plan is stable; use plan_status=needs_input when the current open item is waiting for operator input and must not be scheduler-resumed as runnable work. If task interpretation, scope, or acceptance changes, update objective or plan before continuing. Update todo_list after material progress such as a code change, verification result, blocker discovery, or completed inspection objective. Work-item updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current item remains open because progress is blocked, record the specific blocker or missing fact in blocked_by instead of silently widening exploration. Before completing a WorkItem, audit whether the acceptance evidence is present and verification status is known. Complete explicitly when complete; when using result_summary, state the result and the verification performed, or why verification was not applicable or possible.".to_string(),
         ));
     }
     if names.contains(&"GetWorkItem") || names.contains(&"ListWorkItems") {
@@ -281,24 +281,21 @@ mod tests {
             .iter()
             .find(|s| s.name == "tool_work_item_write")
             .expect("work item write section");
-        assert!(section
-            .content
-            .contains("there is no current work item yet"));
-        assert!(section
-            .content
-            .contains("clarify the objective with the operator"));
-        assert!(section
-            .content
-            .contains("bounded inspection is needed to make the objective concrete"));
+        assert!(section.content.contains("durable work state"));
         assert!(section.content.contains("genuinely separate work"));
         assert!(section
             .content
-            .contains("Continuous discussion, planning threads"));
-        assert!(section.content.contains("candidate issue screening"));
+            .contains("independent lifecycle and completion criteria"));
+        assert!(section.content.contains("not as a scratchpad"));
         assert!(section
             .content
-            .contains("record candidate issues, options, and decisions"));
-        assert!(section.content.contains("independent lifecycle"));
+            .contains("not for transient current-turn steps"));
+        assert!(section.content.contains("not as a default planning tool"));
+        assert!(section.content.contains("Reuse the current WorkItem"));
+        assert!(section
+            .content
+            .contains("continuous discussion, planning threads"));
+        assert!(section.content.contains("candidate issue screening"));
         assert!(section
             .content
             .contains("Do not create a new WorkItem just to refine"));
@@ -328,6 +325,9 @@ mod tests {
         assert!(section
             .content
             .contains("instead of silently widening exploration"));
+        assert!(section
+            .content
+            .contains("audit whether the acceptance evidence is present"));
     }
 
     #[test]

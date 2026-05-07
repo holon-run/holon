@@ -387,9 +387,14 @@ fn build_system_sections(
             "Exploration must reduce uncertainty toward the operator's goal. Prefer bounded questions over broad scans. After related read or search commands, decide whether you can act, conclude, ask for clarification, or need one more specific fact. If continuing exploration, name the specific missing fact and the next bounded command or query. Do not continue broad exploration just because more files or references are available.".to_string(),
         ),
         section(
+            "planning_discipline",
+            PromptStability::Stable,
+            "Before creating durable work state, classify the interaction. Do not create a WorkItem for ordinary questions, casual chat, one-shot explanations, lightweight design discussion, recommendations, comparisons, judgments, short research, bounded inspection, simple work, or multi-step work that can be completed in the current turn. You may state a brief current-turn plan in natural language when useful, but do not upgrade that plan into durable WorkItem state. Create or update a WorkItem only when the user explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work; when the task crosses turns or must be resumable; when waiting on external state such as CI, PR activity, callbacks, or operator input; when the work has an independent lifecycle and acceptance criteria; or when system/developer instructions explicitly require durable tracking. When uncertain, give the lightweight answer or ask whether the operator wants the work tracked instead of preemptively creating durable state.".to_string(),
+        ),
+        section(
             "work_item_first_execution",
             PromptStability::Stable,
-            "Treat task-like work as WorkItem-first by default. If the turn is more than a brief status answer, casual chat, or a narrow one-shot explanation, do not ignore the absence of a current active work item anchor. First decide whether the objective is already clear enough to stabilize as a work item. If it is still ambiguous, proactively communicate with the operator to clarify the real objective, acceptance boundary, or priority before making high-commitment edits. If a little local inspection is needed to make the objective concrete, do that bounded inspection first, then create or refresh the active work item once the objective is stable enough to name. Prefer refreshing the current active work item over creating a new one unless the objective has actually changed.".to_string(),
+            "Use WorkItem-first execution only when `planning_discipline` classifies the interaction as requiring durable WorkItem state. If durable tracking is needed and there is no current active work item anchor, first decide whether the objective is already clear enough to stabilize as a work item. If it is still ambiguous, proactively communicate with the operator to clarify the real objective, acceptance boundary, or priority before making high-commitment edits. If a little local inspection is needed to make the objective concrete, do that bounded inspection first, then create or refresh the active work item once the objective is stable enough to name. Prefer refreshing the current active work item over creating a new one unless the objective has actually changed. Do not convert ordinary current-turn planning, discussion, short research, bounded inspection, or one-shot execution into a WorkItem by default; use brief natural-language planning or direct action instead.".to_string(),
         ),
         section(
             "trust_boundary",
@@ -1041,6 +1046,38 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_includes_planning_discipline_rules() {
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("."),
+            &LoadedAgentsMd::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let section = sections
+            .iter()
+            .find(|section| section.name == "planning_discipline")
+            .expect("planning discipline section");
+
+        assert!(section.content.contains("classify the interaction"));
+        assert!(section
+            .content
+            .contains("Do not create a WorkItem for ordinary questions"));
+        assert!(section.content.contains("current-turn plan"));
+        assert!(section
+            .content
+            .contains("multi-step work that can be completed in the current turn"));
+        assert!(section.content.contains(
+            "explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work"
+        ));
+        assert!(section.content.contains("task crosses turns"));
+        assert!(section
+            .content
+            .contains("preemptively creating durable state"));
+    }
+
+    #[test]
     fn system_prompt_includes_work_item_first_execution_rules() {
         let sections = build_system_sections(
             &sample_identity(),
@@ -1056,9 +1093,10 @@ mod tests {
             .expect("work item first execution section");
 
         assert!(section.content.contains("WorkItem-first"));
+        assert!(section.content.contains("`planning_discipline`"));
         assert!(section
             .content
-            .contains("absence of a current active work item anchor"));
+            .contains("there is no current active work item anchor"));
         assert!(section.content.contains("clarify the real objective"));
         assert!(section
             .content
@@ -1066,7 +1104,9 @@ mod tests {
         assert!(section
             .content
             .contains("once the objective is stable enough to name"));
-        assert!(section.content.contains("brief status answer"));
+        assert!(section
+            .content
+            .contains("Do not convert ordinary current-turn planning"));
     }
 
     #[test]
