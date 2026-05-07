@@ -58,6 +58,7 @@ pub async fn spawn_raw_http_server_bytes_sequence(responses: Vec<Vec<u8>>) -> St
     format!("http://{}", addr)
 }
 
+#[allow(dead_code)]
 pub async fn spawn_raw_http_server_bytes_sequence_with_delay(
     responses: Vec<(u64, Vec<u8>)>,
 ) -> String {

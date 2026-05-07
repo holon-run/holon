@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 // Shared runtime harness helpers.
 // Reusable test helpers such as config builders, waiting helpers,
 // git/worktree helpers, and tool-result parsing.

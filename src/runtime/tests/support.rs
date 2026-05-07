@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 pub(crate) use async_trait::async_trait;
 pub(crate) use chrono::Utc;
 pub(crate) use std::path::PathBuf;

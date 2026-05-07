@@ -38,6 +38,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check warnings
+        run: RUSTFLAGS="-D warnings" cargo check --all-targets
+
       - name: Build
         run: cargo build --all-targets
 

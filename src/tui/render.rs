@@ -1,7 +1,7 @@
 use super::overlay::draw_overlay;
-use super::view_model::{
-    render_header_line, render_model_detail, HeaderViewModel, StatusbarViewModel,
-};
+#[cfg(test)]
+use super::view_model::render_header_line;
+use super::view_model::{render_model_detail, HeaderViewModel, StatusbarViewModel};
 use super::*;
 use crate::tui::input::slash_menu_specs;
 use crate::types::{TaskKind, TaskStatus};
@@ -424,6 +424,7 @@ fn display_width(text: &str) -> u16 {
     UnicodeWidthStr::width(text).min(u16::MAX as usize) as u16
 }
 
+#[cfg(test)]
 pub(super) fn render_header(agent: &AgentSummary) -> String {
     render_header_line(agent)
 }

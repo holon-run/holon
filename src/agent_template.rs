@@ -812,7 +812,7 @@ async fn materialize_skill_ref(
     }
 }
 
-pub fn builtin_skill(name: &str) -> Option<&'static BuiltinSkill> {
+fn builtin_skill(name: &str) -> Option<&'static BuiltinSkill> {
     BUILTIN_SKILLS.iter().find(|skill| skill.name == name)
 }
 

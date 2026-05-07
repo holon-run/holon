@@ -85,6 +85,9 @@ current source of truth.
   `test:`, `chore:`.
 - Keep early commits narrow. This repository is still defining its core model.
 - In PR descriptions, explain which runtime concept changed and why.
+- Before creating a PR, run `cargo fmt --all -- --check` and
+  `RUSTFLAGS="-D warnings" cargo check --all-targets` to keep formatting and
+  warning gates green.
 
 ## Migration Notes
 
