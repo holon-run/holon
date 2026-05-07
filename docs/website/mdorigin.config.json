@@ -1,0 +1,61 @@
+{
+  "siteTitle": "Holon",
+  "siteDescription": "Headless runtime for long-lived agents that wait, wake, delegate, and preserve durable context.",
+  "siteUrl": "https://holon.run",
+  "favicon": "/assets/logo.png",
+  "socialImage": "/assets/logo.png",
+  "logo": {
+    "src": "/assets/logo.png",
+    "alt": "Holon"
+  },
+  "topNav": [
+    {
+      "label": "Start",
+      "href": "/getting-started/"
+    },
+    {
+      "label": "Concepts",
+      "href": "/concepts/"
+    },
+    {
+      "label": "Guides",
+      "href": "/guides/"
+    },
+    {
+      "label": "Reference",
+      "href": "/reference/"
+    },
+    {
+      "label": "Roadmap",
+      "href": "/roadmap/"
+    }
+  ],
+  "footerNav": [
+    {
+      "label": "GitHub",
+      "href": "https://github.com/holon-run/holon"
+    },
+    {
+      "label": "Issues",
+      "href": "https://github.com/holon-run/holon/issues"
+    },
+    {
+      "label": "Releases",
+      "href": "https://github.com/holon-run/holon/releases"
+    }
+  ],
+  "footerText": "Holon is an early-stage headless runtime project. Runtime clarity comes before UI convenience.",
+  "socialLinks": [
+    {
+      "icon": "github",
+      "label": "GitHub",
+      "href": "https://github.com/holon-run/holon"
+    }
+  ],
+  "editLink": {
+    "baseUrl": "https://github.com/holon-run/holon/edit/main/docs/website/"
+  },
+  "showHomeIndex": false,
+  "showDate": false,
+  "showSummary": true
+}
