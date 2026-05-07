@@ -274,6 +274,6 @@ When the dogfood session is complete:
 
 ## Related Documentation
 
-- [AgentInbox Callback Integration](./agentinbox-callback-integration.md)
+- [AgentInbox Callback Integration](./archive/operational-agentinbox-callback-integration.md)
 - [AgentInbox Wake-Hint Quickstart](./agentinbox-wake-hint-quickstart.md)
-- [Callback Capability and Providerless Ingress](./callback-capability-and-providerless-ingress.md)
+- [Callback Capability and Providerless Ingress](./rfcs/external-trigger-capability.md)

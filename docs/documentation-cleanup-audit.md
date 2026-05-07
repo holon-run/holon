@@ -2,6 +2,17 @@
 
 Date: 2026-04-23
 
+## Completion Status
+
+**Executed**: 2026-05-07
+
+The high-confidence archival and roadmap consolidation recommendations from this
+audit have been executed. Superseded documents have been moved to
+`docs/archive/` with appropriate prefixes (superseded-, historical-, reference-,
+etc.).
+
+See `docs/archive/README.md` for details on the archive structure.
+
 ## Summary
 
 `docs/rfcs/` is now the canonical home for Holon's architecture contracts.

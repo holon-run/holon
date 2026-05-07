@@ -6,6 +6,14 @@ The goal of v0 is not to solve every future integration. The goal is to make
 the core lifecycle explicit enough that the first local runtime can be built
 without hidden assumptions.
 
+## Terminology Note
+
+This document contains some historical "callback" terminology in the message
+provenance and external trigger sections. The current public/runtime-facing
+terminology uses **External Trigger Capability** instead. See
+[`rfcs/external-trigger-capability.md`](./rfcs/external-trigger-capability.md)
+for the canonical contract.
+
 ## Scope
 
 This spec covers:
