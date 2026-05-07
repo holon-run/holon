@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::types::{
@@ -13,6 +13,7 @@ use crate::types::{
 };
 
 const SKILL_ENTRYPOINT: &str = "SKILL.md";
+const INSTALL_METADATA_FILENAME: &str = ".holon-skill-install.json";
 const SKILL_ROOT_SUFFIXES: [&str; 4] = [
     "skills",
     ".agents/skills",
@@ -279,13 +280,17 @@ pub fn install_skill_with_user_home(
     let name = match kind {
         crate::types::SkillInstallKind::Builtin { name } => {
             validate_skill_name(name)?;
-            crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
+            let destination =
+                crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
+            record_install_metadata(&destination, "builtin")?;
             name.clone()
         }
         crate::types::SkillInstallKind::Named { name, mode } => {
             validate_skill_name(name)?;
             if crate::agent_template::builtin_skill_names().contains(&name.as_str()) {
-                crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
+                let destination =
+                    crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
+                record_install_metadata(&destination, "builtin")?;
                 name.clone()
             } else {
                 let path = resolve_user_skill_by_name(user_home, name)?;
@@ -311,6 +316,9 @@ fn materialize_local_skill(
         SkillInstallMode::Linked => materialize_linked_skill_ref(skills_root, &path)?,
         SkillInstallMode::Copied => materialize_copied_skill_ref(skills_root, &path)?,
     };
+    if *mode == SkillInstallMode::Copied {
+        record_install_metadata(&destination, "copied")?;
+    }
     Ok(destination
         .file_name()
         .and_then(|n| n.to_str())
@@ -397,17 +405,20 @@ fn materialize_copied_skill_ref(skills_root: &Path, path: &Path) -> Result<PathB
     let destination = skills_root.join(skill_name);
     if destination.exists() {
         bail!(
-            "template skill destination {} already exists",
+            "local skill destination {} already exists",
             destination.display()
         );
     }
-    copy_dir_all(path, &destination).with_context(|| {
+    if let Err(error) = copy_dir_all(path, &destination).with_context(|| {
         format!(
             "failed to copy local skill ref {} -> {}",
             path.display(),
             destination.display()
         )
-    })?;
+    }) {
+        let _ = fs::remove_dir_all(&destination);
+        return Err(error);
+    }
     Ok(destination)
 }
 
@@ -429,12 +440,35 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
                 )
             })?;
         } else if file_type.is_symlink() {
-            let target = fs::read_link(&src_path)
-                .with_context(|| format!("failed to read symlink {}", src_path.display()))?;
-            create_symlink(&target, &dst_path)?;
+            bail!(
+                "copy mode does not support symlinks inside skill directories: {}",
+                src_path.display()
+            );
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SkillInstallMetadata {
+    install_mode: String,
+}
+
+fn record_install_metadata(destination: &Path, install_mode: &str) -> Result<()> {
+    let payload = serde_json::to_vec_pretty(&SkillInstallMetadata {
+        install_mode: install_mode.into(),
+    })?;
+    fs::write(destination.join(INSTALL_METADATA_FILENAME), payload).with_context(|| {
+        format!(
+            "failed to write install metadata for {}",
+            destination.display()
+        )
+    })
+}
+
+fn read_install_metadata(skill_dir: &Path) -> Option<SkillInstallMetadata> {
+    let content = fs::read(skill_dir.join(INSTALL_METADATA_FILENAME)).ok()?;
+    serde_json::from_slice(&content).ok()
 }
 
 pub fn uninstall_skill(agent_home: &Path, name: &str) -> Result<()> {
@@ -534,6 +568,11 @@ fn installed_skill_view(catalog: SkillCatalogEntry) -> Result<InstalledSkillView
     } else {
         None
     };
+    let install_metadata = if link_target.is_none() {
+        read_install_metadata(skill_dir)
+    } else {
+        None
+    };
     let warning = link_target
         .as_ref()
         .and_then(|target| {
@@ -571,6 +610,20 @@ fn installed_skill_view(catalog: SkillCatalogEntry) -> Result<InstalledSkillView
     Ok(InstalledSkillView {
         install_mode: if link_target.is_some() {
             "linked".into()
+        } else if matches!(
+            install_metadata
+                .as_ref()
+                .map(|metadata| metadata.install_mode.as_str()),
+            Some("builtin")
+        ) {
+            "builtin".into()
+        } else if matches!(
+            install_metadata
+                .as_ref()
+                .map(|metadata| metadata.install_mode.as_str()),
+            Some("copied")
+        ) {
+            "copied".into()
         } else if crate::agent_template::builtin_skill_names()
             .contains(&catalog.skill_id.trim_start_matches("agent:"))
         {
@@ -584,12 +637,12 @@ fn installed_skill_view(catalog: SkillCatalogEntry) -> Result<InstalledSkillView
     })
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn create_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(src, dst)
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn create_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     if src.is_dir() {
         std::os::windows::fs::symlink_dir(src, dst)
@@ -847,6 +900,58 @@ mod tests {
         let installed = list_installed_skills(&agent_home).unwrap();
         assert_eq!(installed[0].install_mode, "copied");
         assert!(installed[0].link_target.is_none());
+    }
+
+    #[test]
+    fn copied_local_skill_named_like_builtin_reports_copied_mode() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source/ghx");
+        let agent_home = dir.path().join("agent");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join(SKILL_ENTRYPOINT),
+            "---\nname: ghx\ndescription: local ghx\n---\nbody",
+        )
+        .unwrap();
+
+        install_skill_with_user_home(
+            &agent_home,
+            None,
+            &crate::types::SkillInstallKind::Local {
+                path: source,
+                mode: SkillInstallMode::Copied,
+            },
+        )
+        .unwrap();
+
+        let installed = list_installed_skills(&agent_home).unwrap();
+        assert_eq!(installed[0].catalog.name, "ghx");
+        assert_eq!(installed[0].install_mode, "copied");
+    }
+
+    #[test]
+    fn copy_mode_rejects_symlinks_inside_skill_directory() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source/demo");
+        let agent_home = dir.path().join("agent");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join(SKILL_ENTRYPOINT), "# Demo").unwrap();
+        let target = dir.path().join("target.txt");
+        fs::write(&target, "target").unwrap();
+        create_symlink(&target, &source.join("linked.txt")).unwrap();
+
+        let error = install_skill_with_user_home(
+            &agent_home,
+            None,
+            &crate::types::SkillInstallKind::Local {
+                path: source,
+                mode: SkillInstallMode::Copied,
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:?}").contains("does not support symlinks"));
+        assert!(!agent_home.join("skills/demo").exists());
     }
 
     #[test]

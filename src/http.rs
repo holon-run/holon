@@ -1645,7 +1645,7 @@ pub async fn install_skill(
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
-    let user_home = state.host.config().home_dir.clone();
+    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
     let skill_name =
         crate::skills::install_skill_with_user_home(&agent_home, Some(&user_home), &request.kind)
             .map_err(error_response)?;

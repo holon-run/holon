@@ -1274,6 +1274,22 @@ mod tests {
     }
 
     #[test]
+    fn skills_install_relative_existing_file_stays_named_request() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ghx"), "not a skill directory").unwrap();
+
+        let kind = build_skill_install_kind_from_cwd("ghx", false, dir.path()).unwrap();
+
+        assert_eq!(
+            kind,
+            holon::types::SkillInstallKind::Named {
+                name: "ghx".into(),
+                mode: holon::types::SkillInstallMode::Linked,
+            }
+        );
+    }
+
+    #[test]
     fn unspecified_listen_accepts_explicit_advertise_url() {
         let mut config = test_config();
         let advertise = apply_serve_options(
@@ -1490,7 +1506,7 @@ fn build_skill_install_kind_from_cwd(
         return Ok(holon::types::SkillInstallKind::Local { path, mode });
     }
     let resolved = cwd.join(&path);
-    if resolved.exists() {
+    if resolved.is_dir() {
         Ok(holon::types::SkillInstallKind::Local {
             path: resolved,
             mode,
