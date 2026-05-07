@@ -420,6 +420,8 @@ enum SkillsCommands {
         #[arg(long)]
         builtin: bool,
         #[arg(long)]
+        copy: bool,
+        #[arg(long)]
         agent: Option<String>,
     },
     Uninstall {
@@ -1239,6 +1241,55 @@ mod tests {
     }
 
     #[test]
+    fn skills_install_relative_existing_path_is_absolutized_before_control_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skills/demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# Demo").unwrap();
+
+        let kind = build_skill_install_kind_from_cwd("skills/demo", false, dir.path()).unwrap();
+
+        assert_eq!(
+            kind,
+            holon::types::SkillInstallKind::Local {
+                path: skill_dir,
+                mode: holon::types::SkillInstallMode::Linked,
+            }
+        );
+    }
+
+    #[test]
+    fn skills_install_unresolved_name_stays_named_request() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let kind = build_skill_install_kind_from_cwd("ghx", true, dir.path()).unwrap();
+
+        assert_eq!(
+            kind,
+            holon::types::SkillInstallKind::Named {
+                name: "ghx".into(),
+                mode: holon::types::SkillInstallMode::Copied,
+            }
+        );
+    }
+
+    #[test]
+    fn skills_install_relative_existing_file_stays_named_request() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ghx"), "not a skill directory").unwrap();
+
+        let kind = build_skill_install_kind_from_cwd("ghx", false, dir.path()).unwrap();
+
+        assert_eq!(
+            kind,
+            holon::types::SkillInstallKind::Named {
+                name: "ghx".into(),
+                mode: holon::types::SkillInstallMode::Linked,
+            }
+        );
+    }
+
+    #[test]
     fn unspecified_listen_accepts_explicit_advertise_url() {
         let mut config = test_config();
         let advertise = apply_serve_options(
@@ -1404,24 +1455,14 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         SkillsCommands::Install {
             name_or_path,
             builtin,
+            copy,
             agent,
         } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let kind = if builtin {
                 holon::types::SkillInstallKind::Builtin { name: name_or_path }
             } else {
-                let path = std::path::PathBuf::from(&name_or_path);
-                if path.is_absolute() {
-                    if !path.is_dir() {
-                        anyhow::bail!(
-                            "path '{}' does not exist or is not a directory. Use --builtin to install a builtin skill by name.",
-                            path.display()
-                        );
-                    }
-                    holon::types::SkillInstallKind::Local { path }
-                } else {
-                    holon::types::SkillInstallKind::Builtin { name: name_or_path }
-                }
+                build_skill_install_kind(&name_or_path, copy)?
             };
             post_control_json(
                 config,
@@ -1439,6 +1480,42 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
             )
             .await
         }
+    }
+}
+
+fn build_skill_install_kind(
+    name_or_path: &str,
+    copy: bool,
+) -> Result<holon::types::SkillInstallKind> {
+    let cwd = std::env::current_dir().context("failed to resolve current directory")?;
+    build_skill_install_kind_from_cwd(name_or_path, copy, &cwd)
+}
+
+fn build_skill_install_kind_from_cwd(
+    name_or_path: &str,
+    copy: bool,
+    cwd: &Path,
+) -> Result<holon::types::SkillInstallKind> {
+    let mode = if copy {
+        holon::types::SkillInstallMode::Copied
+    } else {
+        holon::types::SkillInstallMode::Linked
+    };
+    let path = PathBuf::from(name_or_path);
+    if path.is_absolute() {
+        return Ok(holon::types::SkillInstallKind::Local { path, mode });
+    }
+    let resolved = cwd.join(&path);
+    if resolved.is_dir() {
+        Ok(holon::types::SkillInstallKind::Local {
+            path: resolved,
+            mode,
+        })
+    } else {
+        Ok(holon::types::SkillInstallKind::Named {
+            name: name_or_path.into(),
+            mode,
+        })
     }
 }
 

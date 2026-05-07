@@ -375,7 +375,7 @@ fn templates_root_for_home(home_dir: &Path) -> PathBuf {
     home_dir.join(".agents").join("templates")
 }
 
-fn user_home_dir() -> Result<PathBuf> {
+pub(crate) fn user_home_dir() -> Result<PathBuf> {
     env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())

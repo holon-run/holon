@@ -574,8 +574,9 @@ impl TuiApp {
                         return Ok(());
                     }
                 };
-                let kind = crate::types::SkillInstallKind::Builtin {
+                let kind = crate::types::SkillInstallKind::Named {
                     name: skill_name.clone(),
+                    mode: crate::types::SkillInstallMode::Linked,
                 };
                 self.client.install_skill(&agent_id, kind).await?;
                 self.status_line = format!("Installed skill: {skill_name}");
