@@ -493,6 +493,14 @@ pub enum SkillActivationState {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum SkillLoadReason {
+    ReadSkillMd,
+    RunSkillScript,
+    PromptInjection,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ClosureOutcome {
     Completed,
     Continuable,

@@ -789,13 +789,26 @@ Prompt context includes catalog metadata and active-skill metadata, but not raw
 System prompt guidance tells the agent that if a listed skill matches the task,
 it should open that skill's `SKILL.md` before following the workflow.
 
-Activation is currently minimal and file-based:
+Activation is currently minimal and file-based. Discovery alone does not mark a
+skill active and does not emit an activation event:
 
-- reading a discovered catalog entry's `SKILL.md` marks that skill
-  `turn_active`
+- reading a discovered catalog entry's `SKILL.md` marks that skill `turn_active`
+  and emits `skill_activated` with `load_reason=read_skill_md`
+- a successful command or command batch that references that `SKILL.md` does the
+  same
+- a successful command or command batch that references `scripts/*` under a
+  discovered skill root marks the skill `turn_active` and emits
+  `skill_activated` with `load_reason=run_skill_script`
+- `prompt_injection` is reserved as a future `load_reason` for runtime-driven
+  `SKILL.md` prompt injection
 - successful turn completion promotes current turn-active skills to
-  `session_active`
+  `session_active` without emitting a separate promotion event
 - resumed session-active skills are restored into runtime state as `restored`
+
+For `skill_activated`, `path` is the triggering activation path. It is the
+discovered `SKILL.md` for `read_skill_md`, and the matching `scripts/*` path
+for `run_skill_script` when one can be identified. `entrypoint_path` always
+points at the activated skill's `SKILL.md`.
 
 This keeps skill behavior inspectable without adding a dedicated activation
 control surface in v0.
