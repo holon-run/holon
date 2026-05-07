@@ -2403,7 +2403,11 @@ impl TurnExecution<'_> {
                         runtime.inner.storage.append_tool_execution(&record)?;
                         if matches!(record.status, crate::types::ToolExecutionStatus::Success) {
                             runtime
-                                .record_skill_tool_activation(&record.tool_name, &record.input)
+                                .record_skill_tool_activation(
+                                    &record.tool_name,
+                                    &record.input,
+                                    &result,
+                                )
                                 .await?;
                         }
 

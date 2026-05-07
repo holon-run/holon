@@ -24,6 +24,7 @@ mod worktree;
 
 use std::{
     collections::HashMap,
+    fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -63,21 +64,22 @@ use crate::{
         EffectiveExecution, ExecutionScopeKind, ExecutionSnapshot, LocalSystem,
         WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
     },
-    tool::ToolRegistry,
+    tool::{ToolRegistry, ToolResult},
     types::{
         ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView, AgentKind, AgentState,
         AgentStatus, AgentSummary, AuditEvent, BriefRecord, CallbackDeliveryMode,
         CallbackDeliveryPayload, CallbackDeliveryResult, CallbackIngressDisposition,
         CancelWaitingResult, ClosureDecision, ContinuationResolution, ControlAction,
-        ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerScope,
-        ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
-        Priority, QueueEntryRecord, QueueEntryStatus, ResolvedModelAvailability,
-        RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture, SkillActivationSource,
-        SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
-        TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
-        TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
-        WaitingIntentSummary, WorkItemState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
+        ExecCommandBatchItemStatus, ExecCommandBatchResult, ExternalTriggerCapability,
+        ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, ExternalTriggerSummary,
+        LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord, QueueEntryStatus,
+        ResolvedModelAvailability, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
+        SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
+        SkillsRuntimeView, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord,
+        TimerStatus, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        WaitingIntentRecord, WaitingIntentStatus, WaitingIntentSummary, WorkItemState,
+        WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::WebConfig,
 };
@@ -665,6 +667,7 @@ impl RuntimeHandle {
         &self,
         tool_name: &str,
         input: &serde_json::Value,
+        result: &ToolResult,
     ) -> Result<()> {
         match tool_name {
             "Read" | "ReadFile" => {
@@ -679,10 +682,12 @@ impl RuntimeHandle {
                 }
             }
             "ExecCommandBatch" => {
-                if let Some(items) = input.get("items").and_then(|value| value.as_array()) {
-                    for item in items {
-                        if let Some(command) = item.get("cmd").and_then(|value| value.as_str()) {
-                            self.record_skill_command_activation(command).await?;
+                if let Some(batch) = result.envelope.result.as_ref().and_then(|value| {
+                    serde_json::from_value::<ExecCommandBatchResult>(value.clone()).ok()
+                }) {
+                    for item in batch.items {
+                        if matches!(item.status, ExecCommandBatchItemStatus::Completed) {
+                            self.record_skill_command_activation(&item.cmd).await?;
                         }
                     }
                 }
@@ -749,7 +754,8 @@ impl RuntimeHandle {
                 "agent_id": agent_id,
                 "skill_id": skill.skill_id,
                 "skill_name": skill.name,
-                "path": skill.path,
+                "path": resolved_path,
+                "entrypoint_path": skill.path,
                 "scope": skill.scope,
                 "activation_source": SkillActivationSource::ImplicitFromCatalog,
                 "activation_state": SkillActivationState::TurnActive,
@@ -774,48 +780,12 @@ impl RuntimeHandle {
         let skills = self.skills_runtime_view_for_state(&state_snapshot, &identity)?;
 
         for skill in skills.discoverable_skills {
-            if command_mentions_path(command, &skill.path) {
-                let skill_path = skill.path.to_string_lossy().into_owned();
-                self.record_skill_read_activation(&skill_path, SkillLoadReason::ReadSkillMd)
-                    .await?;
-                continue;
-            }
-
-            if let Ok(relative_to_workspace) = skill
-                .path
-                .strip_prefix(execution.workspace.workspace_anchor())
+            if let Some((activation_path, load_reason)) =
+                command_skill_activation(command, &skill, execution.workspace.workspace_anchor())
             {
-                if command_mentions_path(command, relative_to_workspace) {
-                    let skill_path = skill.path.to_string_lossy().into_owned();
-                    self.record_skill_read_activation(&skill_path, SkillLoadReason::ReadSkillMd)
-                        .await?;
-                    continue;
-                }
-            }
-
-            if let Some(skill_root) = skill.path.parent() {
-                let scripts_root = skill_root.join("scripts");
-                if command_mentions_path(command, &scripts_root) {
-                    let script_path = scripts_root.to_string_lossy().into_owned();
-                    self.record_skill_read_activation(
-                        &script_path,
-                        SkillLoadReason::RunSkillScript,
-                    )
+                let activation_path = activation_path.to_string_lossy().into_owned();
+                self.record_skill_read_activation(&activation_path, load_reason)
                     .await?;
-                    continue;
-                }
-                if let Ok(relative_to_workspace) =
-                    scripts_root.strip_prefix(execution.workspace.workspace_anchor())
-                {
-                    if command_mentions_path(command, relative_to_workspace) {
-                        let script_path = scripts_root.to_string_lossy().into_owned();
-                        self.record_skill_read_activation(
-                            &script_path,
-                            SkillLoadReason::RunSkillScript,
-                        )
-                        .await?;
-                    }
-                }
             }
         }
         Ok(())
@@ -1072,6 +1042,71 @@ impl RuntimeHandle {
 fn command_mentions_path(command: &str, path: &Path) -> bool {
     let display = path.to_string_lossy();
     command.contains(display.as_ref())
+}
+
+fn command_skill_activation(
+    command: &str,
+    skill: &SkillCatalogEntry,
+    workspace_anchor: &Path,
+) -> Option<(PathBuf, SkillLoadReason)> {
+    if command_mentions_path(command, &skill.path)
+        || skill
+            .path
+            .strip_prefix(workspace_anchor)
+            .map(|relative| command_mentions_path(command, relative))
+            .unwrap_or(false)
+    {
+        return Some((skill.path.clone(), SkillLoadReason::ReadSkillMd));
+    }
+
+    let skill_root = skill.path.parent()?;
+    let scripts_root = skill_root.join("scripts");
+    for script_path in script_paths_under(&scripts_root) {
+        if command_mentions_path(command, &script_path)
+            || script_path
+                .strip_prefix(workspace_anchor)
+                .map(|relative| command_mentions_path(command, relative))
+                .unwrap_or(false)
+        {
+            return Some((script_path, SkillLoadReason::RunSkillScript));
+        }
+    }
+
+    if command_mentions_path(command, &scripts_root)
+        || scripts_root
+            .strip_prefix(workspace_anchor)
+            .map(|relative| command_mentions_path(command, relative))
+            .unwrap_or(false)
+    {
+        return Some((scripts_root, SkillLoadReason::RunSkillScript));
+    }
+
+    None
+}
+
+fn script_paths_under(root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    collect_script_paths(root, &mut paths);
+    paths
+}
+
+fn collect_script_paths(path: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    if metadata.is_file() {
+        paths.push(path.to_path_buf());
+        return;
+    }
+    if !metadata.is_dir() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        collect_script_paths(&entry.path(), paths);
+    }
 }
 
 fn skill_for_activation_path<'a>(

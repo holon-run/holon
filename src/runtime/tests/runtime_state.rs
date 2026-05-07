@@ -1327,6 +1327,11 @@ async fn reading_discovered_skill_marks_it_active_and_promotes_on_success() {
         .expect("skill_activated event should be recorded");
     assert_eq!(activation.data["skill_name"], "demo");
     assert_eq!(activation.data["load_reason"], "read_skill_md");
+    assert!(activation.data["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(".agents/skills/demo/SKILL.md"));
+    assert_eq!(activation.data["path"], activation.data["entrypoint_path"]);
     assert_eq!(
         activation.data["activation_source"],
         "implicit_from_catalog"
@@ -1360,6 +1365,7 @@ async fn batch_command_reading_discovered_skill_marks_it_active() {
     let activation = skill_activation_event(&runtime, "workspace:demo");
     assert_eq!(activation.data["skill_name"], "demo");
     assert_eq!(activation.data["load_reason"], "read_skill_md");
+    assert_eq!(activation.data["path"], activation.data["entrypoint_path"]);
 }
 
 #[tokio::test]
@@ -1386,6 +1392,44 @@ async fn command_running_skill_script_marks_it_active_with_script_reason() {
         activation.data["load_reason"],
         serde_json::json!(SkillLoadReason::RunSkillScript)
     );
+    assert!(activation.data["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(".agents/skills/demo/scripts/run.sh"));
+    assert!(activation.data["entrypoint_path"]
+        .as_str()
+        .unwrap()
+        .ends_with(".agents/skills/demo/SKILL.md"));
+}
+
+#[tokio::test]
+async fn batch_skipped_skill_command_does_not_mark_skill_active() {
+    let (_dir, _workspace, runtime) = run_skill_activation_probe(
+        Arc::new(SkillActivationCommandProvider::new(
+            "ExecCommandBatch",
+            serde_json::json!({
+                "stop_on_error": true,
+                "items": [
+                    {
+                        "cmd": "false",
+                        "workdir": "."
+                    },
+                    {
+                        "cmd": "cat .agents/skills/demo/SKILL.md",
+                        "workdir": "."
+                    }
+                ]
+            }),
+        )),
+        false,
+    )
+    .await;
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.active_skills.is_empty());
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(!events.iter().any(|event| event.kind == "skill_activated"));
 }
 
 async fn run_skill_activation_probe(

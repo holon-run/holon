@@ -805,6 +805,11 @@ skill active and does not emit an activation event:
   `session_active` without emitting a separate promotion event
 - resumed session-active skills are restored into runtime state as `restored`
 
+For `skill_activated`, `path` is the triggering activation path. It is the
+discovered `SKILL.md` for `read_skill_md`, and the matching `scripts/*` path
+for `run_skill_script` when one can be identified. `entrypoint_path` always
+points at the activated skill's `SKILL.md`.
+
 This keeps skill behavior inspectable without adding a dedicated activation
 control surface in v0.
 

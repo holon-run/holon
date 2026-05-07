@@ -58,17 +58,26 @@ discovered skill is touched in a way that loads or uses the skill:
 
 - which skill ids were activated
 - which skill name was activated
-- which source path each one came from
+- which path triggered activation
+- which `SKILL.md` entrypoint the activated skill came from
 - whether activation came from agent scope or workspace scope
 - why the skill was loaded (`read_skill_md`, `run_skill_script`, or the
   reserved `prompt_injection`)
 - the turn index and current run id when available
 
+In the event payload, `path` is the triggering path. For
+`load_reason=read_skill_md`, it is the discovered `SKILL.md`. For
+`load_reason=run_skill_script`, it is the matching `scripts/*` path when the
+runtime can identify one, otherwise the skill's `scripts` directory.
+`entrypoint_path` always points at the skill's `SKILL.md`.
+
 The v1 runtime monitors:
 
 - tool reads of a discovered skill's `SKILL.md`
 - successful shell commands that reference a discovered skill's `SKILL.md`
-- successful shell commands, including command batches, that reference
+- successful shell command-batch items that completed and reference a
+  discovered skill's `SKILL.md`
+- successful shell commands, including completed command-batch items, that reference
   `scripts/*` under a discovered skill root
 
 Successful turn completion promotes current `turn_active` skills to
