@@ -123,6 +123,9 @@ type ProviderAttemptRecord = {
   model_ref: string
   attempt: number
   max_attempts: number
+  started_at?: string
+  completed_at?: string
+  duration_ms?: number
   failure_kind?: string
   disposition?: string
   outcome: ProviderAttemptOutcome
@@ -161,6 +164,8 @@ Phase-1 visibility rules:
 
 - successful provider rounds may still include prior failed attempts before the
   winning provider
+- provider-attempt timing fields measure the provider request attempt itself;
+  retry backoff remains represented separately as `backoff_ms`
 - each provider-attempt record may carry its own `token_usage` when that
   attempt reported usage
 - failed provider rounds preserve the attempt timeline alongside the final
@@ -199,6 +204,13 @@ Phase-1 token visibility rules:
   `output_tokens` fields and also mirror them under `data.token_usage`
 - `provider_round_completed` and `terminal_delivery_round_completed` audit
   events include `token_usage`
+- `turn_context_built`, `provider_round_completed`, `tool_executed`, and
+  `turn_terminal` carry the durable timing fields consumed by
+  `holon debug latency`; queue wait is derived from `message_admitted` to
+  `message_processing_started`
+- `provider_round_completed` includes `context_build_ms`,
+  `provider_round_ms`, `provider_started_at`, and `provider_completed_at`
+  for the model-facing round
 - `provider_round_completed` is provider telemetry only; assistant-visible
   bounded text previews and tool requests are emitted as
   `assistant_round_recorded`

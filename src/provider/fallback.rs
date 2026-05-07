@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use chrono::Utc;
 use tokio::time::sleep;
 use tracing::warn;
 
@@ -309,13 +310,20 @@ impl AgentProvider for FallbackProvider {
             for attempt in 1..=max_attempts {
                 let attempt_request =
                     request_for_model_attempt(&request, &requested_model_ref, &candidate.model_ref);
+                let attempt_started_at = Utc::now();
+                let attempt_started = std::time::Instant::now();
                 match candidate.provider.complete_turn(attempt_request).await {
                     Ok(response) => {
+                        let attempt_completed_at = Utc::now();
+                        let attempt_duration_ms = attempt_started.elapsed().as_millis() as u64;
                         timeline.push(ProviderAttemptRecord {
                             provider: candidate.provider_name.clone(),
                             model_ref: candidate.model_ref.clone(),
                             attempt,
                             max_attempts,
+                            started_at: Some(attempt_started_at),
+                            completed_at: Some(attempt_completed_at),
+                            duration_ms: Some(attempt_duration_ms),
                             failure_kind: None,
                             disposition: None,
                             outcome: ProviderAttemptOutcome::Succeeded,
@@ -337,6 +345,8 @@ impl AgentProvider for FallbackProvider {
                         return Ok((response, Some(diagnostics)));
                     }
                     Err(error) => {
+                        let attempt_completed_at = Utc::now();
+                        let attempt_duration_ms = attempt_started.elapsed().as_millis() as u64;
                         let classification = classify_provider_error(&error);
                         let should_retry = classification.disposition
                             == RetryDisposition::Retryable
@@ -348,6 +358,9 @@ impl AgentProvider for FallbackProvider {
                                 model_ref: candidate.model_ref.clone(),
                                 attempt,
                                 max_attempts,
+                                started_at: Some(attempt_started_at),
+                                completed_at: Some(attempt_completed_at),
+                                duration_ms: Some(attempt_duration_ms),
                                 failure_kind: Some(classification.kind.as_str().to_string()),
                                 disposition: Some(classification.disposition.as_str().to_string()),
                                 outcome: ProviderAttemptOutcome::Retrying,
@@ -375,6 +388,9 @@ impl AgentProvider for FallbackProvider {
                             model_ref: candidate.model_ref.clone(),
                             attempt,
                             max_attempts,
+                            started_at: Some(attempt_started_at),
+                            completed_at: Some(attempt_completed_at),
+                            duration_ms: Some(attempt_duration_ms),
                             failure_kind: Some(classification.kind.as_str().to_string()),
                             disposition: Some(classification.disposition.as_str().to_string()),
                             outcome: match classification.disposition {

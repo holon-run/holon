@@ -310,6 +310,7 @@ Important first-party event families currently include:
 
 ### Turn and model execution
 
+- `turn_context_built`
 - `provider_round_completed`
 - `assistant_round_recorded`
 - `text_only_round_observed`
@@ -643,6 +644,9 @@ Typical ephemeral items include:
   `progress`; `provider_round_completed` is provider telemetry, while
   `assistant_round_recorded` carries bounded assistant text previews and
   tool-request progress for chat/activity rendering
+- `turn_context_built` classified as `trace`; it is a local diagnostics event
+  for prompt/context build latency and should not be promoted to operator
+  delivery by default
 - `tool_executed` and `tool_execution_failed` classified as `trace`
 - lightweight task/workspace/worktree progress that is only relevant while the
   turn is in flight
