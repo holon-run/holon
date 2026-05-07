@@ -1895,14 +1895,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["CHUTES_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "deepseek",
         "https://api.deepseek.com/anthropic",
         &["DEEPSEEK_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "deepseek-anthropic",
         "https://api.deepseek.com/anthropic",
@@ -2007,7 +2007,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["STEPFUN_PLAN_API_KEY", "STEPFUN_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "synthetic",
         "https://api.synthetic.new/anthropic",
@@ -2060,14 +2060,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         ],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "xiaomi",
         "https://api.xiaomimimo.com/anthropic",
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "xiaomi-anthropic",
         "https://api.xiaomimimo.com/anthropic",
@@ -2081,14 +2081,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "xiaomi-token-plan",
         "https://token-plan-cn.xiaomimimo.com/anthropic",
         &["XIAOMI_TOKEN_PLAN_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "xiaomi-token-plan-anthropic",
         "https://token-plan-cn.xiaomimimo.com/anthropic",
@@ -2109,14 +2109,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["XAI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "zai",
         "https://api.z.ai/api/anthropic",
         &["ZAI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "zai-anthropic",
         "https://api.z.ai/api/anthropic",
@@ -2130,14 +2130,14 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["ZAI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "bigmodel",
         "https://open.bigmodel.cn/api/anthropic",
         &["BIGMODEL_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "bigmodel-anthropic",
         "https://open.bigmodel.cn/api/anthropic",
@@ -2151,21 +2151,21 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         &["BIGMODEL_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "minimax",
         "https://api.minimax.io/anthropic",
         &["MINIMAX_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "minimax-portal",
         "https://api.minimax.io/anthropic",
         &["MINIMAX_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_anthropic_compatible_provider_lite(
         &mut registry,
         "vercel-ai-gateway",
         "https://ai-gateway.vercel.sh",
@@ -2192,6 +2192,7 @@ fn insert_openai_compatible_provider(
     )
 }
 
+#[allow(dead_code)]
 fn insert_anthropic_compatible_provider(
     registry: &mut ProviderRegistry,
     provider: &str,
@@ -2207,6 +2208,28 @@ fn insert_anthropic_compatible_provider(
         env_names,
         settings_env,
         resolve_anthropic_context_management_config()?,
+    )
+}
+
+/// Insert an Anthropic-compatible provider with a "lite" context management config
+/// that avoids Claude-specific features (no betas, Current cache strategy).
+/// Use this for non-Anthropic providers that expose an Anthropic-compatible API
+/// but may not support Claude-specific betas or prompt caching extensions.
+fn insert_anthropic_compatible_provider_lite(
+    registry: &mut ProviderRegistry,
+    provider: &str,
+    default_base_url: &str,
+    env_names: &[&str],
+    settings_env: &HashMap<String, String>,
+) -> Result<()> {
+    insert_builtin_http_provider_with_context_management(
+        registry,
+        provider,
+        ProviderTransportKind::AnthropicMessages,
+        default_base_url,
+        env_names,
+        settings_env,
+        resolve_anthropic_compatible_context_management_config()?,
     )
 }
 
@@ -2810,6 +2833,71 @@ fn resolve_anthropic_context_management_config() -> Result<AnthropicContextManag
 
 fn default_anthropic_runtime_cache_strategy() -> AnthropicCacheStrategy {
     AnthropicCacheStrategy::ClaudeCliLike
+}
+
+/// Resolve context management config for non-Anthropic providers that expose
+/// an Anthropic-compatible API. Uses "Current" cache strategy by default and
+/// omits Claude-specific betas, avoiding 400 errors from providers that do not
+/// support Claude-specific protocol extensions.
+fn resolve_anthropic_compatible_context_management_config() -> Result<AnthropicContextManagementConfig> {
+    let enabled = match env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT").ok() {
+        Some(value) => parse_bool_value(&value)
+            .map_err(|_| anyhow!("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT expects a boolean"))?
+            .ok_or_else(|| anyhow!("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT expects a boolean"))?,
+        None => false,
+    };
+    let trigger_input_tokens = env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_TRIGGER_INPUT_TOKENS")
+        .ok()
+        .map(|value| {
+            parse_positive_u32_key(
+                "HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_TRIGGER_INPUT_TOKENS",
+                &value,
+            )
+        })
+        .transpose()?
+        .unwrap_or(100_000);
+    let keep_recent_tool_uses =
+        env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_KEEP_RECENT_TOOL_USES")
+            .ok()
+            .map(|value| {
+                parse_positive_u32_key(
+                    "HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_KEEP_RECENT_TOOL_USES",
+                    &value,
+                )
+            })
+            .transpose()?
+            .unwrap_or(3);
+    let clear_at_least_input_tokens =
+        env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_CLEAR_AT_LEAST_INPUT_TOKENS")
+            .ok()
+            .map(|value| {
+                parse_positive_u32_key(
+                    "HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_CLEAR_AT_LEAST_INPUT_TOKENS",
+                    &value,
+                )
+            })
+            .transpose()?;
+    // Use "Current" cache strategy by default for compatible providers,
+    // which avoids sending Claude-specific betas and cache_control markers.
+    let cache_strategy = env::var("HOLON_ANTHROPIC_CACHE_STRATEGY")
+        .ok()
+        .map(|value| parse_anthropic_cache_strategy_env(&value))
+        .transpose()?
+        .unwrap_or(AnthropicCacheStrategy::Current);
+    // Only use betas if explicitly set via env; never auto-inject Claude-specific betas.
+    let betas = env::var("HOLON_ANTHROPIC_BETAS")
+        .ok()
+        .map(|value| parse_comma_separated_values(&value))
+        .unwrap_or_default();
+
+    Ok(AnthropicContextManagementConfig {
+        enabled,
+        trigger_input_tokens,
+        keep_recent_tool_uses,
+        clear_at_least_input_tokens,
+        cache_strategy,
+        betas,
+    })
 }
 
 fn parse_anthropic_cache_strategy_env(raw_value: &str) -> Result<AnthropicCacheStrategy> {
@@ -3799,7 +3887,7 @@ mod tests {
         );
         assert_eq!(
             deepseek_anthropic.context_management.cache_strategy,
-            AnthropicCacheStrategy::ClaudeCliLike
+            AnthropicCacheStrategy::Current
         );
 
         let deepseek_openai = providers
