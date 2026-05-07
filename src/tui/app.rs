@@ -1,6 +1,8 @@
 use super::chat::CachedChatText;
+use super::state::{tui_state_path, TuiClientState};
 use super::*;
 use std::cell::RefCell;
+use std::path::PathBuf;
 use tokio::{sync::mpsc, task::JoinHandle};
 
 pub(super) struct TuiApp {
@@ -19,6 +21,8 @@ pub(super) struct TuiApp {
     pub(super) refresh_deadline: Option<Instant>,
     pub(super) reconnect_attempt: u32,
     pub(super) selected_agent: usize,
+    pub(super) preferred_agent_id: Option<String>,
+    pub(super) state_path: PathBuf,
     pub(super) chat_scroll: ChatScrollState,
     pub(super) chat_max_scroll: u16,
     pub(super) composer: ComposerState,
@@ -39,6 +43,10 @@ pub(super) struct TuiApp {
 impl TuiApp {
     pub(crate) fn new(client: LocalClient, log_writer: TuiLogWriter) -> Self {
         let connection_summary = client.connection_summary();
+        let state_path = tui_state_path(&client);
+        let preferred_agent_id = TuiClientState::load(&state_path)
+            .ok()
+            .map(|state| state.last_selected_agent_id);
         Self {
             client,
             agents: Vec::new(),
@@ -55,6 +63,8 @@ impl TuiApp {
             refresh_deadline: None,
             reconnect_attempt: 0,
             selected_agent: 0,
+            preferred_agent_id,
+            state_path,
             chat_scroll: ChatScrollState::new(),
             chat_max_scroll: 0,
             composer: ComposerState::new(),

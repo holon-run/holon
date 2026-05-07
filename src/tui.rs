@@ -45,6 +45,7 @@ mod overlay;
 mod projection;
 mod render;
 mod runtime;
+mod state;
 mod view_model;
 
 use app::TuiApp;
@@ -216,6 +217,7 @@ mod tests {
         determine_alt_screen_mode_for_terminal, draw, is_cursor_too_old_error,
         is_operator_origin_value, paragraph_max_scroll, paragraph_max_scroll_unframed,
         projection::{OperatorVisibility, TuiProjection},
+        state::{tui_state_path, TuiClientState},
         view_model::{HeaderViewModel, StatusbarViewModel},
         AgentListChange, ChatScrollState, ComposerState, ConversationCell, OverlayState, TuiApp,
         TuiConnectionState, TuiRuntimeMessage,
@@ -277,6 +279,69 @@ mod tests {
                 temp.join(".codex"),
             ),
         }
+    }
+
+    #[test]
+    fn local_tui_restores_persisted_selected_agent_on_initial_agent_list() {
+        let config = test_config();
+        let state_path = config.home_dir.join("state").join("tui").join("local.json");
+        TuiClientState::new("beta").save(&state_path).unwrap();
+        let client = LocalClient::new(config).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+
+        let change = app.apply_agent_list(vec![
+            sample_agent_summary("default"),
+            sample_agent_summary("beta"),
+        ]);
+
+        assert_eq!(change, AgentListChange::RequiresBootstrap);
+        assert_eq!(app.selected_agent_id(), Some("beta"));
+    }
+
+    #[test]
+    fn missing_persisted_agent_falls_back_to_default_agent() {
+        let config = test_config();
+        let state_path = config.home_dir.join("state").join("tui").join("local.json");
+        TuiClientState::new("missing").save(&state_path).unwrap();
+        let client = LocalClient::new(config).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+
+        app.apply_agent_list(vec![
+            sample_agent_summary("alpha"),
+            sample_agent_summary("default"),
+        ]);
+
+        assert_eq!(app.selected_agent_id(), Some("default"));
+    }
+
+    #[test]
+    fn remote_tui_state_scope_uses_hashed_connect_target_without_token() {
+        let config = test_config();
+        let client =
+            LocalClient::remote(config, "http://example.test:7878/", "top-secret-token").unwrap();
+        let path = tui_state_path(&client);
+        let filename = path.file_name().unwrap().to_string_lossy();
+
+        assert!(filename.starts_with("remote-"));
+        assert!(filename.ends_with(".json"));
+        assert!(!filename.contains("example"));
+        assert!(!filename.contains("top-secret-token"));
+
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.record_selected_agent("beta");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("beta"));
+        assert!(!raw.contains("top-secret-token"));
+        assert!(!raw.contains("example.test"));
     }
 
     fn sample_agent_summary(agent_id: &str) -> AgentSummary {
