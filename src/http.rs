@@ -107,12 +107,10 @@ impl AppState {
         host: RuntimeHost,
         runtime_service: Option<RuntimeServiceHandle>,
     ) -> Self {
-        let require_control_token = host
-            .config()
-            .control_token_required(ControlTransportKind::Unix);
+        // Unix control is local IPC; filesystem permissions are the access boundary.
         Self {
             host,
-            require_control_token,
+            require_control_token: false,
             runtime_service,
             advertise_url: None,
         }
