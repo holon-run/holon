@@ -45,6 +45,7 @@ mod overlay;
 mod projection;
 mod render;
 mod runtime;
+mod view_model;
 
 use app::TuiApp;
 #[cfg(test)]
@@ -207,6 +208,7 @@ mod tests {
     use chrono::Utc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
+    use std::path::PathBuf;
     use tokio::sync::mpsc;
 
     use super::{
@@ -214,6 +216,7 @@ mod tests {
         determine_alt_screen_mode_for_terminal, draw, is_cursor_too_old_error,
         is_operator_origin_value, paragraph_max_scroll, paragraph_max_scroll_unframed,
         projection::{OperatorVisibility, TuiProjection},
+        view_model::{HeaderViewModel, StatusbarViewModel},
         AgentListChange, ChatScrollState, ComposerState, ConversationCell, OverlayState, TuiApp,
         TuiConnectionState, TuiRuntimeMessage,
     };
@@ -428,6 +431,184 @@ mod tests {
             "kind": "system",
             "subsystem": "runtime"
         })));
+    }
+
+    #[test]
+    fn header_view_model_shows_agent_status_without_contract() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("holon-dev", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+        app.agents = vec![snapshot.agent.clone()];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let view_model = HeaderViewModel::from_app(&app);
+
+        assert_eq!(view_model.line, "holon-dev  running");
+        assert!(!view_model.line.contains("public/self_owned"));
+        assert!(!view_model.line.contains("public_named"));
+    }
+
+    #[test]
+    fn header_view_model_prefers_operator_waiting_label_and_resume_hint() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        let mut snapshot = sample_snapshot("holon-dev", "evt-0");
+        snapshot.agent.agent.status = AgentStatus::AwakeIdle;
+        snapshot.agent.closure.waiting_reason =
+            Some(crate::types::WaitingReason::AwaitingOperatorInput);
+        snapshot.agent.lifecycle.resume_required = true;
+        app.agents = vec![snapshot.agent.clone()];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let view_model = HeaderViewModel::from_app(&app);
+
+        assert_eq!(
+            view_model.line,
+            "holon-dev  waiting for you · resume required"
+        );
+    }
+
+    #[test]
+    fn statusbar_view_model_shows_workspace_label_execution_root_and_model() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.status_line.clear();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let workspace_anchor = home.join("opensource/src/github.com/holon-run/holon");
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.active_workspace_entry = Some(crate::types::ActiveWorkspaceEntry {
+            workspace_id: "ws-random".into(),
+            workspace_anchor: workspace_anchor.clone(),
+            execution_root_id: "canonical_root:ws-random".into(),
+            execution_root: workspace_anchor.clone(),
+            projection_kind: crate::system::WorkspaceProjectionKind::CanonicalRoot,
+            access_mode: crate::system::WorkspaceAccessMode::ExclusiveWrite,
+            cwd: workspace_anchor.clone(),
+            occupancy_id: None,
+            projection_metadata: None,
+        });
+        snapshot.workspace.active_workspace_entry =
+            snapshot.agent.agent.active_workspace_entry.clone();
+        app.agents = vec![snapshot.agent.clone()];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let view_model = StatusbarViewModel::from_app(&app, false);
+
+        assert!(view_model.context_line.starts_with("holon ("));
+        assert!(view_model
+            .context_line
+            .contains("opensource/src/github.com/holon-run/holon)"));
+        assert!(view_model
+            .context_line
+            .contains("anthropic/claude-sonnet-4-6"));
+        assert!(!view_model.context_line.contains("model:"));
+    }
+
+    #[test]
+    fn statusbar_view_model_uses_workspace_label_for_worktree_execution_root() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.status_line.clear();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let workspace_anchor = home.join("opensource/src/github.com/holon-run/holon");
+        let execution_root =
+            home.join("opensource/worktrees/github.com/holon-run/holon/issue-960-working-switch");
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.agent.agent.active_workspace_entry = Some(crate::types::ActiveWorkspaceEntry {
+            workspace_id: "ws-random".into(),
+            workspace_anchor: workspace_anchor.clone(),
+            execution_root_id: format!("git_worktree_root:ws-random:{}", execution_root.display()),
+            execution_root: execution_root.clone(),
+            projection_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+            access_mode: crate::system::WorkspaceAccessMode::ExclusiveWrite,
+            cwd: execution_root.clone(),
+            occupancy_id: None,
+            projection_metadata: None,
+        });
+        snapshot.workspace.active_workspace_entry =
+            snapshot.agent.agent.active_workspace_entry.clone();
+        app.agents = vec![snapshot.agent.clone()];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let view_model = StatusbarViewModel::from_app(&app, false);
+
+        assert!(view_model.context_line.starts_with("holon ("));
+        assert!(view_model
+            .context_line
+            .contains("opensource/worktrees/github.com/holon-run/holon/issue-960-working-switch)"));
+        assert!(!view_model
+            .context_line
+            .starts_with("issue-960-working-switch"));
+    }
+
+    #[test]
+    fn statusbar_view_model_prompts_for_active_tasks() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.status_line.clear();
+        let mut snapshot = sample_snapshot("default", "evt-0");
+        snapshot.tasks = vec![crate::types::TaskRecord {
+            id: "task-1".into(),
+            agent_id: "default".into(),
+            kind: crate::types::TaskKind::CommandTask,
+            status: crate::types::TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            summary: Some("cargo test".into()),
+            detail: None,
+            recovery: None,
+        }];
+        app.agents = vec![snapshot.agent.clone()];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let view_model = StatusbarViewModel::from_app(&app, false);
+
+        assert!(view_model
+            .status_line
+            .contains("1 active task · /tasks to inspect"));
+    }
+
+    #[test]
+    fn statusbar_view_model_prefers_overlay_hint_over_transient_status() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+        app.status_line = "Opened tasks overlay".into();
+        app.overlay = OverlayState::Tasks {
+            selected: 0,
+            detail_scroll: 0,
+        };
+        let snapshot = sample_snapshot("default", "evt-0");
+        app.agents = vec![snapshot.agent.clone()];
+        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+        let view_model = StatusbarViewModel::from_app(&app, false);
+
+        assert!(view_model.status_line.contains("Tasks:"));
+        assert!(!view_model.status_line.contains("Opened tasks overlay"));
     }
 
     #[test]
