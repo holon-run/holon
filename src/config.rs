@@ -2820,7 +2820,8 @@ fn default_anthropic_runtime_cache_strategy() -> AnthropicCacheStrategy {
 /// an Anthropic-compatible API. Uses "Current" cache strategy by default and
 /// omits Claude-specific betas, avoiding 400 errors from providers that do not
 /// support Claude-specific protocol extensions.
-fn resolve_anthropic_compatible_context_management_config() -> Result<AnthropicContextManagementConfig> {
+fn resolve_anthropic_compatible_context_management_config(
+) -> Result<AnthropicContextManagementConfig> {
     let enabled = match env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT").ok() {
         Some(value) => parse_bool_value(&value)
             .map_err(|_| anyhow!("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT expects a boolean"))?
