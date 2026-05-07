@@ -976,6 +976,7 @@ fn build_turn_local_checkpoint_request(
     }
 }
 
+#[cfg(test)]
 fn build_turn_local_projection(
     prompt_frame: &ProviderPromptFrame,
     rounds: &[TurnRoundRecord],

@@ -84,6 +84,8 @@ current source of truth.
 - Use clear conventional commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`,
   `test:`, `chore:`.
 - Keep early commits narrow. This repository is still defining its core model.
+- Before opening a Rust PR, run `cargo fmt --all -- --check` and
+  `RUSTFLAGS="-D warnings" cargo check --all-targets` for warning-free builds.
 - In PR descriptions, explain which runtime concept changed and why.
 
 ## Migration Notes
