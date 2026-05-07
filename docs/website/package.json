@@ -7,9 +7,11 @@
     "build:index": "mdorigin build index --root .",
     "build:search": "mdorigin build search --root . --out dist/search",
     "build:cloudflare": "mdorigin build cloudflare --root . --search dist/search",
-    "build": "npm run build:index && npm run build:search && npm run build:cloudflare"
+    "build": "npm run build:index && npm run build:search && npm run build:cloudflare",
+    "deploy": "wrangler deploy --config wrangler.jsonc"
   },
   "devDependencies": {
-    "mdorigin": "^0.5.0"
+    "mdorigin": "^0.5.0",
+    "wrangler": "^4.0.0"
   }
 }
