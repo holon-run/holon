@@ -60,6 +60,51 @@ pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> R
     Ok(())
 }
 
+pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+
+    let client = reqwest::Client::new();
+    let payload: serde_json::Value = client
+        .get(format!("{base}/agents/list"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let entry = payload
+        .as_array()
+        .and_then(|entries| entries.first())
+        .expect("agent list should contain default agent");
+    assert_eq!(entry["identity"]["agent_id"], "default");
+    assert!(entry.get("status").is_some());
+    assert!(entry.get("model").is_some());
+
+    for heavy_field in [
+        "skills",
+        "active_children",
+        "active_waiting_intents",
+        "active_external_triggers",
+        "recent_operator_notifications",
+        "loaded_agents_md",
+        "recent_brief_count",
+        "recent_event_count",
+    ] {
+        assert!(
+            entry.get(heavy_field).is_none(),
+            "{heavy_field} should not be present in /agents/list"
+        );
+    }
+
+    let mut config = test_config();
+    config.http_addr = base.trim_start_matches("http://").to_string();
+    let local_client = LocalClient::new(config)?;
+    let entries = local_client.list_agent_entries().await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].identity.agent_id, "default");
+
+    server.abort();
+    Ok(())
+}
+
 #[cfg(unix)]
 pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()> {
     let mut config = test_config();

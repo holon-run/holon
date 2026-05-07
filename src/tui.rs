@@ -10,8 +10,8 @@ use crate::{
     system::{workspace_access_mode_label, workspace_projection_label},
     tui_markdown::{render_markdown_text, render_markdown_text_spaced},
     types::{
-        AgentSummary, BriefRecord, MessageBody, OperatorMessageRecord, OperatorMessageStatus,
-        TaskRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        AgentListEntry, AgentSummary, BriefRecord, MessageBody, OperatorMessageRecord,
+        OperatorMessageStatus, TaskRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
     },
 };
 use anyhow::{anyhow, Result};
@@ -2725,7 +2725,7 @@ mod tests {
 
         tokio::time::timeout(std::time::Duration::from_millis(50), app.tick())
             .await
-            .expect("tick should not wait for slow /agents")
+            .expect("tick should not wait for slow /agents/list")
             .unwrap();
 
         assert!(app.agent_list_refresh_in_flight);

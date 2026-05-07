@@ -626,6 +626,7 @@ without durably persisting public self-owned agents as `stopped`.
 
 Holon now exposes two different public per-agent inspection surfaces:
 
+- `GET /agents/list`
 - `GET /agents/:agent_id/status`
 - `GET /agents/:agent_id/state`
 
@@ -633,6 +634,14 @@ They should not be treated as interchangeable.
 
 Phase-1 contract:
 
+- `/agents/list`
+  - the narrow public agent-list bootstrap surface
+  - returns `Vec<AgentListEntry>`
+  - meant for TUI agent selection and other clients that need to choose an
+    agent without downloading full per-agent runtime projections
+  - intentionally excludes heavy nested collections such as skills, active
+    children, waiting intents, triggers, notifications, event tails, and
+    loaded AGENTS.md metadata
 - `/status`
   - the concise agent-facing summary surface
   - returns one `AgentSummary`

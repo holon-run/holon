@@ -30,11 +30,12 @@ use crate::{
     storage::AppStorage,
     system::WorkspaceAccessMode,
     types::{
-        AgentIdentityRecord, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentVisibility,
-        ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord, ExternalTriggerStatus,
-        OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord, TaskStatus, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WorkspaceEntry, WorkspaceOccupancyRecord,
+        AgentIdentityRecord, AgentIdentityView, AgentKind, AgentListEntry, AgentOwnership,
+        AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
+        AgentVisibility, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
+        ExternalTriggerStatus, OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord,
+        TaskStatus, TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -544,6 +545,20 @@ impl RuntimeHost {
         }
         summaries.sort_by(|left, right| left.agent.id.cmp(&right.agent.id));
         Ok(summaries)
+    }
+
+    pub async fn list_agent_entries(&self) -> Result<Vec<AgentListEntry>> {
+        self.ensure_default_agent_identity()?;
+        let mut entries = Vec::new();
+        for identity in self.agent_identity_records()?.into_iter().filter(|record| {
+            record.status == AgentRegistryStatus::Active
+                && record.visibility == AgentVisibility::Public
+        }) {
+            let runtime = self.get_or_create_agent(&identity.agent_id).await?;
+            entries.push(runtime.agent_list_entry().await?);
+        }
+        entries.sort_by(|left, right| left.identity.agent_id.cmp(&right.identity.agent_id));
+        Ok(entries)
     }
 
     pub fn public_agent_activity_snapshots(&self) -> Result<Vec<PublicAgentActivitySnapshot>> {

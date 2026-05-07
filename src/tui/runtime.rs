@@ -29,7 +29,7 @@ pub(super) enum TuiRuntimeMessage {
     Disconnected {
         error: String,
     },
-    AgentListLoaded(Result<Vec<AgentSummary>, String>),
+    AgentListLoaded(Result<Vec<AgentListEntry>, String>),
     SnapshotLoaded {
         request_id: u64,
         target_index: usize,
@@ -118,16 +118,19 @@ impl TuiApp {
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
         tokio::spawn(async move {
-            let result = client.list_agents().await.map_err(|err| err.to_string());
+            let result = client
+                .list_agent_entries()
+                .await
+                .map_err(|err| err.to_string());
             let _ = tx.send(TuiRuntimeMessage::AgentListLoaded(result));
         });
     }
 
-    pub(super) fn apply_loaded_agents(&mut self, result: Result<Vec<AgentSummary>, String>) {
+    pub(super) fn apply_loaded_agents(&mut self, result: Result<Vec<AgentListEntry>, String>) {
         self.agent_list_refresh_in_flight = false;
         self.schedule_agent_list_refresh();
-        let agents = match result {
-            Ok(agents) => agents,
+        let entries = match result {
+            Ok(entries) => entries,
             Err(err) => {
                 if self.agents.is_empty() {
                     self.set_disconnected(format!("failed to list public agents: {err}"));
@@ -137,6 +140,10 @@ impl TuiApp {
                 return;
             }
         };
+        let agents = entries
+            .into_iter()
+            .map(AgentListEntry::into_agent_summary_placeholder)
+            .collect();
         match self.apply_agent_list(agents) {
             AgentListChange::Ready => {}
             AgentListChange::RequiresBootstrap => self.begin_bootstrap_selected_agent(),

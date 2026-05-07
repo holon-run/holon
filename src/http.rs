@@ -127,6 +127,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(root))
         .route("/handshake", get(handshake))
         .route("/agents", get(list_agents))
+        .route("/agents/list", get(list_agent_entries))
         .route("/agents/:agent_id/enqueue", post(enqueue))
         .route("/agents/:agent_id/status", get(status))
         .route("/agents/:agent_id/briefs", get(briefs))
@@ -568,6 +569,19 @@ pub async fn list_agents(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let agents = state.host.list_agents().await.map_err(error_response)?;
+    Ok(Json(agents))
+}
+
+pub async fn list_agent_entries(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let agents = state
+        .host
+        .list_agent_entries()
+        .await
+        .map_err(error_response)?;
     Ok(Json(agents))
 }
 
