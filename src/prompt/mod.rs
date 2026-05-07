@@ -71,6 +71,18 @@ impl EffectivePrompt {
 
         output.push("## Prompt Topology".to_string());
         output.push("".to_string());
+        output.push("Section inventory:".to_string());
+        append_section_inventory(&mut output, "system", &self.system_sections);
+        append_section_inventory(&mut output, "context", &self.context_sections);
+        output.push(format!(
+            "Rendered system chars: {}",
+            self.rendered_system_prompt.chars().count()
+        ));
+        output.push(format!(
+            "Rendered context chars: {}",
+            self.rendered_context_attachment.chars().count()
+        ));
+        output.push("".to_string());
         output.push("## Execution State".to_string());
         output.push("".to_string());
         output.push(format!("Agent home: {}", self.agent_home.display()));
@@ -119,18 +131,28 @@ impl EffectivePrompt {
         ));
         output.push("".to_string());
         output.push("System sections:".to_string());
-        for section in &self.system_sections {
+        for (index, section) in self.system_sections.iter().enumerate() {
             output.push(format!(
-                "  - [{}] (id: {}, stability: {:?})",
-                section.name, section.id, section.stability
+                "  - #{} [{}] (id: {}, stability: {:?}, cache scope: {}, chars: {})",
+                index + 1,
+                section.name,
+                section.id,
+                section.stability,
+                prompt_cache_scope_label(section.stability),
+                section.content.chars().count()
             ));
         }
         output.push("".to_string());
         output.push("Context sections:".to_string());
-        for section in &self.context_sections {
+        for (index, section) in self.context_sections.iter().enumerate() {
             output.push(format!(
-                "  - [{}] (id: {}, stability: {:?})",
-                section.name, section.id, section.stability
+                "  - #{} [{}] (id: {}, stability: {:?}, cache scope: {}, chars: {})",
+                index + 1,
+                section.name,
+                section.id,
+                section.stability,
+                prompt_cache_scope_label(section.stability),
+                section.content.chars().count()
             ));
         }
         output.push("".to_string());
@@ -156,6 +178,31 @@ impl EffectivePrompt {
         output.push("== Rendered Context Attachment ==".to_string());
         output.push(self.rendered_context_attachment.clone());
         output.join("\n\n")
+    }
+}
+
+fn append_section_inventory(output: &mut Vec<String>, label: &str, sections: &[PromptSection]) {
+    output.push(format!(
+        "  - {}: total={}, stable={}, agent_scoped={}, turn_scoped={}",
+        label,
+        sections.len(),
+        count_sections_by_stability(sections, PromptStability::Stable),
+        count_sections_by_stability(sections, PromptStability::AgentScoped),
+        count_sections_by_stability(sections, PromptStability::TurnScoped)
+    ));
+}
+
+fn count_sections_by_stability(sections: &[PromptSection], stability: PromptStability) -> usize {
+    sections
+        .iter()
+        .filter(|section| section.stability == stability)
+        .count()
+}
+
+fn prompt_cache_scope_label(stability: PromptStability) -> &'static str {
+    match stability {
+        PromptStability::Stable | PromptStability::AgentScoped => "included",
+        PromptStability::TurnScoped => "turn-only",
     }
 }
 
@@ -1194,10 +1241,55 @@ mod tests {
         assert!(dump.contains("Cwd: /repo/src"));
         assert!(dump.contains("Agent AGENTS.md: /tmp/agent-home/AGENTS.md (AGENTS.md)"));
         assert!(dump.contains("Workspace AGENTS.md: /repo/CLAUDE.md (CLAUDE.md fallback)"));
-        assert!(dump.contains("[test_section] (id: test-stable-id-123, stability: Stable)"));
-        assert!(dump.contains("[context_section] (id: ctx-id-456, stability: AgentScoped)"));
+        assert!(dump.contains("Section inventory:"));
+        assert!(dump.contains("  - system: total=1, stable=1, agent_scoped=0, turn_scoped=0"));
+        assert!(dump.contains("  - context: total=1, stable=0, agent_scoped=1, turn_scoped=0"));
+        assert!(dump.contains("Rendered system chars: 15"));
+        assert!(dump.contains("Rendered context chars: 16"));
+        assert!(dump.contains(
+            "#1 [test_section] (id: test-stable-id-123, stability: Stable, cache scope: included"
+        ));
+        assert!(dump.contains(
+            "#1 [context_section] (id: ctx-id-456, stability: AgentScoped, cache scope: included"
+        ));
         assert!(dump.contains("[test_section][id: test-stable-id-123][Stable]"));
         assert!(dump.contains("[context_section][id: ctx-id-456][AgentScoped]"));
+    }
+
+    #[test]
+    fn prompt_dump_marks_turn_scoped_sections_as_turn_only() {
+        let prompt = EffectivePrompt {
+            identity: sample_identity(),
+            agent_home: PathBuf::from("/tmp/agent-home"),
+            execution: sample_execution_snapshot(),
+            loaded_agents_md: LoadedAgentsMd::default(),
+            cache_identity: sample_cache_identity(),
+            system_sections: vec![PromptSection {
+                name: "constrained_repair".to_string(),
+                id: "constrained_repair".to_string(),
+                content: "limit edits to src/prompt/mod.rs".to_string(),
+                stability: PromptStability::TurnScoped,
+            }],
+            context_sections: vec![PromptSection {
+                name: "current_input".to_string(),
+                id: "current_input".to_string(),
+                content: "inspect prompt assembly".to_string(),
+                stability: PromptStability::TurnScoped,
+            }],
+            rendered_system_prompt: "rendered turn system".to_string(),
+            rendered_context_attachment: "rendered turn context".to_string(),
+        };
+
+        let dump = prompt.render_dump();
+
+        assert!(dump.contains("  - system: total=1, stable=0, agent_scoped=0, turn_scoped=1"));
+        assert!(dump.contains("  - context: total=1, stable=0, agent_scoped=0, turn_scoped=1"));
+        assert!(dump.contains(
+            "#1 [constrained_repair] (id: constrained_repair, stability: TurnScoped, cache scope: turn-only"
+        ));
+        assert!(dump.contains(
+            "#1 [current_input] (id: current_input, stability: TurnScoped, cache scope: turn-only"
+        ));
     }
 
     #[test]

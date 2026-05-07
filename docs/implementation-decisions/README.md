@@ -72,3 +72,4 @@ Current decision notes:
 - [052 Turn-Local Compaction Remains Request Projection](./052-turn-local-compaction-remains-request-projection.md)
 - [053 Anthropic-Compatible Provider Probes](./053-anthropic-compatible-provider-probes.md)
 - [054 Web Tool Plane](./054-web-tool-plane.md)
+- [055 Prompt Dump Inventory](./055-prompt-dump-inventory.md)
