@@ -42,6 +42,7 @@ For a short architecture map and reading path, see
 ## Eventing And Client Surface
 
 - [Event Stream Interface Design](./event-stream-interface.md)
+- [Operator Display Levels and Event Presentation](./operator-display-levels-and-event-presentation.md)
 
 ## Tools And Delegation
 
