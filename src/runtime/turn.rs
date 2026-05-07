@@ -307,6 +307,7 @@ fn estimate_model_block_tokens(block: &ModelBlock) -> usize {
         ModelBlock::ToolUse { id, name, input } => {
             estimate_text_tokens(id) + estimate_text_tokens(name) + estimate_json_tokens(input)
         }
+        ModelBlock::Thinking { text, .. } => estimate_text_tokens(text),
     }
 }
 
@@ -1894,6 +1895,7 @@ impl TurnExecution<'_> {
                             input: input.clone(),
                         });
                     }
+                    ModelBlock::Thinking { .. } => {}
                 }
             }
 

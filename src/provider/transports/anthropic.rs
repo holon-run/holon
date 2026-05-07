@@ -102,6 +102,8 @@ struct ApiResponseBlock {
     #[serde(rename = "type")]
     kind: String,
     text: Option<String>,
+    thinking: Option<String>,
+    signature: Option<String>,
     id: Option<String>,
     name: Option<String>,
     input: Option<Value>,
@@ -602,6 +604,16 @@ fn conversation_message_to_api(
                                     "name": name,
                                     "input": input,
                                 }),
+                                ModelBlock::Thinking { text, signature } => {
+                                    let mut v = json!({
+                                        "type": "thinking",
+                                        "thinking": text,
+                                    });
+                                    if !signature.is_empty() {
+                                        v.as_object_mut().unwrap().insert("signature".into(), json!(signature));
+                                    }
+                                    v
+                                },
                             },
                             rolling_cache_block_index == Some(block_index),
                         )
@@ -695,6 +707,10 @@ fn api_response_block_to_model(block: ApiResponseBlock) -> Option<ModelBlock> {
             id: block.id?,
             name: block.name?,
             input: block.input.unwrap_or_else(|| json!({})),
+        }),
+        "thinking" => Some(ModelBlock::Thinking {
+            text: block.thinking.unwrap_or_default(),
+            signature: block.signature.unwrap_or_default(),
         }),
         _ => None,
     }
@@ -1130,6 +1146,7 @@ fn model_block_kind(block: &ModelBlock) -> &'static str {
     match block {
         ModelBlock::Text { .. } => "assistant_text",
         ModelBlock::ToolUse { .. } => "tool_use",
+        ModelBlock::Thinking { .. } => "thinking",
     }
 }
 
@@ -1137,6 +1154,11 @@ fn hash_model_block(block: &ModelBlock) -> String {
     match block {
         ModelBlock::Text { text } => {
             let value = json!({ "type": "text", "text": text });
+            sha256_hex(canonical_json(&value).as_bytes())
+        }
+        ModelBlock::Thinking { text, .. } => {
+            // Include a stable prefix so thinking blocks hash differently from text blocks
+            let value = json!({ "type": "thinking", "thinking": text });
             sha256_hex(canonical_json(&value).as_bytes())
         }
         ModelBlock::ToolUse { id, name, input } => {
@@ -1165,6 +1187,7 @@ fn estimate_model_block_tokens(block: &ModelBlock) -> u64 {
     match block {
         ModelBlock::Text { text } => estimate_tokens_from_chars(text.len()),
         ModelBlock::ToolUse { .. } => 50,
+        ModelBlock::Thinking { text, .. } => estimate_tokens_from_chars(text.len()),
     }
 }
 

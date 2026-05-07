@@ -276,6 +276,12 @@ pub enum ModelBlock {
         name: String,
         input: Value,
     },
+    Thinking {
+        text: String,
+        /// Opaque signature returned by the provider (e.g. DeepSeek V4 Pro).
+        /// Must be passed back verbatim in subsequent requests.
+        signature: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

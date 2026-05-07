@@ -86,11 +86,16 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
             conversation: vec![
                 ConversationMessage::UserBlocks(context_blocks),
                 ConversationMessage::UserText("Use the probe result and answer exactly OK.".into()),
-                ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
-                    id: "call_context_management_probe".into(),
-                    name: "ProbeTool".into(),
-                    input: serde_json::json!({ "reason": "context-management-smoke" }),
-                }]),
+                ConversationMessage::AssistantBlocks(vec![
+                    // Include a thinking block so that thinking-mode models (e.g. DeepSeek V4 Pro)
+                    // accept the assistant message. Non-thinking models simply ignore it.
+                    ModelBlock::Thinking { text: "I should use the probe tool.".into(), signature: String::new() },
+                    ModelBlock::ToolUse {
+                        id: "call_context_management_probe".into(),
+                        name: "ProbeTool".into(),
+                        input: serde_json::json!({ "reason": "context-management-smoke" }),
+                    },
+                ]),
                 ConversationMessage::UserToolResults(vec![ToolResultBlock {
                     tool_use_id: "call_context_management_probe".into(),
                     content: "probe_result=OK".into(),
@@ -108,6 +113,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         .filter_map(|block| match block {
             ModelBlock::Text { text } => Some(text.as_str()),
             ModelBlock::ToolUse { .. } => None,
+            ModelBlock::Thinking { .. } => None,
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -115,7 +121,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         output
             .blocks
             .iter()
-            .all(|block| matches!(block, ModelBlock::Text { .. })),
+            .all(|block| matches!(block, ModelBlock::Text { .. } | ModelBlock::Thinking { .. })),
         "{provider_id_text}/{model} emitted another tool call instead of completing the continuation"
     );
     assert!(
