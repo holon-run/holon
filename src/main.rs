@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     io::Write,
     net::SocketAddr,
@@ -27,8 +28,9 @@ use holon::{
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
     solve::{run_solve, SolveRequest},
+    storage::AppStorage,
     tui::run_tui,
-    types::{ControlAction, TrustLevel},
+    types::{AuditEvent, ControlAction, TrustLevel},
 };
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
@@ -376,6 +378,14 @@ enum DebugCommands {
         agent: Option<String>,
         #[arg(long, default_value = "trusted-operator")]
         trust: TrustLevel,
+    },
+    Latency {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long, default_value_t = 5000)]
+        events_limit: usize,
     },
 }
 
@@ -1334,6 +1344,107 @@ mod tests {
         assert_eq!(advertise, None);
         assert_eq!(config.callback_base_url, "http://lab.example.test:7878");
     }
+
+    #[test]
+    fn latency_diagnostics_groups_turn_phase_events() {
+        let at = |secs: i64| {
+            chrono::DateTime::parse_from_rfc3339(&format!("2026-05-07T00:00:{secs:02}Z"))
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        let event = |kind: &str, created_at, data| AuditEvent {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at,
+            kind: kind.into(),
+            data,
+        };
+        let events = vec![
+            event(
+                "message_admitted",
+                at(0),
+                serde_json::json!({ "message_id": "msg-1" }),
+            ),
+            event(
+                "message_processing_started",
+                at(2),
+                serde_json::json!({ "id": "msg-1" }),
+            ),
+            event(
+                "turn_started",
+                at(2),
+                serde_json::json!({
+                    "turn_index": 42,
+                    "message_id": "msg-1",
+                    "run_id": "run-1",
+                }),
+            ),
+            event(
+                "turn_context_built",
+                at(3),
+                serde_json::json!({ "turn_index": 42, "duration_ms": 100 }),
+            ),
+            event(
+                "provider_round_completed",
+                at(4),
+                serde_json::json!({
+                    "turn_index": 42,
+                    "round": 1,
+                    "context_build_ms": 20,
+                    "provider_round_ms": 300,
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "provider_attempt_timeline": {
+                        "winning_model_ref": "anthropic/claude-sonnet-4-6",
+                        "attempts": [{
+                            "provider": "anthropic",
+                            "model_ref": "anthropic/claude-sonnet-4-6",
+                            "outcome": "succeeded"
+                        }]
+                    }
+                }),
+            ),
+            event(
+                "tool_executed",
+                at(5),
+                serde_json::json!({
+                    "turn_index": 42,
+                    "tool_name": "ExecCommand",
+                    "duration_ms": 400,
+                    "summary": "ok"
+                }),
+            ),
+            event(
+                "turn_terminal",
+                at(6),
+                serde_json::json!({
+                    "turn_index": 42,
+                    "kind": "completed",
+                    "duration_ms": 1000
+                }),
+            ),
+        ];
+
+        let diagnostics = build_latency_diagnostics(&events, 10);
+
+        assert_eq!(diagnostics.len(), 1);
+        let turn = &diagnostics[0];
+        assert_eq!(turn.turn_index, 42);
+        assert_eq!(turn.queue_wait_ms, Some(2000));
+        assert_eq!(turn.context_build_ms, 120);
+        assert_eq!(turn.provider_context_build_ms, 20);
+        assert_eq!(turn.provider_round_ms, 300);
+        assert_eq!(turn.tool_execution_ms, 400);
+        assert_eq!(turn.total_ms, Some(1000));
+        assert_eq!(turn.runtime_cleanup_ms(), Some(280));
+        assert_eq!(
+            turn.provider_rounds[0].provider.as_deref(),
+            Some("anthropic")
+        );
+        assert_eq!(
+            turn.provider_rounds[0].model_ref.as_deref(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+    }
 }
 
 async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Result<()> {
@@ -1341,6 +1452,387 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
         DebugCommands::Prompt { text, agent, trust } => {
             dump_prompt(config, text, agent, trust).await
         }
+        DebugCommands::Latency {
+            agent,
+            limit,
+            events_limit,
+        } => print_latency_diagnostics(&config, agent, limit, events_limit),
+    }
+}
+
+#[derive(Debug, Default)]
+struct TurnLatencyDiagnostics {
+    turn_index: u64,
+    run_id: Option<String>,
+    message_id: Option<String>,
+    terminal_kind: Option<String>,
+    total_ms: Option<u64>,
+    queue_wait_ms: Option<u64>,
+    context_build_ms: u64,
+    provider_context_build_ms: u64,
+    provider_round_ms: u64,
+    tool_execution_ms: u64,
+    provider_rounds: Vec<ProviderRoundLatencyDiagnostics>,
+    tools: Vec<ToolLatencyDiagnostics>,
+}
+
+impl TurnLatencyDiagnostics {
+    fn runtime_cleanup_ms(&self) -> Option<u64> {
+        self.total_ms.map(|total| {
+            total.saturating_sub(
+                self.provider_context_build_ms
+                    .saturating_add(self.provider_round_ms)
+                    .saturating_add(self.tool_execution_ms),
+            )
+        })
+    }
+}
+
+#[derive(Debug)]
+struct ProviderRoundLatencyDiagnostics {
+    round: u64,
+    duration_ms: u64,
+    provider: Option<String>,
+    model_ref: Option<String>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+}
+
+#[derive(Debug)]
+struct ToolLatencyDiagnostics {
+    tool_name: String,
+    duration_ms: u64,
+    summary: Option<String>,
+}
+
+fn print_latency_diagnostics(
+    config: &AppConfig,
+    agent: Option<String>,
+    limit: usize,
+    events_limit: usize,
+) -> Result<()> {
+    let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+    let agent_home = config.data_dir.join("agents").join(&agent);
+    let storage = AppStorage::new(&agent_home)?;
+    let events = storage.read_recent_events(events_limit)?;
+    let diagnostics = build_latency_diagnostics(&events, limit);
+    if diagnostics.is_empty() {
+        println!(
+            "No turn latency data found for agent {agent} in {}",
+            agent_home.join(".holon/ledger/events.jsonl").display()
+        );
+        return Ok(());
+    }
+    for turn in diagnostics {
+        let total = turn
+            .total_ms
+            .map(format_duration_ms)
+            .unwrap_or_else(|| "unknown".into());
+        let run = turn.run_id.as_deref().unwrap_or("unknown");
+        let kind = turn.terminal_kind.as_deref().unwrap_or("unknown");
+        println!(
+            "turn {} run={} kind={} runtime_total={}",
+            turn.turn_index, run, kind, total
+        );
+        println!(
+            "  queue_wait        {}",
+            turn.queue_wait_ms
+                .map(format_duration_ms)
+                .unwrap_or_else(|| "unknown".into())
+        );
+        println!(
+            "  context_build     {}",
+            format_duration_ms(turn.context_build_ms)
+        );
+        for provider_round in &turn.provider_rounds {
+            let provider = provider_round.provider.as_deref().unwrap_or("provider");
+            let model = provider_round.model_ref.as_deref().unwrap_or("model");
+            let input = provider_round
+                .input_tokens
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".into());
+            let output = provider_round
+                .output_tokens
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".into());
+            println!(
+                "  provider round {:<2} {}  {}/{} input={} output={}",
+                provider_round.round,
+                format_duration_ms(provider_round.duration_ms),
+                provider,
+                model,
+                input,
+                output
+            );
+        }
+        for tool in &turn.tools {
+            let summary = tool
+                .summary
+                .as_deref()
+                .filter(|summary| !summary.trim().is_empty())
+                .map(|summary| format!("  {}", summary.trim()))
+                .unwrap_or_default();
+            println!(
+                "  tool {:<14} {}{}",
+                tool.tool_name,
+                format_duration_ms(tool.duration_ms),
+                summary
+            );
+        }
+        println!(
+            "  tool_execution    {}",
+            format_duration_ms(turn.tool_execution_ms)
+        );
+        println!(
+            "  turn_cleanup      {}",
+            turn.runtime_cleanup_ms()
+                .map(format_duration_ms)
+                .unwrap_or_else(|| "unknown".into())
+        );
+    }
+    Ok(())
+}
+
+fn build_latency_diagnostics(events: &[AuditEvent], limit: usize) -> Vec<TurnLatencyDiagnostics> {
+    let mut turns = BTreeMap::<u64, TurnLatencyDiagnostics>::new();
+    let mut admitted_at_by_message = BTreeMap::<String, chrono::DateTime<chrono::Utc>>::new();
+    let mut processing_at_by_message = BTreeMap::<String, chrono::DateTime<chrono::Utc>>::new();
+    for event in events {
+        match event.kind.as_str() {
+            "message_admitted" => {
+                if let Some(message_id) = event
+                    .data
+                    .get("message_id")
+                    .and_then(|value| value.as_str())
+                {
+                    admitted_at_by_message.insert(message_id.to_string(), event.created_at);
+                }
+            }
+            "message_processing_started" => {
+                if let Some(message_id) = event.data.get("id").and_then(|value| value.as_str()) {
+                    processing_at_by_message.insert(message_id.to_string(), event.created_at);
+                }
+            }
+            "turn_started" => {
+                if let Some(turn_index) = event
+                    .data
+                    .get("turn_index")
+                    .and_then(|value| value.as_u64())
+                {
+                    let turn = turns
+                        .entry(turn_index)
+                        .or_insert_with(|| TurnLatencyDiagnostics {
+                            turn_index,
+                            ..TurnLatencyDiagnostics::default()
+                        });
+                    turn.message_id = event
+                        .data
+                        .get("message_id")
+                        .and_then(|value| value.as_str())
+                        .map(ToString::to_string);
+                    turn.run_id = event
+                        .data
+                        .get("run_id")
+                        .and_then(|value| value.as_str())
+                        .map(ToString::to_string);
+                }
+            }
+            "turn_context_built" => {
+                if let Some(turn_index) = event
+                    .data
+                    .get("turn_index")
+                    .and_then(|value| value.as_u64())
+                {
+                    let turn = turns
+                        .entry(turn_index)
+                        .or_insert_with(|| TurnLatencyDiagnostics {
+                            turn_index,
+                            ..TurnLatencyDiagnostics::default()
+                        });
+                    turn.context_build_ms = turn.context_build_ms.saturating_add(
+                        event
+                            .data
+                            .get("duration_ms")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0),
+                    );
+                    if turn.run_id.is_none() {
+                        turn.run_id = event
+                            .data
+                            .get("run_id")
+                            .and_then(|value| value.as_str())
+                            .map(ToString::to_string);
+                    }
+                }
+            }
+            "provider_round_completed" => {
+                if let Some(turn_index) = event
+                    .data
+                    .get("turn_index")
+                    .and_then(|value| value.as_u64())
+                {
+                    let duration_ms = event
+                        .data
+                        .get("provider_round_ms")
+                        .or_else(|| event.data.get("duration_ms"))
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    let turn = turns
+                        .entry(turn_index)
+                        .or_insert_with(|| TurnLatencyDiagnostics {
+                            turn_index,
+                            ..TurnLatencyDiagnostics::default()
+                        });
+                    turn.provider_round_ms = turn.provider_round_ms.saturating_add(duration_ms);
+                    let context_build_ms = event
+                        .data
+                        .get("context_build_ms")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    turn.context_build_ms = turn.context_build_ms.saturating_add(context_build_ms);
+                    turn.provider_context_build_ms = turn
+                        .provider_context_build_ms
+                        .saturating_add(context_build_ms);
+                    if turn.run_id.is_none() {
+                        turn.run_id = event
+                            .data
+                            .get("run_id")
+                            .and_then(|value| value.as_str())
+                            .map(ToString::to_string);
+                    }
+                    let timeline = event.data.get("provider_attempt_timeline");
+                    let winning = timeline
+                        .and_then(|value| value.get("winning_model_ref"))
+                        .and_then(|value| value.as_str());
+                    let attempt = timeline
+                        .and_then(|value| value.get("attempts"))
+                        .and_then(|value| value.as_array())
+                        .and_then(|attempts| {
+                            attempts
+                                .iter()
+                                .rev()
+                                .find(|attempt| {
+                                    attempt.get("outcome").and_then(|value| value.as_str())
+                                        == Some("succeeded")
+                                })
+                                .or_else(|| attempts.last())
+                        });
+                    turn.provider_rounds.push(ProviderRoundLatencyDiagnostics {
+                        round: event
+                            .data
+                            .get("round")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0),
+                        duration_ms,
+                        provider: attempt
+                            .and_then(|attempt| attempt.get("provider"))
+                            .and_then(|value| value.as_str())
+                            .map(ToString::to_string),
+                        model_ref: winning
+                            .or_else(|| {
+                                attempt
+                                    .and_then(|attempt| attempt.get("model_ref"))
+                                    .and_then(|value| value.as_str())
+                            })
+                            .map(ToString::to_string),
+                        input_tokens: event
+                            .data
+                            .get("input_tokens")
+                            .and_then(|value| value.as_u64()),
+                        output_tokens: event
+                            .data
+                            .get("output_tokens")
+                            .and_then(|value| value.as_u64()),
+                    });
+                }
+            }
+            "tool_executed" => {
+                if let Some(turn_index) = event
+                    .data
+                    .get("turn_index")
+                    .and_then(|value| value.as_u64())
+                {
+                    let duration_ms = event
+                        .data
+                        .get("duration_ms")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    let tool_name = event
+                        .data
+                        .get("tool_name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("tool")
+                        .to_string();
+                    let turn = turns
+                        .entry(turn_index)
+                        .or_insert_with(|| TurnLatencyDiagnostics {
+                            turn_index,
+                            ..TurnLatencyDiagnostics::default()
+                        });
+                    turn.tool_execution_ms = turn.tool_execution_ms.saturating_add(duration_ms);
+                    turn.tools.push(ToolLatencyDiagnostics {
+                        tool_name,
+                        duration_ms,
+                        summary: event
+                            .data
+                            .get("summary")
+                            .and_then(|value| value.as_str())
+                            .map(ToString::to_string),
+                    });
+                }
+            }
+            "turn_terminal" => {
+                if let Some(turn_index) = event
+                    .data
+                    .get("turn_index")
+                    .and_then(|value| value.as_u64())
+                {
+                    let turn = turns
+                        .entry(turn_index)
+                        .or_insert_with(|| TurnLatencyDiagnostics {
+                            turn_index,
+                            ..TurnLatencyDiagnostics::default()
+                        });
+                    turn.total_ms = event
+                        .data
+                        .get("duration_ms")
+                        .and_then(|value| value.as_u64());
+                    turn.terminal_kind = event
+                        .data
+                        .get("kind")
+                        .and_then(|value| value.as_str())
+                        .map(ToString::to_string);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for turn in turns.values_mut() {
+        if let Some(message_id) = turn.message_id.as_ref() {
+            if let (Some(admitted_at), Some(processing_at)) = (
+                admitted_at_by_message.get(message_id),
+                processing_at_by_message.get(message_id),
+            ) {
+                turn.queue_wait_ms = processing_at
+                    .signed_duration_since(*admitted_at)
+                    .num_milliseconds()
+                    .try_into()
+                    .ok();
+            }
+        }
+    }
+
+    let mut values = turns.into_values().collect::<Vec<_>>();
+    values.sort_by_key(|turn| turn.turn_index);
+    values.into_iter().rev().take(limit).collect()
+}
+
+fn format_duration_ms(duration_ms: u64) -> String {
+    if duration_ms >= 1000 {
+        format!("{:.1}s", duration_ms as f64 / 1000.0)
+    } else {
+        format!("{duration_ms}ms")
     }
 }
 

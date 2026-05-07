@@ -67,6 +67,7 @@ When provider diagnostics are available, inspect:
 
 - `token_usage`
 - `provider_attempt_timeline`
+- `holon debug latency --agent <id> --limit 10`
 - the final error summary
 
 These surfaces tell you:
@@ -74,6 +75,8 @@ These surfaces tell you:
 - whether the provider retried
 - whether it failed fast on a contract or auth error
 - whether fallback advanced to another configured provider
+- whether time was spent waiting in queue, building context, waiting on the
+  provider, executing tools, or finishing turn cleanup
 
 ## Long-Lived Runtime Health
 
@@ -208,6 +211,8 @@ If one prompt failed:
 
 1. run `holon run --json`
 2. inspect `token_usage` and `provider_attempt_timeline`
+3. run `holon debug latency --agent <id> --limit 3` for recent long-lived
+   agent turn timing
 
 If the long-lived runtime seems unhealthy:
 

@@ -18,6 +18,7 @@ impl RuntimeHandle {
         self.record_incoming_transcript_entry(message)?;
         let ack = brief::make_ack(&message.agent_id, message);
         self.persist_brief(&ack).await?;
+        let context_build_started = std::time::Instant::now();
         let identity = self.agent_identity_view().await?;
         let context_config = self.current_context_config().await;
 
@@ -56,6 +57,24 @@ impl RuntimeHandle {
                 continuation_resolution,
             )?
         };
+        let context_build_ms = context_build_started.elapsed().as_millis() as u64;
+        let (turn_index, run_id) = {
+            let guard = self.inner.agent.lock().await;
+            (guard.state.turn_index, guard.state.current_run_id.clone())
+        };
+        self.inner.storage.append_event(&AuditEvent::new(
+            "turn_context_built",
+            serde_json::json!({
+                "agent_id": message.agent_id.clone(),
+                "message_id": message.id.clone(),
+                "turn_index": turn_index,
+                "run_id": run_id,
+                "duration_ms": context_build_ms,
+                "context_section_count": built.context_sections.len(),
+                "rendered_context_chars": built.rendered_context_attachment.chars().count(),
+                "rendered_system_chars": built.rendered_system_prompt.chars().count(),
+            }),
+        ))?;
         if built
             .context_sections
             .iter()

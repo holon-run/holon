@@ -863,6 +863,11 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
         Some(18)
     );
     assert_eq!(timeline["attempts"].as_array().unwrap().len(), 2);
+    for attempt in timeline["attempts"].as_array().unwrap() {
+        assert!(attempt.get("started_at").is_none());
+        assert!(attempt.get("completed_at").is_none());
+        assert!(attempt.get("duration_ms").is_none());
+    }
     assert_eq!(
         timeline["aggregated_token_usage"]["total_tokens"].as_u64(),
         Some(18)
@@ -884,6 +889,14 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
             .len(),
         2
     );
+    assert!(provider_event.data["context_build_ms"].as_u64().is_some());
+    assert!(provider_event.data["provider_round_ms"].as_u64().is_some());
+    assert!(provider_event.data["provider_started_at"]
+        .as_str()
+        .is_some());
+    assert!(provider_event.data["provider_completed_at"]
+        .as_str()
+        .is_some());
     assert_eq!(
         provider_event.data["requested_model"].as_str(),
         Some("openai/gpt-5.4")
@@ -893,6 +906,62 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
         Some("anthropic/claude-sonnet-4-6")
     );
     assert_eq!(provider_event.data["fallback_active"].as_bool(), Some(true));
+}
+
+#[tokio::test]
+async fn runtime_records_turn_latency_phase_events_for_provider_and_tool() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(OneToolThenTextProvider {
+            calls: Mutex::new(0),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            TrustLevel::TrustedOperator,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.final_text, "done");
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    let provider_events = events
+        .iter()
+        .filter(|event| event.kind == "provider_round_completed")
+        .collect::<Vec<_>>();
+    assert_eq!(provider_events.len(), 2);
+    assert!(provider_events.iter().all(|event| {
+        event.data["context_build_ms"].as_u64().is_some()
+            && event.data["provider_round_ms"].as_u64().is_some()
+            && event.data["provider_started_at"].as_str().is_some()
+            && event.data["provider_completed_at"].as_str().is_some()
+    }));
+    let tool_event = events
+        .iter()
+        .find(|event| event.kind == "tool_executed")
+        .expect("missing tool latency event");
+    assert_eq!(tool_event.data["tool_name"].as_str(), Some("ExecCommand"));
+    assert!(tool_event.data["duration_ms"].as_u64().is_some());
+    let terminal = events
+        .iter()
+        .find(|event| event.kind == "turn_terminal")
+        .expect("missing turn terminal event");
+    assert_eq!(terminal.data["kind"].as_str(), Some("completed"));
+    assert!(terminal.data["duration_ms"].as_u64().is_some());
 }
 
 #[tokio::test]

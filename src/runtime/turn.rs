@@ -1,6 +1,7 @@
 use std::{collections::HashSet, env, time::Instant};
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -381,6 +382,30 @@ struct ProviderAttemptModelState {
     requested_model: Option<ModelRef>,
     active_model: Option<ModelRef>,
     fallback_active: bool,
+}
+
+fn normalize_provider_attempt_timing(
+    timeline: Option<ProviderAttemptTimeline>,
+    started_at: DateTime<Utc>,
+    completed_at: DateTime<Utc>,
+    duration_ms: u64,
+) -> Option<ProviderAttemptTimeline> {
+    let mut timeline = timeline?;
+    if timeline.attempts.len() != 1 {
+        return Some(timeline);
+    }
+    for attempt in &mut timeline.attempts {
+        if attempt.started_at.is_none() {
+            attempt.started_at = Some(started_at);
+        }
+        if attempt.completed_at.is_none() {
+            attempt.completed_at = Some(completed_at);
+        }
+        if attempt.duration_ms.is_none() {
+            attempt.duration_ms = Some(duration_ms);
+        }
+    }
+    Some(timeline)
 }
 
 fn provider_attempt_model_state(
@@ -1378,6 +1403,39 @@ impl RuntimeHandle {
         }
     }
 
+    async fn complete_turn_with_timing(
+        &self,
+        provider: std::sync::Arc<dyn AgentProvider>,
+        request: ProviderTurnRequest,
+    ) -> (
+        Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)>,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        u64,
+    ) {
+        let started_at = Utc::now();
+        let started = Instant::now();
+        let result = self.complete_turn_with_interrupt(provider, request).await;
+        let completed_at = Utc::now();
+        let duration_ms = started.elapsed().as_millis() as u64;
+        (
+            result.map(|(response, timeline)| {
+                (
+                    response,
+                    normalize_provider_attempt_timing(
+                        timeline,
+                        started_at,
+                        completed_at,
+                        duration_ms,
+                    ),
+                )
+            }),
+            started_at,
+            completed_at,
+            duration_ms,
+        )
+    }
+
     async fn ensure_not_interrupted(&self) -> Result<()> {
         if let Some(snapshot) = self.current_run_interrupt_token().await {
             if snapshot.token.is_cancelled() {
@@ -1578,6 +1636,7 @@ impl TurnExecution<'_> {
                     .await?;
             }
 
+            let context_build_started = Instant::now();
             let identity = runtime.agent_identity_view().await?;
             let available_tools = runtime.filtered_tool_specs(&identity)?;
             let allowed_tool_names = available_tools
@@ -1585,17 +1644,31 @@ impl TurnExecution<'_> {
                 .map(|tool| tool.name.clone())
                 .collect::<HashSet<_>>();
 
-            let (response, attempt_timeline, context_management) = if round == 1 {
+            let (
+                response,
+                attempt_timeline,
+                context_management,
+                context_build_ms,
+                provider_started_at,
+                provider_completed_at,
+                provider_round_ms,
+            ) = if round == 1 {
                 let request = build_provider_turn_request(&effective_prompt, available_tools);
                 let provider = runtime.current_provider().await;
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
-                match runtime
-                    .complete_turn_with_interrupt(provider, request)
-                    .await
-                {
-                    Ok((response, attempt_timeline)) => {
-                        (response, attempt_timeline, context_management)
-                    }
+                let context_build_ms = context_build_started.elapsed().as_millis() as u64;
+                let (result, provider_started_at, provider_completed_at, provider_round_ms) =
+                    runtime.complete_turn_with_timing(provider, request).await;
+                match result {
+                    Ok((response, attempt_timeline)) => (
+                        response,
+                        attempt_timeline,
+                        context_management,
+                        context_build_ms,
+                        provider_started_at,
+                        provider_completed_at,
+                        provider_round_ms,
+                    ),
                     Err(err) => {
                         if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
                             runtime
@@ -1814,13 +1887,19 @@ impl TurnExecution<'_> {
                 );
                 let provider = runtime.current_provider().await;
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
-                match runtime
-                    .complete_turn_with_interrupt(provider, request)
-                    .await
-                {
-                    Ok((response, attempt_timeline)) => {
-                        (response, attempt_timeline, context_management)
-                    }
+                let context_build_ms = context_build_started.elapsed().as_millis() as u64;
+                let (result, provider_started_at, provider_completed_at, provider_round_ms) =
+                    runtime.complete_turn_with_timing(provider, request).await;
+                match result {
+                    Ok((response, attempt_timeline)) => (
+                        response,
+                        attempt_timeline,
+                        context_management,
+                        context_build_ms,
+                        provider_started_at,
+                        provider_completed_at,
+                        provider_round_ms,
+                    ),
                     Err(err) => {
                         if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
                             runtime
@@ -1937,6 +2016,10 @@ impl TurnExecution<'_> {
                     "run_id": run_id,
                     "round": round,
                     "stop_reason": stop_reason,
+                    "context_build_ms": context_build_ms,
+                    "provider_round_ms": provider_round_ms,
+                    "provider_started_at": provider_started_at,
+                    "provider_completed_at": provider_completed_at,
                     "input_tokens": response.input_tokens,
                     "output_tokens": response.output_tokens,
                     "token_usage": token_usage,
@@ -2958,6 +3041,60 @@ mod tests {
             select_exact_tail_start(&rounds, boundary_keep_recent_budget),
             2
         );
+    }
+
+    #[test]
+    fn normalize_provider_attempt_timing_only_backfills_single_attempt_timeline() {
+        fn attempt(attempt: usize) -> crate::provider::ProviderAttemptRecord {
+            crate::provider::ProviderAttemptRecord {
+                provider: "test".into(),
+                model_ref: "test/model".into(),
+                attempt,
+                max_attempts: 2,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                failure_kind: None,
+                disposition: None,
+                outcome: crate::provider::ProviderAttemptOutcome::Succeeded,
+                advanced_to_fallback: false,
+                backoff_ms: None,
+                token_usage: None,
+                transport_diagnostics: None,
+            }
+        }
+
+        let started_at = Utc::now();
+        let completed_at = started_at + chrono::Duration::milliseconds(42);
+        let single = ProviderAttemptTimeline {
+            attempts: vec![attempt(1)],
+            requested_model_ref: "test/model".into(),
+            active_model_ref: None,
+            winning_model_ref: None,
+            aggregated_token_usage: None,
+        };
+        let single = normalize_provider_attempt_timing(single.into(), started_at, completed_at, 42)
+            .expect("single-attempt timeline");
+
+        assert_eq!(single.attempts[0].started_at, Some(started_at));
+        assert_eq!(single.attempts[0].completed_at, Some(completed_at));
+        assert_eq!(single.attempts[0].duration_ms, Some(42));
+
+        let multiple = ProviderAttemptTimeline {
+            attempts: vec![attempt(1), attempt(2)],
+            requested_model_ref: "test/model".into(),
+            active_model_ref: None,
+            winning_model_ref: None,
+            aggregated_token_usage: None,
+        };
+        let multiple =
+            normalize_provider_attempt_timing(multiple.into(), started_at, completed_at, 42)
+                .expect("multi-attempt timeline");
+
+        assert!(multiple
+            .attempts
+            .iter()
+            .all(|attempt| attempt.duration_ms.is_none()));
     }
 
     #[test]

@@ -133,7 +133,7 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
         Some(capability.external_trigger_id.as_str())
     );
 
-    let events = runtime.storage().read_recent_events(20)?;
+    let events = runtime.storage().read_recent_events(100)?;
     let delivered = events
         .iter()
         .rev()
@@ -225,7 +225,7 @@ pub async fn callback_wake_hint_routes_through_wake_hint() -> Result<()> {
     })
     .await?;
 
-    let events = runtime.storage().read_recent_events(20)?;
+    let events = runtime.storage().read_recent_events(100)?;
     let delivered = events
         .iter()
         .rev()
