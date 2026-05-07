@@ -33,4 +33,7 @@ http_async_tests!(
 );
 
 #[cfg(unix)]
-http_async_tests!(control_prompt_is_open_over_unix_socket_auto,);
+http_async_tests!(
+    control_prompt_is_open_over_unix_socket_auto,
+    control_runtime_status_is_open_over_unix_socket_when_auth_required,
+);
