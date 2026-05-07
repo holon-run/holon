@@ -80,15 +80,18 @@ Start the long-running runtime in the foreground:
 
 ```bash
 holon serve
+holon serve --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
 ```
 
 Manage the runtime as a local daemon:
 
 ```bash
 holon daemon start
+holon daemon start --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
 holon daemon status
 holon daemon logs
 holon daemon stop
+holon daemon restart --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
 ```
 
 Open the local operator console:

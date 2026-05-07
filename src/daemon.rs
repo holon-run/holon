@@ -12,8 +12,9 @@ pub use lifecycle::{
 pub(crate) use service::runtime_activity_message;
 pub use service::{
     runtime_activity_summary, RuntimeActivityState, RuntimeActivitySummary,
-    RuntimeAgentOverrideSummary, RuntimeConfigSurface, RuntimeServiceHandle,
-    RuntimeServiceMetadata, RuntimeShutdownResponse, RuntimeStartupSurface, RuntimeStatusResponse,
+    RuntimeAgentOverrideSummary, RuntimeConfigSurface, RuntimeControlAuthMode,
+    RuntimeServiceHandle, RuntimeServiceMetadata, RuntimeShutdownResponse, RuntimeStartupSurface,
+    RuntimeStatusResponse,
 };
 pub use state::{
     cleanup_daemon_state, config_fingerprint, daemon_logs, daemon_paths, load_daemon_metadata,

@@ -599,6 +599,7 @@ pub async fn runtime_status(
         socket_path: config.socket_path.clone(),
         workspace_dir: config.workspace_dir.clone(),
         default_agent_id: config.default_agent_id.clone(),
+        callback_base_url: config.callback_base_url.clone(),
         control_token_configured: config.control_token.is_some(),
         control_auth_mode: config.control_auth_mode.into(),
     };

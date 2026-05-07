@@ -503,6 +503,13 @@ Phase-1 commands:
 - `holon daemon restart`
 - `holon daemon logs`
 
+`daemon start` and `daemon restart` accept the same remote-control access
+options as `serve`, including `--access`, `--host`, `--listen`, `--port`,
+`--advertise`, `--token`, and `--token-file`. The daemon lifecycle layer
+validates those options before launch and starts the background `serve` process
+with the same effective options. `--advertise` is also the callback base URL
+that external-trigger capabilities report.
+
 Current contract:
 
 - `serve` remains the only runtime owner mode
@@ -518,6 +525,12 @@ Current contract:
 - stale daemon pid metadata that points to a missing process is also treated as
   recoverable stale state; `daemon restart` must clean it up instead of failing
   hard on `kill -TERM`
+- `daemon restart` is an explicit stop/start cycle using the supplied access
+  options; if no options are supplied, it restarts with the configured local
+  defaults
+- `daemon restart` performs full process replacement; durable runtime state is
+  recovered through storage, but in-flight provider turns and transient process
+  state are interrupted
 - socket-path takeover by an unrelated process fails closed
 - `daemon stop` prefers graceful runtime shutdown through the control surface
   before falling back to process termination

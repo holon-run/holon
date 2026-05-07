@@ -51,6 +51,8 @@ pub struct RuntimeStartupSurface {
     pub socket_path: PathBuf,
     pub workspace_dir: PathBuf,
     pub default_agent_id: String,
+    #[serde(default)]
+    pub callback_base_url: String,
     pub control_token_configured: bool,
     pub control_auth_mode: RuntimeControlAuthMode,
 }

@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     process::{Child, Command, Stdio},
     time::Duration,
@@ -111,7 +112,11 @@ pub async fn daemon_status(config: &AppConfig) -> Result<DaemonStatusView> {
     }
 }
 
-pub async fn daemon_start(config: &AppConfig) -> Result<DaemonLifecycleResult> {
+pub async fn daemon_start(
+    config: &AppConfig,
+    serve_args: &[OsString],
+    control_token_env: Option<&str>,
+) -> Result<DaemonLifecycleResult> {
     let current_fingerprint = config_fingerprint(config)?;
     match probe_runtime(config).await {
         ProbeRuntime::Running(status) => {
@@ -122,8 +127,9 @@ pub async fn daemon_start(config: &AppConfig) -> Result<DaemonLifecycleResult> {
                 ));
             }
             if status.config_fingerprint != current_fingerprint {
+                let details = effective_config_mismatch_summary(config, &status);
                 return Err(anyhow!(
-                    "runtime is already running with a different effective config; use 'holon daemon restart' to replace it"
+                    "runtime is already running with a different effective config; use 'holon daemon restart' to replace it; differing config: {details}"
                 ));
             }
             let mut status = daemon_status(config).await?;
@@ -166,34 +172,39 @@ pub async fn daemon_start(config: &AppConfig) -> Result<DaemonLifecycleResult> {
         .try_clone()
         .with_context(|| format!("failed to clone {}", log_path.display()))?;
     let exe = std::env::current_exe().context("failed to resolve current holon executable")?;
-    let mut child = Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .arg("serve")
+        .args(serve_args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err))
-        .spawn()
-        .context("failed to spawn 'holon serve'")?;
+        .stderr(Stdio::from(log_err));
+    if let Some(token) = control_token_env {
+        command.env("HOLON_CONTROL_TOKEN", token);
+    }
+    let mut child = command.spawn().context("failed to spawn 'holon serve'")?;
 
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
     loop {
         match probe_runtime(config).await {
             ProbeRuntime::Running(status) => {
                 if status.config_fingerprint != current_fingerprint {
+                    let details = effective_config_mismatch_summary(config, &status);
                     best_effort_cleanup_spawned_start(config, &mut child).await;
                     let _ = persist_daemon_lifecycle_failure(
-                    config,
-                    &RuntimeFailureSummary {
-                        occurred_at: Utc::now(),
-                        summary:
-                            "daemon start failed because runtime reported a different effective config fingerprint"
-                                .into(),
-                        phase: RuntimeFailurePhase::Startup,
-                        detail_hint: Some(daemon_log_hint()),
-                        failure_artifact: None,
-                    },
-                );
+                        config,
+                        &RuntimeFailureSummary {
+                            occurred_at: Utc::now(),
+                            summary: format!(
+                                "daemon start failed because runtime reported a different effective config fingerprint: {details}"
+                            ),
+                            phase: RuntimeFailurePhase::Startup,
+                            detail_hint: Some(daemon_log_hint()),
+                            failure_artifact: None,
+                        },
+                    );
                     return Err(anyhow!(
-                        "runtime started but reported a different effective config fingerprint; {}",
+                        "runtime started but reported a different effective config fingerprint; differing config: {details}; {}",
                         daemon_log_hint()
                     ));
                 }
@@ -392,9 +403,13 @@ Probe error: {details}",
     })
 }
 
-pub async fn daemon_restart(config: &AppConfig) -> Result<DaemonLifecycleResult> {
+pub async fn daemon_restart(
+    config: &AppConfig,
+    serve_args: &[OsString],
+    control_token_env: Option<&str>,
+) -> Result<DaemonLifecycleResult> {
     let _ = daemon_stop(config).await?;
-    let started = daemon_start(config).await?;
+    let started = daemon_start(config, serve_args, control_token_env).await?;
     Ok(DaemonLifecycleResult {
         ok: true,
         action: DaemonLifecycleAction::Restart,
@@ -418,8 +433,9 @@ pub async fn ensure_serve_preflight(config: &AppConfig) -> Result<()> {
                     config.home_dir.display()
                 ));
             }
+            let details = effective_config_mismatch_summary(config, &status);
             return Err(anyhow!(
-                "runtime is already running with a different effective config; stop or restart it explicitly"
+                "runtime is already running with a different effective config; stop or restart it explicitly; differing config: {details}"
             ));
         }
         ProbeRuntime::Stopped {
@@ -526,8 +542,9 @@ async fn wait_for_startup_stability(
                     ));
                 }
                 if status.config_fingerprint != expected_fingerprint {
+                    let details = effective_config_mismatch_summary(config, &status);
                     return Err(anyhow!(
-                        "runtime config fingerprint changed during startup stabilization"
+                        "runtime config fingerprint changed during startup stabilization; differing config: {details}"
                     ));
                 }
             }
@@ -571,6 +588,125 @@ async fn wait_for_shutdown(config: &AppConfig, timeout: Duration) -> Result<()> 
             return Err(anyhow!("timed out waiting for runtime shutdown"));
         }
         tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+pub(crate) fn effective_config_mismatch_summary(
+    config: &AppConfig,
+    status: &RuntimeStatusResponse,
+) -> String {
+    let mut differences = Vec::new();
+    push_diff(
+        &mut differences,
+        "home_dir",
+        config.home_dir.display().to_string(),
+        status.home_dir.display().to_string(),
+    );
+    push_diff(
+        &mut differences,
+        "socket_path",
+        config.socket_path.display().to_string(),
+        status.socket_path.display().to_string(),
+    );
+    push_diff(
+        &mut differences,
+        "http_addr",
+        config.http_addr.clone(),
+        status.http_addr.clone(),
+    );
+
+    if let Some(startup) = &status.startup_surface {
+        push_diff(
+            &mut differences,
+            "workspace_dir",
+            config.workspace_dir.display().to_string(),
+            startup.workspace_dir.display().to_string(),
+        );
+        push_diff(
+            &mut differences,
+            "default_agent_id",
+            config.default_agent_id.clone(),
+            startup.default_agent_id.clone(),
+        );
+        push_diff(
+            &mut differences,
+            "callback_base_url",
+            config.callback_base_url.clone(),
+            startup.callback_base_url.clone(),
+        );
+        push_diff(
+            &mut differences,
+            "control_auth_mode",
+            format!("{:?}", config.control_auth_mode),
+            format!("{:?}", startup.control_auth_mode),
+        );
+        push_diff(
+            &mut differences,
+            "control_token_configured",
+            config.control_token.is_some().to_string(),
+            startup.control_token_configured.to_string(),
+        );
+    } else {
+        differences.push("startup_surface missing from runtime status".into());
+    }
+
+    if let Some(runtime) = &status.runtime_surface {
+        push_diff(
+            &mut differences,
+            "model.default",
+            config.default_model.as_string(),
+            runtime.model_default.clone(),
+        );
+        push_diff(
+            &mut differences,
+            "model.fallbacks",
+            config
+                .fallback_models
+                .iter()
+                .map(|model| model.as_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            runtime.model_fallbacks.join(","),
+        );
+        push_diff(
+            &mut differences,
+            "runtime_max_output_tokens",
+            config.runtime_max_output_tokens.to_string(),
+            runtime.runtime_max_output_tokens.to_string(),
+        );
+        push_diff(
+            &mut differences,
+            "default_tool_output_tokens",
+            config.default_tool_output_tokens.to_string(),
+            runtime.default_tool_output_tokens.to_string(),
+        );
+        push_diff(
+            &mut differences,
+            "max_tool_output_tokens",
+            config.max_tool_output_tokens.to_string(),
+            runtime.max_tool_output_tokens.to_string(),
+        );
+        push_diff(
+            &mut differences,
+            "disable_provider_fallback",
+            config.provider_fallback_disabled().to_string(),
+            runtime.disable_provider_fallback.to_string(),
+        );
+    } else {
+        differences.push("runtime_surface missing from runtime status".into());
+    }
+
+    if differences.is_empty() {
+        "fingerprint differed, but no field-level difference was available from runtime status"
+            .into()
+    } else {
+        differences.join("; ")
+    }
+}
+
+fn push_diff(differences: &mut Vec<String>, key: &str, expected: String, actual: String) {
+    if expected != actual {
+        differences.push(format!("{key} expected={expected:?} actual={actual:?}"));
     }
 }
 
