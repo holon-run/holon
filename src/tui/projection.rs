@@ -895,10 +895,8 @@ fn is_verbose_event(event: &ProjectionEventRecord) -> bool {
 fn is_debug_event(event: &ProjectionEventRecord) -> bool {
     match event.kind.as_str() {
         "provider_round_completed" => provider_round_has_useful_telemetry(event),
-        "message_admitted"
-        | "message_processing_interrupted"
+        "message_processing_interrupted"
         | "operator_interjection_admitted"
-        | "turn_started"
         | "task_created"
         | "task_status_updated"
         | "task_input_delivered"

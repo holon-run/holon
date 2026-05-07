@@ -1272,10 +1272,9 @@ fn assistant_round_recorded_text(payload: &Value) -> (String, Option<String>, St
     let tool_names = tool_names(payload);
     if !tool_names.is_empty() {
         let tools = tool_names.join(", ");
-        let body = format!("tools: {tools}");
         return (
-            "Assistant tool request".into(),
-            Some(body),
+            "Assistant requested tools".into(),
+            Some(tools.clone()),
             format!("Assistant requested tools: {tools}"),
         );
     }
@@ -1505,10 +1504,11 @@ fn tool_text(
     let Some(tool_name) = payload.get("tool_name").and_then(Value::as_str) else {
         return (title.into(), None, title.into());
     };
-    let friendly = tool_friendly_label(tool_name);
+    let failed = kind == "tool_execution_failed";
+    let friendly = tool_friendly_label(tool_name, failed);
     if tool_name == "ExecCommand" {
         if let Some(cmd) = payload.get("exec_command_cmd").and_then(Value::as_str) {
-            let summary = if kind == "tool_execution_failed" {
+            let summary = if failed {
                 format!("Command failed: {cmd}")
             } else {
                 format!("Command finished: {cmd}")
@@ -1516,32 +1516,67 @@ fn tool_text(
             return (friendly.into(), Some(cmd.to_string()), summary);
         }
     }
-    let summary = if kind == "tool_execution_failed" {
-        format!("{friendly} failed")
+    let summary = if tool_friendly_label_is_generic(tool_name) {
+        format!("{friendly}: {tool_name}")
     } else {
         friendly.to_string()
     };
     (friendly.into(), Some(tool_name.to_string()), summary)
 }
 
-fn tool_friendly_label(tool_name: &str) -> &'static str {
-    match tool_name {
-        "ApplyPatch" => "Applied patch",
-        "ExecCommand" => "Command finished",
-        "ExecCommandBatch" => "Command batch finished",
-        "ListWorkItems" => "Listed work items",
-        "CreateWorkItem" => "Created work item",
-        "UpdateWorkItem" => "Updated work item",
-        "CompleteWorkItem" => "Completed work item",
-        "TaskList" => "Listed tasks",
-        "TaskOutput" => "Read task output",
-        "SpawnAgent" => "Started child agent",
-        "Sleep" => "Slept",
-        "ReadSkill" => "Read skill",
-        "WebFetch" => "Fetched web page",
-        "WebSearch" => "Searched web",
-        _ => "Tool finished",
+fn tool_friendly_label(tool_name: &str, failed: bool) -> &'static str {
+    match (tool_name, failed) {
+        ("ApplyPatch", false) => "Applied patch",
+        ("ApplyPatch", true) => "Patch failed",
+        ("ExecCommand", false) => "Command finished",
+        ("ExecCommand", true) => "Command failed",
+        ("ExecCommandBatch", false) => "Command batch finished",
+        ("ExecCommandBatch", true) => "Command batch failed",
+        ("ListWorkItems", false) => "Listed work items",
+        ("ListWorkItems", true) => "List work items failed",
+        ("CreateWorkItem", false) => "Created work item",
+        ("CreateWorkItem", true) => "Create work item failed",
+        ("UpdateWorkItem", false) => "Updated work item",
+        ("UpdateWorkItem", true) => "Update work item failed",
+        ("CompleteWorkItem", false) => "Completed work item",
+        ("CompleteWorkItem", true) => "Complete work item failed",
+        ("TaskList", false) => "Listed tasks",
+        ("TaskList", true) => "List tasks failed",
+        ("TaskOutput", false) => "Read task output",
+        ("TaskOutput", true) => "Read task output failed",
+        ("SpawnAgent", false) => "Started child agent",
+        ("SpawnAgent", true) => "Start child agent failed",
+        ("Sleep", false) => "Slept",
+        ("Sleep", true) => "Sleep failed",
+        ("ReadSkill", false) => "Read skill",
+        ("ReadSkill", true) => "Read skill failed",
+        ("WebFetch", false) => "Fetched web page",
+        ("WebFetch", true) => "Fetch web page failed",
+        ("WebSearch", false) => "Searched web",
+        ("WebSearch", true) => "Search web failed",
+        (_, false) => "Tool finished",
+        (_, true) => "Tool failed",
     }
+}
+
+fn tool_friendly_label_is_generic(tool_name: &str) -> bool {
+    !matches!(
+        tool_name,
+        "ApplyPatch"
+            | "ExecCommand"
+            | "ExecCommandBatch"
+            | "ListWorkItems"
+            | "CreateWorkItem"
+            | "UpdateWorkItem"
+            | "CompleteWorkItem"
+            | "TaskList"
+            | "TaskOutput"
+            | "SpawnAgent"
+            | "Sleep"
+            | "ReadSkill"
+            | "WebFetch"
+            | "WebSearch"
+    )
 }
 
 fn category_title(category: OperatorEventCategory, kind: &str) -> String {
@@ -1776,7 +1811,7 @@ mod tests {
             tools.summary,
             "Assistant requested tools: ExecCommand, ReadFile"
         );
-        assert_eq!(tools.body.as_deref(), Some("tools: ExecCommand, ReadFile"));
+        assert_eq!(tools.body.as_deref(), Some("ExecCommand, ReadFile"));
 
         let empty = present_operator_event(
             "assistant_round_recorded",
@@ -1980,5 +2015,32 @@ mod tests {
             );
             assert_eq!(presentation.summary, expected);
         }
+
+        let failed = present_operator_event(
+            "tool_execution_failed",
+            &json!({ "tool_name": "ExecCommand", "exec_command_cmd": "cargo test" }),
+            "tool_execution_failed",
+            &context,
+        );
+        assert_eq!(failed.title, "Command failed");
+        assert_eq!(failed.summary, "Command failed: cargo test");
+
+        let unknown = present_operator_event(
+            "tool_executed",
+            &json!({ "tool_name": "CustomTool" }),
+            "tool_executed",
+            &context,
+        );
+        assert_eq!(unknown.title, "Tool finished");
+        assert_eq!(unknown.summary, "Tool finished: CustomTool");
+
+        let unknown_failed = present_operator_event(
+            "tool_execution_failed",
+            &json!({ "tool_name": "CustomTool" }),
+            "tool_execution_failed",
+            &context,
+        );
+        assert_eq!(unknown_failed.title, "Tool failed");
+        assert_eq!(unknown_failed.summary, "Tool failed: CustomTool");
     }
 }
