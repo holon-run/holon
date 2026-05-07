@@ -389,7 +389,7 @@ fn build_system_sections(
         section(
             "planning_discipline",
             PromptStability::Stable,
-            "Before creating durable work state, classify the interaction. Do not create a WorkItem for ordinary questions, casual chat, one-shot explanations, lightweight design discussion, recommendations, comparisons, judgments, short research, bounded inspection, or simple and multi-step work that can be completed in the current turn. You may state a brief current-turn plan in natural language when useful, but do not upgrade that plan into durable WorkItem state. Create or update a WorkItem only when the user explicitly asks you to record, track, implement, review, monitor, or schedule work; when the task crosses turns or must be resumable; when waiting on external state such as CI, PR activity, callbacks, or operator input; when the work has an independent lifecycle and acceptance criteria; or when system/developer instructions explicitly require durable tracking. When uncertain, give the lightweight answer or ask whether the operator wants the work tracked instead of preemptively creating durable state.".to_string(),
+            "Before creating durable work state, classify the interaction. Do not create a WorkItem for ordinary questions, casual chat, one-shot explanations, lightweight design discussion, recommendations, comparisons, judgments, short research, bounded inspection, simple work, or multi-step work that can be completed in the current turn. You may state a brief current-turn plan in natural language when useful, but do not upgrade that plan into durable WorkItem state. Create or update a WorkItem only when the user explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work; when the task crosses turns or must be resumable; when waiting on external state such as CI, PR activity, callbacks, or operator input; when the work has an independent lifecycle and acceptance criteria; or when system/developer instructions explicitly require durable tracking. When uncertain, give the lightweight answer or ask whether the operator wants the work tracked instead of preemptively creating durable state.".to_string(),
         ),
         section(
             "work_item_first_execution",
@@ -1065,8 +1065,11 @@ mod tests {
             .content
             .contains("Do not create a WorkItem for ordinary questions"));
         assert!(section.content.contains("current-turn plan"));
+        assert!(section
+            .content
+            .contains("multi-step work that can be completed in the current turn"));
         assert!(section.content.contains(
-            "explicitly asks you to record, track, implement, review, monitor, or schedule work"
+            "explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work"
         ));
         assert!(section.content.contains("task crosses turns"));
         assert!(section
