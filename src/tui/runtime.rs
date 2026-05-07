@@ -359,7 +359,7 @@ impl TuiApp {
                     self.status_line = format!("Failed to switch to agent {agent_id}: {err}");
                 } else {
                     let reason = format!("failed to bootstrap {agent_id} from /state: {err}");
-                    self.schedule_refresh(reason.clone());
+                    self.schedule_refresh(reason);
                     self.status_line = format!("Snapshot refresh failed for {agent_id}: {err}");
                 }
                 return;
@@ -601,17 +601,7 @@ impl TuiApp {
         let merged_transcript = if is_streaming && !self.transcript.is_empty() {
             // Start with HTTP response, then add any SSE-only messages not yet in HTTP response
             let mut merged = projection.transcript_tail.clone();
-            for entry in &self.transcript {
-                let key = transcript_merge_key(entry);
-                // /state uses persisted ids while SSE entries can be synthetic.
-                // related_message_id is the stable identity once persistence catches up.
-                if !merged
-                    .iter()
-                    .any(|persisted| transcript_merge_key(persisted) == key)
-                {
-                    merged.push(entry.clone());
-                }
-            }
+            merge_transcript_tail(&mut merged, &self.transcript);
             merged
         } else {
             projection.transcript_tail.clone()
