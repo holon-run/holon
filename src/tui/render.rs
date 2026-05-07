@@ -1,6 +1,7 @@
 use super::overlay::draw_overlay;
 use super::*;
 use crate::tui::input::slash_menu_specs;
+use crate::tui::keymap::{status_hint, KeyContext};
 use crate::types::{TaskKind, TaskStatus};
 use unicode_width::UnicodeWidthStr;
 
@@ -78,30 +79,22 @@ fn draw_prompt_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_menu:
 }
 
 fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-    let help = match app.overlay {
-        OverlayState::None if !slash_menu_lines(app).is_empty() => {
-            "Slash: Up/Down select  Tab complete  Enter run  Esc close"
-        }
-        OverlayState::None => {
-            "/help commands  /state agent state  /transcript  PgUp/PgDn scroll  Ctrl+A/E edit  Ctrl+C quit"
-        }
-        OverlayState::Agents => "Agents: Up/Down, Esc",
-        OverlayState::Events { .. } => "Events: Up/Down, PgUp/PgDn, Home/End, Esc",
-        OverlayState::Transcript { .. } => "Transcript: Up/Down, PgUp/PgDn, Home/End, Esc",
-        OverlayState::AgentState { .. } => "Agent state: Up/Down, PgUp/PgDn, Home/End, Esc",
-        OverlayState::Tasks { .. } => {
-            "Tasks: Up/Down, PgUp/PgDn, Home/End, Esc"
-        }
-        OverlayState::ModelPicker { .. } => {
-            "Model: type filter, Backspace edit, Up/Down move, Enter select, Esc cancel"
-        }
-        OverlayState::ModelEffortPicker { .. } => {
-            "Reasoning effort: Up/Down move, Enter select, Esc back"
-        }
-        OverlayState::DebugPromptInput { .. } => "Debug prompt: Enter confirm, Esc cancel",
-        OverlayState::DebugPromptView { .. } => "Debug prompt: Up/Down, PgUp/PgDn, Home/End, Esc",
-        OverlayState::HelpView { .. } => "Help: Up/Down, PgUp/PgDn, Home/End, Esc",
+    let slash_visible =
+        matches!(app.overlay, OverlayState::None) && !slash_menu_lines(app).is_empty();
+    let context = match app.overlay {
+        OverlayState::None => KeyContext::Main,
+        OverlayState::Agents => KeyContext::AgentsOverlay,
+        OverlayState::Events { .. } => KeyContext::EventsOverlay,
+        OverlayState::Transcript { .. }
+        | OverlayState::AgentState { .. }
+        | OverlayState::DebugPromptView { .. }
+        | OverlayState::HelpView { .. } => KeyContext::ScrollOverlay,
+        OverlayState::Tasks { .. } => KeyContext::TasksOverlay,
+        OverlayState::ModelPicker { .. } => KeyContext::ModelPicker,
+        OverlayState::ModelEffortPicker { .. } => KeyContext::ModelEffortPicker,
+        OverlayState::DebugPromptInput { .. } => KeyContext::DebugPromptInput,
     };
+    let help = status_hint(context, slash_visible);
 
     let connection = app.connection_label();
     let model = app

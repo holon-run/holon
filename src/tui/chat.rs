@@ -1,4 +1,5 @@
 use super::*;
+use crossterm::event::KeyCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ChatScrollState {

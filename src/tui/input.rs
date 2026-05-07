@@ -1,4 +1,8 @@
 use super::*;
+use crate::tui::keymap::{
+    resolve_key, ComposerAction, KeyContext, ScrollAction, SlashMenuAction, TuiKeyAction,
+};
+use crossterm::event::KeyCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlashCommand {
@@ -596,7 +600,7 @@ impl TuiApp {
     }
 
     pub(super) async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        if resolve_key(KeyContext::Global, key) == TuiKeyAction::Quit {
             self.should_quit = true;
             return Ok(());
         }
@@ -612,16 +616,16 @@ impl TuiApp {
                 let current_index = self
                     .selected_event_reverse_index(selected_event_id.as_deref())
                     .unwrap_or(0);
-                match key.code {
-                    KeyCode::Esc => {}
-                    KeyCode::Up => {
+                match resolve_key(KeyContext::EventsOverlay, key) {
+                    TuiKeyAction::OverlayClose => {}
+                    TuiKeyAction::OverlayMoveUp => {
                         let next_index = current_index.saturating_sub(1);
                         self.overlay = OverlayState::Events {
                             selected_event_id: self.event_id_for_reverse_index(next_index),
                             detail_scroll: 0,
                         };
                     }
-                    KeyCode::Down => {
+                    TuiKeyAction::OverlayMoveDown => {
                         let max = self
                             .projection
                             .as_ref()
@@ -633,8 +637,14 @@ impl TuiApp {
                             detail_scroll: 0,
                         };
                     }
-                    other => {
-                        detail_scroll = adjust_scroll_for_key(detail_scroll, other);
+                    TuiKeyAction::OverlayScroll(action) => {
+                        detail_scroll = adjust_scroll_for_action(detail_scroll, action);
+                        self.overlay = OverlayState::Events {
+                            selected_event_id,
+                            detail_scroll,
+                        };
+                    }
+                    _ => {
                         self.overlay = OverlayState::Events {
                             selected_event_id,
                             detail_scroll,
@@ -644,53 +654,47 @@ impl TuiApp {
                 Ok(())
             }
             OverlayState::Transcript { mut scroll } => {
-                if key.code != KeyCode::Esc {
-                    scroll = adjust_scroll_for_key(scroll, key.code);
-                    self.overlay = OverlayState::Transcript { scroll };
+                match resolve_key(KeyContext::ScrollOverlay, key) {
+                    TuiKeyAction::OverlayClose => {}
+                    TuiKeyAction::OverlayScroll(action) => {
+                        scroll = adjust_scroll_for_action(scroll, action);
+                        self.overlay = OverlayState::Transcript { scroll };
+                    }
+                    _ => self.overlay = OverlayState::Transcript { scroll },
                 }
                 Ok(())
             }
             OverlayState::AgentState { mut scroll } => {
-                if key.code != KeyCode::Esc {
-                    scroll = adjust_scroll_for_key(scroll, key.code);
-                    self.overlay = OverlayState::AgentState { scroll };
+                match resolve_key(KeyContext::ScrollOverlay, key) {
+                    TuiKeyAction::OverlayClose => {}
+                    TuiKeyAction::OverlayScroll(action) => {
+                        scroll = adjust_scroll_for_action(scroll, action);
+                        self.overlay = OverlayState::AgentState { scroll };
+                    }
+                    _ => self.overlay = OverlayState::AgentState { scroll },
                 }
                 Ok(())
             }
             OverlayState::Tasks {
                 selected,
                 detail_scroll,
-            } if matches!(
-                key.code,
-                KeyCode::Char('f')
-                    | KeyCode::Char('F')
-                    | KeyCode::Char('l')
-                    | KeyCode::Char('L')
-                    | KeyCode::Char('x')
-                    | KeyCode::Char('X')
-                    | KeyCode::Char('i')
-                    | KeyCode::Char('I')
-            ) =>
-            {
-                let action = task_overlay_action_for_key(key.code);
-                self.handle_task_overlay_action(selected, detail_scroll, action)
-                    .await?;
-                Ok(())
-            }
-            OverlayState::Tasks {
-                mut selected,
-                mut detail_scroll,
             } => {
-                match key.code {
-                    KeyCode::Esc => {}
-                    KeyCode::Up => {
+                let mut selected = selected;
+                let mut detail_scroll = detail_scroll;
+                match resolve_key(KeyContext::TasksOverlay, key) {
+                    TuiKeyAction::OverlayClose => {}
+                    TuiKeyAction::Task(action) => {
+                        self.handle_task_overlay_action(selected, detail_scroll, action)
+                            .await?;
+                    }
+                    TuiKeyAction::OverlayMoveUp => {
                         selected = selected.saturating_sub(1);
                         self.overlay = OverlayState::Tasks {
                             selected,
                             detail_scroll: 0,
                         };
                     }
-                    KeyCode::Down => {
+                    TuiKeyAction::OverlayMoveDown => {
                         let max = self.tasks.len().saturating_sub(1);
                         selected = (selected + 1).min(max);
                         self.overlay = OverlayState::Tasks {
@@ -698,8 +702,14 @@ impl TuiApp {
                             detail_scroll: 0,
                         };
                     }
-                    other => {
-                        detail_scroll = adjust_scroll_for_key(detail_scroll, other);
+                    TuiKeyAction::OverlayScroll(action) => {
+                        detail_scroll = adjust_scroll_for_action(detail_scroll, action);
+                        self.overlay = OverlayState::Tasks {
+                            selected,
+                            detail_scroll,
+                        };
+                    }
+                    _ => {
                         self.overlay = OverlayState::Tasks {
                             selected,
                             detail_scroll,
@@ -712,16 +722,16 @@ impl TuiApp {
                 mut filter,
                 mut selected,
             } => {
-                match key.code {
-                    KeyCode::Esc => {}
-                    KeyCode::Enter => {
+                match resolve_key(KeyContext::ModelPicker, key) {
+                    TuiKeyAction::OverlayClose => {}
+                    TuiKeyAction::OverlayAccept => {
                         self.apply_model_picker_selection(&filter, selected).await?;
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
+                    TuiKeyAction::OverlayMoveUp => {
                         selected = selected.saturating_sub(1);
                         self.overlay = OverlayState::ModelPicker { filter, selected };
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
+                    TuiKeyAction::OverlayMoveDown => {
                         let max = crate::tui::model_picker::model_picker_rows(
                             self.selected_agent_summary(),
                             &filter,
@@ -731,7 +741,7 @@ impl TuiApp {
                         selected = (selected + 1).min(max);
                         self.overlay = OverlayState::ModelPicker { filter, selected };
                     }
-                    KeyCode::Backspace => {
+                    TuiKeyAction::ModelFilterBackspace => {
                         filter.pop();
                         selected = crate::tui::model_picker::clamp_model_picker_selection(
                             self.selected_agent_summary(),
@@ -740,7 +750,7 @@ impl TuiApp {
                         );
                         self.overlay = OverlayState::ModelPicker { filter, selected };
                     }
-                    KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    TuiKeyAction::InsertChar(ch) => {
                         filter.push(ch);
                         selected = crate::tui::model_picker::clamp_model_picker_selection(
                             self.selected_agent_summary(),
@@ -749,9 +759,7 @@ impl TuiApp {
                         );
                         self.overlay = OverlayState::ModelPicker { filter, selected };
                     }
-                    _ => {
-                        self.overlay = OverlayState::ModelPicker { filter, selected };
-                    }
+                    _ => self.overlay = OverlayState::ModelPicker { filter, selected },
                 }
                 Ok(())
             }
@@ -761,18 +769,18 @@ impl TuiApp {
                 return_filter,
                 return_selected,
             } => {
-                match key.code {
-                    KeyCode::Esc => {
+                match resolve_key(KeyContext::ModelEffortPicker, key) {
+                    TuiKeyAction::OverlayClose => {
                         self.overlay = OverlayState::ModelPicker {
                             filter: return_filter,
                             selected: return_selected,
                         };
                     }
-                    KeyCode::Enter => {
+                    TuiKeyAction::OverlayAccept => {
                         self.apply_model_effort_picker_selection(&model, selected)
                             .await?;
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
+                    TuiKeyAction::OverlayMoveUp => {
                         selected = selected.saturating_sub(1);
                         self.overlay = OverlayState::ModelEffortPicker {
                             model,
@@ -781,7 +789,7 @@ impl TuiApp {
                             return_selected,
                         };
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
+                    TuiKeyAction::OverlayMoveDown => {
                         let max = crate::tui::overlay::MODEL_REASONING_EFFORT_OPTIONS.len() - 1;
                         selected = (selected + 1).min(max);
                         self.overlay = OverlayState::ModelEffortPicker {
@@ -797,13 +805,16 @@ impl TuiApp {
                             selected,
                             return_filter,
                             return_selected,
-                        };
+                        }
                     }
                 }
                 Ok(())
             }
             OverlayState::DebugPromptInput { mut composer } => {
-                match edit_buffer(key, &mut composer) {
+                match apply_composer_key_action(
+                    resolve_key(KeyContext::DebugPromptInput, key),
+                    &mut composer,
+                ) {
                     Some(BufferAction::Submit) => {
                         let agent_id = self
                             .selected_agent_id()
@@ -836,20 +847,34 @@ impl TuiApp {
                 dump,
                 mut scroll,
             } => {
-                if key.code != KeyCode::Esc {
-                    scroll = adjust_scroll_for_key(scroll, key.code);
-                    self.overlay = OverlayState::DebugPromptView {
-                        title,
-                        dump,
-                        scroll,
-                    };
+                match resolve_key(KeyContext::ScrollOverlay, key) {
+                    TuiKeyAction::OverlayClose => {}
+                    TuiKeyAction::OverlayScroll(action) => {
+                        scroll = adjust_scroll_for_action(scroll, action);
+                        self.overlay = OverlayState::DebugPromptView {
+                            title,
+                            dump,
+                            scroll,
+                        };
+                    }
+                    _ => {
+                        self.overlay = OverlayState::DebugPromptView {
+                            title,
+                            dump,
+                            scroll,
+                        }
+                    }
                 }
                 Ok(())
             }
             OverlayState::HelpView { mut scroll } => {
-                if key.code != KeyCode::Esc {
-                    scroll = adjust_scroll_for_key(scroll, key.code);
-                    self.overlay = OverlayState::HelpView { scroll };
+                match resolve_key(KeyContext::ScrollOverlay, key) {
+                    TuiKeyAction::OverlayClose => {}
+                    TuiKeyAction::OverlayScroll(action) => {
+                        scroll = adjust_scroll_for_action(scroll, action);
+                        self.overlay = OverlayState::HelpView { scroll };
+                    }
+                    _ => self.overlay = OverlayState::HelpView { scroll },
                 }
                 Ok(())
             }
@@ -861,41 +886,40 @@ impl TuiApp {
             return Ok(());
         }
 
-        match key.code {
-            KeyCode::Char('?') if self.composer.is_empty() => {
+        match resolve_key(KeyContext::Main, key) {
+            TuiKeyAction::OpenHelp if self.composer.is_empty() => {
                 self.overlay = OverlayState::HelpView { scroll: 0 };
             }
-            KeyCode::Up if self.history_index.is_some() || self.composer.is_empty() => {
+            TuiKeyAction::OpenHelp => {
+                let before = self.composer.as_str().to_string();
+                self.composer.insert_char('?');
+                self.sync_slash_menu_after_edit(before != self.composer.as_str());
+            }
+            TuiKeyAction::HistoryPrevious
+                if self.history_index.is_some() || self.composer.is_empty() =>
+            {
                 self.navigate_history(-1);
             }
-            KeyCode::Down if self.history_index.is_some() || self.composer.is_empty() => {
+            TuiKeyAction::HistoryNext
+                if self.history_index.is_some() || self.composer.is_empty() =>
+            {
                 self.navigate_history(1);
             }
-            // PageUp/PageDown always scroll chat
-            KeyCode::PageUp | KeyCode::PageDown => {
+            TuiKeyAction::ChatScroll(action) => {
+                self.chat_scroll
+                    .scroll_with_key(scroll_action_key_code(action), self.chat_max_scroll);
+            }
+            TuiKeyAction::HistoryPrevious | TuiKeyAction::HistoryNext => {
                 self.chat_scroll
                     .scroll_with_key(key.code, self.chat_max_scroll);
             }
-            // Up/Down when composer has content: scroll chat (no history)
-            KeyCode::Up | KeyCode::Down => {
-                self.chat_scroll
-                    .scroll_with_key(key.code, self.chat_max_scroll);
-            }
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.composer.insert_newline();
-            }
-            KeyCode::Esc => {
-                self.composer.clear();
-                self.history_index = None;
-                self.slash_menu_selected = 0;
-                self.slash_menu_dismissed_for = None;
-            }
-            _ => {
+            action => {
                 let before = self.composer.as_str().to_string();
-                match edit_buffer(key, &mut self.composer) {
+                match apply_composer_key_action(action, &mut self.composer) {
                     Some(BufferAction::Submit) => self.submit_prompt_buffer().await?,
                     Some(BufferAction::Cancel) => {
                         self.composer.clear();
+                        self.history_index = None;
                         self.slash_menu_selected = 0;
                         self.slash_menu_dismissed_for = None;
                     }
@@ -908,45 +932,37 @@ impl TuiApp {
     }
 
     async fn handle_slash_menu_key(&mut self, key: KeyEvent) -> Result<bool> {
-        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {
-            return Ok(false);
-        }
         if !self.is_slash_menu_visible() {
             return Ok(false);
         }
 
         let specs = self.active_slash_menu_specs();
 
-        match key.code {
-            KeyCode::Esc => {
+        match resolve_key(KeyContext::SlashMenu, key) {
+            TuiKeyAction::Ignore => Ok(false),
+            TuiKeyAction::SlashMenu(SlashMenuAction::Dismiss) => {
                 self.slash_menu_dismissed_for = Some(self.composer.as_str().to_string());
                 self.slash_menu_selected = 0;
                 Ok(true)
             }
             _ if specs.is_empty() => Ok(false),
-            KeyCode::Up | KeyCode::Char('p')
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    || matches!(key.code, KeyCode::Up) =>
-            {
+            TuiKeyAction::SlashMenu(SlashMenuAction::Previous) => {
                 self.slash_menu_selected = self.slash_menu_selected.saturating_sub(1);
                 Ok(true)
             }
-            KeyCode::Down | KeyCode::Char('n')
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    || matches!(key.code, KeyCode::Down) =>
-            {
+            TuiKeyAction::SlashMenu(SlashMenuAction::Next) => {
                 self.slash_menu_selected =
                     (self.slash_menu_selected + 1).min(specs.len().saturating_sub(1));
                 Ok(true)
             }
-            KeyCode::Tab => {
+            TuiKeyAction::SlashMenu(SlashMenuAction::Complete) => {
                 let selected = self.slash_menu_selected.min(specs.len().saturating_sub(1));
                 self.composer = ComposerState::from(specs[selected].name);
                 self.slash_menu_selected = selected;
                 self.slash_menu_dismissed_for = None;
                 Ok(true)
             }
-            KeyCode::Enter => {
+            TuiKeyAction::SlashMenu(SlashMenuAction::Submit) => {
                 let selected = self.slash_menu_selected.min(specs.len().saturating_sub(1));
                 let selection =
                     slash_menu_enter_submission(self.composer.as_str(), specs[selected]);
@@ -1005,9 +1021,9 @@ impl TuiApp {
     }
 
     async fn handle_agents_overlay_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Esc => Ok(()),
-            KeyCode::Enter => {
+        match resolve_key(KeyContext::AgentsOverlay, key) {
+            TuiKeyAction::OverlayClose => Ok(()),
+            TuiKeyAction::OverlayAccept => {
                 let agent_id = self.selected_agent_id().unwrap_or("").to_string();
                 match self.bootstrap_agent_index(self.selected_agent).await {
                     Ok(()) => {
@@ -1024,12 +1040,12 @@ impl TuiApp {
                     }
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            TuiKeyAction::OverlayMoveUp => {
                 self.move_agent_selection(-1).await?;
                 self.overlay = OverlayState::Agents;
                 Ok(())
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            TuiKeyAction::OverlayMoveDown => {
                 self.move_agent_selection(1).await?;
                 self.overlay = OverlayState::Agents;
                 Ok(())
@@ -1148,75 +1164,31 @@ enum BufferAction {
     Cancel,
 }
 
-fn edit_buffer(key: KeyEvent, composer: &mut ComposerState) -> Option<BufferAction> {
-    // Standard editing shortcuts with Ctrl modifier
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        if matches!(key.code, KeyCode::Char(_)) {
-            return match key.code {
-                KeyCode::Char('a') => {
-                    composer.move_to_start();
-                    None
-                }
-                KeyCode::Char('e') => {
-                    composer.move_to_end();
-                    None
-                }
-                KeyCode::Char('b') => {
-                    composer.move_left();
-                    None
-                }
-                KeyCode::Char('f') => {
-                    composer.move_right();
-                    None
-                }
-                KeyCode::Char('k') => {
-                    composer.delete_to_end();
-                    None
-                }
-                KeyCode::Char('u') => {
-                    composer.delete_to_start();
-                    None
-                }
-                KeyCode::Char('w') => {
-                    composer.delete_word();
-                    None
-                }
-                KeyCode::Char('h') => {
-                    composer.backspace();
-                    None
-                }
-                KeyCode::Char('d') => {
-                    composer.delete();
-                    None
-                }
-                _ => None,
-            };
-        }
-    }
-
-    match key.code {
-        KeyCode::Enter => {
-            // Ignore Shift+Enter - it's handled by the outer match to insert newline
-            if !key.modifiers.contains(KeyModifiers::SHIFT) && !composer.as_str().trim().is_empty()
-            {
+fn apply_composer_key_action(
+    action: TuiKeyAction,
+    composer: &mut ComposerState,
+) -> Option<BufferAction> {
+    match action {
+        TuiKeyAction::Composer(ComposerAction::Submit) => {
+            if !composer.as_str().trim().is_empty() {
                 return Some(BufferAction::Submit);
             }
         }
-        KeyCode::Esc => return Some(BufferAction::Cancel),
-        KeyCode::Backspace => {
-            composer.backspace();
-        }
-        KeyCode::Delete => composer.delete(),
-        KeyCode::Left => composer.move_left(),
-        KeyCode::Right => composer.move_right(),
-        KeyCode::Home => composer.move_home(),
-        KeyCode::End => composer.move_end(),
-        KeyCode::Char(ch) => {
-            if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                composer.insert_char(ch);
-            }
-        }
-        KeyCode::Tab => composer.insert_char('\t'),
+        TuiKeyAction::Composer(ComposerAction::Cancel) => return Some(BufferAction::Cancel),
+        TuiKeyAction::Composer(ComposerAction::InsertNewline) => composer.insert_newline(),
+        TuiKeyAction::Composer(ComposerAction::Backspace) => composer.backspace(),
+        TuiKeyAction::Composer(ComposerAction::Delete) => composer.delete(),
+        TuiKeyAction::Composer(ComposerAction::MoveLeft) => composer.move_left(),
+        TuiKeyAction::Composer(ComposerAction::MoveRight) => composer.move_right(),
+        TuiKeyAction::Composer(ComposerAction::MoveHome) => composer.move_home(),
+        TuiKeyAction::Composer(ComposerAction::MoveEnd) => composer.move_end(),
+        TuiKeyAction::Composer(ComposerAction::InsertTab) => composer.insert_char('\t'),
+        TuiKeyAction::Composer(ComposerAction::MoveToStart) => composer.move_to_start(),
+        TuiKeyAction::Composer(ComposerAction::MoveToEnd) => composer.move_to_end(),
+        TuiKeyAction::Composer(ComposerAction::DeleteToEnd) => composer.delete_to_end(),
+        TuiKeyAction::Composer(ComposerAction::DeleteToStart) => composer.delete_to_start(),
+        TuiKeyAction::Composer(ComposerAction::DeleteWord) => composer.delete_word(),
+        TuiKeyAction::InsertChar(ch) => composer.insert_char(ch),
         _ => {}
     }
     None
@@ -1230,25 +1202,25 @@ fn adjust_scroll(scroll: u16, delta: i16) -> u16 {
     }
 }
 
-fn adjust_scroll_for_key(scroll: u16, code: KeyCode) -> u16 {
-    match code {
-        KeyCode::Up => adjust_scroll(scroll, -1),
-        KeyCode::Down => adjust_scroll(scroll, 1),
-        KeyCode::PageUp => adjust_scroll(scroll, -10),
-        KeyCode::PageDown => adjust_scroll(scroll, 10),
-        KeyCode::Home => 0,
-        KeyCode::End => u16::MAX,
-        _ => scroll,
+fn adjust_scroll_for_action(scroll: u16, action: ScrollAction) -> u16 {
+    match action {
+        ScrollAction::Up => adjust_scroll(scroll, -1),
+        ScrollAction::Down => adjust_scroll(scroll, 1),
+        ScrollAction::PageUp => adjust_scroll(scroll, -10),
+        ScrollAction::PageDown => adjust_scroll(scroll, 10),
+        ScrollAction::Home => 0,
+        ScrollAction::End => u16::MAX,
     }
 }
 
-fn task_overlay_action_for_key(key: KeyCode) -> render::TaskOverlayAction {
-    match key {
-        KeyCode::Char('f') | KeyCode::Char('F') => render::TaskOverlayAction::FullOutput,
-        KeyCode::Char('l') | KeyCode::Char('L') => render::TaskOverlayAction::FollowOutput,
-        KeyCode::Char('x') | KeyCode::Char('X') => render::TaskOverlayAction::Stop,
-        KeyCode::Char('i') | KeyCode::Char('I') => render::TaskOverlayAction::Input,
-        _ => unreachable!("caller filters task overlay action keys"),
+fn scroll_action_key_code(action: ScrollAction) -> KeyCode {
+    match action {
+        ScrollAction::Up => KeyCode::Up,
+        ScrollAction::Down => KeyCode::Down,
+        ScrollAction::PageUp => KeyCode::PageUp,
+        ScrollAction::PageDown => KeyCode::PageDown,
+        ScrollAction::Home => KeyCode::Home,
+        ScrollAction::End => KeyCode::End,
     }
 }
 
@@ -1295,7 +1267,6 @@ mod tests {
         parse_composer_submission, slash_command_spec, slash_menu_enter_submission,
         slash_menu_specs, slash_prompt_lines, ComposerSubmission, SlashCommand,
     };
-    use crossterm::event::KeyCode;
 
     #[test]
     fn parses_plain_chat_submission() {
@@ -1441,17 +1412,5 @@ mod tests {
     fn slash_prompt_matches_submit_semantics_for_leading_whitespace() {
         let lines = slash_prompt_lines("   /help").expect("slash prompt should be active");
         assert!(lines[0].contains(">/help"));
-    }
-
-    #[test]
-    fn task_overlay_action_keys_map_to_actions() {
-        assert_eq!(
-            super::task_overlay_action_for_key(KeyCode::Char('f')),
-            crate::tui::render::TaskOverlayAction::FullOutput
-        );
-        assert_eq!(
-            super::task_overlay_action_for_key(KeyCode::Char('X')),
-            crate::tui::render::TaskOverlayAction::Stop
-        );
     }
 }
