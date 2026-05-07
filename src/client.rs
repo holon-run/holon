@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -255,6 +256,18 @@ impl LocalClient {
             Some(remote) => format!("remote {} auth=bearer", remote.base_url),
             None => "local runtime".into(),
         }
+    }
+
+    pub(crate) fn home_dir(&self) -> &Path {
+        &self.config.home_dir
+    }
+
+    pub(crate) fn default_agent_id(&self) -> &str {
+        &self.config.default_agent_id
+    }
+
+    pub(crate) fn remote_base_url(&self) -> Option<&str> {
+        self.remote.as_ref().map(|remote| remote.base_url.as_str())
     }
 
     pub async fn list_agents(&self) -> Result<Vec<AgentSummary>> {

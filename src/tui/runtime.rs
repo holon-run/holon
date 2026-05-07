@@ -1,4 +1,5 @@
 use super::projection::ProjectionSlice;
+use super::state::TuiClientState;
 use super::*;
 use crate::client::{AgentStreamEvent, EventStreamRequest, LocalEventStream, LocalHttpError};
 use tokio::sync::mpsc;
@@ -132,11 +133,14 @@ impl TuiApp {
         });
 
         self.selected_agent = previously_selected
-            .and_then(|agent_id| {
-                agents
-                    .iter()
-                    .position(|agent| agent.identity.agent_id == agent_id)
+            .as_deref()
+            .and_then(|agent_id| find_agent_index(&agents, agent_id))
+            .or_else(|| {
+                self.preferred_agent_id
+                    .as_deref()
+                    .and_then(|agent_id| find_agent_index(&agents, agent_id))
             })
+            .or_else(|| find_agent_index(&agents, self.client.default_agent_id()))
             .unwrap_or_else(|| self.selected_agent.min(agents.len().saturating_sub(1)));
         self.agents = agents;
 
@@ -303,6 +307,7 @@ impl TuiApp {
 
         self.stop_stream_task();
         self.selected_agent = target_index;
+        self.record_selected_agent(&agent_id);
         self.projection = Some(projection);
         self.apply_projection_view();
         self.last_refresh_at = Some(Local::now());
@@ -360,6 +365,17 @@ impl TuiApp {
                 }
                 Ok(())
             }
+        }
+    }
+
+    pub(super) fn record_selected_agent(&mut self, agent_id: &str) {
+        self.preferred_agent_id = Some(agent_id.to_string());
+        if let Err(err) = TuiClientState::new(agent_id).save(&self.state_path) {
+            tracing::warn!(
+                error = %err,
+                path = %self.state_path.display(),
+                "failed to persist TUI selected agent"
+            );
         }
     }
 
@@ -664,6 +680,12 @@ fn transcript_merge_key(entry: &TranscriptEntry) -> &str {
         .related_message_id
         .as_deref()
         .unwrap_or(entry.id.as_str())
+}
+
+fn find_agent_index(agents: &[AgentSummary], agent_id: &str) -> Option<usize> {
+    agents
+        .iter()
+        .position(|agent| agent.identity.agent_id == agent_id)
 }
 
 impl Drop for TuiApp {
