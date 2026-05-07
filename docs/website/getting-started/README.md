@@ -10,6 +10,32 @@ Holon is currently developed as a Rust runtime. The fastest way to understand
 it is to run the binary locally, inspect the repository docs, and keep the
 runtime model in view while experimenting.
 
+## New to Holon?
+
+If this is your first time using Holon, follow our step-by-step tutorial:
+
+- **[Create your first agent](first-agent.md)** - Build, start, connect with TUI, create an agent, and configure models in ~15 minutes
+
+This hands-on guide covers:
+
+- Building Holon from source
+- Starting the runtime (CLI mode and daemon mode)
+- Using the Terminal UI (TUI)
+- Creating agents with templates
+- Configuring models and providers
+
+## Experienced developers?
+
+If you're already familiar with Holon or want to jump straight into specifics:
+
+- **[Runtime model](/concepts/runtime-model.md)** - Understand Holon's core concepts
+- **[Trust boundaries](/concepts/trust-boundaries.md)** - Learn about security and isolation
+- **[Local runtime guide](/guides/local-runtime.md)** - Conservative workflow for local development
+- **[Quick examples](/guides/quick-examples.md)** - Common tasks and workflows
+- **[Integration guide](/guides/integration.md)** - Integrate Holon into your systems
+- **[CLI reference](/reference/cli.md)** - Command-line interface details
+- **[HTTP control plane](/reference/http-control-plane.md)** - REST API for automation
+
 ## Requirements
 
 - Rust toolchain with Cargo.
