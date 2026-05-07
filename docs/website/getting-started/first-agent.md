@@ -239,8 +239,8 @@ See [Configuration reference](/reference/configuration.md) for more details on a
 
 > **Note**: For security, Holon uses a credential store to manage API keys. Set credentials via:
 > ```bash
-> cargo run -- config credentials set anthropic
-> # Paste your ANTHROPIC_AUTH_TOKEN when prompted
+> cargo run -- config credentials set --kind api_key --stdin anthropic
+> # Paste your ANTHROPIC_AUTH_TOKEN and press Enter
 > ```
 > See [Configuration reference](/reference/configuration.md) for details.
 
@@ -292,7 +292,7 @@ Verify your credentials:
 
 ```bash
 echo $ANTHROPIC_AUTH_TOKEN
-cargo run -- config get model
+cargo run -- config get model.default
 ```
 
 For more help, see [Troubleshooting guide](/guides/troubleshooting.md).
