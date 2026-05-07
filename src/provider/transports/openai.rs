@@ -2721,6 +2721,7 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) async fn send_chat_completion_stream_request(
     client: &Client,
     url: String,
@@ -2758,6 +2759,7 @@ pub(crate) async fn send_chat_completion_stream_request(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 async fn read_chat_completion_stream(response: Response) -> Result<Value> {
     const MAX_STREAMED_EVENTS: usize = 128;
     let mut streamed_events = Vec::new();
@@ -2864,6 +2866,7 @@ async fn read_chat_completion_stream(response: Response) -> Result<Value> {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 fn process_chat_completion_sse_event(
     data_lines: &mut Vec<String>,
 ) -> Result<Option<ChatCompletionSseEvent>> {
@@ -3041,6 +3044,7 @@ pub(crate) fn accumulate_chat_completion_stream_events(events: Vec<Value>) -> Re
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 enum ChatCompletionSseEvent {
     ContentDelta(String),
     ToolCallDelta(Value),

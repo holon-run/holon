@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 // Shared runtime integration fixtures and test implementations.
 // Domain-focused suites in sibling files call into these functions so coverage

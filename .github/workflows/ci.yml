@@ -27,6 +27,8 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
 
