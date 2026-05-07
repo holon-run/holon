@@ -313,7 +313,8 @@ fn paste_single_line_text(text: &str) -> String {
 
 impl TuiApp {
     fn should_treat_enter_as_paste_newline(&self, key: KeyEvent) -> bool {
-        const PASTE_NEWLINE_GUARD: Duration = Duration::from_millis(35);
+        const PASTE_BURST_WINDOW: Duration = Duration::from_millis(100);
+        const PASTE_BURST_MIN_CHARS: usize = 8;
 
         let trimmed = self.composer.as_str().trim_start();
         if key.code != KeyCode::Enter
@@ -323,8 +324,38 @@ impl TuiApp {
         {
             return false;
         }
-        self.last_composer_key_edit_at
-            .is_some_and(|last_edit| last_edit.elapsed() <= PASTE_NEWLINE_GUARD)
+        self.composer_key_burst_len >= PASTE_BURST_MIN_CHARS
+            && self
+                .composer_key_burst_started_at
+                .is_some_and(|started_at| started_at.elapsed() <= PASTE_BURST_WINDOW)
+    }
+
+    fn record_composer_key_edit(&mut self, action: TuiKeyAction) {
+        const PASTE_BURST_INTER_KEY_WINDOW: Duration = Duration::from_millis(20);
+
+        if !matches!(action, TuiKeyAction::InsertChar(_)) {
+            self.reset_composer_key_burst();
+            return;
+        }
+
+        let now = Instant::now();
+        let continues_burst = self
+            .composer_key_burst_last_at
+            .is_some_and(|last_at| now.duration_since(last_at) <= PASTE_BURST_INTER_KEY_WINDOW);
+        if continues_burst {
+            self.composer_key_burst_len = self.composer_key_burst_len.saturating_add(1);
+            self.composer_key_burst_last_at = Some(now);
+        } else {
+            self.composer_key_burst_started_at = Some(now);
+            self.composer_key_burst_last_at = Some(now);
+            self.composer_key_burst_len = 1;
+        }
+    }
+
+    fn reset_composer_key_burst(&mut self) {
+        self.composer_key_burst_started_at = None;
+        self.composer_key_burst_last_at = None;
+        self.composer_key_burst_len = 0;
     }
 
     pub(super) async fn handle_paste(&mut self, text: &str) -> Result<()> {
@@ -333,7 +364,7 @@ impl TuiApp {
             OverlayState::None => {
                 let before = self.composer.as_str().to_string();
                 self.composer.insert_str(text);
-                self.last_composer_key_edit_at = None;
+                self.reset_composer_key_burst();
                 self.sync_slash_menu_after_edit(before != self.composer.as_str());
             }
             OverlayState::ModelPicker { filter, selected } => {
@@ -943,12 +974,12 @@ impl TuiApp {
                 };
                 match apply_composer_key_action(action, &mut self.composer) {
                     Some(BufferAction::Submit) => {
-                        self.last_composer_key_edit_at = None;
+                        self.reset_composer_key_burst();
                         self.submit_prompt_buffer().await?;
                     }
                     Some(BufferAction::Cancel) => {
                         self.composer.clear();
-                        self.last_composer_key_edit_at = None;
+                        self.reset_composer_key_burst();
                         self.history_index = None;
                         self.slash_menu_selected = 0;
                         self.slash_menu_dismissed_for = None;
@@ -956,7 +987,7 @@ impl TuiApp {
                     None => {
                         let changed = before != self.composer.as_str();
                         if changed {
-                            self.last_composer_key_edit_at = Some(Instant::now());
+                            self.record_composer_key_edit(action);
                         }
                         self.sync_slash_menu_after_edit(changed);
                     }

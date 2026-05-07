@@ -357,7 +357,7 @@ fn prompt_pane_scroll(area: Rect, buffer: &str, cursor: usize, hint_rows: u16) -
     let layout = PromptPaneLayout::new(area);
     let (_, cursor_row) =
         prompt_cursor_visual_position(buffer, cursor, layout.input_width, hint_rows);
-    cursor_row.saturating_sub(layout.viewport_rows)
+    cursor_row.saturating_sub(layout.viewport_rows.saturating_sub(1))
 }
 
 fn prompt_cursor_position(
