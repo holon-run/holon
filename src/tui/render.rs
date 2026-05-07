@@ -1,7 +1,7 @@
 use super::overlay::draw_overlay;
+use super::view_model::{render_header_line, HeaderViewModel, StatusbarViewModel};
 use super::*;
 use crate::tui::input::slash_menu_specs;
-use crate::tui::keymap::{status_hint, KeyContext};
 use crate::types::{TaskKind, TaskStatus};
 use unicode_width::UnicodeWidthStr;
 
@@ -9,7 +9,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
     let area = frame.area();
     let slash_menu = slash_menu_lines(app);
     let prompt_height = prompt_pane_height(app.composer.as_str(), slash_menu.len(), area.width);
-    let status_height = status_bar_height(&app.status_line);
+    let status_height = status_bar_height();
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -32,11 +32,8 @@ fn draw_main_panels(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-    let text = match app.selected_agent_summary() {
-        Some(agent) => render_header(agent),
-        None => "No agent selected.".to_string(),
-    };
-    let paragraph = Paragraph::new(text)
+    let view_model = HeaderViewModel::from_app(app);
+    let paragraph = Paragraph::new(view_model.line)
         .block(Block::default().borders(Borders::BOTTOM))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
@@ -79,33 +76,8 @@ fn draw_prompt_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_menu:
 }
 
 fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-    let slash_visible =
-        matches!(app.overlay, OverlayState::None) && !slash_menu_lines(app).is_empty();
-    let context = match app.overlay {
-        OverlayState::None => KeyContext::Main,
-        OverlayState::Agents => KeyContext::AgentsOverlay,
-        OverlayState::Events { .. } => KeyContext::EventsOverlay,
-        OverlayState::Transcript { .. }
-        | OverlayState::AgentState { .. }
-        | OverlayState::DebugPromptView { .. }
-        | OverlayState::HelpView { .. } => KeyContext::ScrollOverlay,
-        OverlayState::Tasks { .. } => KeyContext::TasksOverlay,
-        OverlayState::ModelPicker { .. } => KeyContext::ModelPicker,
-        OverlayState::ModelEffortPicker { .. } => KeyContext::ModelEffortPicker,
-        OverlayState::DebugPromptInput { .. } => KeyContext::DebugPromptInput,
-    };
-    let help = status_hint(context, slash_visible);
-
-    let connection = app.connection_label();
-    let model = app
-        .selected_agent_summary()
-        .map(render_model_status)
-        .unwrap_or_else(|| "model: <no agent selected>".into());
-    let text = if app.status_line.trim().is_empty() {
-        format!("{help}\n{connection}  {model}")
-    } else {
-        format!("{help}\n{connection}  {model}\n{}", app.status_line)
-    };
+    let view_model = StatusbarViewModel::from_app(app);
+    let text = format!("{}\n{}", view_model.context_line, view_model.status_line);
     let paragraph = Paragraph::new(text).block(Block::default().borders(Borders::TOP));
     frame.render_widget(paragraph, area);
 }
@@ -274,12 +246,8 @@ fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> 
     pane_rows.clamp(3, u32::from(MAX_PROMPT_PANE_HEIGHT)) as u16
 }
 
-fn status_bar_height(status_line: &str) -> u16 {
-    if status_line.trim().is_empty() {
-        3
-    } else {
-        4
-    }
+fn status_bar_height() -> u16 {
+    3
 }
 
 fn render_prompt_buffer(buffer: &str) -> String {
@@ -334,7 +302,7 @@ fn render_prompt_text(buffer: &str, slash_menu: &[Line<'static>]) -> Text<'stati
     ]))
 }
 
-fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
+pub(super) fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
     if app.overlay != OverlayState::None {
         return Vec::new();
     }
@@ -455,16 +423,7 @@ fn display_width(text: &str) -> u16 {
 }
 
 pub(super) fn render_header(agent: &AgentSummary) -> String {
-    let mut line = format!(
-        "{}  {:?}  {}",
-        agent.identity.agent_id,
-        agent.agent.status,
-        agent.identity.contract_badge()
-    );
-    if agent.lifecycle.resume_required {
-        line.push_str("  resume required");
-    }
-    line
+    render_header_line(agent)
 }
 
 pub(super) fn render_projection_event_summary(
@@ -1036,9 +995,10 @@ mod tests {
     }
 
     #[test]
-    fn render_header_uses_agent_contract_badge() {
+    fn render_header_uses_agent_status_without_identity_contract() {
         let rendered = render_header(&sample_agent_summary());
-        assert!(rendered.contains("public/self_owned (public_named)"));
+        assert_eq!(rendered, "default  idle");
+        assert!(!rendered.contains("public/self_owned (public_named)"));
     }
 
     #[test]
@@ -1230,8 +1190,7 @@ mod tests {
 
     #[test]
     fn empty_status_line_uses_compact_status_bar_height() {
-        assert_eq!(status_bar_height(""), 3);
-        assert_eq!(status_bar_height("Action failed"), 4);
+        assert_eq!(status_bar_height(), 3);
     }
 
     fn task(status: TaskStatus, kind: TaskKind, detail: Option<Value>) -> TaskRecord {
