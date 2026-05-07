@@ -864,9 +864,9 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
     );
     assert_eq!(timeline["attempts"].as_array().unwrap().len(), 2);
     for attempt in timeline["attempts"].as_array().unwrap() {
-        assert!(attempt["started_at"].as_str().is_some());
-        assert!(attempt["completed_at"].as_str().is_some());
-        assert!(attempt["duration_ms"].as_u64().is_some());
+        assert!(attempt.get("started_at").is_none());
+        assert!(attempt.get("completed_at").is_none());
+        assert!(attempt.get("duration_ms").is_none());
     }
     assert_eq!(
         timeline["aggregated_token_usage"]["total_tokens"].as_u64(),
