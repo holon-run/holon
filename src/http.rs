@@ -1645,8 +1645,10 @@ pub async fn install_skill(
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
+    let user_home = state.host.config().home_dir.clone();
     let skill_name =
-        crate::skills::install_skill(&agent_home, &request.kind).map_err(error_response)?;
+        crate::skills::install_skill_with_user_home(&agent_home, Some(&user_home), &request.kind)
+            .map_err(error_response)?;
     runtime
         .append_audit_event(
             "skill_installed",

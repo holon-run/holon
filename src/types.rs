@@ -674,10 +674,34 @@ pub struct SkillsRuntimeView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillInstallMode {
+    Linked,
+    Copied,
+}
+
+impl Default for SkillInstallMode {
+    fn default() -> Self {
+        Self::Linked
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SkillInstallKind {
-    Builtin { name: String },
-    Local { path: PathBuf },
+    Builtin {
+        name: String,
+    },
+    Named {
+        name: String,
+        #[serde(default)]
+        mode: SkillInstallMode,
+    },
+    Local {
+        path: PathBuf,
+        #[serde(default)]
+        mode: SkillInstallMode,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

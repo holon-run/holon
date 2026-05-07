@@ -420,6 +420,8 @@ enum SkillsCommands {
         #[arg(long)]
         builtin: bool,
         #[arg(long)]
+        copy: bool,
+        #[arg(long)]
         agent: Option<String>,
     },
     Uninstall {
@@ -1404,6 +1406,7 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         SkillsCommands::Install {
             name_or_path,
             builtin,
+            copy,
             agent,
         } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
@@ -1411,16 +1414,18 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
                 holon::types::SkillInstallKind::Builtin { name: name_or_path }
             } else {
                 let path = std::path::PathBuf::from(&name_or_path);
-                if path.is_absolute() {
-                    if !path.is_dir() {
-                        anyhow::bail!(
-                            "path '{}' does not exist or is not a directory. Use --builtin to install a builtin skill by name.",
-                            path.display()
-                        );
-                    }
-                    holon::types::SkillInstallKind::Local { path }
+                let mode = if copy {
+                    holon::types::SkillInstallMode::Copied
                 } else {
-                    holon::types::SkillInstallKind::Builtin { name: name_or_path }
+                    holon::types::SkillInstallMode::Linked
+                };
+                if path.is_absolute() || path.exists() {
+                    holon::types::SkillInstallKind::Local { path, mode }
+                } else {
+                    holon::types::SkillInstallKind::Named {
+                        name: name_or_path,
+                        mode,
+                    }
                 }
             };
             post_control_json(
