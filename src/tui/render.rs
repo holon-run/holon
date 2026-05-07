@@ -60,9 +60,9 @@ fn draw_prompt_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_menu:
         slash_menu.len() as u16,
     );
     let paragraph = Paragraph::new(render_prompt_text(app.composer.as_str(), slash_menu))
-        .block(Block::default().borders(Borders::ALL))
         .scroll((prompt_scroll, 0))
         .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
     frame.render_widget(paragraph, area);
 
     if matches!(app.overlay, OverlayState::None) {
@@ -232,7 +232,7 @@ fn todo_summary_work_item<'a>(
 fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> u16 {
     const MAX_PROMPT_PANE_HEIGHT: u16 = 12;
 
-    let input_width = pane_width.saturating_sub(2).max(1);
+    let input_width = PromptPaneLayout::input_width_for_pane_width(pane_width);
     let mut prompt_rows = 0u32;
     for line in render_prompt_buffer(buffer).split('\n') {
         prompt_rows = prompt_rows.saturating_add(u32::from(wrapped_prompt_rows(line, input_width)));
@@ -241,11 +241,8 @@ fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> 
         }
     }
     let slash_menu_rows = slash_menu_rows.min(usize::from(MAX_PROMPT_PANE_HEIGHT)) as u32;
-    let pane_rows = prompt_rows
-        .max(1)
-        .saturating_add(slash_menu_rows)
-        .saturating_add(2);
-    pane_rows.clamp(3, u32::from(MAX_PROMPT_PANE_HEIGHT)) as u16
+    let pane_rows = prompt_rows.max(1).saturating_add(slash_menu_rows);
+    pane_rows.clamp(1, u32::from(MAX_PROMPT_PANE_HEIGHT)) as u16
 }
 
 fn status_bar_height() -> u16 {
@@ -357,10 +354,10 @@ pub(super) fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
 }
 
 fn prompt_pane_scroll(area: Rect, buffer: &str, cursor: usize, hint_rows: u16) -> u16 {
-    let input_width = area.width.saturating_sub(2).max(1);
-    let (_, cursor_row) = prompt_cursor_visual_position(buffer, cursor, input_width, hint_rows);
-    let viewport_rows = area.height.saturating_sub(2).max(1);
-    cursor_row.saturating_sub(viewport_rows)
+    let layout = PromptPaneLayout::new(area);
+    let (_, cursor_row) =
+        prompt_cursor_visual_position(buffer, cursor, layout.input_width, hint_rows);
+    cursor_row.saturating_sub(layout.viewport_rows.saturating_sub(1))
 }
 
 fn prompt_cursor_position(
@@ -370,14 +367,18 @@ fn prompt_cursor_position(
     hint_rows: u16,
     scroll: u16,
 ) -> (u16, u16) {
-    let input_width = area.width.saturating_sub(2).max(1);
+    let layout = PromptPaneLayout::new(area);
     let (column, cursor_row) =
-        prompt_cursor_visual_position(buffer, cursor, input_width, hint_rows);
-    let max_x = area.x + area.width.saturating_sub(2);
-    let max_y = area.y + area.height.saturating_sub(2);
+        prompt_cursor_visual_position(buffer, cursor, layout.input_width, hint_rows);
     (
-        (area.x + 1 + column).min(max_x),
-        (area.y + 1 + cursor_row.saturating_sub(scroll)).min(max_y),
+        layout
+            .cursor_origin_x
+            .saturating_add(column)
+            .min(layout.max_cursor_x),
+        layout
+            .cursor_origin_y
+            .saturating_add(cursor_row.saturating_sub(scroll))
+            .min(layout.max_cursor_y),
     )
 }
 
@@ -407,10 +408,36 @@ fn prompt_cursor_visual_position(
         last_line_width - soft_wrap_row * input_width
     };
     let row = hint_rows
-        .saturating_add(1)
         .saturating_add(wrapped_rows_before)
         .saturating_add(soft_wrap_row);
     (column, row)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PromptPaneLayout {
+    input_width: u16,
+    viewport_rows: u16,
+    cursor_origin_x: u16,
+    cursor_origin_y: u16,
+    max_cursor_x: u16,
+    max_cursor_y: u16,
+}
+
+impl PromptPaneLayout {
+    fn new(area: Rect) -> Self {
+        Self {
+            input_width: Self::input_width_for_pane_width(area.width),
+            viewport_rows: area.height.max(1),
+            cursor_origin_x: area.x,
+            cursor_origin_y: area.y,
+            max_cursor_x: area.x.saturating_add(area.width.saturating_sub(1)),
+            max_cursor_y: area.y.saturating_add(area.height.saturating_sub(1)),
+        }
+    }
+
+    fn input_width_for_pane_width(pane_width: u16) -> u16 {
+        pane_width.max(1)
+    }
 }
 
 fn wrapped_prompt_rows(line: &str, visible_line_width: u16) -> u16 {
@@ -947,8 +974,9 @@ mod tests {
 
     #[test]
     fn prompt_pane_height_accounts_for_soft_wrapped_lines() {
-        assert_eq!(prompt_pane_height("abcdefgh", 0, 10), 4);
-        assert_eq!(prompt_pane_height("abcdefghabcdefgh", 0, 10), 5);
+        assert_eq!(prompt_pane_height("abcdefgh", 0, 10), 1);
+        assert_eq!(prompt_pane_height("abcdefghabcdefgh", 0, 10), 2);
+        assert_eq!(prompt_pane_height("abcdefgh", 2, 10), 3);
     }
 
     #[test]
@@ -1055,7 +1083,7 @@ mod tests {
         let area = Rect::new(10, 5, 40, 6);
         assert_eq!(
             prompt_cursor_position(area, "first\nsecond", "first\nsecond".len(), 0, 0),
-            (19, 8)
+            (18, 6)
         );
     }
 
@@ -1064,7 +1092,7 @@ mod tests {
         let area = Rect::new(10, 5, 10, 6);
         assert_eq!(
             prompt_cursor_position(area, "abcdefgh", "abcdefgh".len(), 0, 0),
-            (13, 8)
+            (19, 5)
         );
     }
 
@@ -1073,7 +1101,7 @@ mod tests {
         let area = Rect::new(10, 5, 10, 6);
         assert_eq!(
             prompt_cursor_position(area, "你好你好", "你好你好".len(), 0, 0),
-            (13, 8)
+            (19, 5)
         );
     }
 
@@ -1082,24 +1110,24 @@ mod tests {
         let area = Rect::new(10, 5, 10, 4);
         assert_eq!(
             prompt_cursor_position(area, "abcdefgh\nabcdefgh", "abcdefgh\nabcdefgh".len(), 0, 0),
-            (13, 7)
+            (19, 6)
         );
     }
 
     #[test]
     fn prompt_cursor_tracks_insert_position_inside_line() {
         let area = Rect::new(10, 5, 20, 6);
-        assert_eq!(prompt_cursor_position(area, "hello", 2, 0, 0), (15, 7));
+        assert_eq!(prompt_cursor_position(area, "hello", 2, 0, 0), (14, 5));
     }
 
     #[test]
     fn prompt_pane_scroll_keeps_multiline_cursor_visible() {
-        let area = Rect::new(10, 5, 20, 5);
+        let area = Rect::new(10, 5, 20, 3);
         let buffer = "first\n\nsecond\nthird\nfourth";
         let scroll = prompt_pane_scroll(area, buffer, buffer.len(), 0);
         assert!(scroll > 0);
         let (_, y) = prompt_cursor_position(area, buffer, buffer.len(), 0, scroll);
-        assert!(y <= area.y + area.height.saturating_sub(2));
+        assert!(y <= area.y + area.height.saturating_sub(1));
     }
 
     #[test]
@@ -1161,7 +1189,7 @@ mod tests {
     #[test]
     fn prompt_cursor_offsets_for_slash_menu_rows() {
         let area = Rect::new(10, 5, 20, 8);
-        assert_eq!(prompt_cursor_position(area, "/de", 3, 2, 0), (16, 9));
+        assert_eq!(prompt_cursor_position(area, "/de", 3, 2, 0), (15, 7));
     }
 
     #[test]

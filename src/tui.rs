@@ -237,7 +237,7 @@ mod tests {
     use ratatui::text::{Line, Text};
     use ratatui::{backend::TestBackend, layout::Rect, Terminal};
     use serde_json::json;
-    use std::path::PathBuf;
+    use std::{path::PathBuf, time::Instant};
 
     fn test_config() -> AppConfig {
         let temp = tempfile::tempdir().unwrap().keep();
@@ -850,6 +850,47 @@ mod tests {
         app.handle_paste("first\nsecond").await.unwrap();
 
         assert_eq!(app.composer.as_str(), "first\nsecond");
+    }
+
+    #[tokio::test]
+    async fn rapid_enter_after_large_key_burst_inserts_newline_for_paste_fallback() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+
+        app.composer = ComposerState::from("pasted text");
+        app.composer_key_burst_started_at = Some(Instant::now());
+        app.composer_key_burst_last_at = app.composer_key_burst_started_at;
+        app.composer_key_burst_len = 8;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.composer.as_str(), "pasted text\n");
+    }
+
+    #[tokio::test]
+    async fn quick_enter_after_normal_text_still_submits() {
+        let client = LocalClient::new(test_config()).unwrap();
+        let mut app = TuiApp::new(
+            client,
+            crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+
+        for ch in "short".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        let err = app
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect_err("normal quick Enter should still submit");
+
+        assert!(err.to_string().contains("no agent selected"));
+        assert_eq!(app.composer.as_str(), "short");
     }
 
     #[tokio::test]
