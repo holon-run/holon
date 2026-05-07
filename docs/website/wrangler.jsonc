@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "holon-docs-site",
+  "main": "dist/cloudflare/worker.mjs",
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "dist/cloudflare/assets"
+  },
+  "compatibility_date": "2026-03-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true
+}
