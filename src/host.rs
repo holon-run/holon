@@ -1063,13 +1063,7 @@ impl RuntimeHost {
     }
 
     pub(crate) fn agent_data_dir(&self, agent_id: &str) -> PathBuf {
-        let primary = self.config().data_dir.join("agents").join(agent_id);
-        let legacy = self.config().data_dir.join("sessions").join(agent_id);
-        if primary.exists() || !legacy.exists() {
-            primary
-        } else {
-            legacy
-        }
+        self.config().data_dir.join("agents").join(agent_id)
     }
 
     pub(crate) fn is_temporary_agent_id(agent_id: &str) -> bool {
@@ -1634,6 +1628,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn agent_data_dir_uses_agents_directory_without_sessions_compat() {
+        let (_home, host) = test_host();
+        let legacy = host
+            .config()
+            .data_dir
+            .join("sessions")
+            .join(&host.config().default_agent_id);
+        std::fs::create_dir_all(&legacy).unwrap();
+
+        assert_eq!(
+            host.agent_data_dir(&host.config().default_agent_id),
+            host.config()
+                .data_dir
+                .join("agents")
+                .join(&host.config().default_agent_id)
+        );
+    }
+
     #[tokio::test]
     async fn spawn_public_named_preserves_existing_runtime_state() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -1687,7 +1700,10 @@ mod tests {
             .expect("public named identity should exist");
         assert_eq!(identity.parent_agent_id, None);
         assert_eq!(identity.delegated_from_task_id, None);
-        assert_eq!(identity.lineage_parent_agent_id.as_deref(), Some("default"));
+        assert_eq!(
+            identity.lineage_parent_agent_id.as_deref(),
+            Some(host.config().default_agent_id.as_str())
+        );
 
         let summary = host
             .get_public_agent("release-bot")
@@ -1698,7 +1714,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             summary.identity.lineage_parent_agent_id.as_deref(),
-            Some("default")
+            Some(host.config().default_agent_id.as_str())
         );
     }
 
@@ -1880,7 +1896,7 @@ mod tests {
         );
         assert_eq!(
             bootstrap.metadata.as_ref().unwrap()["creator_agent_id"],
-            "default"
+            host.config().default_agent_id
         );
         assert!(bootstrap
             .metadata

@@ -23,7 +23,8 @@ callbacks, and agent creation will keep drifting.
 
 ## Short Answer
 
-`Holon` should use `default agent` as the primary term, not `root agent`.
+`Holon` should use `default agent` as the role term, not `root agent`.
+The default local agent id is `main`.
 
 `Holon` should also treat `agent` as the primary runtime primitive and describe
 other distinctions with explicit axes instead of one overloaded role list.
@@ -41,7 +42,7 @@ And each agent should also have explicit lifecycle properties:
 
 The main rules are:
 
-- `default` means default entrypoint, not elevated authority
+- `main` is the default local agent id, not elevated authority
 - `child` means parent provenance, not necessarily persistence
 - `delegated execution` is best understood as a child-agent lifecycle pattern,
   not a separate runtime primitive
@@ -83,7 +84,8 @@ agents.
 
 ## Naming Decision
 
-`Holon` should use `default agent` as the user-facing and runtime term.
+`Holon` should use `default agent` as the role term and `main` as the default
+local agent id.
 
 It should not use `root agent` as the primary term.
 
@@ -91,8 +93,8 @@ Reason:
 
 - `root` strongly implies elevated privilege
 - `Holon` does not intend the default agent to bypass trust or execution rules
-- the implementation already uses `default_agent_id`, so `default agent` keeps
-  naming aligned with current runtime state
+- `main` is a stronger durable identity than `default`, while `default agent`
+  remains the role name for the omitted-`--agent` route
 
 `root` may still be used for unrelated concepts such as root directories or
 root tasks, but not as the primary agent-role term.
@@ -241,7 +243,7 @@ This RFC distinguishes two cases:
 
 - `default agent` and `named agent`
   - should use meaningful, operator-facing ids
-  - examples: `default`, `release-bot`
+  - examples: `main`, `release-bot`
 - `child agent`
   - should normally use runtime-generated ids
   - the exact id format is an implementation detail
@@ -264,6 +266,8 @@ be cleaned up after closure according to later policy.
 The first routing rules should be:
 
 - commands that omit `--agent` target the `default agent`
+- when `HOLON_AGENT_ID` is not set, the default agent id is `main`
+- `HOLON_AGENT_ID` explicitly overrides the default agent id
 - explicitly named public agents target that agent and only that agent
 - `holon run` without `--agent` should execute on a temporary ephemeral agent
 - `holon run --agent <id>` should execute on that named persistent agent
@@ -365,8 +369,8 @@ These questions matter, but they do not block the first model.
 
 ## Decision
 
-`Holon` should use `default agent` as the primary term for the host's default
-operator-facing agent.
+`Holon` should use `default agent` as the role term for the host's default
+operator-facing agent, and `main` as the default local agent id.
 
 It should treat `agent` as the primary runtime primitive and model other
 distinctions with explicit kinds and lifecycle axes:

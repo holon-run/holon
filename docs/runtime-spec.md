@@ -817,6 +817,8 @@ The current first-pass profile presets are:
 Routing rules:
 
 - omitted agent targeting still resolves to the default agent
+- when `HOLON_AGENT_ID` is not set, the default agent id is `main`
+- `HOLON_AGENT_ID` explicitly overrides the default agent id
 - explicitly targeting a non-default public agent does not auto-create it
 - public named agents must be created explicitly through control surfaces
 - `holon run` without `--agent` uses a temporary private agent
