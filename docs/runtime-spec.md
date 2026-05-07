@@ -207,7 +207,9 @@ Phase-1 token visibility rules:
 - `turn_context_built`, `provider_round_completed`, `tool_executed`, and
   `turn_terminal` carry the durable timing fields consumed by
   `holon debug latency`; queue wait is derived from `message_admitted` to
-  `message_processing_started`
+  `message_processing_started`, while turn cleanup is derived from the
+  runtime-local `turn_terminal` duration and does not subtract queue wait or
+  pre-loop operator-dispatch context build time
 - `provider_round_completed` includes `context_build_ms`,
   `provider_round_ms`, `provider_started_at`, and `provider_completed_at`
   for the model-facing round

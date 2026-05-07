@@ -391,6 +391,9 @@ fn normalize_provider_attempt_timing(
     duration_ms: u64,
 ) -> Option<ProviderAttemptTimeline> {
     let mut timeline = timeline?;
+    if timeline.attempts.len() != 1 {
+        return Some(timeline);
+    }
     for attempt in &mut timeline.attempts {
         if attempt.started_at.is_none() {
             attempt.started_at = Some(started_at);
@@ -3038,6 +3041,60 @@ mod tests {
             select_exact_tail_start(&rounds, boundary_keep_recent_budget),
             2
         );
+    }
+
+    #[test]
+    fn normalize_provider_attempt_timing_only_backfills_single_attempt_timeline() {
+        fn attempt(attempt: usize) -> crate::provider::ProviderAttemptRecord {
+            crate::provider::ProviderAttemptRecord {
+                provider: "test".into(),
+                model_ref: "test/model".into(),
+                attempt,
+                max_attempts: 2,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                failure_kind: None,
+                disposition: None,
+                outcome: crate::provider::ProviderAttemptOutcome::Succeeded,
+                advanced_to_fallback: false,
+                backoff_ms: None,
+                token_usage: None,
+                transport_diagnostics: None,
+            }
+        }
+
+        let started_at = Utc::now();
+        let completed_at = started_at + chrono::Duration::milliseconds(42);
+        let single = ProviderAttemptTimeline {
+            attempts: vec![attempt(1)],
+            requested_model_ref: "test/model".into(),
+            active_model_ref: None,
+            winning_model_ref: None,
+            aggregated_token_usage: None,
+        };
+        let single = normalize_provider_attempt_timing(single.into(), started_at, completed_at, 42)
+            .expect("single-attempt timeline");
+
+        assert_eq!(single.attempts[0].started_at, Some(started_at));
+        assert_eq!(single.attempts[0].completed_at, Some(completed_at));
+        assert_eq!(single.attempts[0].duration_ms, Some(42));
+
+        let multiple = ProviderAttemptTimeline {
+            attempts: vec![attempt(1), attempt(2)],
+            requested_model_ref: "test/model".into(),
+            active_model_ref: None,
+            winning_model_ref: None,
+            aggregated_token_usage: None,
+        };
+        let multiple =
+            normalize_provider_attempt_timing(multiple.into(), started_at, completed_at, 42)
+                .expect("multi-attempt timeline");
+
+        assert!(multiple
+            .attempts
+            .iter()
+            .all(|attempt| attempt.duration_ms.is_none()));
     }
 
     #[test]

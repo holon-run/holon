@@ -1431,9 +1431,11 @@ mod tests {
         assert_eq!(turn.turn_index, 42);
         assert_eq!(turn.queue_wait_ms, Some(2000));
         assert_eq!(turn.context_build_ms, 120);
+        assert_eq!(turn.provider_context_build_ms, 20);
         assert_eq!(turn.provider_round_ms, 300);
         assert_eq!(turn.tool_execution_ms, 400);
         assert_eq!(turn.total_ms, Some(1000));
+        assert_eq!(turn.runtime_cleanup_ms(), Some(280));
         assert_eq!(
             turn.provider_rounds[0].provider.as_deref(),
             Some("anthropic")
@@ -1467,10 +1469,23 @@ struct TurnLatencyDiagnostics {
     total_ms: Option<u64>,
     queue_wait_ms: Option<u64>,
     context_build_ms: u64,
+    provider_context_build_ms: u64,
     provider_round_ms: u64,
     tool_execution_ms: u64,
     provider_rounds: Vec<ProviderRoundLatencyDiagnostics>,
     tools: Vec<ToolLatencyDiagnostics>,
+}
+
+impl TurnLatencyDiagnostics {
+    fn runtime_cleanup_ms(&self) -> Option<u64> {
+        self.total_ms.map(|total| {
+            total.saturating_sub(
+                self.provider_context_build_ms
+                    .saturating_add(self.provider_round_ms)
+                    .saturating_add(self.tool_execution_ms),
+            )
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -1516,7 +1531,7 @@ fn print_latency_diagnostics(
         let run = turn.run_id.as_deref().unwrap_or("unknown");
         let kind = turn.terminal_kind.as_deref().unwrap_or("unknown");
         println!(
-            "turn {} run={} kind={} total={}",
+            "turn {} run={} kind={} runtime_total={}",
             turn.turn_index, run, kind, total
         );
         println!(
@@ -1570,18 +1585,8 @@ fn print_latency_diagnostics(
         );
         println!(
             "  turn_cleanup      {}",
-            turn.total_ms
-                .map(|total| {
-                    format_duration_ms(
-                        total.saturating_sub(
-                            turn.queue_wait_ms
-                                .unwrap_or(0)
-                                .saturating_add(turn.context_build_ms)
-                                .saturating_add(turn.provider_round_ms)
-                                .saturating_add(turn.tool_execution_ms),
-                        ),
-                    )
-                })
+            turn.runtime_cleanup_ms()
+                .map(format_duration_ms)
                 .unwrap_or_else(|| "unknown".into())
         );
     }
@@ -1679,13 +1684,15 @@ fn build_latency_diagnostics(events: &[AuditEvent], limit: usize) -> Vec<TurnLat
                             ..TurnLatencyDiagnostics::default()
                         });
                     turn.provider_round_ms = turn.provider_round_ms.saturating_add(duration_ms);
-                    turn.context_build_ms = turn.context_build_ms.saturating_add(
-                        event
-                            .data
-                            .get("context_build_ms")
-                            .and_then(|value| value.as_u64())
-                            .unwrap_or(0),
-                    );
+                    let context_build_ms = event
+                        .data
+                        .get("context_build_ms")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    turn.context_build_ms = turn.context_build_ms.saturating_add(context_build_ms);
+                    turn.provider_context_build_ms = turn
+                        .provider_context_build_ms
+                        .saturating_add(context_build_ms);
                     if turn.run_id.is_none() {
                         turn.run_id = event
                             .data
