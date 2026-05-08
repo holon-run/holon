@@ -48,7 +48,7 @@ pub fn load_skills_runtime_view(
         }
     }
 
-    if let Some(root) = select_skill_root(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
+    for root in existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
         discoverable_skills.extend(load_catalog_for_scope(SkillScope::Agent, &root)?);
         discovered_roots.push(SkillRootView {
             scope: SkillScope::Agent,
@@ -262,6 +262,25 @@ fn agent_skills_root(agent_home: &Path) -> PathBuf {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SkillInstallConflict {
+    pub skill_name: String,
+    pub destination: PathBuf,
+}
+
+impl std::fmt::Display for SkillInstallConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "skill '{}' is already installed at {}; uninstall it first or choose a different skill name",
+            self.skill_name,
+            self.destination.display()
+        )
+    }
+}
+
+impl std::error::Error for SkillInstallConflict {}
+
 /// Validate that a skill name is a single path component with no traversal.
 fn validate_skill_name(name: &str) -> Result<()> {
     if name.is_empty()
@@ -276,6 +295,19 @@ fn validate_skill_name(name: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn install_destination(skills_root: &Path, skill_name: &str) -> Result<PathBuf> {
+    validate_skill_name(skill_name)?;
+    let destination = skills_root.join(skill_name);
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err(SkillInstallConflict {
+            skill_name: skill_name.to_string(),
+            destination,
+        }
+        .into());
+    }
+    Ok(destination)
 }
 
 pub fn install_skill(agent_home: &Path, kind: &crate::types::SkillInstallKind) -> Result<String> {
@@ -293,6 +325,7 @@ pub fn install_skill_with_user_home(
     let name = match kind {
         crate::types::SkillInstallKind::Builtin { name } => {
             validate_skill_name(name)?;
+            let _ = install_destination(&skills_root, name)?;
             let destination =
                 crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
             record_install_metadata(&destination, "builtin")?;
@@ -301,6 +334,7 @@ pub fn install_skill_with_user_home(
         crate::types::SkillInstallKind::Named { name, mode } => {
             validate_skill_name(name)?;
             if crate::agent_template::builtin_skill_names().contains(&name.as_str()) {
+                let _ = install_destination(&skills_root, name)?;
                 let destination =
                     crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
                 record_install_metadata(&destination, "builtin")?;
@@ -325,6 +359,7 @@ fn materialize_local_skill(
     let path = normalize_local_skill_path(path)?;
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     validate_skill_name(file_name)?;
+    let _ = install_destination(skills_root, file_name)?;
     let destination = match mode {
         SkillInstallMode::Linked => materialize_linked_skill_ref(skills_root, &path)?,
         SkillInstallMode::Copied => materialize_copied_skill_ref(skills_root, &path)?,
@@ -486,17 +521,29 @@ fn read_install_metadata(skill_dir: &Path) -> Option<SkillInstallMetadata> {
 
 pub fn uninstall_skill(agent_home: &Path, name: &str) -> Result<()> {
     validate_skill_name(name)?;
-    let skills_root = agent_skills_root(agent_home);
-    let destination = skills_root.join(name);
-    // Use symlink_metadata to detect symlinks without following them.
-    let meta = match fs::symlink_metadata(&destination) {
-        Ok(m) => m,
-        Err(_) => {
+    let mut matches = Vec::new();
+    for skills_root in existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
+        let destination = skills_root.join(name);
+        if let Ok(meta) = fs::symlink_metadata(&destination) {
+            matches.push((destination, meta));
+        }
+    }
+    let [(destination, meta)] = matches.as_slice() else {
+        if matches.is_empty() {
             bail!(
                 "skill '{}' is not installed in agent skills directory",
                 name
             );
         }
+        bail!(
+            "skill '{}' is installed in multiple agent skill roots: {}; remove the duplicate directories manually",
+            name,
+            matches
+                .iter()
+                .map(|(path, _)| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     };
     // Verify this looks like a skill installation by checking for SKILL_ENTRYPOINT.
     if !destination.join(SKILL_ENTRYPOINT).exists() && !meta.is_symlink() {
@@ -522,47 +569,58 @@ pub struct InstalledSkillView {
 }
 
 pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView>> {
-    let skills_root = agent_skills_root(agent_home);
-    if !skills_root.is_dir() {
-        return Ok(Vec::new());
-    }
     let mut entries = Vec::new();
-    for child in fs::read_dir(&skills_root)
-        .with_context(|| format!("failed to read {}", skills_root.display()))?
-    {
-        let child = child?;
-        let file_type = child.file_type()?;
-        if !file_type.is_dir() && !file_type.is_symlink() {
-            continue;
-        }
-        let skill_name = child.file_name().to_string_lossy().to_string();
-        let skill_path = child.path().join(SKILL_ENTRYPOINT);
-        let catalog = if skill_path.is_file() {
-            let content = fs::read_to_string(&skill_path).with_context(|| {
-                format!("failed to read installed skill {}", skill_path.display())
-            })?;
-            let parsed = parse_skill_metadata(&content);
-            SkillCatalogEntry {
-                skill_id: format!("agent:{skill_name}"),
-                name: parsed.name.unwrap_or_else(|| skill_name.clone()),
-                description: parsed
-                    .description
-                    .unwrap_or_else(|| first_body_paragraph(&content)),
-                path: skill_path,
-                scope: SkillScope::Agent,
-            }
-        } else {
-            SkillCatalogEntry {
-                skill_id: format!("agent:{skill_name}"),
-                name: skill_name.clone(),
-                description: String::new(),
-                path: skill_path,
-                scope: SkillScope::Agent,
+    for skills_root in existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
+        let read_dir = match fs::read_dir(&skills_root) {
+            Ok(read_dir) => read_dir,
+            Err(error) => {
+                warn!(
+                    "skipping unreadable installed skill root {}: {error}",
+                    skills_root.display()
+                );
+                continue;
             }
         };
-        entries.push(installed_skill_view(catalog)?);
+        for child in read_dir {
+            let child = child?;
+            let file_type = child.file_type()?;
+            if !file_type.is_dir() && !file_type.is_symlink() {
+                continue;
+            }
+            let skill_name = child.file_name().to_string_lossy().to_string();
+            let skill_path = child.path().join(SKILL_ENTRYPOINT);
+            let catalog = if skill_path.is_file() {
+                let content = fs::read_to_string(&skill_path).with_context(|| {
+                    format!("failed to read installed skill {}", skill_path.display())
+                })?;
+                let parsed = parse_skill_metadata(&content);
+                SkillCatalogEntry {
+                    skill_id: format!("agent:{skill_name}"),
+                    name: parsed.name.unwrap_or_else(|| skill_name.clone()),
+                    description: parsed
+                        .description
+                        .unwrap_or_else(|| first_body_paragraph(&content)),
+                    path: skill_path,
+                    scope: SkillScope::Agent,
+                }
+            } else {
+                SkillCatalogEntry {
+                    skill_id: format!("agent:{skill_name}"),
+                    name: skill_name.clone(),
+                    description: String::new(),
+                    path: skill_path,
+                    scope: SkillScope::Agent,
+                }
+            };
+            entries.push(installed_skill_view(catalog)?);
+        }
     }
-    entries.sort_by(|left, right| left.catalog.skill_id.cmp(&right.catalog.skill_id));
+    entries.sort_by(|left, right| {
+        left.catalog
+            .skill_id
+            .cmp(&right.catalog.skill_id)
+            .then_with(|| left.catalog.path.cmp(&right.catalog.path))
+    });
     Ok(entries)
 }
 
@@ -671,7 +729,7 @@ mod tests {
     use crate::types::{SkillActivationSource, SkillActivationState};
 
     #[test]
-    fn uses_first_existing_root_without_merging_fallbacks() {
+    fn agent_skill_discovery_merges_compatible_roots() {
         let dir = tempdir().unwrap();
         let base = dir.path();
         let first_root = base.join("skills");
@@ -693,9 +751,13 @@ mod tests {
             load_skills_runtime_view(SkillVisibility::NonDefaultAgent, None, base, None, &[])
                 .unwrap();
 
-        assert_eq!(view.discovered_roots.len(), 1);
-        assert_eq!(view.discoverable_skills.len(), 1);
-        assert_eq!(view.discoverable_skills[0].name, "alpha");
+        assert_eq!(view.discovered_roots.len(), 2);
+        let names = view
+            .discoverable_skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["alpha", "beta"]);
     }
 
     #[test]
@@ -988,6 +1050,80 @@ mod tests {
     }
 
     #[test]
+    fn list_installed_skills_merges_compatible_agent_roots() {
+        let dir = tempdir().unwrap();
+        let agent_home = dir.path().join("agent");
+        for (root, name) in [("skills", "alpha"), (".codex/skills", "beta")] {
+            let skill_dir = agent_home.join(root).join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join(SKILL_ENTRYPOINT),
+                format!("---\nname: {name}\ndescription: installed\n---\nbody"),
+            )
+            .unwrap();
+        }
+
+        let installed = list_installed_skills(&agent_home).unwrap();
+
+        let names = installed
+            .iter()
+            .map(|skill| skill.catalog.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn install_existing_destination_returns_structured_conflict() {
+        let dir = tempdir().unwrap();
+        let agent_home = dir.path().join("agent");
+        let destination = agent_home.join("skills/ghx");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join(SKILL_ENTRYPOINT), "# Existing ghx").unwrap();
+
+        let error = install_skill_with_user_home(
+            &agent_home,
+            None,
+            &crate::types::SkillInstallKind::Builtin { name: "ghx".into() },
+        )
+        .unwrap_err();
+        let conflict = error
+            .downcast_ref::<SkillInstallConflict>()
+            .expect("existing destination should return a structured conflict");
+
+        assert_eq!(conflict.skill_name, "ghx");
+        assert_eq!(conflict.destination, destination);
+    }
+
+    #[test]
+    fn install_existing_broken_symlink_returns_structured_conflict() {
+        let dir = tempdir().unwrap();
+        let agent_home = dir.path().join("agent");
+        let skills_root = agent_home.join("skills");
+        fs::create_dir_all(&skills_root).unwrap();
+        let destination = skills_root.join("demo");
+        create_symlink(&dir.path().join("missing-demo"), &destination).unwrap();
+        let source = dir.path().join("source/demo");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join(SKILL_ENTRYPOINT), "# Demo").unwrap();
+
+        let error = install_skill_with_user_home(
+            &agent_home,
+            None,
+            &crate::types::SkillInstallKind::Local {
+                path: source,
+                mode: SkillInstallMode::Linked,
+            },
+        )
+        .unwrap_err();
+        let conflict = error
+            .downcast_ref::<SkillInstallConflict>()
+            .expect("dangling destination symlink should return a structured conflict");
+
+        assert_eq!(conflict.skill_name, "demo");
+        assert_eq!(conflict.destination, destination);
+    }
+
+    #[test]
     fn uninstall_linked_skill_removes_only_agent_local_link() {
         let dir = tempdir().unwrap();
         let source = dir.path().join("source/demo");
@@ -1008,6 +1144,40 @@ mod tests {
 
         assert!(source.join(SKILL_ENTRYPOINT).is_file());
         assert!(!agent_home.join("skills/demo").exists());
+    }
+
+    #[test]
+    fn uninstall_skill_searches_compatible_agent_roots() {
+        let dir = tempdir().unwrap();
+        let agent_home = dir.path().join("agent");
+        let source = dir.path().join("source/demo");
+        let legacy_destination = agent_home.join(".codex/skills/demo");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join(SKILL_ENTRYPOINT), "# Demo").unwrap();
+        fs::create_dir_all(legacy_destination.parent().unwrap()).unwrap();
+        create_symlink(&source, &legacy_destination).unwrap();
+
+        uninstall_skill(&agent_home, "demo").unwrap();
+
+        assert!(source.join(SKILL_ENTRYPOINT).is_file());
+        assert!(!legacy_destination.exists());
+    }
+
+    #[test]
+    fn uninstall_skill_rejects_duplicate_installs_across_roots() {
+        let dir = tempdir().unwrap();
+        let agent_home = dir.path().join("agent");
+        for root in ["skills", ".codex/skills"] {
+            let skill_dir = agent_home.join(root).join("demo");
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(skill_dir.join(SKILL_ENTRYPOINT), "# Demo").unwrap();
+        }
+
+        let error = uninstall_skill(&agent_home, "demo").unwrap_err();
+
+        assert!(error.to_string().contains("multiple agent skill roots"));
+        assert!(agent_home.join("skills/demo").exists());
+        assert!(agent_home.join(".codex/skills/demo").exists());
     }
 
     #[test]

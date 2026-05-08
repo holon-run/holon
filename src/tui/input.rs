@@ -627,8 +627,20 @@ impl TuiApp {
                     name: skill_name.clone(),
                     mode: crate::types::SkillInstallMode::Linked,
                 };
-                self.client.install_skill(&agent_id, kind).await?;
-                self.status_line = format!("Installed skill: {skill_name}");
+                match self.client.install_skill(&agent_id, kind).await {
+                    Ok(_) => self.status_line = format!("Installed skill: {skill_name}"),
+                    Err(error) => {
+                        if error
+                            .downcast_ref::<crate::client::LocalHttpError>()
+                            .is_some_and(|error| error.has_code("skill_already_installed"))
+                        {
+                            self.status_line =
+                                format!("Skill already installed: {skill_name}; uninstall first");
+                        } else {
+                            return Err(error);
+                        }
+                    }
+                }
             }
             SlashCommand::SkillUninstall => {
                 let skill_name = args

@@ -15,6 +15,8 @@ http_async_tests!(
     control_prompt_is_open_on_loopback_auto,
     agent_state_route_returns_aggregated_snapshot,
     agent_state_route_includes_bootstrap_projection_fields_when_present,
+    list_skills_includes_all_agent_skill_roots,
+    install_skill_existing_destination_returns_conflict,
     control_agent_model_override_set_and_clear_updates_status,
     control_prompt_requires_bearer_token_when_required,
     remote_tcp_surfaces_require_bearer_token_when_required,
