@@ -241,6 +241,8 @@ fn resolve_waiting(
         && trigger.task_terminal
         && trigger.task_blocking
     {
+        // Terminal blocking task state is persisted before TaskResult enqueue, so
+        // resuming here cannot reopen the stale active-task wait that just ended.
         evidence.push("terminal_blocking_task_result".to_string());
         return ContinuationResolution {
             trigger_kind: trigger.kind,

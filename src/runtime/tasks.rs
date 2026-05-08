@@ -44,15 +44,15 @@ fn spawn_agent_task_label(initial_message: &str) -> String {
     crate::tool::helpers::truncate_text(&label, SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET)
 }
 
-fn task_status_from_label(status: &str) -> TaskStatus {
+fn task_status_label(status: &TaskStatus) -> &'static str {
     match status {
-        "running" => TaskStatus::Running,
-        "cancelling" => TaskStatus::Cancelling,
-        "completed" => TaskStatus::Completed,
-        "failed" => TaskStatus::Failed,
-        "cancelled" => TaskStatus::Cancelled,
-        "interrupted" => TaskStatus::Interrupted,
-        _ => TaskStatus::Queued,
+        TaskStatus::Queued => "queued",
+        TaskStatus::Running => "running",
+        TaskStatus::Cancelling => "cancelling",
+        TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Cancelled => "cancelled",
+        TaskStatus::Interrupted => "interrupted",
     }
 }
 
@@ -214,23 +214,27 @@ impl RuntimeHandle {
                 .run_subagent_prompt(&agent_id, &prompt, &trust)
                 .await;
             let (text, status) = match subagent_result {
-                Ok(text) => (text, "completed"),
-                Err(err) => (format!("child agent failed: {err:#}"), "failed"),
+                Ok(text) => (text, TaskStatus::Completed),
+                Err(err) => (format!("child agent failed: {err:#}"), TaskStatus::Failed),
             };
+            let status_label = task_status_label(&status);
 
-            let terminal_task = task_with_status(
-                &task_record,
-                task_status_from_label(status),
-                task_record.detail.clone(),
-            );
-            let _ = runtime
+            let terminal_task = task_with_status(&task_record, status, task_record.detail.clone());
+            if let Err(error) = runtime
                 .persist_task_status_direct(&terminal_task, "task_status_updated")
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    task_id = %terminal_task.id,
+                    error = %error,
+                    "failed to persist terminal task status before task result"
+                );
+            }
             let result_message = MessageEnvelope {
                 metadata: Some(serde_json::json!({
                     "task_id": task_record.id,
                     "task_kind": task_record.kind,
-                    "task_status": status,
+                    "task_status": status_label,
                     "task_summary": task_record.summary,
                     "task_detail": task_record.detail,
                     "task_recovery": task_record.recovery,
@@ -520,7 +524,7 @@ impl RuntimeHandle {
 
             let (mut text, status, mut task_detail, worktree_path): (
                 String,
-                &str,
+                TaskStatus,
                 serde_json::Value,
                 Option<(PathBuf, String, Vec<String>)>,
             ) = match subagent_result {
@@ -536,7 +540,11 @@ impl RuntimeHandle {
                     });
                     (
                         worktree::format_worktree_task_result(&result),
-                        if result.failed { "failed" } else { "completed" },
+                        if result.failed {
+                            TaskStatus::Failed
+                        } else {
+                            TaskStatus::Completed
+                        },
                         {
                             let mut detail = task_record
                                 .detail
@@ -550,7 +558,7 @@ impl RuntimeHandle {
                 }
                 Err(err) => (
                     format!("worktree child agent failed: {err:#}"),
-                    "failed",
+                    TaskStatus::Failed,
                     task_record
                         .detail
                         .clone()
@@ -572,10 +580,11 @@ impl RuntimeHandle {
                 }
             }
 
+            let status_label = task_status_label(&status);
             let mut metadata = serde_json::json!({
                 "task_id": task_record.id,
                 "task_kind": task_record.kind,
-                "task_status": status,
+                "task_status": status_label,
                 "task_summary": task_record.summary,
                 "task_detail": task_detail.clone(),
                 "task_recovery": task_record.recovery,
@@ -583,14 +592,17 @@ impl RuntimeHandle {
             if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
                 metadata["worktree"] = worktree;
             }
-            let terminal_task = task_with_status(
-                &task_record,
-                task_status_from_label(status),
-                Some(task_detail.clone()),
-            );
-            let _ = runtime
+            let terminal_task = task_with_status(&task_record, status, Some(task_detail.clone()));
+            if let Err(error) = runtime
                 .persist_task_status_direct(&terminal_task, "task_status_updated")
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    task_id = %terminal_task.id,
+                    error = %error,
+                    "failed to persist terminal task status before task result"
+                );
+            }
             let result_message = MessageEnvelope {
                 metadata: Some(metadata),
                 ..MessageEnvelope::new(
@@ -731,9 +743,16 @@ impl RuntimeHandle {
                         TaskStatus::Failed,
                         task_record.detail.clone(),
                     );
-                    let _ = runtime
+                    if let Err(error) = runtime
                         .persist_task_status_direct(&failed_task, "task_status_updated")
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(
+                            task_id = %failed_task.id,
+                            error = %error,
+                            "failed to persist terminal task status before task result"
+                        );
+                    }
                     let _ = runtime.enqueue(result_message).await;
                     runtime
                         .inner
@@ -918,20 +937,12 @@ impl RuntimeHandle {
         let (mut text, status, mut task_detail) = match result {
             Ok(result) => (
                 result.text,
-                match result.status {
-                    TaskStatus::Completed => "completed",
-                    TaskStatus::Failed => "failed",
-                    TaskStatus::Cancelled => "cancelled",
-                    TaskStatus::Interrupted => "interrupted",
-                    TaskStatus::Cancelling => "cancelling",
-                    TaskStatus::Running => "running",
-                    TaskStatus::Queued => "queued",
-                },
+                result.status,
                 result.task_detail.unwrap_or(task_detail_for_result.clone()),
             ),
             Err(err) => (
                 format!("child agent failed: {err:#}"),
-                "failed",
+                TaskStatus::Failed,
                 task_detail_for_result,
             ),
         };
@@ -963,7 +974,7 @@ impl RuntimeHandle {
                         worktree_path: path.clone(),
                         worktree_branch: branch.clone(),
                         changed_files: changed_files.clone(),
-                        failed: status == "failed",
+                        failed: status == TaskStatus::Failed,
                     });
                     if let Ok(Some(cleanup)) = self
                         .cleanup_task_owned_worktree_in_detail(
@@ -997,10 +1008,11 @@ impl RuntimeHandle {
             ))?;
         }
 
+        let status_label = task_status_label(&status);
         let mut metadata = serde_json::json!({
             "task_id": task_record.id,
             "task_kind": task_record.kind,
-            "task_status": status,
+            "task_status": status_label,
             "task_summary": task_record.summary,
             "task_recovery": task_record.recovery,
             "task_detail": task_detail.clone(),
@@ -1014,14 +1026,17 @@ impl RuntimeHandle {
         if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
             metadata["worktree"] = worktree;
         }
-        let terminal_task = task_with_status(
-            &task_record,
-            task_status_from_label(status),
-            Some(task_detail.clone()),
-        );
-        let _ = self
+        let terminal_task = task_with_status(&task_record, status, Some(task_detail.clone()));
+        if let Err(error) = self
             .persist_task_status_direct(&terminal_task, "task_status_updated")
-            .await;
+            .await
+        {
+            tracing::warn!(
+                task_id = %terminal_task.id,
+                error = %error,
+                "failed to persist terminal task status before task result"
+            );
+        }
         let result_message = MessageEnvelope {
             metadata: Some(metadata),
             ..MessageEnvelope::new(
