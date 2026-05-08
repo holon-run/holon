@@ -495,21 +495,29 @@ Queued messages are durable scheduler inputs.
 Restart behavior should be explicit:
 
 - `Queued` messages replay;
-- `Dequeued` messages replay only if the previous run did not reach a terminal
-  boundary;
+- `Dequeued` messages may replay at the message level when the previous run did
+  not reach a terminal boundary;
 - `Processed`, `Interrupted`, `Dropped`, and `Interjected` messages do not
   replay as normal queued messages.
 
-The current replay behavior should be characterized by tests before it changes.
+Holon should not replay prior tool calls as a recovery mechanism. Tool calls
+are model-driven. After a restart, the runtime may replay the dequeued message
+so the model can inspect current state and decide what to do next, but the
+runtime must not automatically execute tool calls that were recorded before the
+restart.
 
-Open question:
+The scheduler contract is therefore:
 
-- should a `Dequeued` message replay after a provider/tool side effect but
-  before `Processed`, or should Holon persist a run checkpoint that prevents
-  duplicate side effects?
+- replay is message-level, not tool-call-level;
+- prior assistant rounds, tool executions, task records, work items, and briefs
+  should be visible enough for the next model turn to recover;
+- duplicate prevention means the runtime does not re-execute an already
+  recorded tool call id by itself;
+- if a side effect happened but no durable tool record exists, the scheduler
+  cannot reliably infer it and should not pretend otherwise.
 
-Until that is resolved, tools that can cause side effects should remain
-auditable and preferably idempotent or recoverable.
+This keeps side-effect recovery model-guided through observable evidence rather
+than scheduler-owned semantic replay.
 
 ## Context And Compaction Contract
 
@@ -739,18 +747,134 @@ Required scenarios:
 - compaction does not rewrite scheduler truth;
 - ledger replay can explain the final scheduler projection.
 
-## Open Questions
+## Decisions
 
-- Should `AgentState.status` eventually be fully derived, or should it remain a
-  cached projection with strict consistency checks?
-- What is the durable generation marker for WorkItem idempotency: `updated_at`,
-  append sequence, or an explicit revision?
-- How should Holon prevent duplicate side effects when a `Dequeued` message
-  replays after a crash?
-- Should task-to-work-item association become a first-class `TaskRecord` field
-  or remain in detail metadata?
-- Should scheduler replay fixtures live under `tests/fixtures/scheduler/` or
-  be generated from real `.holon/ledger` directories?
+### `AgentState.status` Remains A Cached Projection
+
+`AgentState.status` should remain persisted for fast TUI, API, and recovery
+reads.
+
+It should not remain a shared authority that unrelated modules mutate
+independently. The scheduler should become the only writer for status-like
+runtime posture. Tests should be able to rebuild the scheduler projection from
+durable ledgers and compare it with the cached agent state.
+
+This avoids making every status read expensive while still preventing hidden
+state drift.
+
+### WorkItem Idempotency Uses Explicit Revision
+
+Work-item idempotency should use an explicit revision or generation field, not
+`updated_at`.
+
+`updated_at` is useful for display and ordering, but it is too weak as a
+scheduler idempotency key. It can be affected by clock precision, imports,
+fixtures, and non-semantic writes.
+
+The preferred direction is:
+
+```rust
+struct WorkItemRecord {
+    revision: u64,
+    // existing fields...
+}
+```
+
+Every new WorkItem snapshot increments `revision`. Work-queue tick keys should
+then use:
+
+```text
+work_queue:continue_active:<work_item_id>:<revision>
+work_queue:queued_available:<work_item_id>:<revision>
+```
+
+If Holon later introduces ledger-wide sequence numbers, WorkItem revision can
+still remain the work-item-local semantic generation.
+
+### Dequeued Replay Is Message-Level
+
+Holon should replay `Dequeued` messages at the message level, not at the
+tool-call level.
+
+The runtime should not try to classify every tool as safe or unsafe to replay.
+Tools are model-invoked, and the model can inspect current state before
+deciding whether to call a tool again. Runtime-owned automatic replay of old
+tool calls would be both hard to classify and easy to get wrong.
+
+The decision is:
+
+- replaying a dequeued message may cause a new model turn;
+- old tool call ids are never automatically re-executed by scheduler recovery;
+- visible ledger evidence is the recovery mechanism;
+- if no durable record exists for a side effect, the scheduler cannot
+  reconstruct it reliably.
+
+This keeps replay simple and avoids introducing a premature side-effect
+classification system into the scheduler.
+
+### Task-To-WorkItem Association Becomes First-Class
+
+Task records should gain a first-class optional work-item association.
+
+Recommended shape:
+
+```rust
+struct TaskRecord {
+    work_item_id: Option<String>,
+    // existing fields...
+}
+```
+
+This lets Holon answer scheduler questions directly:
+
+- which WorkItem is this blocking task related to?
+- can this WorkItem complete while unrelated tasks are still running?
+- should this task result satisfy the current wait?
+- how should `/tasks` and state snapshots group active work?
+
+During migration, old records may continue to expose work-item association from
+`detail.work_item_id` as a fallback. New records should write the first-class
+field.
+
+### Scheduler Replay Fixtures Live Under `tests/fixtures/scheduler`
+
+Scheduler replay fixtures should live under:
+
+```text
+tests/fixtures/scheduler/
+```
+
+Each fixture should preserve the minimum ledger subset needed to rebuild a
+scheduler projection:
+
+```text
+tests/fixtures/scheduler/<case>/
+  agent.json
+  ledger/
+    messages.jsonl
+    queue_entries.jsonl
+    events.jsonl
+    tasks.jsonl
+    work_items.jsonl
+    waiting_intents.jsonl
+    timers.jsonl
+    tools.jsonl
+    briefs.jsonl
+  expected.json
+```
+
+Real `.holon/ledger` directories should be convertible into this fixture shape
+through a debug/export command, but committed tests should use stable,
+repository-local fixtures.
+
+## Deferred Follow-Up
+
+Tools may later expose a lightweight side-effect level such as `read_only`,
+`workspace_mutation`, `external_mutation`, or `unknown` for diagnostics and
+prompt guidance.
+
+That belongs with tool contract work, not this scheduler RFC. Scheduler
+recovery must not depend on it.
 
 ## Related RFCs
 
