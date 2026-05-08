@@ -250,6 +250,76 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     Ok(())
 }
 
+pub async fn list_skills_includes_all_agent_skill_roots() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let agent_home = host.config().data_dir.join("agents/default");
+    for (root, name) in [("skills", "alpha"), (".codex/skills", "beta")] {
+        let skill_dir = agent_home.join(root).join(name);
+        std::fs::create_dir_all(&skill_dir)?;
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: installed\n---\nbody"),
+        )?;
+    }
+
+    let payload: serde_json::Value = Client::new()
+        .get(format!("{base}/agents/default/skills"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let names = payload["skills"]
+        .as_array()
+        .expect("skills should be an array")
+        .iter()
+        .filter_map(|skill| skill["name"].as_str())
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"alpha"));
+    assert!(names.contains(&"beta"));
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn install_skill_existing_destination_returns_conflict() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = Client::new();
+    let payload = serde_json::json!({
+        "kind": {
+            "kind": "builtin",
+            "name": "ghx",
+        }
+    });
+
+    let first = client
+        .post(format!("{base}/control/agents/default/skills/install"))
+        .json(&payload)
+        .send()
+        .await?;
+    assert!(first.status().is_success());
+
+    let second = client
+        .post(format!("{base}/control/agents/default/skills/install"))
+        .json(&payload)
+        .send()
+        .await?;
+    assert_eq!(second.status(), reqwest::StatusCode::CONFLICT);
+    let body: serde_json::Value = second.json().await?;
+    assert_eq!(body["code"], "skill_already_installed");
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("uninstall it first"));
+    assert!(body["hint"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("uninstall"));
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_agent_model_override_set_and_clear_updates_status() -> Result<()> {
     let mut config = test_config();
     config.default_model = holon::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap();

@@ -1573,7 +1573,7 @@ pub async fn install_skill(
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
     let skill_name =
         crate::skills::install_skill_with_user_home(&agent_home, Some(&user_home), &request.kind)
-            .map_err(error_response)?;
+            .map_err(skill_install_error_response)?;
     runtime
         .append_audit_event(
             "skill_installed",
@@ -2623,6 +2623,23 @@ fn interrupt_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
                 "code": "no_current_run",
                 "error": format!("agent {agent_id} has no current run to interrupt"),
                 "agent_id": agent_id,
+            })),
+        ),
+        Err(error) => error_response(error),
+    }
+}
+
+fn skill_install_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    match error.downcast::<crate::skills::SkillInstallConflict>() {
+        Ok(conflict) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "code": "skill_already_installed",
+                "error": conflict.to_string(),
+                "skill_name": conflict.skill_name,
+                "destination": conflict.destination,
+                "hint": "uninstall the existing skill first or choose a different skill name",
             })),
         ),
         Err(error) => error_response(error),
