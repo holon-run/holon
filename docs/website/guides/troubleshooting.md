@@ -1,3 +1,9 @@
+---
+title: Troubleshooting
+summary: Solutions for common Holon issues covering daemon, configuration, model, and TUI problems.
+order: 30
+---
+
 # Troubleshooting
 
 Solutions for common Holon issues.

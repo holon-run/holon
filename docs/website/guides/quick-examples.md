@@ -1,3 +1,9 @@
+---
+title: Quick examples
+summary: Common Holon tasks you can try after completing the Getting Started guide.
+order: 15
+---
+
 # Quick Examples
 
 Common Holon tasks you can try after completing the [Getting Started guide](/getting-started/first-agent.md).

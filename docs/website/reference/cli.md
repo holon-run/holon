@@ -1,3 +1,9 @@
+---
+title: CLI reference
+summary: Holon's command-line interface, command tree, and common workflows.
+order: 10
+---
+
 # CLI Reference
 
 Holon's command-line interface. All commands accept `--help` for detailed flag documentation.
@@ -7,6 +13,17 @@ Holon's command-line interface. All commands accept `--help` for detailed flag d
 ```
 holon
 ├── run          One-shot agent interaction
+├── prompt       Send a prompt to an agent (lightweight)
+├── status       Show agent status
+├── tail         Show recent log tail
+├── transcript   Show conversation transcript
+├── task         Run a command as a background task
+├── timer        Create a delayed or recurring timer
+├── control      Send control actions to an agent
+│   ├── pause    Pause an agent
+│   ├── resume   Resume an agent
+│   ├── stop     Stop an agent
+│   └── interrupt Interrupt current run
 ├── daemon       Background daemon lifecycle
 │   ├── start    Start the daemon
 │   ├── stop     Stop the daemon
@@ -20,6 +37,10 @@ holon
 │       ├── set  Set agent model override
 │       └── clear Clear agent model override
 ├── serve        Start HTTP control plane server
+├── skills       Manage skills
+│   ├── list     List installed skills
+│   ├── install  Install a skill
+│   └── uninstall Uninstall a skill
 ├── tui          Launch interactive terminal UI
 ├── config       Runtime configuration
 │   ├── get      Read a config key
@@ -40,6 +61,11 @@ holon
 │   │   └── remove Remove a credential
 │   └── models  Model catalog
 │       └── list List available models
+├── solve        Solve a GitHub issue or similar target
+├── workspace    Workspace management (attach, exit, detach)
+├── debug        Debug utilities
+│   ├── prompt   Debug-mode prompt
+│   └── latency  Show latency metrics
 └── help         Print help
 ```
 

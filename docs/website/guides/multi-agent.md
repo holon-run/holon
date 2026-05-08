@@ -1,3 +1,9 @@
+---
+title: Multi-agent collaboration
+summary: Spawning child agents, supervision contracts, and workspace modes for parallel work.
+order: 35
+---
+
 # Multi-Agent Collaboration
 
 Holon supports spawning child agents for parallel work, delegation, and

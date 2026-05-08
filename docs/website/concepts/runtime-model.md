@@ -1,3 +1,9 @@
+---
+title: Runtime model
+summary: Agents, tasks, work items, workspaces, and the execution loop that make up Holon's runtime.
+order: 10
+---
+
 # Runtime Model
 
 Holon treats agent execution as a runtime system. A single model turn is

@@ -1,3 +1,9 @@
+---
+title: Work items guide
+summary: Durable objective tracking with work items, plans, todo lists, and lifecycle management.
+order: 45
+---
+
 # Work Items Guide
 
 Work items are Holon's durable unit of tracked work. Use them when an objective

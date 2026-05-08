@@ -1,3 +1,9 @@
+---
+title: Trust boundaries
+summary: How Holon classifies origin, trust, and priority to keep long-lived agents secure.
+order: 20
+---
+
 # Trust Boundaries
 
 Holon keeps trust boundaries explicit because long-lived agents receive input

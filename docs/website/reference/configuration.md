@@ -1,3 +1,9 @@
+---
+title: Configuration
+summary: Holon configuration files, keys, credentials, environment variables, and diagnostics.
+order: 15
+---
+
 # Configuration Reference
 
 Holon stores runtime configuration in JSON files under `~/.holon/`:
@@ -17,7 +23,7 @@ Use `holon config get/set/unset/list` to read and write keys. Use `holon config 
 |-----|------|-------------|
 | `model.default` | model_ref | Default provider/model, e.g. `"anthropic/claude-sonnet-4-6"` |
 | `model.fallbacks` | model_ref_list | Ordered fallback models when the default is unavailable |
-| `disable_provider_fallback` | boolean | When `true`, never fall back to other providers |
+| `runtime.disable_provider_fallback` | boolean | Disable provider/model fallback; require deterministic single-provider execution |
 
 ```bash
 # Set the default model
@@ -158,11 +164,10 @@ holon config schema
 
 ## Configuration File Location
 
-Holon follows the XDG convention with a fallback to `~/.holon/`:
+Holon resolves its configuration directory as follows:
 
 1. `$HOLON_HOME/config.json` (if `HOLON_HOME` is set)
-2. `$XDG_CONFIG_HOME/holon/config.json`
-3. `~/.holon/config.json`
+2. `~/.holon/config.json` (fallback)
 
 Credentials follow the same pattern with `credentials.json`.
 

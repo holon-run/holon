@@ -1,3 +1,9 @@
+---
+title: Integration guide
+summary: Programmatic access to Holon's HTTP control plane with curl examples and endpoint reference.
+order: 25
+---
+
 # Integration Guide
 
 Holon exposes an HTTP control plane for programmatic access. Start the server with `holon serve` and interact with agents, tasks, and work items through a REST-style API.

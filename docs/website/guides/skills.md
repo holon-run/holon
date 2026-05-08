@@ -1,3 +1,9 @@
+---
+title: Skills guide
+summary: Reusable SKILL.md workflows, skill locations, and how to develop custom skills.
+order: 40
+---
+
 # Skills Guide
 
 Skills are reusable local workflows. A skill is rooted at a `SKILL.md` file and
