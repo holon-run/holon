@@ -31,8 +31,10 @@ If you're already familiar with Holon or want to jump straight into specifics:
 - **[Runtime model](/concepts/runtime-model.md)** - Understand Holon's core concepts
 - **[Trust boundaries](/concepts/trust-boundaries.md)** - Learn about security and isolation
 - **[Local runtime guide](/guides/local-runtime.md)** - Conservative workflow for local development
+- **[Work items guide](/guides/work-items.md)** - Track durable objectives across turns
 - **[Quick examples](/guides/quick-examples.md)** - Common tasks and workflows
 - **[Integration guide](/guides/integration.md)** - Integrate Holon into your systems
+- **[Troubleshooting guide](/guides/troubleshooting.md)** - Diagnose common setup and runtime issues
 - **[CLI reference](/reference/cli.md)** - Command-line interface details
 - **[HTTP control plane](/reference/http-control-plane.md)** - REST API for automation
 

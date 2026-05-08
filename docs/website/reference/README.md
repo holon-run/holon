@@ -7,10 +7,14 @@ order: 40
 # Reference
 
 Reference pages should describe the current public surface without promising
-stability before the runtime contract is settled. Prefer links to source and
-repository docs when implementation details change quickly.
+stability before the runtime contract is settled. Use these pages to inspect
+the current CLI, control plane, and operator configuration surfaces.
 
 <!-- INDEX:START -->
+
+- [Configuration](./configuration.md)
+  File locations, config keys, credentials, provider setup, and diagnostics.
+  <!-- mdorigin:index kind=article -->
 
 - [CLI](./cli.md)
   How to inspect and use the current Holon command-line surface.
