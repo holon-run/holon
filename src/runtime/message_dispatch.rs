@@ -30,9 +30,17 @@ impl RuntimeHandle {
         let continuation_resolution = continuation_trigger
             .as_ref()
             .map(|trigger| resolve_continuation(&prior_closure, trigger));
-        let model_visible = continuation_resolution
-            .as_ref()
-            .is_some_and(|resolution| resolution.model_visible);
+        let model_turn_allowed = {
+            let guard = self.inner.agent.lock().await;
+            !matches!(
+                guard.state.status,
+                AgentStatus::Paused | AgentStatus::Stopped
+            )
+        };
+        let model_visible = model_turn_allowed
+            && continuation_resolution
+                .as_ref()
+                .is_some_and(|resolution| resolution.model_visible);
 
         match message.kind {
             MessageKind::OperatorPrompt

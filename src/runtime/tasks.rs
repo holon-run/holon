@@ -44,6 +44,37 @@ fn spawn_agent_task_label(initial_message: &str) -> String {
     crate::tool::helpers::truncate_text(&label, SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET)
 }
 
+fn task_status_from_label(status: &str) -> TaskStatus {
+    match status {
+        "running" => TaskStatus::Running,
+        "cancelling" => TaskStatus::Cancelling,
+        "completed" => TaskStatus::Completed,
+        "failed" => TaskStatus::Failed,
+        "cancelled" => TaskStatus::Cancelled,
+        "interrupted" => TaskStatus::Interrupted,
+        _ => TaskStatus::Queued,
+    }
+}
+
+fn task_with_status(
+    task: &TaskRecord,
+    status: TaskStatus,
+    detail: Option<serde_json::Value>,
+) -> TaskRecord {
+    TaskRecord {
+        id: task.id.clone(),
+        agent_id: task.agent_id.clone(),
+        kind: task.kind.clone(),
+        status,
+        created_at: task.created_at,
+        updated_at: Utc::now(),
+        parent_message_id: task.parent_message_id.clone(),
+        summary: task.summary.clone(),
+        detail,
+        recovery: task.recovery.clone(),
+    }
+}
+
 impl RuntimeHandle {
     pub(crate) fn supports_child_agent_spawning(&self) -> bool {
         self.inner.host_bridge.is_some()
@@ -187,6 +218,14 @@ impl RuntimeHandle {
                 Err(err) => (format!("child agent failed: {err:#}"), "failed"),
             };
 
+            let terminal_task = task_with_status(
+                &task_record,
+                task_status_from_label(status),
+                task_record.detail.clone(),
+            );
+            let _ = runtime
+                .persist_task_status_direct(&terminal_task, "task_status_updated")
+                .await;
             let result_message = MessageEnvelope {
                 metadata: Some(serde_json::json!({
                     "task_id": task_record.id,
@@ -538,12 +577,20 @@ impl RuntimeHandle {
                 "task_kind": task_record.kind,
                 "task_status": status,
                 "task_summary": task_record.summary,
-                "task_detail": task_detail,
+                "task_detail": task_detail.clone(),
                 "task_recovery": task_record.recovery,
             });
             if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
                 metadata["worktree"] = worktree;
             }
+            let terminal_task = task_with_status(
+                &task_record,
+                task_status_from_label(status),
+                Some(task_detail.clone()),
+            );
+            let _ = runtime
+                .persist_task_status_direct(&terminal_task, "task_status_updated")
+                .await;
             let result_message = MessageEnvelope {
                 metadata: Some(metadata),
                 ..MessageEnvelope::new(
@@ -679,6 +726,14 @@ impl RuntimeHandle {
                             AdmissionContext::RuntimeOwned,
                         )
                     };
+                    let failed_task = task_with_status(
+                        &task_record,
+                        TaskStatus::Failed,
+                        task_record.detail.clone(),
+                    );
+                    let _ = runtime
+                        .persist_task_status_direct(&failed_task, "task_status_updated")
+                        .await;
                     let _ = runtime.enqueue(result_message).await;
                     runtime
                         .inner
@@ -815,7 +870,7 @@ impl RuntimeHandle {
                 "task_status": "running",
                 "task_summary": task_record.summary,
                 "task_recovery": task_record.recovery,
-                "task_detail": task_detail,
+                "task_detail": task_detail.clone(),
             })),
             ..MessageEnvelope::new(
                 agent_id.clone(),
@@ -948,7 +1003,7 @@ impl RuntimeHandle {
             "task_status": status,
             "task_summary": task_record.summary,
             "task_recovery": task_record.recovery,
-            "task_detail": task_detail,
+            "task_detail": task_detail.clone(),
         });
         if let Some(delegation) = delegation.as_ref() {
             metadata["delegation_id"] = serde_json::json!(delegation.delegation_id.clone());
@@ -959,6 +1014,14 @@ impl RuntimeHandle {
         if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
             metadata["worktree"] = worktree;
         }
+        let terminal_task = task_with_status(
+            &task_record,
+            task_status_from_label(status),
+            Some(task_detail.clone()),
+        );
+        let _ = self
+            .persist_task_status_direct(&terminal_task, "task_status_updated")
+            .await;
         let result_message = MessageEnvelope {
             metadata: Some(metadata),
             ..MessageEnvelope::new(

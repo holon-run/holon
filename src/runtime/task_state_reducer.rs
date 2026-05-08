@@ -42,7 +42,7 @@ pub(super) fn has_blocking_active_tasks(
         tasks
             .iter()
             .find(|task| &task.id == task_id)
-            .is_some_and(TaskRecord::is_blocking)
+            .is_some_and(|task| task.is_blocking() && !is_terminal_task_status(&task.status))
     }))
 }
 
@@ -289,6 +289,21 @@ mod tests {
         assert!(has_blocking_active_tasks(&storage, &active_task_ids).unwrap());
         let no_blocking = vec!["background".to_string()];
         assert!(!has_blocking_active_tasks(&storage, &no_blocking).unwrap());
+    }
+
+    #[test]
+    fn has_blocking_active_tasks_ignores_terminal_stale_active_ids() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage
+            .append_task(&task("stale", TaskStatus::Running, true))
+            .unwrap();
+        storage
+            .append_task(&task("stale", TaskStatus::Completed, true))
+            .unwrap();
+
+        let active_task_ids = vec!["stale".to_string()];
+        assert!(!has_blocking_active_tasks(&storage, &active_task_ids).unwrap());
     }
 
     #[tokio::test]

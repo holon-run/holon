@@ -261,7 +261,11 @@ impl RuntimeHandle {
             .latest_task_records()
             .await?
             .into_iter()
-            .filter(|task| active_task_ids.contains(task.id.as_str()) && task.is_blocking())
+            .filter(|task| {
+                active_task_ids.contains(task.id.as_str())
+                    && task.is_blocking()
+                    && !task_state_reducer::is_terminal_task_status(&task.status)
+            })
             .count())
     }
 
@@ -1085,7 +1089,10 @@ fn active_child_tasks<'a>(
 ) -> Vec<&'a TaskRecord> {
     tasks
         .iter()
-        .filter(|task| active_task_ids.iter().any(|task_id| task_id == &task.id))
+        .filter(|task| {
+            active_task_ids.iter().any(|task_id| task_id == &task.id)
+                && !task_state_reducer::is_terminal_task_status(&task.status)
+        })
         .collect()
 }
 

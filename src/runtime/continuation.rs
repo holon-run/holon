@@ -120,14 +120,19 @@ pub(super) fn resolve_continuation(
         );
     }
 
-    let model_visible = matches!(
-        trigger.kind,
-        ContinuationTriggerKind::OperatorInput
-            | ContinuationTriggerKind::TimerFire
-            | ContinuationTriggerKind::InternalFollowup
-    ) || ((trigger.kind == ContinuationTriggerKind::ExternalEvent
-        || trigger.kind == ContinuationTriggerKind::SystemTick)
-        && trigger.contentful);
+    let terminal_blocking_task_result = trigger.kind == ContinuationTriggerKind::TaskResult
+        && trigger.task_terminal
+        && trigger.task_blocking;
+    let model_visible = terminal_blocking_task_result
+        || matches!(
+            trigger.kind,
+            ContinuationTriggerKind::OperatorInput
+                | ContinuationTriggerKind::TimerFire
+                | ContinuationTriggerKind::InternalFollowup
+        )
+        || ((trigger.kind == ContinuationTriggerKind::ExternalEvent
+            || trigger.kind == ContinuationTriggerKind::SystemTick)
+            && trigger.contentful);
     let class = if model_visible {
         ContinuationClass::LocalContinuation
     } else {
@@ -228,6 +233,22 @@ fn resolve_waiting(
             prior_closure_outcome,
             prior_waiting_reason,
             matched_waiting_reason,
+            evidence,
+        };
+    }
+
+    if trigger.kind == ContinuationTriggerKind::TaskResult
+        && trigger.task_terminal
+        && trigger.task_blocking
+    {
+        evidence.push("terminal_blocking_task_result".to_string());
+        return ContinuationResolution {
+            trigger_kind: trigger.kind,
+            class: ContinuationClass::ResumeOverride,
+            model_visible: true,
+            prior_closure_outcome,
+            prior_waiting_reason,
+            matched_waiting_reason: false,
             evidence,
         };
     }
@@ -359,6 +380,44 @@ mod tests {
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_visible);
+    }
+
+    #[test]
+    fn terminal_blocking_task_result_resumes_without_prior_wait() {
+        let resolution = resolve_continuation(
+            &ClosureDecision {
+                outcome: ClosureOutcome::Completed,
+                waiting_reason: None,
+                work_signal: None,
+                runtime_posture: RuntimePosture::Awake,
+                evidence: vec![],
+            },
+            &ContinuationTrigger {
+                kind: ContinuationTriggerKind::TaskResult,
+                contentful: true,
+                task_terminal: true,
+                task_blocking: true,
+                wake_hint_source: None,
+            },
+        );
+        assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
+        assert!(resolution.model_visible);
+    }
+
+    #[test]
+    fn terminal_blocking_task_result_overrides_mismatched_wait() {
+        let resolution = resolve_continuation(
+            &waiting(WaitingReason::AwaitingExternalChange),
+            &ContinuationTrigger {
+                kind: ContinuationTriggerKind::TaskResult,
+                contentful: true,
+                task_terminal: true,
+                task_blocking: true,
+                wake_hint_source: None,
+            },
+        );
+        assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
+        assert!(resolution.model_visible);
     }
 
     #[test]

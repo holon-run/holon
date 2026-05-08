@@ -1710,6 +1710,45 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_pause
     Ok(())
 }
 
+pub async fn blocking_command_task_clears_active_state_while_runtime_paused() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    let runtime = host.default_runtime().await?;
+    runtime.control(ControlAction::Pause).await?;
+
+    let task = runtime
+        .schedule_command_task(
+            "blocking complete while paused".into(),
+            holon::types::CommandTaskSpec {
+                cmd: "printf blocking_paused_ok".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: Some(256),
+                accepts_input: false,
+                continue_on_result: true,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    wait_until(|| {
+        let tasks = runtime.storage().latest_task_records()?;
+        let state = runtime.storage().read_agent()?.expect("agent should exist");
+        Ok(tasks.iter().any(|record| {
+            record.id == task.id && record.status == holon::types::TaskStatus::Completed
+        }) && !state.active_task_ids.contains(&task.id))
+    })
+    .await?;
+
+    let state = runtime.agent_state().await?;
+    assert_eq!(state.status, AgentStatus::Paused);
+    assert!(!state.active_task_ids.contains(&task.id));
+    Ok(())
+}
+
 pub async fn command_task_result_is_canonical_follow_up_on_completion() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;

@@ -672,7 +672,7 @@ impl RuntimeHandle {
             &task_record,
             terminal.status.clone(),
             detail.clone(),
-            !task_record.is_blocking(),
+            true,
             "command_task_terminal_persisted",
         )
         .await?;
