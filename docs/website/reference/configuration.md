@@ -5,7 +5,7 @@ Holon stores runtime configuration in JSON files under `~/.holon/`:
 | File | Purpose |
 |------|---------|
 | `~/.holon/config.json` | Providers, model defaults, TUI, web, and runtime settings |
-| `~/.holon/credentials.json` | Encrypted API key storage (managed via `config credentials`) |
+| `~/.holon/credentials.json` | Permission-protected credential storage (managed via `config credentials`) |
 
 ## Configuration Keys
 

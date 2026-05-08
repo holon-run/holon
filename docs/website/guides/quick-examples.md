@@ -27,7 +27,7 @@ holon agents create reviewer
 Create an agent from a built-in template:
 
 ```bash
-holon agents create reviewer --template code-reviewer
+holon agents create reviewer --template holon-reviewer
 ```
 
 Then interact with it:

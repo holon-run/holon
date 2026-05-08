@@ -121,11 +121,7 @@ curl http://localhost:8787/agents/my-agent/status
 ```bash
 curl -X POST http://localhost:8787/control/agents/my-agent/work-items \
   -H "Content-Type: application/json" \
-  -d '{
-    "objective": "Review and fix all clippy warnings",
-    "plan": "1. Run clippy\n2. Fix each warning category\n3. Verify build",
-    "priority": "normal"
-  }'
+  -d '{"objective": "Review and fix all clippy warnings"}'
 ```
 
 ### Wake a sleeping agent
