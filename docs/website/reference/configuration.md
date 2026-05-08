@@ -1,0 +1,193 @@
+# Configuration Reference
+
+Holon stores runtime configuration in JSON files under `~/.holon/`:
+
+| File | Purpose |
+|------|---------|
+| `~/.holon/config.json` | Providers, model defaults, TUI, web, and runtime settings |
+| `~/.holon/credentials.json` | Encrypted API key storage (managed via `config credentials`) |
+
+## Configuration Keys
+
+Use `holon config get/set/unset/list` to read and write keys. Use `holon config schema` to see every available key with its type, default, and description.
+
+### Model & Provider Settings
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `model.default` | model_ref | Default provider/model, e.g. `"anthropic/claude-sonnet-4-6"` |
+| `model.fallbacks` | model_ref_list | Ordered fallback models when the default is unavailable |
+| `disable_provider_fallback` | boolean | When `true`, never fall back to other providers |
+
+```bash
+# Set the default model
+holon config set model.default "deepseek-anthropic/deepseek-v4-pro"
+
+# Add fallback models (JSON array)
+holon config set model.fallbacks '["anthropic/claude-sonnet-4-6","minimax/MiniMax-M2.7"]'
+
+# Read current default
+holon config get model.default
+
+# See all current config
+holon config list
+```
+
+### Per-Model Policy
+
+The `models.catalog` key lets you override runtime metadata for specific provider/model refs. Keys under `model.unknown_fallback.*` control policy for models without built-in metadata.
+
+## Credential Management
+
+Credentials are stored securely in `~/.holon/credentials.json`. Use `config credentials` subcommands — **never edit this file directly**.
+
+### Setting Credentials
+
+```bash
+# Preferred: use --stdin to avoid shell history leakage
+holon config credentials set --kind api_key --stdin deepseek
+# Paste your API key and press Enter (Ctrl+D to finish)
+
+# Alternative: --material (visible in shell history — not recommended)
+holon config credentials set --kind api_key --material "sk-..." deepseek
+```
+
+The `<PROFILE>` argument is a label you choose (e.g. `deepseek`, `bigmodel`, `openai`).
+
+### Listing & Removing
+
+```bash
+holon config credentials list
+holon config credentials remove deepseek
+```
+
+### Environment Variables
+
+As an alternative to the credential store, Holon reads API keys from environment variables:
+
+| Provider | Environment Variable |
+|----------|---------------------|
+| Anthropic | `ANTHROPIC_AUTH_TOKEN` |
+| DeepSeek | `DEEPSEEK_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| BigModel (Zhipu) | `BIGMODEL_API_KEY` |
+| MiniMax | `MINIMAX_API_KEY` |
+| Xiaomi MiMo | `XIAOMI_API_KEY` |
+| OpenRouter | `OPENROUTER_API_KEY` |
+| Fireworks | `FIREWORKS_API_KEY` |
+| Together | `TOGETHER_API_KEY` |
+| Mistral | `MISTRAL_API_KEY` |
+| xAI | `XAI_API_KEY` |
+| Moonshot | `MOONSHOT_API_KEY` |
+| Volcengine | `VOLCENGINE_API_KEY` or `ARK_API_KEY` |
+| StepFun | `STEPFUN_API_KEY` |
+| Qwen | `QWEN_API_KEY` or `DASHSCOPE_API_KEY` |
+| HuggingFace | `HUGGINGFACE_API_KEY` or `HF_TOKEN` |
+| Venice | `VENICE_API_KEY` |
+| Chutes | `CHUTES_API_KEY` |
+| NVIDIA | `NVIDIA_API_KEY` |
+
+For a complete, up-to-date list, run `holon config providers list`.
+
+## Provider Configuration
+
+Holon ships with built-in provider definitions for 40+ providers. You can add or override providers in `config.json`.
+
+### Listing Registered Providers
+
+```bash
+holon config providers list
+```
+
+Each provider entry shows its transport protocol (`anthropic_messages`, `openai_chat_completions`, etc.), base URL, and credential requirement.
+
+### Adding a Custom Provider
+
+```bash
+holon config providers set my-proxy \
+  --transport openai_chat_completions \
+  --base-url "https://my-proxy.example.com/v1" \
+  --credential-source env \
+  --credential-env "MY_PROXY_API_KEY" \
+  --credential-kind api_key
+```
+
+Options:
+- `--transport`: Protocol — `anthropic_messages`, `openai_chat_completions`, or `openai_responses`
+- `--base-url`: API endpoint base URL
+- `--credential-source`: `none`, `env`, `credential_profile`, or `external_cli`
+- `--credential-kind`: `none`, `api_key`, or `session_token`
+- `--credential-env`: Environment variable name (when source is `env`)
+- `--credential-profile`: Credential store profile (when source is `credential_profile`)
+
+### Removing a Provider
+
+```bash
+holon config providers remove my-proxy
+```
+
+## Listing Available Models
+
+```bash
+holon config models list
+```
+
+This shows each model's availability, credential status, provider, transport, and policy (context window, max output tokens, capabilities).
+
+## Agent-Level Model Overrides
+
+Each agent can override the default model:
+
+```bash
+holon agents model set "anthropic/claude-sonnet-4-6" --agent reviewer
+```
+
+The override is stored in the agent's own configuration, not the global `model.default`.
+
+## Diagnostics
+
+```bash
+# Full system health check including model availability
+holon config doctor
+
+# List all configuration keys with types and defaults
+holon config schema
+```
+
+`config doctor` reports: default model, fallback models, per-model availability, provider settings, and retry policy.
+
+## Configuration File Location
+
+Holon follows the XDG convention with a fallback to `~/.holon/`:
+
+1. `$HOLON_HOME/config.json` (if `HOLON_HOME` is set)
+2. `$XDG_CONFIG_HOME/holon/config.json`
+3. `~/.holon/config.json`
+
+Credentials follow the same pattern with `credentials.json`.
+
+## TUI Settings
+
+| Key | Values | Default | Description |
+|-----|--------|---------|-------------|
+| `tui.alternate_screen` | `auto`, `always`, `never` | `auto` | Alternate screen buffer behavior |
+
+## Web Fetch/Search Settings
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `web.fetch.enabled` | boolean | `true` | Enable WebFetch tool |
+| `web.fetch.max_chars` | integer | `20000` | Max characters returned to model |
+| `web.fetch.max_response_bytes` | integer | `750000` | Max response bytes before truncation |
+| `web.fetch.timeout_seconds` | integer | `20` | Per-request timeout |
+| `web.fetch.max_redirects` | integer | `5` | Max redirect hops |
+| `web.fetch.allowed_hosts` | string_list | `[]` | Hosts allowed (empty = all) |
+| `web.fetch.denied_hosts` | string_list | `[]` | Hosts blocked |
+| `web.search.enabled` | boolean | `true` | Enable WebSearch tool |
+| `web.search.provider` | string | `"auto"` | Default search provider |
+| `web.search.max_results` | integer | `5` | Max results returned |
+
+## See Also
+
+- [CLI Reference](/reference/cli.md) — Complete CLI command reference
+- [Getting Started](/getting-started/first-agent.md) — Step-by-step setup tutorial
