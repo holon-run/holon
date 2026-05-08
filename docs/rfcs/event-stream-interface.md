@@ -197,13 +197,13 @@ trigger tool execution.
 
 ### Replay Projection Boundary
 
-The replay surface authorizes and projects events before delivery. Presentation
-visibility and replay authorization are related but separate concerns:
+The replay surface authorizes events before delivery. Presentation visibility
+and replay authorization are related but separate concerns:
 
 - `OperatorVisibility` tells a client how prominently an already-authorized
   event-derived item should be displayed.
-- replay projection decides which payload fields a client is allowed to
-  receive.
+- replay projection identifies the authorized replay surface and whether the
+  raw standard event payload was included.
 
 Every replay envelope should preserve safe provenance needed for recovery and
 audit, including event cursor/id, sequence, timestamp, event kind, agent id,
@@ -211,17 +211,13 @@ and any available origin, trust, authority class, delivery surface, admission
 context, transport/source, reply route, message id, task id, work item id,
 correlation id, and causation id.
 
-Payloads that contain trace/internal detail require an explicit projection
-capability or must be redacted before replay. This includes raw tool output,
-raw external payloads, internal diagnostics, local paths, and artifact
-references. Redaction should keep enough stable summary/provenance fields for a
-client to reconcile state without receiving the raw internal detail.
-
-The default replay projection is the operator projection. Operator replay may
-include raw payloads only for explicit schema-stable allowlisted event kinds;
-all other payloads must be redacted regardless of their presentation
-visibility. A local debug projection may expose raw payloads, but it requires
-control authorization and is not the public default.
+Runtime events should have clear, standard payload schemas that first-party
+clients and integrations can consume directly. The default replay projection is
+the operator projection, and it includes the raw standard event payload. UI
+noise and density are handled by client-side presentation policy, not by
+mutating or clipping the stream payload. A local debug projection remains
+available for explicitly authorized debug clients, but the canonical event
+contract should not depend on a separate redacted operator shape.
 
 ## Event Envelope
 
@@ -238,8 +234,8 @@ Every stream event should use one canonical envelope.
   "type": "task_status_updated",
   "projection": {
     "name": "operator",
-    "raw_payload_included": false,
-    "redactions": ["internal_detail_payload"]
+    "raw_payload_included": true,
+    "redactions": []
   },
   "provenance": {
     "origin": {"kind": "operator"},
@@ -266,14 +262,12 @@ Every stream event should use one canonical envelope.
   - raw runtime event kind
 - `projection`
   - the replay projection applied to this envelope
-  - `raw_payload_included=false` means the payload is a safe projection, not
-    the raw event data
+  - `raw_payload_included=true` means the payload is the canonical event
+    payload for the selected authorized replay surface
 - `provenance`
-  - provenance fields that survive replay projection independently of payload
-    redaction
+  - provenance fields duplicated for client recovery and indexing
 - `payload`
-  - authorized projected payload
-  - may be raw only when the selected replay projection permits it
+  - authorized standard event payload
 
 ### SSE Projection
 

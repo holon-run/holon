@@ -1142,13 +1142,19 @@ fn workspace_text(
     _fallback_summary: &str,
     label: &'static str,
 ) -> (String, Option<String>, String) {
-    let workspace_id = payload.get("workspace_id").and_then(Value::as_str);
-    if let Some(workspace_id) = workspace_id {
-        return (
-            label.into(),
-            Some(workspace_id.to_string()),
-            format!("{label}: {workspace_id}"),
-        );
+    let body = first_string_field(
+        payload,
+        &[
+            "execution_root",
+            "canonical_root",
+            "workspace_anchor",
+            "workspace_path",
+            "cwd",
+            "workspace_id",
+        ],
+    );
+    if let Some(body) = body {
+        return (label.into(), Some(body.clone()), format!("{label}: {body}"));
     }
     (label.into(), None, label.into())
 }
@@ -1516,12 +1522,62 @@ fn tool_text(
             return (friendly.into(), Some(cmd.to_string()), summary);
         }
     }
+    if tool_name == "ExecCommandBatch" {
+        if let Some(detail) = command_batch_detail(payload) {
+            let summary = if failed {
+                format!("Command batch failed: {detail}")
+            } else {
+                format!("Command batch finished: {detail}")
+            };
+            return (friendly.into(), Some(detail), summary);
+        }
+    }
+    if let Some(detail) = tool_payload_detail(payload) {
+        return (
+            friendly.into(),
+            Some(detail.clone()),
+            format!("{friendly}: {detail}"),
+        );
+    }
     let summary = if tool_friendly_label_is_generic(tool_name) {
         format!("{friendly}: {tool_name}")
     } else {
         friendly.to_string()
     };
     (friendly.into(), Some(tool_name.to_string()), summary)
+}
+
+fn command_batch_detail(payload: &Value) -> Option<String> {
+    let items = payload
+        .get("exec_command_batch_items")
+        .and_then(Value::as_array)?;
+    let cmds = items
+        .iter()
+        .filter_map(|item| item.get("cmd").and_then(Value::as_str))
+        .map(collapse_whitespace)
+        .filter(|cmd| !cmd.is_empty())
+        .take(2)
+        .collect::<Vec<_>>();
+    if cmds.is_empty() {
+        return None;
+    }
+    let total = items.len();
+    let mut detail = format!("{total} item");
+    if total != 1 {
+        detail.push('s');
+    }
+    detail.push_str(": ");
+    detail.push_str(&cmds.join("; "));
+    if total > cmds.len() {
+        detail.push_str("; ...");
+    }
+    Some(trim_summary(&detail))
+}
+
+fn tool_payload_detail(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["error", "summary", "reason"])
+        .map(|value| trim_summary(&collapse_whitespace(&value)))
+        .filter(|value| !value.is_empty())
 }
 
 fn tool_friendly_label(tool_name: &str, failed: bool) -> &'static str {
@@ -1546,6 +1602,8 @@ fn tool_friendly_label(tool_name: &str, failed: bool) -> &'static str {
         ("TaskOutput", true) => "Read task output failed",
         ("SpawnAgent", false) => "Started child agent",
         ("SpawnAgent", true) => "Start child agent failed",
+        ("UseWorkspace", false) => "Workspace selected",
+        ("UseWorkspace", true) => "Workspace selection failed",
         ("Sleep", false) => "Slept",
         ("Sleep", true) => "Sleep failed",
         ("ReadSkill", false) => "Read skill",
@@ -1572,6 +1630,7 @@ fn tool_friendly_label_is_generic(tool_name: &str) -> bool {
             | "TaskList"
             | "TaskOutput"
             | "SpawnAgent"
+            | "UseWorkspace"
             | "Sleep"
             | "ReadSkill"
             | "WebFetch"
@@ -1997,6 +2056,23 @@ mod tests {
     }
 
     #[test]
+    fn workspace_events_prefer_execution_root_context() {
+        let presentation = present_operator_event(
+            "workspace_used",
+            &json!({
+                "workspace_id": "ws-1",
+                "workspace_label": "holon",
+                "execution_root": "/repo/holon/worktree"
+            }),
+            "workspace_used",
+            &OperatorPresentationContext::default(),
+        );
+
+        assert_eq!(presentation.title, "Workspace used");
+        assert_eq!(presentation.summary, "Workspace used: /repo/holon/worktree");
+    }
+
+    #[test]
     fn tool_executed_uses_friendly_tool_labels() {
         let context = OperatorPresentationContext::default();
         let samples = [
@@ -2004,6 +2080,7 @@ mod tests {
             ("TaskList", "Listed tasks"),
             ("TaskOutput", "Read task output"),
             ("SpawnAgent", "Started child agent"),
+            ("UseWorkspace", "Workspace selected"),
             ("Sleep", "Slept"),
         ];
         for (tool_name, expected) in samples {
@@ -2024,6 +2101,40 @@ mod tests {
         );
         assert_eq!(failed.title, "Command failed");
         assert_eq!(failed.summary, "Command failed: cargo test");
+
+        let batch = present_operator_event(
+            "tool_executed",
+            &json!({
+                "tool_name": "ExecCommandBatch",
+                "exec_command_batch_items": [
+                    { "index": 0, "cmd": "rg operator_event src" },
+                    { "index": 1, "cmd": "cargo test operator_event" },
+                    { "index": 2, "cmd": "cargo fmt --check" }
+                ]
+            }),
+            "tool_executed",
+            &context,
+        );
+        assert_eq!(batch.title, "Command batch finished");
+        assert_eq!(
+            batch.summary,
+            "Command batch finished: 3 items: rg operator_event src; cargo test operator_event; ..."
+        );
+
+        let workspace = present_operator_event(
+            "tool_executed",
+            &json!({
+                "tool_name": "UseWorkspace",
+                "summary": "using workspace holon at /repo/holon"
+            }),
+            "tool_executed",
+            &context,
+        );
+        assert_eq!(workspace.title, "Workspace selected");
+        assert_eq!(
+            workspace.summary,
+            "Workspace selected: using workspace holon at /repo/holon"
+        );
 
         let unknown = present_operator_event(
             "tool_executed",

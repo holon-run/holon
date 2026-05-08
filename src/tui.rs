@@ -1899,7 +1899,7 @@ mod tests {
             event_type: "tool_executed".into(),
             projection: Some(json!({
                 "name": "operator",
-                "raw_payload_included": false,
+                "raw_payload_included": true,
             })),
             provenance: None,
             payload: json!({

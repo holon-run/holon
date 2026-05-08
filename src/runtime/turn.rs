@@ -2379,6 +2379,7 @@ impl TurnExecution<'_> {
                             "turn_index": turn_index,
                             "run_id": run_id,
                             "exec_command_cmd": command_preview_field(&call),
+                            "exec_command_batch_items": command_batch_preview_field(&call),
                             "exec_command_cost": command_cost_field(
                                 &call,
                                 runtime.inner.default_tool_output_tokens,
@@ -2498,6 +2499,7 @@ impl TurnExecution<'_> {
                                 "turn_index": turn_index,
                                 "run_id": run_id,
                                 "exec_command_cmd": command_preview_field(&call),
+                                "exec_command_batch_items": command_batch_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
                                     &call,
                                     runtime.inner.default_tool_output_tokens,
@@ -2545,6 +2547,7 @@ impl TurnExecution<'_> {
                                 "turn_index": turn_index,
                                 "run_id": run_id,
                                 "exec_command_cmd": command_preview_field(&call),
+                                "exec_command_batch_items": command_batch_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
                                     &call,
                                     runtime.inner.default_tool_output_tokens,
@@ -2634,6 +2637,29 @@ fn command_preview_field(call: &ToolCall) -> Option<String> {
         .then(|| call.input.get("cmd").and_then(Value::as_str))
         .flatten()
         .map(command_preview)
+}
+
+fn command_batch_preview_field(call: &ToolCall) -> Option<Value> {
+    if call.name != "ExecCommandBatch" {
+        return None;
+    }
+    let items = call.input.get("items").and_then(Value::as_array)?;
+    let previews = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            item.get("cmd")
+                .and_then(Value::as_str)
+                .map(command_preview)
+                .map(|cmd| {
+                    serde_json::json!({
+                        "index": index,
+                        "cmd": cmd,
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    (!previews.is_empty()).then(|| Value::Array(previews))
 }
 
 fn command_cost_field(

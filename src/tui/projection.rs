@@ -1361,16 +1361,16 @@ mod tests {
             event_type: "assistant_round_recorded".into(),
             projection: Some(json!({
                 "name": "operator",
-                "raw_payload_included": false,
-                "redactions": ["internal_detail_payload"],
+                "raw_payload_included": true,
+                "redactions": [],
             })),
             provenance: None,
             payload: json!({
-                "redacted": true,
                 "stop_reason": "tool_use",
                 "tool_names": ["ExecCommand"],
                 "tool_call_count": 1,
                 "has_tool_calls": true,
+                "raw_text": "debug assistant body",
             }),
         }];
         snapshot.cursor = Some("evt-tail-1".into());
