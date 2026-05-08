@@ -169,15 +169,29 @@ impl RuntimeHandle {
     }
 
     pub async fn control(&self, action: ControlAction) -> Result<()> {
-        {
+        let occupancy_to_release = {
+            let mut occupancy_to_release = None;
             let mut guard = self.inner.agent.lock().await;
             match action {
                 ControlAction::Pause => guard.state.status = AgentStatus::Paused,
                 ControlAction::Resume => guard.state.status = AgentStatus::AwakeIdle,
-                ControlAction::Stop => guard.state.status = AgentStatus::Stopped,
+                ControlAction::Stop => {
+                    guard.state.status = AgentStatus::Stopped;
+                    occupancy_to_release = guard
+                        .state
+                        .active_workspace_entry
+                        .take()
+                        .and_then(|entry| entry.occupancy_id);
+                }
             }
             guard.state.current_run_id = None;
             self.inner.storage.write_agent(&guard.state)?;
+            occupancy_to_release
+        };
+        if let Some(occupancy_id) = occupancy_to_release.as_deref() {
+            if let Some(bridge) = self.inner.host_bridge.as_ref() {
+                let _ = bridge.release_workspace_occupancy(occupancy_id).await?;
+            }
         }
         self.inner.storage.append_event(&AuditEvent::new(
             "control_applied",

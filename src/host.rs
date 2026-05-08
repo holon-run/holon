@@ -2755,6 +2755,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_releases_active_workspace_occupancy() {
+        let (_home, host) = test_host();
+        let workspace_home = tempdir().unwrap();
+        let workspace_path = workspace_home.path().to_path_buf();
+        let workspace = host.ensure_workspace_entry(workspace_path.clone()).unwrap();
+        let runtime = host.default_runtime().await.unwrap();
+        runtime.attach_workspace(&workspace).await.unwrap();
+        runtime
+            .enter_workspace(
+                &workspace,
+                WorkspaceProjectionKind::CanonicalRoot,
+                WorkspaceAccessMode::ExclusiveWrite,
+                Some(workspace_path.clone()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let occupancy_id = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .active_workspace_entry
+            .as_ref()
+            .and_then(|entry| entry.occupancy_id.clone())
+            .expect("exclusive workspace should acquire occupancy");
+        runtime.control(ControlAction::Stop).await.unwrap();
+
+        let stopped = runtime.agent_state().await.unwrap();
+        assert_eq!(stopped.status, AgentStatus::Stopped);
+        assert!(
+            stopped.active_workspace_entry.is_none(),
+            "stopped agents should not keep an active workspace entry"
+        );
+        let released = host
+            .workspace_occupancy_by_id(&occupancy_id)
+            .unwrap()
+            .expect("occupancy record should remain queryable");
+        assert!(
+            released.released_at.is_some(),
+            "stop should release the workspace occupancy"
+        );
+
+        host.create_named_agent("peer", None).await.unwrap();
+        let peer = host.get_public_agent("peer").await.unwrap();
+        peer.attach_workspace(&workspace).await.unwrap();
+        peer.enter_workspace(
+            &workspace,
+            WorkspaceProjectionKind::CanonicalRoot,
+            WorkspaceAccessMode::ExclusiveWrite,
+            Some(workspace_path),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn resume_respawns_stopped_persistent_agent_runtime_loop() {
         let (_home, host) = test_host();
         let agent_id = host.config().default_agent_id.clone();
