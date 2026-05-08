@@ -180,8 +180,11 @@ impl RuntimeHandle {
                     occupancy_to_release = guard
                         .state
                         .active_workspace_entry
-                        .take()
-                        .and_then(|entry| entry.occupancy_id);
+                        .as_ref()
+                        .and_then(|entry| entry.occupancy_id.clone());
+                    if occupancy_to_release.is_none() {
+                        guard.state.active_workspace_entry = None;
+                    }
                 }
             }
             guard.state.current_run_id = None;
@@ -189,8 +192,25 @@ impl RuntimeHandle {
             occupancy_to_release
         };
         if let Some(occupancy_id) = occupancy_to_release.as_deref() {
-            if let Some(bridge) = self.inner.host_bridge.as_ref() {
-                let _ = bridge.release_workspace_occupancy(occupancy_id).await?;
+            let bridge = self.inner.host_bridge.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "cannot release workspace occupancy {} without host bridge",
+                    occupancy_id
+                )
+            })?;
+            let _ = bridge.release_workspace_occupancy(occupancy_id).await?;
+            {
+                let mut guard = self.inner.agent.lock().await;
+                let should_clear = guard
+                    .state
+                    .active_workspace_entry
+                    .as_ref()
+                    .and_then(|entry| entry.occupancy_id.as_deref())
+                    == Some(occupancy_id);
+                if should_clear {
+                    guard.state.active_workspace_entry = None;
+                    self.inner.storage.write_agent(&guard.state)?;
+                }
             }
         }
         self.inner.storage.append_event(&AuditEvent::new(
