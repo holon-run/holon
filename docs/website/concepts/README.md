@@ -7,7 +7,12 @@ order: 20
 # Concepts
 
 Holon is easiest to understand as a runtime rather than as a chat wrapper. The
-core concepts below describe what the runtime makes explicit.
+core concepts below describe what the runtime makes explicit. Start with the
+runtime model, then read trust boundaries before wiring the system into
+external inputs or automation.
+
+Concept pages explain behavior; guides show workflows; reference pages describe
+the current surface area.
 
 ## Core ideas
 

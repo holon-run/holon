@@ -50,6 +50,8 @@ docs before treating any CLI shape as stable.
   and how this mdorigin site is built.
 - [Concepts](/concepts/) describes the runtime model, trust boundaries, and
   lifecycle vocabulary.
+- [Configuration reference](/reference/configuration.md) documents providers,
+  credentials, config files, and diagnostic commands.
 - [Guides](/guides/) provide task-oriented workflows for local development and
   documentation updates.
 - [Reference](/reference/) records the current CLI and control-plane surfaces
