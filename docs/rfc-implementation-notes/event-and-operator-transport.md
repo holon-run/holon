@@ -30,10 +30,10 @@ The v0.14 replay/projection minimum is:
   sequence, timestamp, event kind, agent id, origin, trust, authority class,
   delivery surface, admission context, transport/source, reply route, message
   id, task id, work item id, correlation id, and causation id when available.
-- operator replay is the default projection and only includes raw payloads for
-  explicitly allowlisted event kinds.
-- local first-party debug replay may include raw payloads only after control
-  authorization.
+- operator replay is the default projection and includes canonical standard
+  event payloads.
+- client display density is handled by presentation policy, not by clipping the
+  replay payload.
 - cursor expiry remains a deterministic `/state` refresh path rather than a
   client-side history reconstruction guess.
 

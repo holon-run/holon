@@ -447,22 +447,18 @@ hints.
 
 Event replay is a separate authorization/projection boundary. A replayed event
 is historical state recovery, not re-ingress, re-execution, or a new operator
-instruction. The stream envelope must carry safe provenance independently of
-the event payload so payload redaction does not erase audit context. Required
-replay provenance includes the event cursor/id, sequence, timestamp, event
-kind, agent id, and any available origin, trust, authority class, delivery
-surface, admission context, transport/source, reply route, message id, task id,
-work item id, correlation id, and causation id.
+instruction. The stream envelope carries provenance independently of the event
+payload so clients can index and recover replayed records consistently.
+Required replay provenance includes the event cursor/id, sequence, timestamp,
+event kind, agent id, and any available origin, trust, authority class,
+delivery surface, admission context, transport/source, reply route, message id,
+task id, work item id, correlation id, and causation id.
 
-Operator replay is the default projection. It may include raw payloads only for
-explicitly allowlisted schema-stable event kinds; all other payloads must be
-redacted even when the same event would have prominent presentation visibility.
-Trace/internal payloads, including raw tool output, raw external payloads, local
-paths, artifact references, and internal diagnostics, require a stronger debug
-projection. A local debug replay projection may expose raw payloads only after
-control authorization. A client may still decide how to display an authorized
-event from `visibility`, but display level is not the same as replay
-authorization.
+Operator replay is the default projection and includes the canonical standard
+event payload. Event payloads should be explicit, schema-stable runtime
+contracts rather than operator-specific redacted shapes. A client may still
+decide how to display an authorized event from `visibility`, but display level
+is not the same as replay authorization.
 
 The visibility model below describes the current implementation. The target
 cross-surface display contract is defined by

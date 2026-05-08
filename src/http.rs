@@ -1284,43 +1284,16 @@ fn project_event_payload_for_replay(
             },
             provenance,
         },
-        EventReplayProjection::Operator => {
-            if is_raw_operator_replay_allowed(&event.kind) {
-                return ProjectedReplayEvent {
-                    payload: event.data.clone(),
-                    projection: EventReplayProjectionRecord {
-                        name: projection,
-                        raw_payload_included: true,
-                        redactions: Vec::new(),
-                    },
-                    provenance,
-                };
-            }
-            ProjectedReplayEvent {
-                payload: redacted_operator_replay_payload(event),
-                projection: EventReplayProjectionRecord {
-                    name: projection,
-                    raw_payload_included: false,
-                    redactions: vec!["internal_detail_payload".to_string()],
-                },
-                provenance,
-            }
-        }
+        EventReplayProjection::Operator => ProjectedReplayEvent {
+            payload: event.data.clone(),
+            projection: EventReplayProjectionRecord {
+                name: projection,
+                raw_payload_included: true,
+                redactions: Vec::new(),
+            },
+            provenance,
+        },
     }
-}
-
-fn is_raw_operator_replay_allowed(event_kind: &str) -> bool {
-    matches!(
-        event_kind,
-        "message_admitted"
-            | "brief_created"
-            | "waiting_intent_created"
-            | "waiting_intent_cancelled"
-            | "work_item_written"
-            | "work_item_completed"
-            | "workspace_entered"
-            | "workspace_exited"
-    )
 }
 
 fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {
@@ -1339,66 +1312,6 @@ fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {
         correlation_id: clone_payload_field(payload, "correlation_id"),
         causation_id: clone_payload_field(payload, "causation_id"),
     }
-}
-
-fn redacted_operator_replay_payload(event: &AuditEvent) -> Value {
-    if event.kind == "assistant_round_recorded" {
-        return redacted_assistant_round_replay_payload(event);
-    }
-
-    let mut payload = serde_json::Map::new();
-    payload.insert("redacted".to_string(), Value::Bool(true));
-    payload.insert(
-        "redaction_reason".to_string(),
-        Value::String("internal_detail_requires_trace_projection".to_string()),
-    );
-    payload.insert("summary".to_string(), Value::String(event.kind.clone()));
-    for field in [
-        "agent_id",
-        "message_id",
-        "task_id",
-        "work_item_id",
-        "run_id",
-        "turn_index",
-        "round",
-        "status",
-        "kind",
-        "tool_name",
-    ] {
-        if let Some(value) = clone_payload_field(&event.data, field) {
-            payload.insert(field.to_string(), value);
-        }
-    }
-    Value::Object(payload)
-}
-
-fn redacted_assistant_round_replay_payload(event: &AuditEvent) -> Value {
-    let mut payload = serde_json::Map::new();
-    payload.insert("redacted".to_string(), Value::Bool(true));
-    payload.insert(
-        "redaction_reason".to_string(),
-        Value::String("assistant_round_operator_projection".to_string()),
-    );
-    payload.insert("summary".to_string(), Value::String(event.kind.clone()));
-    for field in [
-        "agent_id",
-        "run_id",
-        "turn_index",
-        "round",
-        "stop_reason",
-        "text_preview",
-        "text_block_count",
-        "text_char_count",
-        "tool_call_count",
-        "tool_names",
-        "has_text",
-        "has_tool_calls",
-    ] {
-        if let Some(value) = clone_payload_field(&event.data, field) {
-            payload.insert(field.to_string(), value);
-        }
-    }
-    Value::Object(payload)
 }
 
 fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
