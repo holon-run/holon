@@ -638,6 +638,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id: None,
             summary: Some("cargo test".into()),
             detail: None,
             recovery: None,

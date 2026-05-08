@@ -18,6 +18,10 @@ fn default_agent_home_workspace_id() -> String {
     AGENT_HOME_WORKSPACE_ID.to_string()
 }
 
+fn default_work_item_revision() -> u64 {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceEntry {
     pub workspace_id: String,
@@ -1970,6 +1974,8 @@ pub struct TaskRecord {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub parent_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
     pub summary: Option<String>,
     #[serde(default)]
     pub detail: Option<Value>,
@@ -1997,6 +2003,15 @@ impl TaskRecord {
 
     pub fn is_child_agent_task(&self) -> bool {
         self.kind.is_child_agent()
+    }
+
+    pub fn effective_work_item_id(&self) -> Option<&str> {
+        self.work_item_id.as_deref().or_else(|| {
+            self.detail
+                .as_ref()
+                .and_then(|detail| detail.get("work_item_id"))
+                .and_then(Value::as_str)
+        })
     }
 
     pub fn child_agent_workspace_mode(&self) -> Option<ChildAgentWorkspaceMode> {
@@ -2565,6 +2580,8 @@ pub struct WorkItemRecord {
     pub agent_id: String,
     #[serde(default = "default_agent_home_workspace_id")]
     pub workspace_id: String,
+    #[serde(default = "default_work_item_revision")]
+    pub revision: u64,
     pub objective: String,
     pub state: WorkItemState,
     pub plan_status: WorkItemPlanStatus,
@@ -2591,6 +2608,7 @@ impl WorkItemRecord {
             id: format!("work_{}", Uuid::new_v4().simple()),
             agent_id: agent_id.into(),
             workspace_id: AGENT_HOME_WORKSPACE_ID.to_string(),
+            revision: 1,
             objective: objective.into(),
             state,
             plan_status: WorkItemPlanStatus::Draft,

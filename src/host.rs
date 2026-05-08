@@ -2204,6 +2204,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 parent_message_id: None,
+                work_item_id: None,
                 summary: Some("delegated child".into()),
                 detail: Some(serde_json::json!({
                     "child_agent_id": "child_test",
@@ -2265,6 +2266,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 parent_message_id: None,
+                work_item_id: None,
                 summary: Some("delegated child".into()),
                 detail: Some(serde_json::json!({
                     "child_agent_id": "child_recover",
@@ -2491,6 +2493,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 parent_message_id: None,
+                work_item_id: None,
                 summary: Some("delegated child".into()),
                 detail: Some(serde_json::json!({
                     "child_agent_id": "child_stop",
