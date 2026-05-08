@@ -2,6 +2,41 @@ use super::super::*;
 use super::support::*;
 use crate::types::WorkItemPlanStatus;
 
+fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> TaskRecord {
+    TaskRecord {
+        id: task_id.into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: work_item_id.map(ToString::to_string),
+        summary: Some("blocking command".into()),
+        detail: Some(serde_json::json!({
+            "wait_policy": "blocking",
+            "work_item_id": work_item_id,
+        })),
+        recovery: None,
+    }
+}
+
+#[test]
+fn work_item_record_revision_defaults_for_old_records() {
+    let value = serde_json::json!({
+        "id": "work-old",
+        "agent_id": "default",
+        "workspace_id": "agent_home",
+        "objective": "old record",
+        "state": "open",
+        "plan_status": "draft",
+        "created_at": Utc::now(),
+        "updated_at": Utc::now(),
+    });
+    let record: WorkItemRecord = serde_json::from_value(value).unwrap();
+    assert_eq!(record.revision, 1);
+}
+
 #[tokio::test]
 async fn work_item_query_tools_return_current_open_done_views() {
     let dir = tempdir().unwrap();
@@ -161,6 +196,103 @@ async fn work_item_query_tools_return_current_open_done_views() {
         fallback_payload["work_items"][0]["id"].as_str(),
         Some(active.id.as_str())
     );
+}
+
+#[tokio::test]
+async fn work_item_revision_increments_on_updates_and_completion() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let created = runtime
+        .create_work_item("revision contract".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(created.revision, 1);
+
+    let updated = runtime
+        .update_work_item_fields(
+            created.id.clone(),
+            None,
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.revision, 2);
+
+    let completed = runtime
+        .complete_work_item(updated.id.clone(), Some("done".into()))
+        .await
+        .unwrap();
+    assert_eq!(completed.revision, 3);
+}
+
+#[tokio::test]
+async fn work_item_completion_blocks_only_related_or_unscoped_blocking_tasks() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let target = runtime
+        .create_work_item("target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let other = runtime
+        .create_work_item("other".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let unrelated_task = blocking_task_for_work_item("task-other", Some(&other.id));
+    runtime.storage().append_task(&unrelated_task).unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.active_task_ids = vec![unrelated_task.id.clone()];
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let completed = runtime
+        .complete_work_item(target.id.clone(), Some("target done".into()))
+        .await
+        .unwrap();
+    assert_eq!(completed.id, target.id);
+
+    let blocked = runtime
+        .create_work_item("blocked".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let unscoped_task = blocking_task_for_work_item("task-unscoped", None);
+    runtime.storage().append_task(&unscoped_task).unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.active_task_ids = vec![unscoped_task.id.clone()];
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let err = runtime
+        .complete_work_item(blocked.id.clone(), Some("too early".into()))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("cannot complete work item"));
 }
 
 #[tokio::test]
@@ -824,6 +956,58 @@ async fn turn_end_work_item_commit_defaults_completed_turn_to_active() {
         .unwrap()
         .current_turn_work_item_id
         .is_none());
+}
+
+#[tokio::test]
+async fn turn_end_work_item_commit_ignores_unfinished_turn_binding() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("no terminal yet".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.turn_index = 7;
+        guard.state.current_turn_work_item_id = Some(work.id.clone());
+        guard.state.last_turn_terminal = None;
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let committed = runtime
+        .maybe_commit_turn_end_work_item_transition()
+        .await
+        .unwrap();
+    assert!(committed.is_none());
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_turn_work_item_id
+            .as_deref(),
+        Some(work.id.as_str())
+    );
+    assert_eq!(
+        runtime
+            .latest_work_item(&work.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        1
+    );
 }
 
 #[tokio::test]

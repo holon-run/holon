@@ -1,0 +1,29 @@
+{
+  "agent": {
+    "current_work_item_id": "work-active",
+    "active_task_ids": ["task-active"],
+    "pending_wake_hint_reason": "fixture wake"
+  },
+  "work_items": [
+    {
+      "id": "work-active",
+      "objective": "continue active fixture work",
+      "state": "open",
+      "revision": 3
+    },
+    {
+      "id": "work-queued",
+      "objective": "queued fixture work",
+      "state": "open",
+      "revision": 1
+    }
+  ],
+  "tasks": [
+    {
+      "id": "task-active",
+      "status": "running",
+      "wait_policy": "blocking",
+      "work_item_id": "work-active"
+    }
+  ]
+}

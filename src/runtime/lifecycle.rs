@@ -34,6 +34,14 @@ impl RuntimeHandle {
         let (turn_index, work_item_id) = {
             let mut guard = self.inner.agent.lock().await;
             let turn_index = guard.state.turn_index;
+            let turn_completed = guard
+                .state
+                .last_turn_terminal
+                .as_ref()
+                .is_some_and(|record| record.turn_index == turn_index);
+            if !turn_completed {
+                return Ok(None);
+            }
             let work_item_id = guard.state.current_turn_work_item_id.take();
             self.inner.storage.write_agent(&guard.state)?;
             (turn_index, work_item_id)
@@ -72,6 +80,7 @@ impl RuntimeHandle {
                 id: latest.id.clone(),
                 agent_id: latest.agent_id.clone(),
                 workspace_id: latest.workspace_id.clone(),
+                revision: latest.revision + 1,
                 objective: latest.objective.clone(),
                 state: latest.state.clone(),
                 plan_status: latest.plan_status,
@@ -1234,6 +1243,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id: None,
             summary: None,
             detail: None,
             recovery: None,

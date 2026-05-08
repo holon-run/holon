@@ -11,6 +11,7 @@ mod message_dispatch;
 mod operator;
 mod operator_dispatch;
 mod provider_turn;
+mod scheduler;
 mod subagent;
 mod task_state_reducer;
 mod task_supervisor;

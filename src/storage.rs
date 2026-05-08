@@ -1082,6 +1082,7 @@ mod tests {
             created_at: now + chrono::Duration::seconds(offset),
             updated_at: now + chrono::Duration::seconds(offset),
             parent_message_id: None,
+            work_item_id: None,
             summary: Some(format!("{id} {status:?}")),
             detail: None,
             recovery: None,
@@ -1131,6 +1132,7 @@ mod tests {
                     created_at: now + chrono::Duration::seconds(index),
                     updated_at: now + chrono::Duration::seconds(index),
                     parent_message_id: None,
+                    work_item_id: None,
                     summary: None,
                     detail: None,
                     recovery: None,
@@ -1160,6 +1162,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             parent_message_id: None,
+            work_item_id: None,
             summary: None,
             detail: None,
             recovery: Some(TaskRecoverySpec::SubagentTask {

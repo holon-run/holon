@@ -1,6 +1,5 @@
 use super::message_dispatch::message_text;
 use super::*;
-use crate::runtime::task_state_reducer::has_blocking_active_tasks;
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
@@ -69,6 +68,7 @@ fn task_with_status(
         created_at: task.created_at,
         updated_at: Utc::now(),
         parent_message_id: task.parent_message_id.clone(),
+        work_item_id: task.work_item_id.clone(),
         summary: task.summary.clone(),
         detail,
         recovery: task.recovery.clone(),
@@ -76,6 +76,15 @@ fn task_with_status(
 }
 
 impl RuntimeHandle {
+    pub(super) async fn task_work_item_binding(&self) -> Option<String> {
+        let guard = self.inner.agent.lock().await;
+        guard
+            .state
+            .current_turn_work_item_id
+            .clone()
+            .or_else(|| guard.state.current_work_item_id.clone())
+    }
+
     pub(crate) fn supports_child_agent_spawning(&self) -> bool {
         self.inner.host_bridge.is_some()
     }
@@ -130,6 +139,7 @@ impl RuntimeHandle {
         self.ensure_background_tasks_allowed(CHILD_AGENT_TASK_KIND)
             .await?;
         let agent_id = self.agent_id().await?;
+        let work_item_id = self.task_work_item_binding().await;
         let workspace_mode = ChildAgentWorkspaceMode::Inherit;
         let recovery = TaskRecoverySpec::ChildAgentTask {
             summary: summary.clone(),
@@ -145,6 +155,7 @@ impl RuntimeHandle {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id,
             summary: Some(summary.clone()),
             detail: Some(child_agent_task_detail(workspace_mode)),
             recovery: Some(recovery),
@@ -187,6 +198,7 @@ impl RuntimeHandle {
                     "task_summary": task_record.summary,
                     "task_detail": task_record.detail,
                     "task_recovery": task_record.recovery,
+                    "work_item_id": task_record.work_item_id.clone(),
                 })),
                 ..MessageEnvelope::new(
                     agent_id.clone(),
@@ -238,6 +250,7 @@ impl RuntimeHandle {
                     "task_summary": task_record.summary,
                     "task_detail": task_record.detail,
                     "task_recovery": task_record.recovery,
+                    "work_item_id": task_record.work_item_id.clone(),
                 })),
                 ..MessageEnvelope::new(
                     agent_id,
@@ -465,6 +478,7 @@ impl RuntimeHandle {
             CHILD_AGENT_TASK_KIND,
         )?;
         let agent_id = self.agent_id().await?;
+        let work_item_id = self.task_work_item_binding().await;
         let recovery = TaskRecoverySpec::ChildAgentTask {
             summary: summary.clone(),
             prompt: prompt.clone(),
@@ -479,6 +493,7 @@ impl RuntimeHandle {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id,
             summary: Some(summary.clone()),
             detail: Some(child_agent_task_detail(workspace_mode)),
             recovery: Some(recovery),
@@ -588,6 +603,7 @@ impl RuntimeHandle {
                 "task_summary": task_record.summary,
                 "task_detail": task_detail.clone(),
                 "task_recovery": task_record.recovery,
+                "work_item_id": task_record.work_item_id.clone(),
             });
             if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
                 metadata["worktree"] = worktree;
@@ -720,6 +736,7 @@ impl RuntimeHandle {
                             "task_summary": task_record.summary,
                             "task_detail": task_record.detail,
                             "task_recovery": task_record.recovery,
+                            "work_item_id": task_record.work_item_id.clone(),
                         })),
                         ..MessageEnvelope::new(
                             agent_id.clone(),
@@ -827,6 +844,7 @@ impl RuntimeHandle {
         }
 
         let agent_id = self.agent_id().await?;
+        let work_item_id = self.task_work_item_binding().await;
         let recovery = TaskRecoverySpec::ChildAgentTask {
             summary: summary.clone(),
             prompt,
@@ -841,6 +859,7 @@ impl RuntimeHandle {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id,
             summary: Some(summary),
             detail: Some(child_agent_task_detail(workspace_mode)),
             recovery: Some(recovery),
@@ -889,6 +908,7 @@ impl RuntimeHandle {
                 "task_status": "running",
                 "task_summary": task_record.summary,
                 "task_recovery": task_record.recovery,
+                "work_item_id": task_record.work_item_id.clone(),
                 "task_detail": task_detail.clone(),
             })),
             ..MessageEnvelope::new(
@@ -1015,6 +1035,7 @@ impl RuntimeHandle {
             "task_status": status_label,
             "task_summary": task_record.summary,
             "task_recovery": task_record.recovery,
+            "work_item_id": task_record.work_item_id.clone(),
             "task_detail": task_detail.clone(),
         });
         if let Some(delegation) = delegation.as_ref() {
@@ -1159,43 +1180,7 @@ impl RuntimeHandle {
         task: &TaskRecord,
         event_kind: &'static str,
     ) -> Result<()> {
-        self.inner.storage.append_task(task)?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if is_terminal_task_status(&task.status) {
-                guard.state.active_task_ids.retain(|id| id != &task.id);
-                if !matches!(
-                    guard.state.status,
-                    AgentStatus::Paused | AgentStatus::Stopped
-                ) {
-                    guard.state.status = if has_blocking_active_tasks(
-                        &self.inner.storage,
-                        &guard.state.active_task_ids,
-                    )? {
-                        AgentStatus::AwaitingTask
-                    } else {
-                        AgentStatus::AwakeIdle
-                    };
-                }
-            } else {
-                if !guard.state.active_task_ids.contains(&task.id) {
-                    guard.state.active_task_ids.push(task.id.clone());
-                }
-                if task.is_blocking()
-                    && !matches!(
-                        guard.state.status,
-                        AgentStatus::Paused | AgentStatus::Stopped
-                    )
-                {
-                    guard.state.status = AgentStatus::AwaitingTask;
-                }
-            }
-            self.inner.storage.write_agent(&guard.state)?;
-        }
-        self.inner
-            .storage
-            .append_event(&AuditEvent::new(event_kind, to_json_value(task)))?;
-        Ok(())
+        self.persist_task_transition(task, event_kind).await
     }
 
     async fn persist_interrupted_tasks(&self, tasks: Vec<TaskRecord>) -> Result<Vec<TaskRecord>> {
@@ -1223,6 +1208,7 @@ impl RuntimeHandle {
                 created_at: task.created_at,
                 updated_at: Utc::now(),
                 parent_message_id: None,
+                work_item_id: task.work_item_id.clone(),
                 summary: task.summary.clone(),
                 detail: Some(detail),
                 recovery: task.recovery.clone(),
@@ -1585,6 +1571,7 @@ impl RuntimeHandle {
                 .unwrap_or_else(Utc::now),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id: existing.as_ref().and_then(|task| task.work_item_id.clone()),
             summary: existing
                 .as_ref()
                 .and_then(|task| task.summary.clone())
@@ -1985,6 +1972,7 @@ impl RuntimeHandle {
             wrote_item = true;
         }
         if wrote_item {
+            record.revision = existing.revision + 1;
             self.inner.storage.append_work_item(&record)?;
             self.inner.storage.append_event(&AuditEvent::new(
                 "work_item_written",
@@ -2014,7 +2002,11 @@ impl RuntimeHandle {
         }
         let has_blocking_tasks = {
             let guard = self.inner.agent.lock().await;
-            has_blocking_active_tasks(&self.inner.storage, &guard.state.active_task_ids)?
+            scheduler::has_completion_blocking_task_for_work_item(
+                &self.inner.storage,
+                &guard.state.active_task_ids,
+                &work_item_id,
+            )?
         };
         if has_blocking_tasks {
             return Err(anyhow!(
@@ -2023,6 +2015,7 @@ impl RuntimeHandle {
             ));
         }
         let record = WorkItemRecord {
+            revision: existing.revision + 1,
             state: WorkItemState::Completed,
             blocked_by: None,
             result_summary: result_summary.clone(),
@@ -2172,6 +2165,11 @@ pub(super) fn task_from_message(message: &MessageEnvelope, agent_id: &str) -> Re
         created_at: Utc::now(),
         updated_at: Utc::now(),
         parent_message_id: Some(message.id.clone()),
+        work_item_id: metadata
+            .and_then(|value| value.get("work_item_id"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+            .or_else(|| message.work_item_id.clone()),
         summary,
         detail: metadata.and_then(|value| value.get("task_detail")).cloned(),
         recovery: metadata

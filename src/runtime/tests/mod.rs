@@ -1,5 +1,6 @@
 mod agent_and_tools;
 mod runtime_state;
+mod scheduler;
 mod support;
 mod task_recovery;
 mod timers;

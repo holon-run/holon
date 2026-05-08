@@ -10,6 +10,7 @@ For a short architecture map and reading path, see
 
 - [Agent Control Plane Model](./agent-control-plane-model.md)
 - [Agent Profile Model](./agent-profile-model.md)
+- [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
 - [Result Closure](./result-closure.md)
 - [Continuation Trigger](./continuation-trigger.md)
 - [Objective, Delta, and Acceptance Boundary](./objective-delta-and-acceptance-boundary.md)

@@ -476,6 +476,7 @@ impl RuntimeHandle {
             false,
         );
         let diagnostics = self.command_cost_diagnostics_for(&resolved.spec);
+        let work_item_id = self.task_work_item_binding().await;
         let task = TaskRecord {
             id: task_id.clone(),
             agent_id: agent_id.clone(),
@@ -484,6 +485,7 @@ impl RuntimeHandle {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             parent_message_id: None,
+            work_item_id,
             summary: Some(summary.clone()),
             detail: Some(detail),
             recovery: Some(TaskRecoverySpec::CommandTask {
@@ -687,12 +689,13 @@ impl RuntimeHandle {
         let result_message = MessageEnvelope {
             metadata: Some({
                 serde_json::json!({
-                "task_id": task_record.id,
-                "task_kind": task_record.kind,
-                "task_status": status_label,
-                "task_summary": task_record.summary,
-                "task_detail": detail.clone(),
-                "task_recovery": task_record.recovery,
+                    "task_id": task_record.id,
+                    "task_kind": task_record.kind,
+                    "task_status": status_label,
+                    "task_summary": task_record.summary,
+                    "task_detail": detail.clone(),
+                    "task_recovery": task_record.recovery,
+                    "work_item_id": task_record.work_item_id.clone(),
                 })
             }),
             ..MessageEnvelope::new(
@@ -777,6 +780,7 @@ impl RuntimeHandle {
                 created_at: task_record.created_at,
                 updated_at: chrono::Utc::now(),
                 parent_message_id: None,
+                work_item_id: task_record.work_item_id.clone(),
                 summary: task_record.summary.clone(),
                 detail: Some(command_task_detail(
                     resolved,
@@ -812,6 +816,7 @@ impl RuntimeHandle {
                         false,
                     ),
                     "task_recovery": task_record.recovery,
+                    "work_item_id": task_record.work_item_id.clone(),
                 })),
                 ..MessageEnvelope::new(
                     agent_id.to_string(),
@@ -914,6 +919,7 @@ impl RuntimeHandle {
             created_at: task_record.created_at,
             updated_at: chrono::Utc::now(),
             parent_message_id: None,
+            work_item_id: task_record.work_item_id.clone(),
             summary: task_record.summary.clone(),
             detail: Some(detail),
             recovery: task_record.recovery.clone(),
@@ -1439,6 +1445,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id: None,
             summary: Some(summary.into()),
             detail: Some(command_task_detail(
                 resolved,

@@ -110,6 +110,7 @@ async fn runtime_interrupts_inflight_task_after_restart() {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id: None,
             summary: Some("recoverable command".into()),
             detail: None,
             recovery: Some(TaskRecoverySpec::CommandTask {

@@ -1207,6 +1207,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             parent_message_id: None,
+            work_item_id: None,
             summary: Some("sample task".into()),
             detail,
             recovery: None,

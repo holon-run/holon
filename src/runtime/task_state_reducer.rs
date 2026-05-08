@@ -1,13 +1,7 @@
-use super::*;
+use super::{scheduler, *};
 
 pub(super) fn is_terminal_task_status(status: &TaskStatus) -> bool {
-    matches!(
-        status,
-        TaskStatus::Completed
-            | TaskStatus::Failed
-            | TaskStatus::Cancelled
-            | TaskStatus::Interrupted
-    )
+    scheduler::is_terminal_task_status(status)
 }
 
 pub(super) fn should_ignore_task_update(storage: &AppStorage, task: &TaskRecord) -> Result<bool> {
@@ -47,33 +41,35 @@ pub(super) fn has_blocking_active_tasks(
 }
 
 impl RuntimeHandle {
-    pub(super) async fn reduce_task_status_message(&self, task: TaskRecord) -> Result<()> {
-        if should_ignore_task_update(&self.inner.storage, &task)? {
+    pub(super) async fn persist_task_transition(
+        &self,
+        task: &TaskRecord,
+        event_kind: &'static str,
+    ) -> Result<()> {
+        if should_ignore_task_update(&self.inner.storage, task)? {
             return Ok(());
         }
 
-        self.inner.storage.append_task(&task)?;
+        self.inner.storage.append_task(task)?;
         {
             let mut guard = self.inner.agent.lock().await;
-            if !guard.state.active_task_ids.contains(&task.id) {
+            if is_terminal_task_status(&task.status) {
+                guard.state.active_task_ids.retain(|id| id != &task.id);
+            } else if !guard.state.active_task_ids.contains(&task.id) {
                 guard.state.active_task_ids.push(task.id.clone());
             }
-            if task.is_blocking()
-                && !matches!(
-                    guard.state.status,
-                    AgentStatus::Paused | AgentStatus::Stopped
-                )
-            {
-                guard.state.status = AgentStatus::AwaitingTask;
-            }
-            guard.state.current_run_id = None;
+            scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
             self.inner.storage.write_agent(&guard.state)?;
         }
-        self.inner.storage.append_event(&AuditEvent::new(
-            "task_status_updated",
-            to_json_value(&task),
-        ))?;
+        self.inner
+            .storage
+            .append_event(&AuditEvent::new(event_kind, to_json_value(task)))?;
         Ok(())
+    }
+
+    pub(super) async fn reduce_task_status_message(&self, task: TaskRecord) -> Result<()> {
+        self.persist_task_transition(&task, "task_status_updated")
+            .await
     }
 
     pub(super) async fn reduce_task_result_message(
@@ -86,44 +82,8 @@ impl RuntimeHandle {
         if should_ignore_task_update(&self.inner.storage, &task)? {
             return Ok(());
         }
-
-        self.inner.storage.append_task(&task)?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if is_terminal_task_status(&task.status) {
-                guard.state.active_task_ids.retain(|id| id != &task.id);
-                if !matches!(
-                    guard.state.status,
-                    AgentStatus::Paused | AgentStatus::Stopped
-                ) {
-                    guard.state.status = if has_blocking_active_tasks(
-                        &self.inner.storage,
-                        &guard.state.active_task_ids,
-                    )? {
-                        AgentStatus::AwaitingTask
-                    } else {
-                        AgentStatus::AwakeIdle
-                    };
-                }
-            } else {
-                if !guard.state.active_task_ids.contains(&task.id) {
-                    guard.state.active_task_ids.push(task.id.clone());
-                }
-                if task.is_blocking()
-                    && !matches!(
-                        guard.state.status,
-                        AgentStatus::Paused | AgentStatus::Stopped
-                    )
-                {
-                    guard.state.status = AgentStatus::AwaitingTask;
-                }
-            }
-            guard.state.current_run_id = None;
-        }
-        self.inner.storage.append_event(&AuditEvent::new(
-            "task_result_received",
-            to_json_value(&task),
-        ))?;
+        self.persist_task_transition(&task, "task_result_received")
+            .await?;
 
         let task_status_label = match task.status {
             TaskStatus::Completed => "completed",
@@ -150,6 +110,15 @@ impl RuntimeHandle {
             if emit_result_brief {
                 let brief = brief::make_task_result(&message.agent_id, &task.id, &result_text);
                 self.persist_brief(&brief).await?;
+            }
+            if let Some(work_item_id) = message
+                .work_item_id
+                .clone()
+                .or_else(|| task.effective_work_item_id().map(ToString::to_string))
+            {
+                let mut guard = self.inner.agent.lock().await;
+                guard.state.current_turn_work_item_id = Some(work_item_id);
+                self.inner.storage.write_agent(&guard.state)?;
             }
             self.process_interactive_message(
                 message,
@@ -195,6 +164,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id: None,
             summary: Some(format!("task {id}")),
             detail: blocking.then(|| json!({ "wait_policy": "blocking" })),
             recovery: None,
@@ -306,6 +276,20 @@ mod tests {
         assert!(!has_blocking_active_tasks(&storage, &active_task_ids).unwrap());
     }
 
+    #[test]
+    fn task_record_work_item_id_falls_back_to_detail_for_old_records() {
+        let mut record = task("task-1", TaskStatus::Running, true);
+        record.detail = Some(serde_json::json!({
+            "wait_policy": "blocking",
+            "work_item_id": "work-old",
+        }));
+
+        assert_eq!(record.effective_work_item_id(), Some("work-old"));
+
+        record.work_item_id = Some("work-new".into());
+        assert_eq!(record.effective_work_item_id(), Some("work-new"));
+    }
+
     #[tokio::test]
     async fn non_terminal_task_updates_add_missing_active_task_ids_and_blocking_state() {
         let runtime = runtime();
@@ -386,6 +370,24 @@ mod tests {
         }));
         let transcript = runtime.storage().read_recent_transcript(10).unwrap();
         assert!(transcript.is_empty());
+    }
+
+    #[tokio::test]
+    async fn model_visible_task_result_binds_turn_to_work_item() {
+        let runtime = runtime();
+        let mut task = task("task-1", TaskStatus::Completed, false);
+        task.work_item_id = Some("work-1".into());
+        let mut message = task_result_message("task-1");
+        message.work_item_id = Some("work-1".into());
+
+        runtime
+            .reduce_task_result_message(&message, task, true, None)
+            .await
+            .unwrap();
+
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(state.current_turn_work_item_id.as_deref(), Some("work-1"));
+        assert!(state.last_turn_terminal.is_some());
     }
 
     #[tokio::test]

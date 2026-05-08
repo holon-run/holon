@@ -169,6 +169,7 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
         created_at: now + chrono::Duration::seconds(offset),
         updated_at: now + chrono::Duration::seconds(offset),
         parent_message_id: None,
+        work_item_id: None,
         summary: Some(format!("{id} {status:?}")),
         detail: None,
         recovery: None,

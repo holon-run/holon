@@ -962,6 +962,7 @@ async fn task_result_routes_through_reduction_and_follow_up_behavior() {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id: None,
             summary: Some("task running".into()),
             detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
             recovery: None,

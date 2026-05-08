@@ -196,6 +196,7 @@ pub(crate) async fn mark_blocking_task(runtime: &RuntimeHandle, task_id: &str) {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id: None,
             summary: Some("blocking command".into()),
             detail: Some(serde_json::json!({
                 "wait_policy": "blocking"

@@ -210,6 +210,11 @@ impl RuntimeHandle {
         &self,
         work_item: &crate::types::WorkItemRecord,
     ) -> Result<Option<String>> {
+        if let Some(message_id) = self.duplicate_work_queue_tick_message_id(
+            &scheduler::work_queue_tick_idempotency_key(work_item, "queued_available"),
+        )? {
+            return Ok(Some(message_id));
+        }
         let recent_messages = self
             .inner
             .storage
@@ -239,6 +244,11 @@ impl RuntimeHandle {
         &self,
         work_item: &crate::types::WorkItemRecord,
     ) -> Result<Option<String>> {
+        if let Some(message_id) = self.duplicate_work_queue_tick_message_id(
+            &scheduler::work_queue_tick_idempotency_key(work_item, "continue_active"),
+        )? {
+            return Ok(Some(message_id));
+        }
         let recent_briefs = self
             .inner
             .storage
@@ -254,6 +264,35 @@ impl RuntimeHandle {
         }
 
         Ok(Some(result_brief.id.clone()))
+    }
+
+    fn duplicate_work_queue_tick_message_id(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .inner
+            .storage
+            .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
+            .into_iter()
+            .rev()
+            .filter(|message| {
+                matches!(
+                    (&message.kind, &message.origin),
+                    (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                        if subsystem == "work_queue"
+                )
+            })
+            .find(|message| {
+                message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("work_queue"))
+                    .and_then(|metadata| metadata.get("idempotency_key"))
+                    .and_then(|value| value.as_str())
+                    == Some(idempotency_key)
+            })
+            .map(|message| message.id))
     }
 
     fn has_work_signal_after(
@@ -417,6 +456,7 @@ impl RuntimeHandle {
         work_item: &crate::types::WorkItemRecord,
         reason: &str,
     ) -> Result<()> {
+        let idempotency_key = scheduler::work_queue_tick_idempotency_key(work_item, reason);
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
             MessageKind::SystemTick,
@@ -440,7 +480,9 @@ impl RuntimeHandle {
         message.metadata = Some(serde_json::json!({
             "work_queue": {
                 "reason": reason,
+                "idempotency_key": idempotency_key,
                 "work_item_id": work_item.id,
+                "work_item_revision": work_item.revision,
                 "objective": work_item.objective,
                 "state": work_item.state,
                 "runtime_switched_current_item": false,
@@ -934,6 +976,46 @@ mod tests {
                 && event.data["reason"] == "no_new_signal_after_queued_available"
                 && event.data["work_item_id"] == queued_id
         }));
+    }
+
+    #[test]
+    fn queued_system_tick_idempotency_key_includes_work_item_revision() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+        clear_queue(&test_runtime);
+
+        let first_ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(
+            first_ticks[0].1["idempotency_key"].as_str(),
+            Some("work_queue:queued_available:wi-queued:1")
+        );
+
+        let mut updated = queued.clone();
+        updated.revision += 1;
+        updated.updated_at = chrono::Utc::now();
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_work_item(&updated)
+            .unwrap();
+
+        assert!(rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 2);
+        assert_eq!(
+            ticks[1].1["idempotency_key"].as_str(),
+            Some("work_queue:queued_available:wi-queued:2")
+        );
     }
 
     #[test]

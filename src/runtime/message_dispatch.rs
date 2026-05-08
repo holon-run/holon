@@ -11,11 +11,6 @@ impl RuntimeHandle {
             "message_processing_started",
             to_json_value(&message),
         ))?;
-        if let Some(work_item_id) = message.work_item_id.as_deref() {
-            let mut guard = self.inner.agent.lock().await;
-            guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
-        }
-
         let task = match message.kind {
             MessageKind::TaskStatus | MessageKind::TaskResult => {
                 Some(tasks::task_from_message(&message, &message.agent_id)?)
@@ -51,6 +46,11 @@ impl RuntimeHandle {
             | MessageKind::ChannelEvent
             | MessageKind::InternalFollowup => {
                 if model_visible {
+                    if let Some(work_item_id) = message.work_item_id.as_deref() {
+                        let mut guard = self.inner.agent.lock().await;
+                        guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
+                        self.inner.storage.write_agent(&guard.state)?;
+                    }
                     self.process_interactive_message(
                         &message,
                         continuation_resolution.as_ref(),
@@ -100,15 +100,7 @@ impl RuntimeHandle {
                 AgentStatus::Asleep | AgentStatus::Paused | AgentStatus::Stopped
             );
             if status_mutable {
-                guard.state.status = if task_state_reducer::has_blocking_active_tasks(
-                    &self.inner.storage,
-                    &guard.state.active_task_ids,
-                )? {
-                    AgentStatus::AwaitingTask
-                } else {
-                    AgentStatus::AwakeIdle
-                };
-                guard.state.current_run_id = None;
+                scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
             }
             if status_mutable || matches!(message.kind, MessageKind::TaskResult) {
                 self.inner.storage.write_agent(&guard.state)?;

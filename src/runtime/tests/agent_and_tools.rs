@@ -786,6 +786,7 @@ async fn cancelling_task_ignores_late_running_status_update() {
         created_at: Utc::now(),
         updated_at: Utc::now(),
         parent_message_id: None,
+        work_item_id: None,
         summary: Some("regression task".into()),
         detail: Some(serde_json::json!({
             "task_status": "cancelling",
@@ -836,6 +837,7 @@ async fn latest_task_list_entries_return_compact_projection() {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_message_id: None,
+            work_item_id: None,
             summary: Some("watch logs".into()),
             detail: Some(serde_json::json!({
                 "wait_policy": "blocking",
