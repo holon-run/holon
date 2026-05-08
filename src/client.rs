@@ -25,6 +25,7 @@ use crate::{
 const UNIX_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCAL_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const REMOTE_STATE_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
@@ -563,7 +564,7 @@ impl LocalClient {
     async fn send_http(&self, request: RequestSpec, include_control_auth: bool) -> Result<Vec<u8>> {
         let response = self
             .build_http_request(&request, include_control_auth)
-            .timeout(self.http_request_timeout())
+            .timeout(self.http_request_timeout_for_path(&request.path))
             .send()
             .await
             .with_context(|| format!("failed to send {}", request.path))?;
@@ -592,10 +593,11 @@ impl LocalClient {
         if let Some(last_event_id) = last_event_id {
             builder = builder.header("Last-Event-ID", last_event_id);
         }
-        let response = tokio::time::timeout(self.http_request_timeout(), builder.send())
-            .await
-            .map_err(|_| anyhow!("timed out opening event stream {}", path))?
-            .with_context(|| format!("failed to open event stream {}", path))?;
+        let response =
+            tokio::time::timeout(self.http_request_timeout_for_path(path), builder.send())
+                .await
+                .map_err(|_| anyhow!("timed out opening event stream {}", path))?
+                .with_context(|| format!("failed to open event stream {}", path))?;
         let status = response.status();
         if !status.is_success() {
             let bytes = response.bytes().await?.to_vec();
@@ -640,12 +642,8 @@ impl LocalClient {
         }
     }
 
-    fn http_request_timeout(&self) -> Duration {
-        if self.remote.is_some() {
-            REMOTE_HTTP_REQUEST_TIMEOUT
-        } else {
-            LOCAL_HTTP_REQUEST_TIMEOUT
-        }
+    fn http_request_timeout_for_path(&self, path: &str) -> Duration {
+        http_request_timeout_for_path(self.remote.is_some(), path)
     }
 
     #[cfg(unix)]
@@ -775,6 +773,18 @@ impl LocalClient {
             current_chunk_size: None,
             eof: false,
         })
+    }
+}
+
+fn is_state_bootstrap_path(path: &str) -> bool {
+    path == "/state" || (path.starts_with("/agents/") && path.ends_with("/state"))
+}
+
+fn http_request_timeout_for_path(remote: bool, path: &str) -> Duration {
+    match (remote, is_state_bootstrap_path(path)) {
+        (true, true) => REMOTE_STATE_BOOTSTRAP_TIMEOUT,
+        (true, false) => REMOTE_HTTP_REQUEST_TIMEOUT,
+        (false, _) => LOCAL_HTTP_REQUEST_TIMEOUT,
     }
 }
 
@@ -1242,8 +1252,10 @@ fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>> {
 mod tests {
     use super::{
         authorization_header_value, decode_chunked_body, decode_or_error, event_stream_path,
-        normalize_remote_base_url, parse_http_response, parse_sse_frame, take_next_sse_frame,
-        validate_header_value, validate_unix_request_target, EventStreamRequest, LocalHttpError,
+        http_request_timeout_for_path, is_state_bootstrap_path, normalize_remote_base_url,
+        parse_http_response, parse_sse_frame, take_next_sse_frame, validate_header_value,
+        validate_unix_request_target, EventStreamRequest, LocalHttpError,
+        REMOTE_HTTP_REQUEST_TIMEOUT, REMOTE_STATE_BOOTSTRAP_TIMEOUT,
     };
 
     #[test]
@@ -1258,6 +1270,29 @@ mod tests {
             normalize_remote_base_url("http://example.test:7878/".into()).unwrap(),
             "http://example.test:7878"
         );
+    }
+
+    #[test]
+    fn remote_state_bootstrap_uses_longer_timeout_than_lightweight_calls() {
+        assert_eq!(
+            http_request_timeout_for_path(true, "/agents/default/state"),
+            REMOTE_STATE_BOOTSTRAP_TIMEOUT
+        );
+        assert_eq!(
+            http_request_timeout_for_path(true, "/agents/default/status"),
+            REMOTE_HTTP_REQUEST_TIMEOUT
+        );
+        assert!(REMOTE_STATE_BOOTSTRAP_TIMEOUT > REMOTE_HTTP_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn state_bootstrap_path_detection_is_exact() {
+        assert!(is_state_bootstrap_path("/state"));
+        assert!(is_state_bootstrap_path("/agents/default/state"));
+        assert!(!is_state_bootstrap_path("/agents/default/status"));
+        assert!(!is_state_bootstrap_path(
+            "/agents/default/events?since=evt_1"
+        ));
     }
 
     #[test]
