@@ -1,56 +1,118 @@
----
-title: Runtime model
-summary: How Holon separates agents, work items, tasks, queues, and delivery.
-order: 10
----
+# Runtime Model
 
-# Runtime model
+Holon treats agent execution as a runtime system. A single model turn is
+important, but it's not the whole picture. The runtime tracks durable identity,
+active work, supervised tasks, wake conditions, and final delivery as separate
+concerns — each with its own lifecycle.
 
-Holon treats agent execution as a runtime problem. A turn is important, but it
-is not the whole system. The runtime tracks durable identity, active work,
-supervised tasks, wake conditions, and final delivery as separate concerns.
+## Core Concepts
 
-## Agents
+### Agents
 
-An agent is an addressable runtime actor. It has an identity, lifecycle, active
-workspace, loaded guidance, and durable local state. Agents can be public and
-self-owned, or private and supervised by a parent task.
+An agent is an **addressable runtime actor** with:
 
-## Work items
+- **Identity** — A unique `agent_id` used for addressing messages and
+  inspecting state
+- **Lifecycle** — Created, active, sleeping, and eventually terminated
+- **Workspace** — A project root where the agent reads and mutates files
+- **Guidance** — Loaded from `AGENTS.md` (project and agent-level)
+- **Local state** — Agent-specific memory, pending follow-ups, and work item
+  focus
 
-A work item names an objective that may outlive a single model turn. It carries
-the plan, readiness state, blockers, and a progress checklist. This lets Holon
-resume or inspect work without pretending that every continuation is a new
-chat message.
+Agent profiles:
 
-## Tasks
+- **Public (self-owned):** Standalone identity, self-managed lifecycle. Used
+  for long-running, addressable agents.
+- **Private (child):** Parent-supervised via a task handle. Used for delegated
+  subtasks and parallel work.
 
-Tasks are supervised executions. A task can be a shell command, a long-running
-process, or a delegated child agent. Task lifecycle is separate from the
-agent's user-facing answer: Holon can inspect status, read bounded output, send
-continuation input, or stop work explicitly.
+### Work Items
 
-## Queues and wakeups
+A work item is a **durable objective record** that outlives individual model
+turns. It contains:
 
-Holon can enqueue follow-up messages, sleep when no immediate work remains, and
-wake on external triggers. These state transitions are visible in the runtime
-surface so integrations do not need to infer hidden background behavior.
+- **Objective** — The short goal statement (e.g. "Fix build warnings in src/")
+- **Plan** — Durable multi-step plan in prose
+- **Plan status** — `draft`, `ready`, or `needs_input`
+- **Todo list** — Discrete progress checklist items
+- **Blocked by** — Specific blocker description when progress stalls
 
-## Delivery
+Work items let Holon resume work across turns, inspect progress, or hand off
+incomplete work to another agent. They are not chat history — they're a
+**project management primitive** built into the runtime.
 
-Holon separates internal execution traces from user-facing delivery. A final
-answer should explain the useful result, while logs, command output, and
-runtime evidence remain available through the appropriate task or memory
-surfaces.
+Work item lifecycle:
 
-## The operating loop
+```
+[Created] -> [Draft plan] -> [Ready] -> [In progress] -> [Completed]
+                ^                            |
+                +--- [Needs input] <-- [Blocked]
+```
 
-1. Ingress arrives with origin, trust, and priority metadata.
-2. The agent anchors the objective as a work item when the work is non-trivial.
-3. The agent reads only the context needed to act safely.
-4. Mutations happen through explicit workspace or task tools.
-5. Verification runs through real project checks when available.
-6. The agent delivers a concise result and sleeps if no follow-up remains.
+### Tasks
 
-This loop keeps Holon headless and integration-friendly while still supporting
-long-lived, stateful work.
+A task is a **supervised execution handle**. Tasks include:
+
+- **Command tasks** — Shell commands, builds, tests, scripts
+- **Child agent tasks** — Delegated agents spawned via `SpawnAgent`
+
+Task lifecycle is independent of the agent's user-facing answer. You can:
+
+- Inspect status (`TaskStatus`)
+- Read bounded output (`TaskOutput`)
+- Send continuation input (`TaskInput`)
+- Stop explicitly (`TaskStop`)
+
+### Queues and Wakeups
+
+Holon's scheduling primitives:
+
+- **Enqueue** — Schedule a follow-up message for this agent. Priorities:
+  `interrupt`, `next`, `normal`, `background`.
+- **Sleep** — Agent goes idle when no immediate work remains.
+- **Wake** — External trigger or queued message reactivates the agent.
+- **External triggers** — Callbacks from CI, webhooks, timers, or external
+  services.
+
+These state transitions are visible — integrations don't need to infer hidden
+background behavior.
+
+### Delivery
+
+Holon separates **internal execution traces** from **user-facing delivery**:
+
+- **Briefs** — Condensed context summaries for model consumption
+- **Final answer** — The useful result shown to the operator
+- **Task output** — Command stdout/stderr, available through task inspection
+- **Transcripts** — Full turn history for debugging
+
+### Workspaces
+
+Every agent has exactly one active workspace. Workspaces define:
+
+- **Instruction root** — Where `AGENTS.md` and policy files are resolved
+- **Execution root** — Default working directory for commands
+- **ApplyPatch target** — Where file mutations land
+
+Workspaces can be attached, detached, or isolated for safe experimentation.
+
+## The Operating Loop
+
+Each agent turn follows this pattern:
+
+1. **Ingress** arrives with `origin`, `trust`, and `priority` metadata.
+2. **Anchor** — Non-trivial work gets a work item with a stable objective.
+3. **Load context** — Agent reads only what's needed for the current decision.
+4. **Mutate** — Changes happen through explicit workspace tools (`ApplyPatch`,
+   `ExecCommand`).
+5. **Verify** — Run real project checks (`cargo test`, `cargo check`) when
+   available.
+6. **Deliver** — Concise user-facing result, then sleep or enqueue follow-up.
+
+## See Also
+
+- [Trust Boundaries](/concepts/trust-boundaries.md) — How Holon classifies and
+  enforces trust
+- [CLI Reference](/reference/cli.md) — All CLI commands
+- [Integration Guide](/guides/integration.md) — HTTP control plane API
+- [Getting Started](/getting-started/first-agent.md) — Hands-on tutorial
