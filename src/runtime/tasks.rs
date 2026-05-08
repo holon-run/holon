@@ -603,7 +603,7 @@ impl RuntimeHandle {
                 "task_summary": task_record.summary,
                 "task_detail": task_detail.clone(),
                 "task_recovery": task_record.recovery,
-                    "work_item_id": task_record.work_item_id.clone(),
+                "work_item_id": task_record.work_item_id.clone(),
             });
             if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
                 metadata["worktree"] = worktree;
@@ -730,14 +730,14 @@ impl RuntimeHandle {
                 Err(err) => {
                     let result_message = MessageEnvelope {
                         metadata: Some(serde_json::json!({
-                                "task_id": task_record.id,
-                                "task_kind": task_record.kind,
-                                "task_status": "failed",
-                                "task_summary": task_record.summary,
-                                "task_detail": task_record.detail,
-                                "task_recovery": task_record.recovery,
-                        "work_item_id": task_record.work_item_id.clone(),
-                            })),
+                            "task_id": task_record.id,
+                            "task_kind": task_record.kind,
+                            "task_status": "failed",
+                            "task_summary": task_record.summary,
+                            "task_detail": task_record.detail,
+                            "task_recovery": task_record.recovery,
+                            "work_item_id": task_record.work_item_id.clone(),
+                        })),
                         ..MessageEnvelope::new(
                             agent_id.clone(),
                             MessageKind::TaskResult,
@@ -908,7 +908,7 @@ impl RuntimeHandle {
                 "task_status": "running",
                 "task_summary": task_record.summary,
                 "task_recovery": task_record.recovery,
-                    "work_item_id": task_record.work_item_id.clone(),
+                "work_item_id": task_record.work_item_id.clone(),
                 "task_detail": task_detail.clone(),
             })),
             ..MessageEnvelope::new(
@@ -1035,7 +1035,7 @@ impl RuntimeHandle {
             "task_status": status_label,
             "task_summary": task_record.summary,
             "task_recovery": task_record.recovery,
-                    "work_item_id": task_record.work_item_id.clone(),
+            "work_item_id": task_record.work_item_id.clone(),
             "task_detail": task_detail.clone(),
         });
         if let Some(delegation) = delegation.as_ref() {

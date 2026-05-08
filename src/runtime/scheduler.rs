@@ -27,7 +27,11 @@ impl SchedulerProjection {
             active_tasks,
             has_blocking_active_tasks,
             current_work_item: work_queue.current,
-            queued_work_items: work_queue.queued_blocked.len(),
+            queued_work_items: work_queue
+                .queued_blocked
+                .iter()
+                .filter(|item| item.blocked_by.is_none())
+                .count(),
             pending_wake_hint: state.pending_wake_hint.is_some(),
         })
     }

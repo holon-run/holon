@@ -111,6 +111,15 @@ impl RuntimeHandle {
                 let brief = brief::make_task_result(&message.agent_id, &task.id, &result_text);
                 self.persist_brief(&brief).await?;
             }
+            if let Some(work_item_id) = message
+                .work_item_id
+                .clone()
+                .or_else(|| task.effective_work_item_id().map(ToString::to_string))
+            {
+                let mut guard = self.inner.agent.lock().await;
+                guard.state.current_turn_work_item_id = Some(work_item_id);
+                self.inner.storage.write_agent(&guard.state)?;
+            }
             self.process_interactive_message(
                 message,
                 continuation_resolution,
@@ -361,6 +370,24 @@ mod tests {
         }));
         let transcript = runtime.storage().read_recent_transcript(10).unwrap();
         assert!(transcript.is_empty());
+    }
+
+    #[tokio::test]
+    async fn model_visible_task_result_binds_turn_to_work_item() {
+        let runtime = runtime();
+        let mut task = task("task-1", TaskStatus::Completed, false);
+        task.work_item_id = Some("work-1".into());
+        let mut message = task_result_message("task-1");
+        message.work_item_id = Some("work-1".into());
+
+        runtime
+            .reduce_task_result_message(&message, task, true, None)
+            .await
+            .unwrap();
+
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(state.current_turn_work_item_id.as_deref(), Some("work-1"));
+        assert!(state.last_turn_terminal.is_some());
     }
 
     #[tokio::test]

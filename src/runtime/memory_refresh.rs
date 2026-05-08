@@ -275,6 +275,7 @@ impl RuntimeHandle {
             .storage
             .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
             .into_iter()
+            .rev()
             .filter(|message| {
                 matches!(
                     (&message.kind, &message.origin),

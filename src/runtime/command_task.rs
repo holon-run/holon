@@ -689,12 +689,12 @@ impl RuntimeHandle {
         let result_message = MessageEnvelope {
             metadata: Some({
                 serde_json::json!({
-                "task_id": task_record.id,
-                "task_kind": task_record.kind,
-                "task_status": status_label,
-                "task_summary": task_record.summary,
-                "task_detail": detail.clone(),
-                "task_recovery": task_record.recovery,
+                    "task_id": task_record.id,
+                    "task_kind": task_record.kind,
+                    "task_status": status_label,
+                    "task_summary": task_record.summary,
+                    "task_detail": detail.clone(),
+                    "task_recovery": task_record.recovery,
                     "work_item_id": task_record.work_item_id.clone(),
                 })
             }),
