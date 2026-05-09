@@ -664,22 +664,65 @@ async fn rapid_enter_after_large_key_burst_inserts_newline_for_paste_fallback() 
 }
 
 #[tokio::test]
-async fn quick_enter_after_normal_text_still_submits() {
+async fn non_bracketed_multiline_paste_fallback_keeps_short_lines_in_composer() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
 
-    for ch in "short".chars() {
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.composer.as_str(), "a\nb");
+}
+
+#[tokio::test]
+async fn non_bracketed_slash_prefixed_paste_fallback_does_not_run_menu_command() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    for ch in "/he".chars() {
         app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))
             .await
             .unwrap();
     }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    for ch in "body".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(app.composer.as_str(), "/he\nbody");
+    assert_eq!(app.overlay, OverlayState::None);
+}
+
+#[tokio::test]
+async fn enter_after_normal_text_still_submits_when_not_paste_burst() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    app.composer = ComposerState::from("short");
     let err = app
         .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await
-        .expect_err("normal quick Enter should still submit");
+        .expect_err("normal Enter should still submit");
 
     assert!(err.to_string().contains("no agent selected"));
     assert_eq!(app.composer.as_str(), "short");
@@ -1169,6 +1212,33 @@ fn default_tui_render_omits_agent_state_panel_and_box_borders() {
     let rows = rendered_buffer_rows(&terminal);
     let main_rows = &rows[2..22];
     assert!(!main_rows.iter().any(|row| row.contains('│')));
+}
+
+#[test]
+fn prompt_render_preserves_blank_multiline_rows() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
+        "default", "evt-0",
+    )));
+    app.apply_projection_view();
+    app.composer = ComposerState::from("first\n\nsecond");
+
+    let backend = TestBackend::new(40, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+    let rows = rendered_buffer_rows(&terminal);
+    let first_row = rows
+        .iter()
+        .position(|row| row.starts_with("> first"))
+        .expect("first prompt row should render");
+    assert!(rows[first_row + 1].starts_with("  "));
+    assert!(rows[first_row + 1].trim().is_empty());
+    assert!(rows[first_row + 2].starts_with("  second"));
 }
 
 #[test]

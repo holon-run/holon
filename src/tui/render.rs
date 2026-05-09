@@ -5,18 +5,21 @@ use super::view_model::{render_model_detail, HeaderViewModel, StatusbarViewModel
 use super::*;
 use crate::tui::input::slash_menu_specs;
 use crate::types::{TaskKind, TaskStatus};
-use unicode_width::UnicodeWidthStr;
+use ratatui::style::Color;
+use unicode_width::UnicodeWidthChar;
 
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
     let area = frame.area();
     let slash_menu = slash_menu_lines(app);
     let prompt_height = prompt_pane_height(app.composer.as_str(), slash_menu.len(), area.width);
+    let prompt_gap_height = prompt_top_gap_height();
     let status_height = status_bar_height();
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Min(0),
+            Constraint::Length(prompt_gap_height),
             Constraint::Length(prompt_height),
             Constraint::Length(status_height),
         ])
@@ -24,8 +27,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut TuiApp) {
 
     draw_header(frame, outer[0], app);
     draw_main_panels(frame, outer[1], app);
-    draw_prompt_pane(frame, outer[2], app, &slash_menu);
-    draw_status_bar(frame, outer[3], app, !slash_menu.is_empty());
+    draw_prompt_top_gap(frame, outer[2]);
+    draw_prompt_pane(frame, outer[3], app, &slash_menu);
+    draw_status_bar(frame, outer[4], app, !slash_menu.is_empty());
     draw_overlay(frame, app);
 }
 
@@ -52,17 +56,28 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
     frame.render_widget(paragraph, area);
 }
 
+fn draw_prompt_top_gap(frame: &mut Frame<'_>, area: Rect) {
+    frame.render_widget(Block::default().style(prompt_pane_style()), area);
+}
+
 fn draw_prompt_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_menu: &[Line<'static>]) {
+    let prompt_style = prompt_pane_style();
     let prompt_scroll = prompt_pane_scroll(
         area,
         app.composer.as_str(),
         app.composer.cursor(),
         slash_menu.len() as u16,
     );
-    let paragraph = Paragraph::new(render_prompt_text(app.composer.as_str(), slash_menu))
-        .scroll((prompt_scroll, 0))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(Clear, area);
+    let paragraph = Paragraph::new(render_prompt_text_for_width(
+        app.composer.as_str(),
+        slash_menu,
+        area.width,
+        prompt_scroll,
+        area.height,
+    ))
+    .style(prompt_style)
+    .scroll((0, 0));
+    frame.render_widget(Block::default().style(prompt_style), area);
     frame.render_widget(paragraph, area);
 
     if matches!(app.overlay, OverlayState::None) {
@@ -233,13 +248,9 @@ fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> 
     const MAX_PROMPT_PANE_HEIGHT: u16 = 12;
 
     let input_width = PromptPaneLayout::input_width_for_pane_width(pane_width);
-    let mut prompt_rows = 0u32;
-    for line in render_prompt_buffer(buffer).split('\n') {
-        prompt_rows = prompt_rows.saturating_add(u32::from(wrapped_prompt_rows(line, input_width)));
-        if prompt_rows >= u32::from(MAX_PROMPT_PANE_HEIGHT) {
-            break;
-        }
-    }
+    let prompt_rows =
+        prompt_visual_row_count_up_to(buffer, input_width, usize::from(MAX_PROMPT_PANE_HEIGHT))
+            as u32;
     let slash_menu_rows = slash_menu_rows.min(usize::from(MAX_PROMPT_PANE_HEIGHT)) as u32;
     let pane_rows = prompt_rows.max(1).saturating_add(slash_menu_rows);
     pane_rows.clamp(1, u32::from(MAX_PROMPT_PANE_HEIGHT)) as u16
@@ -247,6 +258,10 @@ fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> 
 
 fn status_bar_height() -> u16 {
     3
+}
+
+fn prompt_top_gap_height() -> u16 {
+    1
 }
 
 fn render_prompt_buffer(buffer: &str) -> String {
@@ -277,6 +292,10 @@ fn render_prompt_buffer(buffer: &str) -> String {
     rendered
 }
 
+fn prompt_pane_style() -> Style {
+    Style::default().fg(Color::Reset).bg(Color::Reset)
+}
+
 fn render_prompt_text(buffer: &str, slash_menu: &[Line<'static>]) -> Text<'static> {
     if !slash_menu.is_empty() {
         let mut lines = slash_menu.to_vec();
@@ -299,6 +318,41 @@ fn render_prompt_text(buffer: &str, slash_menu: &[Line<'static>]) -> Text<'stati
             Style::default().add_modifier(Modifier::DIM),
         ),
     ]))
+}
+
+fn render_prompt_text_for_width(
+    buffer: &str,
+    slash_menu: &[Line<'static>],
+    pane_width: u16,
+    scroll: u16,
+    viewport_rows: u16,
+) -> Text<'static> {
+    if buffer.is_empty() && slash_menu.is_empty() {
+        return render_prompt_text(buffer, slash_menu);
+    }
+
+    let scroll = usize::from(scroll);
+    let viewport_rows = usize::from(viewport_rows.max(1));
+    let slash_skip = scroll.min(slash_menu.len());
+    let mut lines = slash_menu
+        .iter()
+        .skip(slash_skip)
+        .take(viewport_rows)
+        .cloned()
+        .collect::<Vec<_>>();
+    let prompt_skip = scroll.saturating_sub(slash_menu.len());
+    let remaining_rows = viewport_rows.saturating_sub(lines.len());
+    lines.extend(
+        prompt_visual_rows_range(
+            buffer,
+            PromptPaneLayout::input_width_for_pane_width(pane_width),
+            prompt_skip,
+            remaining_rows,
+        )
+        .into_iter()
+        .map(Line::from),
+    );
+    Text::from(lines)
 }
 
 pub(super) fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
@@ -355,8 +409,8 @@ pub(super) fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
 
 fn prompt_pane_scroll(area: Rect, buffer: &str, cursor: usize, hint_rows: u16) -> u16 {
     let layout = PromptPaneLayout::new(area);
-    let (_, cursor_row) =
-        prompt_cursor_visual_position(buffer, cursor, layout.input_width, hint_rows);
+    let (_, prompt_cursor_row) = prompt_cursor_visual_position(buffer, cursor, layout.input_width);
+    let cursor_row = hint_rows.saturating_add(prompt_cursor_row);
     cursor_row.saturating_sub(layout.viewport_rows.saturating_sub(1))
 }
 
@@ -368,8 +422,9 @@ fn prompt_cursor_position(
     scroll: u16,
 ) -> (u16, u16) {
     let layout = PromptPaneLayout::new(area);
-    let (column, cursor_row) =
-        prompt_cursor_visual_position(buffer, cursor, layout.input_width, hint_rows);
+    let (column, prompt_cursor_row) =
+        prompt_cursor_visual_position(buffer, cursor, layout.input_width);
+    let cursor_row = hint_rows.saturating_add(prompt_cursor_row);
     (
         layout
             .cursor_origin_x
@@ -382,35 +437,8 @@ fn prompt_cursor_position(
     )
 }
 
-fn prompt_cursor_visual_position(
-    buffer: &str,
-    cursor: usize,
-    input_width: u16,
-    hint_rows: u16,
-) -> (u16, u16) {
-    let rendered = render_prompt_buffer(&buffer[..cursor]);
-    let lines = rendered.split('\n').collect::<Vec<_>>();
-    let wrapped_rows_before = lines
-        .iter()
-        .take(lines.len().saturating_sub(1))
-        .map(|line| wrapped_prompt_rows(line, input_width))
-        .sum::<u16>();
-    let last_line = lines.last().copied().unwrap_or("");
-    let last_line_width = display_width(last_line);
-    let soft_wrap_row = if last_line_width == 0 {
-        0
-    } else {
-        last_line_width.saturating_sub(1) / input_width
-    };
-    let column = if last_line_width == 0 {
-        0
-    } else {
-        last_line_width - soft_wrap_row * input_width
-    };
-    let row = hint_rows
-        .saturating_add(wrapped_rows_before)
-        .saturating_add(soft_wrap_row);
-    (column, row)
+fn prompt_cursor_visual_position(buffer: &str, cursor: usize, input_width: u16) -> (u16, u16) {
+    prompt_visual_position_at_end(&buffer[..cursor], input_width)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -440,15 +468,158 @@ impl PromptPaneLayout {
     }
 }
 
-fn wrapped_prompt_rows(line: &str, visible_line_width: u16) -> u16 {
-    let line_width = u32::from(display_width(line));
-    let visible_line_width = u32::from(visible_line_width.max(1));
-    let rows = line_width.saturating_add(visible_line_width.saturating_sub(1)) / visible_line_width;
-    rows.max(1).min(u32::from(u16::MAX)) as u16
+#[cfg(test)]
+fn prompt_visual_rows(buffer: &str, visible_line_width: u16) -> Vec<String> {
+    prompt_visual_rows_range(buffer, visible_line_width, 0, usize::MAX)
 }
 
-fn display_width(text: &str) -> u16 {
-    UnicodeWidthStr::width(text).min(u16::MAX as usize) as u16
+fn prompt_visual_rows_range(
+    buffer: &str,
+    visible_line_width: u16,
+    skip: usize,
+    take: usize,
+) -> Vec<String> {
+    if take == 0 {
+        return Vec::new();
+    }
+
+    let visible_line_width = usize::from(visible_line_width.max(1));
+    let end = skip.saturating_add(take);
+    let mut rows = Vec::new();
+    let mut row_index = 0usize;
+
+    for (line_index, line) in buffer.split('\n').enumerate() {
+        let prefix = if line_index == 0 { "> " } else { "  " };
+        if !push_wrapped_prompt_line(
+            prefix,
+            line,
+            visible_line_width,
+            &mut row_index,
+            skip,
+            end,
+            &mut rows,
+        ) {
+            break;
+        }
+    }
+
+    rows
+}
+
+fn push_wrapped_prompt_line(
+    prefix: &str,
+    line: &str,
+    visible_line_width: usize,
+    row_index: &mut usize,
+    skip: usize,
+    end: usize,
+    rows: &mut Vec<String>,
+) -> bool {
+    let mut row = String::new();
+    let mut row_width = 0usize;
+
+    for ch in prefix.chars().chain(line.chars()) {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if row_width > 0 && row_width.saturating_add(ch_width) > visible_line_width {
+            if !push_prompt_row(std::mem::take(&mut row), row_index, skip, end, rows) {
+                return false;
+            }
+            row_width = 0;
+        }
+        row.push(ch);
+        row_width = row_width.saturating_add(ch_width);
+    }
+
+    push_prompt_row(row, row_index, skip, end, rows)
+}
+
+fn push_prompt_row(
+    row: String,
+    row_index: &mut usize,
+    skip: usize,
+    end: usize,
+    rows: &mut Vec<String>,
+) -> bool {
+    if *row_index >= skip && *row_index < end {
+        rows.push(row);
+    }
+    *row_index = row_index.saturating_add(1);
+    *row_index < end
+}
+
+fn prompt_visual_row_count_up_to(buffer: &str, visible_line_width: u16, limit: usize) -> usize {
+    if limit == 0 {
+        return 0;
+    }
+
+    let visible_line_width = usize::from(visible_line_width.max(1));
+    let mut rows = 0usize;
+    for (line_index, line) in buffer.split('\n').enumerate() {
+        let prefix = if line_index == 0 { "> " } else { "  " };
+        rows = rows.saturating_add(wrapped_prompt_line_count_up_to(
+            prefix,
+            line,
+            visible_line_width,
+            limit.saturating_sub(rows),
+        ));
+        if rows >= limit {
+            break;
+        }
+    }
+    rows
+}
+
+fn wrapped_prompt_line_count_up_to(
+    prefix: &str,
+    line: &str,
+    visible_line_width: usize,
+    limit: usize,
+) -> usize {
+    if limit == 0 {
+        return 0;
+    }
+
+    let mut rows = 1usize;
+    let mut row_width = 0usize;
+    for ch in prefix.chars().chain(line.chars()) {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if row_width > 0 && row_width.saturating_add(ch_width) > visible_line_width {
+            if rows >= limit {
+                return rows;
+            }
+            rows = rows.saturating_add(1);
+            row_width = 0;
+        }
+        row_width = row_width.saturating_add(ch_width);
+    }
+    rows
+}
+
+fn prompt_visual_position_at_end(buffer: &str, visible_line_width: u16) -> (u16, u16) {
+    let visible_line_width = usize::from(visible_line_width.max(1));
+    let mut row = 0usize;
+    let mut column = 0usize;
+
+    for (line_index, line) in buffer.split('\n').enumerate() {
+        if line_index > 0 {
+            row = row.saturating_add(1);
+            column = 0;
+        }
+        let prefix = if line_index == 0 { "> " } else { "  " };
+        for ch in prefix.chars().chain(line.chars()) {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if column > 0 && column.saturating_add(ch_width) > visible_line_width {
+                row = row.saturating_add(1);
+                column = 0;
+            }
+            column = column.saturating_add(ch_width);
+        }
+    }
+
+    (
+        column.min(visible_line_width.saturating_sub(1)) as u16,
+        row.min(usize::from(u16::MAX)) as u16,
+    )
 }
 
 #[cfg(test)]
@@ -821,9 +992,10 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        prompt_cursor_position, prompt_pane_height, prompt_pane_scroll, render_header,
-        render_model_status, render_prompt_buffer, render_prompt_text, render_summary,
-        render_task_detail, status_bar_height, todo_summary_work_item,
+        prompt_cursor_position, prompt_pane_height, prompt_pane_scroll, prompt_top_gap_height,
+        prompt_visual_rows, render_header, render_model_status, render_prompt_buffer,
+        render_prompt_text, render_prompt_text_for_width, render_summary, render_task_detail,
+        status_bar_height, todo_summary_work_item,
     };
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::types::{
@@ -977,6 +1149,18 @@ mod tests {
         assert_eq!(prompt_pane_height("abcdefgh", 0, 10), 1);
         assert_eq!(prompt_pane_height("abcdefghabcdefgh", 0, 10), 2);
         assert_eq!(prompt_pane_height("abcdefgh", 2, 10), 3);
+    }
+
+    #[test]
+    fn prompt_visual_rows_preserve_blank_lines_and_soft_wraps() {
+        assert_eq!(
+            prompt_visual_rows("first\n\nsecond", 20),
+            vec!["> first", "  ", "  second"]
+        );
+        assert_eq!(
+            prompt_visual_rows("abcdefghabcdefgh", 10),
+            vec!["> abcdefgh", "abcdefgh"]
+        );
     }
 
     #[test]
@@ -1187,6 +1371,22 @@ mod tests {
     }
 
     #[test]
+    fn width_aware_prompt_text_uses_prewrapped_visual_lines() {
+        let rendered = render_prompt_text_for_width("abcdefghabcdefgh", &[], 10, 0, 12);
+        let rows = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows, vec!["> abcdefgh", "abcdefgh"]);
+    }
+
+    #[test]
     fn prompt_cursor_offsets_for_slash_menu_rows() {
         let area = Rect::new(10, 5, 20, 8);
         assert_eq!(prompt_cursor_position(area, "/de", 3, 2, 0), (15, 7));
@@ -1195,6 +1395,11 @@ mod tests {
     #[test]
     fn status_bar_uses_fixed_two_line_height() {
         assert_eq!(status_bar_height(), 3);
+    }
+
+    #[test]
+    fn prompt_top_gap_uses_one_spacing_row() {
+        assert_eq!(prompt_top_gap_height(), 1);
     }
 
     fn task(status: TaskStatus, kind: TaskKind, detail: Option<Value>) -> TaskRecord {

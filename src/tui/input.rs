@@ -378,21 +378,16 @@ fn paste_single_line_text(text: &str) -> String {
 
 impl TuiApp {
     fn should_treat_enter_as_paste_newline(&self, key: KeyEvent) -> bool {
-        const PASTE_BURST_WINDOW: Duration = Duration::from_millis(100);
-        const PASTE_BURST_MIN_CHARS: usize = 8;
+        const PASTE_BURST_ENTER_WINDOW: Duration = Duration::from_millis(30);
 
         let trimmed = self.composer.as_str().trim_start();
-        if key.code != KeyCode::Enter
-            || !key.modifiers.is_empty()
-            || trimmed.is_empty()
-            || trimmed.starts_with('/')
-        {
+        if key.code != KeyCode::Enter || !key.modifiers.is_empty() || trimmed.is_empty() {
             return false;
         }
-        self.composer_key_burst_len >= PASTE_BURST_MIN_CHARS
+        self.composer_key_burst_len > 0
             && self
-                .composer_key_burst_started_at
-                .is_some_and(|started_at| started_at.elapsed() <= PASTE_BURST_WINDOW)
+                .composer_key_burst_last_at
+                .is_some_and(|last_at| last_at.elapsed() <= PASTE_BURST_ENTER_WINDOW)
     }
 
     fn record_composer_key_edit(&mut self, action: TuiKeyAction) {
@@ -1095,6 +1090,9 @@ impl TuiApp {
 
     async fn handle_slash_menu_key(&mut self, key: KeyEvent) -> Result<bool> {
         if !self.is_slash_menu_visible() {
+            return Ok(false);
+        }
+        if self.should_treat_enter_as_paste_newline(key) {
             return Ok(false);
         }
 
