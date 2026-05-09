@@ -145,7 +145,7 @@ This shows each model's availability, credential status, provider, transport, an
 Each agent can override the default model:
 
 ```bash
-holon agents model set "anthropic/claude-sonnet-4-6" --agent reviewer
+holon agent model set "anthropic/claude-sonnet-4-6" reviewer
 ```
 
 The override is stored in the agent's own configuration, not the global `model.default`.

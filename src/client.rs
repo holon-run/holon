@@ -360,6 +360,21 @@ impl LocalClient {
         .await
     }
 
+    pub async fn control_agent(
+        &self,
+        agent_id: &str,
+        action: crate::types::ControlAction,
+    ) -> Result<Value> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/control"),
+            &crate::http::ControlRequest {
+                action,
+                trust: Some(TrustLevel::TrustedOperator),
+            },
+        )
+        .await
+    }
+
     pub async fn attach_workspace(
         &self,
         agent_id: &str,
@@ -1313,7 +1328,7 @@ mod tests {
     fn decode_or_error_includes_code_and_hint_for_stopped_agent() {
         let err = decode_or_error(
             409,
-            br#"{"ok":false,"error":"agent default is stopped; resume first","code":"agent_stopped","hint":"resume with `holon control resume --agent default`"}"#.to_vec(),
+            br#"{"ok":false,"error":"agent default is stopped; resume first","code":"agent_stopped","hint":"resume with `holon agent resume default`"}"#.to_vec(),
             "/control/agents/default/prompt",
         )
         .unwrap_err();
@@ -1323,11 +1338,11 @@ mod tests {
         assert!(typed.has_code("agent_stopped"));
         assert_eq!(
             typed.hint.as_deref(),
-            Some("resume with `holon control resume --agent default`")
+            Some("resume with `holon agent resume default`")
         );
         assert!(rendered.contains("agent default is stopped; resume first"));
         assert!(rendered.contains("[agent_stopped]"));
-        assert!(rendered.contains("Hint: resume with `holon control resume --agent default`"));
+        assert!(rendered.contains("Hint: resume with `holon agent resume default`"));
     }
 
     #[test]

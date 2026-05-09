@@ -82,18 +82,27 @@ holon run --trust untrusted-external "User query"      # mark trust level
 ### Create and use an agent
 
 ```bash
-holon agents create reviewer
-holon agents create code-reviewer --template code-reviewer
+holon agent create reviewer
+holon agent create code-reviewer --template code-reviewer
 holon run --agent reviewer "Review src/runtime/turn.rs"
+```
+
+### Agent lifecycle
+
+```bash
+holon agent pause reviewer
+holon agent resume reviewer
+holon agent stop reviewer
+holon agent interrupt reviewer
 ```
 
 ### Model selection
 
 ```bash
 holon config set model.default "deepseek-anthropic/deepseek-v4-pro"
-holon agents model set "anthropic/claude-sonnet-4-6" --agent reviewer
-holon agents model get --agent reviewer
-holon agents model clear --agent reviewer
+holon agent model set "anthropic/claude-sonnet-4-6" reviewer
+holon agent model get reviewer
+holon agent model clear reviewer
 ```
 
 ### Daemon management
@@ -200,7 +209,7 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--listen <ADDR>` | Listen address |
 | `--token <TOKEN>` | Auth token |
 
-### `holon agents create` options
+### `holon agent create` options
 
 | Option | Description |
 |--------|-------------|

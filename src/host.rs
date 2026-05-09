@@ -428,7 +428,7 @@ impl RuntimeHost {
                     Some(_) => {}
                     None => {
                         return Err(anyhow!(
-                            "agent {} not found; create it first with 'holon agents create {}'",
+                            "agent {} not found; create it first with 'holon agent create {}'",
                             agent_id,
                             agent_id
                         ));

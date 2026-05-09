@@ -3090,7 +3090,7 @@ impl AgentLifecycleHint {
                 operator_hint: Some(
                     "agent is administratively stopped; resume before new prompts or wakes".into(),
                 ),
-                resume_cli_hint: Some(format!("holon control resume --agent {agent_id}")),
+                resume_cli_hint: Some(format!("holon agent resume {agent_id}")),
                 resume_control_path: Some(format!("/control/agents/{agent_id}/control")),
             };
         }

@@ -34,6 +34,16 @@ enum ComposerSubmission {
 enum SlashArgRule {
     None,
     ExactlyOne,
+    Agent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgentSlashAction {
+    Switch(String),
+    Control {
+        action: crate::types::ControlAction,
+        agent_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,9 +142,9 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
     },
     SlashCommandSpec {
         name: "/agent",
-        description: "switch to agent by id",
-        usage: "/agent <agent-id>",
-        arg_rule: SlashArgRule::ExactlyOne,
+        description: "switch or control an agent",
+        usage: "/agent <agent-id>|pause [agent-id]|resume [agent-id]|stop [agent-id]",
+        arg_rule: SlashArgRule::Agent,
         command: SlashCommand::Agent,
     },
     SlashCommandSpec {
@@ -191,6 +201,49 @@ fn slash_command_argument_error(spec: SlashCommandSpec, args: usize) -> anyhow::
                 spec.usage
             )
         }
+        SlashArgRule::Agent => anyhow!(
+            "{0} expects an agent id or lifecycle action; usage: {1}",
+            spec.name,
+            spec.usage
+        ),
+    }
+}
+
+fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
+    let Some(first) = args.first() else {
+        return Err(anyhow!(
+            "/agent requires an agent id or lifecycle action; usage: /agent <agent-id>|pause [agent-id]|resume [agent-id]|stop [agent-id]"
+        ));
+    };
+    match first.as_str() {
+        "pause" | "resume" | "stop" => {
+            if args.len() > 2 {
+                return Err(anyhow!(
+                    "/agent {first} accepts at most one agent id; usage: /agent {first} [agent-id]"
+                ));
+            }
+            let action = match first.as_str() {
+                "pause" => crate::types::ControlAction::Pause,
+                "resume" => crate::types::ControlAction::Resume,
+                "stop" => crate::types::ControlAction::Stop,
+                _ => unreachable!("matched lifecycle action"),
+            };
+            Ok(AgentSlashAction::Control {
+                action,
+                agent_id: args.get(1).cloned(),
+            })
+        }
+        "status" | "interrupt" | "list" | "model" | "wake" => Err(anyhow!(
+            "/agent {first} is not supported in the TUI yet; use /help for supported commands"
+        )),
+        _ => {
+            if args.len() != 1 {
+                return Err(anyhow!(
+                    "/agent expects exactly one agent id for switching; usage: /agent <agent-id>"
+                ));
+            }
+            Ok(AgentSlashAction::Switch(first.clone()))
+        }
     }
 }
 
@@ -241,6 +294,9 @@ fn parse_composer_submission(buffer: &str) -> Result<Option<ComposerSubmission>>
         }
         SlashArgRule::ExactlyOne if args.len() != 1 => {
             return Err(slash_command_argument_error(slash_command_spec, args.len()));
+        }
+        SlashArgRule::Agent => {
+            parse_agent_slash_action(&args)?;
         }
         SlashArgRule::None | SlashArgRule::ExactlyOne => {}
     }
@@ -566,24 +622,42 @@ impl TuiApp {
                 self.status_line = format!("Interrupted current run for {agent_id}");
                 self.begin_bootstrap_selected_agent();
             }
-            SlashCommand::Agent => {
-                let requested_agent_id = args
-                    .into_iter()
-                    .next()
-                    .expect("slash command /agent requires one argument");
-                let target_index = self
-                    .agents
-                    .iter()
-                    .position(|agent| agent.identity.agent_id == requested_agent_id)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "unknown agent '{requested_agent_id}'; use /agents to inspect valid ids"
-                        )
-                    })?;
-                self.overlay = OverlayState::None;
-                self.begin_bootstrap_agent_index(target_index);
-                self.status_line = format!("Switching to agent {requested_agent_id}");
-            }
+            SlashCommand::Agent => match parse_agent_slash_action(&args)? {
+                AgentSlashAction::Switch(requested_agent_id) => {
+                    let target_index = self
+                            .agents
+                            .iter()
+                            .position(|agent| agent.identity.agent_id == requested_agent_id)
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "unknown agent '{requested_agent_id}'; use /agents to inspect valid ids"
+                                )
+                            })?;
+                    self.overlay = OverlayState::None;
+                    self.begin_bootstrap_agent_index(target_index);
+                    self.status_line = format!("Switching to agent {requested_agent_id}");
+                }
+                AgentSlashAction::Control { action, agent_id } => {
+                    let agent_id = agent_id
+                        .or_else(|| self.selected_agent_id().map(ToString::to_string))
+                        .ok_or_else(|| anyhow!("no agent selected"))?;
+                    self.client.control_agent(&agent_id, action.clone()).await?;
+                    self.overlay = OverlayState::None;
+                    self.status_line = format!(
+                        "{} agent {agent_id}",
+                        match action {
+                            crate::types::ControlAction::Pause => "Paused",
+                            crate::types::ControlAction::Resume => "Resumed",
+                            crate::types::ControlAction::Stop => "Stopped",
+                        }
+                    );
+                    if self.selected_agent_id() == Some(agent_id.as_str()) {
+                        self.begin_bootstrap_selected_agent();
+                    } else {
+                        self.schedule_agent_list_refresh();
+                    }
+                }
+            },
             SlashCommand::Skills => {
                 let agent_id = match self.selected_agent_id() {
                     Some(id) => id.to_string(),
@@ -1335,8 +1409,9 @@ impl TuiApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_composer_submission, slash_command_spec, slash_menu_enter_submission,
-        slash_menu_specs, slash_prompt_lines, ComposerSubmission, SlashCommand,
+        parse_agent_slash_action, parse_composer_submission, slash_command_spec,
+        slash_menu_enter_submission, slash_menu_specs, slash_prompt_lines, AgentSlashAction,
+        ComposerSubmission, SlashCommand,
     };
 
     #[test]
@@ -1389,6 +1464,27 @@ mod tests {
             ))
         );
         assert_eq!(
+            parse_composer_submission("/agent pause").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::Agent,
+                vec!["pause".into()]
+            ))
+        );
+        assert_eq!(
+            parse_composer_submission("/agent resume foo").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::Agent,
+                vec!["resume".into(), "foo".into()]
+            ))
+        );
+        assert_eq!(
+            parse_composer_submission("/agent stop").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::Agent,
+                vec!["stop".into()]
+            ))
+        );
+        assert_eq!(
             parse_composer_submission("/display 4").unwrap(),
             Some(ComposerSubmission::Slash(
                 SlashCommand::Display,
@@ -1412,7 +1508,9 @@ mod tests {
     #[test]
     fn slash_commands_require_arguments_for_agent() {
         let err = parse_composer_submission("/agent").unwrap_err();
-        assert!(err.to_string().contains("requires one argument"));
+        assert!(err
+            .to_string()
+            .contains("requires an agent id or lifecycle action"));
     }
 
     #[test]
@@ -1424,7 +1522,40 @@ mod tests {
     #[test]
     fn slash_commands_reject_too_many_arguments() {
         let err = parse_composer_submission("/agent default extra").unwrap_err();
-        assert!(err.to_string().contains("expects exactly one argument"));
+        assert!(err
+            .to_string()
+            .contains("expects exactly one agent id for switching"));
+        let err = parse_composer_submission("/agent pause default extra").unwrap_err();
+        assert!(err.to_string().contains("accepts at most one agent id"));
+    }
+
+    #[test]
+    fn agent_slash_lifecycle_actions_map_to_control_actions() {
+        assert_eq!(
+            parse_agent_slash_action(&["pause".into()]).unwrap(),
+            AgentSlashAction::Control {
+                action: crate::types::ControlAction::Pause,
+                agent_id: None,
+            }
+        );
+        assert_eq!(
+            parse_agent_slash_action(&["resume".into(), "foo".into()]).unwrap(),
+            AgentSlashAction::Control {
+                action: crate::types::ControlAction::Resume,
+                agent_id: Some("foo".into()),
+            }
+        );
+        assert_eq!(
+            parse_agent_slash_action(&["stop".into()]).unwrap(),
+            AgentSlashAction::Control {
+                action: crate::types::ControlAction::Stop,
+                agent_id: None,
+            }
+        );
+        assert_eq!(
+            parse_agent_slash_action(&["default".into()]).unwrap(),
+            AgentSlashAction::Switch("default".into())
+        );
     }
 
     #[test]
