@@ -158,6 +158,7 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
             delegated_from_task_id: None,
         },
         agent: state,
+        active_task_count: 0,
         lifecycle: AgentLifecycleHint::default(),
         model: AgentModelState {
             effective_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),

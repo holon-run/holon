@@ -568,13 +568,15 @@ impl RuntimeHost {
             record.status == AgentRegistryStatus::Active
                 && record.visibility == AgentVisibility::Public
         }) {
-            let state = AppStorage::new(self.agent_data_dir(&identity.agent_id))?
+            let storage = AppStorage::new(self.agent_data_dir(&identity.agent_id))?;
+            let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
+            let active_task_count = storage.active_task_count_for_agent(&identity.agent_id)?;
             snapshots.push(PublicAgentActivitySnapshot {
                 agent_id: identity.agent_id,
                 status: state.status.clone(),
-                active_task_count: state.active_task_ids.len(),
+                active_task_count,
                 last_runtime_failure: state.last_runtime_failure,
             });
         }
@@ -596,6 +598,7 @@ impl RuntimeHost {
             let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
+            let active_task_count = storage.active_task_count_for_agent(&identity.agent_id)?;
             children.push(ChildAgentSummary {
                 identity: AgentIdentityView::from_record(
                     &identity,
@@ -604,7 +607,7 @@ impl RuntimeHost {
                 status: state.status.clone(),
                 current_run_id: state.current_run_id.clone(),
                 pending: state.pending,
-                active_task_count: state.active_task_ids.len(),
+                active_task_count,
                 observability: self
                     .child_agent_observability_snapshot(&identity.agent_id, &storage, &state)
                     .await?,
@@ -2154,8 +2157,22 @@ mod tests {
         child_state.status = AgentStatus::AwakeRunning;
         child_state.pending = 1;
         child_state.current_run_id = Some("run-1".into());
-        child_state.active_task_ids = vec!["task-1".into()];
         child_storage.write_agent(&child_state).unwrap();
+        child_storage
+            .append_task(&TaskRecord {
+                id: "task-1".into(),
+                agent_id: "child_test".into(),
+                kind: crate::types::TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("child task".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "background" })),
+                recovery: None,
+            })
+            .unwrap();
 
         let summary = default_runtime.agent_summary().await.unwrap();
         assert_eq!(summary.identity.kind, AgentKind::Default);
@@ -2228,8 +2245,22 @@ mod tests {
         let child_storage = AppStorage::new(host.agent_data_dir("child_test")).unwrap();
         let mut child_state = AgentState::new("child_test");
         child_state.status = AgentStatus::AwaitingTask;
-        child_state.active_task_ids = vec!["child-task-1".into()];
         child_storage.write_agent(&child_state).unwrap();
+        child_storage
+            .append_task(&TaskRecord {
+                id: "child-task-1".into(),
+                agent_id: "child_test".into(),
+                kind: crate::types::TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("child task".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: None,
+            })
+            .unwrap();
 
         drop(host);
 

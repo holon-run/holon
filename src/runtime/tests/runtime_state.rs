@@ -968,12 +968,6 @@ async fn task_result_routes_through_reduction_and_follow_up_behavior() {
             recovery: None,
         })
         .unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.active_task_ids.push("task-1".into());
-        runtime.storage().write_agent(&guard.state).unwrap();
-    }
-
     let message = MessageEnvelope::new(
         "default",
         MessageKind::TaskResult,
@@ -1007,8 +1001,8 @@ async fn task_result_routes_through_reduction_and_follow_up_behavior() {
         .unwrap();
 
     assert_eq!(provider.call_count().await, 1);
-    let state = runtime.agent_state().await.unwrap();
-    assert!(!state.active_task_ids.contains(&"task-1".to_string()));
+    let active_tasks = runtime.active_tasks(10).await.unwrap();
+    assert!(!active_tasks.iter().any(|task| task.id == "task-1"));
     let events = runtime.storage().read_recent_events(100).unwrap();
     assert!(events
         .iter()
@@ -1033,10 +1027,25 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
         context_config(),
     )
     .unwrap();
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "task-1".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::ChildAgentTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("task running".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+            recovery: None,
+        })
+        .unwrap();
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Paused;
-        guard.state.active_task_ids.push("task-1".into());
         runtime.storage().write_agent(&guard.state).unwrap();
     }
 
@@ -1072,7 +1081,8 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
         .unwrap()
         .expect("agent state should be persisted");
     assert_eq!(persisted.status, AgentStatus::Paused);
-    assert!(!persisted.active_task_ids.contains(&"task-1".to_string()));
+    let active_tasks = runtime.active_tasks(10).await.unwrap();
+    assert!(!active_tasks.iter().any(|task| task.id == "task-1"));
 }
 
 #[tokio::test]

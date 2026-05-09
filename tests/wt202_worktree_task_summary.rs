@@ -183,11 +183,7 @@ async fn wt202_summarize_candidate_worktree_results_for_review() -> Result<()> {
         .await?;
 
     // Wait for all tasks to complete
-    wait_until_async(|| async {
-        let state = runtime.agent_state().await?;
-        Ok(state.active_task_ids.is_empty())
-    })
-    .await?;
+    wait_until_async(|| async { Ok(runtime.active_tasks(10).await?.is_empty()) }).await?;
 
     // Generate summary of candidate worktree results
     let summary = runtime.summarize_worktree_tasks().await?;

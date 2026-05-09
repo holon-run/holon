@@ -10,8 +10,6 @@ struct AgentFixture {
     #[serde(default)]
     current_work_item_id: Option<String>,
     #[serde(default)]
-    active_task_ids: Vec<String>,
-    #[serde(default)]
     pending_wake_hint_reason: Option<String>,
     #[serde(default)]
     turn_index: u64,
@@ -143,26 +141,64 @@ fn read_optional_scheduler_fixture<T: DeserializeOwned + Default>(name: &str, pa
     }
 }
 
+fn read_optional_scheduler_jsonl_fixture<T: DeserializeOwned>(name: &str, path: &str) -> Vec<T> {
+    let jsonl_path = scheduler_fixture_path(name, path);
+    if jsonl_path.exists() {
+        let content = std::fs::read_to_string(&jsonl_path).unwrap_or_else(|error| {
+            panic!(
+                "failed to read scheduler fixture {}: {error}",
+                jsonl_path.display()
+            )
+        });
+        return content
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let line = line.trim();
+                if line.is_empty() {
+                    return None;
+                }
+                Some(serde_json::from_str(line).unwrap_or_else(|error| {
+                    panic!(
+                        "failed to parse scheduler fixture {} line {}: {error}",
+                        jsonl_path.display(),
+                        index + 1
+                    )
+                }))
+            })
+            .collect();
+    }
+
+    if let Some(json_path) = path.strip_suffix(".jsonl") {
+        let json_path = format!("{json_path}.json");
+        return read_optional_scheduler_fixture(name, &json_path);
+    }
+
+    Vec::new()
+}
+
 fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentState) {
     let agent_fixture: AgentFixture = read_scheduler_fixture(name, "agent.json");
     let work_items: Vec<WorkItemFixture> =
-        read_optional_scheduler_fixture(name, "ledger/work_items.json");
-    let tasks: Vec<TaskFixture> = read_optional_scheduler_fixture(name, "ledger/tasks.json");
+        read_optional_scheduler_jsonl_fixture(name, "ledger/work_items.jsonl");
+    let tasks: Vec<TaskFixture> = read_optional_scheduler_jsonl_fixture(name, "ledger/tasks.jsonl");
     let waiting_intents: Vec<WaitingIntentFixture> =
-        read_optional_scheduler_fixture(name, "ledger/waiting_intents.json");
-    let timers: Vec<TimerFixture> = read_optional_scheduler_fixture(name, "ledger/timers.json");
+        read_optional_scheduler_jsonl_fixture(name, "ledger/waiting_intents.jsonl");
+    let timers: Vec<TimerFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/timers.jsonl");
     let messages: Vec<MessageFixture> =
-        read_optional_scheduler_fixture(name, "ledger/messages.json");
+        read_optional_scheduler_jsonl_fixture(name, "ledger/messages.jsonl");
     let queue_entries: Vec<QueueEntryFixture> =
-        read_optional_scheduler_fixture(name, "ledger/queue_entries.json");
-    let events: Vec<EventFixture> = read_optional_scheduler_fixture(name, "ledger/events.json");
-    let briefs: Vec<BriefFixture> = read_optional_scheduler_fixture(name, "ledger/briefs.json");
+        read_optional_scheduler_jsonl_fixture(name, "ledger/queue_entries.jsonl");
+    let events: Vec<EventFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/events.jsonl");
+    let briefs: Vec<BriefFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/briefs.jsonl");
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
 
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = agent_fixture.current_work_item_id;
-    agent.active_task_ids = agent_fixture.active_task_ids;
     agent.turn_index = agent_fixture.turn_index;
     if let Some(kind) = agent_fixture.last_turn_terminal_kind {
         agent.last_turn_terminal = Some(TurnTerminalRecord {
@@ -465,7 +501,7 @@ fn scheduler_projection_breaks_down_waiting_intent_scopes() {
 }
 
 #[test]
-fn scheduler_projection_filters_waiting_intents_and_timers_by_agent() {
+fn scheduler_projection_filters_tasks_waiting_intents_and_timers_by_agent() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
     let agent = AgentState::new("default");
@@ -512,8 +548,27 @@ fn scheduler_projection_filters_waiting_intents_and_timers_by_agent() {
             })
             .unwrap();
     }
+    for (id, agent_id) in [("task-current", "default"), ("task-other", "other")] {
+        storage
+            .append_task(&TaskRecord {
+                id: id.into(),
+                agent_id: agent_id.into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some(format!("{id} summary")),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: None,
+            })
+            .unwrap();
+    }
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.active_tasks.len(), 1);
+    assert_eq!(projection.active_tasks[0].id, "task-current");
     assert_eq!(projection.active_waiting_intents, 1);
     assert_eq!(projection.active_agent_waiting_intents, 1);
     assert_eq!(projection.active_timers, 1);

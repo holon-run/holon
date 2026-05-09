@@ -187,6 +187,7 @@ mod tests {
                 delegated_from_task_id: None,
             },
             agent: AgentState::new("default"),
+            active_task_count: 0,
             lifecycle: AgentLifecycleHint::default(),
             model: AgentModelState {
                 source: AgentModelSource::RuntimeDefault,

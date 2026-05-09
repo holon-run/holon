@@ -1051,8 +1051,7 @@ pub async fn runtime_status_route_reports_waiting_activity_summary() -> Result<(
     let client = reqwest::Client::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let state = runtime.agent_state().await?;
-        if !state.active_task_ids.is_empty() {
+        if !runtime.active_tasks(10).await?.is_empty() {
             break;
         }
         if Instant::now() >= deadline {

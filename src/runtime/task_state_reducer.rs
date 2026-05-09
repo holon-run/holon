@@ -31,20 +31,6 @@ fn task_status_phase(status: &TaskStatus) -> u8 {
     }
 }
 
-#[cfg(test)]
-fn has_blocking_active_tasks(storage: &AppStorage, active_task_ids: &[String]) -> Result<bool> {
-    if active_task_ids.is_empty() {
-        return Ok(false);
-    }
-    let tasks = storage.latest_task_records()?;
-    Ok(active_task_ids.iter().any(|task_id| {
-        tasks
-            .iter()
-            .find(|task| &task.id == task_id)
-            .is_some_and(|task| task.is_blocking() && !is_terminal_task_status(&task.status))
-    }))
-}
-
 pub(super) struct TaskTransition<'a> {
     pub(super) task: &'a TaskRecord,
     pub(super) event_kind: &'static str,
@@ -66,11 +52,6 @@ impl RuntimeHandle {
         self.inner.storage.append_task(task)?;
         {
             let mut guard = self.inner.agent.lock().await;
-            if is_terminal_task_status(&task.status) {
-                guard.state.active_task_ids.retain(|id| id != &task.id);
-            } else if !guard.state.active_task_ids.contains(&task.id) {
-                guard.state.active_task_ids.push(task.id.clone());
-            }
             if !matches!(
                 guard.state.status,
                 AgentStatus::Paused | AgentStatus::Stopped
@@ -310,14 +291,16 @@ mod tests {
             .append_task(&task("background", TaskStatus::Running, false))
             .unwrap();
 
-        let active_task_ids = vec!["blocking".to_string()];
-        assert!(has_blocking_active_tasks(&storage, &active_task_ids).unwrap());
-        let no_blocking = vec!["background".to_string()];
-        assert!(!has_blocking_active_tasks(&storage, &no_blocking).unwrap());
+        let active = storage
+            .latest_active_task_records_for_agent("default", usize::MAX)
+            .unwrap();
+        assert!(active.iter().any(|task| task.id == "blocking"));
+        assert!(active.iter().any(|task| task.id == "background"));
+        assert!(active.iter().any(TaskRecord::is_blocking));
     }
 
     #[test]
-    fn has_blocking_active_tasks_ignores_terminal_stale_active_ids() {
+    fn active_task_projection_ignores_terminal_latest_records() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         storage
@@ -327,8 +310,10 @@ mod tests {
             .append_task(&task("stale", TaskStatus::Completed, true))
             .unwrap();
 
-        let active_task_ids = vec!["stale".to_string()];
-        assert!(!has_blocking_active_tasks(&storage, &active_task_ids).unwrap());
+        let active = storage
+            .latest_active_task_records_for_agent("default", usize::MAX)
+            .unwrap();
+        assert!(active.is_empty());
     }
 
     #[test]
@@ -346,7 +331,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_terminal_task_updates_add_missing_active_task_ids_and_blocking_state() {
+    async fn non_terminal_task_updates_are_visible_in_ledger_projection_and_blocking_state() {
         let runtime = runtime();
 
         runtime
@@ -354,8 +339,9 @@ mod tests {
             .await
             .unwrap();
 
+        let active_tasks = runtime.active_tasks(10).await.unwrap();
+        assert!(active_tasks.iter().any(|task| task.id == "task-1"));
         let state = runtime.agent_state().await.unwrap();
-        assert!(state.active_task_ids.contains(&"task-1".to_string()));
         assert_eq!(state.status, AgentStatus::AwaitingTask);
     }
 
@@ -379,7 +365,8 @@ mod tests {
 
         let state = runtime.agent_state().await.unwrap();
         assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
-        assert!(state.active_task_ids.contains(&"task-1".to_string()));
+        let active_tasks = runtime.active_tasks(10).await.unwrap();
+        assert!(active_tasks.iter().any(|task| task.id == "task-1"));
     }
 
     #[tokio::test]
@@ -405,8 +392,9 @@ mod tests {
             .unwrap();
         let state = runtime.agent_state().await.unwrap();
         assert_eq!(state.status, AgentStatus::AwaitingTask);
-        assert!(!state.active_task_ids.contains(&"task-1".to_string()));
-        assert!(state.active_task_ids.contains(&"task-2".to_string()));
+        let active_tasks = runtime.active_tasks(10).await.unwrap();
+        assert!(!active_tasks.iter().any(|task| task.id == "task-1"));
+        assert!(active_tasks.iter().any(|task| task.id == "task-2"));
 
         runtime
             .reduce_task_result_message(
@@ -419,7 +407,8 @@ mod tests {
             .unwrap();
         let final_state = runtime.agent_state().await.unwrap();
         assert_eq!(final_state.status, AgentStatus::AwakeIdle);
-        assert!(!final_state.active_task_ids.contains(&"task-2".to_string()));
+        let final_active_tasks = runtime.active_tasks(10).await.unwrap();
+        assert!(!final_active_tasks.iter().any(|task| task.id == "task-2"));
     }
 
     #[tokio::test]

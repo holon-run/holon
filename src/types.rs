@@ -1427,7 +1427,6 @@ pub struct AgentState {
     pub sleeping_until: Option<DateTime<Utc>>,
     pub current_run_id: Option<String>,
     pub pending: usize,
-    pub active_task_ids: Vec<String>,
     pub last_wake_reason: Option<String>,
     pub last_brief_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -1520,7 +1519,6 @@ impl AgentState {
             sleeping_until: None,
             current_run_id: None,
             pending: 0,
-            active_task_ids: Vec::new(),
             last_wake_reason: None,
             last_brief_at: None,
             working_memory: WorkingMemoryState::default(),
@@ -3103,6 +3101,8 @@ pub struct AgentSummary {
     pub identity: AgentIdentityView,
     pub agent: AgentState,
     #[serde(default)]
+    pub active_task_count: usize,
+    #[serde(default)]
     pub lifecycle: AgentLifecycleHint,
     pub model: AgentModelState,
     pub token_usage: AgentTokenUsageSummary,
@@ -3279,6 +3279,7 @@ impl AgentListEntry {
             closure,
             execution,
             agent,
+            active_task_count: 0,
             active_workspace_occupancy: None,
             loaded_agents_md: LoadedAgentsMdView::default(),
             skills: SkillsRuntimeView::default(),

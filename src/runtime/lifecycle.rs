@@ -337,6 +337,7 @@ impl RuntimeHandle {
 
     pub async fn agent_summary(&self) -> Result<AgentSummary> {
         let agent = self.agent_state().await?;
+        let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;
         let model = self.model_state_for(&agent);
         let closure = self.current_closure_decision().await?;
         let execution = self.execution_snapshot().await?;
@@ -373,6 +374,7 @@ impl RuntimeHandle {
                 agent.status.clone(),
             ),
             agent,
+            active_task_count,
             model,
             token_usage,
             closure,
@@ -420,7 +422,10 @@ impl RuntimeHandle {
     }
 
     pub async fn active_tasks(&self, limit: usize) -> Result<Vec<TaskRecord>> {
-        self.inner.storage.latest_active_task_records(limit)
+        let agent_id = self.agent_id().await?;
+        self.inner
+            .storage
+            .latest_active_task_records_for_agent(&agent_id, limit)
     }
 
     pub async fn recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
@@ -448,7 +453,7 @@ impl RuntimeHandle {
         state: &AgentState,
     ) -> Result<ChildAgentObservabilitySnapshot> {
         let latest_tasks = storage.latest_task_records()?;
-        let active_tasks = active_child_tasks(&state.active_task_ids, &latest_tasks);
+        let active_tasks = active_child_tasks(&state.id, &latest_tasks);
         let active_waiting_intent_count = storage
             .latest_waiting_intents()?
             .into_iter()
@@ -1096,15 +1101,11 @@ impl RuntimeHandle {
     }
 }
 
-fn active_child_tasks<'a>(
-    active_task_ids: &[String],
-    tasks: &'a [TaskRecord],
-) -> Vec<&'a TaskRecord> {
+fn active_child_tasks<'a>(agent_id: &str, tasks: &'a [TaskRecord]) -> Vec<&'a TaskRecord> {
     tasks
         .iter()
         .filter(|task| {
-            active_task_ids.iter().any(|task_id| task_id == &task.id)
-                && !task_state_reducer::is_terminal_task_status(&task.status)
+            task.agent_id == agent_id && !task_state_reducer::is_terminal_task_status(&task.status)
         })
         .collect()
 }
@@ -1145,7 +1146,7 @@ fn build_child_agent_observability(
     latest_tasks: &[TaskRecord],
     briefs: &[BriefRecord],
 ) -> ChildAgentObservabilitySnapshot {
-    let active_tasks = active_child_tasks(&agent.active_task_ids, latest_tasks);
+    let active_tasks = active_child_tasks(&agent.id, latest_tasks);
     build_child_agent_observability_with_active_tasks(
         agent,
         waiting_reason,
@@ -1166,7 +1167,7 @@ fn build_child_agent_observability_with_active_tasks(
     let phase = if agent.last_turn_terminal.is_some()
         && agent.current_run_id.is_none()
         && agent.pending == 0
-        && agent.active_task_ids.is_empty()
+        && active_tasks.is_empty()
     {
         ChildAgentPhase::Terminal
     } else if blocked_reason.is_some() {
@@ -1323,7 +1324,6 @@ mod tests {
 
         let mut agent = AgentState::new("child");
         agent.status = AgentStatus::AwakeIdle;
-        agent.active_task_ids = vec!["background".into()];
         let snapshot = build_child_agent_observability(&agent, None, 0, &[background], &[]);
 
         assert_ne!(snapshot.phase, ChildAgentPhase::Blocked);
@@ -1337,7 +1337,6 @@ mod tests {
 
         let mut agent = AgentState::new("child");
         agent.status = AgentStatus::AwakeIdle;
-        agent.active_task_ids = vec!["background".into()];
         storage.write_agent(&agent).expect("write agent");
         storage
             .append_task(&task_with_wait_policy(

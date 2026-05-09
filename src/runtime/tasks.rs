@@ -1959,10 +1959,10 @@ impl RuntimeHandle {
             return Ok(existing);
         }
         let has_blocking_tasks = {
-            let guard = self.inner.agent.lock().await;
+            let agent_id = self.agent_id().await?;
             scheduler::has_completion_blocking_task_for_work_item(
                 &self.inner.storage,
-                &guard.state.active_task_ids,
+                &agent_id,
                 &work_item_id,
             )?
         };

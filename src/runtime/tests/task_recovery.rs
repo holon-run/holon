@@ -36,8 +36,8 @@ async fn runtime_tracks_background_task() {
         .unwrap();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        let state = runtime.agent_state().await.unwrap();
-        if !state.active_task_ids.contains(&task.id) {
+        let active_tasks = runtime.active_tasks(10).await.unwrap();
+        if !active_tasks.iter().any(|record| record.id == task.id) {
             break;
         }
         assert!(

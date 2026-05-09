@@ -1,5 +1,4 @@
 {
   "current_work_item_id": "work-active",
-  "active_task_ids": ["task-active"],
   "pending_wake_hint_reason": "fixture wake"
 }
