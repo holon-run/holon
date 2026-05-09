@@ -30,7 +30,6 @@ pub(crate) struct SchedulerAgentSnapshot {
     id: String,
     status: AgentStatus,
     active_run_id: Option<String>,
-    active_task_ids: Vec<String>,
     pending_wake_hint: bool,
 }
 
@@ -40,7 +39,6 @@ impl SchedulerAgentSnapshot {
             id: state.id.clone(),
             status: state.status.clone(),
             active_run_id: state.current_run_id.clone(),
-            active_task_ids: state.active_task_ids.clone(),
             pending_wake_hint: state.pending_wake_hint.is_some(),
         }
     }
@@ -89,14 +87,8 @@ impl SchedulerProjection {
         queue_len: usize,
         work_queue: WorkQueuePromptProjection,
     ) -> Result<Self> {
-        let latest_tasks = storage.latest_task_records()?;
-        let active_tasks = snapshot
-            .active_task_ids
-            .iter()
-            .filter_map(|task_id| latest_tasks.iter().find(|task| &task.id == task_id))
-            .filter(|task| is_active_task_status(&task.status))
-            .cloned()
-            .collect::<Vec<_>>();
+        let active_tasks =
+            storage.latest_active_task_records_for_agent(&snapshot.id, usize::MAX)?;
         let has_blocking_active_tasks = active_tasks.iter().any(TaskRecord::is_blocking);
         let queued_runnable_work_items = work_queue
             .queued_blocked
@@ -406,10 +398,6 @@ pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
     )
 }
 
-pub(crate) fn is_active_task_status(status: &TaskStatus) -> bool {
-    !is_terminal_task_status(status)
-}
-
 pub(crate) fn projected_status_for_idle(
     state: &AgentState,
     storage: &AppStorage,
@@ -462,19 +450,13 @@ pub(crate) fn active_task_blocks_work_item_completion(
 
 pub(crate) fn has_completion_blocking_task_for_work_item(
     storage: &AppStorage,
-    active_task_ids: &[String],
+    agent_id: &str,
     work_item_id: &str,
 ) -> Result<bool> {
-    if active_task_ids.is_empty() {
-        return Ok(false);
-    }
-    let tasks = storage.latest_task_records()?;
-    Ok(active_task_ids.iter().any(|task_id| {
-        tasks
-            .iter()
-            .find(|task| &task.id == task_id)
-            .is_some_and(|task| active_task_blocks_work_item_completion(task, work_item_id))
-    }))
+    Ok(storage
+        .latest_active_task_records_for_agent(agent_id, usize::MAX)?
+        .iter()
+        .any(|task| active_task_blocks_work_item_completion(task, work_item_id)))
 }
 
 pub(crate) fn work_queue_tick_idempotency_key(work_item: &WorkItemRecord, reason: &str) -> String {

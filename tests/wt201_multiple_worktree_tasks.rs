@@ -184,18 +184,14 @@ async fn wt201_one_session_can_coordinate_multiple_worktree_tasks() -> Result<()
         .await?;
 
     // Verify all tasks were created and are tracked
-    let state = runtime.agent_state().await?;
-    assert_eq!(state.active_task_ids.len(), 3);
-    assert!(state.active_task_ids.contains(&task1.id));
-    assert!(state.active_task_ids.contains(&task2.id));
-    assert!(state.active_task_ids.contains(&task3.id));
+    let active_tasks = runtime.active_tasks(10).await?;
+    assert_eq!(active_tasks.len(), 3);
+    assert!(active_tasks.iter().any(|task| task.id == task1.id));
+    assert!(active_tasks.iter().any(|task| task.id == task2.id));
+    assert!(active_tasks.iter().any(|task| task.id == task3.id));
 
     // Wait for all tasks to complete
-    wait_until_async(|| async {
-        let state = runtime.agent_state().await?;
-        Ok(state.active_task_ids.is_empty())
-    })
-    .await?;
+    wait_until_async(|| async { Ok(runtime.active_tasks(10).await?.is_empty()) }).await?;
 
     // Verify all tasks completed successfully
     let tasks = runtime.latest_task_records().await?;

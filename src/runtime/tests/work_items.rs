@@ -264,11 +264,6 @@ async fn work_item_completion_blocks_only_related_or_unscoped_blocking_tasks() {
         .unwrap();
     let unrelated_task = blocking_task_for_work_item("task-other", Some(&other.id));
     runtime.storage().append_task(&unrelated_task).unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.active_task_ids = vec![unrelated_task.id.clone()];
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
-    }
 
     let completed = runtime
         .complete_work_item(target.id.clone(), Some("target done".into()))
@@ -282,11 +277,6 @@ async fn work_item_completion_blocks_only_related_or_unscoped_blocking_tasks() {
         .unwrap();
     let unscoped_task = blocking_task_for_work_item("task-unscoped", None);
     runtime.storage().append_task(&unscoped_task).unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.active_task_ids = vec![unscoped_task.id.clone()];
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
-    }
 
     let err = runtime
         .complete_work_item(blocked.id.clone(), Some("too early".into()))

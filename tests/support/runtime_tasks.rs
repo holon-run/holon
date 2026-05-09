@@ -89,20 +89,17 @@ pub async fn background_task_rejoins_main_session() -> Result<()> {
     assert_eq!(summary.closure.waiting_reason, None);
 
     wait_until(|| {
-        let state = runtime.storage().read_agent()?;
+        let active_tasks = runtime.storage().latest_active_task_records(usize::MAX)?;
         let tasks = runtime.storage().latest_task_records()?;
-        Ok(state
-            .as_ref()
-            .map(|agent| !agent.active_task_ids.contains(&task.id))
-            .unwrap_or(false)
+        Ok(!active_tasks.iter().any(|record| record.id == task.id)
             && tasks.iter().any(|record| {
                 record.id == task.id && record.status == holon::types::TaskStatus::Completed
             }))
     })
     .await?;
 
-    let state = runtime.agent_state().await?;
-    assert!(!state.active_task_ids.contains(&task.id));
+    let active_tasks = runtime.active_tasks(10).await?;
+    assert!(!active_tasks.iter().any(|record| record.id == task.id));
 
     let tasks = runtime.recent_tasks(10).await?;
     assert!(
@@ -148,8 +145,8 @@ pub async fn stop_task_cancels_running_background_task() -> Result<()> {
     })
     .await?;
 
-    let state = runtime.agent_state().await?;
-    assert!(!state.active_task_ids.contains(&task.id));
+    let active_tasks = runtime.active_tasks(10).await?;
+    assert!(!active_tasks.iter().any(|record| record.id == task.id));
     Ok(())
 }
 
@@ -727,7 +724,7 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
 
     let state = runtime.agent_state().await?;
     assert_eq!(state.status, AgentStatus::Asleep);
-    assert!(state.active_task_ids.is_empty());
+    assert!(runtime.active_tasks(10).await?.is_empty());
     Ok(())
 }
 
@@ -1650,8 +1647,8 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
             && event.data.get("status").and_then(|value| value.as_str()) == Some("cancelled")
     }));
 
-    let state = runtime.agent_state().await?;
-    assert!(!state.active_task_ids.contains(&task.id));
+    let active_tasks = runtime.active_tasks(10).await?;
+    assert!(!active_tasks.iter().any(|record| record.id == task.id));
     Ok(())
 }
 
@@ -1704,8 +1701,9 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_pause
         Some(true)
     );
 
+    let active_tasks = runtime.active_tasks(10).await?;
+    assert!(!active_tasks.iter().any(|record| record.id == task.id));
     let state = runtime.agent_state().await?;
-    assert!(!state.active_task_ids.contains(&task.id));
     assert_eq!(state.status, AgentStatus::Paused);
     Ok(())
 }
@@ -1736,16 +1734,20 @@ pub async fn blocking_command_task_clears_active_state_while_runtime_paused() ->
 
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
-        let state = runtime.storage().read_agent()?.expect("agent should exist");
+        let active_tasks = runtime.storage().latest_active_task_records(usize::MAX)?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Completed
-        }) && !state.active_task_ids.contains(&task.id))
+        }) && !active_tasks.iter().any(|record| record.id == task.id))
     })
     .await?;
 
     let state = runtime.agent_state().await?;
     assert_eq!(state.status, AgentStatus::Paused);
-    assert!(!state.active_task_ids.contains(&task.id));
+    assert!(!runtime
+        .active_tasks(10)
+        .await?
+        .iter()
+        .any(|record| record.id == task.id));
     Ok(())
 }
 
@@ -1950,10 +1952,10 @@ pub async fn command_task_runner_failure_marks_task_failed_and_cleans_up() -> Re
     assert_eq!(detail["cmd"], "printf should_not_hang");
     assert!(detail["error"].as_str().is_some());
     assert!(!runtime
-        .agent_state()
+        .active_tasks(10)
         .await?
-        .active_task_ids
-        .contains(&task.id));
+        .iter()
+        .any(|record| record.id == task.id));
 
     let events = runtime.recent_events(20).await?;
     assert!(events.iter().any(|event| {
@@ -2050,8 +2052,8 @@ pub async fn command_task_nonzero_exit_produces_failed_output_and_runtime_state(
     assert_eq!(value["task"]["exit_status"], 7);
     assert!(value["task"]["failure_artifact"].is_object());
 
-    let state = runtime.agent_state().await?;
-    assert!(!state.active_task_ids.contains(&task.id));
+    let active_tasks = runtime.active_tasks(10).await?;
+    assert!(!active_tasks.iter().any(|record| record.id == task.id));
 
     let events = runtime.recent_events(20).await?;
     assert!(events.iter().any(|event| {

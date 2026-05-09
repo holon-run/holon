@@ -98,8 +98,7 @@ pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
         format!("Contract: {}", agent.identity.contract_badge()),
         format!(
             "Queue: pending {}  active tasks {}",
-            agent.agent.pending,
-            agent.agent.active_task_ids.len()
+            agent.agent.pending, agent.active_task_count
         ),
         format!(
             "Closure: {:?} / {:?}",
@@ -708,7 +707,7 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
             agent.model.source
         ),
         format!("Pending queue: {}", agent.agent.pending),
-        format!("Active tasks: {}", agent.agent.active_task_ids.len()),
+        format!("Active tasks: {}", agent.active_task_count),
         format!(
             "Closure: {:?} / posture {:?}",
             agent.closure.outcome, agent.closure.runtime_posture
@@ -856,6 +855,7 @@ mod tests {
                 delegated_from_task_id: None,
             },
             agent: state,
+            active_task_count: 0,
             lifecycle: AgentLifecycleHint::default(),
             model: AgentModelState {
                 effective_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6")

@@ -1,0 +1,3 @@
+{"id":"work-active","objective":"continue active fixture work","state":"open","revision":3}
+{"id":"work-queued","objective":"queued fixture work","state":"open","revision":1}
+{"id":"work-needs-input","objective":"waiting fixture work","state":"open","plan_status":"needs_input","revision":2}

@@ -1,8 +1,0 @@
-[
-  {
-    "id": "task-active",
-    "status": "running",
-    "wait_policy": "blocking",
-    "work_item_id": "work-active"
-  }
-]

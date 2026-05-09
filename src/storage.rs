@@ -469,6 +469,25 @@ impl AppStorage {
         Ok(records)
     }
 
+    pub fn latest_active_task_records_for_agent(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<TaskRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut records = self
+            .latest_active_task_records(usize::MAX)?
+            .into_iter()
+            .filter(|task| task.agent_id == agent_id)
+            .collect::<Vec<_>>();
+        if records.len() > limit {
+            records.truncate(limit);
+        }
+        Ok(records)
+    }
+
     pub fn latest_task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
         if !self.tasks_path.exists() {
             return Ok(None);

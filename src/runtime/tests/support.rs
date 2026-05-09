@@ -204,9 +204,6 @@ pub(crate) async fn mark_blocking_task(runtime: &RuntimeHandle, task_id: &str) {
             recovery: None,
         })
         .unwrap();
-    let mut guard = runtime.inner.agent.lock().await;
-    guard.state.active_task_ids = vec![task_id.to_string()];
-    runtime.inner.storage.write_agent(&guard.state).unwrap();
 }
 
 pub(crate) struct TruncatingProvider {

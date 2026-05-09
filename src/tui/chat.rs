@@ -607,10 +607,7 @@ fn agent_has_active_activity(agent: &AgentSummary) -> bool {
         ) || child.pending > 0
             || child.active_task_count > 0
     });
-    active_parent
-        || agent.agent.pending > 0
-        || !agent.agent.active_task_ids.is_empty()
-        || active_child
+    active_parent || agent.agent.pending > 0 || agent.active_task_count > 0 || active_child
 }
 
 fn latest_action_event<'a>(

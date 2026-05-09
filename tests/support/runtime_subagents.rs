@@ -181,7 +181,11 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
 
     let state = runtime.agent_state().await?;
     assert_eq!(state.status, AgentStatus::AwaitingTask);
-    assert!(state.active_task_ids.contains(&task.id));
+    assert!(runtime
+        .active_tasks(10)
+        .await?
+        .iter()
+        .any(|record| record.id == task.id));
 
     let mut saw_child_summary = false;
     for _ in 0..20 {
@@ -226,7 +230,7 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
         final_summary.agent.status,
         AgentStatus::AwakeIdle | AgentStatus::Asleep
     ));
-    assert!(!final_summary.agent.active_task_ids.contains(&task.id));
+    assert_eq!(final_summary.active_task_count, 0);
     assert!(final_summary.active_children.is_empty());
     Ok(())
 }
@@ -369,7 +373,8 @@ pub async fn blocking_subagent_result_does_not_regress_to_running_task_status() 
             )
         });
         if let Some(state) = state {
-            Ok(!state.active_task_ids.contains(&task.id)
+            let active_tasks = runtime.storage().latest_active_task_records(usize::MAX)?;
+            Ok(!active_tasks.iter().any(|record| record.id == task.id)
                 && state.status != AgentStatus::AwakeRunning
                 && state.status != AgentStatus::AwaitingTask
                 && state.current_run_id.is_none()

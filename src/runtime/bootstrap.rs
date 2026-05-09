@@ -262,11 +262,6 @@ impl RuntimeHandle {
             }
         }
 
-        let active_tasks = snapshot
-            .active_tasks
-            .iter()
-            .map(|task| task.id.clone())
-            .collect::<Vec<_>>();
         let blocking_active_tasks = snapshot
             .active_tasks
             .iter()
@@ -279,7 +274,6 @@ impl RuntimeHandle {
         for skill in &mut state.active_skills {
             skill.activation_source = SkillActivationSource::Restored;
         }
-        state.active_task_ids = active_tasks;
         state.pending = queue.len();
         state.total_message_count = storage.count_messages().unwrap_or_default();
         if !matches!(state.status, AgentStatus::Paused | AgentStatus::Stopped) {
