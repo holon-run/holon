@@ -1318,7 +1318,7 @@ async fn agent_scoped_external_trigger_survives_missing_work_item_cleanup() {
     assert_eq!(waiting[0].scope, ExternalTriggerScope::Agent);
     assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
     let closure = runtime.current_closure_decision().await.unwrap();
-    assert_ne!(
+    assert_eq!(
         closure.waiting_reason,
         Some(WaitingReason::AwaitingExternalChange)
     );

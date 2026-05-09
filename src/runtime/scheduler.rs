@@ -55,7 +55,9 @@ impl SchedulerProjection {
         let active_waiting_intents = storage
             .latest_waiting_intents()?
             .into_iter()
-            .filter(|intent| intent.status == WaitingIntentStatus::Active)
+            .filter(|intent| {
+                intent.agent_id == state.id && intent.status == WaitingIntentStatus::Active
+            })
             .collect::<Vec<_>>();
         let active_work_item_waiting_intents = active_waiting_intents
             .iter()
@@ -68,7 +70,7 @@ impl SchedulerProjection {
         let active_timers = storage
             .latest_timer_records()?
             .into_iter()
-            .filter(|timer| timer.status == TimerStatus::Active)
+            .filter(|timer| timer.agent_id == state.id && timer.status == TimerStatus::Active)
             .count();
         Ok(Self {
             status: state.status.clone(),
@@ -330,6 +332,12 @@ pub(crate) fn idle_boundary_decision(
     projection: &SchedulerProjection,
     boundary: impl Into<String>,
 ) -> SchedulerDecision {
+    if matches!(
+        projection.status,
+        AgentStatus::Stopped | AgentStatus::Paused | AgentStatus::Asleep
+    ) {
+        return idle_noop_decision(projection).boundary(boundary);
+    }
     if let Some(decision) = wait_decision_for_projection(projection) {
         return decision.boundary(boundary);
     }

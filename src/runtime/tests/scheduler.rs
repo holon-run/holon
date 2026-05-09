@@ -327,6 +327,96 @@ fn scheduler_projection_breaks_down_waiting_intent_scopes() {
 }
 
 #[test]
+fn scheduler_projection_filters_waiting_intents_and_timers_by_agent() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let now = Utc::now();
+
+    for (id, agent_id) in [("wait-current", "default"), ("wait-other", "other")] {
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: id.into(),
+                agent_id: agent_id.into(),
+                scope: ExternalTriggerScope::Agent,
+                work_item_id: None,
+                description: format!("{id} description"),
+                source: "test".into(),
+                resource: None,
+                condition: None,
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: format!("trigger-{id}"),
+                created_at: now,
+                cancelled_at: None,
+                last_triggered_at: None,
+                trigger_count: 0,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+    }
+    for (id, agent_id) in [("timer-current", "default"), ("timer-other", "other")] {
+        storage
+            .append_timer(&TimerRecord {
+                id: id.into(),
+                agent_id: agent_id.into(),
+                created_at: now,
+                duration_ms: 1000,
+                interval_ms: None,
+                repeat: false,
+                status: TimerStatus::Active,
+                summary: None,
+                next_fire_at: Some(now),
+                last_fired_at: None,
+                fire_count: 0,
+            })
+            .unwrap();
+    }
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.active_waiting_intents, 1);
+    assert_eq!(projection.active_agent_waiting_intents, 1);
+    assert_eq!(projection.active_timers, 1);
+}
+
+#[test]
+fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Stopped;
+    storage.write_agent(&agent).unwrap();
+    storage
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: "wait-current".into(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::Agent,
+            work_item_id: None,
+            description: "wait".into(),
+            source: "test".into(),
+            resource: None,
+            condition: None,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-wait-current".into(),
+            created_at: Utc::now(),
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        })
+        .unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Stop);
+    assert_eq!(decision.reason, "stopped");
+}
+
+#[test]
 fn scheduler_decision_event_records_evidence_and_bindings() {
     let message = MessageEnvelope::new(
         "default",

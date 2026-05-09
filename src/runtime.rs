@@ -862,8 +862,14 @@ impl RuntimeHandle {
             }
         }
 
+        enum RunLoopPoll {
+            Stopped(AgentState, usize),
+            Message(MessageEnvelope, AgentState, AgentState),
+            Idle,
+        }
+
         loop {
-            let next_message = {
+            let poll = {
                 let mut guard = self.inner.agent.lock().await;
                 if self.inner.shutdown_requested.load(Ordering::SeqCst) {
                     guard.state.current_run_id = None;
@@ -871,19 +877,9 @@ impl RuntimeHandle {
                     return Ok(());
                 }
                 if guard.state.status == AgentStatus::Stopped {
-                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
-                        &self.inner.storage,
-                        &guard.state,
-                        guard.queue.len(),
-                    )?;
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &scheduler::idle_boundary_decision(&projection, "run_loop"),
-                    )?;
-                    return Ok(());
-                }
-                if guard.state.status == AgentStatus::Paused {
-                    None
+                    RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len())
+                } else if guard.state.status == AgentStatus::Paused {
+                    RunLoopPoll::Idle
                 } else if let Some(message) = guard.queue.pop() {
                     let run_id = Uuid::new_v4().to_string();
                     let interrupt_token = CancellationToken::new();
@@ -898,22 +894,40 @@ impl RuntimeHandle {
                     guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
                     self.inner.storage.write_agent(&guard.state)?;
                     let running_state = guard.state.clone();
-                    Some((message, prior_state, running_state))
+                    RunLoopPoll::Message(message, prior_state, running_state)
                 } else {
-                    None
+                    RunLoopPoll::Idle
                 }
             };
 
-            let Some((message, prior_state, running_state)) = next_message else {
-                if self.maybe_emit_pending_system_tick(None).await? {
-                    continue;
-                }
-                {
-                    let guard = self.inner.agent.lock().await;
+            let (message, prior_state, running_state) = match poll {
+                RunLoopPoll::Stopped(state, queue_len) => {
                     let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
                         &self.inner.storage,
-                        &guard.state,
-                        guard.queue.len(),
+                        &state,
+                        queue_len,
+                    )?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &scheduler::idle_boundary_decision(&projection, "run_loop"),
+                    )?;
+                    return Ok(());
+                }
+                RunLoopPoll::Message(message, prior_state, running_state) => {
+                    (message, prior_state, running_state)
+                }
+                RunLoopPoll::Idle => {
+                    if self.maybe_emit_pending_system_tick(None).await? {
+                        continue;
+                    }
+                    let idle_snapshot = {
+                        let guard = self.inner.agent.lock().await;
+                        (guard.state.clone(), guard.queue.len())
+                    };
+                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
+                        &self.inner.storage,
+                        &idle_snapshot.0,
+                        idle_snapshot.1,
                     )?;
                     let decision = scheduler::idle_boundary_decision(&projection, "run_loop_idle");
                     if !matches!(
@@ -923,26 +937,26 @@ impl RuntimeHandle {
                     ) {
                         scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                     }
-                }
-                let idle_state = {
-                    let mut guard = self.inner.agent.lock().await;
-                    if !matches!(
-                        guard.state.status,
-                        AgentStatus::Asleep | AgentStatus::Paused
-                    ) && guard.queue.is_empty()
-                    {
-                        scheduler::apply_sleep_projection(&mut guard.state, None);
-                        self.inner.storage.write_agent(&guard.state)?;
-                        Some(guard.state.clone())
-                    } else {
-                        None
+                    let idle_state = {
+                        let mut guard = self.inner.agent.lock().await;
+                        if !matches!(
+                            guard.state.status,
+                            AgentStatus::Asleep | AgentStatus::Paused | AgentStatus::Stopped
+                        ) && guard.queue.is_empty()
+                        {
+                            scheduler::apply_sleep_projection(&mut guard.state, None);
+                            self.inner.storage.write_agent(&guard.state)?;
+                            Some(guard.state.clone())
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(idle_state) = idle_state {
+                        self.append_state_changed_events(&idle_state)?;
                     }
-                };
-                if let Some(idle_state) = idle_state {
-                    self.append_state_changed_events(&idle_state)?;
+                    self.inner.notify.notified().await;
+                    continue;
                 }
-                self.inner.notify.notified().await;
-                continue;
             };
 
             self.append_state_changed_events(&running_state)?;
