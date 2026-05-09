@@ -115,13 +115,13 @@ The TUI shows:
 ### Remote TUI (optional)
 
 To connect to a remote Holon instance:
-
+ 
 ```bash
 # On the remote host
-cargo run -- serve --access lan --host 192.168.1.10 --token-file ~/.config/holon/remote.token
+cargo run -- serve --access lan --host 192.168.1.10 --token-file ~/.holon/remote.token
 
 # From your local machine
-cargo run -- tui --connect http://192.168.1.10:7878 --token-file ~/.config/holon/remote.token
+cargo run -- tui --connect http://192.168.1.10:7878 --token-file ~/.holon/remote.token
 ```
 
 See [Remote TUI Access RFC](https://github.com/holon-run/holon/blob/main/docs/rfcs/remote-tui-access.md) for details.
