@@ -56,6 +56,10 @@ semantics, triggers, and workspace isolation.
 The **trust boundaries** page is product-oriented: it explains why origin and
 trust matter for real integrations, not just as security theory.
 
+The **documentation layers** page explains how Holon separates product docs,
+current-contract reference, and maintainer design records — so you know which
+documents are canonical for which purpose.
+
 For the canonical design contracts behind these concepts, see the repository
 [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs) and
 [implementation
