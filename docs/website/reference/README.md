@@ -13,7 +13,7 @@ behavior changes.
 
 > **Stability note:** The runtime is pre-1.0. CLI shapes, config keys, and HTTP
 > endpoints may change without prior notice. Each reference page records the
-> version it was last checked against. See the [roadmap](/roadmap/) for what is
+> version it was last regenerated against where applicable. See the [roadmap](/roadmap/) for what is
 > considered stable.
 
 <!-- INDEX:START -->

@@ -36,6 +36,7 @@ holon (v0.13.0)
 │   ├── stop     Stop an agent
 │   ├── interrupt Interrupt current run
 │   └── model    Per-agent model configuration
+│       ├── get  Get agent model override
 │       ├── set  Set agent model override
 │       └── clear Clear agent model override
 ├── serve        Start HTTP control plane server

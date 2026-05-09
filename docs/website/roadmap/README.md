@@ -66,13 +66,6 @@ Holon is *not* focused on these right now:
 - Hidden automation that cannot be inspected as runtime state.
 - Documentation that contradicts the repository runtime contracts.
 
-## Non-goals for now
-
-- UI-first product pages.
-- A plugin marketplace.
-- Hidden automation that cannot be inspected as runtime state.
-- Documentation that contradicts the repository runtime specs.
-
 <!-- INDEX:START -->
 
 <!-- INDEX:END -->

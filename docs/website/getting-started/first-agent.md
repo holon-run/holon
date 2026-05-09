@@ -115,7 +115,7 @@ The TUI shows:
 ### Remote TUI (optional)
 
 To connect to a remote Holon instance:
- 
+
 ```bash
 # On the remote host
 cargo run -- serve --access lan --host 192.168.1.10 --token-file ~/.holon/remote.token
