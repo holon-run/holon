@@ -1840,6 +1840,47 @@ async fn agent_scoped_waiting_intent_contributes_to_closure() {
 }
 
 #[tokio::test]
+async fn current_closure_ignores_other_agent_timers() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime
+        .inner
+        .storage
+        .append_timer(&TimerRecord {
+            id: "other-timer".into(),
+            agent_id: "other".into(),
+            created_at: Utc::now(),
+            duration_ms: 1000,
+            interval_ms: None,
+            repeat: false,
+            status: TimerStatus::Active,
+            summary: None,
+            next_fire_at: Some(Utc::now()),
+            last_fired_at: None,
+            fire_count: 0,
+        })
+        .unwrap();
+
+    let closure = runtime.current_closure_decision().await.unwrap();
+
+    assert_ne!(closure.waiting_reason, Some(WaitingReason::AwaitingTimer));
+    assert!(!closure
+        .evidence
+        .iter()
+        .any(|evidence| evidence == "active_timers=1"));
+}
+
+#[tokio::test]
 async fn reconcile_waiting_contract_cancels_waits_when_only_waiting_anchor_exists() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
