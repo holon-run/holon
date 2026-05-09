@@ -572,9 +572,7 @@ impl RuntimeHost {
             let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
-            let active_task_count = storage
-                .latest_active_task_records_for_agent(&identity.agent_id, usize::MAX)?
-                .len();
+            let active_task_count = storage.active_task_count_for_agent(&identity.agent_id)?;
             snapshots.push(PublicAgentActivitySnapshot {
                 agent_id: identity.agent_id,
                 status: state.status.clone(),
@@ -600,9 +598,7 @@ impl RuntimeHost {
             let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
-            let active_task_count = storage
-                .latest_active_task_records_for_agent(&identity.agent_id, usize::MAX)?
-                .len();
+            let active_task_count = storage.active_task_count_for_agent(&identity.agent_id)?;
             children.push(ChildAgentSummary {
                 identity: AgentIdentityView::from_record(
                     &identity,

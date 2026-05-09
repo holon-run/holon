@@ -337,7 +337,7 @@ impl RuntimeHandle {
 
     pub async fn agent_summary(&self) -> Result<AgentSummary> {
         let agent = self.agent_state().await?;
-        let active_task_count = self.active_tasks(usize::MAX).await?.len();
+        let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;
         let model = self.model_state_for(&agent);
         let closure = self.current_closure_decision().await?;
         let execution = self.execution_snapshot().await?;

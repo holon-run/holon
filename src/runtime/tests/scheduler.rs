@@ -169,8 +169,9 @@ fn read_optional_scheduler_jsonl_fixture<T: DeserializeOwned>(name: &str, path: 
             .collect();
     }
 
-    if let Some(json_path) = path.strip_suffix("l") {
-        return read_optional_scheduler_fixture(name, json_path);
+    if let Some(json_path) = path.strip_suffix(".jsonl") {
+        let json_path = format!("{json_path}.json");
+        return read_optional_scheduler_fixture(name, &json_path);
     }
 
     Vec::new()

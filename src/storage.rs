@@ -474,18 +474,66 @@ impl AppStorage {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<TaskRecord>> {
-        if limit == 0 {
+        if limit == 0 || !self.tasks_path.exists() {
             return Ok(Vec::new());
         }
-        let mut records = self
-            .latest_active_task_records(usize::MAX)?
-            .into_iter()
-            .filter(|task| task.agent_id == agent_id)
-            .collect::<Vec<_>>();
-        if records.len() > limit {
-            records.truncate(limit);
-        }
+
+        let mut seen = std::collections::BTreeSet::<String>::new();
+        let mut pending_recovery = std::collections::BTreeMap::<String, usize>::new();
+        let mut records = Vec::<TaskRecord>::new();
+
+        scan_jsonl_reverse::<TaskRecord, _>(&self.tasks_path, |record| {
+            if let Some(index) = pending_recovery.get(&record.id).copied() {
+                if records[index].recovery.is_none() {
+                    records[index].recovery = record.recovery.clone();
+                }
+                if records[index].recovery.is_some() {
+                    pending_recovery.remove(&record.id);
+                }
+            }
+
+            if seen.contains(&record.id) {
+                return records.len() < limit || !pending_recovery.is_empty();
+            }
+            seen.insert(record.id.clone());
+
+            if records.len() < limit
+                && record.agent_id == agent_id
+                && is_active_task_status(&record.status)
+            {
+                records.push(record);
+                let index = records.len() - 1;
+                if records[index].recovery.is_none() {
+                    pending_recovery.insert(records[index].id.clone(), index);
+                }
+            }
+
+            records.len() < limit || !pending_recovery.is_empty()
+        })?;
+
+        records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(records)
+    }
+
+    pub fn active_task_count_for_agent(&self, agent_id: &str) -> Result<usize> {
+        if !self.tasks_path.exists() {
+            return Ok(0);
+        }
+
+        let mut seen = std::collections::BTreeSet::<String>::new();
+        let mut count = 0usize;
+
+        scan_jsonl_reverse::<TaskRecord, _>(&self.tasks_path, |record| {
+            if !seen.insert(record.id.clone()) {
+                return true;
+            }
+            if record.agent_id == agent_id && is_active_task_status(&record.status) {
+                count += 1;
+            }
+            true
+        })?;
+
+        Ok(count)
     }
 
     pub fn latest_task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
@@ -1166,6 +1214,52 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec!["task-4", "task-3"]);
+    }
+
+    #[test]
+    fn latest_active_task_records_for_agent_scopes_limit_and_count() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let task = |id: &str, agent_id: &str, status: TaskStatus, offset: i64| TaskRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            kind: TaskKind::CommandTask,
+            status: status.clone(),
+            created_at: now + chrono::Duration::seconds(offset),
+            updated_at: now + chrono::Duration::seconds(offset),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some(format!("{id} {status:?}")),
+            detail: None,
+            recovery: None,
+        };
+
+        storage
+            .append_task(&task("default-old", "default", TaskStatus::Running, 0))
+            .unwrap();
+        storage
+            .append_task(&task("other-new", "other", TaskStatus::Running, 1))
+            .unwrap();
+        storage
+            .append_task(&task("default-new", "default", TaskStatus::Running, 2))
+            .unwrap();
+        storage
+            .append_task(&task("default-old", "default", TaskStatus::Completed, 3))
+            .unwrap();
+
+        let active = storage
+            .latest_active_task_records_for_agent("default", 1)
+            .unwrap();
+        let ids = active
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["default-new"]);
+        assert_eq!(storage.active_task_count_for_agent("default").unwrap(), 1);
+        assert_eq!(storage.active_task_count_for_agent("other").unwrap(), 1);
     }
 
     #[test]
