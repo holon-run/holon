@@ -598,6 +598,7 @@ impl RuntimeHandle {
                 "runtime_switched_current_item": false,
             }
         }));
+        message.work_item_id = Some(work_item.id.clone());
         self.inner.storage.append_event(&AuditEvent::new(
             "system_tick_emitted",
             serde_json::json!({
@@ -1043,6 +1044,22 @@ mod tests {
         assert_eq!(ticks.len(), 1);
         assert_eq!(ticks[0].1["reason"].as_str(), Some("queued_available"));
         assert_eq!(ticks[0].1["work_item_id"].as_str(), Some(queued_id));
+        let messages = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_messages(10)
+            .unwrap();
+        let tick_message = messages
+            .iter()
+            .find(|message| {
+                matches!(
+                    message.origin,
+                    MessageOrigin::System { ref subsystem } if subsystem == "work_queue"
+                )
+            })
+            .expect("work queue tick message should be recorded");
+        assert_eq!(tick_message.work_item_id.as_deref(), Some(queued_id));
 
         let guard = test_runtime.runtime.inner.agent.blocking_lock();
         assert!(guard.state.current_work_item_id.is_none());
