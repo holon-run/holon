@@ -13,6 +13,10 @@ struct AgentFixture {
     active_task_ids: Vec<String>,
     #[serde(default)]
     pending_wake_hint_reason: Option<String>,
+    #[serde(default)]
+    turn_index: u64,
+    #[serde(default)]
+    last_turn_terminal_kind: Option<TurnTerminalKind>,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +49,41 @@ struct TimerFixture {
 }
 
 #[derive(Deserialize)]
+struct MessageFixture {
+    id: String,
+    kind: MessageKind,
+    text: String,
+    #[serde(default)]
+    priority: Option<Priority>,
+    #[serde(default)]
+    work_item_id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct QueueEntryFixture {
+    message_id: String,
+    status: QueueEntryStatus,
+    #[serde(default)]
+    priority: Option<Priority>,
+}
+
+#[derive(Deserialize)]
+struct EventFixture {
+    kind: String,
+    #[serde(default)]
+    data: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct BriefFixture {
+    id: String,
+    kind: BriefKind,
+    text: String,
+}
+
+#[derive(Deserialize)]
 struct ExpectedFixture {
     current_work_item_id: Option<String>,
     current_work_item_revision: Option<u64>,
@@ -64,6 +103,12 @@ struct ExpectedFixture {
     decision: Option<String>,
     #[serde(default)]
     decision_reason: Option<String>,
+    #[serde(default)]
+    runtime_error: bool,
+    #[serde(default)]
+    replay_message_ids: Vec<String>,
+    #[serde(default)]
+    turn_terminal_kind: Option<TurnTerminalKind>,
 }
 
 fn scheduler_fixture_path(name: &str, path: &str) -> PathBuf {
@@ -106,12 +151,30 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
     let waiting_intents: Vec<WaitingIntentFixture> =
         read_optional_scheduler_fixture(name, "ledger/waiting_intents.json");
     let timers: Vec<TimerFixture> = read_optional_scheduler_fixture(name, "ledger/timers.json");
+    let messages: Vec<MessageFixture> =
+        read_optional_scheduler_fixture(name, "ledger/messages.json");
+    let queue_entries: Vec<QueueEntryFixture> =
+        read_optional_scheduler_fixture(name, "ledger/queue_entries.json");
+    let events: Vec<EventFixture> = read_optional_scheduler_fixture(name, "ledger/events.json");
+    let briefs: Vec<BriefFixture> = read_optional_scheduler_fixture(name, "ledger/briefs.json");
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
 
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = agent_fixture.current_work_item_id;
     agent.active_task_ids = agent_fixture.active_task_ids;
+    agent.turn_index = agent_fixture.turn_index;
+    if let Some(kind) = agent_fixture.last_turn_terminal_kind {
+        agent.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_index: agent.turn_index,
+            kind,
+            reason: Some("fixture terminal".into()),
+            last_assistant_message: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 1,
+        });
+    }
     if let Some(reason) = agent_fixture.pending_wake_hint_reason {
         agent.pending_wake_hint = Some(PendingWakeHint {
             reason,
@@ -198,6 +261,59 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
             })
             .unwrap();
     }
+    for message_fixture in messages {
+        let origin = match message_fixture.kind {
+            MessageKind::SystemTick => MessageOrigin::System {
+                subsystem: "fixture".into(),
+            },
+            MessageKind::TaskResult | MessageKind::TaskStatus => MessageOrigin::Task {
+                task_id: message_fixture
+                    .task_id
+                    .clone()
+                    .unwrap_or_else(|| "fixture-task".into()),
+            },
+            _ => MessageOrigin::Webhook {
+                source: "fixture".into(),
+                event_type: None,
+            },
+        };
+        let mut message = MessageEnvelope::new(
+            "default",
+            message_fixture.kind,
+            origin,
+            TrustLevel::TrustedIntegration,
+            message_fixture.priority.unwrap_or(Priority::Normal),
+            MessageBody::Text {
+                text: message_fixture.text,
+            },
+        );
+        message.id = message_fixture.id;
+        message.work_item_id = message_fixture.work_item_id;
+        message.task_id = message_fixture.task_id;
+        storage.append_message(&message).unwrap();
+    }
+    for queue_entry in queue_entries {
+        storage
+            .append_queue_entry(&QueueEntryRecord {
+                message_id: queue_entry.message_id,
+                agent_id: "default".into(),
+                priority: queue_entry.priority.unwrap_or(Priority::Normal),
+                status: queue_entry.status,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+    }
+    for event in events {
+        storage
+            .append_event(&AuditEvent::new(event.kind, event.data))
+            .unwrap();
+    }
+    for brief in briefs {
+        let mut record = BriefRecord::new("default", brief.kind, brief.text, None, None);
+        record.id = brief.id;
+        storage.append_brief(&record).unwrap();
+    }
 
     (dir, storage, agent)
 }
@@ -256,6 +372,27 @@ fn assert_scheduler_fixture(name: &str) {
         projection.active_timers, expected.active_timers,
         "{name}: active timers"
     );
+    assert_eq!(
+        projection.runtime_error, expected.runtime_error,
+        "{name}: runtime error"
+    );
+    assert_eq!(
+        agent.last_turn_terminal.map(|record| record.kind),
+        expected.turn_terminal_kind,
+        "{name}: turn terminal kind"
+    );
+    if !expected.replay_message_ids.is_empty() {
+        let snapshot = storage.recovery_snapshot().unwrap();
+        let replay_message_ids = snapshot
+            .replay_messages
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            replay_message_ids, expected.replay_message_ids,
+            "{name}: replay messages"
+        );
+    }
     if let Some(expected_decision) = expected.decision {
         let decision = scheduler::idle_boundary_decision(&projection, "fixture");
         assert_eq!(
@@ -279,6 +416,9 @@ fn scheduler_projection_replays_fixture_facts() {
         "blocking_task",
         "timer_wait",
         "queued_available",
+        "pending_wake_hint",
+        "dequeued_replay",
+        "baseline_over_budget_terminal",
     ] {
         assert_scheduler_fixture(name);
     }
