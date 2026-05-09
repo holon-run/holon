@@ -143,7 +143,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
     SlashCommandSpec {
         name: "/agent",
         description: "switch or control an agent",
-        usage: "/agent <agent-id>|pause [agent-id]|resume [agent-id]|stop [agent-id]",
+        usage:
+            "/agent <agent-id>|switch <agent-id>|pause [agent-id]|resume [agent-id]|stop [agent-id]",
         arg_rule: SlashArgRule::Agent,
         command: SlashCommand::Agent,
     },
@@ -233,8 +234,16 @@ fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
                 agent_id: args.get(1).cloned(),
             })
         }
+        "switch" => {
+            if args.len() != 2 {
+                return Err(anyhow!(
+                    "/agent switch expects exactly one agent id; usage: /agent switch <agent-id>"
+                ));
+            }
+            Ok(AgentSlashAction::Switch(args[1].clone()))
+        }
         "status" | "interrupt" | "list" | "model" | "wake" => Err(anyhow!(
-            "/agent {first} is not supported in the TUI yet; use /help for supported commands"
+            "/agent {first} is not supported in the TUI yet; use /agent switch {first} to select an agent with that id"
         )),
         _ => {
             if args.len() != 1 {
@@ -1485,6 +1494,13 @@ mod tests {
             ))
         );
         assert_eq!(
+            parse_composer_submission("/agent switch pause").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::Agent,
+                vec!["switch".into(), "pause".into()]
+            ))
+        );
+        assert_eq!(
             parse_composer_submission("/display 4").unwrap(),
             Some(ComposerSubmission::Slash(
                 SlashCommand::Display,
@@ -1527,6 +1543,10 @@ mod tests {
             .contains("expects exactly one agent id for switching"));
         let err = parse_composer_submission("/agent pause default extra").unwrap_err();
         assert!(err.to_string().contains("accepts at most one agent id"));
+        let err = parse_composer_submission("/agent switch").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("switch expects exactly one agent id"));
     }
 
     #[test]
@@ -1556,6 +1576,12 @@ mod tests {
             parse_agent_slash_action(&["default".into()]).unwrap(),
             AgentSlashAction::Switch("default".into())
         );
+        assert_eq!(
+            parse_agent_slash_action(&["switch".into(), "pause".into()]).unwrap(),
+            AgentSlashAction::Switch("pause".into())
+        );
+        let err = parse_agent_slash_action(&["status".into()]).unwrap_err();
+        assert!(err.to_string().contains("use /agent switch status"));
     }
 
     #[test]

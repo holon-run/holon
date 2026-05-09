@@ -2059,15 +2059,8 @@ async fn control_agent_lifecycle(
     action: ControlAction,
 ) -> Result<()> {
     let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
-    post_control_json(
-        config,
-        &format!("/control/agents/{agent}/control"),
-        &ControlRequest {
-            action,
-            trust: Some(TrustLevel::TrustedOperator),
-        },
-    )
-    .await
+    let client = LocalClient::new(config.clone())?;
+    print_json(&client.control_agent(&agent, action).await?)
 }
 
 async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> Result<()> {
