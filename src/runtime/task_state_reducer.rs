@@ -40,12 +40,20 @@ pub(super) fn has_blocking_active_tasks(
     }))
 }
 
+pub(super) struct TaskTransition<'a> {
+    pub(super) task: &'a TaskRecord,
+    pub(super) event_kind: &'static str,
+}
+
+impl<'a> TaskTransition<'a> {
+    pub(super) fn new(task: &'a TaskRecord, event_kind: &'static str) -> Self {
+        Self { task, event_kind }
+    }
+}
+
 impl RuntimeHandle {
-    pub(super) async fn persist_task_transition(
-        &self,
-        task: &TaskRecord,
-        event_kind: &'static str,
-    ) -> Result<()> {
+    pub(super) async fn apply_task_transition(&self, transition: TaskTransition<'_>) -> Result<()> {
+        let task = transition.task;
         if should_ignore_task_update(&self.inner.storage, task)? {
             return Ok(());
         }
@@ -58,13 +66,31 @@ impl RuntimeHandle {
             } else if !guard.state.active_task_ids.contains(&task.id) {
                 guard.state.active_task_ids.push(task.id.clone());
             }
-            scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
+            if !matches!(
+                guard.state.status,
+                AgentStatus::Paused | AgentStatus::Stopped
+            ) {
+                if guard.state.current_run_id.is_none() {
+                    scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
+                } else if task.is_blocking() && !is_terminal_task_status(&task.status) {
+                    guard.state.status = AgentStatus::AwaitingTask;
+                }
+            }
             self.inner.storage.write_agent(&guard.state)?;
         }
         self.inner
             .storage
-            .append_event(&AuditEvent::new(event_kind, to_json_value(task)))?;
+            .append_event(&AuditEvent::new(transition.event_kind, to_json_value(task)))?;
         Ok(())
+    }
+
+    pub(super) async fn persist_task_transition(
+        &self,
+        task: &TaskRecord,
+        event_kind: &'static str,
+    ) -> Result<()> {
+        self.apply_task_transition(TaskTransition::new(task, event_kind))
+            .await
     }
 
     pub(super) async fn reduce_task_status_message(&self, task: TaskRecord) -> Result<()> {
@@ -302,6 +328,29 @@ mod tests {
         let state = runtime.agent_state().await.unwrap();
         assert!(state.active_task_ids.contains(&"task-1".to_string()));
         assert_eq!(state.status, AgentStatus::AwaitingTask);
+    }
+
+    #[tokio::test]
+    async fn task_transition_preserves_active_run_id_during_turn() {
+        let runtime = runtime();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = AgentStatus::AwakeRunning;
+            guard.state.current_run_id = Some("run-1".into());
+            runtime.inner.storage.write_agent(&guard.state).unwrap();
+        }
+
+        runtime
+            .apply_task_transition(TaskTransition::new(
+                &task("task-1", TaskStatus::Running, true),
+                "task_status_updated",
+            ))
+            .await
+            .unwrap();
+
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
+        assert!(state.active_task_ids.contains(&"task-1".to_string()));
     }
 
     #[tokio::test]

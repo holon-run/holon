@@ -347,11 +347,11 @@ Scheduler decisions should use a fixed priority order.
 6. active blocking tasks mean `WaitForTask`.
 7. active waiting intents mean `WaitForExternalChange`.
 8. active timers mean `WaitForTimer`.
-9. current runnable work item means `EmitSystemTick(continue_active)` unless an
+9. pending wake hint means `EmitSystemTick(wake_hint)`.
+10. current runnable work item means `EmitSystemTick(continue_active)` unless an
    idempotency key has already been emitted for the same generation.
-10. queued runnable work item means `EmitSystemTick(queued_available)` unless an
+11. queued runnable work item means `EmitSystemTick(queued_available)` unless an
     idempotency key has already been emitted for the same generation.
-11. pending wake hint means `EmitSystemTick(wake_hint)`.
 12. no runnable work and no pending inputs means `Sleep` or `StayIdle`,
     depending on host mode.
 

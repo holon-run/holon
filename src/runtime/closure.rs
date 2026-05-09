@@ -167,7 +167,7 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
     }
 }
 
-pub(super) fn runtime_error_active(events: &[AuditEvent], briefs: &[BriefRecord]) -> bool {
+pub(crate) fn runtime_error_active(events: &[AuditEvent], briefs: &[BriefRecord]) -> bool {
     let latest_runtime_error = events
         .iter()
         .filter(|event| event.kind == "runtime_error")

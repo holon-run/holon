@@ -1,4 +1,4 @@
-use super::*;
+use super::{task_state_reducer, *};
 use std::ffi::OsString;
 
 use crate::system::{
@@ -384,7 +384,11 @@ impl RuntimeHandle {
             updated_at: chrono::Utc::now(),
             ..task
         };
-        self.inner.storage.append_task(&updated)?;
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &updated,
+            "task_status_updated",
+        ))
+        .await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "task_worktree_metadata_recorded",
             serde_json::json!({
