@@ -36,15 +36,11 @@ impl RuntimeHandle {
             && continuation_resolution
                 .as_ref()
                 .is_some_and(|resolution| resolution.model_visible);
-        self.inner
-            .storage
-            .append_event(&scheduler::scheduler_decision_event(
-                &scheduler::message_processing_decision(
-                    &message,
-                    model_turn_allowed,
-                    model_visible,
-                ),
-            ))?;
+        scheduler::append_scheduler_decision(
+            &self.inner.storage,
+            &scheduler::message_processing_decision(&message, model_turn_allowed, model_visible)
+                .boundary("message_processing"),
+        )?;
 
         match message.kind {
             MessageKind::OperatorPrompt

@@ -135,6 +135,7 @@ pub(crate) struct SchedulerDecision {
     pub message_id: Option<String>,
     pub work_item_id: Option<String>,
     pub task_id: Option<String>,
+    pub boundary: Option<String>,
     pub evidence: Vec<String>,
 }
 
@@ -148,6 +149,7 @@ impl SchedulerDecision {
             message_id: None,
             work_item_id: None,
             task_id: None,
+            boundary: None,
             evidence: Vec::new(),
         }
     }
@@ -180,6 +182,11 @@ impl SchedulerDecision {
         self
     }
 
+    pub(crate) fn boundary(mut self, boundary: impl Into<String>) -> Self {
+        self.boundary = Some(boundary.into());
+        self
+    }
+
     pub(crate) fn evidence(mut self, evidence: impl Into<String>) -> Self {
         self.evidence.push(evidence.into());
         self
@@ -197,9 +204,28 @@ pub(crate) fn scheduler_decision_event(decision: &SchedulerDecision) -> AuditEve
             "message_id": &decision.message_id,
             "work_item_id": &decision.work_item_id,
             "task_id": &decision.task_id,
+            "boundary": &decision.boundary,
             "evidence": &decision.evidence,
         }),
     )
+}
+
+pub(crate) fn append_scheduler_decision(
+    storage: &AppStorage,
+    decision: &SchedulerDecision,
+) -> Result<bool> {
+    let event = scheduler_decision_event(decision);
+    let duplicate = storage
+        .read_recent_events(32)?
+        .into_iter()
+        .rev()
+        .find(|latest| latest.kind == event.kind)
+        .is_some_and(|latest| latest.data == event.data);
+    if duplicate {
+        return Ok(false);
+    }
+    storage.append_event(&event)?;
+    Ok(true)
 }
 
 pub(crate) fn message_processing_decision(
@@ -230,12 +256,14 @@ pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerD
         (SchedulerDecisionKind::Stop, "stopped")
     } else if matches!(projection.status, AgentStatus::Paused) {
         (SchedulerDecisionKind::Noop, "paused")
+    } else if matches!(projection.status, AgentStatus::Asleep) {
+        (SchedulerDecisionKind::StayIdle, "already_asleep")
     } else if projection.queue_len > 0 {
         (SchedulerDecisionKind::Noop, "queue_not_empty")
     } else if projection.turn_in_progress {
         (SchedulerDecisionKind::Noop, "turn_in_progress")
     } else {
-        (SchedulerDecisionKind::Noop, "not_idle_tick_eligible")
+        (SchedulerDecisionKind::Sleep, "no_pending_scheduler_facts")
     };
     SchedulerDecision::new(kind, reason)
         .liveness_only(true)
@@ -295,6 +323,16 @@ pub(crate) fn wait_decision_for_projection(
             None
         }
     })
+}
+
+pub(crate) fn idle_boundary_decision(
+    projection: &SchedulerProjection,
+    boundary: impl Into<String>,
+) -> SchedulerDecision {
+    if let Some(decision) = wait_decision_for_projection(projection) {
+        return decision.boundary(boundary);
+    }
+    idle_noop_decision(projection).boundary(boundary)
 }
 
 pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {

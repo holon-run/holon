@@ -152,36 +152,36 @@ impl RuntimeHandle {
         match trigger {
             Some(IdleTickTrigger::WorkQueueActive(active)) => {
                 if suppress_continue_active {
-                    self.inner
-                        .storage
-                        .append_event(&scheduler::scheduler_decision_event(
-                            &scheduler::SchedulerDecision::new(
-                                scheduler::SchedulerDecisionKind::Noop,
-                                "continue_active_suppressed_after_model_visible_continuation",
-                            )
-                            .liveness_only(true)
-                            .work_item_id(active.id.clone())
-                            .evidence(
-                                "model_visible_continuation_suppresses_duplicate_continue_active",
-                            ),
-                        ))?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &scheduler::SchedulerDecision::new(
+                            scheduler::SchedulerDecisionKind::Noop,
+                            "continue_active_suppressed_after_model_visible_continuation",
+                        )
+                        .boundary("idle_tick")
+                        .liveness_only(true)
+                        .work_item_id(active.id.clone())
+                        .evidence(
+                            "model_visible_continuation_suppresses_duplicate_continue_active",
+                        ),
+                    )?;
                     return Ok(false);
                 }
                 if let Some(result_brief_id) =
                     self.duplicate_continue_active_result_brief_id(&active)?
                 {
-                    self.inner
-                        .storage
-                        .append_event(&scheduler::scheduler_decision_event(
-                            &scheduler::SchedulerDecision::new(
-                                scheduler::SchedulerDecisionKind::Noop,
-                                "duplicate_continue_active",
-                            )
-                            .liveness_only(true)
-                            .work_item_id(active.id.clone())
-                            .evidence("duplicate_tick_suppressed")
-                            .evidence(format!("result_brief_id={result_brief_id}")),
-                        ))?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &scheduler::SchedulerDecision::new(
+                            scheduler::SchedulerDecisionKind::Noop,
+                            "duplicate_continue_active",
+                        )
+                        .boundary("idle_tick")
+                        .liveness_only(true)
+                        .work_item_id(active.id.clone())
+                        .evidence("duplicate_tick_suppressed")
+                        .evidence(format!("result_brief_id={result_brief_id}")),
+                    )?;
                     self.inner.storage.append_event(&AuditEvent::new(
                         "system_tick_suppressed",
                         serde_json::json!({
@@ -199,18 +199,18 @@ impl RuntimeHandle {
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued)) => {
                 if let Some(message_id) = self.duplicate_queued_available_message_id(&queued)? {
-                    self.inner
-                        .storage
-                        .append_event(&scheduler::scheduler_decision_event(
-                            &scheduler::SchedulerDecision::new(
-                                scheduler::SchedulerDecisionKind::Noop,
-                                "duplicate_queued_available",
-                            )
-                            .liveness_only(true)
-                            .work_item_id(queued.id.clone())
-                            .evidence("duplicate_tick_suppressed")
-                            .evidence(format!("message_id={message_id}")),
-                        ))?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &scheduler::SchedulerDecision::new(
+                            scheduler::SchedulerDecisionKind::Noop,
+                            "duplicate_queued_available",
+                        )
+                        .boundary("idle_tick")
+                        .liveness_only(true)
+                        .work_item_id(queued.id.clone())
+                        .evidence("duplicate_tick_suppressed")
+                        .evidence(format!("message_id={message_id}")),
+                    )?;
                     self.inner.storage.append_event(&AuditEvent::new(
                         "system_tick_suppressed",
                         serde_json::json!({
@@ -228,17 +228,17 @@ impl RuntimeHandle {
             }
             Some(IdleTickTrigger::WakeHint(pending)) => {
                 if let Some(message_id) = self.duplicate_wake_hint_message_id(&pending)? {
-                    self.inner
-                        .storage
-                        .append_event(&scheduler::scheduler_decision_event(
-                            &scheduler::SchedulerDecision::new(
-                                scheduler::SchedulerDecisionKind::Noop,
-                                "duplicate_wake_hint",
-                            )
-                            .liveness_only(true)
-                            .evidence("duplicate_wake_hint_suppressed")
-                            .evidence(format!("message_id={message_id}")),
-                        ))?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &scheduler::SchedulerDecision::new(
+                            scheduler::SchedulerDecisionKind::Noop,
+                            "duplicate_wake_hint",
+                        )
+                        .boundary("idle_tick")
+                        .liveness_only(true)
+                        .evidence("duplicate_wake_hint_suppressed")
+                        .evidence(format!("message_id={message_id}")),
+                    )?;
                     let mut guard = self.inner.agent.lock().await;
                     if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                         guard.state.pending_wake_hint = None;
@@ -486,18 +486,18 @@ impl RuntimeHandle {
         let correlation_id = pending.correlation_id.clone();
         let causation_id = pending.causation_id.clone();
         let idempotency_key = scheduler::wake_hint_idempotency_key(pending);
-        self.inner
-            .storage
-            .append_event(&scheduler::scheduler_decision_event(
-                &scheduler::SchedulerDecision::new(
-                    scheduler::SchedulerDecisionKind::EmitSystemTick,
-                    "wake_hint",
-                )
-                .model_visible(true)
-                .evidence("runtime_idle")
-                .evidence("pending_wake_hint")
-                .evidence(format!("idempotency_key={idempotency_key}")),
-            ))?;
+        scheduler::append_scheduler_decision(
+            &self.inner.storage,
+            &scheduler::SchedulerDecision::new(
+                scheduler::SchedulerDecisionKind::EmitSystemTick,
+                "wake_hint",
+            )
+            .boundary("idle_tick")
+            .model_visible(true)
+            .evidence("runtime_idle")
+            .evidence("pending_wake_hint")
+            .evidence(format!("idempotency_key={idempotency_key}")),
+        )?;
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
             MessageKind::SystemTick,
@@ -554,19 +554,19 @@ impl RuntimeHandle {
         reason: &str,
     ) -> Result<()> {
         let idempotency_key = scheduler::work_queue_tick_idempotency_key(work_item, reason);
-        self.inner
-            .storage
-            .append_event(&scheduler::scheduler_decision_event(
-                &scheduler::SchedulerDecision::new(
-                    scheduler::SchedulerDecisionKind::EmitSystemTick,
-                    reason,
-                )
-                .model_visible(true)
-                .work_item_id(work_item.id.clone())
-                .evidence("runtime_idle")
-                .evidence("work_item_runnable")
-                .evidence(format!("idempotency_key={idempotency_key}")),
-            ))?;
+        scheduler::append_scheduler_decision(
+            &self.inner.storage,
+            &scheduler::SchedulerDecision::new(
+                scheduler::SchedulerDecisionKind::EmitSystemTick,
+                reason,
+            )
+            .boundary("idle_tick")
+            .model_visible(true)
+            .work_item_id(work_item.id.clone())
+            .evidence("runtime_idle")
+            .evidence("work_item_runnable")
+            .evidence(format!("idempotency_key={idempotency_key}")),
+        )?;
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
             MessageKind::SystemTick,

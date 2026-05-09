@@ -222,3 +222,24 @@ fn scheduler_decision_event_records_evidence_and_bindings() {
         .iter()
         .any(|value| value.as_str() == Some("fixture_evidence")));
 }
+
+#[test]
+fn scheduler_decision_append_dedupes_identical_latest_event() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForExternalChange,
+        "active_waiting_intents",
+    )
+    .boundary("fixture")
+    .liveness_only(true)
+    .evidence("active_waiting_intents=1");
+
+    assert!(scheduler::append_scheduler_decision(&storage, &decision).unwrap());
+    assert!(!scheduler::append_scheduler_decision(&storage, &decision).unwrap());
+
+    let events = storage.read_recent_events(10).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "scheduler_decision");
+    assert_eq!(events[0].data["boundary"].as_str(), Some("fixture"));
+}

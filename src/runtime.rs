@@ -871,6 +871,15 @@ impl RuntimeHandle {
                     return Ok(());
                 }
                 if guard.state.status == AgentStatus::Stopped {
+                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
+                        &self.inner.storage,
+                        &guard.state,
+                        guard.queue.len(),
+                    )?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &scheduler::idle_boundary_decision(&projection, "run_loop"),
+                    )?;
                     return Ok(());
                 }
                 if guard.state.status == AgentStatus::Paused {
@@ -899,6 +908,22 @@ impl RuntimeHandle {
             let Some((message, prior_state, running_state)) = next_message else {
                 if self.maybe_emit_pending_system_tick(None).await? {
                     continue;
+                }
+                {
+                    let guard = self.inner.agent.lock().await;
+                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
+                        &self.inner.storage,
+                        &guard.state,
+                        guard.queue.len(),
+                    )?;
+                    let decision = scheduler::idle_boundary_decision(&projection, "run_loop_idle");
+                    if !matches!(
+                        decision.kind,
+                        scheduler::SchedulerDecisionKind::Sleep
+                            | scheduler::SchedulerDecisionKind::StayIdle
+                    ) {
+                        scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    }
                 }
                 let idle_state = {
                     let mut guard = self.inner.agent.lock().await;
