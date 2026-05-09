@@ -105,7 +105,7 @@ holon tui
 Connect to a remote daemon via TUI:
 
 ```bash
-holon tui --connect https://your-server:8787
+holon tui --connect http://your-server:8787
 ```
 
 ## 6. Start the HTTP Server
