@@ -24,10 +24,8 @@ fn task_status_phase(status: &TaskStatus) -> u8 {
     }
 }
 
-pub(super) fn has_blocking_active_tasks(
-    storage: &AppStorage,
-    active_task_ids: &[String],
-) -> Result<bool> {
+#[cfg(test)]
+fn has_blocking_active_tasks(storage: &AppStorage, active_task_ids: &[String]) -> Result<bool> {
     if active_task_ids.is_empty() {
         return Ok(false);
     }

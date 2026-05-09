@@ -5,6 +5,7 @@ use crate::types::{
     AgentStatus, MessageEnvelope, TaskRecord, TaskStatus, TimerStatus, WaitingIntentStatus,
     WorkItemRecord,
 };
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
@@ -18,6 +19,8 @@ pub(crate) struct SchedulerProjection {
     pub queued_work_items: usize,
     pub pending_wake_hint: bool,
     pub active_waiting_intents: usize,
+    pub active_work_item_waiting_intents: usize,
+    pub active_agent_waiting_intents: usize,
     pub active_timers: usize,
     pub turn_in_progress: bool,
     pub runtime_error: bool,
@@ -52,12 +55,22 @@ impl SchedulerProjection {
         let active_waiting_intents = storage
             .latest_waiting_intents()?
             .into_iter()
-            .filter(|intent| intent.status == WaitingIntentStatus::Active)
+            .filter(|intent| {
+                intent.agent_id == state.id && intent.status == WaitingIntentStatus::Active
+            })
+            .collect::<Vec<_>>();
+        let active_work_item_waiting_intents = active_waiting_intents
+            .iter()
+            .filter(|intent| intent.scope == ExternalTriggerScope::WorkItem)
+            .count();
+        let active_agent_waiting_intents = active_waiting_intents
+            .iter()
+            .filter(|intent| intent.scope == ExternalTriggerScope::Agent)
             .count();
         let active_timers = storage
             .latest_timer_records()?
             .into_iter()
-            .filter(|timer| timer.status == TimerStatus::Active)
+            .filter(|timer| timer.agent_id == state.id && timer.status == TimerStatus::Active)
             .count();
         Ok(Self {
             status: state.status.clone(),
@@ -69,7 +82,9 @@ impl SchedulerProjection {
             queued_work_items: queued_runnable_work_items.len(),
             queued_runnable_work_items,
             pending_wake_hint: state.pending_wake_hint.is_some(),
-            active_waiting_intents,
+            active_waiting_intents: active_waiting_intents.len(),
+            active_work_item_waiting_intents,
+            active_agent_waiting_intents,
             active_timers,
             turn_in_progress: state.current_run_id.is_some(),
             runtime_error: runtime_error_active(
@@ -97,7 +112,7 @@ pub(crate) enum SchedulerDecisionKind {
 }
 
 impl SchedulerDecisionKind {
-    fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::StartModelTurn => "StartModelTurn",
             Self::ReduceMessageOnly => "ReduceMessageOnly",
@@ -123,6 +138,7 @@ pub(crate) struct SchedulerDecision {
     pub message_id: Option<String>,
     pub work_item_id: Option<String>,
     pub task_id: Option<String>,
+    pub boundary: Option<String>,
     pub evidence: Vec<String>,
 }
 
@@ -136,6 +152,7 @@ impl SchedulerDecision {
             message_id: None,
             work_item_id: None,
             task_id: None,
+            boundary: None,
             evidence: Vec::new(),
         }
     }
@@ -168,6 +185,11 @@ impl SchedulerDecision {
         self
     }
 
+    pub(crate) fn boundary(mut self, boundary: impl Into<String>) -> Self {
+        self.boundary = Some(boundary.into());
+        self
+    }
+
     pub(crate) fn evidence(mut self, evidence: impl Into<String>) -> Self {
         self.evidence.push(evidence.into());
         self
@@ -185,9 +207,28 @@ pub(crate) fn scheduler_decision_event(decision: &SchedulerDecision) -> AuditEve
             "message_id": &decision.message_id,
             "work_item_id": &decision.work_item_id,
             "task_id": &decision.task_id,
+            "boundary": &decision.boundary,
             "evidence": &decision.evidence,
         }),
     )
+}
+
+pub(crate) fn append_scheduler_decision(
+    storage: &AppStorage,
+    decision: &SchedulerDecision,
+) -> Result<bool> {
+    let event = scheduler_decision_event(decision);
+    let duplicate = storage
+        .read_recent_events(32)?
+        .into_iter()
+        .rev()
+        .find(|latest| latest.kind == event.kind)
+        .is_some_and(|latest| latest.data == event.data);
+    if duplicate {
+        return Ok(false);
+    }
+    storage.append_event(&event)?;
+    Ok(true)
 }
 
 pub(crate) fn message_processing_decision(
@@ -218,12 +259,14 @@ pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerD
         (SchedulerDecisionKind::Stop, "stopped")
     } else if matches!(projection.status, AgentStatus::Paused) {
         (SchedulerDecisionKind::Noop, "paused")
+    } else if matches!(projection.status, AgentStatus::Asleep) {
+        (SchedulerDecisionKind::StayIdle, "already_asleep")
     } else if projection.queue_len > 0 {
         (SchedulerDecisionKind::Noop, "queue_not_empty")
     } else if projection.turn_in_progress {
         (SchedulerDecisionKind::Noop, "turn_in_progress")
     } else {
-        (SchedulerDecisionKind::Noop, "not_idle_tick_eligible")
+        (SchedulerDecisionKind::Sleep, "no_pending_scheduler_facts")
     };
     SchedulerDecision::new(kind, reason)
         .liveness_only(true)
@@ -285,6 +328,22 @@ pub(crate) fn wait_decision_for_projection(
     })
 }
 
+pub(crate) fn idle_boundary_decision(
+    projection: &SchedulerProjection,
+    boundary: impl Into<String>,
+) -> SchedulerDecision {
+    if matches!(
+        projection.status,
+        AgentStatus::Stopped | AgentStatus::Paused | AgentStatus::Asleep
+    ) {
+        return idle_noop_decision(projection).boundary(boundary);
+    }
+    if let Some(decision) = wait_decision_for_projection(projection) {
+        return decision.boundary(boundary);
+    }
+    idle_noop_decision(projection).boundary(boundary)
+}
+
 pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
     matches!(
         status,
@@ -320,6 +379,20 @@ pub(crate) fn apply_idle_projection(state: &mut AgentState, storage: &AppStorage
     state.status = projected_status_for_idle(state, storage)?;
     state.current_run_id = None;
     Ok(())
+}
+
+pub(crate) fn apply_running_projection(state: &mut AgentState, run_id: String) {
+    state.status = AgentStatus::AwakeRunning;
+    state.current_run_id = Some(run_id);
+}
+
+pub(crate) fn apply_sleep_projection(
+    state: &mut AgentState,
+    sleeping_until: Option<DateTime<Utc>>,
+) {
+    state.status = AgentStatus::Asleep;
+    state.current_run_id = None;
+    state.sleeping_until = sleeping_until;
 }
 
 pub(crate) fn active_task_blocks_work_item_completion(
