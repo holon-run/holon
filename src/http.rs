@@ -1004,13 +1004,28 @@ fn slim_state_json_value(value: Value, string_limit: usize) -> Value {
 }
 
 fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return text.to_string();
+    if limit == 0 {
+        return String::new();
     }
-    if limit <= 3 {
-        return text.chars().take(limit).collect();
+
+    let truncated_char_limit = limit.saturating_sub(3);
+    let mut truncate_at = None;
+    for (index, (byte_index, _)) in text.char_indices().enumerate() {
+        if limit <= 3 {
+            if index == limit {
+                return text[..byte_index].to_string();
+            }
+        } else {
+            if index == truncated_char_limit {
+                truncate_at = Some(byte_index);
+            }
+            if index == limit {
+                let byte_index = truncate_at.unwrap_or(byte_index);
+                return format!("{}...", &text[..byte_index]);
+            }
+        }
     }
-    format!("{}...", text.chars().take(limit - 3).collect::<String>())
+    text.to_string()
 }
 
 fn state_work_item_rank(item: &WorkItemRecord) -> u8 {
@@ -1145,6 +1160,28 @@ mod tests {
                 .chars()
                 .count()
                 <= STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT
+        );
+    }
+
+    #[test]
+    fn state_bootstrap_string_truncation_preserves_total_budget() {
+        assert_eq!(super::truncate_state_bootstrap_string("abcdef", 0), "");
+        assert_eq!(super::truncate_state_bootstrap_string("abcdef", 2), "ab");
+        assert_eq!(
+            super::truncate_state_bootstrap_string("abcdef", 6),
+            "abcdef"
+        );
+        assert_eq!(
+            super::truncate_state_bootstrap_string("abcdefg", 6),
+            "abc..."
+        );
+        assert_eq!(
+            super::truncate_state_bootstrap_string("你好世界", 3),
+            "你好世"
+        );
+        assert_eq!(
+            super::truncate_state_bootstrap_string("你好世界a", 4),
+            "你..."
         );
     }
 }
