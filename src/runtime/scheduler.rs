@@ -110,7 +110,7 @@ pub(crate) enum SchedulerDecisionKind {
 }
 
 impl SchedulerDecisionKind {
-    fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::StartModelTurn => "StartModelTurn",
             Self::ReduceMessageOnly => "ReduceMessageOnly",

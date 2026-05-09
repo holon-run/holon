@@ -1,0 +1,14 @@
+{
+  "current_work_item_id": null,
+  "current_work_item_revision": null,
+  "queued_work_items": 0,
+  "active_tasks": 1,
+  "has_blocking_active_tasks": true,
+  "pending_wake_hint": false,
+  "active_waiting_intents": 0,
+  "active_work_item_waiting_intents": 0,
+  "active_agent_waiting_intents": 0,
+  "active_timers": 0,
+  "decision": "WaitForTask",
+  "decision_reason": "blocking_active_tasks"
+}

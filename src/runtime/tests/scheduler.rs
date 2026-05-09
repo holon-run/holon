@@ -1,12 +1,17 @@
 use super::super::*;
 use super::support::*;
 use crate::types::WorkItemPlanStatus;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
 struct AgentFixture {
+    #[serde(default)]
     current_work_item_id: Option<String>,
+    #[serde(default)]
     active_task_ids: Vec<String>,
+    #[serde(default)]
     pending_wake_hint_reason: Option<String>,
 }
 
@@ -28,6 +33,18 @@ struct TaskFixture {
 }
 
 #[derive(Deserialize)]
+struct WaitingIntentFixture {
+    id: String,
+    scope: ExternalTriggerScope,
+    work_item_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TimerFixture {
+    id: String,
+}
+
+#[derive(Deserialize)]
 struct ExpectedFixture {
     current_work_item_id: Option<String>,
     current_work_item_revision: Option<u64>,
@@ -41,26 +58,54 @@ struct ExpectedFixture {
     active_work_item_waiting_intents: usize,
     #[serde(default)]
     active_agent_waiting_intents: usize,
+    #[serde(default)]
+    active_timers: usize,
+    #[serde(default)]
+    decision: Option<String>,
+    #[serde(default)]
+    decision_reason: Option<String>,
 }
 
-#[test]
-fn scheduler_projection_replays_fixture_facts() {
-    let agent_fixture: AgentFixture = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/scheduler/basic/agent.json"
-    ))
-    .unwrap();
-    let work_items: Vec<WorkItemFixture> = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/scheduler/basic/ledger/work_items.json"
-    ))
-    .unwrap();
-    let tasks: Vec<TaskFixture> = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/scheduler/basic/ledger/tasks.json"
-    ))
-    .unwrap();
-    let expected: ExpectedFixture = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/scheduler/basic/expected.json"
-    ))
-    .unwrap();
+fn scheduler_fixture_path(name: &str, path: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/scheduler")
+        .join(name)
+        .join(path)
+}
+
+fn read_scheduler_fixture<T: DeserializeOwned>(name: &str, path: &str) -> T {
+    let path = scheduler_fixture_path(name, path);
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "failed to read scheduler fixture {}: {error}",
+            path.display()
+        )
+    });
+    serde_json::from_str(&content).unwrap_or_else(|error| {
+        panic!(
+            "failed to parse scheduler fixture {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn read_optional_scheduler_fixture<T: DeserializeOwned + Default>(name: &str, path: &str) -> T {
+    let path_buf = scheduler_fixture_path(name, path);
+    if path_buf.exists() {
+        read_scheduler_fixture(name, path)
+    } else {
+        T::default()
+    }
+}
+
+fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentState) {
+    let agent_fixture: AgentFixture = read_scheduler_fixture(name, "agent.json");
+    let work_items: Vec<WorkItemFixture> =
+        read_optional_scheduler_fixture(name, "ledger/work_items.json");
+    let tasks: Vec<TaskFixture> = read_optional_scheduler_fixture(name, "ledger/tasks.json");
+    let waiting_intents: Vec<WaitingIntentFixture> =
+        read_optional_scheduler_fixture(name, "ledger/waiting_intents.json");
+    let timers: Vec<TimerFixture> = read_optional_scheduler_fixture(name, "ledger/timers.json");
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
 
@@ -113,6 +158,53 @@ fn scheduler_projection_replays_fixture_facts() {
             })
             .unwrap();
     }
+    for intent in waiting_intents {
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: intent.id.clone(),
+                agent_id: "default".into(),
+                scope: intent.scope,
+                work_item_id: intent.work_item_id,
+                description: format!("fixture waiting intent {}", intent.id),
+                source: "fixture".into(),
+                resource: None,
+                condition: None,
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: format!("trigger-{}", intent.id),
+                created_at: Utc::now(),
+                cancelled_at: None,
+                last_triggered_at: None,
+                trigger_count: 0,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+    }
+    for timer in timers {
+        storage
+            .append_timer(&TimerRecord {
+                id: timer.id,
+                agent_id: "default".into(),
+                created_at: Utc::now(),
+                duration_ms: 1000,
+                interval_ms: None,
+                repeat: false,
+                status: TimerStatus::Active,
+                summary: Some("fixture timer".into()),
+                next_fire_at: Some(Utc::now()),
+                last_fired_at: None,
+                fire_count: 0,
+            })
+            .unwrap();
+    }
+
+    (dir, storage, agent)
+}
+
+fn assert_scheduler_fixture(name: &str) {
+    let expected: ExpectedFixture = read_scheduler_fixture(name, "expected.json");
+    let (_dir, storage, agent) = build_scheduler_fixture(name);
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(
@@ -120,34 +212,76 @@ fn scheduler_projection_replays_fixture_facts() {
             .current_work_item
             .as_ref()
             .map(|item| item.id.as_str()),
-        expected.current_work_item_id.as_deref()
+        expected.current_work_item_id.as_deref(),
+        "{name}: current work item"
     );
     assert_eq!(
         projection
             .current_work_item
             .as_ref()
             .map(|item| item.revision),
-        expected.current_work_item_revision
-    );
-    assert_eq!(projection.queued_work_items, expected.queued_work_items);
-    assert_eq!(projection.active_tasks.len(), expected.active_tasks);
-    assert_eq!(
-        projection.has_blocking_active_tasks,
-        expected.has_blocking_active_tasks
-    );
-    assert_eq!(projection.pending_wake_hint, expected.pending_wake_hint);
-    assert_eq!(
-        projection.active_waiting_intents,
-        expected.active_waiting_intents
+        expected.current_work_item_revision,
+        "{name}: current work item revision"
     );
     assert_eq!(
-        projection.active_work_item_waiting_intents,
-        expected.active_work_item_waiting_intents
+        projection.queued_work_items, expected.queued_work_items,
+        "{name}: queued work items"
     );
     assert_eq!(
-        projection.active_agent_waiting_intents,
-        expected.active_agent_waiting_intents
+        projection.active_tasks.len(),
+        expected.active_tasks,
+        "{name}: active tasks"
     );
+    assert_eq!(
+        projection.has_blocking_active_tasks, expected.has_blocking_active_tasks,
+        "{name}: blocking active tasks"
+    );
+    assert_eq!(
+        projection.pending_wake_hint, expected.pending_wake_hint,
+        "{name}: pending wake hint"
+    );
+    assert_eq!(
+        projection.active_waiting_intents, expected.active_waiting_intents,
+        "{name}: active waiting intents"
+    );
+    assert_eq!(
+        projection.active_work_item_waiting_intents, expected.active_work_item_waiting_intents,
+        "{name}: work-item waiting intents"
+    );
+    assert_eq!(
+        projection.active_agent_waiting_intents, expected.active_agent_waiting_intents,
+        "{name}: agent waiting intents"
+    );
+    assert_eq!(
+        projection.active_timers, expected.active_timers,
+        "{name}: active timers"
+    );
+    if let Some(expected_decision) = expected.decision {
+        let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+        assert_eq!(
+            decision.kind.as_str(),
+            expected_decision,
+            "{name}: scheduler decision"
+        );
+        assert_eq!(
+            Some(decision.reason.as_str()),
+            expected.decision_reason.as_deref(),
+            "{name}: scheduler decision reason"
+        );
+    }
+}
+
+#[test]
+fn scheduler_projection_replays_fixture_facts() {
+    for name in [
+        "basic",
+        "agent_wait",
+        "blocking_task",
+        "timer_wait",
+        "queued_available",
+    ] {
+        assert_scheduler_fixture(name);
+    }
 }
 
 #[test]

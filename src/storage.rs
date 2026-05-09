@@ -1315,8 +1315,22 @@ mod tests {
                 text: "done".into(),
             },
         );
+        let dequeued = MessageEnvelope::new(
+            "default",
+            crate::types::MessageKind::WebhookEvent,
+            crate::types::MessageOrigin::Webhook {
+                source: "test".into(),
+                event_type: None,
+            },
+            crate::types::TrustLevel::TrustedIntegration,
+            Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "dequeued".into(),
+            },
+        );
         storage.append_message(&queued).unwrap();
         storage.append_message(&done).unwrap();
+        storage.append_message(&dequeued).unwrap();
         storage
             .append_queue_entry(&QueueEntryRecord {
                 message_id: queued.id.clone(),
@@ -1337,10 +1351,21 @@ mod tests {
                 updated_at: Utc::now(),
             })
             .unwrap();
+        storage
+            .append_queue_entry(&QueueEntryRecord {
+                message_id: dequeued.id.clone(),
+                agent_id: "default".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Dequeued,
+                created_at: dequeued.created_at,
+                updated_at: Utc::now(),
+            })
+            .unwrap();
 
         let snapshot = storage.recovery_snapshot().unwrap();
-        assert_eq!(snapshot.replay_messages.len(), 1);
+        assert_eq!(snapshot.replay_messages.len(), 2);
         assert_eq!(snapshot.replay_messages[0].id, queued.id);
+        assert_eq!(snapshot.replay_messages[1].id, dequeued.id);
     }
 
     #[test]
