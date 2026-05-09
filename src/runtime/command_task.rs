@@ -10,7 +10,6 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    runtime::task_state_reducer::has_blocking_active_tasks,
     system::{
         workspace::WorkspacePathError, CaptureSpec, ExecutionScopeKind, ExecutionSnapshot,
         ProcessHost, ProcessPurpose, ProcessRequest, ProgramInvocation, RunningProcess,
@@ -23,14 +22,13 @@ use crate::{
     },
     tool::ToolError,
     types::{
-        AgentStatus, CommandCostDiagnostics, CommandTaskSpec, ExecCommandOutcome,
-        ExecCommandResult, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef,
-        TrustLevel,
+        CommandCostDiagnostics, CommandTaskSpec, ExecCommandOutcome, ExecCommandResult,
+        MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskHandle, TaskKind,
+        TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef, TrustLevel,
     },
 };
 
-use super::RuntimeHandle;
+use super::{task_state_reducer, RuntimeHandle};
 
 const OUTPUT_CHANNEL_CAPACITY: usize = 64;
 const INPUT_CHANNEL_CAPACITY: usize = 16;
@@ -509,28 +507,11 @@ impl RuntimeHandle {
                 "promoted_from_exec_command": promoted_from_exec_command,
             }),
         )?;
-        self.inner.storage.append_task(&task)?;
-        self.inner
-            .storage
-            .append_event(&crate::types::AuditEvent::new(
-                "task_created",
-                crate::storage::to_json_value(&task),
-            ))?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if !guard.state.active_task_ids.contains(&task.id) {
-                guard.state.active_task_ids.push(task.id.clone());
-            }
-            if task.is_blocking()
-                && !matches!(
-                    guard.state.status,
-                    AgentStatus::Paused | AgentStatus::Stopped
-                )
-            {
-                guard.state.status = AgentStatus::AwaitingTask;
-            }
-            self.inner.storage.write_agent(&guard.state)?;
-        }
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &task,
+            "task_created",
+        ))
+        .await?;
 
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (force_stop_tx, force_stop_rx) = oneshot::channel();
@@ -772,7 +753,7 @@ impl RuntimeHandle {
                 | Some(TaskStatus::Cancelled)
                 | Some(TaskStatus::Interrupted)
         ) {
-            self.inner.storage.append_task(&TaskRecord {
+            let running_task = TaskRecord {
                 id: task_record.id.clone(),
                 agent_id: task_record.agent_id.clone(),
                 kind: task_record.kind.clone(),
@@ -791,7 +772,12 @@ impl RuntimeHandle {
                     false,
                 )),
                 recovery: task_record.recovery.clone(),
-            })?;
+            };
+            self.apply_task_transition(task_state_reducer::TaskTransition::new(
+                &running_task,
+                "task_status_updated",
+            ))
+            .await?;
             self.inner
                 .storage
                 .append_event(&crate::types::AuditEvent::new(
@@ -924,33 +910,11 @@ impl RuntimeHandle {
             detail: Some(detail),
             recovery: task_record.recovery.clone(),
         };
-        self.inner.storage.append_task(&fallback)?;
-        if clear_active_state {
-            let mut guard = self.inner.agent.lock().await;
-            guard.state.active_task_ids.retain(|id| id != &fallback.id);
-            if !matches!(
-                guard.state.status,
-                AgentStatus::Paused | AgentStatus::Stopped
-            ) {
-                guard.state.status = if guard.state.current_run_id.is_some() {
-                    guard.state.status.clone()
-                } else {
-                    if has_blocking_active_tasks(&self.inner.storage, &guard.state.active_task_ids)?
-                    {
-                        AgentStatus::AwaitingTask
-                    } else {
-                        AgentStatus::AwakeIdle
-                    }
-                };
-            }
-            self.inner.storage.write_agent(&guard.state)?;
-        }
-        self.inner
-            .storage
-            .append_event(&crate::types::AuditEvent::new(
-                event_kind,
-                crate::storage::to_json_value(&fallback),
-            ))?;
+        let _ = clear_active_state;
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &fallback, event_kind,
+        ))
+        .await?;
         Ok(())
     }
 

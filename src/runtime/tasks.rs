@@ -1,5 +1,5 @@
 use super::message_dispatch::message_text;
-use super::*;
+use super::{task_state_reducer, *};
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
@@ -160,25 +160,11 @@ impl RuntimeHandle {
             detail: Some(child_agent_task_detail(workspace_mode)),
             recovery: Some(recovery),
         };
-        self.inner.storage.append_task(&task)?;
-        self.inner
-            .storage
-            .append_event(&AuditEvent::new("task_created", to_json_value(&task)))?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if !guard.state.active_task_ids.contains(&task.id) {
-                guard.state.active_task_ids.push(task.id.clone());
-            }
-            if task.is_blocking()
-                && !matches!(
-                    guard.state.status,
-                    AgentStatus::Paused | AgentStatus::Stopped
-                )
-            {
-                guard.state.status = AgentStatus::AwaitingTask;
-            }
-            self.inner.storage.write_agent(&guard.state)?;
-        }
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &task,
+            "task_created",
+        ))
+        .await?;
 
         if self.inner.host_bridge.is_some() {
             self.spawn_child_agent_task(task.clone(), prompt, trust, false, false)
@@ -362,11 +348,11 @@ impl RuntimeHandle {
                     detail: Some(spawned.task_detail.clone()),
                     ..task.clone()
                 };
-                self.inner.storage.append_task(&queued_task)?;
-                self.inner.storage.append_event(&AuditEvent::new(
+                self.apply_task_transition(task_state_reducer::TaskTransition::new(
+                    &queued_task,
                     "task_child_spawned",
-                    to_json_value(&queued_task),
-                ))?;
+                ))
+                .await?;
 
                 let runtime = self.clone();
                 let task_record = queued_task.clone();
@@ -498,25 +484,11 @@ impl RuntimeHandle {
             detail: Some(child_agent_task_detail(workspace_mode)),
             recovery: Some(recovery),
         };
-        self.inner.storage.append_task(&task)?;
-        self.inner
-            .storage
-            .append_event(&AuditEvent::new("task_created", to_json_value(&task)))?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if !guard.state.active_task_ids.contains(&task.id) {
-                guard.state.active_task_ids.push(task.id.clone());
-            }
-            if task.is_blocking()
-                && !matches!(
-                    guard.state.status,
-                    AgentStatus::Paused | AgentStatus::Stopped
-                )
-            {
-                guard.state.status = AgentStatus::AwaitingTask;
-            }
-            self.inner.storage.write_agent(&guard.state)?;
-        }
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &task,
+            "task_created",
+        ))
+        .await?;
 
         if self.inner.host_bridge.is_some() {
             self.spawn_child_agent_task(task.clone(), prompt, trust, true, false)
@@ -864,25 +836,11 @@ impl RuntimeHandle {
             detail: Some(child_agent_task_detail(workspace_mode)),
             recovery: Some(recovery),
         };
-        self.inner.storage.append_task(&task)?;
-        self.inner
-            .storage
-            .append_event(&AuditEvent::new("task_created", to_json_value(&task)))?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if !guard.state.active_task_ids.contains(&task.id) {
-                guard.state.active_task_ids.push(task.id.clone());
-            }
-            if task.is_blocking()
-                && !matches!(
-                    guard.state.status,
-                    AgentStatus::Paused | AgentStatus::Stopped
-                )
-            {
-                guard.state.status = AgentStatus::AwaitingTask;
-            }
-            self.inner.storage.write_agent(&guard.state)?;
-        }
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &task,
+            "task_created",
+        ))
+        .await?;
         Ok(task)
     }
 
