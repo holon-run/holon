@@ -1,8 +1,9 @@
 ---
 title: CLI reference
-summary: Holon's command-line interface, command tree, and common workflows.
+summary: Holon's current command-line interface as compiled — verified against `holon --help`.
 order: 10
 ---
+<!-- maintenance: regenerate from `holon --help` output when commands change -->
 
 # CLI Reference
 
@@ -11,7 +12,7 @@ Holon's command-line interface. All commands accept `--help` for detailed flag d
 ## Command Tree
 
 ```
-holon
+holon (v0.13.0)
 ├── run          One-shot agent interaction
 ├── prompt       Send a prompt to an agent (lightweight)
 ├── status       Show agent status
@@ -19,21 +20,22 @@ holon
 ├── transcript   Show conversation transcript
 ├── task         Run a command as a background task
 ├── timer        Create a delayed or recurring timer
-├── control      Send control actions to an agent
-│   ├── pause    Pause an agent
-│   ├── resume   Resume an agent
-│   ├── stop     Stop an agent
-│   └── interrupt Interrupt current run
+├── control      [deprecated] use `holon agent pause|resume|stop|interrupt`
 ├── daemon       Background daemon lifecycle
 │   ├── start    Start the daemon
 │   ├── stop     Stop the daemon
 │   ├── status   Check daemon status
 │   ├── restart  Restart the daemon
 │   └── logs     View daemon logs
-├── agents       Agent management
+├── agent        Agent management
+│   ├── list     List all agents
+│   ├── status   Show agent status
 │   ├── create   Create a new agent
+│   ├── pause    Pause an agent
+│   ├── resume   Resume an agent
+│   ├── stop     Stop an agent
+│   ├── interrupt Interrupt current run
 │   └── model    Per-agent model configuration
-│       ├── get  Get agent model override
 │       ├── set  Set agent model override
 │       └── clear Clear agent model override
 ├── serve        Start HTTP control plane server
@@ -82,8 +84,7 @@ holon run --trust untrusted-external "User query"      # mark trust level
 ### Create and use an agent
 
 ```bash
-holon agent create reviewer
-holon agent create code-reviewer --template code-reviewer
+holon agent create reviewer --template holon-reviewer
 holon run --agent reviewer "Review src/runtime/turn.rs"
 ```
 
@@ -159,7 +160,7 @@ holon serve --access tunnel
 ```bash
 holon tui
 holon tui --no-alt-screen
-holon tui --connect https://remote:8787 --token "secret"
+holon tui --connect http://remote:8787 --token "secret"
 ```
 
 ### Multi-turn tasks

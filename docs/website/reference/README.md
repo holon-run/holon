@@ -1,14 +1,20 @@
 ---
 title: Reference
-summary: Current runtime surfaces and operational references.
+summary: Current-contract snapshots of Holon's CLI, configuration, and control-plane surfaces.
 order: 40
 ---
 
 # Reference
 
-Reference pages should describe the current public surface without promising
-stability before the runtime contract is settled. Use these pages to inspect
-the current CLI, control plane, and operator configuration surfaces.
+Reference pages describe Holon's current public surface as it actually behaves —
+not as it is planned or promised. They are verified against the compiled
+runtime (`holon --help`, `holon config schema`) and should be refreshed when
+behavior changes.
+
+> **Stability note:** The runtime is pre-1.0. CLI shapes, config keys, and HTTP
+> endpoints may change without prior notice. Each reference page records the
+> version it was last checked against. See the [roadmap](/roadmap/) for what is
+> considered stable.
 
 <!-- INDEX:START -->
 
