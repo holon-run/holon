@@ -129,7 +129,7 @@ impl RuntimeHandle {
         &self,
         triggering_continuation: Option<&ContinuationResolution>,
     ) -> Result<bool> {
-        let pending_wake_hint = {
+        let (state, queue_len, pending_wake_hint) = {
             let guard = self.inner.agent.lock().await;
             let eligible = matches!(
                 guard.state.status,
@@ -139,9 +139,18 @@ impl RuntimeHandle {
                 return Ok(false);
             }
 
-            guard.state.pending_wake_hint.clone()
+            (
+                guard.state.clone(),
+                guard.queue.len(),
+                guard.state.pending_wake_hint.clone(),
+            )
         };
 
+        let scheduler_projection = scheduler::SchedulerProjection::from_state_with_queue_len(
+            &self.inner.storage,
+            &state,
+            queue_len,
+        )?;
         let projection = self.inner.storage.work_queue_prompt_projection()?;
         let trigger = idle_tick_trigger_from_state(pending_wake_hint, projection);
 
@@ -151,6 +160,17 @@ impl RuntimeHandle {
 
         match trigger {
             Some(IdleTickTrigger::WorkQueueActive(active)) => {
+                if let Some(decision) =
+                    scheduler::wait_decision_for_projection(&scheduler_projection)
+                {
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &decision
+                            .boundary("idle_tick")
+                            .evidence("work_queue_tick_blocked_by_wait_fact"),
+                    )?;
+                    return Ok(false);
+                }
                 if suppress_continue_active {
                     scheduler::append_scheduler_decision(
                         &self.inner.storage,
@@ -198,6 +218,17 @@ impl RuntimeHandle {
                 Ok(true)
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued)) => {
+                if let Some(decision) =
+                    scheduler::wait_decision_for_projection(&scheduler_projection)
+                {
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &decision
+                            .boundary("idle_tick")
+                            .evidence("work_queue_tick_blocked_by_wait_fact"),
+                    )?;
+                    return Ok(false);
+                }
                 if let Some(message_id) = self.duplicate_queued_available_message_id(&queued)? {
                     scheduler::append_scheduler_decision(
                         &self.inner.storage,
@@ -717,7 +748,10 @@ mod tests {
     use super::*;
     use crate::context::ContextConfig;
     use crate::provider::StubProvider;
-    use crate::types::{AgentStatus, TodoItem, TodoItemState, WorkItemRecord, WorkItemState};
+    use crate::types::{
+        AgentStatus, CallbackDeliveryMode, ExternalTriggerScope, TodoItem, TodoItemState,
+        WaitingIntentRecord, WaitingIntentStatus, WorkItemRecord, WorkItemState,
+    };
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
 
@@ -832,6 +866,37 @@ mod tests {
             .append_brief(&brief)
             .unwrap();
         brief
+    }
+
+    fn append_active_waiting_intent(test_runtime: &TestRuntime, work_item_id: Option<&str>) {
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-active".into(),
+                agent_id: "default".into(),
+                scope: if work_item_id.is_some() {
+                    ExternalTriggerScope::WorkItem
+                } else {
+                    ExternalTriggerScope::Agent
+                },
+                work_item_id: work_item_id.map(ToString::to_string),
+                description: "waiting for external signal".into(),
+                source: "test".into(),
+                resource: None,
+                condition: None,
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "trigger-wait-active".into(),
+                created_at: chrono::Utc::now(),
+                cancelled_at: None,
+                last_triggered_at: None,
+                trigger_count: 0,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
     }
 
     fn set_wake_hint(test_runtime: &TestRuntime, reason: &str) -> PendingWakeHint {
@@ -968,6 +1033,45 @@ mod tests {
             "continue_active",
             "Active item should be continued, not queued item activated"
         );
+    }
+
+    #[test]
+    fn active_waiting_intent_blocks_work_queue_idle_tick() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        add_current_work_item(&test_runtime, "wi-active", "active-target");
+        append_active_waiting_intent(&test_runtime, Some("wi-active"));
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(
+            !emitted,
+            "active waiting intent should block work-queue self reactivation"
+        );
+        assert!(get_emitted_system_ticks(&test_runtime).is_empty());
+        let events = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_events(10)
+            .unwrap();
+        let decision = events
+            .iter()
+            .find(|event| event.kind == "scheduler_decision")
+            .expect("blocking decision should be recorded");
+        assert_eq!(
+            decision.data["decision"].as_str(),
+            Some("WaitForExternalChange")
+        );
+        assert!(decision.data["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("work_queue_tick_blocked_by_wait_fact")));
     }
 
     #[test]
