@@ -123,15 +123,13 @@ impl RuntimeHandle {
         state: &AgentState,
         runtime_error_override: Option<bool>,
     ) -> Result<ClosureDecision> {
-        let projection = scheduler::SchedulerProjection::from_state(&self.inner.storage, state)?;
-        let runtime_error = match runtime_error_override {
-            Some(value) => value,
-            None => runtime_error_active(
-                &self.inner.storage.read_recent_events(64)?,
-                &self.inner.storage.read_recent_briefs(64)?,
-            ),
-        };
         let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
+        let projection = scheduler::SchedulerProjection::from_state_with_work_queue(
+            &self.inner.storage,
+            state,
+            work_queue_projection.clone(),
+        )?;
+        let runtime_error = runtime_error_override.unwrap_or(projection.runtime_error);
         Ok(derive_closure_decision(&ClosureFacts {
             runtime_error,
             awaiting_operator_input: super::memory_refresh::work_queue_waits_for_operator(

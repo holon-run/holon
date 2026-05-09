@@ -129,7 +129,7 @@ impl RuntimeHandle {
         &self,
         triggering_continuation: Option<&ContinuationResolution>,
     ) -> Result<bool> {
-        let (state, queue_len, pending_wake_hint) = {
+        let (scheduler_snapshot, queue_len, pending_wake_hint) = {
             let guard = self.inner.agent.lock().await;
             let eligible = matches!(
                 guard.state.status,
@@ -140,19 +140,21 @@ impl RuntimeHandle {
             }
 
             (
-                guard.state.clone(),
+                scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
                 guard.queue.len(),
                 guard.state.pending_wake_hint.clone(),
             )
         };
 
-        let scheduler_projection = scheduler::SchedulerProjection::from_state_with_queue_len(
-            &self.inner.storage,
-            &state,
-            queue_len,
-        )?;
-        let projection = self.inner.storage.work_queue_prompt_projection()?;
-        let trigger = idle_tick_trigger_from_state(pending_wake_hint, projection);
+        let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
+        let scheduler_projection =
+            scheduler::SchedulerProjection::from_snapshot_with_queue_len_and_work_queue(
+                &self.inner.storage,
+                &scheduler_snapshot,
+                queue_len,
+                work_queue_projection.clone(),
+            )?;
+        let trigger = idle_tick_trigger_from_state(pending_wake_hint, work_queue_projection);
 
         let suppress_continue_active = triggering_continuation
             .is_some_and(|continuation| continuation.model_visible)

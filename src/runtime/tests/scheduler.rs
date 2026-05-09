@@ -381,18 +381,16 @@ fn assert_scheduler_fixture(name: &str) {
         expected.turn_terminal_kind,
         "{name}: turn terminal kind"
     );
-    if !expected.replay_message_ids.is_empty() {
-        let snapshot = storage.recovery_snapshot().unwrap();
-        let replay_message_ids = snapshot
-            .replay_messages
-            .into_iter()
-            .map(|message| message.id)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            replay_message_ids, expected.replay_message_ids,
-            "{name}: replay messages"
-        );
-    }
+    let snapshot = storage.recovery_snapshot().unwrap();
+    let replay_message_ids = snapshot
+        .replay_messages
+        .into_iter()
+        .map(|message| message.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replay_message_ids, expected.replay_message_ids,
+        "{name}: replay messages"
+    );
     if let Some(expected_decision) = expected.decision {
         let decision = scheduler::idle_boundary_decision(&projection, "fixture");
         assert_eq!(
