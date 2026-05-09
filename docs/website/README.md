@@ -1,63 +1,98 @@
 ---
 title: Holon
-summary: A headless, event-driven runtime for long-lived agents.
+summary: A local-first runtime that gives agents a durable home, explicit work queues, and clear trust boundaries.
 order: 1
 ---
 
 # Holon
 
-Holon is a local-first, headless runtime for long-lived agents. It gives an
-agent a durable execution home, explicit work queues, supervised tasks, and
-clear boundaries between user-facing output and internal runtime traces.
+**Holon gives every agent a durable home.**
 
-The website is now a mdorigin documentation site: every page is source
-Markdown, every route can be fetched as Markdown, and the same content can be
-built for static hosting or a Cloudflare Worker.
+Instead of starting each agent as a throwaway chat session, Holon runs agents
+inside a local-first, headless, event-driven runtime. Agents keep state across
+turns, manage queued work, supervise delegated tasks, and respect explicit trust
+boundaries — all on your machine.
 
-## Why Holon exists
+## Who Holon is for
 
-Most agent tools start as chat sessions. Holon starts from runtime concerns:
+Holon is built for three kinds of users right now:
 
-- **Long-lived execution**: agents can sleep, wake, continue work, and retain
-  durable state across turns.
-- **Explicit lifecycle**: work items, tasks, queues, triggers, and child agents
-  are first-class runtime concepts.
-- **Trust-aware ingress**: operator input, external events, and delegated
-  outputs retain provenance instead of being flattened into one prompt stream.
-- **Headless delivery**: the runtime is designed for APIs, workers, CLIs, and
-  integrations before UI shells.
+**Agent runtime builders** who want a durable execution foundation — not a
+prompt chain or a framework that conflates the model call with the agent's
+lifecycle.
 
-## Start here
+**Automation and integration developers** who need agents that run locally, wait
+for external events, resume work, and produce structured output without a
+browser tab open.
+
+**Contributors** evaluating whether Holon's runtime model matches their
+expectations for lifecycle, trust, and local-first design before investing
+deeper.
+
+## How Holon is different
+
+Most agent tools flatten everything into a chat message. Holon preserves
+structure:
+
+- **Local-first** — the runtime runs on your machine, not a cloud session.
+  Agents own durable homes, and you control persistence.
+- **Headless and long-lived** — agents sleep, wake, queue work, and continue
+  across turns without a UI needing to stay connected.
+- **Explicit lifecycle** — work items, tasks, queues, triggers, and child agents
+  are first-class runtime concepts, not hidden state in a prompt loop.
+- **Trust-aware provenance** — operator input, external events, and delegated
+  outputs each carry their origin and trust classification through the runtime
+  instead of being merged into one undifferentiated stream.
+
+Holon is designed for APIs, workers, CLIs, and integrations before UI shells.
+The agent home is a real directory; the work queue is explicit; the runtime
+contracts are visible.
+
+## Try Holon
 
 ```bash
 git clone https://github.com/holon-run/holon.git
 cd holon
 cargo build
-```
-
-Then explore the runtime from source:
-
-```bash
 cargo run -- --help
 ```
 
-The runtime is still early. Prefer reading the concept pages and repository
-docs before treating any CLI shape as stable.
+This gets you from zero to a running Holon binary. Next, follow the
+[getting started guide](/getting-started/) to create your first agent.
+
+> **Holon is early-stage software.** The runtime model is stabilizing, but CLI
+> shapes, config schemas, and provider surfaces may change. See the
+> [roadmap](/roadmap/) for what's stable today and what's still experimental.
 
 ## Documentation map
 
-- [Getting started](/getting-started/) explains how to run the project locally
-  and how this mdorigin site is built.
-- [Concepts](/concepts/) describes the runtime model, trust boundaries, and
-  lifecycle vocabulary.
-- [Configuration reference](/reference/configuration.md) documents providers,
-  credentials, config files, and diagnostic commands.
-- [Guides](/guides/) provide task-oriented workflows for local development and
-  documentation updates.
-- [Reference](/reference/) records the current CLI and control-plane surfaces
-  without hiding early-stage instability.
-- [Roadmap](/roadmap/) summarizes the order in which Holon is defining the
-  runtime.
+- [Getting started](/getting-started/) — your first Holon agent run, from
+  install to first interaction.
+- [Concepts](/concepts/) — the mental model: agents, work items, tasks, queues,
+  and trust boundaries.
+- [Guides](/guides/) — task-oriented workflows for operating, integrating, and
+  extending Holon.
+- [Reference](/reference/) — current CLI, configuration, and control-plane
+  surface documentation.
+- [Roadmap](/roadmap/) — what's stable now, what's next, and what's still
+  experimental.
+
+## For contributors
+
+Holon's internal design material lives in the [repository `docs/`
+directory](https://github.com/holon-run/holon/tree/main/docs): RFCs define
+runtime contracts, implementation decisions record architecture rationale, and
+archived notes preserve historical context. These are maintainer-facing
+documents; you do not need to read them to use Holon, but they are the
+canonical source when you need to understand or change runtime behavior.
+
+## About this site
+
+This website is built from source Markdown with mdorigin. Every page is
+available as both rendered HTML and raw Markdown, and `Accept: text/markdown`
+requests return machine-readable content. See the
+[documentation workflow guide](/guides/documentation-workflow/) for build and
+preview details.
 
 ## Markdown-native access
 
@@ -68,18 +103,9 @@ mdorigin keeps the site useful for both humans and agents:
 - `Accept: text/markdown` requests can retrieve Markdown content directly.
 - Build commands can generate search data and Cloudflare Worker assets.
 
-## Build this site
-
-```bash
-cd docs/website
-mdorigin dev --root .
-mdorigin build index --root .
-mdorigin build search --root . --out dist/search
-mdorigin build cloudflare --root . --search dist/search
-```
-
-`siteUrl` is configured as `https://holon.run` so publishing can emit canonical
-sitemap and feed URLs for the production domain.
+Build commands are covered in the [documentation workflow
+guide](/guides/documentation-workflow/). The production `siteUrl` is
+`https://holon.run`.
 
 <!-- INDEX:START -->
 
