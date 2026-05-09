@@ -12,12 +12,12 @@ the current CLI, control plane, and operator configuration surfaces.
 
 <!-- INDEX:START -->
 
-- [Configuration](./configuration.md)
-  File locations, config keys, credentials, provider setup, and diagnostics.
+- [CLI reference](./cli.md)
+  Holon's command-line interface, command tree, and common workflows.
   <!-- mdorigin:index kind=article -->
 
-- [CLI](./cli.md)
-  How to inspect and use the current Holon command-line surface.
+- [Configuration](./configuration.md)
+  Holon configuration files, keys, credentials, environment variables, and diagnostics.
   <!-- mdorigin:index kind=article -->
 
 - [HTTP control plane](./http-control-plane.md)
