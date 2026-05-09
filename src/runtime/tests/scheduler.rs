@@ -1,13 +1,7 @@
 use super::super::*;
 use super::support::*;
+use crate::types::WorkItemPlanStatus;
 use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct SchedulerFixture {
-    agent: AgentFixture,
-    work_items: Vec<WorkItemFixture>,
-    tasks: Vec<TaskFixture>,
-}
 
 #[derive(Deserialize)]
 struct AgentFixture {
@@ -21,6 +15,7 @@ struct WorkItemFixture {
     id: String,
     objective: String,
     state: WorkItemState,
+    plan_status: Option<WorkItemPlanStatus>,
     revision: u64,
 }
 
@@ -32,17 +27,41 @@ struct TaskFixture {
     work_item_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ExpectedFixture {
+    current_work_item_id: Option<String>,
+    current_work_item_revision: Option<u64>,
+    queued_work_items: usize,
+    active_tasks: usize,
+    has_blocking_active_tasks: bool,
+    pending_wake_hint: bool,
+}
+
 #[test]
 fn scheduler_projection_replays_fixture_facts() {
-    let fixture: SchedulerFixture =
-        serde_json::from_str(include_str!("../../../tests/fixtures/scheduler/basic.json")).unwrap();
+    let agent_fixture: AgentFixture = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/scheduler/basic/agent.json"
+    ))
+    .unwrap();
+    let work_items: Vec<WorkItemFixture> = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/scheduler/basic/ledger/work_items.json"
+    ))
+    .unwrap();
+    let tasks: Vec<TaskFixture> = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/scheduler/basic/ledger/tasks.json"
+    ))
+    .unwrap();
+    let expected: ExpectedFixture = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/scheduler/basic/expected.json"
+    ))
+    .unwrap();
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
 
     let mut agent = AgentState::new("default");
-    agent.current_work_item_id = fixture.agent.current_work_item_id;
-    agent.active_task_ids = fixture.agent.active_task_ids;
-    if let Some(reason) = fixture.agent.pending_wake_hint_reason {
+    agent.current_work_item_id = agent_fixture.current_work_item_id;
+    agent.active_task_ids = agent_fixture.active_task_ids;
+    if let Some(reason) = agent_fixture.pending_wake_hint_reason {
         agent.pending_wake_hint = Some(PendingWakeHint {
             reason,
             description: None,
@@ -60,13 +79,16 @@ fn scheduler_projection_replays_fixture_facts() {
     }
     storage.write_agent(&agent).unwrap();
 
-    for item in fixture.work_items {
+    for item in work_items {
         let mut record = WorkItemRecord::new("default", item.objective, item.state);
         record.id = item.id;
+        if let Some(plan_status) = item.plan_status {
+            record.plan_status = plan_status;
+        }
         record.revision = item.revision;
         storage.append_work_item(&record).unwrap();
     }
-    for task in fixture.tasks {
+    for task in tasks {
         storage
             .append_task(&TaskRecord {
                 id: task.id,
@@ -92,17 +114,51 @@ fn scheduler_projection_replays_fixture_facts() {
             .current_work_item
             .as_ref()
             .map(|item| item.id.as_str()),
-        Some("work-active")
+        expected.current_work_item_id.as_deref()
     );
     assert_eq!(
         projection
             .current_work_item
             .as_ref()
             .map(|item| item.revision),
-        Some(3)
+        expected.current_work_item_revision
     );
-    assert_eq!(projection.queued_work_items, 1);
-    assert_eq!(projection.active_tasks.len(), 1);
-    assert!(projection.has_blocking_active_tasks);
-    assert!(projection.pending_wake_hint);
+    assert_eq!(projection.queued_work_items, expected.queued_work_items);
+    assert_eq!(projection.active_tasks.len(), expected.active_tasks);
+    assert_eq!(
+        projection.has_blocking_active_tasks,
+        expected.has_blocking_active_tasks
+    );
+    assert_eq!(projection.pending_wake_hint, expected.pending_wake_hint);
+}
+
+#[test]
+fn scheduler_decision_event_records_evidence_and_bindings() {
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        TrustLevel::TrustedSystem,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue".into(),
+        },
+    );
+    let event = scheduler::scheduler_decision_event(
+        &scheduler::message_processing_decision(&message, true, true)
+            .work_item_id("work-1")
+            .evidence("fixture_evidence"),
+    );
+
+    assert_eq!(event.kind, "scheduler_decision");
+    assert_eq!(event.data["decision"].as_str(), Some("StartModelTurn"));
+    assert_eq!(event.data["model_visible"].as_bool(), Some(true));
+    assert_eq!(event.data["work_item_id"].as_str(), Some("work-1"));
+    assert!(event.data["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value.as_str() == Some("fixture_evidence")));
 }

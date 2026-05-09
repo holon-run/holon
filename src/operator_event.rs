@@ -270,6 +270,7 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "continuation_trigger_received"
         | "continuation_resolved"
         | "closure_decided"
+        | "scheduler_decision"
         | "system_tick_emitted"
         | "system_tick_suppressed"
         | "runtime_service_shutdown_requested" => OperatorEventCategory::Control,
@@ -512,6 +513,7 @@ fn event_text(
             simple_event_text("Continuation resolved", continuation_body(payload))
         }
         "closure_decided" => simple_event_text("Closure updated", closure_body(payload)),
+        "scheduler_decision" => simple_event_text("Scheduler decision", scheduler_body(payload)),
         "system_tick_emitted" => {
             simple_event_text("System tick emitted", reason_or_message_body(payload))
         }
@@ -772,6 +774,31 @@ fn closure_body(payload: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(ToString::to_string)
         .or_else(|| first_string_field(payload, &["outcome", "runtime_posture", "waiting_reason"]))
+}
+
+fn scheduler_body(payload: &Value) -> Option<String> {
+    let decision = string_field(payload, "decision");
+    let reason = string_field(payload, "reason");
+    let work_item = string_field(payload, "work_item_id").map(|id| format!("work {id}"));
+    let task = string_field(payload, "task_id").map(|id| format!("task {id}"));
+    let mut parts = Vec::new();
+    if let Some(decision) = decision {
+        parts.push(decision);
+    }
+    if let Some(reason) = reason {
+        parts.push(reason);
+    }
+    if let Some(work_item) = work_item {
+        parts.push(work_item);
+    }
+    if let Some(task) = task {
+        parts.push(task);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
 }
 
 fn context_body(payload: &Value) -> Option<String> {
@@ -1773,6 +1800,7 @@ mod tests {
         "continuation_trigger_received",
         "continuation_resolved",
         "closure_decided",
+        "scheduler_decision",
         "system_tick_emitted",
         "system_tick_suppressed",
         "runtime_service_shutdown_requested",
