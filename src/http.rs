@@ -65,6 +65,13 @@ use crate::{
     },
 };
 
+const STATE_BOOTSTRAP_TASK_LIMIT: usize = 40;
+const STATE_BOOTSTRAP_TRANSCRIPT_LIMIT: usize = 40;
+const STATE_BOOTSTRAP_OPERATOR_MESSAGE_LIMIT: usize = 40;
+const STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT: usize = 2048;
+const STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT: usize = 8192;
+const STATE_BOOTSTRAP_JSON_ARRAY_LIMIT: usize = 64;
+
 #[derive(Clone)]
 pub struct AppState {
     pub host: RuntimeHost,
@@ -876,13 +883,22 @@ pub async fn agent_state(
         })
         .collect();
     let agent = runtime.agent_summary().await.map_err(error_response)?;
-    let tasks = runtime.active_tasks(50).await.map_err(error_response)?;
-    let transcript_tail = runtime
-        .recent_transcript(100)
+    let tasks = runtime
+        .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
         .await
-        .map_err(error_response)?;
+        .map_err(error_response)?
+        .into_iter()
+        .map(slim_state_task_record)
+        .collect();
+    let transcript_tail = runtime
+        .recent_transcript(STATE_BOOTSTRAP_TRANSCRIPT_LIMIT)
+        .await
+        .map_err(error_response)?
+        .into_iter()
+        .map(slim_state_transcript_entry)
+        .collect();
     let operator_messages = runtime
-        .recent_operator_messages(100)
+        .recent_operator_messages(STATE_BOOTSTRAP_OPERATOR_MESSAGE_LIMIT)
         .await
         .map_err(error_response)?;
     let briefs_tail = runtime.recent_briefs(24).await.map_err(error_response)?;
@@ -952,6 +968,66 @@ fn sort_state_work_items(work_items: &mut [WorkItemRecord]) {
     });
 }
 
+fn slim_state_task_record(mut task: TaskRecord) -> TaskRecord {
+    if let Some(detail) = task.detail.take() {
+        task.detail = Some(slim_state_json_value(
+            detail,
+            STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT,
+        ));
+    }
+    task
+}
+
+fn slim_state_transcript_entry(mut entry: TranscriptEntry) -> TranscriptEntry {
+    entry.data = slim_state_json_value(entry.data, STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT);
+    entry
+}
+
+fn slim_state_json_value(value: Value, string_limit: usize) -> Value {
+    match value {
+        Value::String(text) => Value::String(truncate_state_bootstrap_string(&text, string_limit)),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .take(STATE_BOOTSTRAP_JSON_ARRAY_LIMIT)
+                .map(|item| slim_state_json_value(item, string_limit))
+                .collect(),
+        ),
+        Value::Object(object) => Value::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| (key, slim_state_json_value(value, string_limit)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
+    if limit == 0 {
+        return String::new();
+    }
+
+    let truncated_char_limit = limit.saturating_sub(3);
+    let mut truncate_at = None;
+    for (index, (byte_index, _)) in text.char_indices().enumerate() {
+        if limit <= 3 {
+            if index == limit {
+                return text[..byte_index].to_string();
+            }
+        } else {
+            if index == truncated_char_limit {
+                truncate_at = Some(byte_index);
+            }
+            if index == limit {
+                let byte_index = truncate_at.unwrap_or(byte_index);
+                return format!("{}...", &text[..byte_index]);
+            }
+        }
+    }
+    text.to_string()
+}
+
 fn state_work_item_rank(item: &WorkItemRecord) -> u8 {
     match item.state {
         WorkItemState::Open if item.blocked_by.is_none() => 0,
@@ -971,9 +1047,16 @@ fn state_workspace_snapshot(agent: &AgentSummary) -> StateWorkspaceSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::sort_state_work_items;
-    use crate::types::{WorkItemRecord, WorkItemState};
+    use super::{
+        sort_state_work_items, STATE_BOOTSTRAP_JSON_ARRAY_LIMIT,
+        STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT, STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
+    };
+    use crate::types::{
+        TaskKind, TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind, WorkItemRecord,
+        WorkItemState,
+    };
     use chrono::{Duration, Utc};
+    use serde_json::json;
 
     #[test]
     fn state_sort_preserves_queue_display_order() {
@@ -1016,6 +1099,89 @@ mod tests {
                 waiting.objective.as_str(),
                 "completed",
             ]
+        );
+    }
+
+    #[test]
+    fn state_bootstrap_slims_large_task_detail_and_transcript_data() {
+        let now = chrono::Utc::now();
+        let task = TaskRecord {
+            id: "task-1".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("large task".into()),
+            detail: Some(json!({
+                "cmd": "printf test",
+                "output_path": "/tmp/output.log",
+                "output_summary": "x".repeat(STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT + 64),
+                "lines": (0..(STATE_BOOTSTRAP_JSON_ARRAY_LIMIT + 10)).collect::<Vec<_>>()
+            })),
+            recovery: None,
+        };
+        let slimmed = super::slim_state_task_record(task);
+        let detail = slimmed.detail.expect("detail");
+        assert_eq!(detail["cmd"], "printf test");
+        assert_eq!(detail["output_path"], "/tmp/output.log");
+        assert!(
+            detail["output_summary"]
+                .as_str()
+                .expect("summary")
+                .chars()
+                .count()
+                <= STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT
+        );
+        assert_eq!(
+            detail["lines"].as_array().expect("lines").len(),
+            STATE_BOOTSTRAP_JSON_ARRAY_LIMIT
+        );
+
+        let entry = TranscriptEntry {
+            id: "entry-1".into(),
+            agent_id: "default".into(),
+            created_at: now,
+            kind: TranscriptEntryKind::ToolResults,
+            round: Some(1),
+            related_message_id: None,
+            stop_reason: None,
+            input_tokens: None,
+            output_tokens: None,
+            data: json!({"content": "y".repeat(STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT + 64)}),
+        };
+        let slimmed_entry = super::slim_state_transcript_entry(entry);
+        assert!(
+            slimmed_entry.data["content"]
+                .as_str()
+                .expect("content")
+                .chars()
+                .count()
+                <= STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT
+        );
+    }
+
+    #[test]
+    fn state_bootstrap_string_truncation_preserves_total_budget() {
+        assert_eq!(super::truncate_state_bootstrap_string("abcdef", 0), "");
+        assert_eq!(super::truncate_state_bootstrap_string("abcdef", 2), "ab");
+        assert_eq!(
+            super::truncate_state_bootstrap_string("abcdef", 6),
+            "abcdef"
+        );
+        assert_eq!(
+            super::truncate_state_bootstrap_string("abcdefg", 6),
+            "abc..."
+        );
+        assert_eq!(
+            super::truncate_state_bootstrap_string("你好世界", 3),
+            "你好世"
+        );
+        assert_eq!(
+            super::truncate_state_bootstrap_string("你好世界a", 4),
+            "你..."
         );
     }
 }

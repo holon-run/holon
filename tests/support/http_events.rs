@@ -22,8 +22,8 @@ use holon::{
         AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel, WaitingIntentStatus,
-        WorkItemState,
+        OperatorDeliveryStatus, TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState,
+        TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -515,6 +515,81 @@ pub async fn events_route_local_debug_projection_requires_control_auth() -> Resu
         .send()
         .await?;
     assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let now = chrono::Utc::now();
+
+    runtime.storage().append_task(&TaskRecord {
+        id: "large-task".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: now,
+        updated_at: now,
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("large task".into()),
+        detail: Some(serde_json::json!({
+            "output_path": "/tmp/large-task.log",
+            "output_summary": "x".repeat(12_000),
+            "lines": (0..120).collect::<Vec<_>>()
+        })),
+        recovery: None,
+    })?;
+    runtime
+        .storage()
+        .append_transcript_entry(&TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::ToolResults,
+            Some(1),
+            None,
+            serde_json::json!({ "content": "y".repeat(20_000) }),
+        ))?;
+
+    let snapshot: serde_json::Value = reqwest::Client::new()
+        .get(format!("{base}/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    let task = snapshot["tasks"]
+        .as_array()
+        .and_then(|tasks| tasks.iter().find(|task| task["id"] == "large-task"))
+        .expect("large task should be present");
+    assert_eq!(task["detail"]["output_path"], "/tmp/large-task.log");
+    assert!(
+        task["detail"]["output_summary"]
+            .as_str()
+            .expect("task summary")
+            .chars()
+            .count()
+            <= 2048
+    );
+    assert_eq!(task["detail"]["lines"].as_array().expect("lines").len(), 64);
+
+    let transcript = snapshot["transcript_tail"]
+        .as_array()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry["data"]["content"].as_str().is_some())
+        })
+        .expect("large transcript should be present");
+    assert!(
+        transcript["data"]["content"]
+            .as_str()
+            .expect("transcript content")
+            .chars()
+            .count()
+            <= 8192
+    );
 
     server.abort();
     Ok(())
