@@ -1,28 +1,66 @@
 ---
 title: Concepts
-summary: Runtime concepts that define Holon's execution model.
+summary: The mental model behind Holon — four simple objects that make agents durable.
 order: 20
 ---
 
 # Concepts
 
-Holon is easiest to understand as a runtime rather than as a chat wrapper. The
-core concepts below describe what the runtime makes explicit. Start with the
-runtime model, then read trust boundaries before wiring the system into
-external inputs or automation.
+Holon is easiest to understand as a runtime, not a chat wrapper. The runtime
+centers on four simple objects that work together:
 
-Concept pages explain behavior; guides show workflows; reference pages describe
-the current surface area.
+## The mental model in four objects
 
-## Core ideas
+**Agents** are the actors. Each agent has a durable home directory, its own
+guidance (`AGENTS.md`), local memory, and a work queue. You address an agent by
+its ID, and it persists across turns — it can sleep, wake, and continue work
+without losing state.
 
-- Agents have durable homes and can be addressed across turns.
-- Work items name objectives separately from transient model context.
-- Tasks represent supervised execution, including shell commands and delegated
-  child agents.
-- Queues, wake hints, sleeps, and external triggers are visible lifecycle
-  mechanisms instead of hidden background behavior.
-- Origin, trust, and priority remain attached to ingress and execution events.
+**Work items** are the objectives. They capture *what* the agent is trying to
+achieve, with a durable plan, a todo checklist, and a completion goal. Work
+items survive across turns and model calls, so an agent can resume after hours
+or days without losing progress.
+
+**Tasks** are the execution. Every command, every child agent delegation, every
+background operation is wrapped in a task handle. You can inspect task status,
+read output, send input, or stop a task — the runtime tracks it all.
+
+**Trust boundaries** are the provenance. Operator input, external webhooks,
+child agent output, and web-sourced content each carry an origin and a trust
+level. Holon never flattens them into one undifferentiated prompt stream.
+
+```
+Agent (who)
+  └── Work items (what they're doing)
+        └── Tasks (how they do it)
+              └── Trust classification (where input came from)
+```
+
+## Why this matters
+
+Most agent tools work like chat sessions: a prompt goes in, a response comes
+out, and the state disappears. Holon is different because:
+
+- You can walk away and the agent keeps working.
+- You can inspect *what* the agent is doing without reading the entire
+  transcript.
+- You can see *where* each input came from and how much to trust it.
+- You can delegate work to child agents and supervise their progress.
+
+## Deeper reading
+
+The **runtime model** page expands the four-object mental model into precise
+lifecycle vocabulary: agent profiles, work-item states, task kinds, queue
+semantics, triggers, and workspace isolation.
+
+The **trust boundaries** page is product-oriented: it explains why origin and
+trust matter for real integrations, not just as security theory.
+
+For the canonical design contracts behind these concepts, see the repository
+[RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs) and
+[implementation
+decisions](https://github.com/holon-run/holon/tree/main/docs/implementation-decisions/).
+These are maintainer-facing documents; you do not need them to use Holon.
 
 <!-- INDEX:START -->
 
