@@ -243,16 +243,10 @@ impl RuntimeHandle {
                 }
                 handle.token.cancel();
                 interrupted_run_id = Some(handle.run_id.clone());
-                guard.state.current_run_id = None;
                 if matches!(guard.state.status, AgentStatus::AwakeRunning) {
-                    guard.state.status = if task_state_reducer::has_blocking_active_tasks(
-                        &self.inner.storage,
-                        &guard.state.active_task_ids,
-                    )? {
-                        AgentStatus::AwaitingTask
-                    } else {
-                        AgentStatus::AwakeIdle
-                    };
+                    scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
+                } else {
+                    guard.state.current_run_id = None;
                 }
                 self.inner.storage.write_agent(&guard.state)?;
             }
@@ -1051,9 +1045,7 @@ impl RuntimeHandle {
         });
         let state = {
             let mut guard = self.inner.agent.lock().await;
-            guard.state.status = AgentStatus::Asleep;
-            guard.state.current_run_id = None;
-            guard.state.sleeping_until = sleeping_until;
+            scheduler::apply_sleep_projection(&mut guard.state, sleeping_until);
             self.inner.storage.write_agent(&guard.state)?;
             guard.state.clone()
         };

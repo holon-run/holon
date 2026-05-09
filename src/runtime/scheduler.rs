@@ -5,6 +5,7 @@ use crate::types::{
     AgentStatus, MessageEnvelope, TaskRecord, TaskStatus, TimerStatus, WaitingIntentStatus,
     WorkItemRecord,
 };
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
@@ -370,6 +371,20 @@ pub(crate) fn apply_idle_projection(state: &mut AgentState, storage: &AppStorage
     state.status = projected_status_for_idle(state, storage)?;
     state.current_run_id = None;
     Ok(())
+}
+
+pub(crate) fn apply_running_projection(state: &mut AgentState, run_id: String) {
+    state.status = AgentStatus::AwakeRunning;
+    state.current_run_id = Some(run_id);
+}
+
+pub(crate) fn apply_sleep_projection(
+    state: &mut AgentState,
+    sleeping_until: Option<DateTime<Utc>>,
+) {
+    state.status = AgentStatus::Asleep;
+    state.current_run_id = None;
+    state.sleeping_until = sleeping_until;
 }
 
 pub(crate) fn active_task_blocks_work_item_completion(

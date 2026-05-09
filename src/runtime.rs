@@ -889,8 +889,7 @@ impl RuntimeHandle {
                     let interrupt_token = CancellationToken::new();
                     let prior_state = guard.state.clone();
                     guard.state.pending = guard.queue.len();
-                    guard.state.status = AgentStatus::AwakeRunning;
-                    guard.state.current_run_id = Some(run_id.clone());
+                    scheduler::apply_running_projection(&mut guard.state, run_id.clone());
                     guard.current_run_interrupt = Some(CurrentRunInterruptHandle {
                         run_id: run_id.clone(),
                         token: interrupt_token,
@@ -932,9 +931,7 @@ impl RuntimeHandle {
                         AgentStatus::Asleep | AgentStatus::Paused
                     ) && guard.queue.is_empty()
                     {
-                        guard.state.status = AgentStatus::Asleep;
-                        guard.state.current_run_id = None;
-                        guard.state.sleeping_until = None;
+                        scheduler::apply_sleep_projection(&mut guard.state, None);
                         self.inner.storage.write_agent(&guard.state)?;
                         Some(guard.state.clone())
                     } else {
@@ -1001,16 +998,8 @@ impl RuntimeHandle {
                         guard.state.status,
                         AgentStatus::Paused | AgentStatus::Stopped
                     ) {
-                        guard.state.status = if task_state_reducer::has_blocking_active_tasks(
-                            &self.inner.storage,
-                            &guard.state.active_task_ids,
-                        )? {
-                            AgentStatus::AwaitingTask
-                        } else {
-                            AgentStatus::AwakeIdle
-                        };
+                        scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
                     }
-                    guard.state.current_run_id = None;
                     guard.current_run_interrupt = None;
                     self.inner.storage.write_agent(&guard.state)?;
                     guard.state.clone()
