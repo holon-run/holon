@@ -101,4 +101,8 @@ The generated `dist/` directory is ignored because it is a build artifact.
 
 <!-- INDEX:START -->
 
+- [Create your first agent](./first-agent.md)
+  From zero to your first Holon agent: build, start, TUI basics, create an agent, and configure models.
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->

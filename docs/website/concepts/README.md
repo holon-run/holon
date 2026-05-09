@@ -27,11 +27,11 @@ the current surface area.
 <!-- INDEX:START -->
 
 - [Runtime model](./runtime-model.md)
-  How Holon separates agents, work items, tasks, queues, and delivery.
+  Agents, tasks, work items, workspaces, and the execution loop that make up Holon's runtime.
   <!-- mdorigin:index kind=article -->
 
 - [Trust boundaries](./trust-boundaries.md)
-  How Holon preserves provenance across operator input, external events, and delegated output.
+  How Holon classifies origin, trust, and priority to keep long-lived agents secure.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->
