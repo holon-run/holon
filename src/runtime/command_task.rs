@@ -557,7 +557,6 @@ impl RuntimeHandle {
                             Some(&err.to_string()),
                             true,
                         ),
-                        true,
                         "command_task_result_persisted_after_runner_failure",
                     )
                     .await;
@@ -655,7 +654,6 @@ impl RuntimeHandle {
             &task_record,
             terminal.status.clone(),
             detail.clone(),
-            true,
             "command_task_terminal_persisted",
         )
         .await?;
@@ -709,7 +707,6 @@ impl RuntimeHandle {
                 &task_record,
                 terminal.status.clone(),
                 detail,
-                true,
                 "command_task_result_persisted_after_enqueue_failure",
             )
             .await?;
@@ -894,7 +891,6 @@ impl RuntimeHandle {
         task_record: &TaskRecord,
         status: TaskStatus,
         detail: serde_json::Value,
-        clear_active_state: bool,
         event_kind: &'static str,
     ) -> Result<()> {
         let fallback = TaskRecord {
@@ -910,7 +906,6 @@ impl RuntimeHandle {
             detail: Some(detail),
             recovery: task_record.recovery.clone(),
         };
-        let _ = clear_active_state;
         self.apply_task_transition(task_state_reducer::TaskTransition::new(
             &fallback, event_kind,
         ))

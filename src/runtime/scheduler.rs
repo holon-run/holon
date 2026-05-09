@@ -81,6 +81,7 @@ impl SchedulerProjection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum SchedulerDecisionKind {
     StartModelTurn,
     ReduceMessageOnly,
@@ -161,6 +162,7 @@ impl SchedulerDecision {
         self
     }
 
+    #[allow(dead_code)]
     pub(crate) fn task_id(mut self, task_id: impl Into<String>) -> Self {
         self.task_id = Some(task_id.into());
         self
@@ -177,13 +179,13 @@ pub(crate) fn scheduler_decision_event(decision: &SchedulerDecision) -> AuditEve
         "scheduler_decision",
         serde_json::json!({
             "decision": decision.kind.as_str(),
-            "reason": decision.reason,
+            "reason": &decision.reason,
             "model_visible": decision.model_visible,
             "liveness_only": decision.liveness_only,
-            "message_id": decision.message_id,
-            "work_item_id": decision.work_item_id,
-            "task_id": decision.task_id,
-            "evidence": decision.evidence,
+            "message_id": &decision.message_id,
+            "work_item_id": &decision.work_item_id,
+            "task_id": &decision.task_id,
+            "evidence": &decision.evidence,
         }),
     )
 }
@@ -210,6 +212,7 @@ pub(crate) fn message_processing_decision(
     decision
 }
 
+#[allow(dead_code)]
 pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerDecision {
     let (kind, reason) = if matches!(projection.status, AgentStatus::Stopped) {
         (SchedulerDecisionKind::Stop, "stopped")
@@ -228,6 +231,7 @@ pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerD
         .evidence(format!("queue_len={}", projection.queue_len))
 }
 
+#[allow(dead_code)]
 pub(crate) fn wait_decision_for_projection(
     projection: &SchedulerProjection,
 ) -> Option<SchedulerDecision> {

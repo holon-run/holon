@@ -131,21 +131,11 @@ impl RuntimeHandle {
     ) -> Result<bool> {
         let pending_wake_hint = {
             let guard = self.inner.agent.lock().await;
-            let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
-                &self.inner.storage,
-                &guard.state,
-                guard.queue.len(),
-            )?;
             let eligible = matches!(
                 guard.state.status,
                 AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep
             ) && guard.queue.is_empty();
             if !eligible {
-                self.inner
-                    .storage
-                    .append_event(&scheduler::scheduler_decision_event(
-                        &scheduler::idle_noop_decision(&projection),
-                    ))?;
                 return Ok(false);
             }
 
@@ -268,30 +258,7 @@ impl RuntimeHandle {
                 }
                 Ok(true)
             }
-            None => {
-                let guard = self.inner.agent.lock().await;
-                let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
-                    &self.inner.storage,
-                    &guard.state,
-                    guard.queue.len(),
-                )?;
-                let decision =
-                    scheduler::wait_decision_for_projection(&projection).unwrap_or_else(|| {
-                        let kind = if matches!(projection.status, AgentStatus::Asleep) {
-                            scheduler::SchedulerDecisionKind::Sleep
-                        } else {
-                            scheduler::SchedulerDecisionKind::StayIdle
-                        };
-                        scheduler::SchedulerDecision::new(kind, "no_runnable_work_or_pending_wake")
-                            .liveness_only(true)
-                            .evidence(format!("status={:?}", projection.status))
-                    });
-                drop(guard);
-                self.inner
-                    .storage
-                    .append_event(&scheduler::scheduler_decision_event(&decision))?;
-                Ok(false)
-            }
+            None => Ok(false),
         }
     }
 
