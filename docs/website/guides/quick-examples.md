@@ -27,13 +27,13 @@ holon run --json "List files in the current directory"
 Create a named agent that persists across sessions:
 
 ```bash
-holon agents create reviewer
+holon agent create reviewer
 ```
 
 Create an agent from a built-in template:
 
 ```bash
-holon agents create reviewer --template holon-reviewer
+holon agent create reviewer --template holon-reviewer
 ```
 
 Then interact with it:
@@ -53,13 +53,13 @@ holon config set model.default "deepseek-anthropic/deepseek-v4-pro"
 Set a per-agent model override:
 
 ```bash
-holon agents model set "anthropic/claude-sonnet-4-6" --agent reviewer
+holon agent model set "anthropic/claude-sonnet-4-6" reviewer
 ```
 
 Check which model an agent uses:
 
 ```bash
-holon agents model get --agent reviewer
+holon agent model get reviewer
 ```
 
 ## 4. Run as a Background Daemon
@@ -187,7 +187,7 @@ holon run --workspace-root /path/to/project "Analyze this codebase"
 ## 10. Create an Agent with a Custom Workspace
 
 ```bash
-holon agents create my-builder
+holon agent create my-builder
 holon run --agent my-builder --workspace-root /path/to/project "Build the project"
 ```
 

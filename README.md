@@ -104,7 +104,7 @@ Inspect state:
 
 ```bash
 holon status
-holon agents
+holon agent list
 holon transcript --limit 50
 ```
 

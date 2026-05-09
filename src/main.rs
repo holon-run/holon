@@ -129,14 +129,16 @@ enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
+    #[command(about = "Deprecated: use `holon agent pause|resume|stop|interrupt [agent-id]`")]
     Control {
         action: ControlCommandAction,
         #[arg(long)]
         agent: Option<String>,
     },
-    Agents {
+    #[command(alias = "agents")]
+    Agent {
         #[command(subcommand)]
-        command: Option<AgentsCommands>,
+        command: Option<AgentCommands>,
     },
     Skills {
         #[command(subcommand)]
@@ -390,11 +392,27 @@ enum DebugCommands {
 }
 
 #[derive(Debug, Subcommand)]
-enum AgentsCommands {
+enum AgentCommands {
+    List,
+    Status {
+        agent_id: Option<String>,
+    },
     Create {
         agent_id: String,
         #[arg(long)]
         template: Option<String>,
+    },
+    Pause {
+        agent_id: Option<String>,
+    },
+    Resume {
+        agent_id: Option<String>,
+    },
+    Stop {
+        agent_id: Option<String>,
+    },
+    Interrupt {
+        agent_id: Option<String>,
     },
     Model {
         #[command(subcommand)]
@@ -405,17 +423,14 @@ enum AgentsCommands {
 #[derive(Debug, Subcommand)]
 enum AgentModelCommands {
     Get {
-        #[arg(long)]
-        agent: Option<String>,
+        agent_id: Option<String>,
     },
     Set {
         model: String,
-        #[arg(long)]
-        agent: Option<String>,
+        agent_id: Option<String>,
     },
     Clear {
-        #[arg(long)]
-        agent: Option<String>,
+        agent_id: Option<String>,
     },
 }
 
@@ -641,7 +656,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
             )
             .await
         }
-        Commands::Agents { command } => handle_agents_command(&config, command).await,
+        Commands::Agent { command } => handle_agent_command(&config, command).await,
         Commands::Skills { command } => handle_skills_command(&config, command).await,
         Commands::Workspace { command } => handle_workspace_command(&config, command).await,
         Commands::Tui {
@@ -1223,6 +1238,81 @@ mod tests {
             ]
         );
         assert_eq!(serve_launch.control_token_env, None);
+    }
+
+    #[test]
+    fn agent_lifecycle_commands_parse_with_optional_agent_id() {
+        let cli = Cli::parse_from(["holon", "agent", "pause"]);
+        let Commands::Agent {
+            command: Some(AgentCommands::Pause { agent_id }),
+        } = cli.command
+        else {
+            panic!("expected agent pause command");
+        };
+        assert_eq!(agent_id, None);
+
+        let cli = Cli::parse_from(["holon", "agent", "resume", "foo"]);
+        let Commands::Agent {
+            command: Some(AgentCommands::Resume { agent_id }),
+        } = cli.command
+        else {
+            panic!("expected agent resume command");
+        };
+        assert_eq!(agent_id.as_deref(), Some("foo"));
+
+        let cli = Cli::parse_from(["holon", "agent", "stop", "foo"]);
+        let Commands::Agent {
+            command: Some(AgentCommands::Stop { agent_id }),
+        } = cli.command
+        else {
+            panic!("expected agent stop command");
+        };
+        assert_eq!(agent_id.as_deref(), Some("foo"));
+
+        let cli = Cli::parse_from(["holon", "agent", "interrupt", "foo"]);
+        let Commands::Agent {
+            command: Some(AgentCommands::Interrupt { agent_id }),
+        } = cli.command
+        else {
+            panic!("expected agent interrupt command");
+        };
+        assert_eq!(agent_id.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn agent_model_commands_use_positional_agent_id() {
+        let cli = Cli::parse_from(["holon", "agent", "model", "get", "foo"]);
+        let Commands::Agent {
+            command:
+                Some(AgentCommands::Model {
+                    command: AgentModelCommands::Get { agent_id },
+                }),
+        } = cli.command
+        else {
+            panic!("expected agent model get command");
+        };
+        assert_eq!(agent_id.as_deref(), Some("foo"));
+
+        let cli = Cli::parse_from(["holon", "agent", "model", "set", "openai/gpt-5.1", "foo"]);
+        let Commands::Agent {
+            command:
+                Some(AgentCommands::Model {
+                    command: AgentModelCommands::Set { model, agent_id },
+                }),
+        } = cli.command
+        else {
+            panic!("expected agent model set command");
+        };
+        assert_eq!(model, "openai/gpt-5.1");
+        assert_eq!(agent_id.as_deref(), Some("foo"));
+
+        let cli = Cli::parse_from(["holon", "agents", "list"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Agent {
+                command: Some(AgentCommands::List)
+            }
+        ));
     }
 
     #[test]
@@ -1898,13 +1988,18 @@ async fn handle_workspace_command(config: &AppConfig, command: WorkspaceCommands
     }
 }
 
-async fn handle_agents_command(config: &AppConfig, command: Option<AgentsCommands>) -> Result<()> {
+async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>) -> Result<()> {
     match command {
-        None => {
+        None | Some(AgentCommands::List) => {
             let client = LocalClient::new(config.clone())?;
             print_json(&serde_json::to_value(client.list_agents().await?)?)
         }
-        Some(AgentsCommands::Create { agent_id, template }) => {
+        Some(AgentCommands::Status { agent_id }) => {
+            let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
+            let client = LocalClient::new(config.clone())?;
+            print_json(&serde_json::to_value(client.agent_status(&agent).await?)?)
+        }
+        Some(AgentCommands::Create { agent_id, template }) => {
             post_control_json(
                 config,
                 &format!("/control/agents/{agent_id}/create"),
@@ -1915,25 +2010,57 @@ async fn handle_agents_command(config: &AppConfig, command: Option<AgentsCommand
             )
             .await
         }
-        Some(AgentsCommands::Model { command }) => {
+        Some(AgentCommands::Pause { agent_id }) => {
+            control_agent_lifecycle(config, agent_id, ControlAction::Pause).await
+        }
+        Some(AgentCommands::Resume { agent_id }) => {
+            control_agent_lifecycle(config, agent_id, ControlAction::Resume).await
+        }
+        Some(AgentCommands::Stop { agent_id }) => {
+            control_agent_lifecycle(config, agent_id, ControlAction::Stop).await
+        }
+        Some(AgentCommands::Interrupt { agent_id }) => {
+            let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
+            post_control_json(
+                config,
+                &format!("/control/agents/{agent}/current-run/interrupt"),
+                &http::InterruptCurrentRunRequest {
+                    run_id: None,
+                    mode: Some("pause_after_abort".into()),
+                    trust: Some(TrustLevel::TrustedOperator),
+                },
+            )
+            .await
+        }
+        Some(AgentCommands::Model { command }) => {
             let client = LocalClient::new(config.clone())?;
             match command {
-                AgentModelCommands::Get { agent } => {
-                    let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+                AgentModelCommands::Get { agent_id } => {
+                    let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
                     let summary = client.agent_status(&agent).await?;
                     print_json(&serde_json::to_value(summary.model)?)
                 }
-                AgentModelCommands::Set { model, agent } => {
-                    let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+                AgentModelCommands::Set { model, agent_id } => {
+                    let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
                     print_json(&client.set_agent_model_override(&agent, model, None).await?)
                 }
-                AgentModelCommands::Clear { agent } => {
-                    let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+                AgentModelCommands::Clear { agent_id } => {
+                    let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
                     print_json(&client.clear_agent_model_override(&agent).await?)
                 }
             }
         }
     }
+}
+
+async fn control_agent_lifecycle(
+    config: &AppConfig,
+    agent_id: Option<String>,
+    action: ControlAction,
+) -> Result<()> {
+    let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
+    let client = LocalClient::new(config.clone())?;
+    print_json(&client.control_agent(&agent, action).await?)
 }
 
 async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> Result<()> {

@@ -103,7 +103,7 @@ This shows which models are available, which credentials are configured, and det
 
 1. Check agent exists:
    ```bash
-   holon agents model get --agent my-agent
+   holon agent model get my-agent
    ```
 
 2. Try running with a fresh one-shot:
@@ -116,13 +116,13 @@ This shows which models are available, which credentials are configured, and det
 Check if the agent has a per-agent model override:
 
 ```bash
-holon agents model get --agent my-agent
+holon agent model get my-agent
 ```
 
 Clear the override to fall back to the global default:
 
 ```bash
-holon agents model clear --agent my-agent
+holon agent model clear my-agent
 ```
 
 ## Configuration Issues

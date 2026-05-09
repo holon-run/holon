@@ -2733,7 +2733,7 @@ fn stopped_agent_conflict(
 ) -> (StatusCode, Json<Value>) {
     let agent_id = agent_id.into();
     let hint = format!(
-        "resume with `holon control resume --agent {}` or POST /control/agents/{}/control with JSON body {{\"action\":\"resume\"}}",
+        "resume with `holon agent resume {}` or POST /control/agents/{}/control with JSON body {{\"action\":\"resume\"}}",
         agent_id, agent_id
     );
     (

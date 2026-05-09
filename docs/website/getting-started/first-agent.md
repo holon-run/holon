@@ -143,7 +143,7 @@ When you start Holon, it automatically creates a **default agent** in `~/.holon/
 Create a specialized agent for a specific role:
 
 ```bash
-cargo run -- agents create reviewer --template holon-reviewer
+cargo run -- agent create reviewer --template holon-reviewer
 ```
 
 This creates a new agent in `~/.holon/agents/reviewer/` initialized with the holon-reviewer template.
@@ -154,19 +154,19 @@ Templates provide reusable agent configurations:
 
 ```bash
 # Use a builtin template by ID
-cargo run -- agents create docs-helper --template holon-developer
+cargo run -- agent create docs-helper --template holon-developer
 
 # Use a local template path
-cargo run -- agents create custom --template /path/to/template
+cargo run -- agent create custom --template /path/to/template
 
 # Use a GitHub template URL
-cargo run -- agents create github-agent --template https://github.com/owner/repo/tree/main/template-path
+cargo run -- agent create github-agent --template https://github.com/owner/repo/tree/main/template-path
 ```
 
 ### List agents
 
 ```bash
-cargo run -- agents
+cargo run -- agent list
 ```
 
 ### Switch agents in the TUI
@@ -232,7 +232,7 @@ cargo run -- config set model.default "anthropic/claude-sonnet-4-6"
 An agent can override the default model:
 
 ```bash
-cargo run -- agents model set "anthropic/claude-sonnet-4-6" --agent reviewer
+cargo run -- agent model set "anthropic/claude-sonnet-4-6" reviewer
 ```
 
 See [Configuration reference](/reference/configuration.md) for more details on agent model overrides.
