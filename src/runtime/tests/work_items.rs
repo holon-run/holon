@@ -1801,6 +1801,45 @@ async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_s
 }
 
 #[tokio::test]
+async fn agent_scoped_waiting_intent_contributes_to_closure() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime
+        .create_external_trigger(
+            "Check durable inbox for unread entries".into(),
+            "agentinbox".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let closure = runtime.current_closure_decision().await.unwrap();
+    assert_eq!(closure.outcome, ClosureOutcome::Waiting);
+    assert_eq!(
+        closure.waiting_reason,
+        Some(WaitingReason::AwaitingExternalChange)
+    );
+    assert!(closure
+        .evidence
+        .iter()
+        .any(|item| item == "active_waiting_intents=1"));
+}
+
+#[tokio::test]
 async fn reconcile_waiting_contract_cancels_waits_when_only_waiting_anchor_exists() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

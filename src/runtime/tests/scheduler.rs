@@ -35,6 +35,12 @@ struct ExpectedFixture {
     active_tasks: usize,
     has_blocking_active_tasks: bool,
     pending_wake_hint: bool,
+    #[serde(default)]
+    active_waiting_intents: usize,
+    #[serde(default)]
+    active_work_item_waiting_intents: usize,
+    #[serde(default)]
+    active_agent_waiting_intents: usize,
 }
 
 #[test]
@@ -130,6 +136,60 @@ fn scheduler_projection_replays_fixture_facts() {
         expected.has_blocking_active_tasks
     );
     assert_eq!(projection.pending_wake_hint, expected.pending_wake_hint);
+    assert_eq!(
+        projection.active_waiting_intents,
+        expected.active_waiting_intents
+    );
+    assert_eq!(
+        projection.active_work_item_waiting_intents,
+        expected.active_work_item_waiting_intents
+    );
+    assert_eq!(
+        projection.active_agent_waiting_intents,
+        expected.active_agent_waiting_intents
+    );
+}
+
+#[test]
+fn scheduler_projection_breaks_down_waiting_intent_scopes() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let now = Utc::now();
+    for (id, scope, work_item_id) in [
+        ("work-wait", ExternalTriggerScope::WorkItem, Some("work-1")),
+        ("agent-wait", ExternalTriggerScope::Agent, None),
+    ] {
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: id.into(),
+                agent_id: "default".into(),
+                scope,
+                work_item_id: work_item_id.map(ToString::to_string),
+                description: format!("{id} description"),
+                source: "test".into(),
+                resource: None,
+                condition: None,
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: format!("trigger-{id}"),
+                created_at: now,
+                cancelled_at: None,
+                last_triggered_at: None,
+                trigger_count: 0,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+    }
+    agent.pending_wake_hint = None;
+    storage.write_agent(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.active_waiting_intents, 2);
+    assert_eq!(projection.active_work_item_waiting_intents, 1);
+    assert_eq!(projection.active_agent_waiting_intents, 1);
 }
 
 #[test]

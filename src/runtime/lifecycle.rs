@@ -123,7 +123,7 @@ impl RuntimeHandle {
         state: &AgentState,
         runtime_error_override: Option<bool>,
     ) -> Result<ClosureDecision> {
-        let active_waiting_intents = self.active_work_item_waiting_intent_count().await?;
+        let active_waiting_intents = self.active_waiting_intent_count().await?;
         let active_timers = self
             .inner
             .storage

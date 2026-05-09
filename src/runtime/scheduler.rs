@@ -18,6 +18,8 @@ pub(crate) struct SchedulerProjection {
     pub queued_work_items: usize,
     pub pending_wake_hint: bool,
     pub active_waiting_intents: usize,
+    pub active_work_item_waiting_intents: usize,
+    pub active_agent_waiting_intents: usize,
     pub active_timers: usize,
     pub turn_in_progress: bool,
     pub runtime_error: bool,
@@ -53,6 +55,14 @@ impl SchedulerProjection {
             .latest_waiting_intents()?
             .into_iter()
             .filter(|intent| intent.status == WaitingIntentStatus::Active)
+            .collect::<Vec<_>>();
+        let active_work_item_waiting_intents = active_waiting_intents
+            .iter()
+            .filter(|intent| intent.scope == ExternalTriggerScope::WorkItem)
+            .count();
+        let active_agent_waiting_intents = active_waiting_intents
+            .iter()
+            .filter(|intent| intent.scope == ExternalTriggerScope::Agent)
             .count();
         let active_timers = storage
             .latest_timer_records()?
@@ -69,7 +79,9 @@ impl SchedulerProjection {
             queued_work_items: queued_runnable_work_items.len(),
             queued_runnable_work_items,
             pending_wake_hint: state.pending_wake_hint.is_some(),
-            active_waiting_intents,
+            active_waiting_intents: active_waiting_intents.len(),
+            active_work_item_waiting_intents,
+            active_agent_waiting_intents,
             active_timers,
             turn_in_progress: state.current_run_id.is_some(),
             runtime_error: runtime_error_active(
