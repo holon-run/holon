@@ -729,7 +729,7 @@ pub async fn stopped_status_includes_lifecycle_resume_guidance() -> Result<()> {
     assert_eq!(payload["lifecycle"]["wake_requires_resume"], true);
     assert_eq!(
         payload["lifecycle"]["resume_cli_hint"],
-        "holon control resume --agent default"
+        "holon agent resume default"
     );
     assert_eq!(
         payload["lifecycle"]["resume_control_path"],
@@ -774,7 +774,7 @@ pub async fn control_wake_rejects_stopped_agent_with_resume_guidance() -> Result
     assert!(payload["hint"]
         .as_str()
         .unwrap_or_default()
-        .contains("holon control resume --agent default"));
+        .contains("holon agent resume default"));
 
     let events = runtime.storage().read_recent_events(20)?;
     assert!(!events.iter().any(|event| event.kind == "wake_requested"));
