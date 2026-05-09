@@ -1,6 +1,6 @@
 use super::*;
 use crate::runtime::closure::runtime_error_active;
-use crate::storage::AppStorage;
+use crate::storage::{AppStorage, WorkQueuePromptProjection};
 use crate::types::{
     AgentStatus, MessageEnvelope, TaskRecord, TaskStatus, TimerStatus, WaitingIntentStatus,
     WorkItemRecord,
@@ -26,6 +26,26 @@ pub(crate) struct SchedulerProjection {
     pub runtime_error: bool,
 }
 
+pub(crate) struct SchedulerAgentSnapshot {
+    id: String,
+    status: AgentStatus,
+    active_run_id: Option<String>,
+    active_task_ids: Vec<String>,
+    pending_wake_hint: bool,
+}
+
+impl SchedulerAgentSnapshot {
+    pub(crate) fn from_state(state: &AgentState) -> Self {
+        Self {
+            id: state.id.clone(),
+            status: state.status.clone(),
+            active_run_id: state.current_run_id.clone(),
+            active_task_ids: state.active_task_ids.clone(),
+            pending_wake_hint: state.pending_wake_hint.is_some(),
+        }
+    }
+}
+
 impl SchedulerProjection {
     pub(crate) fn from_state(storage: &AppStorage, state: &AgentState) -> Result<Self> {
         Self::from_state_with_queue_len(storage, state, state.pending)
@@ -36,8 +56,41 @@ impl SchedulerProjection {
         state: &AgentState,
         queue_len: usize,
     ) -> Result<Self> {
+        let snapshot = SchedulerAgentSnapshot::from_state(state);
+        Self::from_snapshot_with_queue_len(storage, &snapshot, queue_len)
+    }
+
+    pub(crate) fn from_snapshot_with_queue_len(
+        storage: &AppStorage,
+        snapshot: &SchedulerAgentSnapshot,
+        queue_len: usize,
+    ) -> Result<Self> {
+        let work_queue = storage.work_queue_prompt_projection()?;
+        Self::from_snapshot_with_queue_len_and_work_queue(storage, snapshot, queue_len, work_queue)
+    }
+
+    pub(crate) fn from_state_with_work_queue(
+        storage: &AppStorage,
+        state: &AgentState,
+        work_queue: WorkQueuePromptProjection,
+    ) -> Result<Self> {
+        let snapshot = SchedulerAgentSnapshot::from_state(state);
+        Self::from_snapshot_with_queue_len_and_work_queue(
+            storage,
+            &snapshot,
+            state.pending,
+            work_queue,
+        )
+    }
+
+    pub(crate) fn from_snapshot_with_queue_len_and_work_queue(
+        storage: &AppStorage,
+        snapshot: &SchedulerAgentSnapshot,
+        queue_len: usize,
+        work_queue: WorkQueuePromptProjection,
+    ) -> Result<Self> {
         let latest_tasks = storage.latest_task_records()?;
-        let active_tasks = state
+        let active_tasks = snapshot
             .active_task_ids
             .iter()
             .filter_map(|task_id| latest_tasks.iter().find(|task| &task.id == task_id))
@@ -45,7 +98,6 @@ impl SchedulerProjection {
             .cloned()
             .collect::<Vec<_>>();
         let has_blocking_active_tasks = active_tasks.iter().any(TaskRecord::is_blocking);
-        let work_queue = storage.work_queue_prompt_projection()?;
         let queued_runnable_work_items = work_queue
             .queued_blocked
             .iter()
@@ -56,7 +108,7 @@ impl SchedulerProjection {
             .latest_waiting_intents()?
             .into_iter()
             .filter(|intent| {
-                intent.agent_id == state.id && intent.status == WaitingIntentStatus::Active
+                intent.agent_id == snapshot.id && intent.status == WaitingIntentStatus::Active
             })
             .collect::<Vec<_>>();
         let active_work_item_waiting_intents = active_waiting_intents
@@ -70,23 +122,23 @@ impl SchedulerProjection {
         let active_timers = storage
             .latest_timer_records()?
             .into_iter()
-            .filter(|timer| timer.agent_id == state.id && timer.status == TimerStatus::Active)
+            .filter(|timer| timer.agent_id == snapshot.id && timer.status == TimerStatus::Active)
             .count();
         Ok(Self {
-            status: state.status.clone(),
+            status: snapshot.status.clone(),
             queue_len,
-            active_run_id: state.current_run_id.clone(),
+            active_run_id: snapshot.active_run_id.clone(),
             active_tasks,
             has_blocking_active_tasks,
             current_work_item: work_queue.current,
             queued_work_items: queued_runnable_work_items.len(),
             queued_runnable_work_items,
-            pending_wake_hint: state.pending_wake_hint.is_some(),
+            pending_wake_hint: snapshot.pending_wake_hint,
             active_waiting_intents: active_waiting_intents.len(),
             active_work_item_waiting_intents,
             active_agent_waiting_intents,
             active_timers,
-            turn_in_progress: state.current_run_id.is_some(),
+            turn_in_progress: snapshot.active_run_id.is_some(),
             runtime_error: runtime_error_active(
                 &storage.read_recent_events(64)?,
                 &storage.read_recent_briefs(64)?,

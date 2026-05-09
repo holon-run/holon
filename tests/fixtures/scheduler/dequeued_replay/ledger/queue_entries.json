@@ -1,0 +1,14 @@
+[
+  {
+    "message_id": "msg-queued",
+    "status": "queued"
+  },
+  {
+    "message_id": "msg-dequeued",
+    "status": "dequeued"
+  },
+  {
+    "message_id": "msg-processed",
+    "status": "processed"
+  }
+]

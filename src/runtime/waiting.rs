@@ -374,15 +374,6 @@ impl RuntimeHandle {
             .count())
     }
 
-    pub(super) async fn active_waiting_intent_count(&self) -> Result<usize> {
-        Ok(self
-            .latest_waiting_intents()
-            .await?
-            .into_iter()
-            .filter(|record| record.status == WaitingIntentStatus::Active)
-            .count())
-    }
-
     pub(super) async fn active_external_trigger_summaries(
         &self,
     ) -> Result<Vec<ExternalTriggerSummary>> {

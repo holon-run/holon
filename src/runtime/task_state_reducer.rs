@@ -9,6 +9,13 @@ pub(super) fn should_ignore_task_update(storage: &AppStorage, task: &TaskRecord)
         return Ok(false);
     };
 
+    if is_terminal_task_status(&latest.status)
+        && is_terminal_task_status(&task.status)
+        && latest.status != task.status
+    {
+        return Ok(true);
+    }
+
     Ok(task_status_phase(&latest.status) > task_status_phase(&task.status))
 }
 
@@ -254,6 +261,30 @@ mod tests {
 
         let stale = task("task-1", TaskStatus::Running, true);
         assert!(should_ignore_task_update(&storage, &stale).unwrap());
+    }
+
+    #[test]
+    fn conflicting_terminal_updates_are_ignored_after_terminal_status_exists() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage
+            .append_task(&task("task-1", TaskStatus::Completed, true))
+            .unwrap();
+
+        let late_terminal = task("task-1", TaskStatus::Failed, true);
+        assert!(should_ignore_task_update(&storage, &late_terminal).unwrap());
+    }
+
+    #[test]
+    fn repeated_same_terminal_updates_are_preserved_for_result_events() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage
+            .append_task(&task("task-1", TaskStatus::Failed, true))
+            .unwrap();
+
+        let repeated_terminal = task("task-1", TaskStatus::Failed, true);
+        assert!(!should_ignore_task_update(&storage, &repeated_terminal).unwrap());
     }
 
     #[test]

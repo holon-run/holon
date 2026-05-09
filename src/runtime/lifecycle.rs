@@ -123,30 +123,25 @@ impl RuntimeHandle {
         state: &AgentState,
         runtime_error_override: Option<bool>,
     ) -> Result<ClosureDecision> {
-        let active_waiting_intents = self.active_waiting_intent_count().await?;
-        let active_timers = self
-            .inner
-            .storage
-            .latest_timer_records()?
-            .into_iter()
-            .filter(|timer| timer.status == TimerStatus::Active)
-            .count();
-        let runtime_error = match runtime_error_override {
-            Some(value) => value,
-            None => runtime_error_active(
-                &self.inner.storage.read_recent_events(64)?,
-                &self.inner.storage.read_recent_briefs(64)?,
-            ),
-        };
         let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
+        let projection = scheduler::SchedulerProjection::from_state_with_work_queue(
+            &self.inner.storage,
+            state,
+            work_queue_projection.clone(),
+        )?;
+        let runtime_error = runtime_error_override.unwrap_or(projection.runtime_error);
         Ok(derive_closure_decision(&ClosureFacts {
             runtime_error,
             awaiting_operator_input: super::memory_refresh::work_queue_waits_for_operator(
                 &work_queue_projection,
             ),
-            active_blocking_tasks: self.blocking_active_task_count().await?,
-            active_waiting_intents,
-            active_timers,
+            active_blocking_tasks: projection
+                .active_tasks
+                .iter()
+                .filter(|task| task.is_blocking())
+                .count(),
+            active_waiting_intents: projection.active_waiting_intents,
+            active_timers: projection.active_timers,
             work_signal: super::memory_refresh::work_queue_reactivation_signal(
                 &work_queue_projection,
             ),
@@ -285,25 +280,6 @@ impl RuntimeHandle {
             return Ok(None);
         };
         bridge.workspace_entry_by_id(workspace_id).await
-    }
-
-    pub(crate) async fn blocking_active_task_count(&self) -> Result<usize> {
-        let state = self.agent_state().await?;
-        let active_task_ids = state
-            .active_task_ids
-            .iter()
-            .map(String::as_str)
-            .collect::<std::collections::HashSet<_>>();
-        Ok(self
-            .latest_task_records()
-            .await?
-            .into_iter()
-            .filter(|task| {
-                active_task_ids.contains(task.id.as_str())
-                    && task.is_blocking()
-                    && !task_state_reducer::is_terminal_task_status(&task.status)
-            })
-            .count())
     }
 
     pub(crate) async fn current_closure_decision(&self) -> Result<ClosureDecision> {
@@ -476,12 +452,14 @@ impl RuntimeHandle {
         let active_waiting_intent_count = storage
             .latest_waiting_intents()?
             .into_iter()
+            .filter(|record| record.agent_id == state.id)
             .filter(|record| record.status == WaitingIntentStatus::Active)
             .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
             .count();
         let active_timers = storage
             .latest_timer_records()?
             .into_iter()
+            .filter(|timer| timer.agent_id == state.id)
             .filter(|timer| timer.status == TimerStatus::Active)
             .count();
         let work_queue_projection = storage.work_queue_prompt_projection()?;
