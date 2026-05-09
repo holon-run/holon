@@ -1,6 +1,6 @@
 ---
 title: Create your first agent
-summary: From zero to your first Holon agent: build, start, TUI basics, create an agent, and configure models.
+summary: "From zero to your first Holon agent: build, start, TUI basics, create an agent, and configure models."
 order: 20
 ---
 

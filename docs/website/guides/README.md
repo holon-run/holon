@@ -13,36 +13,36 @@ surfaces safely.
 
 <!-- INDEX:START -->
 
-- [Quick examples](./quick-examples.md)
-  Common CLI workflows for creating agents, running tasks, and configuring the runtime.
-  <!-- mdorigin:index kind=article -->
-
-- [Integration](./integration.md)
-  How to connect external systems to Holon's HTTP control plane.
-  <!-- mdorigin:index kind=article -->
-
-- [Troubleshooting](./troubleshooting.md)
-  How to diagnose startup, configuration, model, and TUI issues.
-  <!-- mdorigin:index kind=article -->
-
-- [Multi-agent collaboration](./multi-agent.md)
-  How to delegate work to child agents and supervise the resulting task handles.
-  <!-- mdorigin:index kind=article -->
-
-- [Skills](./skills.md)
-  How reusable `SKILL.md` workflows are discovered, installed, and applied.
-  <!-- mdorigin:index kind=article -->
-
-- [Work items](./work-items.md)
-  How to track durable objectives, plans, blockers, and completion state.
-  <!-- mdorigin:index kind=article -->
-
 - [Local runtime](./local-runtime.md)
   A conservative workflow for running and inspecting Holon locally.
   <!-- mdorigin:index kind=article -->
 
+- [Quick examples](./quick-examples.md)
+  Common Holon tasks you can try after completing the Getting Started guide.
+  <!-- mdorigin:index kind=article -->
+
 - [Documentation workflow](./documentation-workflow.md)
   How to edit and build the mdorigin-powered Holon website.
+  <!-- mdorigin:index kind=article -->
+
+- [Integration guide](./integration.md)
+  Programmatic access to Holon's HTTP control plane with curl examples and endpoint reference.
+  <!-- mdorigin:index kind=article -->
+
+- [Troubleshooting](./troubleshooting.md)
+  Solutions for common Holon issues covering daemon, configuration, model, and TUI problems.
+  <!-- mdorigin:index kind=article -->
+
+- [Multi-agent collaboration](./multi-agent.md)
+  Spawning child agents, supervision contracts, and workspace modes for parallel work.
+  <!-- mdorigin:index kind=article -->
+
+- [Skills guide](./skills.md)
+  Reusable SKILL.md workflows, skill locations, and how to develop custom skills.
+  <!-- mdorigin:index kind=article -->
+
+- [Work items guide](./work-items.md)
+  Durable objective tracking with work items, plans, todo lists, and lifecycle management.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->
