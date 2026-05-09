@@ -19,7 +19,7 @@ behavior changes.
 <!-- INDEX:START -->
 
 - [CLI reference](./cli.md)
-  Holon's command-line interface, command tree, and common workflows.
+  Holon's current command-line interface as compiled — verified against `holon --help`.
   <!-- mdorigin:index kind=article -->
 
 - [Configuration](./configuration.md)

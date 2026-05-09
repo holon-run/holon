@@ -76,4 +76,8 @@ These are maintainer-facing documents; you do not need them to use Holon.
   How Holon classifies origin, trust, and priority to keep long-lived agents secure.
   <!-- mdorigin:index kind=article -->
 
+- [Documentation layers](./documentation-layers.md)
+  How Holon separates product docs, current-contract reference, and maintainer design records.
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->
