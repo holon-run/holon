@@ -1,44 +1,70 @@
 ---
 title: Roadmap
-summary: The order in which Holon is defining its runtime.
+summary: What you can rely on today, what's coming next, and what's still experimental.
 order: 50
 ---
 
 # Roadmap
 
-Holon is early-stage. The roadmap prioritizes runtime clarity before adapters,
-plugins, or UI surfaces.
+Holon is pre-1.0. This page tells you what's stable enough to use, what's
+actively changing, and where the project is headed.
 
-## Current priorities
+## What you can rely on today
 
-1. Runtime model and message envelope.
-2. Queue, wake, sleep, and task lifecycle.
-3. Event ingress and trust classification.
-4. Structured user-facing output.
-5. Integrations and adapters.
+These surfaces are stabilizing and unlikely to change without notice:
 
-## What this means for the website
+- **Agent model:** Agents have durable homes, identities, and lifecycles.
+  Creating, listing, and inspecting agents works reliably.
+- **Work items:** Durable objectives with plans, todo lists, and completion
+  tracking are production-grade.
+- **Task supervision:** Shell commands and child agent delegation through the
+  task handle model are stable.
+- **Daemon mode:** `holon daemon start/stop/status/logs` is the recommended way
+  to run Holon interactively.
+- **Control plane:** `holon serve` exposes a working HTTP API for integration.
+- **Trust classification:** Origin and trust levels (`trusted-operator`,
+  `trusted-system`, `trusted-integration`, `untrusted-external`) are enforced
+  at ingress.
 
-The documentation site should mirror that priority:
+## What's experimental
 
-- Explain the runtime vocabulary before promoting integrations.
-- Keep Markdown source readable for humans and agents.
-- Link to deeper repository docs and RFCs when a design needs more context.
-- Avoid publishing unstable behavior as if it were a settled public contract.
+These surfaces work but may change shape or naming:
 
-## Near-term documentation work
+- **CLI command surface:** Command names, flags, and subcommand trees may
+  reorganize. Use `holon --help` as the authority over any written reference.
+- **Configuration schema:** Config keys and credential profiles may evolve.
+- **Provider and model configuration:** Provider registration, fallback
+  behavior, and model catalog are still being refined.
+- **TUI:** The terminal UI is functional but not final in layout or navigation.
+- **Skills system:** Skill loading, discovery, and the SKILL.md contract are
+  stable in concept but may gain new capabilities.
 
-- Add architecture diagrams once the core envelope and lifecycle names settle.
-- Add concrete CLI examples after the command surface stabilizes.
-- Add deployment docs once HTTP and worker adapters are ready for external use.
-- Add release notes and migration guides when packaged releases become routine.
+## What's coming next
 
-## Non-goals for now
+The project prioritizes runtime clarity before adapters, plugins, or UI
+surfaces. Near-term work:
 
-- UI-first product pages.
-- A plugin marketplace.
+1. **Stabilize the public API contract** — lock down CLI, config, and HTTP
+   surface shapes so integrations can depend on them.
+2. **Provider catalog** — first-class support for a verified set of model
+   providers with documented credential flows.
+3. **Event ingress model** — formalize how webhooks, timers, and external
+   triggers enter the runtime queue.
+4. **Packaged releases** — provide pre-built binaries and versioned release
+   notes so users don't need to build from source.
+
+For the detailed implementation roadmap and current RFCs, see the repository
+[docs/rfcs/](https://github.com/holon-run/holon/tree/main/docs/rfcs) and
+[docs/next-phase-direction.md](https://github.com/holon-run/holon/blob/main/docs/next-phase-direction.md).
+
+## Non-goals
+
+Holon is *not* focused on these right now:
+
+- UI-first product pages or dashboards.
+- A plugin marketplace or extension registry.
 - Hidden automation that cannot be inspected as runtime state.
-- Documentation that contradicts the repository runtime specs.
+- Documentation that contradicts the repository runtime contracts.
 
 <!-- INDEX:START -->
 

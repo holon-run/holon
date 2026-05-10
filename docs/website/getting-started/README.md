@@ -1,14 +1,14 @@
 ---
 title: Getting started
-summary: Install Holon from source, inspect the runtime, and run the docs site.
+summary: Go from zero to your first Holon agent in under 15 minutes.
 order: 10
 ---
 
 # Getting started
 
-Holon is currently developed as a Rust runtime. The fastest way to understand
-it is to run the binary locally, inspect the repository docs, and keep the
-runtime model in view while experimenting.
+Holon is currently built from source as a Rust binary. This section gives you
+the shortest path from clone to a running agent, then shows where to branch
+based on what you want to do next.
 
 ## New to Holon?
 
@@ -18,77 +18,49 @@ If this is your first time using Holon, follow our step-by-step tutorial:
 
 This hands-on guide covers:
 
-- Building Holon from source
-- Starting the runtime (CLI mode and daemon mode)
-- Using the Terminal UI (TUI)
-- Creating agents with templates
+- Building and verifying the Holon binary
+- Starting the runtime in daemon mode
+- Connecting with the Terminal UI
+- Creating an agent and sending your first prompt
 - Configuring models and providers
 
-## Experienced developers?
+## Which runtime mode should I use?
+
+Holon gives you three ways to interact with the runtime:
+
+| Mode | Command | Best for |
+|------|---------|----------|
+| **One-shot** | `holon run "..."` | Quick single-turn tasks — no daemon needed |
+| **Daemon + TUI** | `holon daemon start` + `holon tui` | Interactive agent sessions with state, queues, and workspaces |
+| **Daemon + HTTP** | `holon daemon start` + HTTP client | Integrations, automation, control-plane consumers |
+
+The [first agent tutorial](first-agent.md) uses daemon + TUI because it
+gives you the full interactive experience. For one-shot runs, see the
+[quick examples](/guides/quick-examples/).
+
+## Evaluate or explore?
 
 If you're already familiar with Holon or want to jump straight into specifics:
 
-- **[Runtime model](/concepts/runtime-model.md)** - Understand Holon's core concepts
-- **[Trust boundaries](/concepts/trust-boundaries.md)** - Learn about security and isolation
-- **[Local runtime guide](/guides/local-runtime.md)** - Conservative workflow for local development
-- **[Work items guide](/guides/work-items.md)** - Track durable objectives across turns
-- **[Quick examples](/guides/quick-examples.md)** - Common tasks and workflows
-- **[Integration guide](/guides/integration.md)** - Integrate Holon into your systems
-- **[Troubleshooting guide](/guides/troubleshooting.md)** - Diagnose common setup and runtime issues
-- **[CLI reference](/reference/cli.md)** - Command-line interface details
-- **[HTTP control plane](/reference/http-control-plane.md)** - REST API for automation
+- **[Quick examples](/guides/quick-examples/)** — one-shot and common task patterns
+- **[Concepts](/concepts/)** — the mental model before diving into internals
+- **[CLI reference](/reference/cli.md)** — full command surface
+- **[Troubleshooting](/guides/troubleshooting/)** — diagnose common setup issues
+
+## Contribute or develop?
+
+If you plan to modify or contribute to Holon itself:
+
+- **[Local runtime guide](/guides/local-runtime/)** — conservative development workflow
+- **[Documentation workflow](/guides/documentation-workflow/)** — how to build and preview this site
+- **[Integration guide](/guides/integration/)** — wire Holon into external systems
+- Repository `docs/` directory — RFCs, implementation decisions, and architecture notes
 
 ## Requirements
 
-- Rust toolchain with Cargo.
-- Node.js only when you are working on this mdorigin documentation site.
-- A model/provider configuration appropriate for the local runtime commands you
-  intend to exercise.
-
-## Build from source
-
-```bash
-git clone https://github.com/holon-run/holon.git
-cd holon
-cargo build
-```
-
-Run the binary help to see the currently compiled command surface:
-
-```bash
-cargo run -- --help
-```
-
-## Learn the runtime vocabulary
-
-Before wiring Holon into an integration, read:
-
-- [Runtime model](/concepts/runtime-model.md)
-- [Trust boundaries](/concepts/trust-boundaries.md)
-- [Local runtime guide](/guides/local-runtime.md)
-
-The key idea is that Holon is not just a request/response wrapper around a
-model. It tracks work, tasks, queues, wake conditions, and delivery surfaces as
-runtime state.
-
-## Run the documentation site
-
-The `docs/website/` directory is a mdorigin content root:
-
-```bash
-cd docs/website
-mdorigin dev --root .
-```
-
-Useful build checks:
-
-```bash
-mdorigin build index --root .
-mdorigin build search --root . --out dist/search
-mdorigin build cloudflare --root . --search dist/search
-```
-
-The generated `dist/` directory is ignored because it is a build artifact.
+- Rust toolchain with Cargo (build from source; pre-built binaries not yet available)
+- A model provider API key (Anthropic, OpenAI, or compatible)
+- Node.js and mdorigin (only needed for building this documentation site)
 
 ## Repository orientation
 

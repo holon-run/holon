@@ -4,6 +4,13 @@ Date: 2026-04-23
 
 ## Completion Status
 
+**Reconciled with documentation layers (#1012)**: 2026-05-09
+
+The three-layer documentation model from #1006/#1012 is now documented at
+`docs/website/concepts/documentation-layers.md`. This audit remains the
+canonical maintainer-facing tracking document for vocabulary drift, archive
+candidates, and RFC merge targets.
+
 **Executed**: 2026-05-07
 
 The high-confidence archival and roadmap consolidation recommendations from this
