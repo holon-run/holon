@@ -193,14 +193,13 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
                 },
                 source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
             },
-            available_models: Vec::new(),
-            model_availability: Vec::new(),
         },
         token_usage: AgentTokenUsageSummary {
             total: TokenUsage::new(0, 0),
             total_model_rounds: 0,
             last_turn: None,
         },
+        model_availability: Vec::new(),
         closure: ClosureDecision {
             outcome: ClosureOutcome::Completed,
             waiting_reason: None,

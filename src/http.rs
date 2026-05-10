@@ -133,6 +133,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/handshake", get(handshake))
+        .route("/models", get(models_handler))
         .route("/agents", get(list_agents))
         .route("/agents/list", get(list_agent_entries))
         .route("/agents/:agent_id/enqueue", post(enqueue))
@@ -537,6 +538,20 @@ pub async fn root(
     })))
 }
 
+pub async fn models_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state.host.default_runtime().await.map_err(error_response)?;
+    let available_models = runtime.available_models().await.map_err(error_response)?;
+    let model_availability = runtime.model_availability().await.map_err(error_response)?;
+    Ok(Json(json!({
+        "available_models": available_models,
+        "model_availability": model_availability,
+    })))
+}
+
 pub async fn handshake(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -883,11 +898,6 @@ pub async fn agent_state(
         })
         .collect();
     let agent = runtime.agent_summary().await.map_err(error_response)?;
-    // P0: strip heavy model listing from bootstrap snapshot to reduce response size.
-    // TUI clients deserialize with serde(default) so empty vecs are harmless.
-    let mut agent = agent;
-    agent.model.available_models.clear();
-    agent.model.model_availability.clear();
     let tasks = runtime
         .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
         .await
