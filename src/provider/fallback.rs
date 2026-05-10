@@ -407,6 +407,16 @@ impl AgentProvider for FallbackProvider {
                             transport_diagnostics: provider_transport_diagnostics(&error).cloned(),
                         });
                         last_error = Some(error);
+                        let has_fallback = candidate_index + 1 < self.candidates.len();
+                        warn!(
+                            model_ref = %candidate.model_ref,
+                            attempt,
+                            max_attempts,
+                            failure_kind = classification.kind.as_str(),
+                            disposition = classification.disposition.as_str(),
+                            has_fallback,
+                            "provider turn failed; advancing to fallback"
+                        );
                         break;
                     }
                 }
