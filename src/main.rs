@@ -1646,7 +1646,7 @@ fn export_scheduler_fixture(
     write_json_pretty(
         &output.join("agent.json"),
         &serde_json::json!({
-            "current_work_item_id": agent.current_work_item_id,
+            "current_work_item_id": agent.current_work_item_id.clone(),
             "pending_wake_hint_reason": pending_wake_hint_reason,
             "turn_index": agent.turn_index,
             "last_turn_terminal_kind": last_turn_terminal_kind,

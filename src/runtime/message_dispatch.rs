@@ -25,21 +25,20 @@ impl RuntimeHandle {
         let continuation_resolution = continuation_trigger
             .as_ref()
             .map(|trigger| resolve_continuation(&prior_closure, trigger));
-        let model_turn_allowed = {
+        let scheduler_state = {
             let guard = self.inner.agent.lock().await;
-            !matches!(
-                guard.state.status,
-                AgentStatus::Paused | AgentStatus::Stopped
-            )
+            guard.state.clone()
         };
+        let model_turn_allowed = !matches!(
+            scheduler_state.status,
+            AgentStatus::Paused | AgentStatus::Stopped
+        );
         let model_visible = model_turn_allowed
             && continuation_resolution
                 .as_ref()
                 .is_some_and(|resolution| resolution.model_visible);
-        let scheduler_projection = {
-            let guard = self.inner.agent.lock().await;
-            scheduler::SchedulerProjection::from_state(&self.inner.storage, &guard.state)?
-        };
+        let scheduler_projection =
+            scheduler::SchedulerProjection::from_state(&self.inner.storage, &scheduler_state)?;
         let scheduler_decision = scheduler::decide_next_action(
             &scheduler_projection,
             scheduler::SchedulerBoundary::MessageProcessing,
