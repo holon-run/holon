@@ -1534,9 +1534,9 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
     assert!(items.iter().any(|item| matches!(
         item,
         ConversationCell::SystemNotice { body, .. }
-            if body.contains("Command finished: cargo test tui")
+            if body.contains("cargo test tui")
     )));
-    assert!(rendered.contains("Command finished: cargo test tui"));
+    assert!(rendered.contains("cargo test tui"));
     assert!(!rendered.contains("State sync"));
     assert!(!rendered.contains("agent_state_changed"));
     assert!(rendered.contains("Working"));

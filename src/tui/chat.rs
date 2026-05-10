@@ -1,4 +1,7 @@
 use super::*;
+use crate::operator_event::OperatorEventCategory;
+use crate::presentation::{PresentationItem, PresentationReducer, Renderable};
+use crate::tui::projection::ProjectionEventRecord;
 use crossterm::event::KeyCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,25 +175,35 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     }
 
     if let Some(projection) = app.projection.as_ref() {
-        for event in projection.visible_events(app.display_mode) {
-            if event.kind == "message_enqueued" || event.kind == "brief_created" {
-                continue;
+        // New pipeline: events → PresentationItems → RenderedCells → ConversationCells
+        let level = app.display_mode.display_level();
+        let events: Vec<ProjectionEventRecord> = projection
+            .event_log()
+            .iter()
+            .cloned()
+            .filter(|e| {
+                e.kind != "message_enqueued"
+                    && e.kind != "brief_created"
+                    && !matches!(e.presentation.category, OperatorEventCategory::StateSync)
+            })
+            .collect();
+
+        let mut reducer = PresentationReducer::new();
+        let timed_items = reducer.reduce(events.as_slice());
+
+        for timed in &timed_items {
+            if timed.item.is_visible_at(level) {
+                for rendered in timed.item.render(level) {
+                    cells.push(rendered_to_conversation_cell(&rendered, timed.ts));
+                }
             }
-            if is_progress_event(event) && assistant_message_from_event(event).is_some() {
-                cells.push(ConversationCell::AssistantMarkdown(AssistantMarkdownCell {
-                    created_at: event.ts,
-                    agent_id: "Holon (progress)".to_string(),
-                    markdown: conversation_event_body(event),
-                }));
-            } else if !matches!(
-                event.presentation.category,
-                crate::operator_event::OperatorEventCategory::StateSync
-            ) {
-                cells.push(ConversationCell::SystemNotice {
-                    created_at: event.ts,
-                    speaker: conversation_event_speaker(event),
-                    body: conversation_event_body(event),
-                });
+        }
+
+        // Also flush any pending items
+        let flushed = reducer.flush();
+        for timed in &flushed {
+            for rendered in timed.item.render(level) {
+                cells.push(rendered_to_conversation_cell(&rendered, timed.ts));
             }
         }
     }
@@ -674,8 +687,10 @@ fn active_activity_body(
     latest_action: Option<&crate::tui::projection::ProjectionEventRecord>,
 ) -> String {
     let mut lines = Vec::new();
-    if let Some(assistant) = latest_assistant {
-        lines.push(format!("Assistant {}", trim_activity_line(assistant, 120)));
+    // Try the new presentation pipeline for a cleaner activity display.
+    let presentation_text = latest_action.and_then(|action| presentation_activity_text(action));
+    if let Some(text) = presentation_text.or_else(|| latest_assistant.map(|s| s.to_string())) {
+        lines.push(format!("Assistant {}", trim_activity_line(&text, 120)));
     }
     if let Some(action) = latest_action {
         lines.push(format!(
@@ -684,6 +699,18 @@ fn active_activity_body(
         ));
     }
     lines.join("\n")
+}
+
+/// Try to produce a clean activity line via the PresentationReducer.
+fn presentation_activity_text(event: &ProjectionEventRecord) -> Option<String> {
+    let mut reducer = PresentationReducer::new();
+    let items = reducer.reduce(&[event.clone()]);
+    for timed in &items {
+        if let PresentationItem::AssistantProgress { text, .. } = &timed.item {
+            return Some(text.clone());
+        }
+    }
+    None
 }
 
 fn action_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
@@ -993,5 +1020,27 @@ mod tests {
             assistant_message_from_event(&assistant).as_deref(),
             Some("I will inspect the event path first.")
         );
+    }
+}
+
+// ── Presentation item → ConversationCell conversion ───────────────────────
+
+/// Convert a surface-neutral `RenderedCell` into a TUI-specific `ConversationCell`.
+pub(super) fn rendered_to_conversation_cell(
+    cell: &crate::presentation::RenderedCell,
+    ts: chrono::DateTime<chrono::Utc>,
+) -> ConversationCell {
+    if cell.is_live {
+        ConversationCell::ActiveActivity {
+            created_at: ts,
+            speaker: cell.speaker.clone(),
+            body: cell.body.clone(),
+        }
+    } else {
+        ConversationCell::SystemNotice {
+            created_at: ts,
+            speaker: cell.speaker.clone(),
+            body: cell.body.clone(),
+        }
     }
 }

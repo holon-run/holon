@@ -42,7 +42,7 @@ mod keymap;
 mod logging;
 mod model_picker;
 mod overlay;
-mod projection;
+pub(crate) mod projection;
 mod render;
 mod runtime;
 mod state;
