@@ -11,6 +11,7 @@ use crate::{
     config::{AppConfig, RuntimeModelCatalog},
     context::ContextConfig,
     host::RuntimeHostBridge,
+    model_catalog::BuiltInModelMetadata,
     provider::{build_provider_from_model_chain, resolved_model_availability, AgentProvider},
     queue::RuntimeQueue,
     storage::AppStorage,
@@ -372,8 +373,6 @@ impl RuntimeHandle {
             override_model: state.model_override.clone(),
             override_reasoning_effort: state.model_override_reasoning_effort.clone(),
             resolved_policy,
-            available_models: self.inner.model_catalog.available_models(),
-            model_availability: self.inner.model_availability.clone(),
         }
     }
 
@@ -416,5 +415,13 @@ impl RuntimeHandle {
 
     pub(crate) async fn current_context_config(&self) -> ContextConfig {
         self.inner.context_config.read().await.clone()
+    }
+
+    pub(crate) async fn available_models(&self) -> Result<Vec<BuiltInModelMetadata>> {
+        Ok(self.inner.model_catalog.available_models())
+    }
+
+    pub(crate) async fn model_availability(&self) -> Result<Vec<ResolvedModelAvailability>> {
+        Ok(self.inner.model_availability.clone())
     }
 }

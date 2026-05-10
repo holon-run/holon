@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::config::ModelRef;
-use crate::model_catalog::{BuiltInModelMetadata, ResolvedRuntimeModelPolicy};
+use crate::model_catalog::ResolvedRuntimeModelPolicy;
 use crate::system::{
     ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind,
 };
@@ -3024,10 +3024,6 @@ pub struct AgentModelState {
     pub override_reasoning_effort: Option<String>,
     #[serde(default)]
     pub resolved_policy: ResolvedRuntimeModelPolicy,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub available_models: Vec<BuiltInModelMetadata>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_availability: Vec<ResolvedModelAvailability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3106,6 +3102,8 @@ pub struct AgentSummary {
     pub lifecycle: AgentLifecycleHint,
     pub model: AgentModelState,
     pub token_usage: AgentTokenUsageSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_availability: Vec<ResolvedModelAvailability>,
     pub closure: ClosureDecision,
     pub execution: ExecutionSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3171,8 +3169,6 @@ impl AgentListModelSummary {
             override_model: self.override_model,
             override_reasoning_effort: self.override_reasoning_effort,
             resolved_policy: ResolvedRuntimeModelPolicy::default(),
-            available_models: Vec::new(),
-            model_availability: Vec::new(),
         }
     }
 }
@@ -3271,6 +3267,7 @@ impl AgentListEntry {
             identity: self.identity,
             lifecycle: self.lifecycle,
             model: self.model.into_model_state(),
+            model_availability: Vec::new(),
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),
                 total_model_rounds: 0,
@@ -3381,7 +3378,6 @@ mod tests {
             model.resolved_policy.source,
             crate::model_catalog::ModelMetadataSource::UnknownFallback
         );
-        assert!(model.available_models.is_empty());
     }
 
     #[test]

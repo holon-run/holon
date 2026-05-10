@@ -1953,11 +1953,6 @@ mod tests {
                 .prompt_budget_estimated_tokens,
             180_000
         );
-        assert!(inherited
-            .model
-            .available_models
-            .iter()
-            .any(|entry| entry.model_ref.as_string() == "openai/gpt-5.4"));
 
         let updated = runtime
             .set_model_override(ModelRef::parse("openai/gpt-5.4").unwrap(), None)

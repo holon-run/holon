@@ -22,7 +22,6 @@ pub(super) fn model_picker_rows(agent: Option<&AgentSummary>, filter: &str) -> V
     let inherit_row = inherit_default_row(agent);
     let query = filter.trim().to_ascii_lowercase();
     let model_rows = agent
-        .model
         .model_availability
         .iter()
         .filter(|entry| entry.available)
@@ -200,17 +199,16 @@ mod tests {
                 override_model: None,
                 override_reasoning_effort: None,
                 resolved_policy: policy("openai/gpt-5.4", "GPT-5.4"),
-                available_models: Vec::new(),
-                model_availability: vec![
-                    availability("openai/gpt-5.4", "GPT-5.4", true),
-                    availability("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", false),
-                ],
             },
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),
                 total_model_rounds: 0,
                 last_turn: None,
             },
+            model_availability: vec![
+                availability("openai/gpt-5.4", "GPT-5.4", true),
+                availability("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", false),
+            ],
             closure: ClosureDecision {
                 outcome: ClosureOutcome::Completed,
                 waiting_reason: None,
