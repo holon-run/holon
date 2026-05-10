@@ -907,10 +907,12 @@ impl RuntimeHandle {
                         &state,
                         queue_len,
                     )?;
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &scheduler::idle_boundary_decision(&projection, "run_loop"),
-                    )?;
+                    let decision = scheduler::decide_next_action(
+                        &projection,
+                        scheduler::SchedulerBoundary::RunLoop,
+                        scheduler::SchedulerInput::Idle,
+                    );
+                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                     return Ok(());
                 }
                 RunLoopPoll::Message(message, prior_state, running_state) => {
@@ -929,7 +931,11 @@ impl RuntimeHandle {
                         &idle_snapshot.0,
                         idle_snapshot.1,
                     )?;
-                    let decision = scheduler::idle_boundary_decision(&projection, "run_loop_idle");
+                    let decision = scheduler::decide_next_action(
+                        &projection,
+                        scheduler::SchedulerBoundary::RunLoopIdle,
+                        scheduler::SchedulerInput::Idle,
+                    );
                     if !matches!(
                         decision.kind,
                         scheduler::SchedulerDecisionKind::Sleep

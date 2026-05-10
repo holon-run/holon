@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    fs,
     io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -30,7 +31,7 @@ use holon::{
     solve::{run_solve, SolveRequest},
     storage::AppStorage,
     tui::run_tui,
-    types::{AuditEvent, ControlAction, TrustLevel},
+    types::{AuditEvent, ControlAction, TimerStatus, TrustLevel, WaitingIntentStatus},
 };
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
@@ -388,6 +389,12 @@ enum DebugCommands {
         limit: usize,
         #[arg(long, default_value_t = 5000)]
         events_limit: usize,
+    },
+    SchedulerFixture {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        output: PathBuf,
     },
 }
 
@@ -1316,6 +1323,63 @@ mod tests {
     }
 
     #[test]
+    fn debug_scheduler_fixture_command_parses_agent_and_output() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "scheduler-fixture",
+            "--agent",
+            "pm",
+            "--output",
+            "/tmp/scheduler-case",
+        ]);
+        let Commands::Debug {
+            command: DebugCommands::SchedulerFixture { agent, output },
+        } = cli.command
+        else {
+            panic!("expected debug scheduler-fixture command");
+        };
+        assert_eq!(agent.as_deref(), Some("pm"));
+        assert_eq!(output, PathBuf::from("/tmp/scheduler-case"));
+    }
+
+    #[test]
+    fn export_scheduler_fixture_writes_replay_harness_shape() {
+        let config = test_config();
+        let agent_home = config.data_dir.join("agents/default");
+        let storage = AppStorage::new(&agent_home).unwrap();
+        let mut agent = holon::types::AgentState::new("default");
+        agent.current_work_item_id = Some("work-1".into());
+        storage.write_agent(&agent).unwrap();
+        let mut work_item = holon::types::WorkItemRecord::new(
+            "default",
+            "fixture work",
+            holon::types::WorkItemState::Open,
+        );
+        work_item.id = "work-1".into();
+        work_item.revision = 2;
+        storage.append_work_item(&work_item).unwrap();
+
+        let output = tempfile::tempdir().unwrap();
+        export_scheduler_fixture(&config, None, output.path()).unwrap();
+
+        let agent_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join("agent.json")).unwrap())
+                .unwrap();
+        let expected_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join("expected.json")).unwrap())
+                .unwrap();
+        assert_eq!(agent_json["current_work_item_id"].as_str(), Some("work-1"));
+        assert_eq!(
+            expected_json["current_work_item_revision"].as_u64(),
+            Some(2)
+        );
+        assert!(output.path().join("ledger/messages.jsonl").exists());
+        assert!(output.path().join("ledger/tools.jsonl").exists());
+        assert!(output.path().join("ledger/transcript.jsonl").exists());
+    }
+
+    #[test]
     fn daemon_start_passes_inline_token_through_env_not_argv() {
         let options = ServeOptions {
             access: ServeAccess::Lan,
@@ -1547,7 +1611,152 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
             limit,
             events_limit,
         } => print_latency_diagnostics(&config, agent, limit, events_limit),
+        DebugCommands::SchedulerFixture { agent, output } => {
+            export_scheduler_fixture(&config, agent, &output)
+        }
     }
+}
+
+fn export_scheduler_fixture(
+    config: &AppConfig,
+    agent: Option<String>,
+    output: &Path,
+) -> Result<()> {
+    let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
+    let agent_home = config.data_dir.join("agents").join(&agent_id);
+    let storage = AppStorage::new(&agent_home)?;
+    let agent = storage.read_agent()?.with_context(|| {
+        format!(
+            "agent state not found for {agent_id} in {}",
+            agent_home.display()
+        )
+    })?;
+    let ledger_dir = output.join("ledger");
+    fs::create_dir_all(&ledger_dir)
+        .with_context(|| format!("failed to create {}", ledger_dir.display()))?;
+
+    let pending_wake_hint_reason = agent
+        .pending_wake_hint
+        .as_ref()
+        .map(|pending| pending.reason.clone());
+    let last_turn_terminal_kind = agent
+        .last_turn_terminal
+        .as_ref()
+        .map(|terminal| terminal.kind.clone());
+    write_json_pretty(
+        &output.join("agent.json"),
+        &serde_json::json!({
+            "current_work_item_id": agent.current_work_item_id.clone(),
+            "pending_wake_hint_reason": pending_wake_hint_reason,
+            "turn_index": agent.turn_index,
+            "last_turn_terminal_kind": last_turn_terminal_kind,
+        }),
+    )?;
+
+    let work_queue = storage.work_queue_prompt_projection()?;
+    let active_tasks = storage.latest_active_task_records_for_agent(&agent.id, usize::MAX)?;
+    let has_blocking_active_tasks = active_tasks.iter().any(|task| task.is_blocking());
+    let active_waiting_intents = storage
+        .latest_waiting_intents()?
+        .into_iter()
+        .filter(|intent| {
+            intent.agent_id == agent.id && intent.status == WaitingIntentStatus::Active
+        })
+        .collect::<Vec<_>>();
+    let active_timers = storage
+        .latest_timer_records()?
+        .into_iter()
+        .filter(|timer| timer.agent_id == agent.id && timer.status == TimerStatus::Active)
+        .collect::<Vec<_>>();
+    let replay_message_ids = storage
+        .recovery_snapshot()?
+        .replay_messages
+        .into_iter()
+        .map(|message| message.id)
+        .collect::<Vec<_>>();
+    write_json_pretty(
+        &output.join("expected.json"),
+        &serde_json::json!({
+            "current_work_item_id": work_queue.current.as_ref().map(|item| item.id.clone()),
+            "current_work_item_revision": work_queue.current.as_ref().map(|item| item.revision),
+            "queued_work_items": work_queue.queued_blocked.iter().filter(|item| item.is_runnable()).count(),
+            "active_tasks": active_tasks.len(),
+            "has_blocking_active_tasks": has_blocking_active_tasks,
+            "pending_wake_hint": agent.pending_wake_hint.is_some(),
+            "active_waiting_intents": active_waiting_intents.len(),
+            "active_work_item_waiting_intents": active_waiting_intents.iter().filter(|intent| matches!(intent.scope, holon::types::ExternalTriggerScope::WorkItem)).count(),
+            "active_agent_waiting_intents": active_waiting_intents.iter().filter(|intent| matches!(intent.scope, holon::types::ExternalTriggerScope::Agent)).count(),
+            "active_timers": active_timers.len(),
+            "runtime_error": storage.read_recent_events(128)?.iter().any(|event| event.kind == "runtime_error"),
+            "replay_message_ids": replay_message_ids,
+            "turn_terminal_kind": last_turn_terminal_kind,
+        }),
+    )?;
+
+    write_jsonl(
+        &ledger_dir.join("messages.jsonl"),
+        &storage.read_recent_messages(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("queue_entries.jsonl"),
+        &storage.read_recent_queue_entries(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("events.jsonl"),
+        &storage.read_recent_events(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("tasks.jsonl"),
+        &storage.read_recent_tasks(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("work_items.jsonl"),
+        &storage.read_recent_work_items(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("waiting_intents.jsonl"),
+        &storage.read_recent_waiting_intents(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("timers.jsonl"),
+        &storage.read_recent_timers(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("tools.jsonl"),
+        &storage.read_recent_tool_executions(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("briefs.jsonl"),
+        &storage.read_recent_briefs(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("transcript.jsonl"),
+        &storage.read_recent_transcript(usize::MAX)?,
+    )?;
+    write_jsonl(
+        &ledger_dir.join("external_triggers.jsonl"),
+        &storage.read_recent_external_triggers(usize::MAX)?,
+    )?;
+
+    println!(
+        "Exported scheduler fixture for agent {agent_id} to {}",
+        output.display()
+    );
+    Ok(())
+}
+
+fn write_json_pretty(path: &Path, value: &serde_json::Value) -> Result<()> {
+    let content = serde_json::to_vec_pretty(value)?;
+    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn write_jsonl<T: serde::Serialize>(path: &Path, values: &[T]) -> Result<()> {
+    let mut content = Vec::new();
+    for value in values {
+        serde_json::to_writer(&mut content, value)?;
+        content.push(b'\n');
+    }
+    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
 }
 
 #[derive(Debug, Default)]
