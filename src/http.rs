@@ -66,7 +66,7 @@ use crate::{
 };
 
 const STATE_BOOTSTRAP_TASK_LIMIT: usize = 40;
-const STATE_BOOTSTRAP_TRANSCRIPT_LIMIT: usize = 40;
+const STATE_BOOTSTRAP_TRANSCRIPT_LIMIT: usize = 20;
 const STATE_BOOTSTRAP_OPERATOR_MESSAGE_LIMIT: usize = 40;
 const STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT: usize = 2048;
 const STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT: usize = 8192;
@@ -82,7 +82,7 @@ pub struct AppState {
 
 const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
 const DEFAULT_EVENT_STREAM_WINDOW: usize = 128;
-const DEFAULT_STATE_EVENTS_TAIL_LIMIT: usize = DEFAULT_EVENT_STREAM_WINDOW;
+const DEFAULT_STATE_EVENTS_TAIL_LIMIT: usize = 32;
 const MAX_EVENT_STREAM_WINDOW: usize = 512;
 const EVENT_STREAM_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -883,6 +883,11 @@ pub async fn agent_state(
         })
         .collect();
     let agent = runtime.agent_summary().await.map_err(error_response)?;
+    // P0: strip heavy model listing from bootstrap snapshot to reduce response size.
+    // TUI clients deserialize with serde(default) so empty vecs are harmless.
+    let mut agent = agent;
+    agent.model.available_models.clear();
+    agent.model.model_availability.clear();
     let tasks = runtime
         .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
         .await
