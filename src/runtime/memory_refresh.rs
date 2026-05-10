@@ -162,57 +162,39 @@ impl RuntimeHandle {
 
         match trigger {
             Some(IdleTickTrigger::WorkQueueActive(active)) => {
-                if let Some(decision) =
-                    scheduler::wait_decision_for_projection(&scheduler_projection)
-                {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &decision
-                            .boundary("idle_tick")
-                            .evidence("work_queue_tick_blocked_by_wait_fact"),
-                    )?;
-                    return Ok(false);
-                }
-                if suppress_continue_active {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &scheduler::SchedulerDecision::new(
-                            scheduler::SchedulerDecisionKind::Noop,
-                            "continue_active_suppressed_after_model_visible_continuation",
-                        )
-                        .boundary("idle_tick")
-                        .liveness_only(true)
-                        .work_item_id(active.id.clone())
-                        .evidence(
-                            "model_visible_continuation_suppresses_duplicate_continue_active",
-                        ),
-                    )?;
-                    return Ok(false);
-                }
-                if let Some(result_brief_id) =
-                    self.duplicate_continue_active_result_brief_id(&active)?
-                {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &scheduler::SchedulerDecision::new(
-                            scheduler::SchedulerDecisionKind::Noop,
-                            "duplicate_continue_active",
-                        )
-                        .boundary("idle_tick")
-                        .liveness_only(true)
-                        .work_item_id(active.id.clone())
-                        .evidence("duplicate_tick_suppressed")
-                        .evidence(format!("result_brief_id={result_brief_id}")),
-                    )?;
-                    self.inner.storage.append_event(&AuditEvent::new(
-                        "system_tick_suppressed",
-                        serde_json::json!({
-                            "subsystem": "work_queue",
-                            "reason": "no_new_signal_after_result_brief",
-                            "work_item_id": active.id,
-                            "result_brief_id": result_brief_id,
-                        }),
-                    ))?;
+                let duplicate = self
+                    .duplicate_continue_active_result_brief_id(&active)?
+                    .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief);
+                let decision = scheduler::decide_next_action(
+                    &scheduler_projection,
+                    scheduler::SchedulerBoundary::IdleTick,
+                    scheduler::SchedulerInput::IdleSignal(
+                        scheduler::SchedulerIdleSignal::ContinueActive {
+                            work_item: &active,
+                            suppressed_after_model_visible_continuation: suppress_continue_active,
+                            duplicate: duplicate.clone(),
+                        },
+                    ),
+                );
+                if !matches!(
+                    decision.kind,
+                    scheduler::SchedulerDecisionKind::EmitSystemTick
+                ) {
+                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    if let Some(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief(
+                        result_brief_id,
+                    )) = duplicate
+                    {
+                        self.inner.storage.append_event(&AuditEvent::new(
+                            "system_tick_suppressed",
+                            serde_json::json!({
+                                "subsystem": "work_queue",
+                                "reason": "no_new_signal_after_result_brief",
+                                "work_item_id": active.id,
+                                "result_brief_id": result_brief_id,
+                            }),
+                        ))?;
+                    }
                     return Ok(false);
                 }
                 self.emit_system_tick_from_work_queue(&active, "continue_active")
@@ -220,39 +202,38 @@ impl RuntimeHandle {
                 Ok(true)
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued)) => {
-                if let Some(decision) =
-                    scheduler::wait_decision_for_projection(&scheduler_projection)
-                {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &decision
-                            .boundary("idle_tick")
-                            .evidence("work_queue_tick_blocked_by_wait_fact"),
-                    )?;
-                    return Ok(false);
-                }
-                if let Some(message_id) = self.duplicate_queued_available_message_id(&queued)? {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &scheduler::SchedulerDecision::new(
-                            scheduler::SchedulerDecisionKind::Noop,
-                            "duplicate_queued_available",
-                        )
-                        .boundary("idle_tick")
-                        .liveness_only(true)
-                        .work_item_id(queued.id.clone())
-                        .evidence("duplicate_tick_suppressed")
-                        .evidence(format!("message_id={message_id}")),
-                    )?;
-                    self.inner.storage.append_event(&AuditEvent::new(
-                        "system_tick_suppressed",
-                        serde_json::json!({
-                            "subsystem": "work_queue",
-                            "reason": "no_new_signal_after_queued_available",
-                            "work_item_id": queued.id,
-                            "message_id": message_id,
-                        }),
-                    ))?;
+                let duplicate = self
+                    .duplicate_queued_available_message_id(&queued)?
+                    .map(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage);
+                let decision = scheduler::decide_next_action(
+                    &scheduler_projection,
+                    scheduler::SchedulerBoundary::IdleTick,
+                    scheduler::SchedulerInput::IdleSignal(
+                        scheduler::SchedulerIdleSignal::QueuedAvailable {
+                            work_item: &queued,
+                            duplicate: duplicate.clone(),
+                        },
+                    ),
+                );
+                if !matches!(
+                    decision.kind,
+                    scheduler::SchedulerDecisionKind::EmitSystemTick
+                ) {
+                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    if let Some(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage(
+                        message_id,
+                    )) = duplicate
+                    {
+                        self.inner.storage.append_event(&AuditEvent::new(
+                            "system_tick_suppressed",
+                            serde_json::json!({
+                                "subsystem": "work_queue",
+                                "reason": "no_new_signal_after_queued_available",
+                                "work_item_id": queued.id,
+                                "message_id": message_id,
+                            }),
+                        ))?;
+                    }
                     return Ok(false);
                 }
                 self.emit_system_tick_from_work_queue(&queued, "queued_available")
@@ -260,18 +241,24 @@ impl RuntimeHandle {
                 Ok(true)
             }
             Some(IdleTickTrigger::WakeHint(pending)) => {
-                if let Some(message_id) = self.duplicate_wake_hint_message_id(&pending)? {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &scheduler::SchedulerDecision::new(
-                            scheduler::SchedulerDecisionKind::Noop,
-                            "duplicate_wake_hint",
-                        )
-                        .boundary("idle_tick")
-                        .liveness_only(true)
-                        .evidence("duplicate_wake_hint_suppressed")
-                        .evidence(format!("message_id={message_id}")),
-                    )?;
+                let duplicate = self
+                    .duplicate_wake_hint_message_id(&pending)?
+                    .map(scheduler::SchedulerDuplicateEvidence::WakeHintMessage);
+                let decision = scheduler::decide_next_action(
+                    &scheduler_projection,
+                    scheduler::SchedulerBoundary::IdleTick,
+                    scheduler::SchedulerInput::IdleSignal(
+                        scheduler::SchedulerIdleSignal::WakeHint {
+                            pending: &pending,
+                            duplicate,
+                        },
+                    ),
+                );
+                if !matches!(
+                    decision.kind,
+                    scheduler::SchedulerDecisionKind::EmitSystemTick
+                ) {
+                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                     let mut guard = self.inner.agent.lock().await;
                     if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                         guard.state.pending_wake_hint = None;

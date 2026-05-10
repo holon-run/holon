@@ -2,8 +2,8 @@ use super::*;
 use crate::runtime::closure::runtime_error_active;
 use crate::storage::{AppStorage, WorkQueuePromptProjection};
 use crate::types::{
-    AgentStatus, MessageEnvelope, TaskRecord, TaskStatus, TimerStatus, WaitingIntentStatus,
-    WorkItemRecord,
+    AgentStatus, MessageEnvelope, PendingWakeHint, TaskRecord, TaskStatus, TimerStatus,
+    TurnTerminalKind, WaitingIntentStatus, WorkItemRecord,
 };
 use chrono::{DateTime, Utc};
 
@@ -22,6 +22,7 @@ pub(crate) struct SchedulerProjection {
     pub active_work_item_waiting_intents: usize,
     pub active_agent_waiting_intents: usize,
     pub active_timers: usize,
+    pub last_turn_terminal: Option<TurnTerminalKind>,
     pub turn_in_progress: bool,
     pub runtime_error: bool,
 }
@@ -31,6 +32,7 @@ pub(crate) struct SchedulerAgentSnapshot {
     status: AgentStatus,
     active_run_id: Option<String>,
     pending_wake_hint: bool,
+    last_turn_terminal: Option<TurnTerminalKind>,
 }
 
 impl SchedulerAgentSnapshot {
@@ -40,6 +42,10 @@ impl SchedulerAgentSnapshot {
             status: state.status.clone(),
             active_run_id: state.current_run_id.clone(),
             pending_wake_hint: state.pending_wake_hint.is_some(),
+            last_turn_terminal: state
+                .last_turn_terminal
+                .as_ref()
+                .map(|terminal| terminal.kind.clone()),
         }
     }
 }
@@ -130,6 +136,7 @@ impl SchedulerProjection {
             active_work_item_waiting_intents,
             active_agent_waiting_intents,
             active_timers,
+            last_turn_terminal: snapshot.last_turn_terminal.clone(),
             turn_in_progress: snapshot.active_run_id.is_some(),
             runtime_error: runtime_error_active(
                 &storage.read_recent_events(64)?,
@@ -186,6 +193,59 @@ pub(crate) struct SchedulerDecision {
     pub evidence: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchedulerBoundary {
+    RunLoop,
+    RunLoopIdle,
+    MessageProcessing,
+    IdleTick,
+}
+
+impl SchedulerBoundary {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::RunLoop => "run_loop",
+            Self::RunLoopIdle => "run_loop_idle",
+            Self::MessageProcessing => "message_processing",
+            Self::IdleTick => "idle_tick",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SchedulerDuplicateEvidence {
+    ContinueActiveBrief(String),
+    QueuedAvailableMessage(String),
+    WakeHintMessage(String),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum SchedulerIdleSignal<'a> {
+    ContinueActive {
+        work_item: &'a WorkItemRecord,
+        suppressed_after_model_visible_continuation: bool,
+        duplicate: Option<SchedulerDuplicateEvidence>,
+    },
+    QueuedAvailable {
+        work_item: &'a WorkItemRecord,
+        duplicate: Option<SchedulerDuplicateEvidence>,
+    },
+    WakeHint {
+        pending: &'a PendingWakeHint,
+        duplicate: Option<SchedulerDuplicateEvidence>,
+    },
+}
+
+pub(crate) enum SchedulerInput<'a> {
+    Idle,
+    Message {
+        message: &'a MessageEnvelope,
+        model_turn_allowed: bool,
+        model_visible: bool,
+    },
+    IdleSignal(SchedulerIdleSignal<'a>),
+}
+
 impl SchedulerDecision {
     pub(crate) fn new(kind: SchedulerDecisionKind, reason: impl Into<String>) -> Self {
         Self {
@@ -237,6 +297,155 @@ impl SchedulerDecision {
     pub(crate) fn evidence(mut self, evidence: impl Into<String>) -> Self {
         self.evidence.push(evidence.into());
         self
+    }
+}
+
+pub(crate) fn decide_next_action(
+    projection: &SchedulerProjection,
+    boundary: SchedulerBoundary,
+    input: SchedulerInput<'_>,
+) -> SchedulerDecision {
+    let boundary_label = boundary.as_str();
+    if matches!(projection.status, AgentStatus::Stopped) {
+        return SchedulerDecision::new(SchedulerDecisionKind::Stop, "stopped")
+            .boundary(boundary_label)
+            .liveness_only(true)
+            .evidence(format!("status={:?}", projection.status));
+    }
+
+    match input {
+        SchedulerInput::Message {
+            message,
+            model_turn_allowed,
+            model_visible,
+        } => message_processing_decision(message, model_turn_allowed, model_visible)
+            .boundary(boundary_label)
+            .evidence(format!("queue_len={}", projection.queue_len))
+            .evidence(format!("turn_in_progress={}", projection.turn_in_progress)),
+        SchedulerInput::IdleSignal(signal) => {
+            decide_idle_signal_action(projection, boundary_label, signal)
+        }
+        SchedulerInput::Idle => idle_boundary_decision(projection, boundary_label),
+    }
+}
+
+fn decide_idle_signal_action(
+    projection: &SchedulerProjection,
+    boundary: &'static str,
+    signal: SchedulerIdleSignal<'_>,
+) -> SchedulerDecision {
+    if matches!(projection.status, AgentStatus::Paused) {
+        return SchedulerDecision::new(SchedulerDecisionKind::Noop, "paused")
+            .boundary(boundary)
+            .liveness_only(true)
+            .evidence(format!("status={:?}", projection.status));
+    }
+    if projection.turn_in_progress {
+        return SchedulerDecision::new(SchedulerDecisionKind::Noop, "turn_in_progress")
+            .boundary(boundary)
+            .liveness_only(true)
+            .evidence(format!("active_run_id={:?}", projection.active_run_id));
+    }
+
+    match signal {
+        SchedulerIdleSignal::WakeHint { pending, duplicate } => {
+            if let Some(SchedulerDuplicateEvidence::WakeHintMessage(message_id)) = duplicate {
+                return SchedulerDecision::new(SchedulerDecisionKind::Noop, "duplicate_wake_hint")
+                    .boundary(boundary)
+                    .liveness_only(true)
+                    .evidence("duplicate_wake_hint_suppressed")
+                    .evidence(format!("message_id={message_id}"))
+                    .evidence(format!(
+                        "idempotency_key={}",
+                        wake_hint_idempotency_key(pending)
+                    ));
+            }
+            SchedulerDecision::new(SchedulerDecisionKind::EmitSystemTick, "wake_hint")
+                .boundary(boundary)
+                .model_visible(true)
+                .evidence("runtime_idle")
+                .evidence("pending_wake_hint")
+                .evidence(format!(
+                    "idempotency_key={}",
+                    wake_hint_idempotency_key(pending)
+                ))
+        }
+        SchedulerIdleSignal::ContinueActive {
+            work_item,
+            suppressed_after_model_visible_continuation,
+            duplicate,
+        } => {
+            if let Some(decision) = wait_decision_for_projection(projection) {
+                return decision
+                    .boundary(boundary)
+                    .evidence("work_queue_tick_blocked_by_wait_fact");
+            }
+            if suppressed_after_model_visible_continuation {
+                return SchedulerDecision::new(
+                    SchedulerDecisionKind::Noop,
+                    "continue_active_suppressed_after_model_visible_continuation",
+                )
+                .boundary(boundary)
+                .liveness_only(true)
+                .work_item_id(work_item.id.clone())
+                .evidence("model_visible_continuation_suppresses_duplicate_continue_active");
+            }
+            if let Some(SchedulerDuplicateEvidence::ContinueActiveBrief(result_brief_id)) =
+                duplicate
+            {
+                return SchedulerDecision::new(
+                    SchedulerDecisionKind::Noop,
+                    "duplicate_continue_active",
+                )
+                .boundary(boundary)
+                .liveness_only(true)
+                .work_item_id(work_item.id.clone())
+                .evidence("duplicate_tick_suppressed")
+                .evidence(format!("result_brief_id={result_brief_id}"));
+            }
+            SchedulerDecision::new(SchedulerDecisionKind::EmitSystemTick, "continue_active")
+                .boundary(boundary)
+                .model_visible(true)
+                .work_item_id(work_item.id.clone())
+                .evidence("runtime_idle")
+                .evidence("work_item_runnable")
+                .evidence(format!(
+                    "idempotency_key={}",
+                    work_queue_tick_idempotency_key(work_item, "continue_active")
+                ))
+        }
+        SchedulerIdleSignal::QueuedAvailable {
+            work_item,
+            duplicate,
+        } => {
+            if let Some(decision) = wait_decision_for_projection(projection) {
+                return decision
+                    .boundary(boundary)
+                    .evidence("work_queue_tick_blocked_by_wait_fact");
+            }
+            if let Some(SchedulerDuplicateEvidence::QueuedAvailableMessage(message_id)) = duplicate
+            {
+                return SchedulerDecision::new(
+                    SchedulerDecisionKind::Noop,
+                    "duplicate_queued_available",
+                )
+                .boundary(boundary)
+                .liveness_only(true)
+                .work_item_id(work_item.id.clone())
+                .evidence("duplicate_tick_suppressed")
+                .evidence(format!("message_id={message_id}"));
+            }
+            SchedulerDecision::new(SchedulerDecisionKind::EmitSystemTick, "queued_available")
+                .boundary(boundary)
+                .model_visible(true)
+                .work_item_id(work_item.id.clone())
+                .evidence("runtime_idle")
+                .evidence("work_item_runnable")
+                .evidence(format!(
+                    "idempotency_key={}",
+                    work_queue_tick_idempotency_key(work_item, "queued_available")
+                ))
+        }
     }
 }
 

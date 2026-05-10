@@ -428,7 +428,11 @@ fn assert_scheduler_fixture(name: &str) {
         "{name}: replay messages"
     );
     if let Some(expected_decision) = expected.decision {
-        let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+        let decision = scheduler::decide_next_action(
+            &projection,
+            scheduler::SchedulerBoundary::RunLoopIdle,
+            scheduler::SchedulerInput::Idle,
+        );
         assert_eq!(
             decision.kind.as_str(),
             expected_decision,
@@ -607,6 +611,111 @@ fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
     let decision = scheduler::idle_boundary_decision(&projection, "fixture");
     assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Stop);
     assert_eq!(decision.reason, "stopped");
+}
+
+#[test]
+fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
+    work_item.id = "work-1".into();
+    work_item.revision = 7;
+    storage.append_work_item(&work_item).unwrap();
+
+    let pending = PendingWakeHint {
+        reason: "external update".into(),
+        description: None,
+        source: Some("fixture".into()),
+        scope: Some(ExternalTriggerScope::Agent),
+        waiting_intent_id: None,
+        external_trigger_id: Some("trigger-1".into()),
+        resource: None,
+        body: None,
+        content_type: None,
+        correlation_id: None,
+        causation_id: None,
+        created_at: Utc::now(),
+    };
+    agent.pending_wake_hint = Some(pending.clone());
+    storage.write_agent(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let wake_decision = scheduler::decide_next_action(
+        &projection,
+        scheduler::SchedulerBoundary::IdleTick,
+        scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::WakeHint {
+            pending: &pending,
+            duplicate: None,
+        }),
+    );
+    assert_eq!(
+        wake_decision.kind,
+        scheduler::SchedulerDecisionKind::EmitSystemTick
+    );
+    assert_eq!(wake_decision.reason, "wake_hint");
+
+    storage
+        .append_task(&TaskRecord {
+            id: "blocking-task".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: Some("work-1".into()),
+            summary: Some("fixture task".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+            recovery: None,
+        })
+        .unwrap();
+    let blocked_projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let work_queue_decision = scheduler::decide_next_action(
+        &blocked_projection,
+        scheduler::SchedulerBoundary::IdleTick,
+        scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::ContinueActive {
+            work_item: &work_item,
+            suppressed_after_model_visible_continuation: false,
+            duplicate: None,
+        }),
+    );
+    assert_eq!(
+        work_queue_decision.kind,
+        scheduler::SchedulerDecisionKind::WaitForTask
+    );
+    assert_eq!(work_queue_decision.reason, "blocking_active_tasks");
+}
+
+#[test]
+fn decide_next_action_records_duplicate_tick_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
+    work_item.id = "work-queued".into();
+    work_item.revision = 3;
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+
+    let decision = scheduler::decide_next_action(
+        &projection,
+        scheduler::SchedulerBoundary::IdleTick,
+        scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
+            work_item: &work_item,
+            duplicate: Some(
+                scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage("msg-1".into()),
+            ),
+        }),
+    );
+
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Noop);
+    assert_eq!(decision.reason, "duplicate_queued_available");
+    assert!(decision
+        .evidence
+        .iter()
+        .any(|entry| entry == "message_id=msg-1"));
 }
 
 #[test]
