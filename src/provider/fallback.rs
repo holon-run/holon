@@ -415,7 +415,7 @@ impl AgentProvider for FallbackProvider {
                             failure_kind = classification.kind.as_str(),
                             disposition = classification.disposition.as_str(),
                             has_fallback,
-                            "provider turn failed; advancing to fallback"
+                            "provider turn failed; {}", if has_fallback { "advancing to fallback" } else { "no fallback remaining" }
                         );
                         break;
                     }
