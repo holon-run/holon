@@ -74,6 +74,7 @@ pub(crate) struct ProjectionEventRecord {
 pub(crate) struct TuiProjection {
     pub(crate) agent: AgentSummary,
     pub(crate) session: StateSessionSnapshot,
+    pub(crate) presentation_reducer: crate::presentation::PresentationReducer,
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) transcript_tail: Vec<TranscriptEntry>,
     pub(crate) operator_messages: Vec<OperatorMessageRecord>,
@@ -92,6 +93,7 @@ pub(crate) struct TuiProjection {
 
 impl TuiProjection {
     pub(crate) fn from_snapshot(snapshot: AgentStateSnapshot) -> Self {
+        let presentation_reducer = crate::presentation::PresentationReducer::new();
         let external_triggers = snapshot.external_triggers;
         let operator_notifications = snapshot.operator_notifications;
         let events_tail = snapshot.events_tail;
@@ -100,6 +102,7 @@ impl TuiProjection {
         let mut projection = Self {
             agent: snapshot.agent,
             session: snapshot.session,
+            presentation_reducer,
             tasks,
             transcript_tail: snapshot.transcript_tail,
             operator_messages: snapshot.operator_messages,
@@ -148,6 +151,9 @@ impl TuiProjection {
             }
         }
         self.cursor = Some(event.id.clone());
+
+        // Feed into presentation reducer for live item tracking
+        let _ = self.presentation_reducer.reduce(&[record.clone()]);
 
         match event.data.event_type.as_str() {
             "agent_state_changed" | "session_state_changed" => {
@@ -437,6 +443,11 @@ impl TuiProjection {
         }
         events.reverse();
         events
+    }
+
+    /// Current live presentation item, if any (for active activity display).
+    pub(crate) fn current_live_item(&self) -> Option<crate::presentation::TimedItem> {
+        self.presentation_reducer.current_live_item()
     }
 
     pub(crate) fn visible_events(
