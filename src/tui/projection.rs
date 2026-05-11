@@ -447,10 +447,7 @@ impl TuiProjection {
 
     /// Current live presentation item, if any (for active activity display).
     pub(crate) fn current_live_item(&self) -> Option<crate::presentation::TimedItem> {
-        let events: Vec<ProjectionEventRecord> = self.event_log.iter().cloned().collect();
-        let mut reducer = crate::presentation::PresentationReducer::new();
-        let items = reducer.reduce(&events);
-        items.into_iter().find(|timed| timed.item.is_live())
+        self.presentation_reducer.current_live_item()
     }
 
     pub(crate) fn visible_events(

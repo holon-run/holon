@@ -558,6 +558,7 @@ impl Renderable for PresentationItem {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PresentationReducer {
     live_group: Option<LiveGroup>,
+    last_ts: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -788,7 +789,23 @@ impl PresentationReducer {
             i += 1;
         }
 
+        if let Some(last) = events.last() {
+            self.last_ts = Some(last.ts);
+        }
+
         items
+    }
+
+    /// Return the current live group as a `TimedItem`, if one is accumulating.
+    pub(crate) fn current_live_item(&self) -> Option<TimedItem> {
+        self.live_group.as_ref().map(|group| TimedItem {
+            item: PresentationItem::ActionGroup {
+                heading: group.heading.clone(),
+                items: group.items.clone(),
+                state: ItemState::Live,
+            },
+            ts: self.last_ts.unwrap_or_else(Utc::now),
+        })
     }
 
     pub(crate) fn flush(&mut self) -> Vec<TimedItem> {
@@ -800,7 +817,7 @@ impl PresentationReducer {
                     items: group.items,
                     state: ItemState::Stable,
                 },
-                ts: Utc::now(),
+                ts: self.last_ts.unwrap_or_else(Utc::now),
             });
         }
         items
@@ -812,13 +829,16 @@ impl PresentationReducer {
                 title: event.presentation.title.clone(),
                 body: event.summary.clone(),
             },
-            OperatorEventCategory::Brief | OperatorEventCategory::Message => {
-                PresentationItem::AssistantResult {
-                    brief_id: None,
-                    body: event.summary.clone(),
-                    outcome: Outcome::Neutral,
-                }
-            }
+            OperatorEventCategory::Brief => PresentationItem::AssistantResult {
+                brief_id: None,
+                body: event.summary.clone(),
+                outcome: Outcome::Neutral,
+            },
+            OperatorEventCategory::Message => PresentationItem::InternalTransition {
+                what: event.kind.clone(),
+                from: "message".to_string(),
+                to: event.summary.clone(),
+            },
             OperatorEventCategory::Waiting => PresentationItem::WaitingNotice {
                 reason: event.summary.clone(),
             },
