@@ -803,17 +803,6 @@ fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<invalid json>".into())
 }
 
-fn conversation_event_speaker(event: &crate::tui::projection::ProjectionEventRecord) -> String {
-    match event.presentation.category {
-        crate::operator_event::OperatorEventCategory::Task
-        | crate::operator_event::OperatorEventCategory::WorkItem => "System (work)".into(),
-        crate::operator_event::OperatorEventCategory::Waiting => "System (waiting)".into(),
-        crate::operator_event::OperatorEventCategory::Workspace => "System (workspace)".into(),
-        crate::operator_event::OperatorEventCategory::Runtime => "System (runtime)".into(),
-        _ => "System".into(),
-    }
-}
-
 pub(super) fn conversation_event_body(
     event: &crate::tui::projection::ProjectionEventRecord,
 ) -> String {

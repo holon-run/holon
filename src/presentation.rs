@@ -7,7 +7,6 @@
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use std::collections::VecDeque;
 
 use crate::operator_event::OperatorEventCategory;
 use crate::tui::projection::ProjectionEventRecord;
@@ -110,6 +109,7 @@ pub enum Outcome {
     Success,
     Failure,
     Neutral,
+    Unknown,
 }
 
 impl Outcome {
@@ -118,6 +118,7 @@ impl Outcome {
             Outcome::Success => "\u{2713}",
             Outcome::Failure => "\u{2717}",
             Outcome::Neutral => "\u{2022}",
+            Outcome::Unknown => "?",
         }
     }
 }
@@ -217,7 +218,7 @@ pub enum PresentationItem {
     CommandExecuted {
         cmd_preview: String,
         duration_ms: u64,
-        exit_code: i32,
+        exit_code: Option<i32>,
         stdout_summary: String,
         full_stdout: Option<String>,
         full_stderr: Option<String>,
@@ -410,10 +411,10 @@ impl Renderable for PresentationItem {
                 full_stdout,
                 full_stderr,
             } => {
-                let outcome = if *exit_code == 0 {
-                    Outcome::Success
-                } else {
-                    Outcome::Failure
+                let outcome = match exit_code {
+                    Some(0) => Outcome::Success,
+                    Some(_) => Outcome::Failure,
+                    None => Outcome::Unknown,
                 };
                 let duration_s = *duration_ms as f64 / 1000.0;
                 let mut body = format!("{} {} ({:.1}s)", outcome.symbol(), cmd_preview, duration_s);
@@ -556,7 +557,6 @@ impl Renderable for PresentationItem {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PresentationReducer {
-    pending: VecDeque<PresentationItem>,
     live_group: Option<LiveGroup>,
 }
 
@@ -574,13 +574,6 @@ impl PresentationReducer {
     pub(crate) fn reduce(&mut self, events: &[ProjectionEventRecord]) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
 
-        while let Some(item) = self.pending.pop_front() {
-            items.push(TimedItem {
-                item,
-                ts: Utc::now(),
-            });
-        }
-
         let mut i = 0;
         while i < events.len() {
             let event = &events[i];
@@ -591,9 +584,17 @@ impl PresentationReducer {
                         exec_command_preview(event).unwrap_or_else(|| event.summary.clone());
 
                     if let Some(next) = events.get(i + 1) {
-                        if next.kind == "tool_executed" && next.summary.contains(&exec_preview) {
+                        if matches!(
+                            next.kind.as_str(),
+                            "tool_executed" | "tool_execution_failed"
+                        ) && next.summary.contains(&exec_preview)
+                        {
                             let duration_ms = duration_between(event, next);
-                            let exit_code = tool_exit_code(next);
+                            let exit_code =
+                                tool_exit_code(next).or_else(|| match next.kind.as_str() {
+                                    "tool_execution_failed" => None,
+                                    _ => Some(0),
+                                });
                             let stdout_summary = tool_output_summary(next);
                             let full_stdout = tool_full_output(next);
                             let full_stderr = tool_full_stderr(next);
@@ -622,7 +623,10 @@ impl PresentationReducer {
                 "tool_executed" | "tool_execution_failed" => {
                     let cmd_preview =
                         exec_command_preview(event).unwrap_or_else(|| event.summary.clone());
-                    let exit_code = tool_exit_code(event);
+                    let exit_code = tool_exit_code(event).or_else(|| match event.kind.as_str() {
+                        "tool_execution_failed" => None,
+                        _ => Some(0),
+                    });
                     let stdout_summary = tool_output_summary(event);
                     let full_stdout = tool_full_output(event);
                     let full_stderr = tool_full_stderr(event);
@@ -799,12 +803,6 @@ impl PresentationReducer {
                 ts: Utc::now(),
             });
         }
-        while let Some(item) = self.pending.pop_front() {
-            items.push(TimedItem {
-                item,
-                ts: Utc::now(),
-            });
-        }
         items
     }
 
@@ -861,12 +859,12 @@ fn duration_between(start: &ProjectionEventRecord, end: &ProjectionEventRecord) 
     duration.num_milliseconds().max(0) as u64
 }
 
-fn tool_exit_code(event: &ProjectionEventRecord) -> i32 {
+fn tool_exit_code(event: &ProjectionEventRecord) -> Option<i32> {
     event
         .payload
         .get("exit_status")
         .and_then(|v: &Value| v.as_i64())
-        .unwrap_or(0) as i32
+        .map(|c| c as i32)
 }
 
 fn tool_output_summary(event: &ProjectionEventRecord) -> String {
@@ -965,7 +963,7 @@ mod tests {
         let item = PresentationItem::CommandExecuted {
             cmd_preview: "cargo test".into(),
             duration_ms: 1000,
-            exit_code: 0,
+            exit_code: Some(0),
             stdout_summary: "".into(),
             full_stdout: None,
             full_stderr: None,
@@ -980,7 +978,7 @@ mod tests {
         let item = PresentationItem::CommandExecuted {
             cmd_preview: "cargo test --lib".into(),
             duration_ms: 2300,
-            exit_code: 0,
+            exit_code: Some(0),
             stdout_summary: "5 passed".into(),
             full_stdout: Some("running 5 tests\ntest result: ok".into()),
             full_stderr: None,
@@ -998,7 +996,7 @@ mod tests {
         let item = PresentationItem::CommandExecuted {
             cmd_preview: "cargo test --lib".into(),
             duration_ms: 2300,
-            exit_code: 0,
+            exit_code: Some(0),
             stdout_summary: "5 passed".into(),
             full_stdout: Some("running 5 tests\ntest result: ok".into()),
             full_stderr: None,
@@ -1117,7 +1115,7 @@ mod tests {
                 ..
             } => {
                 assert!(cmd_preview.contains("cargo test"));
-                assert_eq!(*exit_code, 0);
+                assert_eq!(*exit_code, Some(0));
                 assert_eq!(stdout_summary, "5 passed");
             }
             other => panic!("expected CommandExecuted, got {:?}", other),
