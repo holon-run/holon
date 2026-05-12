@@ -1999,10 +1999,11 @@ pub struct TaskRecord {
 impl TaskRecord {
     pub fn wait_policy(&self) -> TaskWaitPolicy {
         if self.kind.is_legacy_child_agent_compat()
-            || self
-                .recovery
-                .as_ref()
-                .is_some_and(TaskRecoverySpec::is_legacy_child_agent_compat)
+            || self.kind == TaskKind::ChildAgentTask
+            || self.recovery.as_ref().is_some_and(|recovery| {
+                recovery.is_legacy_child_agent_compat()
+                    || matches!(recovery, TaskRecoverySpec::ChildAgentTask { .. })
+            })
         {
             return TaskWaitPolicy::Background;
         }
@@ -2567,7 +2568,7 @@ impl TaskRecoverySpec {
 
     pub fn wait_policy(&self) -> TaskWaitPolicy {
         match self {
-            TaskRecoverySpec::ChildAgentTask { .. } => TaskWaitPolicy::Blocking,
+            TaskRecoverySpec::ChildAgentTask { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::SubagentTask { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::WorktreeSubagentTask { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::CommandTask { .. } => TaskWaitPolicy::Background,
@@ -3604,6 +3605,35 @@ mod tests {
                 .expect("command task snapshot")
                 .terminal_reentry,
             Some(true)
+        );
+    }
+
+    #[test]
+    fn child_agent_recovery_is_supervision_not_scheduler_blocking() {
+        let task = TaskRecord {
+            id: "task-child".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::ChildAgentTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("delegate child".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+            recovery: Some(TaskRecoverySpec::ChildAgentTask {
+                summary: "delegate child".into(),
+                prompt: "finish child work".into(),
+                trust: TrustLevel::TrustedOperator,
+                workspace_mode: ChildAgentWorkspaceMode::Inherit,
+            }),
+        };
+
+        assert_eq!(task.wait_policy(), TaskWaitPolicy::Background);
+        assert!(!task.is_blocking());
+        assert_eq!(
+            task.child_agent_workspace_mode(),
+            Some(ChildAgentWorkspaceMode::Inherit)
         );
     }
 

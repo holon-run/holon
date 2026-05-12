@@ -25,7 +25,7 @@ struct TaskMessageSnapshot {
 
 fn child_agent_task_detail(workspace_mode: ChildAgentWorkspaceMode) -> serde_json::Value {
     serde_json::json!({
-        "wait_policy": crate::types::TaskWaitPolicy::Blocking,
+        "wait_policy": crate::types::TaskWaitPolicy::Background,
         "workspace_mode": workspace_mode,
     })
 }

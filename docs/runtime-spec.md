@@ -912,6 +912,9 @@ Delegation rules:
   parent-visible `child_agent_task` label at spawn time
 - `private_child` returns `agent_id` plus a task handle that maps onto internal
   `child_agent_task` supervision state
+- that supervision task is background by default; parent-supervised means the
+  parent can inspect/input/output/stop the child through task tools, not that
+  the parent scheduler must enter `AwaitingTask`
 - `private_child` also returns `child_agent_id`, `supervision_task_id`, and a
   `child_supervision` projection; `child_agent_id` names the private context,
   while `supervision_task_id` names the parent-visible control handle
