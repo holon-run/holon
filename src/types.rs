@@ -634,6 +634,10 @@ impl TaskKind {
             Self::ChildAgentTask | Self::SubagentTask | Self::WorktreeSubagentTask
         )
     }
+
+    pub fn is_legacy_child_agent_compat(self) -> bool {
+        matches!(self, Self::SubagentTask | Self::WorktreeSubagentTask)
+    }
 }
 
 impl std::fmt::Display for TaskKind {
@@ -1994,6 +1998,15 @@ pub struct TaskRecord {
 
 impl TaskRecord {
     pub fn wait_policy(&self) -> TaskWaitPolicy {
+        if self.kind.is_legacy_child_agent_compat()
+            || self
+                .recovery
+                .as_ref()
+                .is_some_and(TaskRecoverySpec::is_legacy_child_agent_compat)
+        {
+            return TaskWaitPolicy::Background;
+        }
+
         self.detail
             .as_ref()
             .and_then(|detail| detail.get("wait_policy"))
@@ -2512,6 +2525,13 @@ fn task_detail_value<'a>(detail: &'a Option<Value>, key: &str) -> Option<&'a Val
 }
 
 impl TaskRecoverySpec {
+    pub fn is_legacy_child_agent_compat(&self) -> bool {
+        matches!(
+            self,
+            TaskRecoverySpec::SubagentTask { .. } | TaskRecoverySpec::WorktreeSubagentTask { .. }
+        )
+    }
+
     pub fn child_agent_workspace_mode(&self) -> Option<ChildAgentWorkspaceMode> {
         match self {
             TaskRecoverySpec::ChildAgentTask { workspace_mode, .. } => Some(*workspace_mode),
@@ -2526,8 +2546,8 @@ impl TaskRecoverySpec {
     pub fn wait_policy(&self) -> TaskWaitPolicy {
         match self {
             TaskRecoverySpec::ChildAgentTask { .. } => TaskWaitPolicy::Blocking,
-            TaskRecoverySpec::SubagentTask { .. } => TaskWaitPolicy::Blocking,
-            TaskRecoverySpec::WorktreeSubagentTask { .. } => TaskWaitPolicy::Blocking,
+            TaskRecoverySpec::SubagentTask { .. } => TaskWaitPolicy::Background,
+            TaskRecoverySpec::WorktreeSubagentTask { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::CommandTask { spec, .. } => {
                 if spec.continue_on_result {
                     TaskWaitPolicy::Blocking
@@ -3459,6 +3479,47 @@ mod tests {
             task.child_agent_workspace_mode(),
             Some(ChildAgentWorkspaceMode::Worktree)
         );
+        assert_eq!(task.wait_policy(), TaskWaitPolicy::Background);
+        assert!(!task.is_blocking());
+    }
+
+    #[test]
+    fn legacy_child_agent_compat_records_do_not_block_scheduler() {
+        let now = Utc::now();
+        for (kind, recovery) in [
+            (
+                TaskKind::SubagentTask,
+                TaskRecoverySpec::SubagentTask {
+                    summary: "legacy inherited".into(),
+                    prompt: "resume".into(),
+                    trust: TrustLevel::TrustedOperator,
+                },
+            ),
+            (
+                TaskKind::WorktreeSubagentTask,
+                TaskRecoverySpec::WorktreeSubagentTask {
+                    summary: "legacy worktree".into(),
+                    prompt: "resume".into(),
+                    trust: TrustLevel::TrustedOperator,
+                },
+            ),
+        ] {
+            let task = TaskRecord {
+                id: format!("task-{kind}"),
+                agent_id: "default".into(),
+                kind,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: None,
+                summary: None,
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: Some(recovery),
+            };
+            assert_eq!(task.wait_policy(), TaskWaitPolicy::Background);
+            assert!(!task.is_blocking());
+        }
     }
 
     #[test]

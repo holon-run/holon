@@ -1263,7 +1263,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_active_task_records_preserves_recovery_from_older_snapshot() {
+    fn latest_active_task_records_preserves_current_child_agent_recovery_from_older_snapshot() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         let now = Utc::now();
@@ -1278,10 +1278,11 @@ mod tests {
             work_item_id: None,
             summary: None,
             detail: None,
-            recovery: Some(TaskRecoverySpec::SubagentTask {
+            recovery: Some(TaskRecoverySpec::ChildAgentTask {
                 summary: "recover".into(),
                 prompt: "resume with artifact".into(),
                 trust: TrustLevel::TrustedOperator,
+                workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
             }),
         };
         storage.append_task(&task).unwrap();
@@ -1294,7 +1295,7 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert!(matches!(
             active[0].recovery,
-            Some(TaskRecoverySpec::SubagentTask { .. })
+            Some(TaskRecoverySpec::ChildAgentTask { .. })
         ));
     }
 

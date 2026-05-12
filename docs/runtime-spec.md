@@ -2218,7 +2218,9 @@ type TaskKind =
 
 Legacy stored task records may still deserialize `subagent_task` and
 `worktree_subagent_task`. New records should only emit `command_task`,
-`child_agent_task`, or `sleep_job`.
+`child_agent_task`, or `sleep_job`. The legacy child-agent names are
+persistence-compatibility only and do not participate in scheduler blocking
+decisions, even when older detail payloads contain `wait_policy=blocking`.
 
 ```ts
 type TaskRecoverySpec =
@@ -2229,8 +2231,25 @@ type TaskRecoverySpec =
       trust: TrustLevel
       workspace_mode: 'inherit' | 'worktree'
     }
+  | {
+      kind: 'subagent_task' // legacy, persistence compatibility only
+      summary: string
+      prompt: string
+      trust: TrustLevel
+    }
+  | {
+      kind: 'worktree_subagent_task' // legacy, persistence compatibility only
+      summary: string
+      prompt: string
+      trust: TrustLevel
+    }
   | { kind: 'command_task'; summary: string; spec: CommandTaskSpec; trust: TrustLevel }
 ```
+
+Legacy `subagent_task` and `worktree_subagent_task` recovery specs may still be
+accepted while reading old persisted records so the runtime can recover
+supervised child identity and workspace mode. They are not emitted for new
+records and do not imply scheduler blocking.
 
 ### Recovery Behavior
 

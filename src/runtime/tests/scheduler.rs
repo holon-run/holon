@@ -862,6 +862,63 @@ fn scheduler_decision_event_records_evidence_and_bindings() {
 }
 
 #[test]
+fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let now = Utc::now();
+
+    for (id, kind, recovery) in [
+        (
+            "legacy-inherited",
+            TaskKind::SubagentTask,
+            TaskRecoverySpec::SubagentTask {
+                summary: "legacy inherited".into(),
+                prompt: "resume".into(),
+                trust: TrustLevel::TrustedOperator,
+            },
+        ),
+        (
+            "legacy-worktree",
+            TaskKind::WorktreeSubagentTask,
+            TaskRecoverySpec::WorktreeSubagentTask {
+                summary: "legacy worktree".into(),
+                prompt: "resume".into(),
+                trust: TrustLevel::TrustedOperator,
+            },
+        ),
+    ] {
+        storage
+            .append_task(&TaskRecord {
+                id: id.into(),
+                agent_id: "default".into(),
+                kind,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("legacy child task".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: Some(recovery),
+            })
+            .unwrap();
+    }
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.active_tasks.len(), 2);
+    assert!(!projection.has_blocking_active_tasks);
+
+    let decision = scheduler::decide_next_action(
+        &projection,
+        scheduler::SchedulerBoundary::RunLoopIdle,
+        scheduler::SchedulerInput::Idle,
+    );
+    assert_ne!(decision.kind, scheduler::SchedulerDecisionKind::WaitForTask);
+}
+
+#[test]
 fn scheduler_decision_append_dedupes_identical_latest_event() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
