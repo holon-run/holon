@@ -73,6 +73,8 @@ pub async fn wait_for_emit_at_checkpoint() {
 
 /// Release the checkpoint, allowing the emit thread to continue
 pub fn release_checkpoint() {
-    // Notify the emit thread to continue
-    ALLOW_CONTINUE.notify_one();
+    CHECKPOINT_ENABLED.store(false, Ordering::SeqCst);
+    // Wake every test task that may have observed the global checkpoint while
+    // running filtered tests in parallel.
+    ALLOW_CONTINUE.notify_waiters();
 }

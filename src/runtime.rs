@@ -810,9 +810,11 @@ impl RuntimeHandle {
             guard.state.pending = guard.queue.len();
             guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
             guard.state.total_message_count = self.inner.storage.count_messages()?;
-            scheduler::apply_message_wake_projection(&mut guard.state);
             self.inner.storage.write_agent(&guard.state)?;
         }
+        scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .admit_message_wake(&message)
+            .await?;
 
         self.inner.storage.append_event(&AuditEvent::new(
             "message_admitted",
@@ -901,15 +903,21 @@ impl RuntimeHandle {
                         scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                     }
                     let idle_state = {
-                        let mut guard = self.inner.agent.lock().await;
+                        let guard = self.inner.agent.lock().await;
                         if !matches!(
                             guard.state.status,
                             AgentStatus::Asleep | AgentStatus::Paused | AgentStatus::Stopped
                         ) && guard.queue.is_empty()
                         {
-                            scheduler::apply_sleep_projection(&mut guard.state, None);
-                            self.inner.storage.write_agent(&guard.state)?;
-                            Some(guard.state.clone())
+                            drop(guard);
+                            Some(
+                                scheduler_executor::SchedulerDecisionExecutor::new(&self)
+                                    .transition_to_sleep(
+                                        None,
+                                        scheduler_executor::SleepTransitionBoundary::RunLoopIdle,
+                                    )
+                                    .await?,
+                            )
                         } else {
                             None
                         }

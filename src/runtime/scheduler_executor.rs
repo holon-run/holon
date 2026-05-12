@@ -28,6 +28,21 @@ pub(super) struct ShutdownPostureOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SleepTransitionBoundary {
+    LifecycleSleep,
+    RunLoopIdle,
+}
+
+impl SleepTransitionBoundary {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LifecycleSleep => "lifecycle_sleep",
+            Self::RunLoopIdle => "run_loop_idle",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct BootstrapRecoveryFacts {
     pub(super) queued_messages: usize,
     pub(super) blocking_active_tasks: usize,
@@ -114,6 +129,54 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             self.runtime.inner.storage.write_agent(&guard.state)?;
         }
         Ok(guard.state.clone())
+    }
+
+    pub(super) async fn transition_to_sleep(
+        &self,
+        sleeping_until: Option<chrono::DateTime<chrono::Utc>>,
+        boundary: SleepTransitionBoundary,
+    ) -> Result<AgentState> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        let previous_status = guard.state.status.clone();
+        let previous_run_id = guard.state.current_run_id.clone();
+        scheduler::apply_sleep_projection(&mut guard.state, sleeping_until);
+        self.append_posture_decision(
+            boundary.as_str(),
+            "sleep",
+            &previous_status,
+            &guard.state.status,
+            vec![
+                format!("previous_run_id={previous_run_id:?}"),
+                format!("sleeping_until={:?}", guard.state.sleeping_until),
+            ],
+        )?;
+        self.runtime.inner.storage.write_agent(&guard.state)?;
+        Ok(guard.state.clone())
+    }
+
+    pub(super) async fn admit_message_wake(
+        &self,
+        message: &MessageEnvelope,
+    ) -> Result<Option<AgentState>> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        let previous_status = guard.state.status.clone();
+        let previous_sleeping_until = guard.state.sleeping_until;
+        if !scheduler::apply_message_wake_projection(&mut guard.state) {
+            return Ok(None);
+        }
+        self.append_posture_decision(
+            "message_admission",
+            "message_admission_wake",
+            &previous_status,
+            &guard.state.status,
+            vec![
+                format!("message_id={}", message.id),
+                format!("message_kind={:?}", message.kind),
+                format!("previous_sleeping_until={previous_sleeping_until:?}"),
+            ],
+        )?;
+        self.runtime.inner.storage.write_agent(&guard.state)?;
+        Ok(Some(guard.state.clone()))
     }
 
     pub(super) async fn poll(&self) -> Result<RunLoopPoll> {
@@ -223,6 +286,26 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             dispatch_plan,
             scheduler_decision: decision,
         }))
+    }
+
+    fn append_posture_decision(
+        &self,
+        boundary: &'static str,
+        reason: &'static str,
+        previous_status: &AgentStatus,
+        next_status: &AgentStatus,
+        evidence: Vec<String>,
+    ) -> Result<()> {
+        self.runtime.inner.storage.append_event(&AuditEvent::new(
+            "scheduler_posture_decision",
+            serde_json::json!({
+                "boundary": boundary,
+                "reason": reason,
+                "previous_status": previous_status,
+                "next_status": next_status,
+                "evidence": evidence,
+            }),
+        ))
     }
 }
 
