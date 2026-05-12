@@ -810,13 +810,7 @@ impl RuntimeHandle {
             guard.state.pending = guard.queue.len();
             guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
             guard.state.total_message_count = self.inner.storage.count_messages()?;
-            if matches!(
-                guard.state.status,
-                AgentStatus::Asleep | AgentStatus::Booting
-            ) {
-                guard.state.status = AgentStatus::AwakeIdle;
-                guard.state.sleeping_until = None;
-            }
+            scheduler::apply_message_wake_projection(&mut guard.state);
             self.inner.storage.write_agent(&guard.state)?;
         }
 

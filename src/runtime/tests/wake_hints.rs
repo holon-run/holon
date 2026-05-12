@@ -1,5 +1,6 @@
 use super::super::*;
 use super::support::*;
+use crate::ingress::{WakeDisposition, WakeHint};
 
 #[tokio::test]
 async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
@@ -45,6 +46,61 @@ async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
         .any(|message| message.kind == MessageKind::SystemTick
             && message.authority_class == AuthorityClass::RuntimeInstruction));
     runtime_task.abort();
+}
+
+#[tokio::test]
+async fn triggered_wake_hint_records_scheduler_decision_before_tick() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let disposition = runtime
+        .submit_wake_hint(WakeHint {
+            agent_id: "default".into(),
+            reason: "immediate wake".into(),
+            description: None,
+            source: Some("test".into()),
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
+            resource: None,
+            body: Some(MessageBody::Text {
+                text: "wake body".into(),
+            }),
+            content_type: None,
+            correlation_id: Some("corr".into()),
+            causation_id: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(disposition, WakeDisposition::Triggered);
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    let decision_index = events
+        .iter()
+        .position(|event| {
+            event.kind == "scheduler_decision"
+                && event.data["decision"] == "EmitSystemTick"
+                && event.data["reason"] == "wake_hint"
+        })
+        .expect("wake hint scheduler decision should be recorded");
+    let tick_index = events
+        .iter()
+        .position(|event| event.kind == "system_tick_emitted")
+        .expect("wake hint tick should be emitted");
+    assert!(
+        decision_index < tick_index,
+        "scheduler decision should be recorded before tick emission"
+    );
 }
 
 #[tokio::test]

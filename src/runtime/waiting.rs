@@ -72,7 +72,10 @@ impl RuntimeHandle {
         ))?;
 
         if trigger_now {
-            if let Err(err) = self.emit_system_tick_from_wake_hint(&pending).await {
+            if let Err(err) = self
+                .emit_system_tick_from_wake_hint_with_decision(&pending)
+                .await
+            {
                 let mut guard = self.inner.agent.lock().await;
                 if guard.state.pending_wake_hint.is_none() {
                     guard.state.pending_wake_hint = Some(pending);
@@ -91,11 +94,15 @@ impl RuntimeHandle {
             guard.state.pending_wake_hint.clone()
         };
         if let Some(pending) = pending_wake {
-            self.emit_system_tick_from_wake_hint(&pending).await?;
-            let mut guard = self.inner.agent.lock().await;
-            if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
-                guard.state.pending_wake_hint = None;
-                self.inner.storage.write_agent(&guard.state)?;
+            if self
+                .emit_system_tick_from_wake_hint_with_decision(&pending)
+                .await?
+            {
+                let mut guard = self.inner.agent.lock().await;
+                if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
+                    guard.state.pending_wake_hint = None;
+                    self.inner.storage.write_agent(&guard.state)?;
+                }
             }
         }
         Ok(())

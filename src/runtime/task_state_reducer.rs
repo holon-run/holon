@@ -59,7 +59,7 @@ impl RuntimeHandle {
                 if guard.state.current_run_id.is_none() {
                     scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
                 } else if task.is_blocking() && !is_terminal_task_status(&task.status) {
-                    guard.state.status = AgentStatus::AwaitingTask;
+                    scheduler::apply_awaiting_task_projection(&mut guard.state);
                 }
             }
             self.inner.storage.write_agent(&guard.state)?;
