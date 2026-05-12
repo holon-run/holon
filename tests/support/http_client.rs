@@ -222,7 +222,7 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
     Ok(())
 }
 
-pub async fn local_client_over_http_can_stream_events_with_since_query() -> Result<()> {
+pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Result<()> {
     let mut config = test_config();
     let (host, base, server) = spawn_server_with_config(config.clone()).await?;
     let runtime = host.default_runtime().await?;
@@ -246,7 +246,7 @@ pub async fn local_client_over_http_can_stream_events_with_since_query() -> Resu
         .stream_agent_events(
             "default",
             EventStreamRequest {
-                since: Some(cursor),
+                cursor: Some(cursor),
                 ..Default::default()
             },
         )
@@ -277,35 +277,22 @@ pub async fn local_client_over_http_can_stream_events_with_since_query() -> Resu
     Ok(())
 }
 
-pub async fn local_client_over_http_can_stream_events_with_last_event_id_header() -> Result<()> {
+pub async fn local_client_over_http_stream_without_cursor_starts_at_tail() -> Result<()> {
     let mut config = test_config();
     let (host, base, server) = spawn_server_with_config(config.clone()).await?;
-    let runtime = host.default_runtime().await?;
     config.http_addr = base.trim_start_matches("http://").to_string();
+    let runtime = host.default_runtime().await?;
     let client = LocalClient::new(config)?;
 
     client
-        .control_prompt("default", "http header bootstrap")
+        .control_prompt("default", "http tail bootstrap")
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
-    let cursor = client
-        .agent_state_snapshot("default")
-        .await?
-        .cursor
-        .expect("cursor should be present");
 
-    client
-        .control_prompt("default", "http header replay")
-        .await?;
     let mut stream = client
-        .stream_agent_events(
-            "default",
-            EventStreamRequest {
-                last_event_id: Some(cursor),
-                ..Default::default()
-            },
-        )
+        .stream_agent_events("default", EventStreamRequest::default())
         .await?;
+    client.control_prompt("default", "http tail live").await?;
     let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
@@ -329,7 +316,7 @@ pub async fn local_client_over_unix_socket_can_read_agent_state_snapshot() -> Re
 }
 
 #[cfg(unix)]
-pub async fn local_client_over_unix_socket_can_stream_events_with_since_query() -> Result<()> {
+pub async fn local_client_over_unix_socket_can_stream_events_with_cursor_query() -> Result<()> {
     let config = test_config();
     let (host, _socket_path, server) = spawn_unix_server(config.clone()).await?;
     let runtime = host.default_runtime().await?;
@@ -352,7 +339,7 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_since_query() 
         .stream_agent_events(
             "default",
             EventStreamRequest {
-                since: Some(cursor),
+                cursor: Some(cursor),
                 ..Default::default()
             },
         )
@@ -366,35 +353,22 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_since_query() 
 }
 
 #[cfg(unix)]
-pub async fn local_client_over_unix_socket_can_stream_events_with_last_event_id_header(
-) -> Result<()> {
+#[cfg(unix)]
+pub async fn local_client_over_unix_socket_stream_without_cursor_starts_at_tail() -> Result<()> {
     let config = test_config();
     let (host, _socket_path, server) = spawn_unix_server(config.clone()).await?;
     let runtime = host.default_runtime().await?;
     let client = LocalClient::new(config)?;
 
     client
-        .control_prompt("default", "unix header bootstrap")
+        .control_prompt("default", "unix tail bootstrap")
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
-    let cursor = client
-        .agent_state_snapshot("default")
-        .await?
-        .cursor
-        .expect("cursor should be present");
 
-    client
-        .control_prompt("default", "unix header replay")
-        .await?;
     let mut stream = client
-        .stream_agent_events(
-            "default",
-            EventStreamRequest {
-                last_event_id: Some(cursor),
-                ..Default::default()
-            },
-        )
+        .stream_agent_events("default", EventStreamRequest::default())
         .await?;
+    client.control_prompt("default", "unix tail live").await?;
     let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");

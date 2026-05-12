@@ -159,8 +159,10 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         push_pending_operator_message_cell(&mut cells, &mut visible_operator_message_ids, message);
     }
 
+    let event_brief_ids = projection_brief_ids(app);
     for brief in &app.briefs {
-        if matches!(brief.kind, crate::types::BriefKind::Ack) {
+        if matches!(brief.kind, crate::types::BriefKind::Ack) || event_brief_ids.contains(&brief.id)
+        {
             continue;
         }
         cells.push(ConversationCell::AssistantMarkdown(AssistantMarkdownCell {
@@ -183,7 +185,6 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             .cloned()
             .filter(|e| {
                 e.kind != "message_enqueued"
-                    && e.kind != "brief_created"
                     && !matches!(e.presentation.category, OperatorEventCategory::StateSync)
             })
             .collect();
@@ -220,6 +221,21 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         cells.push(active_item);
     }
     cells
+}
+
+fn projection_brief_ids(app: &TuiApp) -> std::collections::BTreeSet<String> {
+    app.projection
+        .as_ref()
+        .map(|projection| {
+            projection
+                .event_log()
+                .iter()
+                .filter(|event| event.kind == "brief_created")
+                .filter_map(|event| event.payload.get("id").and_then(serde_json::Value::as_str))
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn operator_message_statuses(

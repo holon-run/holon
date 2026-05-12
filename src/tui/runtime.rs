@@ -2,7 +2,8 @@ use super::projection::ProjectionSlice;
 use super::state::TuiClientState;
 use super::*;
 use crate::client::{
-    AgentStateSnapshot, AgentStreamEvent, EventStreamRequest, LocalEventStream, LocalHttpError,
+    AgentStateSnapshot, AgentStreamEvent, EventPageRequest, EventStreamRequest, LocalEventStream,
+    LocalHttpError,
 };
 use tokio::sync::mpsc;
 
@@ -47,7 +48,7 @@ pub(super) enum TuiRuntimeMessage {
 
 pub(super) struct EventStreamOpenError {
     message: String,
-    cursor_too_old: bool,
+    cursor_not_found: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,10 +374,25 @@ impl TuiApp {
         tokio::spawn({
             let agent_id = agent_id.clone();
             async move {
-                let result = client
-                    .agent_state_snapshot(&agent_id)
-                    .await
-                    .map_err(|err| err.to_string());
+                let result = async {
+                    let mut snapshot = client.agent_state_snapshot(&agent_id).await?;
+                    let mut events_page = client
+                        .agent_events_page(
+                            &agent_id,
+                            EventPageRequest {
+                                limit: Some(256),
+                                order: Some("desc".into()),
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+                    events_page.events.reverse();
+                    snapshot.events_tail = events_page.events;
+                    snapshot.cursor = events_page.newest_cursor.or(snapshot.cursor);
+                    anyhow::Ok(snapshot)
+                }
+                .await
+                .map_err(|err| err.to_string());
                 let _ = tx.send(TuiRuntimeMessage::SnapshotLoaded {
                     request_id,
                     target_index,
@@ -443,24 +459,24 @@ impl TuiApp {
             self.status_line = "No agent selected".into();
             return;
         };
-        let since = self
+        let cursor = self
             .projection
             .as_ref()
             .and_then(|projection| projection.cursor.clone());
-        self.begin_connect_event_stream_for(agent_id, since);
+        self.begin_connect_event_stream_for(agent_id, cursor);
     }
 
     pub(super) fn begin_connect_event_stream_for(
         &mut self,
         agent_id: String,
-        since: Option<String>,
+        cursor: Option<String>,
     ) {
         self.stream_connect_in_flight = true;
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
         let request_id = self.stream_connect_request_id;
         self.reconnect_deadline = None;
         let request = EventStreamRequest {
-            since,
+            cursor,
             ..Default::default()
         };
         let client = self.client.clone();
@@ -472,7 +488,7 @@ impl TuiApp {
                     .stream_agent_events(&agent_id, request)
                     .await
                     .map_err(|err| EventStreamOpenError {
-                        cursor_too_old: is_cursor_too_old_error(&err),
+                        cursor_not_found: is_cursor_not_found_error(&err),
                         message: err.to_string(),
                     });
                 let _ = tx.send(TuiRuntimeMessage::EventStreamOpened {
@@ -503,12 +519,12 @@ impl TuiApp {
                 self.refresh_deadline = None;
                 self.status_line.clear();
             }
-            Err(err) if err.cursor_too_old => {
+            Err(err) if err.cursor_not_found => {
                 self.schedule_refresh(format!(
-                    "replay cursor expired for {agent_id}; rebuilding from /state"
+                    "replay cursor not found for {agent_id}; rebuilding from /state"
                 ));
                 self.status_line =
-                    format!("Replay cursor expired for {agent_id}; resetting from /state");
+                    format!("Replay cursor not found for {agent_id}; resetting from /state");
             }
             Err(err) => {
                 self.schedule_reconnect(err.message.clone());
@@ -866,7 +882,7 @@ impl Drop for TuiApp {
     }
 }
 
-pub(super) fn is_cursor_too_old_error(err: &anyhow::Error) -> bool {
+pub(super) fn is_cursor_not_found_error(err: &anyhow::Error) -> bool {
     err.downcast_ref::<LocalHttpError>()
-        .is_some_and(|error| error.has_code("cursor_too_old"))
+        .is_some_and(|error| error.has_code("cursor_not_found"))
 }

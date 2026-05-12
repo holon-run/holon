@@ -9,7 +9,7 @@ use super::{
     overlay::{centered_rect_rows, OverlayState},
     projection::{OperatorDisplayMode, TuiProjection},
     render::draw,
-    runtime::{is_cursor_too_old_error, AgentListChange, TuiConnectionState, TuiRuntimeMessage},
+    runtime::{is_cursor_not_found_error, AgentListChange, TuiConnectionState, TuiRuntimeMessage},
     state::{tui_state_path, TuiClientState},
     view_model::{HeaderViewModel, StatusbarViewModel},
 };
@@ -2542,7 +2542,7 @@ fn cursor_expiry_marks_refresh_required() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.schedule_refresh("cursor evt_123 is too old or not found".into());
+    app.schedule_refresh("cursor evt_123 was not found".into());
 
     assert!(matches!(
         app.connection_state,
@@ -2550,22 +2550,22 @@ fn cursor_expiry_marks_refresh_required() {
     ));
     assert_eq!(
         app.connection_detail(),
-        Some("cursor evt_123 is too old or not found")
+        Some("cursor evt_123 was not found")
     );
     assert!(app.refresh_deadline.is_some());
 }
 
 #[test]
-fn cursor_too_old_detection_uses_typed_http_error() {
+fn cursor_not_found_detection_uses_typed_http_error() {
     let err = crate::client::LocalHttpError {
         path: "/agents/default/events".into(),
-        status_code: 410,
-        message: "cursor evt_123 is too old or not found".into(),
-        code: Some("cursor_too_old".into()),
+        status_code: 404,
+        message: "cursor evt_123 was not found".into(),
+        code: Some("cursor_not_found".into()),
         hint: None,
     };
     let err = anyhow::Error::new(err);
-    assert!(is_cursor_too_old_error(&err));
+    assert!(is_cursor_not_found_error(&err));
 }
 
 #[test]

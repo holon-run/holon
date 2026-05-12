@@ -469,7 +469,8 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         "/agents/default/timers",
         "/agents/default/worktree-summary",
         "/agents/default/skills",
-        "/events",
+        "/agents/default/events",
+        "/agents/default/events/stream",
     ] {
         let denied = client.get(format!("{base}{path}")).send().await?;
         assert_eq!(

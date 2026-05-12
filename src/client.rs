@@ -138,10 +138,28 @@ pub struct ControlPromptResponse {
 
 #[derive(Debug, Clone, Default)]
 pub struct EventStreamRequest {
-    pub since: Option<String>,
-    pub last_event_id: Option<String>,
+    pub cursor: Option<String>,
     pub limit: Option<usize>,
     pub projection: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EventPageRequest {
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
+    pub order: Option<String>,
+    pub projection: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EventPageResponse {
+    pub events: Vec<StreamEventEnvelope>,
+    pub oldest_cursor: Option<String>,
+    pub newest_cursor: Option<String>,
+    pub has_older: bool,
+    pub has_newer: bool,
+    pub order: String,
+    pub limit: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -516,10 +534,7 @@ impl LocalClient {
 
         #[cfg(unix)]
         if self.remote.is_none() && self.config.socket_path.exists() {
-            let socket_error = match self
-                .stream_unix_events(&path, false, request.last_event_id.as_deref())
-                .await
-            {
+            let socket_error = match self.stream_unix_events(&path, false).await {
                 Ok(stream) => {
                     return Ok(LocalEventStream {
                         transport: EventStreamTransport::Unix(stream),
@@ -529,19 +544,23 @@ impl LocalClient {
                 Err(err) => err,
             };
             return self
-                .stream_http_events(&path, false, request.last_event_id.as_deref())
+                .stream_http_events(&path, false)
                 .await
                 .with_context(|| {
                     format!("unix socket event stream failed before HTTP fallback: {socket_error}")
                 });
         }
 
-        self.stream_http_events(
-            &path,
-            self.remote.is_some(),
-            request.last_event_id.as_deref(),
-        )
-        .await
+        self.stream_http_events(&path, self.remote.is_some()).await
+    }
+
+    pub async fn agent_events_page(
+        &self,
+        agent_id: &str,
+        request: EventPageRequest,
+    ) -> Result<EventPageResponse> {
+        let path = event_page_path(agent_id, &request)?;
+        self.get_json(&path).await
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
@@ -606,18 +625,11 @@ impl LocalClient {
         &self,
         path: &str,
         include_control_auth: bool,
-        last_event_id: Option<&str>,
     ) -> Result<LocalEventStream> {
-        if let Some(last_event_id) = last_event_id {
-            validate_header_value("Last-Event-ID", last_event_id)?;
-        }
         let request = RequestSpec::get(path);
-        let mut builder = self
+        let builder = self
             .build_http_request(&request, include_control_auth)
             .header(reqwest::header::ACCEPT, "text/event-stream");
-        if let Some(last_event_id) = last_event_id {
-            builder = builder.header("Last-Event-ID", last_event_id);
-        }
         let response =
             tokio::time::timeout(self.http_request_timeout_for_path(path), builder.send())
                 .await
@@ -737,15 +749,11 @@ impl LocalClient {
         &self,
         path: &str,
         include_control_auth: bool,
-        last_event_id: Option<&str>,
     ) -> Result<UnixEventStream> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::UnixStream;
 
         validate_unix_request_target(path)?;
-        if let Some(last_event_id) = last_event_id {
-            validate_header_value("Last-Event-ID", last_event_id)?;
-        }
 
         let mut stream = UnixStream::connect(&self.config.socket_path)
             .await
@@ -766,9 +774,6 @@ impl LocalClient {
                     authorization_header_value(token)?
                 ));
             }
-        }
-        if let Some(last_event_id) = last_event_id {
-            raw.push_str(&format!("Last-Event-ID: {last_event_id}\r\n"));
         }
         raw.push_str("Content-Length: 0\r\n\r\n");
 
@@ -1021,20 +1026,49 @@ fn event_stream_path(agent_id: &str, request: &EventStreamRequest) -> Result<Str
         .context("failed to initialize event stream URL builder")?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("failed to build event stream path"))?
-        .extend(["agents", agent_id, "events"]);
+        .extend(["agents", agent_id, "events", "stream"]);
     {
         let mut query = url.query_pairs_mut();
         if let Some(limit) = request.limit {
             query.append_pair("limit", &limit.to_string());
         }
-        if let Some(since) = request.since.as_deref() {
-            query.append_pair("since", since);
+        if let Some(cursor) = request.cursor.as_deref() {
+            query.append_pair("cursor", cursor);
         }
         if let Some(projection) = request.projection.as_deref() {
             query.append_pair("projection", projection);
         }
     }
 
+    let mut path = url.path().to_string();
+    if let Some(query) = url.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    Ok(path)
+}
+
+fn event_page_path(agent_id: &str, request: &EventPageRequest) -> Result<String> {
+    let mut url =
+        reqwest::Url::parse("http://localhost").context("failed to initialize event page URL")?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow!("failed to build event page path"))?
+        .extend(["agents", agent_id, "events"]);
+    {
+        let mut query = url.query_pairs_mut();
+        if let Some(limit) = request.limit {
+            query.append_pair("limit", &limit.to_string());
+        }
+        if let Some(cursor) = request.cursor.as_deref() {
+            query.append_pair("cursor", cursor);
+        }
+        if let Some(order) = request.order.as_deref() {
+            query.append_pair("order", order);
+        }
+        if let Some(projection) = request.projection.as_deref() {
+            query.append_pair("projection", projection);
+        }
+    }
     let mut path = url.path().to_string();
     if let Some(query) = url.query() {
         path.push('?');
@@ -1316,7 +1350,7 @@ mod tests {
         assert!(is_state_bootstrap_path("/agents/default/state"));
         assert!(!is_state_bootstrap_path("/agents/default/status"));
         assert!(!is_state_bootstrap_path(
-            "/agents/default/events?since=evt_1"
+            "/agents/default/events/stream?cursor=evt_1"
         ));
     }
 
@@ -1373,8 +1407,7 @@ mod tests {
         let path = event_stream_path(
             "default",
             &EventStreamRequest {
-                since: Some("evt_123".into()),
-                last_event_id: Some("evt_122".into()),
+                cursor: Some("evt_123".into()),
                 limit: Some(20),
                 projection: Some("local_debug".into()),
             },
@@ -1382,7 +1415,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             path,
-            "/agents/default/events?limit=20&since=evt_123&projection=local_debug"
+            "/agents/default/events/stream?limit=20&cursor=evt_123&projection=local_debug"
         );
     }
 
@@ -1391,14 +1424,16 @@ mod tests {
         let path = event_stream_path(
             "default",
             &EventStreamRequest {
-                since: Some("evt?x=1&y=2".into()),
-                last_event_id: None,
+                cursor: Some("evt?x=1&y=2".into()),
                 limit: None,
                 projection: None,
             },
         )
         .unwrap();
-        assert_eq!(path, "/agents/default/events?since=evt%3Fx%3D1%26y%3D2");
+        assert_eq!(
+            path,
+            "/agents/default/events/stream?cursor=evt%3Fx%3D1%26y%3D2"
+        );
     }
 
     #[test]
@@ -1411,10 +1446,10 @@ mod tests {
 
     #[test]
     fn validate_header_value_rejects_crlf_injection() {
-        let err = validate_header_value("Last-Event-ID", "evt_123\r\nInjected: yes")
+        let err = validate_header_value("Authorization", "Bearer token\r\nInjected: yes")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("invalid Last-Event-ID header value"));
+        assert!(err.contains("invalid Authorization header value"));
     }
 
     #[test]
