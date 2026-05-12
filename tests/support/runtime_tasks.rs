@@ -1789,7 +1789,7 @@ pub async fn command_task_result_is_canonical_follow_up_on_completion() -> Resul
             .last_continuation
             .as_ref()
             .is_some_and(|continuation| {
-                continuation.model_visible
+                continuation.model_reentry
                     && continuation.trigger_kind
                         == holon::types::ContinuationTriggerKind::TaskResult
             }))

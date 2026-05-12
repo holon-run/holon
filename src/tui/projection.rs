@@ -893,7 +893,7 @@ fn is_verbose_event(event: &ProjectionEventRecord) -> bool {
         | "agent_created"
         | "agent_model_override_set"
         | "agent_model_override_cleared"
-        | "current_run_interrupted"
+        | "current_run_aborted"
         | "control_applied"
         | "runtime_service_shutdown_requested"
         | "turn_context_length_exceeded"
@@ -906,7 +906,7 @@ fn is_verbose_event(event: &ProjectionEventRecord) -> bool {
 fn is_debug_event(event: &ProjectionEventRecord) -> bool {
     match event.kind.as_str() {
         "provider_round_completed" => provider_round_has_useful_telemetry(event),
-        "message_processing_interrupted"
+        "message_processing_aborted"
         | "operator_interjection_admitted"
         | "task_created"
         | "task_status_updated"

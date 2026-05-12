@@ -12,6 +12,7 @@ pub(super) struct ScheduledMessage {
     pub(super) message: MessageEnvelope,
     pub(super) running_state: AgentState,
     pub(super) dispatch_plan: MessageDispatchPlan,
+    pub(super) scheduler_decision: scheduler::SchedulerDecision,
 }
 
 pub(super) struct SchedulerDecisionExecutor<'a> {
@@ -84,7 +85,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             scheduler::SchedulerInput::Message {
                 message: &candidate.message,
                 model_turn_allowed: dispatch_plan.model_turn_allowed,
-                model_visible: dispatch_plan.model_visible,
+                continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
 
@@ -117,13 +118,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 .pop_if_next(&candidate.message.id)
                 .expect("queue head was just checked");
             let run_id = Uuid::new_v4().to_string();
-            let interrupt_token = CancellationToken::new();
+            let abort_token = CancellationToken::new();
             guard.state.pending = guard.queue.len();
             scheduler::apply_running_projection(&mut guard.state, run_id.clone());
-            guard.current_run_interrupt = Some(CurrentRunInterruptHandle {
+            guard.current_run_abort = Some(CurrentRunAbortHandle {
                 run_id: run_id.clone(),
-                token: interrupt_token,
-                reason: Arc::new(StdMutex::new("operator_interrupted".into())),
+                token: abort_token,
+                reason: Arc::new(StdMutex::new("operator_aborted".into())),
             });
             guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
             self.runtime.inner.storage.write_agent(&guard.state)?;
@@ -134,6 +135,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             message,
             running_state,
             dispatch_plan,
+            scheduler_decision: decision,
         }))
     }
 }

@@ -1210,12 +1210,13 @@ type TrustLevel =
 Priority is a scheduling hint, not a trust signal.
 
 ```ts
-type Priority = 'interrupt' | 'next' | 'normal' | 'background'
+type Priority = 'interject' | 'next' | 'normal' | 'background'
 ```
 
 ### Priority Meaning
 
-- `interrupt`: lifecycle or control work that should preempt ordinary work
+- `interject`: trusted operator prompt that should be inserted at the next
+  provider/tool safe point
 - `next`: should run after the current step completes
 - `normal`: default foreground work
 - `background`: low-urgency or deferred work
@@ -1398,7 +1399,7 @@ type AgentModelState = {
 Current contract:
 
 - setting an agent model override only changes that one agent
-- the override applies to future turns and does not interrupt an in-flight
+- the override applies to future turns and does not abort an in-flight
   provider turn
 - clearing the override returns the agent to the runtime default plus fallback
   chain behavior
@@ -1864,7 +1865,7 @@ The minimal request shape is:
 Rules:
 
 - the route must not bootstrap the item through normal message ingress
-- it must not interrupt or replace the current active work item
+- it must not abort or replace the current active work item
 - it uses the same persisted work-item store as `CreateWorkItem`
 - it is a control-plane mutation, not external ingress
 - if the scheduler is idle with no active work item, later rollout may activate

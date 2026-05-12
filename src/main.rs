@@ -50,7 +50,7 @@ enum ControlCommandAction {
     Pause,
     Resume,
     Stop,
-    Interrupt,
+    Abort,
 }
 
 impl ControlCommandAction {
@@ -59,7 +59,7 @@ impl ControlCommandAction {
             Self::Pause => Some(ControlAction::Pause),
             Self::Resume => Some(ControlAction::Resume),
             Self::Stop => Some(ControlAction::Stop),
-            Self::Interrupt => None,
+            Self::Abort => None,
         }
     }
 }
@@ -130,7 +130,7 @@ enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
-    #[command(about = "Deprecated: use `holon agent pause|resume|stop|interrupt [agent-id]`")]
+    #[command(about = "Deprecated: use `holon agent pause|resume|stop|abort [agent-id]`")]
     Control {
         action: ControlCommandAction,
         #[arg(long)]
@@ -418,7 +418,7 @@ enum AgentCommands {
     Stop {
         agent_id: Option<String>,
     },
-    Interrupt {
+    Abort {
         agent_id: Option<String>,
     },
     Model {
@@ -643,11 +643,11 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         }
         Commands::Control { action, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
-            if action == ControlCommandAction::Interrupt {
+            if action == ControlCommandAction::Abort {
                 return post_control_json(
                     &config,
-                    &format!("/control/agents/{agent}/current-run/interrupt"),
-                    &http::InterruptCurrentRunRequest {
+                    &format!("/control/agents/{agent}/current-run/abort"),
+                    &http::AbortCurrentRunRequest {
                         run_id: None,
                         mode: Some("pause_after_abort".into()),
                         trust: Some(TrustLevel::TrustedOperator),
@@ -661,7 +661,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                 &ControlRequest {
                     action: action
                         .as_control_action()
-                        .expect("interrupt action should be handled separately"),
+                        .expect("abort action should be handled separately"),
                     trust: Some(TrustLevel::TrustedOperator),
                 },
             )
@@ -1281,12 +1281,12 @@ mod tests {
         };
         assert_eq!(agent_id.as_deref(), Some("foo"));
 
-        let cli = Cli::parse_from(["holon", "agent", "interrupt", "foo"]);
+        let cli = Cli::parse_from(["holon", "agent", "abort", "foo"]);
         let Commands::Agent {
-            command: Some(AgentCommands::Interrupt { agent_id }),
+            command: Some(AgentCommands::Abort { agent_id }),
         } = cli.command
         else {
-            panic!("expected agent interrupt command");
+            panic!("expected agent abort command");
         };
         assert_eq!(agent_id.as_deref(), Some("foo"));
     }
@@ -2267,12 +2267,12 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
         Some(AgentCommands::Stop { agent_id }) => {
             control_agent_lifecycle(config, agent_id, ControlAction::Stop).await
         }
-        Some(AgentCommands::Interrupt { agent_id }) => {
+        Some(AgentCommands::Abort { agent_id }) => {
             let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
             post_control_json(
                 config,
-                &format!("/control/agents/{agent}/current-run/interrupt"),
-                &http::InterruptCurrentRunRequest {
+                &format!("/control/agents/{agent}/current-run/abort"),
+                &http::AbortCurrentRunRequest {
                     run_id: None,
                     mode: Some("pause_after_abort".into()),
                     trust: Some(TrustLevel::TrustedOperator),

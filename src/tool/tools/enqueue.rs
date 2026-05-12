@@ -21,7 +21,7 @@ pub(crate) const NAME: &str = "Enqueue";
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 pub(crate) enum EnqueuePriority {
-    Interrupt,
+    Interject,
     Next,
     Normal,
     Background,
@@ -53,7 +53,7 @@ pub(crate) async fn execute(
     let args: EnqueueArgs = parse_tool_args(NAME, input)?;
     let text = validate_non_empty(args.text, NAME, "text")?;
     let priority = match args.priority.unwrap_or(EnqueuePriority::Next) {
-        EnqueuePriority::Interrupt => Priority::Interrupt,
+        EnqueuePriority::Interject => Priority::Interject,
         EnqueuePriority::Next => Priority::Next,
         EnqueuePriority::Normal => Priority::Normal,
         EnqueuePriority::Background => Priority::Background,

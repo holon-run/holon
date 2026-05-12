@@ -20,7 +20,7 @@ holon (v0.13.0)
 ├── transcript   Show conversation transcript
 ├── task         Run a command as a background task
 ├── timer        Create a delayed or recurring timer
-├── control      [deprecated] use `holon agent pause|resume|stop|interrupt`
+├── control      [deprecated] use `holon agent pause|resume|stop|abort`
 ├── daemon       Background daemon lifecycle
 │   ├── start    Start the daemon
 │   ├── stop     Stop the daemon
@@ -34,7 +34,7 @@ holon (v0.13.0)
 │   ├── pause    Pause an agent
 │   ├── resume   Resume an agent
 │   ├── stop     Stop an agent
-│   ├── interrupt Interrupt current run
+│   ├── abort Abort current run
 │   └── model    Per-agent model configuration
 │       ├── get  Get agent model override
 │       ├── set  Set agent model override
@@ -95,7 +95,7 @@ holon run --agent reviewer "Review src/runtime/turn.rs"
 holon agent pause reviewer
 holon agent resume reviewer
 holon agent stop reviewer
-holon agent interrupt reviewer
+holon agent abort reviewer
 ```
 
 ### Model selection

@@ -53,7 +53,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_enqueue",
             PromptStability::Stable,
-            "Use Enqueue only when you need to schedule a follow-up message for this same agent instead of acting immediately in the current tool loop. Prefer `priority=next` for normal continuations, `background` for low-urgency bookkeeping, and reserve `interrupt` for genuinely urgent self-follow-up that should preempt queued work. Enqueue returns a structured receipt with `enqueued`, `priority`, `follow_up_text`, and `summary_text`; treat that receipt as confirmation that the follow-up entered the runtime queue, not as completion of the follow-up work itself.".to_string(),
+            "Use Enqueue only when you need to schedule a follow-up message for this same agent instead of acting immediately in the current tool loop. Prefer `priority=next` for normal continuations, `background` for low-urgency bookkeeping, and reserve `interject` for genuinely urgent self-follow-up that should preempt queued work. Enqueue returns a structured receipt with `enqueued`, `priority`, `follow_up_text`, and `summary_text`; treat that receipt as confirmation that the follow-up entered the runtime queue, not as completion of the follow-up work itself.".to_string(),
         ));
     }
     if names.contains(&"CreateExternalTrigger") || names.contains(&"CancelExternalTrigger") {

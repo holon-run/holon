@@ -493,7 +493,7 @@ pub async fn queued_notification_after_compaction_keeps_queued_work_visible() ->
             .as_ref()
             .is_some_and(|continuation| {
                 continuation.trigger_kind == holon::types::ContinuationTriggerKind::SystemTick
-                    && continuation.model_visible
+                    && continuation.model_reentry
             }))
     })
     .await?;

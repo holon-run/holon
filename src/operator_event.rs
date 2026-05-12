@@ -203,7 +203,7 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "message_enqueued"
         | "message_admitted"
         | "message_processing_started"
-        | "message_processing_interrupted"
+        | "message_processing_aborted"
         | "turn_started" => OperatorEventCategory::Message,
         "work_item_written"
         | "work_item_picked"
@@ -265,7 +265,7 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         }
         "control_request_admitted"
         | "control_applied"
-        | "current_run_interrupted"
+        | "current_run_aborted"
         | "wake_requested"
         | "continuation_trigger_received"
         | "continuation_resolved"
@@ -380,8 +380,8 @@ fn event_text(
         "message_processing_started" => {
             simple_event_text("Message processing started", message_id_body(payload))
         }
-        "message_processing_interrupted" => {
-            simple_event_text("Message interrupted", error_or_message_body(payload))
+        "message_processing_aborted" => {
+            simple_event_text("Message aborted", error_or_message_body(payload))
         }
         "operator_interjection_admitted" => {
             simple_event_text("Operator message admitted", message_id_body(payload))
@@ -502,8 +502,8 @@ fn event_text(
             simple_event_text("Control request admitted", control_body(payload))
         }
         "control_applied" => simple_event_text("Control applied", control_body(payload)),
-        "current_run_interrupted" => {
-            simple_event_text("Current run interrupted", reason_or_message_body(payload))
+        "current_run_aborted" => {
+            simple_event_text("Current run aborted", reason_or_message_body(payload))
         }
         "wake_requested" => simple_event_text("Wake requested", reason_or_message_body(payload)),
         "continuation_trigger_received" => {
@@ -1724,7 +1724,7 @@ mod tests {
         "message_enqueued",
         "message_admitted",
         "message_processing_started",
-        "message_processing_interrupted",
+        "message_processing_aborted",
         "turn_started",
         "assistant_round_recorded",
         "text_only_round_observed",
@@ -1795,7 +1795,7 @@ mod tests {
         "session_state_changed",
         "control_request_admitted",
         "control_applied",
-        "current_run_interrupted",
+        "current_run_aborted",
         "wake_requested",
         "continuation_trigger_received",
         "continuation_resolved",

@@ -784,7 +784,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::ContinueActive {
             work_item: &work_item,
-            suppressed_after_model_visible_continuation: false,
+            suppressed_after_model_reentry_continuation: false,
             duplicate: None,
         }),
     );
@@ -840,14 +840,19 @@ fn scheduler_decision_event_records_evidence_and_bindings() {
         },
     );
     let event = scheduler::scheduler_decision_event(
-        &scheduler::message_processing_decision(&message, true, true)
-            .work_item_id("work-1")
-            .evidence("fixture_evidence"),
+        &scheduler::SchedulerDecision::new(
+            scheduler::SchedulerDecisionKind::StartModelTurn,
+            "fixture",
+        )
+        .message(&message)
+        .model_reentry(true)
+        .work_item_id("work-1")
+        .evidence("fixture_evidence"),
     );
 
     assert_eq!(event.kind, "scheduler_decision");
     assert_eq!(event.data["decision"].as_str(), Some("StartModelTurn"));
-    assert_eq!(event.data["model_visible"].as_bool(), Some(true));
+    assert_eq!(event.data["model_reentry"].as_bool(), Some(true));
     assert_eq!(event.data["work_item_id"].as_str(), Some("work-1"));
     assert!(event.data["evidence"]
         .as_array()
@@ -878,19 +883,19 @@ fn scheduler_decision_append_dedupes_identical_latest_event() {
 }
 
 #[test]
-fn interrupt_operator_classifier_requires_trusted_interrupt_operator_prompt() {
-    let trusted_interrupt = MessageEnvelope::new(
+fn operator_interjection_classifier_requires_trusted_operator_interjection_prompt() {
+    let trusted_interjection = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
         TrustLevel::TrustedOperator,
-        Priority::Interrupt,
+        Priority::Interject,
         MessageBody::Text {
-            text: "interrupt".into(),
+            text: "interject".into(),
         },
     );
-    assert!(scheduler::is_interrupt_priority_operator_input(
-        &trusted_interrupt
+    assert!(scheduler::is_operator_interjection_message(
+        &trusted_interjection
     ));
 
     let normal_operator = MessageEnvelope::new(
@@ -903,11 +908,11 @@ fn interrupt_operator_classifier_requires_trusted_interrupt_operator_prompt() {
             text: "normal".into(),
         },
     );
-    assert!(!scheduler::is_interrupt_priority_operator_input(
+    assert!(!scheduler::is_operator_interjection_message(
         &normal_operator
     ));
 
-    let webhook_interrupt = MessageEnvelope::new(
+    let webhook_interjection = MessageEnvelope::new(
         "default",
         MessageKind::WebhookEvent,
         MessageOrigin::Webhook {
@@ -915,12 +920,12 @@ fn interrupt_operator_classifier_requires_trusted_interrupt_operator_prompt() {
             event_type: None,
         },
         TrustLevel::TrustedIntegration,
-        Priority::Interrupt,
+        Priority::Interject,
         MessageBody::Text {
             text: "webhook".into(),
         },
     );
-    assert!(!scheduler::is_interrupt_priority_operator_input(
-        &webhook_interrupt
+    assert!(!scheduler::is_operator_interjection_message(
+        &webhook_interjection
     ));
 }

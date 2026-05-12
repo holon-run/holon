@@ -164,7 +164,7 @@ Every inbound message carries an `origin` that classifies its source. The runtim
 - `system` — Internal runtime subsystem
 - `task` — Child task completion
 
-Messages also carry `priority` (`interrupt`, `next`, `normal`, `background`) and `trust` level metadata.
+Messages also carry `priority` (`interject`, `next`, `normal`, `background`) and `trust` level metadata.
 
 ## Operator Transport Bindings
 
@@ -183,7 +183,7 @@ curl -X POST http://localhost:8787/control/agents/my-agent/operator-bindings \
       "token": "my-delivery-token"
     },
     "capabilities": {
-      "supports_interrupt": true,
+      "supports_interject": true,
       "supports_rich_text": true
     }
   }'

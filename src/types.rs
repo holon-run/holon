@@ -573,7 +573,7 @@ pub enum ContinuationClass {
 pub struct ContinuationResolution {
     pub trigger_kind: ContinuationTriggerKind,
     pub class: ContinuationClass,
-    pub model_visible: bool,
+    pub model_reentry: bool,
     pub prior_closure_outcome: ClosureOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prior_waiting_reason: Option<WaitingReason>,
@@ -779,7 +779,7 @@ pub enum TrustLevel {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
-    Interrupt,
+    Interject,
     Next,
     Normal,
     Background,
@@ -2781,7 +2781,7 @@ pub enum QueueEntryStatus {
     Dequeued,
     Processed,
     Interjected,
-    Interrupted,
+    Aborted,
     Dropped,
 }
 

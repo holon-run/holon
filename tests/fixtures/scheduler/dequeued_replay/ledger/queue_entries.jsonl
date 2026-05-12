@@ -1,6 +1,6 @@
 {"message_id":"msg-queued","status":"queued"}
 {"message_id":"msg-dequeued","status":"dequeued"}
 {"message_id":"msg-processed","status":"processed"}
-{"message_id":"msg-interrupted","status":"interrupted"}
+{"message_id":"msg-aborted","status":"aborted"}
 {"message_id":"msg-interjected","status":"interjected"}
 {"message_id":"msg-dropped","status":"dropped"}
