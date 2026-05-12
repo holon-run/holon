@@ -67,7 +67,6 @@ pub(super) struct TuiRuntimeCheckpoint {
 
 impl TuiApp {
     pub(super) async fn initialize(&mut self) {
-        self.begin_load_models();
         self.schedule_agent_list_refresh();
         self.begin_load_agents();
     }
@@ -129,6 +128,10 @@ impl TuiApp {
     }
 
     pub(super) fn begin_load_models(&mut self) {
+        if self.model_availability_load_in_flight {
+            return;
+        }
+        self.model_availability_load_in_flight = true;
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
         tokio::spawn(async move {
@@ -145,6 +148,7 @@ impl TuiApp {
         &mut self,
         result: Result<Vec<ResolvedModelAvailability>, String>,
     ) {
+        self.model_availability_load_in_flight = false;
         match result {
             Ok(model_availability) => self.model_availability = model_availability,
             Err(error) => self.status_line = format!("Model availability load failed: {error}"),
