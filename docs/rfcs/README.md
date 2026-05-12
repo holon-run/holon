@@ -9,6 +9,7 @@ For a short architecture map and reading path, see
 ## Runtime And Work Model
 
 - [Agent Control Plane Model](./agent-control-plane-model.md)
+- [Agent Lifecycle Control Posture](./agent-lifecycle-control-posture.md)
 - [Agent Profile Model](./agent-profile-model.md)
 - [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
 - [Result Closure](./result-closure.md)

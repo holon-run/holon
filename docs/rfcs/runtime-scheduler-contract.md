@@ -277,14 +277,15 @@ Required fields:
 
 ### Control Inputs
 
-- `PauseRequested`
-- `ResumeRequested`
+- `StartRequested`
 - `StopRequested`
 - `ShutdownRequested`
 - `RuntimeRestarted`
 
-Control inputs are authoritative for posture. They should not erase task,
-work-item, or waiting facts.
+Control inputs are authoritative for whether the agent is runnable. The
+lifecycle vocabulary is defined by
+[Agent Lifecycle Control Posture](./agent-lifecycle-control-posture.md). They
+should not erase task, work-item, or waiting facts.
 
 ## Scheduler State
 
@@ -341,19 +342,18 @@ Decisions should include evidence:
 Scheduler decisions should use a fixed priority order.
 
 1. `stopped` or shutdown means `Stop`.
-2. `paused` means no model turn starts.
-3. queued operator interjection input may be inserted into a running turn.
-4. a queued model-reentry message may start a turn when no turn is running.
-5. terminal blocking task result may resume the model-reentry wait it satisfies.
-6. active blocking tasks mean `WaitForTask`.
-7. active waiting intents mean `WaitForExternalChange`.
-8. active timers mean `WaitForTimer`.
-9. pending wake hint means `EmitSystemTick(wake_hint)`.
-10. current runnable work item means `EmitSystemTick(continue_active)` unless an
+2. queued operator interjection input may be inserted into a running turn.
+3. a queued model-reentry message may start a turn when no turn is running.
+4. terminal blocking task result may resume the model-reentry wait it satisfies.
+5. active blocking tasks mean `WaitForTask`.
+6. active waiting intents mean `WaitForExternalChange`.
+7. active timers mean `WaitForTimer`.
+8. pending wake hint means `EmitSystemTick(wake_hint)`.
+9. current runnable work item means `EmitSystemTick(continue_active)` unless an
    idempotency key has already been emitted for the same generation.
-11. queued runnable work item means `EmitSystemTick(queued_available)` unless an
+10. queued runnable work item means `EmitSystemTick(queued_available)` unless an
     idempotency key has already been emitted for the same generation.
-12. no runnable work and no pending inputs means `Sleep` or `StayIdle`,
+11. no runnable work and no pending inputs means `Sleep` or `StayIdle`,
     depending on host mode.
 
 This order intentionally keeps blocking facts above work-queue self-reactivate

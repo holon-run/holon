@@ -64,7 +64,9 @@ cargo test operator_interjection_prompt_is_interjected_before_next_provider_roun
    `decide_next_action` as the final model-reentry decision boundary.
 2. Keep operator-interjection classification in scheduler code, while preserving
    turn-loop safe-point injection until provider/tool loop ownership changes.
-3. Keep bootstrap, control, and shutdown as explicit posture authorities unless a
-   later RFC moves those control-plane writes behind the scheduler executor.
+3. Track bootstrap, control, and shutdown posture ownership through
+   [Agent Lifecycle Control Posture](../rfcs/agent-lifecycle-control-posture.md).
+   The scheduler RFC owns runnable-agent next-action decisions; lifecycle
+   control owns whether the agent is runnable at all.
 4. Treat recent-ledger duplicate scans as fallback evidence. Explicit
    idempotency keys should remain the primary duplicate contract.
