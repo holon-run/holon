@@ -141,6 +141,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/:agent_id/briefs", get(briefs))
         .route("/agents/:agent_id/state", get(agent_state))
         .route("/agents/:agent_id/events", get(events))
+        .route("/agents/:agent_id/events/stream", get(events_stream))
         .route("/agents/:agent_id/transcript", get(transcript))
         .route("/agents/:agent_id/tasks", get(tasks))
         .route("/agents/:agent_id/worktree-summary", get(worktree_summary))
@@ -212,7 +213,6 @@ pub fn router(state: AppState) -> Router {
         .route("/status", get(status_default))
         .route("/briefs", get(briefs_default))
         .route("/state", get(state_default))
-        .route("/events", get(events_default))
         .route("/transcript", get(transcript_default))
         .route("/worktree-summary", get(worktree_summary_default))
         .with_state(Arc::new(state))
@@ -335,9 +335,24 @@ pub struct LimitQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct EventsQuery {
+    cursor: Option<String>,
     limit: Option<usize>,
-    since: Option<String>,
+    order: Option<EventPageOrder>,
     projection: Option<EventReplayProjection>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EventStreamQuery {
+    cursor: Option<String>,
+    limit: Option<usize>,
+    projection: Option<EventReplayProjection>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum EventPageOrder {
+    Asc,
+    Desc,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -352,6 +367,17 @@ struct EventReplayProjectionRecord {
     name: EventReplayProjection,
     raw_payload_included: bool,
     redactions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct EventsPageResponse {
+    events: Vec<StreamEventEnvelope>,
+    oldest_cursor: Option<String>,
+    newest_cursor: Option<String>,
+    has_older: bool,
+    has_newer: bool,
+    order: EventPageOrder,
+    limit: usize,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1234,20 +1260,6 @@ pub async fn briefs(
     Ok(Json(briefs))
 }
 
-pub async fn events_default(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Query(query): Query<EventsQuery>,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    events(
-        Path(state.host.config().default_agent_id.clone()),
-        State(state),
-        headers,
-        Query(query),
-    )
-    .await
-}
-
 pub async fn transcript_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1280,19 +1292,53 @@ pub async fn events(
     headers: HeaderMap,
     Query(query): Query<EventsQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_EVENT_STREAM_WINDOW)
+        .clamp(1, MAX_EVENT_STREAM_WINDOW);
+    let order = query.order.unwrap_or(EventPageOrder::Desc);
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let projection = query.projection.unwrap_or(EventReplayProjection::Operator);
+    if state.require_control_token || projection == EventReplayProjection::LocalDebug {
+        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    }
+
+    let all_events = runtime.all_events().map_err(error_response)?;
+    let page = event_page(&all_events, query.cursor.as_deref(), limit, order)?;
+    let oldest_cursor = oldest_cursor(&page.events, order);
+    let newest_cursor = newest_cursor(&page.events, order);
+    let events = page
+        .events
+        .iter()
+        .enumerate()
+        .map(|(seq, event)| stream_event_envelope(seq as u64, &agent_id, event, projection))
+        .collect();
+    Ok(Json(EventsPageResponse {
+        events,
+        oldest_cursor,
+        newest_cursor,
+        has_older: page.has_older,
+        has_newer: page.has_newer,
+        order,
+        limit,
+    }))
+}
+
+pub async fn events_stream(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<EventStreamQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let event_window_limit = query
         .limit
         .unwrap_or(DEFAULT_EVENT_STREAM_WINDOW)
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
-    let cursor = query
-        .since
-        .or_else(|| {
-            headers
-                .get("last-event-id")
-                .and_then(|value| value.to_str().ok())
-                .map(|value| value.to_string())
-        })
-        .filter(|value| !value.is_empty());
+    let cursor = query.cursor.filter(|value| !value.is_empty());
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -1307,11 +1353,8 @@ pub async fn events(
         .poll_activity_marker()
         .map_err(error_response)?
         .events;
-    let events = runtime
-        .recent_events(event_window_limit)
-        .await
-        .map_err(error_response)?;
-    let buffered = initial_buffered_events(&events, cursor.as_deref())?;
+    let events = runtime.all_events().map_err(error_response)?;
+    let buffered = initial_buffered_events(&events, cursor.as_deref(), event_window_limit)?;
     let last_seen_cursor = cursor.or_else(|| events.last().map(|event| event.id.clone()));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
     tokio::spawn(async move {
@@ -1360,15 +1403,14 @@ pub async fn events(
                 sleep(EVENT_STREAM_POLL_INTERVAL).await;
                 continue;
             }
-            let latest_events: Vec<AuditEvent> =
-                match state.runtime.recent_events(state.event_window_limit).await {
-                    Ok(latest_events) => latest_events,
-                    Err(err) => {
-                        error!("failed to load events for stream: {err}");
-                        sleep(EVENT_STREAM_POLL_INTERVAL).await;
-                        continue;
-                    }
-                };
+            let latest_events: Vec<AuditEvent> = match state.runtime.all_events() {
+                Ok(latest_events) => latest_events,
+                Err(err) => {
+                    error!("failed to load events for stream: {err}");
+                    sleep(EVENT_STREAM_POLL_INTERVAL).await;
+                    continue;
+                }
+            };
             match refresh_buffered_events(&mut state, latest_events) {
                 Ok(()) => {
                     state.event_marker = event_marker;
@@ -1394,16 +1436,22 @@ pub async fn events(
 fn initial_buffered_events(
     events: &[AuditEvent],
     cursor: Option<&str>,
+    limit: usize,
 ) -> std::result::Result<VecDeque<AuditEvent>, (StatusCode, Json<Value>)> {
     let start_index = if let Some(cursor) = cursor {
         match events.iter().position(|event| event.id == cursor) {
             Some(position) => position + 1,
-            None => return Err(cursor_too_old(cursor.to_string())),
+            None => return Err(cursor_not_found(cursor.to_string())),
         }
     } else {
         events.len()
     };
-    Ok(events.iter().skip(start_index).cloned().collect())
+    Ok(events
+        .iter()
+        .skip(start_index)
+        .take(limit)
+        .cloned()
+        .collect())
 }
 
 fn refresh_buffered_events(
@@ -1421,8 +1469,74 @@ fn refresh_buffered_events(
     };
     for event in latest_events.into_iter().skip(start_index) {
         state.buffered.push_back(event);
+        if state.buffered.len() >= state.event_window_limit {
+            break;
+        }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct EventPage {
+    events: Vec<AuditEvent>,
+    has_older: bool,
+    has_newer: bool,
+}
+
+fn event_page(
+    events: &[AuditEvent],
+    cursor: Option<&str>,
+    limit: usize,
+    order: EventPageOrder,
+) -> std::result::Result<EventPage, (StatusCode, Json<Value>)> {
+    let cursor_index = match cursor {
+        Some(cursor) => Some(
+            events
+                .iter()
+                .position(|event| event.id == cursor)
+                .ok_or_else(|| cursor_not_found(cursor.to_string()))?,
+        ),
+        None => None,
+    };
+    let page = match order {
+        EventPageOrder::Asc => {
+            let start = cursor_index.map_or(0, |index| index + 1);
+            let end = (start + limit).min(events.len());
+            EventPage {
+                events: events[start..end].to_vec(),
+                has_older: start > 0,
+                has_newer: end < events.len(),
+            }
+        }
+        EventPageOrder::Desc => {
+            let end = cursor_index.unwrap_or(events.len());
+            let start = end.saturating_sub(limit);
+            let mut page_events = events[start..end].to_vec();
+            page_events.reverse();
+            EventPage {
+                events: page_events,
+                has_older: start > 0,
+                has_newer: end < events.len(),
+            }
+        }
+    };
+    Ok(page)
+}
+
+fn oldest_cursor(events: &[AuditEvent], order: EventPageOrder) -> Option<String> {
+    match order {
+        EventPageOrder::Asc => events.first(),
+        EventPageOrder::Desc => events.last(),
+    }
+    .map(|event| event.id.clone())
+}
+
+fn newest_cursor(events: &[AuditEvent], order: EventPageOrder) -> Option<String> {
+    match order {
+        EventPageOrder::Asc => events.last(),
+        EventPageOrder::Desc => events.first(),
+    }
+    .map(|event| event.id.clone())
 }
 
 fn stream_event_envelope(
@@ -1499,13 +1613,13 @@ fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
     payload.get(field).filter(|value| !value.is_null()).cloned()
 }
 
-fn cursor_too_old(cursor: String) -> (StatusCode, Json<Value>) {
+fn cursor_not_found(cursor: String) -> (StatusCode, Json<Value>) {
     (
-        StatusCode::GONE,
+        StatusCode::NOT_FOUND,
         Json(json!({
             "ok": false,
-            "error": format!("cursor {cursor} is too old or not found"),
-            "code": "cursor_too_old",
+            "error": format!("cursor {cursor} was not found"),
+            "code": "cursor_not_found",
             "cursor": cursor,
         })),
     )

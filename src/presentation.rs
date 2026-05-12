@@ -217,7 +217,7 @@ pub enum PresentationItem {
     },
     CommandExecuted {
         cmd_preview: String,
-        duration_ms: u64,
+        duration_ms: Option<u64>,
         exit_code: Option<i32>,
         stdout_summary: String,
         full_stdout: Option<String>,
@@ -416,8 +416,11 @@ impl Renderable for PresentationItem {
                     Some(_) => Outcome::Failure,
                     None => Outcome::Unknown,
                 };
-                let duration_s = *duration_ms as f64 / 1000.0;
-                let mut body = format!("{} {} ({:.1}s)", outcome.symbol(), cmd_preview, duration_s);
+                let mut body = format!("{} {}", outcome.symbol(), cmd_preview);
+                if let Some(duration_ms) = duration_ms {
+                    let duration_s = *duration_ms as f64 / 1000.0;
+                    body.push_str(&format!(" ({:.1}s)", duration_s));
+                }
 
                 if level >= 5 {
                     if let Some(stdout) = full_stdout {
@@ -590,7 +593,7 @@ impl PresentationReducer {
                             "tool_executed" | "tool_execution_failed"
                         ) && next.summary.contains(&exec_preview)
                         {
-                            let duration_ms = duration_between(event, next);
+                            let duration_ms = tool_duration_ms(next);
                             let exit_code =
                                 tool_exit_code(next).or_else(|| match next.kind.as_str() {
                                     "tool_execution_failed" => None,
@@ -635,7 +638,7 @@ impl PresentationReducer {
                     items.push(TimedItem {
                         item: PresentationItem::CommandExecuted {
                             cmd_preview,
-                            duration_ms: 0,
+                            duration_ms: tool_duration_ms(event),
                             exit_code,
                             stdout_summary,
                             full_stdout,
@@ -874,17 +877,16 @@ fn exec_command_preview(event: &ProjectionEventRecord) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn duration_between(start: &ProjectionEventRecord, end: &ProjectionEventRecord) -> u64 {
-    let duration = end.ts - start.ts;
-    duration.num_milliseconds().max(0) as u64
-}
-
 fn tool_exit_code(event: &ProjectionEventRecord) -> Option<i32> {
     event
         .payload
         .get("exit_status")
         .and_then(|v: &Value| v.as_i64())
         .map(|c| c as i32)
+}
+
+fn tool_duration_ms(event: &ProjectionEventRecord) -> Option<u64> {
+    event.payload.get("duration_ms").and_then(Value::as_u64)
 }
 
 fn tool_output_summary(event: &ProjectionEventRecord) -> String {
@@ -982,7 +984,7 @@ mod tests {
     fn is_visible_at() {
         let item = PresentationItem::CommandExecuted {
             cmd_preview: "cargo test".into(),
-            duration_ms: 1000,
+            duration_ms: Some(1000),
             exit_code: Some(0),
             stdout_summary: "".into(),
             full_stdout: None,
@@ -997,7 +999,7 @@ mod tests {
     fn command_render_level_4() {
         let item = PresentationItem::CommandExecuted {
             cmd_preview: "cargo test --lib".into(),
-            duration_ms: 2300,
+            duration_ms: Some(2300),
             exit_code: Some(0),
             stdout_summary: "5 passed".into(),
             full_stdout: Some("running 5 tests\ntest result: ok".into()),
@@ -1015,7 +1017,7 @@ mod tests {
     fn command_render_level_5() {
         let item = PresentationItem::CommandExecuted {
             cmd_preview: "cargo test --lib".into(),
-            duration_ms: 2300,
+            duration_ms: Some(2300),
             exit_code: Some(0),
             stdout_summary: "5 passed".into(),
             full_stdout: Some("running 5 tests\ntest result: ok".into()),
