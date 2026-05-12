@@ -1573,7 +1573,10 @@ Rules:
   before the dequeued message became the active run; the `awake_running`
   dispatch marker must not suppress model-visible triggers such as
   `internal_followup` or `timer_fire`
-- `TaskResult` is the canonical rejoin point for blocking delegated work.
+- `TaskResult` is the canonical rejoin point for terminal task-result
+  re-entry. This is independent from scheduler blocking; command
+  `continue_on_result` maps to terminal re-entry metadata and must not by itself
+  make the task a scheduler-blocking wait.
 - `TaskStatus` remains observational; it does not by itself create a new model turn.
 - `TimerTick` may resume local work even if the timer record has already been
   updated out of the active set.
@@ -2251,6 +2254,12 @@ accepted while reading old persisted records so the runtime can recover
 supervised child identity and workspace mode. They are not emitted for new
 records and do not imply scheduler blocking.
 
+For `command_task`, `CommandTaskSpec.continue_on_result` is a compatibility
+startup field for terminal result re-entry. New command task records expose that
+intent as `terminal_reentry` in task detail and `TaskStatus.task.command`, but
+the command task remains `wait_policy = background` unless another explicit
+runtime mechanism marks a task as blocking.
+
 ### Recovery Behavior
 
 On runtime restart:
@@ -2372,6 +2381,8 @@ Phase-1 envelope rules:
   - `TaskStatus.task.command.output_path` may identify where command output is
     stored, but the status snapshot must not include raw output preview bytes or
     artifact arrays
+  - `TaskStatus.task.command.terminal_reentry` is the explicit command-task
+    terminal result re-entry projection; it is not a scheduler wait policy
 - for `child_agent_task`, the `task` detail carries
   `workspace_mode = inherit | worktree`; in worktree mode, worktree artifact
   metadata is reported under task detail/result metadata when available

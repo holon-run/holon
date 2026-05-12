@@ -2023,6 +2023,25 @@ impl TaskRecord {
         self.wait_policy() == TaskWaitPolicy::Blocking
     }
 
+    pub fn terminal_reentry(&self) -> bool {
+        self.detail
+            .as_ref()
+            .and_then(|detail| detail.get("terminal_reentry"))
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                self.detail
+                    .as_ref()
+                    .and_then(|detail| detail.get("continue_on_result"))
+                    .and_then(Value::as_bool)
+            })
+            .or_else(|| {
+                self.recovery
+                    .as_ref()
+                    .map(TaskRecoverySpec::terminal_reentry)
+            })
+            .unwrap_or(false)
+    }
+
     pub fn is_child_agent_task(&self) -> bool {
         self.kind.is_child_agent()
     }
@@ -2084,6 +2103,8 @@ pub struct CommandTaskStatusSnapshot {
     pub exit_status: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continue_on_result: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_reentry: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_from_exec_command: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2180,6 +2201,7 @@ impl TaskStatusSnapshot {
                 result_summary: task_detail_string(&task.detail, "output_summary"),
                 exit_status: task_detail_i32(&task.detail, "exit_status"),
                 continue_on_result: task_detail_bool(&task.detail, "continue_on_result"),
+                terminal_reentry: task.terminal_reentry().then_some(true),
                 promoted_from_exec_command: task_detail_bool(
                     &task.detail,
                     "promoted_from_exec_command",
@@ -2548,13 +2570,16 @@ impl TaskRecoverySpec {
             TaskRecoverySpec::ChildAgentTask { .. } => TaskWaitPolicy::Blocking,
             TaskRecoverySpec::SubagentTask { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::WorktreeSubagentTask { .. } => TaskWaitPolicy::Background,
-            TaskRecoverySpec::CommandTask { spec, .. } => {
-                if spec.continue_on_result {
-                    TaskWaitPolicy::Blocking
-                } else {
-                    TaskWaitPolicy::Background
-                }
-            }
+            TaskRecoverySpec::CommandTask { .. } => TaskWaitPolicy::Background,
+        }
+    }
+
+    pub fn terminal_reentry(&self) -> bool {
+        match self {
+            TaskRecoverySpec::CommandTask { spec, .. } => spec.continue_on_result,
+            TaskRecoverySpec::ChildAgentTask { .. }
+            | TaskRecoverySpec::SubagentTask { .. }
+            | TaskRecoverySpec::WorktreeSubagentTask { .. } => false,
         }
     }
 }
@@ -3520,6 +3545,66 @@ mod tests {
             assert_eq!(task.wait_policy(), TaskWaitPolicy::Background);
             assert!(!task.is_blocking());
         }
+    }
+
+    #[test]
+    fn command_continue_on_result_recovery_is_terminal_reentry_not_blocking() {
+        let recovery = TaskRecoverySpec::CommandTask {
+            summary: "long command".into(),
+            spec: CommandTaskSpec {
+                cmd: "sleep 10".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 100,
+                max_output_tokens: None,
+                accepts_input: false,
+                continue_on_result: true,
+            },
+            trust: TrustLevel::TrustedOperator,
+            promoted_from_exec_command: true,
+        };
+        let task = TaskRecord {
+            id: "task-command".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("long command".into()),
+            detail: Some(serde_json::json!({
+                "continue_on_result": true,
+                "terminal_reentry": true
+            })),
+            recovery: Some(recovery),
+        };
+
+        assert_eq!(task.wait_policy(), TaskWaitPolicy::Background);
+        assert!(!task.is_blocking());
+        assert!(task.terminal_reentry());
+
+        let snapshot = TaskStatusSnapshot::from_task_record(&task);
+        let command = snapshot.command.expect("command task snapshot");
+        assert_eq!(command.continue_on_result, Some(true));
+        assert_eq!(command.terminal_reentry, Some(true));
+
+        let recovered_task = TaskRecord {
+            detail: None,
+            ..task
+        };
+        assert_eq!(recovered_task.wait_policy(), TaskWaitPolicy::Background);
+        assert!(!recovered_task.is_blocking());
+        assert!(recovered_task.terminal_reentry());
+        assert_eq!(
+            TaskStatusSnapshot::from_task_record(&recovered_task)
+                .command
+                .expect("command task snapshot")
+                .terminal_reentry,
+            Some(true)
+        );
     }
 
     #[test]
