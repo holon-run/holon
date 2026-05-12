@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use crate::types::WorkItemPlanStatus;
+use crate::types::{ToolExecutionStatus, WorkItemPlanStatus};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -82,6 +82,15 @@ struct BriefFixture {
 }
 
 #[derive(Deserialize)]
+struct ToolExecutionFixture {
+    id: String,
+    tool_name: String,
+    status: ToolExecutionStatus,
+    #[serde(default)]
+    work_item_id: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct ExpectedFixture {
     current_work_item_id: Option<String>,
     current_work_item_revision: Option<u64>,
@@ -105,6 +114,8 @@ struct ExpectedFixture {
     runtime_error: bool,
     #[serde(default)]
     replay_message_ids: Vec<String>,
+    #[serde(default)]
+    tool_executions: usize,
     #[serde(default)]
     turn_terminal_kind: Option<TurnTerminalKind>,
 }
@@ -194,6 +205,8 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
         read_optional_scheduler_jsonl_fixture(name, "ledger/events.jsonl");
     let briefs: Vec<BriefFixture> =
         read_optional_scheduler_jsonl_fixture(name, "ledger/briefs.jsonl");
+    let tool_executions: Vec<ToolExecutionFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/tools.jsonl");
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
 
@@ -350,6 +363,26 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
         record.id = brief.id;
         storage.append_brief(&record).unwrap();
     }
+    for tool in tool_executions {
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: tool.id,
+                agent_id: "default".into(),
+                work_item_id: tool.work_item_id,
+                turn_index: 1,
+                tool_name: tool.tool_name,
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 1,
+                trust: TrustLevel::TrustedOperator,
+                status: tool.status,
+                input: serde_json::json!({ "fixture": true }),
+                output: serde_json::json!({ "fixture": true }),
+                summary: "fixture tool execution".into(),
+                invocation_surface: Some("fixture".into()),
+            })
+            .unwrap();
+    }
 
     (dir, storage, agent)
 }
@@ -427,6 +460,14 @@ fn assert_scheduler_fixture(name: &str) {
         replay_message_ids, expected.replay_message_ids,
         "{name}: replay messages"
     );
+    assert_eq!(
+        storage
+            .read_recent_tool_executions(usize::MAX)
+            .unwrap()
+            .len(),
+        expected.tool_executions,
+        "{name}: tool executions"
+    );
     if let Some(expected_decision) = expected.decision {
         let decision = scheduler::decide_next_action(
             &projection,
@@ -456,10 +497,76 @@ fn scheduler_projection_replays_fixture_facts() {
         "queued_available",
         "pending_wake_hint",
         "dequeued_replay",
+        "tool_call_replay_boundary",
         "baseline_over_budget_terminal",
     ] {
         assert_scheduler_fixture(name);
     }
+}
+
+#[test]
+fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-active".into());
+    storage.write_agent(&agent).unwrap();
+
+    let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
+    work_item.id = "work-active".into();
+    work_item.revision = 3;
+    storage.append_work_item(&work_item).unwrap();
+    storage
+        .append_task(&TaskRecord {
+            id: "task-active".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: Some("work-active".into()),
+            summary: Some("blocking task".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+            recovery: None,
+        })
+        .unwrap();
+
+    let before = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    storage
+        .append_event(&AuditEvent::new(
+            "turn_local_compaction_completed",
+            serde_json::json!({
+                "agent_id": "default",
+                "turn_index": 1,
+                "checkpoint": "fixture checkpoint",
+            }),
+        ))
+        .unwrap();
+    storage
+        .append_event(&AuditEvent::new(
+            "turn_local_baseline_over_budget",
+            serde_json::json!({
+                "agent_id": "default",
+                "reason": "baseline_unfit",
+            }),
+        ))
+        .unwrap();
+    storage
+        .append_brief(&BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "compaction recap only",
+            Some("work-active".into()),
+            None,
+        ))
+        .unwrap();
+
+    let after = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        before, after,
+        "compaction artifacts must not become scheduler truth"
+    );
 }
 
 #[test]

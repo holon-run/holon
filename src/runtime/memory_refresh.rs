@@ -1255,6 +1255,94 @@ mod tests {
     }
 
     #[test]
+    fn queued_system_tick_explicit_idempotency_key_wins_over_newer_signals() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        let idempotency_key =
+            scheduler::work_queue_tick_idempotency_key(&queued, "queued_available");
+        let mut existing_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            TrustLevel::TrustedSystem,
+            Priority::Next,
+            MessageBody::Text {
+                text: "queued work item is available".into(),
+            },
+        );
+        existing_tick.id = "existing-work-queue-tick".into();
+        existing_tick.created_at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        existing_tick.work_item_id = Some(queued.id.clone());
+        existing_tick.metadata = Some(serde_json::json!({
+            "work_queue": {
+                "idempotency_key": idempotency_key,
+                "reason": "queued_available",
+                "work_item_id": queued.id,
+                "work_item_revision": queued.revision,
+            }
+        }));
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_message(&existing_tick)
+            .unwrap();
+
+        let mut newer_operator_signal = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "newer operator signal".into(),
+            },
+        );
+        newer_operator_signal.created_at = chrono::Utc::now();
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_message(&newer_operator_signal)
+            .unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(
+            !emitted,
+            "same work-item revision must not emit another queued tick even when recent-ledger fallback would see a newer signal"
+        );
+        assert!(get_emitted_system_ticks(&test_runtime).is_empty());
+        let events = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_events(20)
+            .unwrap();
+        let decision = events
+            .iter()
+            .find(|event| event.kind == "scheduler_decision")
+            .expect("duplicate decision should be recorded");
+        assert_eq!(decision.data["decision"].as_str(), Some("Noop"));
+        assert_eq!(
+            decision.data["reason"].as_str(),
+            Some("duplicate_queued_available")
+        );
+        assert!(decision.data["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("message_id=existing-work-queue-tick")));
+    }
+
+    #[test]
     fn queued_system_tick_emits_no_pick_or_activation_events() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);

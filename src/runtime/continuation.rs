@@ -438,4 +438,26 @@ mod tests {
         assert!(!resolution.model_visible);
         assert!(resolution.matched_waiting_reason);
     }
+
+    #[test]
+    fn mismatched_timer_trigger_stays_liveness_only() {
+        let resolution = resolve_continuation(
+            &waiting(WaitingReason::AwaitingTaskResult),
+            &ContinuationTrigger {
+                kind: ContinuationTriggerKind::TimerFire,
+                contentful: true,
+                task_terminal: false,
+                task_blocking: false,
+                wake_hint_source: None,
+            },
+        );
+
+        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        assert!(!resolution.model_visible);
+        assert!(!resolution.matched_waiting_reason);
+        assert!(resolution
+            .evidence
+            .iter()
+            .any(|entry| entry == "does_not_satisfy_waiting_reason"));
+    }
 }
