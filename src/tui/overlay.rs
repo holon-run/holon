@@ -444,21 +444,6 @@ fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
         "  Ctrl+H delete previous character (backspace)",
         "  Ctrl+D delete next character",
         "",
-        "Slash Commands",
-        "  /help show this help",
-        "  /agents open agent picker/detail",
-        "  /agent <agent-id> switch to a specific agent by id",
-        "  /events open raw event inspector",
-        "  /model open model picker for the selected agent",
-        "  /tasks open task overlay",
-        "  /transcript open transcript overlay",
-        "  /state open agent state overlay",
-        "  /refresh re-bootstrap the selected agent from /state",
-        "  /clear-status clear transient local status text",
-        "  /debug-prompt open debug prompt dialog",
-        "  /display <info|verbose|debug|3|4|5> set chat display mode",
-        "  //text send /text as normal chat input",
-        "",
         "Overlays",
         "  Esc closes the current overlay",
         "",
@@ -475,6 +460,8 @@ fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
     .into_iter()
     .map(str::to_string)
     .collect::<Vec<_>>();
+    help_lines.extend(["".into()]);
+    help_lines.extend(crate::tui::input::slash_help_lines());
     help_lines.extend(["".into(), "Default Keymap".into()]);
     help_lines.extend(
         crate::tui::keymap::DEFAULT_BINDING_HINTS
