@@ -637,6 +637,9 @@ impl TuiApp {
                 self.status_line = "Opened raw events overlay".into();
             }
             SlashCommand::Model => {
+                if self.model_availability.is_empty() {
+                    self.begin_load_models();
+                }
                 self.overlay = OverlayState::ModelPicker {
                     filter: String::new(),
                     selected: 0,

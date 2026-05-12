@@ -1018,6 +1018,34 @@ async fn slash_model_opens_model_picker_overlay() {
         }
     );
     assert_eq!(app.composer.as_str(), "");
+    assert!(app.model_availability_load_in_flight);
+}
+
+#[tokio::test]
+async fn initialize_does_not_eagerly_load_model_availability() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    app.initialize().await;
+
+    assert!(!app.model_availability_load_in_flight);
+}
+
+#[test]
+fn loaded_models_clear_lazy_load_in_flight_flag() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.model_availability_load_in_flight = true;
+
+    app.apply_loaded_models(Ok(Vec::new()));
+
+    assert!(!app.model_availability_load_in_flight);
 }
 
 #[tokio::test]

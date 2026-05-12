@@ -109,6 +109,10 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
     assert_eq!(entry["identity"]["agent_id"], "default");
     assert!(entry.get("status").is_some());
     assert!(entry.get("model").is_some());
+    assert!(
+        entry.get("model_availability").is_none(),
+        "/agents/list must not embed runtime-global model availability"
+    );
     let workspace_entry = entry
         .get("active_workspace_entry")
         .expect("active workspace entry should be present");
@@ -132,6 +136,35 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
             "{heavy_field} should not be present in /agents/list"
         );
     }
+
+    let agents_payload: serde_json::Value = client
+        .get(format!("{base}/agents"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let agent = agents_payload
+        .as_array()
+        .and_then(|entries| entries.first())
+        .expect("agent list should contain default agent");
+    assert!(
+        agent.get("model_availability").is_none(),
+        "/agents must not embed runtime-global model availability"
+    );
+
+    let models_payload: serde_json::Value = client
+        .get(format!("{base}/models"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let model_availability = models_payload["model_availability"]
+        .as_array()
+        .expect("/models model_availability should be an array");
+    assert!(
+        model_availability.iter().all(|entry| entry.is_object()),
+        "/models remains the source for runtime-global model availability"
+    );
 
     let mut config = test_config();
     config.http_addr = base.trim_start_matches("http://").to_string();
@@ -170,6 +203,20 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         .iter()
         .any(|notification| notification.summary == "HTTP state visible operator note"));
     assert!(snapshot.cursor.is_some());
+
+    let raw_state: serde_json::Value = reqwest::Client::new()
+        .get(format!("{base}/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let raw_agent = raw_state["agent"]
+        .as_object()
+        .expect("state snapshot should include an agent object");
+    assert!(
+        !raw_agent.contains_key("model_availability"),
+        "/agents/{{agent_id}}/state must not embed runtime-global model availability"
+    );
 
     server.abort();
     Ok(())
