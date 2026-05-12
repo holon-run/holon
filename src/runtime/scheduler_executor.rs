@@ -8,6 +8,31 @@ pub(super) enum RunLoopPoll {
     Idle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ShutdownReason {
+    DaemonShutdown,
+}
+
+impl ShutdownReason {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            ShutdownReason::DaemonShutdown => "daemon_shutdown",
+        }
+    }
+}
+
+pub(super) struct ShutdownPostureOutcome {
+    pub(super) status: AgentStatus,
+    pub(super) current_run_id: Option<String>,
+    pub(super) aborted_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BootstrapRecoveryFacts {
+    pub(super) queued_messages: usize,
+    pub(super) blocking_active_tasks: usize,
+}
+
 pub(super) struct ScheduledMessage {
     pub(super) message: MessageEnvelope,
     pub(super) running_state: AgentState,
@@ -28,6 +53,67 @@ struct QueueCandidate {
 impl<'a> SchedulerDecisionExecutor<'a> {
     pub(super) fn new(runtime: &'a RuntimeHandle) -> Self {
         Self { runtime }
+    }
+
+    pub(super) async fn request_shutdown(
+        &self,
+        reason: ShutdownReason,
+    ) -> Result<ShutdownPostureOutcome> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        let mut aborted_run_id = None;
+        let mut should_write = false;
+
+        if let Some(handle) = guard.current_run_abort.as_ref() {
+            if let Ok(mut current_reason) = handle.reason.lock() {
+                *current_reason = reason.as_str().into();
+            }
+            handle.token.cancel();
+            aborted_run_id = Some(handle.run_id.clone());
+            if matches!(guard.state.status, AgentStatus::AwakeRunning) {
+                scheduler::apply_idle_projection(&mut guard.state, &self.runtime.inner.storage)?;
+            } else {
+                guard.state.current_run_id = None;
+            }
+            should_write = true;
+        } else if guard.state.current_run_id.is_some() {
+            guard.state.current_run_id = None;
+            should_write = true;
+        }
+
+        if should_write {
+            self.runtime.inner.storage.write_agent(&guard.state)?;
+        }
+
+        Ok(ShutdownPostureOutcome {
+            status: guard.state.status.clone(),
+            current_run_id: guard.state.current_run_id.clone(),
+            aborted_run_id,
+        })
+    }
+
+    pub(super) async fn bootstrap_recovered(&self) -> Result<AgentState> {
+        let agent_id = {
+            let guard = self.runtime.inner.agent.lock().await;
+            guard.state.id.clone()
+        };
+        let blocking_active_tasks = self
+            .runtime
+            .inner
+            .storage
+            .latest_active_task_records_for_agent(&agent_id, usize::MAX)?
+            .into_iter()
+            .filter(|task| task.is_blocking())
+            .count();
+
+        let mut guard = self.runtime.inner.agent.lock().await;
+        let facts = BootstrapRecoveryFacts {
+            queued_messages: guard.queue.len(),
+            blocking_active_tasks,
+        };
+        if apply_bootstrap_recovered_projection(&mut guard.state, facts) {
+            self.runtime.inner.storage.write_agent(&guard.state)?;
+        }
+        Ok(guard.state.clone())
     }
 
     pub(super) async fn poll(&self) -> Result<RunLoopPoll> {
@@ -137,5 +223,102 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             dispatch_plan,
             scheduler_decision: decision,
         }))
+    }
+}
+
+pub(super) fn apply_bootstrap_recovered_projection(
+    state: &mut AgentState,
+    facts: BootstrapRecoveryFacts,
+) -> bool {
+    if matches!(state.status, AgentStatus::Paused | AgentStatus::Stopped) {
+        return false;
+    }
+
+    let previous_status = state.status.clone();
+    let previous_run_id = state.current_run_id.clone();
+    state.current_run_id = None;
+
+    if state.pending > 0 || facts.queued_messages > 0 || state.pending_wake_hint.is_some() {
+        state.status = AgentStatus::AwakeIdle;
+    } else if facts.blocking_active_tasks > 0 {
+        state.status = AgentStatus::AwaitingTask;
+    } else if matches!(
+        state.status,
+        AgentStatus::Booting | AgentStatus::AwakeRunning | AgentStatus::AwaitingTask
+    ) {
+        state.status = AgentStatus::AwakeIdle;
+    }
+
+    state.status != previous_status || state.current_run_id != previous_run_id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bootstrap_state(status: AgentStatus) -> AgentState {
+        let mut state = AgentState::new("default");
+        state.status = status;
+        state
+    }
+
+    #[test]
+    fn bootstrap_recovery_with_queued_messages_becomes_runnable_idle() {
+        let mut state = bootstrap_state(AgentStatus::Asleep);
+        state.pending = 1;
+        assert!(apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts {
+                queued_messages: 1,
+                blocking_active_tasks: 0,
+            },
+        ));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.current_run_id, None);
+    }
+
+    #[test]
+    fn bootstrap_recovery_with_blocking_tasks_becomes_awaiting_task() {
+        let mut state = bootstrap_state(AgentStatus::Booting);
+        assert!(apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts {
+                queued_messages: 0,
+                blocking_active_tasks: 2,
+            },
+        ));
+        assert_eq!(state.status, AgentStatus::AwaitingTask);
+    }
+
+    #[test]
+    fn bootstrap_recovery_preserves_stopped_and_paused_gates() {
+        for status in [AgentStatus::Stopped, AgentStatus::Paused] {
+            let mut state = bootstrap_state(status.clone());
+            state.current_run_id = Some("run-1".into());
+            assert!(!apply_bootstrap_recovered_projection(
+                &mut state,
+                BootstrapRecoveryFacts {
+                    queued_messages: 1,
+                    blocking_active_tasks: 1,
+                },
+            ));
+            assert_eq!(state.status, status);
+            assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
+        }
+    }
+
+    #[test]
+    fn bootstrap_recovery_clears_non_durable_current_run() {
+        let mut state = bootstrap_state(AgentStatus::AwakeRunning);
+        state.current_run_id = Some("run-1".into());
+        assert!(apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts {
+                queued_messages: 0,
+                blocking_active_tasks: 0,
+            },
+        ));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.current_run_id, None);
     }
 }
