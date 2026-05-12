@@ -6,7 +6,6 @@ pub(super) struct MessageDispatchPlan {
     pub(super) continuation_trigger: Option<ContinuationTrigger>,
     pub(super) continuation_resolution: Option<ContinuationResolution>,
     pub(super) model_turn_allowed: bool,
-    pub(super) model_visible: bool,
 }
 
 impl RuntimeHandle {
@@ -31,18 +30,12 @@ impl RuntimeHandle {
             scheduler_state.status,
             AgentStatus::Paused | AgentStatus::Stopped
         );
-        let model_visible = model_turn_allowed
-            && continuation_resolution
-                .as_ref()
-                .is_some_and(|resolution| resolution.model_visible);
-
         Ok(MessageDispatchPlan {
             prior_closure,
             task,
             continuation_trigger,
             continuation_resolution,
             model_turn_allowed,
-            model_visible,
         })
     }
 
@@ -66,17 +59,19 @@ impl RuntimeHandle {
             scheduler::SchedulerInput::Message {
                 message: &message,
                 model_turn_allowed: plan.model_turn_allowed,
-                model_visible: plan.model_visible,
+                continuation_resolution: plan.continuation_resolution.as_ref(),
             },
         );
         scheduler::append_scheduler_decision(&self.inner.storage, &scheduler_decision)?;
-        self.process_message_with_plan(message, plan).await
+        self.process_message_with_plan(message, plan, &scheduler_decision)
+            .await
     }
 
     pub(super) async fn process_message_with_plan(
         &self,
         mut message: MessageEnvelope,
         plan: MessageDispatchPlan,
+        scheduler_decision: &scheduler::SchedulerDecision,
     ) -> Result<()> {
         message.normalize_admission_fields();
         self.inner.storage.append_event(&AuditEvent::new(
@@ -88,9 +83,9 @@ impl RuntimeHandle {
             task,
             continuation_trigger,
             continuation_resolution,
-            model_visible,
             ..
         } = plan;
+        let model_reentry = scheduler_decision.model_reentry;
         let task = task?;
         if let Some(trigger) = continuation_trigger.as_ref() {
             self.record_continuation_trigger_received(&message, trigger, &prior_closure)
@@ -105,7 +100,7 @@ impl RuntimeHandle {
             | MessageKind::SystemTick
             | MessageKind::ChannelEvent
             | MessageKind::InternalFollowup => {
-                if model_visible {
+                if model_reentry {
                     if let Some(work_item_id) = message.work_item_id.as_deref() {
                         let mut guard = self.inner.agent.lock().await;
                         guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
@@ -130,7 +125,7 @@ impl RuntimeHandle {
                 self.reduce_task_result_message(
                     &message,
                     task,
-                    model_visible,
+                    model_reentry,
                     continuation_resolution.as_ref(),
                 )
                 .await?;
@@ -172,7 +167,7 @@ impl RuntimeHandle {
             .await?;
         if continuation_resolution
             .as_ref()
-            .is_some_and(|resolution| resolution.model_visible)
+            .is_some_and(|resolution| resolution.model_reentry)
         {
             self.arm_continue_active_suppression().await;
         }

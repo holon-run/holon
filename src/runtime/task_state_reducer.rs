@@ -88,7 +88,7 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         task: TaskRecord,
-        model_visible: bool,
+        model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
     ) -> Result<()> {
         if should_ignore_task_update(&self.inner.storage, &task)? {
@@ -118,7 +118,7 @@ impl RuntimeHandle {
                 format!("Task {} {}: {}", task.id, task_status_label, text)
             }
         };
-        if model_visible {
+        if model_reentry {
             if emit_result_brief {
                 let brief = brief::make_task_result(&message.agent_id, &task.id, &result_text);
                 self.persist_brief(&brief).await?;
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_model_visible_task_results_emit_a_result_brief_without_reopening_turn() {
+    async fn non_model_reentry_task_results_emit_a_result_brief_without_reopening_turn() {
         let runtime = runtime();
         runtime
             .reduce_task_status_message(task("task-1", TaskStatus::Running, false))
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_visible_task_result_binds_turn_to_work_item() {
+    async fn model_reentry_task_result_binds_turn_to_work_item() {
         let runtime = runtime();
         let mut task = task("task-1", TaskStatus::Completed, false);
         task.work_item_id = Some("work-1".into());

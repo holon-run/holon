@@ -17,7 +17,7 @@ enum SlashCommand {
     ClearStatus,
     DebugPrompt,
     Display,
-    Interrupt,
+    Abort,
     Agent,
     Skills,
     SkillInstall,
@@ -134,11 +134,11 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         command: SlashCommand::Display,
     },
     SlashCommandSpec {
-        name: "/interrupt",
-        description: "interrupt current agent run",
-        usage: "/interrupt",
+        name: "/abort",
+        description: "abort current agent run",
+        usage: "/abort",
         arg_rule: SlashArgRule::None,
-        command: SlashCommand::Interrupt,
+        command: SlashCommand::Abort,
     },
     SlashCommandSpec {
         name: "/agent",
@@ -242,7 +242,7 @@ fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
             }
             Ok(AgentSlashAction::Switch(args[1].clone()))
         }
-        "status" | "interrupt" | "list" | "model" | "wake" => Err(anyhow!(
+        "status" | "abort" | "list" | "model" | "wake" => Err(anyhow!(
             "/agent {first} is not supported in the TUI yet; use /agent switch {first} to select an agent with that id"
         )),
         _ => {
@@ -605,7 +605,7 @@ impl TuiApp {
                     display_mode.display_level()
                 );
             }
-            SlashCommand::Interrupt => {
+            SlashCommand::Abort => {
                 let agent_id = match self.selected_agent_id() {
                     Some(id) => id.to_string(),
                     None => {
@@ -617,9 +617,9 @@ impl TuiApp {
                     .projection
                     .as_ref()
                     .and_then(|projection| projection.session.current_run_id.clone());
-                self.client.interrupt_current_run(&agent_id, run_id).await?;
+                self.client.abort_current_run(&agent_id, run_id).await?;
                 self.overlay = OverlayState::None;
-                self.status_line = format!("Interrupted current run for {agent_id}");
+                self.status_line = format!("Aborted current run for {agent_id}");
                 self.begin_bootstrap_selected_agent();
             }
             SlashCommand::Agent => match parse_agent_slash_action(&args)? {
@@ -1506,8 +1506,8 @@ mod tests {
             Some(ComposerSubmission::Slash(SlashCommand::DebugPrompt, vec![]))
         );
         assert_eq!(
-            parse_composer_submission("/interrupt").unwrap(),
-            Some(ComposerSubmission::Slash(SlashCommand::Interrupt, vec![]))
+            parse_composer_submission("/abort").unwrap(),
+            Some(ComposerSubmission::Slash(SlashCommand::Abort, vec![]))
         );
         assert_eq!(
             parse_composer_submission("/agent default").unwrap(),

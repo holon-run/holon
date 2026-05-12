@@ -30,7 +30,7 @@ use crate::{
 
 use super::{
     combine_text_history, is_max_output_stop_reason, message_dispatch::message_text, scheduler,
-    CurrentRunInterrupted, RuntimeHandle,
+    CurrentRunAborted, RuntimeHandle,
 };
 
 pub(super) struct AgentLoopOutcome {
@@ -1351,7 +1351,7 @@ impl RuntimeHandle {
         Ok(record)
     }
 
-    async fn persist_turn_interrupted_record(
+    async fn persist_turn_aborted_record(
         &self,
         run_id: &str,
         reason: &str,
@@ -1388,15 +1388,15 @@ impl RuntimeHandle {
         Ok(record)
     }
 
-    async fn complete_turn_with_interrupt(
+    async fn complete_turn_with_abort(
         &self,
         provider: std::sync::Arc<dyn AgentProvider>,
         request: ProviderTurnRequest,
     ) -> Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> {
-        if let Some(snapshot) = self.current_run_interrupt_token().await {
+        if let Some(snapshot) = self.current_run_abort_token().await {
             tokio::select! {
                 result = provider.complete_turn_with_diagnostics(request) => result,
-                _ = snapshot.token.cancelled() => Err(CurrentRunInterrupted {
+                _ = snapshot.token.cancelled() => Err(CurrentRunAborted {
                     run_id: snapshot.run_id.clone(),
                     reason: snapshot.reason(),
                 }.into()),
@@ -1418,7 +1418,7 @@ impl RuntimeHandle {
     ) {
         let started_at = Utc::now();
         let started = Instant::now();
-        let result = self.complete_turn_with_interrupt(provider, request).await;
+        let result = self.complete_turn_with_abort(provider, request).await;
         let completed_at = Utc::now();
         let duration_ms = started.elapsed().as_millis() as u64;
         (
@@ -1439,10 +1439,10 @@ impl RuntimeHandle {
         )
     }
 
-    async fn ensure_not_interrupted(&self) -> Result<()> {
-        if let Some(snapshot) = self.current_run_interrupt_token().await {
+    async fn ensure_not_aborted(&self) -> Result<()> {
+        if let Some(snapshot) = self.current_run_abort_token().await {
             if snapshot.token.is_cancelled() {
-                return Err(CurrentRunInterrupted {
+                return Err(CurrentRunAborted {
                     run_id: snapshot.run_id.clone(),
                     reason: snapshot.reason(),
                 }
@@ -1463,7 +1463,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             while let Some(message) = guard
                 .queue
-                .pop_next_matching(scheduler::is_interrupt_priority_operator_input)
+                .pop_next_matching(scheduler::is_operator_interjection_message)
             {
                 guard.state.pending = guard.queue.len();
                 messages.push(message);
@@ -1596,12 +1596,12 @@ impl TurnExecution<'_> {
         };
 
         loop {
-            if let Err(err) = runtime.ensure_not_interrupted().await {
-                if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+            if let Err(err) = runtime.ensure_not_aborted().await {
+                if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
                     runtime
-                        .persist_turn_interrupted_record(
-                            &interrupted.run_id,
-                            &interrupted.reason,
+                        .persist_turn_aborted_record(
+                            &aborted.run_id,
+                            &aborted.reason,
                             last_assistant_message.clone(),
                             turn_started_at.elapsed().as_millis() as u64,
                         )
@@ -1676,11 +1676,11 @@ impl TurnExecution<'_> {
                         provider_round_ms,
                     ),
                     Err(err) => {
-                        if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+                        if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
                             runtime
-                                .persist_turn_interrupted_record(
-                                    &interrupted.run_id,
-                                    &interrupted.reason,
+                                .persist_turn_aborted_record(
+                                    &aborted.run_id,
+                                    &aborted.reason,
                                     last_assistant_message.clone(),
                                     turn_started_at.elapsed().as_millis() as u64,
                                 )
@@ -1907,11 +1907,11 @@ impl TurnExecution<'_> {
                         provider_round_ms,
                     ),
                     Err(err) => {
-                        if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+                        if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
                             runtime
-                                .persist_turn_interrupted_record(
-                                    &interrupted.run_id,
-                                    &interrupted.reason,
+                                .persist_turn_aborted_record(
+                                    &aborted.run_id,
+                                    &aborted.reason,
                                     last_assistant_message.clone(),
                                     turn_started_at.elapsed().as_millis() as u64,
                                 )
@@ -2342,12 +2342,12 @@ impl TurnExecution<'_> {
             let mut tool_results = Vec::new();
             let mut tool_result_envelopes = Vec::new();
             for call in tool_calls {
-                if let Err(err) = runtime.ensure_not_interrupted().await {
-                    if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+                if let Err(err) = runtime.ensure_not_aborted().await {
+                    if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
                         runtime
-                            .persist_turn_interrupted_record(
-                                &interrupted.run_id,
-                                &interrupted.reason,
+                            .persist_turn_aborted_record(
+                                &aborted.run_id,
+                                &aborted.reason,
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                             )
@@ -2444,12 +2444,11 @@ impl TurnExecution<'_> {
                     tool_result_envelopes.push(result.envelope);
                     continue;
                 }
-                let tool_execution = if let Some(snapshot) =
-                    runtime.current_run_interrupt_token().await
+                let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
                 {
                     tokio::select! {
                         result = runtime.inner.tools.execute(runtime, agent_id, &trust, &call) => result,
-                        _ = snapshot.token.cancelled() => Err(CurrentRunInterrupted {
+                        _ = snapshot.token.cancelled() => Err(CurrentRunAborted {
                             run_id: snapshot.run_id.clone(),
                             reason: snapshot.reason(),
                         }.into()),
@@ -2525,11 +2524,11 @@ impl TurnExecution<'_> {
                         });
                     }
                     Err(err) => {
-                        if let Some(interrupted) = err.downcast_ref::<CurrentRunInterrupted>() {
+                        if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
                             runtime
-                                .persist_turn_interrupted_record(
-                                    &interrupted.run_id,
-                                    &interrupted.reason,
+                                .persist_turn_aborted_record(
+                                    &aborted.run_id,
+                                    &aborted.reason,
                                     last_assistant_message.clone(),
                                     turn_started_at.elapsed().as_millis() as u64,
                                 )

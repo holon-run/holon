@@ -244,14 +244,14 @@ the broader context.
 The agent plane also owns the current-run intervention surface.
 
 `current_run_id` identifies the provider/tool turn currently executing inside
-the agent. Operator interruption is a control-plane mutation, not an enqueued
-message. It should:
+the agent. Operator abort is a control-plane mutation, not an enqueued message.
+It should:
 
 - cancel only the current provider/tool future;
 - preserve the agent, work item, ledger, and workspace state;
 - reject an optional stale `run_id` guard if the observed run has changed;
-- record an aborted terminal turn with reason `operator_interrupted`;
-- record the dequeued message outcome as interrupted rather than processed;
+- record an aborted terminal turn with reason `operator_aborted`;
+- record the dequeued message outcome as aborted rather than processed;
 - pause the agent by default after the abort so it does not immediately repeat
   the same path.
 

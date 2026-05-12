@@ -170,22 +170,22 @@ struct RuntimeInner {
 struct RuntimeAgent {
     state: AgentState,
     queue: RuntimeQueue,
-    current_run_interrupt: Option<CurrentRunInterruptHandle>,
+    current_run_abort: Option<CurrentRunAbortHandle>,
 }
 
 #[derive(Debug, Clone)]
-struct CurrentRunInterruptHandle {
+struct CurrentRunAbortHandle {
     run_id: String,
     token: CancellationToken,
     reason: Arc<StdMutex<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CurrentRunInterruptMode {
+pub enum CurrentRunAbortMode {
     PauseAfterAbort,
 }
 
-impl CurrentRunInterruptMode {
+impl CurrentRunAbortMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PauseAfterAbort => "pause_after_abort",
@@ -193,28 +193,28 @@ impl CurrentRunInterruptMode {
     }
 }
 
-impl Default for CurrentRunInterruptMode {
+impl Default for CurrentRunAbortMode {
     fn default() -> Self {
         Self::PauseAfterAbort
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CurrentRunInterruptRequest {
+pub struct CurrentRunAbortRequest {
     pub run_id: Option<String>,
-    pub mode: CurrentRunInterruptMode,
+    pub mode: CurrentRunAbortMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CurrentRunInterruptOutcome {
+pub struct CurrentRunAbortOutcome {
     pub agent_id: String,
     pub run_id: String,
-    pub mode: CurrentRunInterruptMode,
+    pub mode: CurrentRunAbortMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum CurrentRunInterruptError {
-    #[error("agent {agent_id} has no current run to interrupt")]
+pub enum CurrentRunAbortError {
+    #[error("agent {agent_id} has no current run to abort")]
     NoCurrentRun { agent_id: String },
     #[error("stale run_id {requested_run_id}; current run is {current_run_id}")]
     StaleRunId {
@@ -224,25 +224,25 @@ pub enum CurrentRunInterruptError {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("current run interrupted: {reason}")]
-pub struct CurrentRunInterrupted {
+#[error("current run aborted: {reason}")]
+pub struct CurrentRunAborted {
     pub run_id: String,
     pub reason: String,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CurrentRunInterruptSnapshot {
+pub(crate) struct CurrentRunAbortSnapshot {
     pub(crate) run_id: String,
     pub(crate) token: CancellationToken,
     pub(crate) reason: Arc<StdMutex<String>>,
 }
 
-impl CurrentRunInterruptSnapshot {
+impl CurrentRunAbortSnapshot {
     pub(crate) fn reason(&self) -> String {
         self.reason
             .lock()
             .map(|reason| reason.clone())
-            .unwrap_or_else(|_| "operator_interrupted".into())
+            .unwrap_or_else(|_| "operator_aborted".into())
     }
 }
 
@@ -267,18 +267,18 @@ impl RuntimeHandle {
         self.inner.storage.poll_activity_marker()
     }
 
-    pub async fn interrupt_current_run(
+    pub async fn abort_current_run(
         &self,
-        request: CurrentRunInterruptRequest,
-    ) -> Result<CurrentRunInterruptOutcome> {
+        request: CurrentRunAbortRequest,
+    ) -> Result<CurrentRunAbortOutcome> {
         let mut guard = self.inner.agent.lock().await;
         let agent_id = guard.state.id.clone();
-        let Some(handle) = guard.current_run_interrupt.as_ref().cloned() else {
-            return Err(CurrentRunInterruptError::NoCurrentRun { agent_id }.into());
+        let Some(handle) = guard.current_run_abort.as_ref().cloned() else {
+            return Err(CurrentRunAbortError::NoCurrentRun { agent_id }.into());
         };
         if let Some(expected_run_id) = request.run_id.as_deref() {
             if expected_run_id != handle.run_id {
-                return Err(CurrentRunInterruptError::StaleRunId {
+                return Err(CurrentRunAbortError::StaleRunId {
                     requested_run_id: expected_run_id.to_string(),
                     current_run_id: handle.run_id.clone(),
                 }
@@ -287,7 +287,7 @@ impl RuntimeHandle {
         }
 
         if let Ok(mut reason) = handle.reason.lock() {
-            *reason = "operator_interrupted".into();
+            *reason = "operator_aborted".into();
         }
         handle.token.cancel();
         guard.state.status = AgentStatus::Paused;
@@ -296,28 +296,28 @@ impl RuntimeHandle {
         drop(guard);
 
         self.inner.storage.append_event(&AuditEvent::new(
-            "current_run_interrupted",
+            "current_run_aborted",
             serde_json::json!({
                 "agent_id": agent_id,
                 "run_id": handle.run_id,
                 "mode": request.mode.as_str(),
-                "reason": "operator_interrupted",
+                "reason": "operator_aborted",
             }),
         ))?;
         self.inner.notify.notify_waiters();
-        Ok(CurrentRunInterruptOutcome {
+        Ok(CurrentRunAbortOutcome {
             agent_id,
             run_id: handle.run_id,
             mode: request.mode,
         })
     }
 
-    pub(crate) async fn current_run_interrupt_token(&self) -> Option<CurrentRunInterruptSnapshot> {
+    pub(crate) async fn current_run_abort_token(&self) -> Option<CurrentRunAbortSnapshot> {
         let guard = self.inner.agent.lock().await;
         guard
-            .current_run_interrupt
+            .current_run_abort
             .as_ref()
-            .map(|handle| CurrentRunInterruptSnapshot {
+            .map(|handle| CurrentRunAbortSnapshot {
                 run_id: handle.run_id.clone(),
                 token: handle.token.clone(),
                 reason: handle.reason.clone(),
@@ -938,26 +938,30 @@ impl RuntimeHandle {
             })?;
 
             if let Err(err) = self
-                .process_message_with_plan(scheduled.message, scheduled.dispatch_plan)
+                .process_message_with_plan(
+                    scheduled.message,
+                    scheduled.dispatch_plan,
+                    &scheduled.scheduler_decision,
+                )
                 .await
             {
-                let interrupted = err.downcast_ref::<CurrentRunInterrupted>().cloned();
-                if let Some(interrupted) = interrupted.as_ref() {
+                let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
+                if let Some(aborted) = aborted.as_ref() {
                     self.inner.storage.append_queue_entry(&QueueEntryRecord {
                         message_id: message.id.clone(),
                         agent_id: message.agent_id.clone(),
                         priority: message.priority.clone(),
-                        status: QueueEntryStatus::Interrupted,
+                        status: QueueEntryStatus::Aborted,
                         created_at: message.created_at,
                         updated_at: Utc::now(),
                     })?;
                     self.inner.storage.append_event(&AuditEvent::new(
-                        "message_processing_interrupted",
+                        "message_processing_aborted",
                         serde_json::json!({
                             "message_id": message.id,
                             "message_kind": message.kind,
-                            "run_id": interrupted.run_id,
-                            "reason": interrupted.reason,
+                            "run_id": aborted.run_id,
+                            "reason": aborted.reason,
                         }),
                     ))?;
                 } else {
@@ -984,7 +988,7 @@ impl RuntimeHandle {
                     ) {
                         scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
                     }
-                    guard.current_run_interrupt = None;
+                    guard.current_run_abort = None;
                     self.inner.storage.write_agent(&guard.state)?;
                     guard.state.clone()
                 };
@@ -995,7 +999,7 @@ impl RuntimeHandle {
             } else {
                 let processed_state = {
                     let mut guard = self.inner.agent.lock().await;
-                    guard.current_run_interrupt = None;
+                    guard.current_run_abort = None;
                     guard.state.clone()
                 };
                 self.append_state_changed_events(&processed_state)?;

@@ -823,7 +823,7 @@ impl AppStorage {
                 }
                 crate::types::QueueEntryStatus::Processed
                 | crate::types::QueueEntryStatus::Interjected
-                | crate::types::QueueEntryStatus::Interrupted
+                | crate::types::QueueEntryStatus::Aborted
                 | crate::types::QueueEntryStatus::Dropped => None,
             })
             .collect::<Vec<_>>();

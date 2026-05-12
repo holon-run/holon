@@ -164,8 +164,8 @@ Add direct tests for `src/runtime/message_dispatch.rs`.
 
 Required cases:
 
-- non-model-visible external/system events do not run an interactive turn
-- model-visible operator/timer/task rejoin events do run an interactive turn
+- non-model-reentry external/system events do not run an interactive turn
+- model-reentry operator/timer/task rejoin events do run an interactive turn
 - `TaskStatus` routes only through task-state reduction
 - `TaskResult` routes through reduction plus correct follow-up behavior
 - unknown control action fails without mutating runtime state
@@ -185,7 +185,7 @@ Required cases:
 - non-terminal task updates add missing active task ids
 - blocking task updates move runtime to `AwaitingTask`
 - terminal result falls back to `AwakeIdle` only when no blocking tasks remain
-- non-model-visible task results emit a result brief rather than reopening a
+- non-model-reentry task results emit a result brief rather than reopening a
   full interactive turn
 
 ### RUNTIME-004 Idle Tick And Work Queue Contract

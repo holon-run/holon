@@ -286,7 +286,7 @@ async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
 }
 
 #[tokio::test]
-async fn idle_tick_suppresses_continue_active_after_model_visible_task_result() {
+async fn idle_tick_suppresses_continue_active_after_model_reentry_task_result() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
@@ -314,7 +314,7 @@ async fn idle_tick_suppresses_continue_active_after_model_visible_task_result() 
     let task_result_rejoin = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::TaskResult,
         class: ContinuationClass::ResumeExpectedWait,
-        model_visible: true,
+        model_reentry: true,
         prior_closure_outcome: ClosureOutcome::Waiting,
         prior_waiting_reason: Some(WaitingReason::AwaitingTaskResult),
         matched_waiting_reason: true,

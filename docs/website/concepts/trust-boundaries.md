@@ -59,7 +59,7 @@ Trust classification prevents accidental authority escalation:
 
 Priority is **separate** from trust:
 
-- **Priority** controls scheduling: `interrupt` > `next` > `normal` >
+- **Priority** controls scheduling: `interject` > `next` > `normal` >
   `background`
 - **Trust** controls authority: what the event is allowed to do
 

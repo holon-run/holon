@@ -152,7 +152,7 @@ async fn runtime_records_scheduler_decision_before_dequeueing_message() {
             );
             let decision = &events[decision_index];
             assert_eq!(decision.data["decision"], "StartModelTurn");
-            assert_eq!(decision.data["model_visible"], true);
+            assert_eq!(decision.data["model_reentry"], true);
             assert!(!events.iter().any(|event| {
                 event.kind == "scheduler_decision"
                     && event.data["message_id"] == message.id.as_str()

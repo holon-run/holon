@@ -157,7 +157,7 @@ impl RuntimeHandle {
         let trigger = idle_tick_trigger_from_state(pending_wake_hint, work_queue_projection);
 
         let suppress_continue_active = triggering_continuation
-            .is_some_and(|continuation| continuation.model_visible)
+            .is_some_and(|continuation| continuation.model_reentry)
             || self.take_continue_active_suppression().await;
 
         match trigger {
@@ -171,7 +171,7 @@ impl RuntimeHandle {
                     scheduler::SchedulerInput::IdleSignal(
                         scheduler::SchedulerIdleSignal::ContinueActive {
                             work_item: &active,
-                            suppressed_after_model_visible_continuation: suppress_continue_active,
+                            suppressed_after_model_reentry_continuation: suppress_continue_active,
                             duplicate: duplicate.clone(),
                         },
                     ),
@@ -1655,7 +1655,7 @@ mod tests {
         );
         assert!(
             get_emitted_system_ticks(&test_runtime).is_empty(),
-            "suppression must not enqueue a model-visible system tick"
+            "suppression must not enqueue a model-reentry system tick"
         );
 
         let events = test_runtime

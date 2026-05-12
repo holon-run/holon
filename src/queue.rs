@@ -4,7 +4,7 @@ use crate::types::{MessageEnvelope, Priority};
 
 #[derive(Debug, Default, Clone)]
 pub struct RuntimeQueue {
-    interrupt: VecDeque<MessageEnvelope>,
+    interject: VecDeque<MessageEnvelope>,
     next: VecDeque<MessageEnvelope>,
     normal: VecDeque<MessageEnvelope>,
     background: VecDeque<MessageEnvelope>,
@@ -13,7 +13,7 @@ pub struct RuntimeQueue {
 impl RuntimeQueue {
     pub fn push(&mut self, message: MessageEnvelope) {
         match message.priority {
-            Priority::Interrupt => self.interrupt.push_back(message),
+            Priority::Interject => self.interject.push_back(message),
             Priority::Next => self.next.push_back(message),
             Priority::Normal => self.normal.push_back(message),
             Priority::Background => self.background.push_back(message),
@@ -22,7 +22,7 @@ impl RuntimeQueue {
 
     pub fn push_front(&mut self, message: MessageEnvelope) {
         match message.priority {
-            Priority::Interrupt => self.interrupt.push_front(message),
+            Priority::Interject => self.interject.push_front(message),
             Priority::Next => self.next.push_front(message),
             Priority::Normal => self.normal.push_front(message),
             Priority::Background => self.background.push_front(message),
@@ -30,7 +30,7 @@ impl RuntimeQueue {
     }
 
     pub fn pop(&mut self) -> Option<MessageEnvelope> {
-        self.interrupt
+        self.interject
             .pop_front()
             .or_else(|| self.next.pop_front())
             .or_else(|| self.normal.pop_front())
@@ -38,7 +38,7 @@ impl RuntimeQueue {
     }
 
     pub fn peek(&self) -> Option<&MessageEnvelope> {
-        self.interrupt
+        self.interject
             .front()
             .or_else(|| self.next.front())
             .or_else(|| self.normal.front())
@@ -57,14 +57,14 @@ impl RuntimeQueue {
         &mut self,
         mut predicate: impl FnMut(&MessageEnvelope) -> bool,
     ) -> Option<MessageEnvelope> {
-        pop_matching_from(&mut self.interrupt, &mut predicate)
+        pop_matching_from(&mut self.interject, &mut predicate)
             .or_else(|| pop_matching_from(&mut self.next, &mut predicate))
             .or_else(|| pop_matching_from(&mut self.normal, &mut predicate))
             .or_else(|| pop_matching_from(&mut self.background, &mut predicate))
     }
 
     pub fn len(&self) -> usize {
-        self.interrupt.len() + self.next.len() + self.normal.len() + self.background.len()
+        self.interject.len() + self.next.len() + self.normal.len() + self.background.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -117,7 +117,7 @@ mod tests {
     fn queue_respects_priority_and_fifo() {
         let mut queue = RuntimeQueue::default();
         queue.push(msg(Priority::Normal, "n1"));
-        queue.push(msg(Priority::Interrupt, "i1"));
+        queue.push(msg(Priority::Interject, "i1"));
         queue.push(msg(Priority::Normal, "n2"));
         queue.push(msg(Priority::Next, "x1"));
 
@@ -143,24 +143,24 @@ mod tests {
     fn peek_and_pop_if_next_use_priority_head() {
         let mut queue = RuntimeQueue::default();
         let normal = msg(Priority::Normal, "normal");
-        let interrupt = msg(Priority::Interrupt, "interrupt");
+        let interject = msg(Priority::Interject, "interject");
         let normal_id = normal.id.clone();
-        let interrupt_id = interrupt.id.clone();
+        let interject_id = interject.id.clone();
         queue.push(normal);
-        queue.push(interrupt);
+        queue.push(interject);
 
-        assert_eq!(queue.peek().unwrap().id, interrupt_id);
+        assert_eq!(queue.peek().unwrap().id, interject_id);
         assert!(queue.pop_if_next(&normal_id).is_none());
-        assert_eq!(queue.pop_if_next(&interrupt_id).unwrap().id, interrupt_id);
+        assert_eq!(queue.pop_if_next(&interject_id).unwrap().id, interject_id);
         assert_eq!(queue.pop_if_next(&normal_id).unwrap().id, normal_id);
     }
 
     #[test]
     fn pop_next_matching_uses_priority_order() {
         let mut queue = RuntimeQueue::default();
-        queue.push(msg(Priority::Interrupt, "webhook"));
+        queue.push(msg(Priority::Interject, "webhook"));
         queue.push(operator_msg(Priority::Normal, "normal-operator"));
-        queue.push(operator_msg(Priority::Interrupt, "interrupt-operator"));
+        queue.push(operator_msg(Priority::Interject, "interject-operator"));
 
         assert_eq!(
             queue
@@ -177,7 +177,7 @@ mod tests {
                 .unwrap()
                 .body,
             MessageBody::Text {
-                text: "interrupt-operator".into()
+                text: "interject-operator".into()
             }
         );
         assert_eq!(

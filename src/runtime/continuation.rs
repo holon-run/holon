@@ -123,7 +123,7 @@ pub(super) fn resolve_continuation(
     let terminal_blocking_task_result = trigger.kind == ContinuationTriggerKind::TaskResult
         && trigger.task_terminal
         && trigger.task_blocking;
-    let model_visible = terminal_blocking_task_result
+    let model_reentry = terminal_blocking_task_result
         || matches!(
             trigger.kind,
             ContinuationTriggerKind::OperatorInput
@@ -133,7 +133,7 @@ pub(super) fn resolve_continuation(
         || ((trigger.kind == ContinuationTriggerKind::ExternalEvent
             || trigger.kind == ContinuationTriggerKind::SystemTick)
             && trigger.contentful);
-    let class = if model_visible {
+    let class = if model_reentry {
         ContinuationClass::LocalContinuation
     } else {
         ContinuationClass::LivenessOnly
@@ -141,7 +141,7 @@ pub(super) fn resolve_continuation(
     ContinuationResolution {
         trigger_kind: trigger.kind,
         class,
-        model_visible,
+        model_reentry,
         prior_closure_outcome,
         prior_waiting_reason,
         matched_waiting_reason: false,
@@ -184,7 +184,7 @@ fn resolve_waiting(
     );
     let override_allowed = trigger.kind == ContinuationTriggerKind::OperatorInput;
     if expected {
-        let model_visible = match trigger.kind {
+        let model_reentry = match trigger.kind {
             ContinuationTriggerKind::TaskResult => trigger.task_terminal && trigger.task_blocking,
             ContinuationTriggerKind::ExternalEvent => trigger.contentful,
             ContinuationTriggerKind::SystemTick => trigger.contentful,
@@ -193,12 +193,12 @@ fn resolve_waiting(
         evidence.push("matches_waiting_reason".to_string());
         return ContinuationResolution {
             trigger_kind: trigger.kind,
-            class: if model_visible {
+            class: if model_reentry {
                 ContinuationClass::ResumeExpectedWait
             } else {
                 ContinuationClass::LivenessOnly
             },
-            model_visible,
+            model_reentry,
             prior_closure_outcome,
             prior_waiting_reason,
             matched_waiting_reason: true,
@@ -211,7 +211,7 @@ fn resolve_waiting(
         return ContinuationResolution {
             trigger_kind: trigger.kind,
             class: ContinuationClass::ResumeOverride,
-            model_visible: true,
+            model_reentry: true,
             prior_closure_outcome,
             prior_waiting_reason,
             matched_waiting_reason: false,
@@ -229,7 +229,7 @@ fn resolve_waiting(
             } else {
                 ContinuationClass::LivenessOnly
             },
-            model_visible: matched_waiting_reason,
+            model_reentry: matched_waiting_reason,
             prior_closure_outcome,
             prior_waiting_reason,
             matched_waiting_reason,
@@ -247,7 +247,7 @@ fn resolve_waiting(
         return ContinuationResolution {
             trigger_kind: trigger.kind,
             class: ContinuationClass::ResumeOverride,
-            model_visible: true,
+            model_reentry: true,
             prior_closure_outcome,
             prior_waiting_reason,
             matched_waiting_reason: false,
@@ -259,7 +259,7 @@ fn resolve_waiting(
     ContinuationResolution {
         trigger_kind: trigger.kind,
         class: ContinuationClass::LivenessOnly,
-        model_visible: false,
+        model_reentry: false,
         prior_closure_outcome,
         prior_waiting_reason,
         matched_waiting_reason: false,
@@ -327,7 +327,7 @@ mod tests {
             },
         );
         assert_eq!(resolution.class, ContinuationClass::ResumeExpectedWait);
-        assert!(resolution.model_visible);
+        assert!(resolution.model_reentry);
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod tests {
             },
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_visible);
+        assert!(!resolution.model_reentry);
     }
 
     #[test]
@@ -359,7 +359,7 @@ mod tests {
             },
         );
         assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
-        assert!(resolution.model_visible);
+        assert!(resolution.model_reentry);
     }
 
     #[test]
@@ -381,7 +381,7 @@ mod tests {
             },
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_visible);
+        assert!(!resolution.model_reentry);
     }
 
     #[test]
@@ -403,7 +403,7 @@ mod tests {
             },
         );
         assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
-        assert!(resolution.model_visible);
+        assert!(resolution.model_reentry);
     }
 
     #[test]
@@ -419,7 +419,7 @@ mod tests {
             },
         );
         assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
-        assert!(resolution.model_visible);
+        assert!(resolution.model_reentry);
     }
 
     #[test]
@@ -435,7 +435,7 @@ mod tests {
             },
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_visible);
+        assert!(!resolution.model_reentry);
         assert!(resolution.matched_waiting_reason);
     }
 
@@ -453,7 +453,7 @@ mod tests {
         );
 
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_visible);
+        assert!(!resolution.model_reentry);
         assert!(!resolution.matched_waiting_reason);
         assert!(resolution
             .evidence

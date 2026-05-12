@@ -296,7 +296,7 @@ fn system_tick_context_snapshot_renders_wake_continuation() -> Result<()> {
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::SystemTick,
         class: ContinuationClass::ResumeExpectedWait,
-        model_visible: true,
+        model_reentry: true,
         prior_closure_outcome: holon::types::ClosureOutcome::Waiting,
         prior_waiting_reason: Some(WaitingReason::AwaitingExternalChange),
         matched_waiting_reason: true,
@@ -423,7 +423,7 @@ fn task_result_context_snapshot_renders_follow_up_continuation() -> Result<()> {
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::TaskResult,
         class: ContinuationClass::ResumeExpectedWait,
-        model_visible: true,
+        model_reentry: true,
         prior_closure_outcome: holon::types::ClosureOutcome::Waiting,
         prior_waiting_reason: Some(WaitingReason::AwaitingTaskResult),
         matched_waiting_reason: true,
@@ -855,7 +855,7 @@ fn system_tick_with_waiting_work_item() -> Result<()> {
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::SystemTick,
         class: ContinuationClass::ResumeExpectedWait,
-        model_visible: true,
+        model_reentry: true,
         prior_closure_outcome: holon::types::ClosureOutcome::Waiting,
         prior_waiting_reason: Some(WaitingReason::AwaitingExternalChange),
         matched_waiting_reason: true,
@@ -1116,7 +1116,7 @@ fn task_result_with_multiple_work_items() -> Result<()> {
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::TaskResult,
         class: ContinuationClass::ResumeExpectedWait,
-        model_visible: true,
+        model_reentry: true,
         prior_closure_outcome: holon::types::ClosureOutcome::Waiting,
         prior_waiting_reason: Some(WaitingReason::AwaitingTaskResult),
         matched_waiting_reason: true,

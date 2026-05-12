@@ -307,7 +307,7 @@ impl RuntimeHandle {
                 agent: Mutex::new(RuntimeAgent {
                     state,
                     queue,
-                    current_run_interrupt: None,
+                    current_run_abort: None,
                 }),
                 notify: Notify::new(),
                 storage,

@@ -136,7 +136,7 @@ change, or operator input.
 ### Wake Hint
 
 A liveness signal that tells the runtime to reconsider scheduling. A wake hint
-does not automatically become rich model-visible content.
+does not automatically become rich model-reentry content.
 
 ### Closure
 
@@ -174,7 +174,7 @@ mapped into this vocabulary.
 - `MessageQueued`
 - `MessageDequeued`
 - `MessageProcessed`
-- `MessageInterrupted`
+- `MessageAborted`
 - `MessageDropped`
 
 Required fields:
@@ -196,7 +196,7 @@ Required fields:
 - `AssistantRoundRecorded`
 - `ToolRoundCompleted`
 - `TurnTerminal`
-- `TurnInterrupted`
+- `TurnAborted`
 - `TurnBaselineOverBudget`
 
 Required fields:
@@ -332,7 +332,7 @@ Decisions should include evidence:
 
 - which facts caused the decision;
 - which message or work item is involved;
-- whether the decision is model-visible;
+- whether the decision is model-reentry;
 - whether it is a liveness-only decision;
 - whether any input was ignored as mismatched.
 
@@ -342,9 +342,9 @@ Scheduler decisions should use a fixed priority order.
 
 1. `stopped` or shutdown means `Stop`.
 2. `paused` means no model turn starts.
-3. queued interrupt operator input may interrupt a running turn.
-4. a queued model-visible message may start a turn when no turn is running.
-5. terminal blocking task result may resume the model-visible wait it satisfies.
+3. queued operator interjection input may be inserted into a running turn.
+4. a queued model-reentry message may start a turn when no turn is running.
+5. terminal blocking task result may resume the model-reentry wait it satisfies.
 6. active blocking tasks mean `WaitForTask`.
 7. active waiting intents mean `WaitForExternalChange`.
 8. active timers mean `WaitForTimer`.
@@ -406,10 +406,10 @@ Invariants:
 - terminal tasks must not remain in the active task set;
 - terminal task records outrank stale non-terminal task messages;
 - task result delivery must not reopen a terminal task;
-- a non-terminal task status is not model-visible by itself;
+- a non-terminal task status is not model-reentry by itself;
 - blocking task truth is derived from latest task records, not from stale
   active id lists alone;
-- task completion should be persisted before the corresponding model-visible
+- task completion should be persisted before the corresponding model-reentry
   task result is queued.
 
 Recommended implementation boundary:
@@ -443,13 +443,13 @@ Invariants:
 - current turn binding is a scoped association for one real model turn.
 
 Turn-end work-item commits should only run for a real turn boundary. Reducing a
-non-model-visible message should not accidentally rewrite a work item's blocker
+non-model-reentry message should not accidentally rewrite a work item's blocker
 state.
 
 ## Work Queue Tick Contract
 
 Work queue ticks are runtime-generated messages used to make runnable work
-model-visible.
+model-reentry.
 
 They must be idempotent.
 
@@ -469,7 +469,7 @@ Invariants:
 
 - a work-queue tick is emitted only when the runtime is idle enough to process
   it;
-- a model-visible continuation suppresses immediate duplicate
+- a model-reentry continuation suppresses immediate duplicate
   `continue_active`;
 - a wake hint has priority over work-queue ticks when both are pending;
 - duplicate suppression records evidence, not just silence.
@@ -498,7 +498,7 @@ Restart behavior should be explicit:
 - `Queued` messages replay;
 - `Dequeued` messages may replay at the message level when the previous run did
   not reach a terminal boundary;
-- `Processed`, `Interrupted`, `Dropped`, and `Interjected` messages do not
+- `Processed`, `Aborted`, `Dropped`, and `Interjected` messages do not
   replay as normal queued messages.
 
 Holon should not replay prior tool calls as a recovery mechanism. Tool calls
@@ -615,7 +615,7 @@ Recommended new event:
   "data": {
     "decision": "EmitSystemTick",
     "reason": "continue_active",
-    "model_visible": false,
+    "model_reentry": false,
     "work_item_id": "work_...",
     "message_id": null,
     "evidence": [
@@ -656,7 +656,7 @@ Coverage:
 
 - queue -> dequeued -> processed transitions;
 - provider turn started only when allowed;
-- non-model-visible task status does not start a turn;
+- non-model-reentry task status does not start a turn;
 - terminal blocking task result resumes the expected wait;
 - paused runtime persists task terminal state but does not start a provider
   turn;
@@ -690,7 +690,7 @@ Required scenarios:
   anchor;
 - completing one work item is not blocked by an unrelated task once task
   association exists;
-- interrupt operator prompt during a long provider/tool turn preserves
+- operator interjection prompt during a long provider/tool turn preserves
   side-effect evidence and queue status.
 
 ## Incremental Implementation Plan
@@ -721,7 +721,7 @@ Required scenarios:
 
 - separate durable current work from scoped turn binding;
 - make turn-end WorkItem commit require a real model turn terminal;
-- prevent non-model-visible reductions from mutating WorkItem blockers.
+- prevent non-model-reentry reductions from mutating WorkItem blockers.
 
 ### Phase 5: Replay Harness
 
@@ -748,7 +748,7 @@ The current implementation has landed the main scheduler contract pieces:
 - turn-local WorkItem binding is distinct from durable current WorkItem focus;
 - scheduler replay fixtures and a debug fixture export command exist.
 - queued and dequeued messages replay at the message level, while processed,
-  interrupted, interjected, and dropped messages do not replay as normal queued
+  aborted, interjected, and dropped messages do not replay as normal queued
   inputs;
 - prior tool executions remain ledger evidence and are not replayed as
   scheduler-owned tool calls;
@@ -768,7 +768,7 @@ Implemented by routing the normal run-loop polling path through
   successful reduction;
 - apply running projection after the scheduled message is selected;
 - keep idle and stopped decisions explainable through `decide_next_action`;
-- dispatch model-visible versus reduce-only messages.
+- dispatch model-reentry versus reduce-only messages.
 
 ### Step 2: Event And Posture Convergence
 
@@ -781,7 +781,7 @@ decision events:
   `scheduler_decision` events built from `SchedulerDecision`;
 - runtime system tick helpers construct messages and rely on scheduler
   decisions for emit-versus-suppress behavior;
-- interrupt-priority operator input uses the scheduler-owned classifier, while
+- operator interjection input uses the scheduler-owned classifier, while
   the turn loop still performs the safe-point interjection and records the
   `Interjected` queue status.
 
@@ -791,10 +791,10 @@ Implemented by making explicit idempotency keys the primary duplicate check and
 adding replay contract coverage:
 
 - queued and dequeued message replay classification;
-- processed, interrupted, interjected, and dropped messages excluded from normal
+- processed, aborted, interjected, and dropped messages excluded from normal
   replay;
 - old tool calls not being automatically re-executed after restart;
-- interrupt input preserving queue status and side-effect evidence;
+- operator interjection input preserving queue status and side-effect evidence;
 - mismatched continuation triggers staying liveness-only;
 - wake hint priority over work-queue ticks;
 - compaction not changing scheduler truth.
@@ -804,10 +804,10 @@ adding replay contract coverage:
 The high-risk scheduler gaps above are closed. The remaining items are narrower
 refinements rather than blockers for the scheduler contract:
 
-- `model_visible` is still calculated by `build_message_dispatch_plan` before
-  the message decision is passed into `decide_next_action`; a future reducer
-  cleanup can move more continuation-resolution detail into scheduler input.
-- interrupt-priority operator input is classified by scheduler code, but the
+- `ContinuationResolution` still classifies whether its trigger requests model
+  reentry; the scheduler owns the final `StartModelTurn` versus
+  `ReduceMessageOnly` decision.
+- operator interjection input is classified by scheduler code, but the
   turn loop still drains and injects it at provider/tool safe points.
 - bootstrap, control, and shutdown remain explicit posture authorities. Normal
   running, idle, awaiting-task, and sleep posture should continue to use

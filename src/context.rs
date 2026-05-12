@@ -800,7 +800,7 @@ fn continuation_context(
     continuation: Option<&ContinuationResolution>,
 ) -> Option<String> {
     let continuation = continuation?;
-    if !continuation.model_visible {
+    if !continuation.model_reentry {
         return None;
     }
 
@@ -2577,7 +2577,7 @@ mod tests {
             Some(&ContinuationResolution {
                 trigger_kind: crate::types::ContinuationTriggerKind::SystemTick,
                 class: ContinuationClass::ResumeExpectedWait,
-                model_visible: true,
+                model_reentry: true,
                 prior_closure_outcome: crate::types::ClosureOutcome::Waiting,
                 prior_waiting_reason: Some(crate::types::WaitingReason::AwaitingExternalChange),
                 matched_waiting_reason: true,
@@ -2640,7 +2640,7 @@ mod tests {
             Some(&ContinuationResolution {
                 trigger_kind: crate::types::ContinuationTriggerKind::SystemTick,
                 class: ContinuationClass::LocalContinuation,
-                model_visible: true,
+                model_reentry: true,
                 prior_closure_outcome: crate::types::ClosureOutcome::Completed,
                 prior_waiting_reason: None,
                 matched_waiting_reason: false,

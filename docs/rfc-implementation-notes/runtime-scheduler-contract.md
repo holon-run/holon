@@ -30,7 +30,7 @@ scheduler blockers.
 - Explicit idempotency keys are checked before fallback recent-ledger duplicate
   heuristics.
 - Queue recovery replays `Queued` and `Dequeued` messages, but excludes
-  `Processed`, `Interrupted`, `Interjected`, and `Dropped` messages.
+  `Processed`, `Aborted`, `Interjected`, and `Dropped` messages.
 - Prior tool executions remain ledger evidence and are not automatically replayed
   as scheduler-owned tool calls.
 - Compaction records, briefs, and checkpoint artifacts do not become scheduler
@@ -55,15 +55,14 @@ Useful local checks:
 cargo test scheduler --quiet
 cargo test mismatched_timer_trigger_stays_liveness_only --quiet
 cargo test queued_system_tick_explicit_idempotency_key_wins_over_newer_signals --quiet
-cargo test interrupt_operator_prompt_is_interjected_before_next_provider_round --quiet
+cargo test operator_interjection_prompt_is_interjected_before_next_provider_round --quiet
 ```
 
 ## Remaining follow-up
 
-1. Move more continuation visibility detail into scheduler input if the
-   `build_message_dispatch_plan -> decide_next_action` split becomes hard to
-   reason about.
-2. Keep interrupt-priority classification in scheduler code, while preserving
+1. Keep `ContinuationResolution` as trigger classification and
+   `decide_next_action` as the final model-reentry decision boundary.
+2. Keep operator-interjection classification in scheduler code, while preserving
    turn-loop safe-point injection until provider/tool loop ownership changes.
 3. Keep bootstrap, control, and shutdown as explicit posture authorities unless a
    later RFC moves those control-plane writes behind the scheduler executor.

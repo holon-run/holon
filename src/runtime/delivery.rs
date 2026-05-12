@@ -100,7 +100,7 @@ fn operator_message_status(
 ) -> OperatorMessageStatus {
     match status {
         QueueEntryStatus::Queued
-            if *priority == Priority::Interrupt && state.current_run_id.is_some() =>
+            if *priority == Priority::Interject && state.current_run_id.is_some() =>
         {
             OperatorMessageStatus::WaitingForSafePoint
         }
@@ -109,7 +109,7 @@ fn operator_message_status(
             OperatorMessageStatus::Processing
         }
         QueueEntryStatus::Processed => OperatorMessageStatus::Processed,
-        QueueEntryStatus::Interrupted => OperatorMessageStatus::Failed,
+        QueueEntryStatus::Aborted => OperatorMessageStatus::Failed,
         QueueEntryStatus::Dropped => OperatorMessageStatus::Dropped,
     }
 }

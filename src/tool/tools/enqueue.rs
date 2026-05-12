@@ -21,7 +21,9 @@ pub(crate) const NAME: &str = "Enqueue";
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 pub(crate) enum EnqueuePriority {
-    Interrupt,
+    // TODO: remove `interrupt` alias after older prompt/tool-call contexts have migrated.
+    #[serde(alias = "interrupt")]
+    Interject,
     Next,
     Normal,
     Background,
@@ -53,7 +55,7 @@ pub(crate) async fn execute(
     let args: EnqueueArgs = parse_tool_args(NAME, input)?;
     let text = validate_non_empty(args.text, NAME, "text")?;
     let priority = match args.priority.unwrap_or(EnqueuePriority::Next) {
-        EnqueuePriority::Interrupt => Priority::Interrupt,
+        EnqueuePriority::Interject => Priority::Interject,
         EnqueuePriority::Next => Priority::Next,
         EnqueuePriority::Normal => Priority::Normal,
         EnqueuePriority::Background => Priority::Background,
@@ -82,4 +84,20 @@ pub(crate) async fn execute(
             summary_text: Some(format!("enqueued follow-up: {text}")),
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_interrupt_priority_deserializes_as_interject() {
+        let args: EnqueueArgs = serde_json::from_value(serde_json::json!({
+            "text": "follow up",
+            "priority": "interrupt"
+        }))
+        .unwrap();
+
+        assert!(matches!(args.priority, Some(EnqueuePriority::Interject)));
+    }
 }

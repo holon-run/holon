@@ -570,7 +570,7 @@ pub async fn control_wake_records_liveness_only_system_tick_on_loopback_auto() -
                 .as_ref()
                 .is_some_and(|continuation| {
                     continuation.class == ContinuationClass::LivenessOnly
-                        && !continuation.model_visible
+                        && !continuation.model_reentry
                 }))
     })
     .await?;
@@ -632,7 +632,7 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
                 && message.delivery_surface == Some(MessageDeliverySurface::HttpControlPrompt)
                 && message.admission_context == Some(AdmissionContext::LocalProcess)
                 && message.authority_class == AuthorityClass::OperatorInstruction
-                && message.priority == Priority::Interrupt
+                && message.priority == Priority::Interject
         }) && events.iter().any(|event| {
             event.kind == "message_admitted"
                 && event.data["delivery_surface"] == "http_control_prompt"

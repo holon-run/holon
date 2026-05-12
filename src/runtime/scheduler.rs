@@ -185,7 +185,7 @@ impl SchedulerDecisionKind {
 pub(crate) struct SchedulerDecision {
     pub kind: SchedulerDecisionKind,
     pub reason: String,
-    pub model_visible: bool,
+    pub model_reentry: bool,
     pub liveness_only: bool,
     pub message_id: Option<String>,
     pub work_item_id: Option<String>,
@@ -225,7 +225,7 @@ pub(crate) enum SchedulerDuplicateEvidence {
 pub(crate) enum SchedulerIdleSignal<'a> {
     ContinueActive {
         work_item: &'a WorkItemRecord,
-        suppressed_after_model_visible_continuation: bool,
+        suppressed_after_model_reentry_continuation: bool,
         duplicate: Option<SchedulerDuplicateEvidence>,
     },
     QueuedAvailable {
@@ -243,7 +243,7 @@ pub(crate) enum SchedulerInput<'a> {
     Message {
         message: &'a MessageEnvelope,
         model_turn_allowed: bool,
-        model_visible: bool,
+        continuation_resolution: Option<&'a ContinuationResolution>,
     },
     IdleSignal(SchedulerIdleSignal<'a>),
 }
@@ -253,7 +253,7 @@ impl SchedulerDecision {
         Self {
             kind,
             reason: reason.into(),
-            model_visible: false,
+            model_reentry: false,
             liveness_only: false,
             message_id: None,
             work_item_id: None,
@@ -263,8 +263,8 @@ impl SchedulerDecision {
         }
     }
 
-    pub(crate) fn model_visible(mut self, value: bool) -> Self {
-        self.model_visible = value;
+    pub(crate) fn model_reentry(mut self, value: bool) -> Self {
+        self.model_reentry = value;
         self
     }
 
@@ -319,8 +319,8 @@ pub(crate) fn decide_next_action(
         SchedulerInput::Message {
             message,
             model_turn_allowed,
-            model_visible,
-        } => message_processing_decision(message, model_turn_allowed, model_visible)
+            continuation_resolution,
+        } => message_processing_decision(message, model_turn_allowed, continuation_resolution)
             .boundary(boundary_label)
             .evidence(format!("queue_len={}", projection.queue_len))
             .evidence(format!("turn_in_progress={}", projection.turn_in_progress)),
@@ -364,7 +364,7 @@ fn decide_idle_signal_action(
             }
             SchedulerDecision::new(SchedulerDecisionKind::EmitSystemTick, "wake_hint")
                 .boundary(boundary)
-                .model_visible(true)
+                .model_reentry(true)
                 .evidence("runtime_idle")
                 .evidence("pending_wake_hint")
                 .evidence(format!(
@@ -374,7 +374,7 @@ fn decide_idle_signal_action(
         }
         SchedulerIdleSignal::ContinueActive {
             work_item,
-            suppressed_after_model_visible_continuation,
+            suppressed_after_model_reentry_continuation,
             duplicate,
         } => {
             if let Some(decision) = wait_decision_for_projection(projection) {
@@ -382,15 +382,15 @@ fn decide_idle_signal_action(
                     .boundary(boundary)
                     .evidence("work_queue_tick_blocked_by_wait_fact");
             }
-            if suppressed_after_model_visible_continuation {
+            if suppressed_after_model_reentry_continuation {
                 return SchedulerDecision::new(
                     SchedulerDecisionKind::Noop,
-                    "continue_active_suppressed_after_model_visible_continuation",
+                    "continue_active_suppressed_after_model_reentry_continuation",
                 )
                 .boundary(boundary)
                 .liveness_only(true)
                 .work_item_id(work_item.id.clone())
-                .evidence("model_visible_continuation_suppresses_duplicate_continue_active");
+                .evidence("model_reentry_continuation_suppresses_duplicate_continue_active");
             }
             if let Some(SchedulerDuplicateEvidence::ContinueActiveBrief(result_brief_id)) =
                 duplicate
@@ -407,7 +407,7 @@ fn decide_idle_signal_action(
             }
             SchedulerDecision::new(SchedulerDecisionKind::EmitSystemTick, "continue_active")
                 .boundary(boundary)
-                .model_visible(true)
+                .model_reentry(true)
                 .work_item_id(work_item.id.clone())
                 .evidence("runtime_idle")
                 .evidence("work_item_runnable")
@@ -439,7 +439,7 @@ fn decide_idle_signal_action(
             }
             SchedulerDecision::new(SchedulerDecisionKind::EmitSystemTick, "queued_available")
                 .boundary(boundary)
-                .model_visible(true)
+                .model_reentry(true)
                 .work_item_id(work_item.id.clone())
                 .evidence("runtime_idle")
                 .evidence("work_item_runnable")
@@ -457,7 +457,7 @@ pub(crate) fn scheduler_decision_event(decision: &SchedulerDecision) -> AuditEve
         serde_json::json!({
             "decision": decision.kind.as_str(),
             "reason": &decision.reason,
-            "model_visible": decision.model_visible,
+            "model_reentry": decision.model_reentry,
             "liveness_only": decision.liveness_only,
             "message_id": &decision.message_id,
             "work_item_id": &decision.work_item_id,
@@ -489,17 +489,19 @@ pub(crate) fn append_scheduler_decision(
 pub(crate) fn message_processing_decision(
     message: &MessageEnvelope,
     model_turn_allowed: bool,
-    model_visible: bool,
+    continuation_resolution: Option<&ContinuationResolution>,
 ) -> SchedulerDecision {
-    let kind = if model_visible {
+    let model_reentry = model_turn_allowed
+        && continuation_resolution.is_some_and(|resolution| resolution.model_reentry);
+    let kind = if model_reentry {
         SchedulerDecisionKind::StartModelTurn
     } else {
         SchedulerDecisionKind::ReduceMessageOnly
     };
     let mut decision = SchedulerDecision::new(kind, format!("{:?}", message.kind))
         .message(message)
-        .model_visible(model_visible)
-        .liveness_only(!model_visible)
+        .model_reentry(model_reentry)
+        .liveness_only(!model_reentry)
         .evidence(format!("message_kind={:?}", message.kind))
         .evidence(format!("trigger_kind={:?}", message.trigger_kind));
     if !model_turn_allowed {
@@ -657,7 +659,7 @@ pub(crate) fn apply_sleep_projection(
     state.sleeping_until = sleeping_until;
 }
 
-pub(crate) fn is_interrupt_priority_operator_input(message: &MessageEnvelope) -> bool {
+pub(crate) fn is_operator_interjection_message(message: &MessageEnvelope) -> bool {
     matches!(
         (
             &message.kind,
@@ -669,7 +671,7 @@ pub(crate) fn is_interrupt_priority_operator_input(message: &MessageEnvelope) ->
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { .. },
             TrustLevel::TrustedOperator,
-            Priority::Interrupt,
+            Priority::Interject,
         )
     )
 }

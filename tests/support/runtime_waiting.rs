@@ -484,7 +484,7 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
                 .as_ref()
                 .is_some_and(|continuation| {
                     continuation.class == holon::types::ContinuationClass::LivenessOnly
-                        && !continuation.model_visible
+                        && !continuation.model_reentry
                 }))
     })
     .await?;

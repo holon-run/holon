@@ -249,13 +249,13 @@ Events:
 - `message_enqueued`
 - `message_admitted`
 - `message_processing_started`
-- `message_processing_interrupted`
+- `message_processing_aborted`
 - `turn_started`
 
 Policy:
 
 - `operator_interjection_admitted`: show as operator input in all main levels
-- `message_processing_interrupted`: show only when it explains an interruption or
+- `message_processing_aborted`: show only when it explains an abort or
   failure
 - all other message plumbing events: hide in main levels; trace only
 
@@ -502,7 +502,7 @@ Events:
 
 - `control_request_admitted`
 - `control_applied`
-- `current_run_interrupted`
+- `current_run_aborted`
 - `wake_requested`
 - `continuation_trigger_received`
 - `continuation_resolved`
@@ -513,7 +513,7 @@ Events:
 
 Policy:
 
-- `info`: show interrupts and shutdown requests; hide routine control plumbing
+- `info`: show aborts and shutdown requests; hide routine control plumbing
 - `verbose`: show control results that change visible behavior
 - `debug`: show continuation/closure details only when useful for diagnosing
   agent posture

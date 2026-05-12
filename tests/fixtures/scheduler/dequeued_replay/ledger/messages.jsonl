@@ -1,6 +1,6 @@
 {"id":"msg-queued","kind":"webhook_event","text":"queued message"}
 {"id":"msg-dequeued","kind":"webhook_event","text":"dequeued message"}
 {"id":"msg-processed","kind":"webhook_event","text":"processed message"}
-{"id":"msg-interrupted","kind":"webhook_event","text":"interrupted message"}
-{"id":"msg-interjected","kind":"operator_prompt","text":"interjected interrupt","priority":"interrupt"}
+{"id":"msg-aborted","kind":"webhook_event","text":"aborted message"}
+{"id":"msg-interjected","kind":"operator_prompt","text":"interjected interject","priority":"interject"}
 {"id":"msg-dropped","kind":"webhook_event","text":"dropped message"}

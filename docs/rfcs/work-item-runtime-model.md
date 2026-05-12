@@ -116,7 +116,7 @@ This RFC aims to let Holon:
 - preserve task understanding through compaction;
 - let agents plan before implementation without requiring a synchronous user
   interaction loop;
-- accept external ingress without always interrupting current work;
+- accept external ingress without always aborting current work;
 - track blockers and completion above individual turns and tasks;
 - keep external queue ownership separate from agent-owned current work.
 

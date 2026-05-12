@@ -729,7 +729,7 @@ mod tests {
         let priority_enum = priority["enum"]
             .as_array()
             .expect("priority enum should be an array");
-        assert!(priority_enum.iter().any(|value| value == "interrupt"));
+        assert!(priority_enum.iter().any(|value| value == "interject"));
         assert!(priority_enum.iter().any(Value::is_null));
     }
 

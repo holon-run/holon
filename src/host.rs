@@ -280,14 +280,14 @@ impl RuntimeHost {
         Ok(runtime)
     }
 
-    pub async fn interrupt_public_agent_current_run(
+    pub async fn abort_public_agent_current_run(
         &self,
         agent_id: &str,
-        request: crate::runtime::CurrentRunInterruptRequest,
-    ) -> std::result::Result<crate::runtime::CurrentRunInterruptOutcome, PublicAgentError> {
+        request: crate::runtime::CurrentRunAbortRequest,
+    ) -> std::result::Result<crate::runtime::CurrentRunAbortOutcome, PublicAgentError> {
         let runtime = self.get_public_agent(agent_id).await?;
         runtime
-            .interrupt_current_run(request)
+            .abort_current_run(request)
             .await
             .map_err(PublicAgentError::Runtime)
     }
@@ -2622,7 +2622,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_shutdown_interrupts_active_run_with_daemon_shutdown_reason() {
+    async fn host_shutdown_aborts_active_run_with_daemon_shutdown_reason() {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
@@ -2663,21 +2663,21 @@ mod tests {
         assert_eq!(persisted.current_run_id, None);
         let terminal = persisted
             .last_turn_terminal
-            .expect("interrupted run should persist a terminal record");
+            .expect("aborted run should persist a terminal record");
         assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
         assert_eq!(terminal.reason.as_deref(), Some("daemon_shutdown"));
 
         let events = storage.read_recent_events(32).unwrap();
         assert!(events.iter().any(|event| {
             event.kind == "runtime_service_shutdown_requested"
-                && event.data.get("interrupted_run_id").is_some()
+                && event.data.get("aborted_run_id").is_some()
         }));
         assert!(events.iter().any(|event| {
-            event.kind == "current_run_interrupted"
+            event.kind == "current_run_aborted"
                 && event.data.get("reason").and_then(Value::as_str) == Some("daemon_shutdown")
         }));
         assert!(events.iter().any(|event| {
-            event.kind == "message_processing_interrupted"
+            event.kind == "message_processing_aborted"
                 && event.data.get("reason").and_then(Value::as_str) == Some("daemon_shutdown")
         }));
     }

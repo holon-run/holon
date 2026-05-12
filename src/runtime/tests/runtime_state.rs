@@ -67,7 +67,7 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
 }
 
 #[tokio::test]
-async fn non_model_visible_external_events_do_not_run_interactive_turn() {
+async fn non_model_reentry_external_events_do_not_run_interactive_turn() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -136,7 +136,7 @@ async fn enqueue_normalizes_operator_admission_fields() {
                     actor_id: Some("operator-1".into()),
                 },
                 TrustLevel::TrustedOperator,
-                Priority::Interrupt,
+                Priority::Interject,
                 MessageBody::Text {
                     text: "ship it".into(),
                 },
@@ -532,7 +532,7 @@ async fn enqueue_normalizes_wake_hint_as_runtime_owned_inspection_signal() {
 }
 
 #[tokio::test]
-async fn interrupt_current_run_aborts_provider_turn_and_pauses_agent() {
+async fn abort_current_run_aborts_provider_turn_and_pauses_agent() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
@@ -572,9 +572,9 @@ async fn interrupt_current_run_aborts_provider_turn_and_pauses_agent() {
         .expect("run id should be active");
 
     let outcome = runtime
-        .interrupt_current_run(CurrentRunInterruptRequest {
+        .abort_current_run(CurrentRunAbortRequest {
             run_id: Some(run_id.clone()),
-            mode: CurrentRunInterruptMode::PauseAfterAbort,
+            mode: CurrentRunAbortMode::PauseAfterAbort,
         })
         .await
         .unwrap();
@@ -586,7 +586,7 @@ async fn interrupt_current_run_aborts_provider_turn_and_pauses_agent() {
             if state
                 .last_turn_terminal
                 .as_ref()
-                .is_some_and(|terminal| terminal.reason.as_deref() == Some("operator_interrupted"))
+                .is_some_and(|terminal| terminal.reason.as_deref() == Some("operator_aborted"))
             {
                 break state;
             }
@@ -594,7 +594,7 @@ async fn interrupt_current_run_aborts_provider_turn_and_pauses_agent() {
         }
     })
     .await
-    .expect("interrupted terminal should be persisted");
+    .expect("aborted terminal should be persisted");
 
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.status, AgentStatus::Paused);
@@ -611,16 +611,16 @@ async fn interrupt_current_run_aborts_provider_turn_and_pauses_agent() {
             .last_turn_terminal
             .as_ref()
             .and_then(|terminal| terminal.reason.as_deref()),
-        Some("operator_interrupted")
+        Some("operator_aborted")
     );
     let queue_entries = runtime.storage().latest_queue_entries().unwrap();
     assert!(queue_entries
         .iter()
-        .any(|entry| entry.status == QueueEntryStatus::Interrupted));
+        .any(|entry| entry.status == QueueEntryStatus::Aborted));
     let events = runtime.all_events().unwrap();
     assert!(events
         .iter()
-        .any(|event| event.kind == "current_run_interrupted"));
+        .any(|event| event.kind == "current_run_aborted"));
 
     runtime
         .control(crate::types::ControlAction::Stop)
@@ -630,7 +630,7 @@ async fn interrupt_current_run_aborts_provider_turn_and_pauses_agent() {
 }
 
 #[tokio::test]
-async fn interrupt_operator_prompt_is_interjected_before_next_provider_round() {
+async fn operator_interjection_prompt_is_interjected_before_next_provider_round() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let first_tool_round = Arc::new(tokio::sync::Notify::new());
@@ -679,7 +679,7 @@ async fn interrupt_operator_prompt_is_interjected_before_next_provider_round() {
             actor_id: Some("control".into()),
         },
         TrustLevel::TrustedOperator,
-        Priority::Interrupt,
+        Priority::Interject,
         MessageBody::Text {
             text: "stop exploring and use the smaller fix".into(),
         },
@@ -753,7 +753,7 @@ async fn interrupt_operator_prompt_is_interjected_before_next_provider_round() {
 }
 
 #[tokio::test]
-async fn interrupt_current_run_rejects_stale_run_id() {
+async fn abort_current_run_rejects_stale_run_id() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
@@ -787,9 +787,9 @@ async fn interrupt_current_run_rejects_stale_run_id() {
     started.notified().await;
 
     let err = runtime
-        .interrupt_current_run(CurrentRunInterruptRequest {
+        .abort_current_run(CurrentRunAbortRequest {
             run_id: Some("stale-run".into()),
-            mode: CurrentRunInterruptMode::PauseAfterAbort,
+            mode: CurrentRunAbortMode::PauseAfterAbort,
         })
         .await
         .unwrap_err();
@@ -802,9 +802,9 @@ async fn interrupt_current_run_rejects_stale_run_id() {
         .is_some());
 
     runtime
-        .interrupt_current_run(CurrentRunInterruptRequest {
+        .abort_current_run(CurrentRunAbortRequest {
             run_id: None,
-            mode: CurrentRunInterruptMode::PauseAfterAbort,
+            mode: CurrentRunAbortMode::PauseAfterAbort,
         })
         .await
         .unwrap();
@@ -816,7 +816,7 @@ async fn interrupt_current_run_rejects_stale_run_id() {
 }
 
 #[tokio::test]
-async fn model_visible_operator_and_timer_events_run_interactive_turn() {
+async fn model_reentry_operator_and_timer_events_run_interactive_turn() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {

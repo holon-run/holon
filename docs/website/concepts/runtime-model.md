@@ -74,7 +74,7 @@ Task lifecycle is independent of the agent's user-facing answer. You can:
 Holon's scheduling primitives:
 
 - **Enqueue** — Schedule a follow-up message for this agent. Priorities:
-  `interrupt`, `next`, `normal`, `background`.
+  `interject`, `next`, `normal`, `background`.
 - **Sleep** — Agent goes idle when no immediate work remains.
 - **Wake** — External trigger or queued message reactivates the agent.
 - **External triggers** — Callbacks from CI, webhooks, timers, or external

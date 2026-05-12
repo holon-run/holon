@@ -50,7 +50,7 @@ use crate::{
     host::{PublicAgentError, RuntimeHost},
     ingress::{InboundRequest, WakeDisposition, WakeHint},
     policy::{default_trust_for_origin, validate_message_kind_for_origin},
-    runtime::{CurrentRunInterruptError, CurrentRunInterruptMode, CurrentRunInterruptRequest},
+    runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
     storage::FileActivityMarker,
     system::{ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary},
     types::{
@@ -171,8 +171,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/control/agents/:agent_id/control", post(control))
         .route(
-            "/control/agents/:agent_id/current-run/interrupt",
-            post(interrupt_current_run),
+            "/control/agents/:agent_id/current-run/abort",
+            post(abort_current_run),
         )
         .route("/control/agents/:agent_id/prompt", post(control_prompt))
         .route(
@@ -482,7 +482,7 @@ pub struct ControlRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct InterruptCurrentRunRequest {
+pub struct AbortCurrentRunRequest {
     pub run_id: Option<String>,
     pub mode: Option<String>,
     pub trust: Option<TrustLevel>,
@@ -730,8 +730,8 @@ async fn enqueue_internal(
         ));
     }
     let priority = request.priority.unwrap_or(Priority::Normal);
-    if matches!(ingress, EnqueueIngress::Public) && priority == Priority::Interrupt {
-        return Err(forbidden("public enqueue may not use interrupt priority"));
+    if matches!(ingress, EnqueueIngress::Public) && priority == Priority::Interject {
+        return Err(forbidden("public enqueue may not use interject priority"));
     }
     let origin = match ingress {
         EnqueueIngress::Public => match request.origin {
@@ -1871,18 +1871,18 @@ pub async fn control(
     Ok(Json(json!({ "ok": true })))
 }
 
-pub async fn interrupt_current_run(
+pub async fn abort_current_run(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<InterruptCurrentRunRequest>,
+    Json(request): Json<AbortCurrentRunRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let mode = match request.mode.as_deref().unwrap_or("pause_after_abort") {
-        "pause_after_abort" => CurrentRunInterruptMode::PauseAfterAbort,
+        "pause_after_abort" => CurrentRunAbortMode::PauseAfterAbort,
         other => {
             return Err(bad_request(format!(
-                "unsupported interrupt mode {other}; expected pause_after_abort"
+                "unsupported abort mode {other}; expected pause_after_abort"
             )))
         }
     };
@@ -1894,15 +1894,15 @@ pub async fn interrupt_current_run(
         .await
         .map_err(agent_access_error)?;
     let outcome = runtime
-        .interrupt_current_run(CurrentRunInterruptRequest {
+        .abort_current_run(CurrentRunAbortRequest {
             run_id: request.run_id.clone(),
             mode,
         })
         .await
-        .map_err(interrupt_error_response)?;
+        .map_err(abort_error_response)?;
     Ok(Json(json!({
         "ok": true,
-        "interrupted": true,
+        "aborted": true,
         "agent_id": outcome.agent_id,
         "run_id": outcome.run_id,
         "mode": outcome.mode.as_str(),
@@ -2139,7 +2139,7 @@ pub async fn control_prompt(
         agent_id,
         EnqueueRequest {
             kind: Some(MessageKind::OperatorPrompt),
-            priority: Some(Priority::Interrupt),
+            priority: Some(Priority::Interject),
             trust: Some(TrustLevel::TrustedOperator),
             body: Some(MessageBody::Text { text: request.text }),
             text: None,
@@ -2273,7 +2273,7 @@ pub async fn operator_ingress(
     let message = InboundRequest {
         agent_id: agent_id.clone(),
         kind: MessageKind::OperatorPrompt,
-        priority: Priority::Interrupt,
+        priority: Priority::Interject,
         origin: MessageOrigin::Operator {
             actor_id: Some(actor_id),
         },
@@ -2782,9 +2782,9 @@ fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<Value>) {
     }
 }
 
-fn interrupt_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
-    match error.downcast::<CurrentRunInterruptError>() {
-        Ok(CurrentRunInterruptError::StaleRunId {
+fn abort_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    match error.downcast::<CurrentRunAbortError>() {
+        Ok(CurrentRunAbortError::StaleRunId {
             requested_run_id,
             current_run_id,
         }) => (
@@ -2797,12 +2797,12 @@ fn interrupt_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
                 "current_run_id": current_run_id,
             })),
         ),
-        Ok(CurrentRunInterruptError::NoCurrentRun { agent_id }) => (
+        Ok(CurrentRunAbortError::NoCurrentRun { agent_id }) => (
             StatusCode::CONFLICT,
             Json(json!({
                 "ok": false,
                 "code": "no_current_run",
-                "error": format!("agent {agent_id} has no current run to interrupt"),
+                "error": format!("agent {agent_id} has no current run to abort"),
                 "agent_id": agent_id,
             })),
         ),
