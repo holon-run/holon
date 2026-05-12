@@ -49,6 +49,89 @@ async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
 }
 
 #[tokio::test]
+async fn recovered_duplicate_wake_hint_clears_pending_without_new_tick() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let pending = PendingWakeHint {
+        reason: "restart duplicate wake".into(),
+        description: None,
+        scope: None,
+        waiting_intent_id: None,
+        external_trigger_id: None,
+        source: Some("test".into()),
+        resource: None,
+        body: None,
+        content_type: None,
+        correlation_id: Some("dup-corr".into()),
+        causation_id: None,
+        created_at: Utc::now(),
+    };
+    let idempotency_key = scheduler::wake_hint_idempotency_key(&pending);
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeIdle;
+    agent.pending_wake_hint = Some(pending);
+    storage.write_agent(&agent).unwrap();
+
+    let mut duplicate = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "wake_hint".into(),
+        },
+        TrustLevel::TrustedSystem,
+        Priority::Next,
+        MessageBody::Text {
+            text: "wake hint: restart duplicate wake".into(),
+        },
+    );
+    duplicate.metadata = Some(serde_json::json!({
+        "wake_hint": {
+            "idempotency_key": idempotency_key,
+            "reason": "restart duplicate wake",
+        }
+    }));
+    storage.append_message(&duplicate).unwrap();
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime.emit_recovered_pending_wake_hint().await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.pending_wake_hint.is_none());
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| {
+                matches!(
+                    (&message.kind, &message.origin),
+                    (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                        if subsystem == "wake_hint"
+                )
+            })
+            .count(),
+        1,
+        "duplicate recovered wake hint must not enqueue another system tick"
+    );
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_decision"
+            && event.data["decision"] == "Noop"
+            && event.data["reason"] == "duplicate_wake_hint"
+    }));
+}
+
+#[tokio::test]
 async fn triggered_wake_hint_records_scheduler_decision_before_tick() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
