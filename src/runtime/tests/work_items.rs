@@ -1107,7 +1107,7 @@ async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
 }
 
 #[tokio::test]
-async fn turn_end_work_item_commit_moves_bound_item_to_waiting_when_runtime_is_waiting() {
+async fn turn_end_work_item_commit_does_not_block_bound_item_for_active_task_presence() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -1132,10 +1132,7 @@ async fn turn_end_work_item_commit_moves_bound_item_to_waiting_when_runtime_is_w
 
     assert_eq!(committed.id, work_item_id);
     assert_eq!(committed.state, WorkItemState::Open);
-    assert_eq!(
-        committed.blocked_by.as_deref(),
-        Some("Waiting on a task result.")
-    );
+    assert_eq!(committed.blocked_by.as_deref(), None);
 }
 
 #[tokio::test]
