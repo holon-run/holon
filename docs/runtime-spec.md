@@ -2231,6 +2231,18 @@ type TaskRecoverySpec =
       trust: TrustLevel
       workspace_mode: 'inherit' | 'worktree'
     }
+  | {
+      kind: 'subagent_task' // legacy, persistence compatibility only
+      summary: string
+      prompt: string
+      trust: TrustLevel
+    }
+  | {
+      kind: 'worktree_subagent_task' // legacy, persistence compatibility only
+      summary: string
+      prompt: string
+      trust: TrustLevel
+    }
   | { kind: 'command_task'; summary: string; spec: CommandTaskSpec; trust: TrustLevel }
 ```
 
