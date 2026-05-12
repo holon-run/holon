@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_recovery_with_blocking_tasks_becomes_idle() {
+    fn bootstrap_recovery_without_runnable_facts_becomes_idle() {
         let mut state = bootstrap_state(AgentStatus::Booting);
         assert!(apply_bootstrap_recovered_projection(
             &mut state,
