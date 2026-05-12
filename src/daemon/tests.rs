@@ -1,6 +1,6 @@
 use super::lifecycle::{
     effective_config_mismatch_summary, probe_runtime, should_retry_startup_stability_probe,
-    ProbeRuntime,
+    wait_for_startup_stability_with_probe, ProbeRuntime,
 };
 use super::state::{
     persist_last_runtime_failure, DAEMON_LOG_TAIL_LINE_CHAR_LIMIT, DAEMON_LOG_TAIL_READ_BYTE_LIMIT,
@@ -19,7 +19,7 @@ use crate::{
     types::{CommandTaskSpec, RuntimeFailurePhase, RuntimeFailureSummary, TrustLevel},
 };
 use chrono::Utc;
-use std::{fs, sync::Arc};
+use std::{fs, process::Command, sync::Arc};
 use tempfile::tempdir;
 
 fn test_config() -> AppConfig {
@@ -403,6 +403,31 @@ async fn startup_stability_retries_transient_occupied_socket_probe_failure() {
         false,
         future_deadline
     ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn startup_stability_succeeds_when_occupied_socket_probe_crosses_deadline() {
+    let config = test_config();
+    let mut child = Command::new("sleep").arg("5").spawn().unwrap();
+    let child_pid = child.id();
+
+    let result = wait_for_startup_stability_with_probe(
+        &config,
+        &mut child,
+        child_pid,
+        "expected-fingerprint",
+        || async {
+            ProbeRuntime::Stopped {
+                occupied_socket: true,
+            }
+        },
+    )
+    .await;
+
+    let _ = child.kill();
+    let _ = child.wait();
+    result.unwrap();
 }
 
 #[cfg(unix)]
