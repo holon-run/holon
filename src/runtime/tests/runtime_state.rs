@@ -110,6 +110,281 @@ async fn non_model_reentry_external_events_do_not_run_interactive_turn() {
 }
 
 #[tokio::test]
+async fn run_loop_idle_sleep_records_scheduler_owned_posture_decision() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let runner = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if runtime.agent_state().await.unwrap().status == AgentStatus::Asleep {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("idle runtime should transition to sleep");
+
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision"
+            && event.data["boundary"] == "run_loop_idle"
+            && event.data["reason"] == "sleep"
+            && event.data["next_status"] == "asleep"
+    }));
+    runner.abort();
+}
+
+#[tokio::test]
+async fn run_loop_idle_sleep_rechecks_queue_before_transition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
+        guard.queue.push(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "queued while idle".into(),
+            },
+        ));
+        guard.state.pending = guard.queue.len();
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .transition_run_loop_idle_to_sleep()
+        .await
+        .unwrap();
+
+    assert!(transition.is_none());
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeIdle);
+    assert_eq!(state.pending, 1);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision" && event.data["boundary"] == "run_loop_idle"
+    }));
+}
+
+#[tokio::test]
+async fn explicit_sleep_transition_records_scheduler_owned_posture_decision() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-1".into());
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    runtime.transition_to_sleep(None).await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Asleep);
+    assert_eq!(state.current_run_id, None);
+    assert_eq!(state.sleeping_until, None);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision"
+            && event.data["boundary"] == "lifecycle_sleep"
+            && event.data["reason"] == "sleep"
+            && event.data["previous_status"] == "awake_running"
+            && event.data["next_status"] == "asleep"
+    }));
+}
+
+#[tokio::test]
+async fn message_admission_wakes_asleep_and_booting_agents() {
+    for status in [AgentStatus::Asleep, AgentStatus::Booting] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = status.clone();
+            guard.state.sleeping_until = Some(Utc::now() + chrono::Duration::seconds(60));
+            runtime.storage().write_agent(&guard.state).unwrap();
+        }
+
+        runtime
+            .enqueue(MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                TrustLevel::TrustedOperator,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "wake up".into(),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.sleeping_until, None);
+        assert_eq!(state.pending, 1);
+        let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "message_admitted"
+                && event.data["kind"] == serde_json::json!(MessageKind::OperatorPrompt)
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "scheduler_posture_decision"
+                && event.data["boundary"] == "message_admission"
+                && event.data["reason"] == "message_admission_wake"
+                && event.data["previous_status"] == serde_json::json!(status)
+                && event.data["next_status"] == "awake_idle"
+        }));
+    }
+}
+
+#[tokio::test]
+async fn message_admission_does_not_wake_stopped_or_paused_agents() {
+    for status in [AgentStatus::Stopped, AgentStatus::Paused] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = status.clone();
+            runtime.storage().write_agent(&guard.state).unwrap();
+        }
+
+        runtime
+            .enqueue(MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                TrustLevel::TrustedOperator,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "do not wake".into(),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(state.status, status);
+        assert_eq!(state.pending, 1);
+        let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+        assert!(!events.iter().any(|event| {
+            event.kind == "scheduler_posture_decision"
+                && event.data["boundary"] == "message_admission"
+        }));
+    }
+}
+
+#[tokio::test]
+async fn sleep_wake_task_ignores_stale_sleeping_until() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime.transition_to_sleep(Some(25)).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.sleeping_until = Some(Utc::now() + chrono::Duration::seconds(60));
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    assert!(!messages.iter().any(|message| {
+        matches!(
+            &message.origin,
+            MessageOrigin::System { subsystem } if subsystem == "sleep_duration"
+        )
+    }));
+    assert_eq!(
+        runtime.agent_state().await.unwrap().status,
+        AgentStatus::Asleep
+    );
+}
+
+#[tokio::test]
 async fn enqueue_normalizes_operator_admission_fields() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

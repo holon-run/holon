@@ -1014,12 +1014,12 @@ impl RuntimeHandle {
             chrono::Utc::now()
                 + chrono::Duration::milliseconds(i64::try_from(duration_ms).unwrap_or(i64::MAX))
         });
-        let state = {
-            let mut guard = self.inner.agent.lock().await;
-            scheduler::apply_sleep_projection(&mut guard.state, sleeping_until);
-            self.inner.storage.write_agent(&guard.state)?;
-            guard.state.clone()
-        };
+        let state = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .transition_to_sleep(
+                sleeping_until,
+                super::scheduler_executor::SleepTransitionBoundary::LifecycleSleep,
+            )
+            .await?;
         self.append_state_changed_events(&state)?;
         if let (Some(duration_ms), Some(sleeping_until)) = (duration_ms, sleeping_until) {
             self.spawn_session_sleep_wake(duration_ms, sleeping_until);

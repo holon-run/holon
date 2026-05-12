@@ -42,6 +42,21 @@ use super::{
     test_config, test_config_with_paths, wait_until, ParsedSseEvent,
 };
 
+async fn next_sse_event_kind(
+    stream: &mut reqwest::Response,
+    event_kind: &str,
+) -> Result<ParsedSseEvent> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = read_next_sse_event(stream).await?;
+            if event.event == event_kind {
+                return Ok(event);
+            }
+        }
+    })
+    .await?
+}
+
 pub async fn events_route_supports_cursor_replay() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
@@ -74,8 +89,7 @@ pub async fn events_route_supports_cursor_replay() -> Result<()> {
         .get(format!("{base}/agents/default/events?since={cursor}"))
         .send()
         .await?;
-    let first_event =
-        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    let first_event = next_sse_event_kind(&mut stream, "message_admitted").await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data["type"], "message_admitted");
 
@@ -117,8 +131,7 @@ pub async fn events_route_supports_last_event_id_header_and_rfc3339_ts() -> Resu
         .header("Last-Event-ID", cursor)
         .send()
         .await?;
-    let replayed =
-        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    let replayed = next_sse_event_kind(&mut stream, "message_admitted").await?;
     assert_eq!(replayed.event, "message_admitted");
     assert!(replayed.data["ts"].is_string());
     assert!(chrono::DateTime::parse_from_rfc3339(
@@ -163,8 +176,7 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
         .get(format!("{base}/agents/default/events?since={cursor}"))
         .send()
         .await?;
-    let replayed =
-        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    let replayed = next_sse_event_kind(&mut stream, "message_admitted").await?;
     assert_eq!(replayed.event, "message_admitted");
     assert_eq!(replayed.data["type"], "message_admitted");
     assert_eq!(replayed.data["provenance"]["origin"]["kind"], "operator");

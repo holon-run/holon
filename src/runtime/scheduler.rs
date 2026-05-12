@@ -639,11 +639,13 @@ pub(crate) fn apply_running_projection(state: &mut AgentState, run_id: String) {
     state.current_run_id = Some(run_id);
 }
 
-pub(crate) fn apply_message_wake_projection(state: &mut AgentState) {
+pub(crate) fn apply_message_wake_projection(state: &mut AgentState) -> bool {
     if matches!(state.status, AgentStatus::Asleep | AgentStatus::Booting) {
         state.status = AgentStatus::AwakeIdle;
         state.sleeping_until = None;
+        return true;
     }
+    false
 }
 
 pub(crate) fn apply_awaiting_task_projection(state: &mut AgentState) {
