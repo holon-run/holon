@@ -377,7 +377,6 @@ impl RuntimeHandle {
             active_task_count,
             model,
             token_usage,
-            model_availability: self.inner.model_availability.clone(),
             closure,
             execution,
             active_workspace_occupancy,

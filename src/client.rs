@@ -13,12 +13,14 @@ use crate::{
         AttachWorkspaceRequest, ClearAgentModelRequest, ControlPromptRequest, DebugPromptRequest,
         DetachWorkspaceRequest, ExitWorkspaceRequest, SetAgentModelRequest,
     },
+    model_catalog::BuiltInModelMetadata,
     system::ExecutionSnapshot,
     types::{
         ActiveWorkspaceEntry, AgentListEntry, AgentSummary, BriefRecord,
         ExternalTriggerStateSnapshot, OperatorMessageRecord, OperatorNotificationRecord,
-        TaskRecord, TimerRecord, TranscriptEntry, TrustLevel, TurnTerminalRecord,
-        WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord, WorktreeSession,
+        ResolvedModelAvailability, TaskRecord, TimerRecord, TranscriptEntry, TrustLevel,
+        TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord,
+        WorktreeSession,
     },
 };
 
@@ -67,6 +69,14 @@ pub struct DebugPromptResponse {
     pub ok: bool,
     pub agent_id: String,
     pub dump: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelsResponse {
+    #[serde(default)]
+    pub available_models: Vec<BuiltInModelMetadata>,
+    #[serde(default)]
+    pub model_availability: Vec<ResolvedModelAvailability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,6 +290,10 @@ impl LocalClient {
 
     pub async fn list_agent_entries(&self) -> Result<Vec<AgentListEntry>> {
         self.get_json("/agents/list").await
+    }
+
+    pub async fn fetch_models(&self) -> Result<ModelsResponse> {
+        self.get_json("/models").await
     }
 
     pub async fn handshake(&self) -> Result<Value> {

@@ -3115,8 +3115,6 @@ pub struct AgentSummary {
     pub lifecycle: AgentLifecycleHint,
     pub model: AgentModelState,
     pub token_usage: AgentTokenUsageSummary,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_availability: Vec<ResolvedModelAvailability>,
     pub closure: ClosureDecision,
     pub execution: ExecutionSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3280,7 +3278,6 @@ impl AgentListEntry {
             identity: self.identity,
             lifecycle: self.lifecycle,
             model: self.model.into_model_state(),
-            model_availability: Vec::new(),
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),
                 total_model_rounds: 0,

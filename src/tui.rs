@@ -11,7 +11,8 @@ use crate::{
     tui_markdown::{render_markdown_text, render_markdown_text_spaced},
     types::{
         AgentListEntry, AgentSummary, BriefRecord, MessageBody, OperatorMessageRecord,
-        OperatorMessageStatus, TaskRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        OperatorMessageStatus, ResolvedModelAvailability, TaskRecord, TranscriptEntry,
+        TranscriptEntryKind, TrustLevel,
     },
 };
 use anyhow::{anyhow, Result};

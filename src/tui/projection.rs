@@ -2517,7 +2517,6 @@ mod tests {
                 total_model_rounds: 0,
                 last_turn: None,
             },
-            model_availability: Vec::new(),
             closure: ClosureDecision {
                 outcome: ClosureOutcome::Completed,
                 waiting_reason: None,
