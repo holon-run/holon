@@ -3,7 +3,7 @@ use super::overlay::draw_overlay;
 use super::view_model::render_header_line;
 use super::view_model::{render_model_detail, HeaderViewModel, StatusbarViewModel};
 use super::*;
-use crate::tui::input::slash_menu_specs;
+use crate::tui::input::{slash_menu_specs, SlashArgHint, SlashCommandSpec};
 use crate::types::{TaskKind, TaskStatus};
 use ratatui::style::Color;
 use unicode_width::UnicodeWidthChar;
@@ -375,14 +375,10 @@ pub(super) fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
     }
     let specs = slash_menu_specs(buffer);
     if specs.is_empty() {
-        let token = buffer.trim_start().split_whitespace().next().unwrap_or("/");
-        return vec![Line::from(vec![
-            Span::styled("  ", Style::default().add_modifier(Modifier::DIM)),
-            Span::styled(
-                format!("no command matches {token}"),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-        ])];
+        return Vec::new();
+    }
+    if let Some(lines) = slash_argument_hint_lines(app, buffer, &specs) {
+        return lines;
     }
 
     specs
@@ -404,6 +400,72 @@ pub(super) fn slash_menu_lines(app: &TuiApp) -> Vec<Line<'static>> {
             ])
         })
         .collect()
+}
+
+fn slash_argument_hint_lines(
+    app: &TuiApp,
+    buffer: &str,
+    specs: &[SlashCommandSpec],
+) -> Option<Vec<Line<'static>>> {
+    let trimmed = buffer.trim_start();
+    let token = trimmed.split_whitespace().next().unwrap_or("/");
+    let spec = specs.iter().copied().find(|spec| spec.name == token)?;
+    let tail = trimmed.get(token.len()..).unwrap_or("");
+    if !tail.chars().next().is_some_and(char::is_whitespace) {
+        return None;
+    }
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled("> ", Style::default().add_modifier(Modifier::REVERSED)),
+        Span::styled(
+            format!("{:<14}", spec.name),
+            Style::default().add_modifier(Modifier::REVERSED),
+        ),
+        Span::styled(
+            spec.usage,
+            Style::default()
+                .add_modifier(Modifier::REVERSED)
+                .add_modifier(Modifier::DIM),
+        ),
+    ])];
+
+    match spec.arg_hint {
+        SlashArgHint::None => {}
+        SlashArgHint::Values(values) => {
+            lines.push(Line::from(vec![
+                Span::styled("  args: ", Style::default().add_modifier(Modifier::DIM)),
+                Span::raw(values.join("  ")),
+            ]));
+        }
+        SlashArgHint::Agent => {
+            lines.push(Line::from(vec![
+                Span::styled("  args: ", Style::default().add_modifier(Modifier::DIM)),
+                Span::raw(
+                    "switch <agent-id>  pause [agent-id]  resume [agent-id]  stop [agent-id]",
+                ),
+            ]));
+            let agents = app
+                .agents
+                .iter()
+                .take(5)
+                .map(|agent| agent.identity.agent_id.as_str())
+                .collect::<Vec<_>>();
+            if !agents.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("  agents: ", Style::default().add_modifier(Modifier::DIM)),
+                    Span::raw(agents.join("  ")),
+                ]));
+            }
+        }
+        SlashArgHint::SkillName => {
+            lines.push(Line::from(vec![
+                Span::styled("  args: ", Style::default().add_modifier(Modifier::DIM)),
+                Span::raw("<name>"),
+            ]));
+        }
+    }
+
+    Some(lines)
 }
 
 fn prompt_pane_scroll(area: Rect, buffer: &str, cursor: usize, hint_rows: u16) -> u16 {

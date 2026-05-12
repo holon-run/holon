@@ -908,7 +908,7 @@ async fn slash_menu_esc_dismisses_without_clearing_prompt() {
 }
 
 #[tokio::test]
-async fn slash_menu_esc_dismisses_unknown_command_without_clearing_prompt() {
+async fn slash_menu_esc_clears_unknown_command_like_regular_input() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -920,9 +920,9 @@ async fn slash_menu_esc_dismisses_unknown_command_without_clearing_prompt() {
         .await
         .unwrap();
 
-    assert_eq!(app.composer.as_str(), "/unknown");
+    assert_eq!(app.composer.as_str(), "");
     assert_eq!(app.overlay, OverlayState::None);
-    assert_eq!(app.slash_menu_dismissed_for.as_deref(), Some("/unknown"));
+    assert_eq!(app.slash_menu_dismissed_for.as_deref(), None);
 }
 
 #[tokio::test]

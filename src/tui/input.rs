@@ -37,6 +37,35 @@ enum SlashArgRule {
     Agent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SlashArgHint {
+    None,
+    Values(&'static [&'static str]),
+    Agent,
+    SkillName,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SlashCommandCategory {
+    Navigation,
+    Runtime,
+    Agent,
+    Skills,
+    Debug,
+}
+
+impl SlashCommandCategory {
+    fn label(self) -> &'static str {
+        match self {
+            SlashCommandCategory::Navigation => "Navigation",
+            SlashCommandCategory::Runtime => "Runtime",
+            SlashCommandCategory::Agent => "Agent",
+            SlashCommandCategory::Skills => "Skills",
+            SlashCommandCategory::Debug => "Debug",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AgentSlashAction {
     Switch(String),
@@ -50,16 +79,22 @@ enum AgentSlashAction {
 pub(super) struct SlashCommandSpec {
     pub(super) name: &'static str,
     pub(super) description: &'static str,
-    usage: &'static str,
+    pub(super) usage: &'static str,
+    pub(super) arg_hint: SlashArgHint,
+    category: SlashCommandCategory,
     arg_rule: SlashArgRule,
     command: SlashCommand,
 }
+
+const DISPLAY_MODE_ARGS: &[&str] = &["info", "verbose", "debug", "3", "4", "5"];
 
 const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
         usage: "/help",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Navigation,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Help,
     },
@@ -67,6 +102,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/agents",
         description: "open agent picker",
         usage: "/agents",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Agent,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Agents,
     },
@@ -74,6 +111,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/events",
         description: "open raw events overlay",
         usage: "/events",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Navigation,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Events,
     },
@@ -81,6 +120,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/model",
         description: "open selected agent model picker",
         usage: "/model",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Agent,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Model,
     },
@@ -88,6 +129,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/tasks",
         description: "open task overlay",
         usage: "/tasks",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Runtime,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Tasks,
     },
@@ -95,6 +138,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/transcript",
         description: "open transcript overlay",
         usage: "/transcript",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Navigation,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Transcript,
     },
@@ -102,6 +147,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/state",
         description: "open agent state overlay",
         usage: "/state",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Agent,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::State,
     },
@@ -109,6 +156,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/refresh",
         description: "refresh selected agent",
         usage: "/refresh",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Runtime,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Refresh,
     },
@@ -116,6 +165,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/clear-status",
         description: "clear local status line",
         usage: "/clear-status",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Runtime,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::ClearStatus,
     },
@@ -123,6 +174,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/debug-prompt",
         description: "open debug prompt dialog",
         usage: "/debug-prompt",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Debug,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::DebugPrompt,
     },
@@ -130,6 +183,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/display",
         description: "set chat display mode",
         usage: "/display <info|verbose|debug|3|4|5>",
+        arg_hint: SlashArgHint::Values(DISPLAY_MODE_ARGS),
+        category: SlashCommandCategory::Runtime,
         arg_rule: SlashArgRule::ExactlyOne,
         command: SlashCommand::Display,
     },
@@ -137,6 +192,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/abort",
         description: "abort current agent run",
         usage: "/abort",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Agent,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Abort,
     },
@@ -145,6 +202,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         description: "switch or control an agent",
         usage:
             "/agent <agent-id>|switch <agent-id>|pause [agent-id]|resume [agent-id]|stop [agent-id]",
+        arg_hint: SlashArgHint::Agent,
+        category: SlashCommandCategory::Agent,
         arg_rule: SlashArgRule::Agent,
         command: SlashCommand::Agent,
     },
@@ -152,6 +211,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/skills",
         description: "show installed skills",
         usage: "/skills",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Skills,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Skills,
     },
@@ -159,6 +220,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/skill-install",
         description: "install a builtin skill",
         usage: "/skill-install <name>",
+        arg_hint: SlashArgHint::SkillName,
+        category: SlashCommandCategory::Skills,
         arg_rule: SlashArgRule::ExactlyOne,
         command: SlashCommand::SkillInstall,
     },
@@ -166,6 +229,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         name: "/skill-uninstall",
         description: "uninstall a skill",
         usage: "/skill-uninstall <name>",
+        arg_hint: SlashArgHint::SkillName,
+        category: SlashCommandCategory::Skills,
         arg_rule: SlashArgRule::ExactlyOne,
         command: SlashCommand::SkillUninstall,
     },
@@ -173,6 +238,33 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
 
 /// Maximum number of entries to keep in input history
 const MAX_INPUT_HISTORY: usize = 100;
+
+pub(super) fn slash_help_lines() -> Vec<String> {
+    let mut lines = vec![
+        "Slash Commands".to_string(),
+        "  Type / to browse commands; non-command /text is sent as chat.".to_string(),
+        "  Prefix with // to send text that starts with a single slash.".to_string(),
+    ];
+    let categories = [
+        SlashCommandCategory::Navigation,
+        SlashCommandCategory::Agent,
+        SlashCommandCategory::Skills,
+        SlashCommandCategory::Runtime,
+        SlashCommandCategory::Debug,
+    ];
+
+    for category in categories {
+        lines.push(String::new());
+        lines.push(category.label().to_string());
+        lines.extend(
+            SLASH_COMMAND_SPECS
+                .iter()
+                .filter(|spec| spec.category == category)
+                .map(|spec| format!("  {:<58} {}", spec.usage, spec.description)),
+        );
+    }
+    lines
+}
 
 fn slash_command_spec(command: &str) -> Option<SlashCommandSpec> {
     SLASH_COMMAND_SPECS
@@ -285,17 +377,18 @@ fn parse_composer_submission(buffer: &str) -> Result<Option<ComposerSubmission>>
     if text == "/" {
         return Err(anyhow!("empty slash command; use /help"));
     }
-    if text.contains('\n') {
-        return Err(anyhow!("slash commands must be submitted on a single line"));
-    }
 
     let mut parts = text.split_whitespace();
     let command = parts
         .next()
         .expect("non-empty slash command must have a token");
+    let Some(slash_command_spec) = slash_command_spec(command) else {
+        return Ok(Some(ComposerSubmission::Chat(text)));
+    };
+    if text.contains('\n') {
+        return Err(anyhow!("slash commands must be submitted on a single line"));
+    }
     let args: Vec<String> = parts.map(ToString::to_string).collect();
-    let slash_command_spec = slash_command_spec(command)
-        .ok_or_else(|| anyhow!("unknown slash command {}; use /help", command))?;
 
     match slash_command_spec.arg_rule {
         SlashArgRule::None if !args.is_empty() => {
@@ -326,12 +419,7 @@ fn slash_prompt_lines(buffer: &str) -> Option<Vec<String>> {
     let matches = slash_menu_specs(buffer);
 
     if matches.is_empty() {
-        if !token.starts_with('/') {
-            return None;
-        }
-        return Some(vec![format!(
-            "Slash: no command matches {token}. Use /help for the full list."
-        )]);
+        return None;
     }
 
     let best = matches
@@ -1113,7 +1201,10 @@ impl TuiApp {
             }
             TuiKeyAction::SlashMenu(SlashMenuAction::Complete) => {
                 let selected = self.slash_menu_selected.min(specs.len().saturating_sub(1));
-                self.composer = ComposerState::from(specs[selected].name);
+                self.composer = ComposerState::from(slash_menu_enter_submission(
+                    self.composer.as_str(),
+                    specs[selected],
+                ));
                 self.slash_menu_selected = selected;
                 self.slash_menu_dismissed_for = None;
                 Ok(true)
@@ -1152,9 +1243,10 @@ impl TuiApp {
         }
 
         let buffer = self.composer.as_str();
-        !buffer.contains('\n')
+        let slash_like = !buffer.contains('\n')
             && buffer.trim_start().starts_with('/')
-            && !buffer.trim_start().starts_with("//")
+            && !buffer.trim_start().starts_with("//");
+        slash_like && !slash_menu_specs(buffer).is_empty()
     }
 
     fn active_slash_menu_specs(&self) -> Vec<SlashCommandSpec> {
@@ -1441,8 +1533,9 @@ impl TuiApp {
 mod tests {
     use super::{
         parse_agent_slash_action, parse_composer_submission,
-        should_treat_enter_as_paste_newline_state, slash_command_spec, slash_menu_enter_submission,
-        slash_menu_specs, slash_prompt_lines, AgentSlashAction, ComposerSubmission, SlashCommand,
+        should_treat_enter_as_paste_newline_state, slash_command_spec, slash_help_lines,
+        slash_menu_enter_submission, slash_menu_specs, slash_prompt_lines, AgentSlashAction,
+        ComposerSubmission, SlashCommand,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::time::Instant;
@@ -1629,9 +1722,23 @@ mod tests {
     }
 
     #[test]
-    fn slash_commands_reject_unknown_names() {
-        let err = parse_composer_submission("/unknown").unwrap_err();
-        assert!(err.to_string().contains("unknown slash command"));
+    fn unknown_slash_inputs_submit_as_chat() {
+        assert_eq!(
+            parse_composer_submission("/unknown").unwrap(),
+            Some(ComposerSubmission::Chat("/unknown".into()))
+        );
+        assert_eq!(
+            parse_composer_submission("/interrupt").unwrap(),
+            Some(ComposerSubmission::Chat("/interrupt".into()))
+        );
+        assert_eq!(
+            parse_composer_submission("/tmp/file").unwrap(),
+            Some(ComposerSubmission::Chat("/tmp/file".into()))
+        );
+        assert_eq!(
+            parse_composer_submission("/Users/example/project").unwrap(),
+            Some(ComposerSubmission::Chat("/Users/example/project".into()))
+        );
     }
 
     #[test]
@@ -1684,5 +1791,30 @@ mod tests {
     fn slash_prompt_matches_submit_semantics_for_leading_whitespace() {
         let lines = slash_prompt_lines("   /help").expect("slash prompt should be active");
         assert!(lines[0].contains(">/help"));
+    }
+
+    #[test]
+    fn slash_help_includes_current_commands() {
+        let help = slash_help_lines().join("\n");
+        for command in [
+            "/help",
+            "/agents",
+            "/events",
+            "/model",
+            "/tasks",
+            "/transcript",
+            "/state",
+            "/refresh",
+            "/clear-status",
+            "/debug-prompt",
+            "/display <info|verbose|debug|3|4|5>",
+            "/abort",
+            "/agent <agent-id>|switch <agent-id>|pause [agent-id]|resume [agent-id]|stop [agent-id]",
+            "/skills",
+            "/skill-install <name>",
+            "/skill-uninstall <name>",
+        ] {
+            assert!(help.contains(command), "help missing {command}");
+        }
     }
 }
