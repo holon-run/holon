@@ -1146,7 +1146,7 @@ fn command_task_detail(
 ) -> serde_json::Value {
     serde_json::json!({
         "cmd": resolved.spec.cmd,
-        "wait_policy": if resolved.spec.continue_on_result { "blocking" } else { "background" },
+        "wait_policy": "background",
         "workdir": resolved.workdir,
         "execution": resolved.execution,
         "shell": resolved.spec.shell,
@@ -1155,6 +1155,7 @@ fn command_task_detail(
         "yield_time_ms": resolved.spec.yield_time_ms,
         "max_output_tokens": resolved.spec.max_output_tokens,
         "continue_on_result": resolved.spec.continue_on_result,
+        "terminal_reentry": resolved.spec.continue_on_result,
         "promoted_from_exec_command": promoted_from_exec_command,
         "accepts_input": resolved.spec.accepts_input && !terminal_snapshot_ready,
         "input_target": if resolved.spec.accepts_input && !terminal_snapshot_ready {

@@ -47,7 +47,7 @@ runtime_async_tests!(
     blocking_command_task_clears_active_state_while_runtime_paused,
     command_task_result_is_canonical_follow_up_on_completion,
     task_result_rejoin_preserves_runtime_provenance_not_operator_authority,
-    blocking_command_task_sets_awaiting_task_closure,
+    command_continue_on_result_does_not_set_awaiting_task_closure,
     command_task_runner_failure_marks_task_failed_and_cleans_up,
     command_task_nonzero_exit_produces_failed_output_and_runtime_state,
     exec_command_auto_promotes_long_running_command_task,

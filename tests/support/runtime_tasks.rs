@@ -1048,7 +1048,9 @@ pub async fn command_task_runs_to_completion_and_persists_detail() -> Result<()>
     assert_eq!(stored.kind.as_str(), "command_task");
     let detail = stored.detail.unwrap_or_default();
     assert_eq!(detail["cmd"], "printf managed_ok");
+    assert_eq!(detail["wait_policy"], "background");
     assert_eq!(detail["continue_on_result"], false);
+    assert_eq!(detail["terminal_reentry"], false);
     let output_path = detail["output_path"]
         .as_str()
         .expect("command task should expose output_path");
@@ -2003,7 +2005,7 @@ pub async fn task_result_rejoin_preserves_runtime_provenance_not_operator_author
     Ok(())
 }
 
-pub async fn blocking_command_task_sets_awaiting_task_closure() -> Result<()> {
+pub async fn command_continue_on_result_does_not_set_awaiting_task_closure() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
@@ -2027,12 +2029,20 @@ pub async fn blocking_command_task_sets_awaiting_task_closure() -> Result<()> {
         .await?;
 
     let summary = runtime.agent_summary().await?;
-    assert_eq!(summary.agent.status, AgentStatus::AwaitingTask);
-    assert_eq!(summary.closure.outcome, ClosureOutcome::Waiting);
+    assert_ne!(summary.agent.status, AgentStatus::AwaitingTask);
+    assert_eq!(summary.closure.outcome, ClosureOutcome::Completed);
+    assert_eq!(summary.closure.waiting_reason, None);
+
+    let stored = runtime.task_record(&task.id).await?.unwrap();
     assert_eq!(
-        summary.closure.waiting_reason,
-        Some(WaitingReason::AwaitingTaskResult)
+        stored.wait_policy(),
+        holon::types::TaskWaitPolicy::Background
     );
+    assert!(!stored.is_blocking());
+    assert!(stored.terminal_reentry());
+    let detail = stored.detail.as_ref().expect("command task detail");
+    assert_eq!(detail["continue_on_result"].as_bool(), Some(true));
+    assert_eq!(detail["terminal_reentry"].as_bool(), Some(true));
 
     runtime
         .stop_task(&task.id, &TrustLevel::TrustedOperator)
