@@ -155,7 +155,7 @@ async fn wait_for_worktree(
     let task_id = task.id.clone();
     let summary = task.summary.clone().unwrap_or_default();
     let storage = runtime.storage().clone();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
 
     loop {
         let events = storage.read_recent_events(200)?;

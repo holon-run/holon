@@ -769,3 +769,51 @@ fn scheduler_decision_append_dedupes_identical_latest_event() {
     assert_eq!(events[0].kind, "scheduler_decision");
     assert_eq!(events[0].data["boundary"].as_str(), Some("fixture"));
 }
+
+#[test]
+fn interrupt_operator_classifier_requires_trusted_interrupt_operator_prompt() {
+    let trusted_interrupt = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        TrustLevel::TrustedOperator,
+        Priority::Interrupt,
+        MessageBody::Text {
+            text: "interrupt".into(),
+        },
+    );
+    assert!(scheduler::is_interrupt_priority_operator_input(
+        &trusted_interrupt
+    ));
+
+    let normal_operator = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        TrustLevel::TrustedOperator,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "normal".into(),
+        },
+    );
+    assert!(!scheduler::is_interrupt_priority_operator_input(
+        &normal_operator
+    ));
+
+    let webhook_interrupt = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "test".into(),
+            event_type: None,
+        },
+        TrustLevel::TrustedIntegration,
+        Priority::Interrupt,
+        MessageBody::Text {
+            text: "webhook".into(),
+        },
+    );
+    assert!(!scheduler::is_interrupt_priority_operator_input(
+        &webhook_interrupt
+    ));
+}

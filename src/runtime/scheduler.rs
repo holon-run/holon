@@ -2,8 +2,9 @@ use super::*;
 use crate::runtime::closure::runtime_error_active;
 use crate::storage::{AppStorage, WorkQueuePromptProjection};
 use crate::types::{
-    AgentStatus, MessageEnvelope, PendingWakeHint, TaskRecord, TaskStatus, TimerStatus,
-    TurnTerminalKind, WaitingIntentStatus, WorkItemRecord,
+    AgentStatus, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint, Priority,
+    TaskRecord, TaskStatus, TimerStatus, TrustLevel, TurnTerminalKind, WaitingIntentStatus,
+    WorkItemRecord,
 };
 use chrono::{DateTime, Utc};
 
@@ -636,6 +637,17 @@ pub(crate) fn apply_running_projection(state: &mut AgentState, run_id: String) {
     state.current_run_id = Some(run_id);
 }
 
+pub(crate) fn apply_message_wake_projection(state: &mut AgentState) {
+    if matches!(state.status, AgentStatus::Asleep | AgentStatus::Booting) {
+        state.status = AgentStatus::AwakeIdle;
+        state.sleeping_until = None;
+    }
+}
+
+pub(crate) fn apply_awaiting_task_projection(state: &mut AgentState) {
+    state.status = AgentStatus::AwaitingTask;
+}
+
 pub(crate) fn apply_sleep_projection(
     state: &mut AgentState,
     sleeping_until: Option<DateTime<Utc>>,
@@ -643,6 +655,23 @@ pub(crate) fn apply_sleep_projection(
     state.status = AgentStatus::Asleep;
     state.current_run_id = None;
     state.sleeping_until = sleeping_until;
+}
+
+pub(crate) fn is_interrupt_priority_operator_input(message: &MessageEnvelope) -> bool {
+    matches!(
+        (
+            &message.kind,
+            &message.origin,
+            &message.trust,
+            &message.priority,
+        ),
+        (
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { .. },
+            TrustLevel::TrustedOperator,
+            Priority::Interrupt,
+        )
+    )
 }
 
 pub(crate) fn active_task_blocks_work_item_completion(

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::types::{MessageEnvelope, MessageKind, MessageOrigin, Priority, TrustLevel};
+use crate::types::{MessageEnvelope, Priority};
 
 #[derive(Debug, Default, Clone)]
 pub struct RuntimeQueue {
@@ -53,24 +53,14 @@ impl RuntimeQueue {
         }
     }
 
-    pub fn pop_interrupt_operator_prompt(&mut self) -> Option<MessageEnvelope> {
-        let position = self.interrupt.iter().position(|message| {
-            matches!(
-                (
-                    &message.kind,
-                    &message.origin,
-                    &message.trust,
-                    &message.priority,
-                ),
-                (
-                    MessageKind::OperatorPrompt,
-                    MessageOrigin::Operator { .. },
-                    TrustLevel::TrustedOperator,
-                    Priority::Interrupt,
-                )
-            )
-        })?;
-        self.interrupt.remove(position)
+    pub fn pop_next_matching(
+        &mut self,
+        mut predicate: impl FnMut(&MessageEnvelope) -> bool,
+    ) -> Option<MessageEnvelope> {
+        pop_matching_from(&mut self.interrupt, &mut predicate)
+            .or_else(|| pop_matching_from(&mut self.next, &mut predicate))
+            .or_else(|| pop_matching_from(&mut self.normal, &mut predicate))
+            .or_else(|| pop_matching_from(&mut self.background, &mut predicate))
     }
 
     pub fn len(&self) -> usize {
@@ -80,6 +70,14 @@ impl RuntimeQueue {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+fn pop_matching_from(
+    queue: &mut VecDeque<MessageEnvelope>,
+    predicate: &mut impl FnMut(&MessageEnvelope) -> bool,
+) -> Option<MessageEnvelope> {
+    let position = queue.iter().position(predicate)?;
+    queue.remove(position)
 }
 
 #[cfg(test)]
@@ -158,14 +156,26 @@ mod tests {
     }
 
     #[test]
-    fn pop_interrupt_operator_prompt_only_drains_trusted_operator_interrupts() {
+    fn pop_next_matching_uses_priority_order() {
         let mut queue = RuntimeQueue::default();
         queue.push(msg(Priority::Interrupt, "webhook"));
         queue.push(operator_msg(Priority::Normal, "normal-operator"));
         queue.push(operator_msg(Priority::Interrupt, "interrupt-operator"));
 
         assert_eq!(
-            queue.pop_interrupt_operator_prompt().unwrap().body,
+            queue
+                .pop_next_matching(|message| {
+                    matches!(
+                        (&message.kind, &message.origin, &message.trust),
+                        (
+                            MessageKind::OperatorPrompt,
+                            MessageOrigin::Operator { .. },
+                            TrustLevel::TrustedOperator,
+                        )
+                    )
+                })
+                .unwrap()
+                .body,
             MessageBody::Text {
                 text: "interrupt-operator".into()
             }

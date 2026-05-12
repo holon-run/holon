@@ -29,7 +29,7 @@ use crate::{
 };
 
 use super::{
-    combine_text_history, is_max_output_stop_reason, message_dispatch::message_text,
+    combine_text_history, is_max_output_stop_reason, message_dispatch::message_text, scheduler,
     CurrentRunInterrupted, RuntimeHandle,
 };
 
@@ -1461,7 +1461,10 @@ impl RuntimeHandle {
         let mut messages = Vec::new();
         {
             let mut guard = self.inner.agent.lock().await;
-            while let Some(message) = guard.queue.pop_interrupt_operator_prompt() {
+            while let Some(message) = guard
+                .queue
+                .pop_next_matching(scheduler::is_interrupt_priority_operator_input)
+            {
                 guard.state.pending = guard.queue.len();
                 messages.push(message);
             }

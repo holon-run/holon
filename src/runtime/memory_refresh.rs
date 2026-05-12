@@ -197,6 +197,7 @@ impl RuntimeHandle {
                     }
                     return Ok(false);
                 }
+                scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                 self.emit_system_tick_from_work_queue(&active, "continue_active")
                     .await?;
                 Ok(true)
@@ -236,6 +237,7 @@ impl RuntimeHandle {
                     }
                     return Ok(false);
                 }
+                scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                 self.emit_system_tick_from_work_queue(&queued, "queued_available")
                     .await?;
                 Ok(true)
@@ -266,6 +268,7 @@ impl RuntimeHandle {
                     }
                     return Ok(false);
                 }
+                scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                 self.emit_system_tick_from_wake_hint(&pending).await?;
 
                 #[cfg(test)]
@@ -398,6 +401,44 @@ impl RuntimeHandle {
             .map(|message| message.id))
     }
 
+    pub(super) async fn emit_system_tick_from_wake_hint_with_decision(
+        &self,
+        pending: &PendingWakeHint,
+    ) -> Result<bool> {
+        let (snapshot, queue_len) = {
+            let guard = self.inner.agent.lock().await;
+            (
+                scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
+                guard.queue.len(),
+            )
+        };
+        let projection = scheduler::SchedulerProjection::from_snapshot_with_queue_len(
+            &self.inner.storage,
+            &snapshot,
+            queue_len,
+        )?;
+        let duplicate = self
+            .duplicate_wake_hint_message_id(pending)?
+            .map(scheduler::SchedulerDuplicateEvidence::WakeHintMessage);
+        let decision = scheduler::decide_next_action(
+            &projection,
+            scheduler::SchedulerBoundary::IdleTick,
+            scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::WakeHint {
+                pending,
+                duplicate,
+            }),
+        );
+        scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+        if !matches!(
+            decision.kind,
+            scheduler::SchedulerDecisionKind::EmitSystemTick
+        ) {
+            return Ok(false);
+        }
+        self.emit_system_tick_from_wake_hint(pending).await?;
+        Ok(true)
+    }
+
     fn has_work_signal_after(
         &self,
         work_item: &crate::types::WorkItemRecord,
@@ -506,18 +547,6 @@ impl RuntimeHandle {
         let correlation_id = pending.correlation_id.clone();
         let causation_id = pending.causation_id.clone();
         let idempotency_key = scheduler::wake_hint_idempotency_key(pending);
-        scheduler::append_scheduler_decision(
-            &self.inner.storage,
-            &scheduler::SchedulerDecision::new(
-                scheduler::SchedulerDecisionKind::EmitSystemTick,
-                "wake_hint",
-            )
-            .boundary("idle_tick")
-            .model_visible(true)
-            .evidence("runtime_idle")
-            .evidence("pending_wake_hint")
-            .evidence(format!("idempotency_key={idempotency_key}")),
-        )?;
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
             MessageKind::SystemTick,
@@ -574,19 +603,6 @@ impl RuntimeHandle {
         reason: &str,
     ) -> Result<()> {
         let idempotency_key = scheduler::work_queue_tick_idempotency_key(work_item, reason);
-        scheduler::append_scheduler_decision(
-            &self.inner.storage,
-            &scheduler::SchedulerDecision::new(
-                scheduler::SchedulerDecisionKind::EmitSystemTick,
-                reason,
-            )
-            .boundary("idle_tick")
-            .model_visible(true)
-            .work_item_id(work_item.id.clone())
-            .evidence("runtime_idle")
-            .evidence("work_item_runnable")
-            .evidence(format!("idempotency_key={idempotency_key}")),
-        )?;
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
             MessageKind::SystemTick,
