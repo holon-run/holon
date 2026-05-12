@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, Response, StatusCode};
 use serde::Serialize;
 use serde_json::json;
 use url::{form_urlencoded, Url};
@@ -290,7 +290,6 @@ async fn brave_search(
     let response = client
         .get(&url)
         .header("Accept", "application/json")
-        .header("Accept-Encoding", "gzip")
         .header("X-Subscription-Token", api_key.as_str())
         .send()
         .await
@@ -318,14 +317,7 @@ async fn brave_search(
             "check the API key or retry later",
         ));
     }
-    let body = response.text().await.map_err(|error| {
-        search_error(
-            "network_failed",
-            format!("Brave Search response failed: {error}"),
-            provider_id,
-            "retry later",
-        )
-    })?;
+    let body = read_search_response(response, provider_id).await?;
     let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
         search_error(
             "parse_failed",
@@ -428,14 +420,7 @@ async fn tavily_search(
             "check the API key or retry later",
         ));
     }
-    let body = response.text().await.map_err(|error| {
-        search_error(
-            "network_failed",
-            format!("Tavily response failed: {error}"),
-            provider_id,
-            "retry later",
-        )
-    })?;
+    let body = read_search_response(response, provider_id).await?;
     let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
         search_error(
             "parse_failed",
@@ -534,14 +519,7 @@ async fn exa_search(
             "check the API key or retry later",
         ));
     }
-    let body = response.text().await.map_err(|error| {
-        search_error(
-            "network_failed",
-            format!("Exa response failed: {error}"),
-            provider_id,
-            "retry later",
-        )
-    })?;
+    let body = read_search_response(response, provider_id).await?;
     let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
         search_error(
             "parse_failed",
@@ -667,6 +645,40 @@ async fn send_search_text(request: reqwest::RequestBuilder, provider: &str) -> R
             "parse_failed",
             format!("WebSearch provider `{provider}` returned non-UTF-8 text: {error}"),
             provider,
+            "configure another WebSearch provider",
+        )
+    })
+}
+
+/// Read a search response body with a byte limit, using chunked streaming to
+/// avoid unbounded memory use when an API endpoint returns an unexpectedly
+/// large payload.
+async fn read_search_response(response: Response, provider_id: &str) -> Result<String> {
+    let mut bytes = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        search_error(
+            "network_failed",
+            format!("{provider_id} response failed: {error}"),
+            provider_id,
+            "retry later or configure another WebSearch provider",
+        )
+    })? {
+        if bytes.len() + chunk.len() > SEARCH_RESPONSE_BYTES {
+            return Err(search_error(
+                "response_too_large",
+                format!("{provider_id} response exceeded the byte limit"),
+                provider_id,
+                "narrow the query or configure another WebSearch provider",
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("{provider_id} returned non-UTF-8 text: {error}"),
+            provider_id,
             "configure another WebSearch provider",
         )
     })
@@ -869,12 +881,12 @@ mod tests {
                 {
                     "title": "Exa Search",
                     "url": "https://exa.ai",
-                    "snippet": "Semantic search engine"
+                    "text": "Semantic search engine"
                 },
                 {
                     "title": "Exa Docs",
                     "url": "https://docs.exa.ai",
-                    "snippet": "Exa API documentation"
+                    "text": "Exa API documentation"
                 }
             ]
         })
@@ -955,6 +967,11 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].title, "Exa Search");
         assert_eq!(results[0].url, "https://exa.ai");
+        assert_eq!(
+            results[0].snippet.as_deref(),
+            Some("Semantic search engine")
+        );
+        assert_eq!(results[1].snippet.as_deref(), Some("Exa API documentation"));
     }
 
     #[tokio::test]
@@ -1084,5 +1101,57 @@ mod tests {
             format!("{err}").contains("no parseable search results"),
             "expected empty results error, got: {err}"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Real API integration tests (opt-in, requires API keys)
+    // ---------------------------------------------------------------------------
+
+    /// Real Brave Search API integration test.
+    /// Set BRAVE_API_KEY env var to run: BRAVE_API_KEY=... cargo test brave_search_live -- --ignored
+    #[tokio::test]
+    #[ignore = "requires BRAVE_API_KEY env var and network access"]
+    async fn brave_search_live_integration() {
+        let api_key = std::env::var("BRAVE_API_KEY").ok();
+        if api_key.is_none() {
+            eprintln!("SKIP: BRAVE_API_KEY not set");
+            return;
+        }
+        let api_key = api_key.unwrap();
+        assert!(!api_key.is_empty(), "BRAVE_API_KEY is empty");
+
+        let provider = WebProviderConfig {
+            kind: WebProviderKind::Brave,
+            base_url: None, // use default https://api.search.brave.com
+            api_key,
+        };
+        let fetch_config = test_fetch_config();
+
+        let results = brave_search(
+            "Rust programming language",
+            3,
+            "brave_live",
+            &provider,
+            &fetch_config,
+        )
+        .await
+        .expect("Brave live search should succeed");
+
+        eprintln!("Brave live search returned {} results", results.len());
+        for (i, r) in results.iter().enumerate() {
+            eprintln!(
+                "  [{i}] title={} url={} snippet={:?}",
+                r.title, r.url, r.snippet
+            );
+        }
+        assert!(
+            !results.is_empty(),
+            "Brave live search should return at least 1 result"
+        );
+        assert!(
+            !results[0].title.is_empty(),
+            "first result should have a title"
+        );
+        assert!(!results[0].url.is_empty(), "first result should have a url");
     }
 }

@@ -1756,8 +1756,9 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                     "web.providers.<name>.kind requires a non-empty provider name"
                 ));
             }
-            let kind: WebProviderKind = serde_json::from_str(&format!("\"{}\"", raw_value.trim()))
-                .with_context(|| format!("invalid web provider kind: {}", raw_value))?;
+            let kind: WebProviderKind =
+                serde_json::from_value(serde_json::Value::String(raw_value.trim().to_string()))
+                    .with_context(|| format!("invalid web provider kind: {}", raw_value))?;
             config
                 .web
                 .providers
@@ -1859,6 +1860,33 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "web.search.enabled" => config.web.search.enabled = None,
         "web.search.provider" => config.web.search.provider = None,
         "web.search.max_results" => config.web.search.max_results = None,
+        key if key.starts_with("web.providers.") && key.ends_with(".kind") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".kind").unwrap();
+            if let Some(provider) = config.web.providers.get_mut(name) {
+                provider.kind = WebProviderKind::DuckDuckGo;
+            } else {
+                return Err(anyhow!("web provider {name} not found"));
+            }
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".base_url") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".base_url").unwrap();
+            if let Some(provider) = config.web.providers.get_mut(name) {
+                provider.base_url = None;
+            } else {
+                return Err(anyhow!("web provider {name} not found"));
+            }
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".credential_profile") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".credential_profile").unwrap();
+            if let Some(provider) = config.web.providers.get_mut(name) {
+                provider.credential_profile = None;
+            } else {
+                return Err(anyhow!("web provider {name} not found"));
+            }
+        }
         key if key.starts_with("web.providers.") => {
             let name = key.strip_prefix("web.providers.").unwrap();
             if name.is_empty() {
@@ -3171,6 +3199,11 @@ fn config_uses_credential_profiles(config: &HolonConfigFile) -> bool {
         .providers
         .values()
         .any(|provider| provider.auth.source == CredentialSource::AuthProfile)
+        || config
+            .web
+            .providers
+            .values()
+            .any(|p| p.credential_profile.is_some())
 }
 
 fn is_startup_only_config_key(key: &str) -> bool {

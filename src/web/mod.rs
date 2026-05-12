@@ -148,7 +148,12 @@ pub fn materialize_web_config(
                 let api_key = provider
                     .credential_profile
                     .as_deref()
-                    .and_then(|profile| credential_store.profiles.get(profile))
+                    .and_then(|profile| {
+                        credential_store
+                            .profiles
+                            .get(profile)
+                            .filter(|entry| entry.kind == crate::config::CredentialKind::ApiKey)
+                    })
                     .map(|entry| entry.material.clone())
                     .unwrap_or_default();
                 (
@@ -261,14 +266,54 @@ mod tests {
 
     #[test]
     fn materialize_missing_credential_profile_yields_empty_key() {
-        let file = crate::config::WebConfigFile::default();
-        // File with no providers but credential_profile references a non-existent profile
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "my_brave".to_string(),
+            WebProviderConfigFile {
+                kind: WebProviderKind::Brave,
+                base_url: None,
+                credential_profile: Some("missing_profile".to_string()),
+            },
+        );
+        let file = crate::config::WebConfigFile {
+            fetch: Default::default(),
+            search: Default::default(),
+            providers,
+        };
+        // Credential store does not contain "missing_profile"
         let store = credential_store_with("other", "irrelevant");
         let config = materialize_web_config(&file, &store);
-        assert!(config.providers.is_empty());
-        // Default WebConfig has no providers
-        let default = WebConfig::default();
-        assert!(default.providers.is_empty());
-        assert_eq!(default.search.provider, "auto");
+        let provider = config.providers.get("my_brave").unwrap();
+        assert!(provider.api_key.is_empty());
+    }
+
+    #[test]
+    fn materialize_non_api_key_credential_kind_yields_empty_key() {
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "my_brave".to_string(),
+            WebProviderConfigFile {
+                kind: WebProviderKind::Brave,
+                base_url: None,
+                credential_profile: Some("session_token".to_string()),
+            },
+        );
+        let file = crate::config::WebConfigFile {
+            fetch: Default::default(),
+            search: Default::default(),
+            providers,
+        };
+        // Profile exists but kind is SessionToken, not ApiKey
+        let mut store = CredentialStoreFile::default();
+        store.profiles.insert(
+            "session_token".to_string(),
+            crate::config::CredentialProfileFile {
+                kind: crate::config::CredentialKind::SessionToken,
+                material: "some-session-hash".to_string(),
+            },
+        );
+        let config = materialize_web_config(&file, &store);
+        let provider = config.providers.get("my_brave").unwrap();
+        assert!(provider.api_key.is_empty());
     }
 }
