@@ -1,7 +1,8 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output},
+    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
@@ -322,6 +323,25 @@ impl std::fmt::Display for RemoteSkillInstallFailed {
 
 impl std::error::Error for RemoteSkillInstallFailed {}
 
+#[derive(Debug, Clone)]
+pub struct RemoteSkillInstallTimedOut {
+    pub package: String,
+    pub timeout: Duration,
+}
+
+impl std::fmt::Display for RemoteSkillInstallTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "remote skill install for '{}' timed out after {}s",
+            self.package,
+            self.timeout.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for RemoteSkillInstallTimedOut {}
+
 trait RemoteSkillInstaller {
     fn add_global(&self, package: &str, skill: Option<&str>) -> Result<()>;
 }
@@ -330,8 +350,20 @@ struct NpxRemoteSkillInstaller;
 
 impl RemoteSkillInstaller for NpxRemoteSkillInstaller {
     fn add_global(&self, package: &str, skill: Option<&str>) -> Result<()> {
-        match Command::new("npx").arg("--version").output() {
-            Ok(_) => {}
+        const REMOTE_SKILL_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
+
+        match command_output_with_timeout(
+            Command::new("npx").arg("--version"),
+            Duration::from_secs(10),
+        ) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err(RemoteSkillInstallTimedOut {
+                    package: package.into(),
+                    timeout: Duration::from_secs(10),
+                }
+                .into());
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Err(SkillManagerUnavailable {
                     manager: "npx".into(),
@@ -346,9 +378,15 @@ impl RemoteSkillInstaller for NpxRemoteSkillInstaller {
         if let Some(skill) = skill {
             command.args(["--skill", skill]);
         }
-        let output = command
-            .output()
+        let output = command_output_with_timeout(&mut command, REMOTE_SKILL_INSTALL_TIMEOUT)
             .with_context(|| format!("failed to run npx skills add for {package}"))?;
+        let Some(output) = output else {
+            return Err(RemoteSkillInstallTimedOut {
+                package: package.into(),
+                timeout: REMOTE_SKILL_INSTALL_TIMEOUT,
+            }
+            .into());
+        };
         if !output.status.success() {
             return Err(RemoteSkillInstallFailed {
                 package: package.into(),
@@ -359,6 +397,25 @@ impl RemoteSkillInstaller for NpxRemoteSkillInstaller {
             .into());
         }
         Ok(())
+    }
+}
+
+fn command_output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> std::io::Result<Option<Output>> {
+    let mut child = command.spawn()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output().map(Some);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -512,6 +569,18 @@ fn install_skill_with_user_home_and_remote_installer(
 fn validate_remote_package(package: &str) -> Result<()> {
     if package.trim().is_empty() {
         bail!("remote skill package must not be empty");
+    }
+    if package.trim() != package {
+        bail!("remote skill package must not contain leading or trailing whitespace");
+    }
+    if package.starts_with('-') {
+        bail!("remote skill package must not start with '-'");
+    }
+    if package
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_ascii_whitespace())
+    {
+        bail!("remote skill package must not contain whitespace or control characters");
     }
     Ok(())
 }
@@ -1429,6 +1498,25 @@ mod tests {
             .downcast_ref::<SkillManagerUnavailable>()
             .expect("missing remote manager should be structured");
         assert_eq!(unavailable.manager, "npx");
+    }
+
+    #[test]
+    fn remote_package_validation_rejects_option_like_and_whitespace_refs() {
+        for package in [
+            "", " ", "--help", "-x", " demo", "demo ", "foo bar", "foo\nbar",
+        ] {
+            assert!(
+                validate_remote_package(package).is_err(),
+                "package should be rejected: {package:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_package_validation_accepts_common_package_refs() {
+        for package in ["vercel-labs/agent-skills", "@scope/package", "agent-skills"] {
+            validate_remote_package(package).unwrap();
+        }
     }
 
     #[test]

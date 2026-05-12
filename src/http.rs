@@ -2847,7 +2847,19 @@ fn skill_install_error_response(error: anyhow::Error) -> (StatusCode, Json<Value
                         "stderr": failed.stderr,
                     })),
                 ),
-                Err(error) => error_response(error),
+                Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallTimedOut>() {
+                    Ok(timeout) => (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        Json(json!({
+                            "ok": false,
+                            "code": "remote_skill_install_timeout",
+                            "error": timeout.to_string(),
+                            "package": timeout.package,
+                            "timeout_seconds": timeout.timeout.as_secs(),
+                        })),
+                    ),
+                    Err(error) => error_response(error),
+                },
             },
         },
     }

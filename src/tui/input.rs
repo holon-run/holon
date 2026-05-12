@@ -1301,13 +1301,20 @@ fn should_treat_enter_as_paste_newline_state(
     if key.code != KeyCode::Enter
         || !key.modifiers.is_empty()
         || trimmed.is_empty()
-        || trimmed.starts_with('/')
+        || (trimmed.starts_with('/') && is_complete_slash_command_token(trimmed))
     {
         return false;
     }
     composer_key_burst_len > 0
         && composer_key_burst_last_at
             .is_some_and(|last_at| last_at.elapsed() <= PASTE_BURST_ENTER_WINDOW)
+}
+
+fn is_complete_slash_command_token(trimmed: &str) -> bool {
+    let Some(token) = trimmed.split_whitespace().next() else {
+        return false;
+    };
+    slash_command_spec(token).is_some()
 }
 
 fn slash_menu_enter_submission(buffer: &str, selected: SlashCommandSpec) -> String {
