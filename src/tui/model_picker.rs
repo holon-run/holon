@@ -15,14 +15,17 @@ pub(super) struct ModelPickerRow {
     pub(super) available: bool,
 }
 
-pub(super) fn model_picker_rows(agent: Option<&AgentSummary>, filter: &str) -> Vec<ModelPickerRow> {
+pub(super) fn model_picker_rows(
+    agent: Option<&AgentSummary>,
+    model_availability: &[ResolvedModelAvailability],
+    filter: &str,
+) -> Vec<ModelPickerRow> {
     let Some(agent) = agent else {
         return Vec::new();
     };
     let inherit_row = inherit_default_row(agent);
     let query = filter.trim().to_ascii_lowercase();
-    let model_rows = agent
-        .model_availability
+    let model_rows = model_availability
         .iter()
         .filter(|entry| entry.available)
         .map(model_availability_row);
@@ -39,10 +42,11 @@ pub(super) fn model_picker_rows(agent: Option<&AgentSummary>, filter: &str) -> V
 
 pub(super) fn selected_model_choice(
     agent: Option<&AgentSummary>,
+    model_availability: &[ResolvedModelAvailability],
     filter: &str,
     selected: usize,
 ) -> Option<ModelPickerChoice> {
-    model_picker_rows(agent, filter)
+    model_picker_rows(agent, model_availability, filter)
         .into_iter()
         .nth(selected)
         .map(|row| row.choice)
@@ -50,10 +54,11 @@ pub(super) fn selected_model_choice(
 
 pub(super) fn clamp_model_picker_selection(
     agent: Option<&AgentSummary>,
+    model_availability: &[ResolvedModelAvailability],
     filter: &str,
     selected: usize,
 ) -> usize {
-    let len = model_picker_rows(agent, filter).len();
+    let len = model_picker_rows(agent, model_availability, filter).len();
     if len == 0 {
         0
     } else {
@@ -171,6 +176,13 @@ mod tests {
         }
     }
 
+    fn model_availability() -> Vec<ResolvedModelAvailability> {
+        vec![
+            availability("openai/gpt-5.4", "GPT-5.4", true),
+            availability("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", false),
+        ]
+    }
+
     fn summary() -> AgentSummary {
         AgentSummary {
             identity: AgentIdentityView {
@@ -205,10 +217,6 @@ mod tests {
                 total_model_rounds: 0,
                 last_turn: None,
             },
-            model_availability: vec![
-                availability("openai/gpt-5.4", "GPT-5.4", true),
-                availability("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", false),
-            ],
             closure: ClosureDecision {
                 outcome: ClosureOutcome::Completed,
                 waiting_reason: None,
@@ -244,7 +252,8 @@ mod tests {
     #[test]
     fn picker_rows_include_inherit_and_runtime_availability() {
         let agent = summary();
-        let rows = model_picker_rows(Some(&agent), "");
+        let availability = model_availability();
+        let rows = model_picker_rows(Some(&agent), &availability, "");
         assert_eq!(rows.len(), 2);
         assert!(rows[0].title.contains("inherit runtime default"));
         assert!(rows[1].title.contains("openai/gpt-5.4"));
@@ -254,7 +263,8 @@ mod tests {
     #[test]
     fn picker_rows_filter_by_model_and_label() {
         let agent = summary();
-        let rows = model_picker_rows(Some(&agent), "sonnet");
+        let availability = model_availability();
+        let rows = model_picker_rows(Some(&agent), &availability, "sonnet");
         assert_eq!(rows.len(), 1);
         assert!(rows[0].title.contains("inherit runtime default"));
     }
@@ -262,7 +272,11 @@ mod tests {
     #[test]
     fn picker_selection_clamps_to_filtered_rows() {
         let agent = summary();
-        assert_eq!(clamp_model_picker_selection(Some(&agent), "gpt", 10), 1);
-        assert!(selected_model_choice(Some(&agent), "", 1).is_some());
+        let availability = model_availability();
+        assert_eq!(
+            clamp_model_picker_selection(Some(&agent), &availability, "gpt", 10),
+            1
+        );
+        assert!(selected_model_choice(Some(&agent), &availability, "", 1).is_some());
     }
 }

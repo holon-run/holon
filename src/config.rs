@@ -3263,6 +3263,7 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard};
 
     use serde_json::{json, Value};
     use tempfile::tempdir;
@@ -3283,31 +3284,88 @@ mod tests {
         ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
     };
 
-    struct EnvVarGuard {
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarSnapshot {
         key: &'static str,
         original: Option<std::ffi::OsString>,
     }
 
+    struct EnvVarGuard {
+        snapshots: Vec<EnvVarSnapshot>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
     impl EnvVarGuard {
         fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-            let original = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, original }
+            let mut guard = Self::new();
+            guard.set_var(key, value);
+            guard
         }
 
         fn unset(key: &'static str) -> Self {
-            let original = std::env::var_os(key);
+            let mut guard = Self::new();
+            guard.unset_var(key);
+            guard
+        }
+
+        fn unset_many(keys: &[&'static str]) -> Self {
+            let mut guard = Self::new();
+            for key in keys {
+                guard.unset_var(key);
+            }
+            guard
+        }
+
+        fn set_and_unset(
+            set_vars: &[(&'static str, &std::ffi::OsStr)],
+            unset_vars: &[&'static str],
+        ) -> Self {
+            let mut guard = Self::new();
+            for (key, value) in set_vars {
+                guard.set_var(key, value);
+            }
+            for key in unset_vars {
+                guard.unset_var(key);
+            }
+            guard
+        }
+
+        fn new() -> Self {
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self {
+                snapshots: Vec::new(),
+                _lock: lock,
+            }
+        }
+
+        fn set_var(&mut self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
+            self.snapshots.push(EnvVarSnapshot {
+                key,
+                original: std::env::var_os(key),
+            });
+            std::env::set_var(key, value);
+        }
+
+        fn unset_var(&mut self, key: &'static str) {
+            self.snapshots.push(EnvVarSnapshot {
+                key,
+                original: std::env::var_os(key),
+            });
             std::env::remove_var(key);
-            Self { key, original }
         }
     }
 
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
-            if let Some(value) = &self.original {
-                std::env::set_var(self.key, value);
-            } else {
-                std::env::remove_var(self.key);
+            for snapshot in self.snapshots.iter().rev() {
+                if let Some(value) = &snapshot.original {
+                    std::env::set_var(snapshot.key, value);
+                } else {
+                    std::env::remove_var(snapshot.key);
+                }
             }
         }
     }
@@ -3414,8 +3472,7 @@ mod tests {
 
     #[test]
     fn config_falls_back_to_settings_values() {
-        let original_value = std::env::var("ANTHROPIC_BASE_URL").ok();
-        std::env::remove_var("ANTHROPIC_BASE_URL");
+        let _base_url_guard = EnvVarGuard::unset("ANTHROPIC_BASE_URL");
 
         let mut settings = HashMap::new();
         settings.insert(
@@ -3425,10 +3482,6 @@ mod tests {
 
         let value = get_config_value("ANTHROPIC_BASE_URL", None, &settings);
         assert_eq!(value.as_deref(), Some("https://example.com"));
-
-        if let Some(orig) = original_value {
-            std::env::set_var("ANTHROPIC_BASE_URL", orig);
-        }
     }
 
     #[test]
@@ -3474,8 +3527,8 @@ mod tests {
 
     #[test]
     fn anthropic_runtime_cache_strategy_defaults_to_claude_code_prompt_cache() {
-        let _strategy_guard = EnvVarGuard::unset("HOLON_ANTHROPIC_CACHE_STRATEGY");
-        let _betas_guard = EnvVarGuard::unset("HOLON_ANTHROPIC_BETAS");
+        let _env_guard =
+            EnvVarGuard::unset_many(&["HOLON_ANTHROPIC_CACHE_STRATEGY", "HOLON_ANTHROPIC_BETAS"]);
 
         let config = resolve_anthropic_context_management_config().unwrap();
 
@@ -3528,17 +3581,11 @@ mod tests {
 
     #[test]
     fn default_holon_home_uses_home_directory() {
-        let original_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", "/tmp/holon-home-test");
+        let _home_guard = EnvVarGuard::set("HOME", "/tmp/holon-home-test");
         assert_eq!(
             default_holon_home(),
             Path::new("/tmp/holon-home-test/.holon")
         );
-        if let Some(home) = original_home {
-            std::env::set_var("HOME", home);
-        } else {
-            std::env::remove_var("HOME");
-        }
     }
 
     #[test]
@@ -4350,11 +4397,15 @@ mod tests {
     #[test]
     fn config_inspection_loads_provider_state_without_resolved_model() {
         let home = tempdir().unwrap();
-        let _home_guard = EnvVarGuard::set("HOME", home.path());
-        let _model_guard = EnvVarGuard::unset("HOLON_MODEL");
-        let _fallback_guard = EnvVarGuard::unset("HOLON_MODEL_FALLBACKS");
-        let _openai_guard = EnvVarGuard::unset("OPENAI_API_KEY");
-        let _anthropic_guard = EnvVarGuard::unset("ANTHROPIC_AUTH_TOKEN");
+        let _env_guard = EnvVarGuard::set_and_unset(
+            &[("HOME", home.path().as_os_str())],
+            &[
+                "HOLON_MODEL",
+                "HOLON_MODEL_FALLBACKS",
+                "OPENAI_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+            ],
+        );
         let provider_id = ProviderId::parse("custom-openai").unwrap();
         save_persisted_config_at(
             &persisted_config_path(home.path()),

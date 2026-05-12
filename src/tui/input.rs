@@ -504,6 +504,7 @@ impl TuiApp {
 
     pub(super) async fn handle_paste(&mut self, text: &str) -> Result<()> {
         let selected_agent = self.selected_agent_summary().cloned();
+        let model_availability = self.model_availability.clone();
         match &mut self.overlay {
             OverlayState::None => {
                 let before = self.composer.as_str().to_string();
@@ -515,6 +516,7 @@ impl TuiApp {
                 filter.push_str(&paste_inline_text(text));
                 *selected = crate::tui::model_picker::clamp_model_picker_selection(
                     selected_agent.as_ref(),
+                    &model_availability,
                     filter,
                     *selected,
                 );
@@ -958,6 +960,7 @@ impl TuiApp {
                     TuiKeyAction::OverlayMoveDown => {
                         let max = crate::tui::model_picker::model_picker_rows(
                             self.selected_agent_summary(),
+                            &self.model_availability,
                             &filter,
                         )
                         .len()
@@ -969,6 +972,7 @@ impl TuiApp {
                         filter.pop();
                         selected = crate::tui::model_picker::clamp_model_picker_selection(
                             self.selected_agent_summary(),
+                            &self.model_availability,
                             &filter,
                             selected,
                         );
@@ -978,6 +982,7 @@ impl TuiApp {
                         filter.push(ch);
                         selected = crate::tui::model_picker::clamp_model_picker_selection(
                             self.selected_agent_summary(),
+                            &self.model_availability,
                             &filter,
                             selected,
                         );
@@ -1304,6 +1309,7 @@ impl TuiApp {
             .to_string();
         let choice = crate::tui::model_picker::selected_model_choice(
             self.selected_agent_summary(),
+            &self.model_availability,
             filter,
             selected,
         )

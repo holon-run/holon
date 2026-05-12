@@ -30,6 +30,7 @@ pub(super) enum TuiRuntimeMessage {
         error: String,
     },
     AgentListLoaded(Result<Vec<AgentListEntry>, String>),
+    ModelsLoaded(Result<Vec<ResolvedModelAvailability>, String>),
     SnapshotLoaded {
         request_id: u64,
         target_index: usize,
@@ -66,6 +67,7 @@ pub(super) struct TuiRuntimeCheckpoint {
 
 impl TuiApp {
     pub(super) async fn initialize(&mut self) {
+        self.begin_load_models();
         self.schedule_agent_list_refresh();
         self.begin_load_agents();
     }
@@ -124,6 +126,29 @@ impl TuiApp {
                 .map_err(|err| err.to_string());
             let _ = tx.send(TuiRuntimeMessage::AgentListLoaded(result));
         });
+    }
+
+    pub(super) fn begin_load_models(&mut self) {
+        let client = self.client.clone();
+        let tx = self.runtime_tx.clone();
+        tokio::spawn(async move {
+            let result = client
+                .fetch_models()
+                .await
+                .map(|models| models.model_availability)
+                .map_err(|err| err.to_string());
+            let _ = tx.send(TuiRuntimeMessage::ModelsLoaded(result));
+        });
+    }
+
+    pub(super) fn apply_loaded_models(
+        &mut self,
+        result: Result<Vec<ResolvedModelAvailability>, String>,
+    ) {
+        match result {
+            Ok(model_availability) => self.model_availability = model_availability,
+            Err(error) => self.status_line = format!("Model availability load failed: {error}"),
+        }
     }
 
     pub(super) fn apply_loaded_agents(&mut self, result: Result<Vec<AgentListEntry>, String>) {
@@ -567,6 +592,7 @@ impl TuiApp {
                     self.status_line = format!("Event stream disconnected: {error}");
                 }
                 TuiRuntimeMessage::AgentListLoaded(result) => self.apply_loaded_agents(result),
+                TuiRuntimeMessage::ModelsLoaded(result) => self.apply_loaded_models(result),
                 TuiRuntimeMessage::SnapshotLoaded {
                     request_id,
                     target_index,

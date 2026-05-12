@@ -316,7 +316,11 @@ fn draw_model_picker_overlay(frame: &mut Frame<'_>, app: &TuiApp, filter: &str, 
         Paragraph::new(filter_text).block(Block::default().title("Model").borders(Borders::ALL));
     frame.render_widget(filter_widget, layout[0]);
 
-    let rows = crate::tui::model_picker::model_picker_rows(app.selected_agent_summary(), filter);
+    let rows = crate::tui::model_picker::model_picker_rows(
+        app.selected_agent_summary(),
+        &app.model_availability,
+        filter,
+    );
     let items = if rows.is_empty() {
         vec![ListItem::new(
             "No runtime-provided model availability matches the filter",
