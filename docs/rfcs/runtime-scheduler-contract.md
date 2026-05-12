@@ -2,6 +2,7 @@
 title: RFC: Runtime Scheduler Contract
 date: 2026-05-08
 status: draft
+handle: rfc-runtime-scheduler-contract
 ---
 
 # RFC: Runtime Scheduler Contract
@@ -729,97 +730,91 @@ Required scenarios:
   patching;
 - use replay mismatches to guide further reducer extraction.
 
-## Current Implementation Gap
+## Current Implementation Status
 
-The current implementation has landed the main characterization pieces:
+The current implementation has landed the main scheduler contract pieces:
 
 - `SchedulerProjection` is the explicit projection over durable scheduler
   facts;
 - `decide_next_action` centralizes the main decision vocabulary for message
   processing, idle loop, and idle tick boundaries;
+- `SchedulerDecisionExecutor` owns the normal run-loop
+  `projection -> decide_next_action -> execute` boundary before queue mutation;
 - active tasks are derived from the task ledger instead of a separate
-  `active_task_ids` cache;
-- task lifecycle writes mostly pass through `TaskTransition`;
+  `active_task_ids` cache, and `active_task_ids` has been retired;
+- task lifecycle writes pass through `TaskTransition` for the main command,
+  child-agent, worktree, and task-result paths;
 - work-queue ticks use explicit WorkItem revision-based idempotency keys;
 - turn-local WorkItem binding is distinct from durable current WorkItem focus;
 - scheduler replay fixtures and a debug fixture export command exist.
+- queued and dequeued messages replay at the message level, while processed,
+  interrupted, interjected, and dropped messages do not replay as normal queued
+  inputs;
+- prior tool executions remain ledger evidence and are not replayed as
+  scheduler-owned tool calls;
+- compaction artifacts, briefs, and turn-local checkpoints do not become
+  scheduler truth.
 
-This is not yet the complete scheduler contract. `decide_next_action` is
-currently a shared decision reducer and diagnostic source, not the only
-scheduler entrypoint. The runtime loop still performs some scheduling work
-directly, such as popping messages, setting the running projection, and emitting
-system ticks. Some `scheduler_decision` events are still written by helper
-paths rather than by one decision executor.
-
-The remaining gaps are:
-
-- `decide_next_action` does not yet choose queued messages before the runtime
-  loop mutates queue state;
-- interrupt-priority operator input is handled by the turn loop, not by the
-  scheduler priority reducer;
-- message visibility is calculated before entering the scheduler, so mismatched
-  continuation triggers are not fully represented as scheduler decisions;
-- `scheduler_decision` events are not exclusively generated from a single
-  projection plus decision result;
-- runtime posture is mostly scheduler-owned, but bootstrap, control, shutdown,
-  and task-transition paths still write status-like fields directly;
-- recent-ledger duplicate scans still affect work-queue suppression behavior
-  instead of being diagnostics only;
-- replay fixtures assert projection and message replay, but do not yet directly
-  cover the "do not replay old tool calls" recovery invariant.
-
-## Remaining Landing Plan
-
-The rest of this RFC should land in three focused steps.
+The focused gap-closing plan that followed this RFC has landed in three steps:
 
 ### Step 1: Decision Executor
 
-Introduce a `SchedulerDecisionExecutor` boundary:
-
-```text
-build projection -> decide_next_action -> execute decision
-```
-
-The executor owns scheduler side effects:
+Implemented by routing the normal run-loop polling path through
+`SchedulerDecisionExecutor`:
 
 - append the `scheduler_decision` event;
-- pop or retain queued messages;
-- mark queue entries as `Dequeued`, `Processed`, `Interrupted`,
-  `Interjected`, or `Dropped`;
-- apply running, idle, and sleep projections;
-- emit runtime-owned system ticks;
+- pop queued messages only after the scheduler decision has been recorded;
+- mark queue entries as `Dequeued` before processing and `Processed` after
+  successful reduction;
+- apply running projection after the scheduled message is selected;
+- keep idle and stopped decisions explainable through `decide_next_action`;
 - dispatch model-visible versus reduce-only messages.
-
-After this step, the run loop should not pop a message and then ask the
-scheduler to explain it. The scheduler should decide first, and the executor
-should mutate state afterward.
 
 ### Step 2: Event And Posture Convergence
 
-Make `scheduler_decision` events come from one path. System tick helpers should
-construct messages, but they should not hand-write decisions. Control and
-bootstrap may remain explicit posture authorities, but normal
-`AwakeRunning`, `AwakeIdle`, `AwaitingTask`, and `Asleep` transitions should go
-through scheduler helpers or the executor.
+Implemented by converging normal scheduler-sensitive posture writes and
+decision events:
 
-This step should also move interrupt-priority operator input into the scheduler
-priority order, even if the turn loop still performs the actual safe-point
-interjection.
+- normal `AwakeRunning`, `AwakeIdle`, `AwaitingTask`, and `Asleep` writes go
+  through scheduler projection helpers;
+- idle, stopped, work-queue, and wake-hint decisions are recorded as
+  `scheduler_decision` events built from `SchedulerDecision`;
+- runtime system tick helpers construct messages and rely on scheduler
+  decisions for emit-versus-suppress behavior;
+- interrupt-priority operator input uses the scheduler-owned classifier, while
+  the turn loop still performs the safe-point interjection and records the
+  `Interjected` queue status.
 
 ### Step 3: Idempotency And Replay Contract Tests
 
-Make explicit idempotency keys the primary work-queue duplicate check. Recent
-ledger scans may remain as safety diagnostics, but their suppressions should be
-recorded as fallback evidence.
-
-Add replay fixtures and runtime tests for:
+Implemented by making explicit idempotency keys the primary duplicate check and
+adding replay contract coverage:
 
 - queued and dequeued message replay classification;
+- processed, interrupted, interjected, and dropped messages excluded from normal
+  replay;
 - old tool calls not being automatically re-executed after restart;
 - interrupt input preserving queue status and side-effect evidence;
 - mismatched continuation triggers staying liveness-only;
 - wake hint priority over work-queue ticks;
 - compaction not changing scheduler truth.
+
+## Remaining Follow-Up
+
+The high-risk scheduler gaps above are closed. The remaining items are narrower
+refinements rather than blockers for the scheduler contract:
+
+- `model_visible` is still calculated by `build_message_dispatch_plan` before
+  the message decision is passed into `decide_next_action`; a future reducer
+  cleanup can move more continuation-resolution detail into scheduler input.
+- interrupt-priority operator input is classified by scheduler code, but the
+  turn loop still drains and injects it at provider/tool safe points.
+- bootstrap, control, and shutdown remain explicit posture authorities. Normal
+  running, idle, awaiting-task, and sleep posture should continue to use
+  scheduler helpers.
+- recent-ledger scans remain fallback duplicate evidence for some work-queue
+  suppression paths. Explicit idempotency keys are primary, and fallback
+  suppressions should remain visible through scheduler evidence.
 
 ## Invariants Checklist
 

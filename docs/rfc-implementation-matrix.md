@@ -1,7 +1,7 @@
 # RFC Implementation Matrix
 
 Status: living implementation tracking note
-Last reviewed: 2026-05-05
+Last reviewed: 2026-05-12
 
 This matrix tracks how current RFC contracts map to implementation, verification,
 and follow-up notes. It is intentionally non-normative: the RFC files under
@@ -64,6 +64,7 @@ Handle convention:
 | `rfc-remote-operator-transport-and-delivery` | [remote-operator-transport-and-delivery](rfcs/remote-operator-transport-and-delivery.md) | Proposed | operator/event transport surfaces | `cargo test` | Main open area: remote delivery API and trust-preserving replay. See [event-and-operator-transport](rfc-implementation-notes/event-and-operator-transport.md). | 012 |
 | `rfc-result-closure` | [result-closure](rfcs/result-closure.md) | Implemented | closure outcome/runtime posture | `cargo test` | Continue keeping closure separate from task status. | 012, 018 |
 | `rfc-runtime-configuration-surface` | [runtime-configuration-surface](rfcs/runtime-configuration-surface.md) | Partial | config/model/provider surfaces | `cargo test` | Needs review against current model/provider configuration behavior. | 032 |
+| `rfc-runtime-scheduler-contract` | [runtime-scheduler-contract](rfcs/runtime-scheduler-contract.md) | Partial | `SchedulerProjection`, `decide_next_action`, `SchedulerDecisionExecutor`, task transition reducer, work-queue idempotency keys, scheduler replay fixtures | `cargo test scheduler --quiet`; focused continuation, wake-hint, memory-refresh, and interrupt-interjection tests | Main gap-closing PRs are landed. Remaining follow-up is reducer cleanup around precomputed message visibility, turn-loop safe-point interjection, explicit control/bootstrap posture authority, and fallback duplicate evidence. See [runtime-scheduler-contract](rfc-implementation-notes/runtime-scheduler-contract.md). | 012, 039, 044 |
 | `rfc-skill-discovery-and-activation` | [skill-discovery-and-activation](rfcs/skill-discovery-and-activation.md) | Partial | skill discovery/activation surfaces | `cargo test` | Installation/management API should keep workspace vs agent scope clear. | 016 |
 | `rfc-task-surface-narrowing` | [task-surface-narrowing](rfcs/task-surface-narrowing.md) | Implemented | task status/output/control tool split | `cargo test` | Keep previews/artifacts separated from lifecycle metadata. | 021, 032 |
 | `rfc-tool-contract-consistency` | [tool-contract-consistency](rfcs/tool-contract-consistency.md) | Partial | tool schema/result conventions | `cargo test` | Ongoing audit needed across all tools. See [tool-contracts](rfc-implementation-notes/tool-contracts.md). | 014, 021, 032 |
