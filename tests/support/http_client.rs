@@ -158,8 +158,11 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
         .await?
         .json()
         .await?;
+    let model_availability = models_payload["model_availability"]
+        .as_array()
+        .expect("/models model_availability should be an array");
     assert!(
-        models_payload.get("model_availability").is_some(),
+        model_availability.iter().all(|entry| entry.is_object()),
         "/models remains the source for runtime-global model availability"
     );
 
@@ -207,8 +210,11 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         .await?
         .json()
         .await?;
+    let raw_agent = raw_state["agent"]
+        .as_object()
+        .expect("state snapshot should include an agent object");
     assert!(
-        raw_state["agent"].get("model_availability").is_none(),
+        !raw_agent.contains_key("model_availability"),
         "/agents/{{agent_id}}/state must not embed runtime-global model availability"
     );
 
