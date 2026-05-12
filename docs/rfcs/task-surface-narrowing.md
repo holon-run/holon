@@ -146,6 +146,8 @@ this shape under the `task_handle` field. For `ExecCommand`, the model-visible
 receipt is typed by the `disposition` discriminant: direct completion uses
 `disposition = completed`, while promotion uses
 `disposition = promoted_to_task` and guarantees `task_handle` is present.
+For `SpawnAgent(private_child)`, the handle is a parent-supervision handle and
+is background by default; supervision does not imply parent scheduler blocking.
 `TaskStatus`, `TaskOutput`, `TaskStop`, and `TaskInput` still accept the
 contained `task_id`; the wrapper exists to make the returned execution receipt
 self-describing.

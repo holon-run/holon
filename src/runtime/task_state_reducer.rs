@@ -167,11 +167,11 @@ mod tests {
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
 
-    fn task(id: &str, status: TaskStatus, blocking: bool) -> TaskRecord {
+    fn task_with_kind(id: &str, status: TaskStatus, blocking: bool, kind: TaskKind) -> TaskRecord {
         TaskRecord {
             id: id.into(),
             agent_id: "default".into(),
-            kind: TaskKind::ChildAgentTask,
+            kind,
             status,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -181,6 +181,14 @@ mod tests {
             detail: blocking.then(|| json!({ "wait_policy": "blocking" })),
             recovery: None,
         }
+    }
+
+    fn task(id: &str, status: TaskStatus, blocking: bool) -> TaskRecord {
+        task_with_kind(id, status, blocking, TaskKind::ChildAgentTask)
+    }
+
+    fn scheduler_blocking_task(id: &str, status: TaskStatus) -> TaskRecord {
+        task_with_kind(id, status, true, TaskKind::SleepJob)
     }
 
     struct RuntimeFixture {
@@ -285,7 +293,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         storage
-            .append_task(&task("blocking", TaskStatus::Running, true))
+            .append_task(&scheduler_blocking_task("blocking", TaskStatus::Running))
             .unwrap();
         storage
             .append_task(&task("background", TaskStatus::Running, false))
@@ -335,7 +343,7 @@ mod tests {
         let runtime = runtime();
 
         runtime
-            .reduce_task_status_message(task("task-1", TaskStatus::Running, true))
+            .reduce_task_status_message(scheduler_blocking_task("task-1", TaskStatus::Running))
             .await
             .unwrap();
 
@@ -373,18 +381,18 @@ mod tests {
     async fn terminal_result_falls_back_to_awake_idle_only_when_no_blocking_tasks_remain() {
         let runtime = runtime();
         runtime
-            .reduce_task_status_message(task("task-1", TaskStatus::Running, true))
+            .reduce_task_status_message(scheduler_blocking_task("task-1", TaskStatus::Running))
             .await
             .unwrap();
         runtime
-            .reduce_task_status_message(task("task-2", TaskStatus::Running, true))
+            .reduce_task_status_message(scheduler_blocking_task("task-2", TaskStatus::Running))
             .await
             .unwrap();
 
         runtime
             .reduce_task_result_message(
                 &task_result_message("task-1"),
-                task("task-1", TaskStatus::Completed, true),
+                scheduler_blocking_task("task-1", TaskStatus::Completed),
                 false,
                 None,
             )
@@ -399,7 +407,7 @@ mod tests {
         runtime
             .reduce_task_result_message(
                 &task_result_message("task-2"),
-                task("task-2", TaskStatus::Completed, true),
+                scheduler_blocking_task("task-2", TaskStatus::Completed),
                 false,
                 None,
             )
