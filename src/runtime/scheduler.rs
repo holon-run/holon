@@ -535,20 +535,6 @@ pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerD
 pub(crate) fn wait_decision_for_projection(
     projection: &SchedulerProjection,
 ) -> Option<SchedulerDecision> {
-    if projection.has_blocking_active_tasks {
-        let mut decision =
-            SchedulerDecision::new(SchedulerDecisionKind::WaitForTask, "blocking_active_tasks")
-                .liveness_only(true)
-                .evidence(format!("active_tasks={}", projection.active_tasks.len()));
-        if let Some(task) = projection
-            .active_tasks
-            .iter()
-            .find(|task| task.is_blocking())
-        {
-            decision = decision.task_id(task.id.clone());
-        }
-        return Some(decision);
-    }
     if projection.active_waiting_intents > 0 {
         return Some(
             SchedulerDecision::new(
@@ -613,7 +599,7 @@ pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
 
 pub(crate) fn projected_status_for_idle(
     state: &AgentState,
-    storage: &AppStorage,
+    _storage: &AppStorage,
 ) -> Result<AgentStatus> {
     if matches!(
         state.status,
@@ -621,11 +607,7 @@ pub(crate) fn projected_status_for_idle(
     ) {
         return Ok(state.status.clone());
     }
-    if SchedulerProjection::from_state(storage, state)?.has_blocking_active_tasks {
-        Ok(AgentStatus::AwaitingTask)
-    } else {
-        Ok(AgentStatus::AwakeIdle)
-    }
+    Ok(AgentStatus::AwakeIdle)
 }
 
 pub(crate) fn apply_idle_projection(state: &mut AgentState, storage: &AppStorage) -> Result<()> {
@@ -646,10 +628,6 @@ pub(crate) fn apply_message_wake_projection(state: &mut AgentState) -> bool {
         return true;
     }
     false
-}
-
-pub(crate) fn apply_awaiting_task_projection(state: &mut AgentState) {
-    state.status = AgentStatus::AwaitingTask;
 }
 
 pub(crate) fn apply_sleep_projection(

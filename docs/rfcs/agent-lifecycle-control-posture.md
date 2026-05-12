@@ -87,7 +87,7 @@ allowed to perform autonomous work.
 ### Scheduler Posture
 
 The derived operational state of a runnable agent, such as `AwakeIdle`,
-`AwakeRunning`, `AwaitingTask`, or `Asleep`.
+`AwakeRunning`, or `Asleep`.
 
 ### Runtime Ownership
 
@@ -120,7 +120,6 @@ enum AgentStatus {
     Booting,
     AwakeIdle,
     AwakeRunning,
-    AwaitingTask,
     Asleep,
     Stopped,
 }
@@ -148,8 +147,11 @@ It should:
 - derive the next status from scheduler projection:
   - queued message or wake hint available -> runnable `AwakeIdle` before the
     next run-loop decision;
-  - blocking active task -> `AwaitingTask`;
   - no runnable facts -> `AwakeIdle` or `Asleep`, depending on sleep policy.
+
+Active task records are diagnostic and task-result reduction facts, not
+lifecycle posture gates. A running task does not by itself move the scheduler
+into a waiting status.
 
 `Start` may restore runtime-owned in-process handles only when those handles are
 known to still be valid. It must not invent handles for interrupted tasks.
