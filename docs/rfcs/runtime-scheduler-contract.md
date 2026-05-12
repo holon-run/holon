@@ -729,6 +729,98 @@ Required scenarios:
   patching;
 - use replay mismatches to guide further reducer extraction.
 
+## Current Implementation Gap
+
+The current implementation has landed the main characterization pieces:
+
+- `SchedulerProjection` is the explicit projection over durable scheduler
+  facts;
+- `decide_next_action` centralizes the main decision vocabulary for message
+  processing, idle loop, and idle tick boundaries;
+- active tasks are derived from the task ledger instead of a separate
+  `active_task_ids` cache;
+- task lifecycle writes mostly pass through `TaskTransition`;
+- work-queue ticks use explicit WorkItem revision-based idempotency keys;
+- turn-local WorkItem binding is distinct from durable current WorkItem focus;
+- scheduler replay fixtures and a debug fixture export command exist.
+
+This is not yet the complete scheduler contract. `decide_next_action` is
+currently a shared decision reducer and diagnostic source, not the only
+scheduler entrypoint. The runtime loop still performs some scheduling work
+directly, such as popping messages, setting the running projection, and emitting
+system ticks. Some `scheduler_decision` events are still written by helper
+paths rather than by one decision executor.
+
+The remaining gaps are:
+
+- `decide_next_action` does not yet choose queued messages before the runtime
+  loop mutates queue state;
+- interrupt-priority operator input is handled by the turn loop, not by the
+  scheduler priority reducer;
+- message visibility is calculated before entering the scheduler, so mismatched
+  continuation triggers are not fully represented as scheduler decisions;
+- `scheduler_decision` events are not exclusively generated from a single
+  projection plus decision result;
+- runtime posture is mostly scheduler-owned, but bootstrap, control, shutdown,
+  and task-transition paths still write status-like fields directly;
+- recent-ledger duplicate scans still affect work-queue suppression behavior
+  instead of being diagnostics only;
+- replay fixtures assert projection and message replay, but do not yet directly
+  cover the "do not replay old tool calls" recovery invariant.
+
+## Remaining Landing Plan
+
+The rest of this RFC should land in three focused steps.
+
+### Step 1: Decision Executor
+
+Introduce a `SchedulerDecisionExecutor` boundary:
+
+```text
+build projection -> decide_next_action -> execute decision
+```
+
+The executor owns scheduler side effects:
+
+- append the `scheduler_decision` event;
+- pop or retain queued messages;
+- mark queue entries as `Dequeued`, `Processed`, `Interrupted`,
+  `Interjected`, or `Dropped`;
+- apply running, idle, and sleep projections;
+- emit runtime-owned system ticks;
+- dispatch model-visible versus reduce-only messages.
+
+After this step, the run loop should not pop a message and then ask the
+scheduler to explain it. The scheduler should decide first, and the executor
+should mutate state afterward.
+
+### Step 2: Event And Posture Convergence
+
+Make `scheduler_decision` events come from one path. System tick helpers should
+construct messages, but they should not hand-write decisions. Control and
+bootstrap may remain explicit posture authorities, but normal
+`AwakeRunning`, `AwakeIdle`, `AwaitingTask`, and `Asleep` transitions should go
+through scheduler helpers or the executor.
+
+This step should also move interrupt-priority operator input into the scheduler
+priority order, even if the turn loop still performs the actual safe-point
+interjection.
+
+### Step 3: Idempotency And Replay Contract Tests
+
+Make explicit idempotency keys the primary work-queue duplicate check. Recent
+ledger scans may remain as safety diagnostics, but their suppressions should be
+recorded as fallback evidence.
+
+Add replay fixtures and runtime tests for:
+
+- queued and dequeued message replay classification;
+- old tool calls not being automatically re-executed after restart;
+- interrupt input preserving queue status and side-effect evidence;
+- mismatched continuation triggers staying liveness-only;
+- wake hint priority over work-queue ticks;
+- compaction not changing scheduler truth.
+
 ## Invariants Checklist
 
 - stopped runtime does not process messages;
