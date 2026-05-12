@@ -1272,6 +1272,7 @@ impl TuiApp {
         match resolve_key(KeyContext::AgentsOverlay, key) {
             TuiKeyAction::OverlayClose => Ok(()),
             TuiKeyAction::OverlayAccept => {
+                let selected = selected.min(self.agents.len().saturating_sub(1));
                 if let Some(agent_id) = self
                     .agents
                     .get(selected)

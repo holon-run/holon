@@ -839,6 +839,28 @@ async fn agent_overlay_enter_starts_switch_without_awaiting_snapshot() {
 }
 
 #[tokio::test]
+async fn agent_overlay_enter_clamps_stale_selection() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.agents = vec![sample_agent_summary("alpha"), sample_agent_summary("beta")];
+    app.selected_agent = 0;
+    app.overlay = OverlayState::Agents { selected: 9 };
+    app.connection_state = TuiConnectionState::Streaming;
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.overlay, OverlayState::None);
+    assert_eq!(app.status_line, "Bootstrapping agent beta from /state");
+    assert_eq!(app.selected_agent_id(), Some("alpha"));
+    assert!(app.snapshot_refresh_in_flight);
+}
+
+#[tokio::test]
 async fn esc_closes_active_overlay_before_touching_prompt() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(

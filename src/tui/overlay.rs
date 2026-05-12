@@ -119,14 +119,13 @@ fn draw_agents_overlay(frame: &mut Frame<'_>, app: &TuiApp, selected: usize) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
     let mut state = ListState::default();
-    if !app.agents.is_empty() {
-        state.select(Some(selected.min(app.agents.len().saturating_sub(1))));
-    }
+    let selected = (!app.agents.is_empty()).then(|| selected.min(app.agents.len() - 1));
+    state.select(selected);
     frame.render_stateful_widget(list, layout[0], &mut state);
 
     let text = app
         .agents
-        .get(selected)
+        .get(selected.unwrap_or(0))
         .map(render::render_summary)
         .unwrap_or_else(|| "No agent selected.".to_string());
     let detail = Paragraph::new(text)
