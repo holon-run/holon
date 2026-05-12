@@ -1533,8 +1533,8 @@ impl TuiApp {
 mod tests {
     use super::{
         parse_agent_slash_action, parse_composer_submission,
-        should_treat_enter_as_paste_newline_state, slash_command_spec, slash_menu_enter_submission,
-        slash_help_lines, slash_menu_specs, slash_prompt_lines, AgentSlashAction,
+        should_treat_enter_as_paste_newline_state, slash_command_spec, slash_help_lines,
+        slash_menu_enter_submission, slash_menu_specs, slash_prompt_lines, AgentSlashAction,
         ComposerSubmission, SlashCommand,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
