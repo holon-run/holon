@@ -126,7 +126,7 @@ impl RuntimeHandle {
             model_availability,
             config.default_tool_output_tokens as u64,
             config.max_tool_output_tokens as u64,
-            crate::web::WebConfig::from(&config.stored_config.web),
+            config.web_config.clone(),
             Some(ProviderReconfigurator { config }),
             Some(host_bridge),
         )

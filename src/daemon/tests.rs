@@ -56,6 +56,7 @@ fn test_config() -> AppConfig {
         validated_model_overrides: std::collections::HashMap::new(),
         validated_unknown_model_fallback: None,
         providers: provider_registry_for_tests(None, Some("dummy"), home.path().join(".codex")),
+        web_config: crate::web::WebConfig::default(),
     }
 }
 

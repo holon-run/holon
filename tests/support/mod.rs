@@ -171,6 +171,7 @@ impl TestConfigBuilder {
                 Some("dummy"),
                 data_dir.join(".codex"),
             ),
+            web_config: holon::web::WebConfig::default(),
         }
     }
 }

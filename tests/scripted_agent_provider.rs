@@ -51,6 +51,7 @@ fn test_config() -> AppConfig {
             Some("dummy"),
             home_dir.join(".codex"),
         ),
+        web_config: holon::web::WebConfig::default(),
     }
 }
 

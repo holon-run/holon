@@ -296,6 +296,7 @@ pub fn test_config(
         validated_model_overrides: std::collections::HashMap::new(),
         validated_unknown_model_fallback: None,
         providers: provider_registry_for_tests(openai_key, anthropic_token, codex_home),
+        web_config: crate::web::WebConfig::default(),
     };
     ProviderTestFixture {
         _home_dir: home_dir,

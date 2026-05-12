@@ -1529,6 +1529,7 @@ mod tests {
                 anthropic_token,
                 PathBuf::from("/tmp/missing-codex-home"),
             ),
+            web_config: crate::web::WebConfig::default(),
         };
         ProviderConfigFixture {
             _home: home,

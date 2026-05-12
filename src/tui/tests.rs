@@ -73,6 +73,7 @@ fn test_config() -> AppConfig {
             Some("dummy"),
             temp.join(".codex"),
         ),
+        web_config: crate::web::WebConfig::default(),
     }
 }
 
