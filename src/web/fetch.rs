@@ -254,6 +254,16 @@ pub fn error_result(tool_name: &str, error: ToolError) -> crate::tool::ToolResul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::Body,
+        http::{
+            header::{CONTENT_ENCODING, CONTENT_TYPE},
+            HeaderValue,
+        },
+        response::Response,
+    };
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write;
 
     #[test]
     fn html_extraction_removes_tags() {
@@ -269,5 +279,56 @@ mod tests {
         let wrapped = external_content_wrapper(&url, "hello");
         assert!(wrapped.contains("external_content"));
         assert!(wrapped.contains("untrusted"));
+    }
+
+    #[tokio::test]
+    async fn fetch_decodes_gzip_response_before_text_extraction() {
+        let body = gzip_bytes("compressed fetch body");
+        let router = axum::Router::new().route(
+            "/page",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { gzip_response(body, "text/plain") }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let mut config = WebFetchConfig::default();
+        config.allowed_hosts = vec![format!("127.0.0.1:{}", addr.port())];
+        let response = fetch(
+            WebFetchRequest {
+                url: format!("http://{addr}/page"),
+                max_chars: None,
+                extract_mode: ExtractMode::Auto,
+            },
+            &config,
+        )
+        .await
+        .unwrap();
+
+        assert!(response.text.contains("compressed fetch body"));
+        assert_eq!(response.bytes_read, "compressed fetch body".len());
+        assert!(!response.truncated);
+    }
+
+    fn gzip_bytes(text: &str) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(text.as_bytes()).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn gzip_response(body: Vec<u8>, content_type: &'static str) -> Response {
+        let mut response = Response::new(Body::from(body));
+        response
+            .headers_mut()
+            .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        response
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+        response
     }
 }

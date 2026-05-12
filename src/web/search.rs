@@ -788,6 +788,16 @@ fn search_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::Body,
+        http::{
+            header::{CONTENT_ENCODING, CONTENT_TYPE},
+            HeaderValue,
+        },
+        response::Response,
+    };
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write;
 
     #[test]
     fn parses_duckduckgo_lite_links() {
@@ -923,6 +933,62 @@ mod tests {
         assert_eq!(results[0].snippet.as_deref(), Some("Brave Search engine"));
         assert_eq!(results[0].source, "brave_test");
         assert_eq!(results[1].title, "Brave Browser");
+    }
+
+    #[tokio::test]
+    async fn brave_search_decodes_gzip_json_response() {
+        let body = gzip_json(&brave_results_json());
+        let router = axum::Router::new().route(
+            "/res/v1/web/search",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { gzip_response(body, "application/json") }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Brave, &base_url);
+        let results = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Brave Search");
+    }
+
+    #[tokio::test]
+    async fn search_response_limit_applies_after_gzip_decode() {
+        let body = gzip_text(&"x".repeat(SEARCH_RESPONSE_BYTES + 1));
+        let router = axum::Router::new().route(
+            "/search",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { gzip_response(body, "text/plain") }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let response = Client::builder()
+            .timeout(timeout(&test_fetch_config()))
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}/search"))
+            .send()
+            .await
+            .unwrap();
+        let error = read_search_response(response, "gzip_test")
+            .await
+            .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "response_too_large");
     }
 
     #[tokio::test]
@@ -1153,5 +1219,26 @@ mod tests {
             "first result should have a title"
         );
         assert!(!results[0].url.is_empty(), "first result should have a url");
+    }
+
+    fn gzip_json(value: &serde_json::Value) -> Vec<u8> {
+        gzip_text(&value.to_string())
+    }
+
+    fn gzip_text(text: &str) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(text.as_bytes()).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn gzip_response(body: Vec<u8>, content_type: &'static str) -> Response {
+        let mut response = Response::new(Body::from(body));
+        response
+            .headers_mut()
+            .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        response
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+        response
     }
 }
