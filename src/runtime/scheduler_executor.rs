@@ -22,7 +22,8 @@ impl ShutdownReason {
 }
 
 pub(super) struct ShutdownPostureOutcome {
-    pub(super) state: AgentState,
+    pub(super) status: AgentStatus,
+    pub(super) current_run_id: Option<String>,
     pub(super) aborted_run_id: Option<String>,
 }
 
@@ -84,21 +85,27 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }
 
         Ok(ShutdownPostureOutcome {
-            state: guard.state.clone(),
+            status: guard.state.status.clone(),
+            current_run_id: guard.state.current_run_id.clone(),
             aborted_run_id,
         })
     }
 
     pub(super) async fn bootstrap_recovered(&self) -> Result<AgentState> {
-        let mut guard = self.runtime.inner.agent.lock().await;
+        let agent_id = {
+            let guard = self.runtime.inner.agent.lock().await;
+            guard.state.id.clone()
+        };
         let blocking_active_tasks = self
             .runtime
             .inner
             .storage
-            .latest_active_task_records_for_agent(&guard.state.id, usize::MAX)?
+            .latest_active_task_records_for_agent(&agent_id, usize::MAX)?
             .into_iter()
             .filter(|task| task.is_blocking())
             .count();
+
+        let mut guard = self.runtime.inner.agent.lock().await;
         let facts = BootstrapRecoveryFacts {
             queued_messages: guard.queue.len(),
             blocking_active_tasks,

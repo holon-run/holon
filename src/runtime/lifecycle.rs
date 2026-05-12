@@ -235,9 +235,9 @@ impl RuntimeHandle {
         self.inner.storage.append_event(&AuditEvent::new(
             "runtime_service_shutdown_requested",
             serde_json::json!({
-                "aborted_run_id": outcome.aborted_run_id,
-                "status": outcome.state.status,
-                "current_run_id": outcome.state.current_run_id,
+                "aborted_run_id": &outcome.aborted_run_id,
+                "status": outcome.status,
+                "current_run_id": &outcome.current_run_id,
             }),
         ))?;
         if let Some(run_id) = outcome.aborted_run_id {
