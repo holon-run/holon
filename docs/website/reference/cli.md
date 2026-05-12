@@ -20,7 +20,7 @@ holon (v0.13.0)
 ├── transcript   Show conversation transcript
 ├── task         Run a command as a background task
 ├── timer        Create a delayed or recurring timer
-├── control      [deprecated] use `holon agent pause|resume|stop|abort`
+├── control      [deprecated] use `holon agent start|stop|abort`
 ├── daemon       Background daemon lifecycle
 │   ├── start    Start the daemon
 │   ├── stop     Stop the daemon
@@ -31,8 +31,9 @@ holon (v0.13.0)
 │   ├── list     List all agents
 │   ├── status   Show agent status
 │   ├── create   Create a new agent
-│   ├── pause    Pause an agent
-│   ├── resume   Resume an agent
+│   ├── start    Start an agent
+│   ├── pause    Deprecated alias for stop
+│   ├── resume   Deprecated alias for start
 │   ├── stop     Stop an agent
 │   ├── abort Abort current run
 │   └── model    Per-agent model configuration
@@ -92,8 +93,7 @@ holon run --agent reviewer "Review src/runtime/turn.rs"
 ### Agent lifecycle
 
 ```bash
-holon agent pause reviewer
-holon agent resume reviewer
+holon agent start reviewer
 holon agent stop reviewer
 holon agent abort reviewer
 ```

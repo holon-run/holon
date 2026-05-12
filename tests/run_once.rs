@@ -1441,6 +1441,6 @@ async fn run_once_rejects_stopped_persistent_agent() -> Result<()> {
     .expect_err("run_once should reject stopped persistent agents");
     assert!(error
         .to_string()
-        .contains("agent default is stopped; resume first"));
+        .contains("agent default is stopped; start first"));
     Ok(())
 }

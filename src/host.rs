@@ -77,7 +77,7 @@ impl std::fmt::Display for PublicAgentError {
             Self::Archived { agent_id } => write!(f, "agent {} is archived", agent_id),
             Self::Private { agent_id } => write!(f, "agent {} is private", agent_id),
             Self::Stopped { agent_id } => {
-                write!(f, "agent {} is stopped; resume first", agent_id)
+                write!(f, "agent {} is stopped; start first", agent_id)
             }
             Self::Runtime(error) => write!(f, "{error}"),
         }
@@ -267,14 +267,14 @@ impl RuntimeHost {
                 .status,
             AgentStatus::Stopped
         );
-        if action == crate::types::ControlAction::Resume && was_stopped {
+        if action.is_start() && was_stopped {
             self.unload_runtime(agent_id).await;
         }
         runtime
             .control(action.clone())
             .await
             .map_err(PublicAgentError::Runtime)?;
-        if action == crate::types::ControlAction::Resume && was_stopped {
+        if action.is_start() && was_stopped {
             return self.get_public_agent(agent_id).await;
         }
         Ok(runtime)
@@ -2843,7 +2843,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_respawns_stopped_persistent_agent_runtime_loop() {
+    async fn start_respawns_stopped_persistent_agent_runtime_loop() {
         let (_home, host) = test_host();
         let agent_id = host.config().default_agent_id.clone();
         let runtime = host.default_runtime().await.unwrap();
@@ -2868,11 +2868,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        let resumed = host
-            .control_public_agent(&agent_id, ControlAction::Resume)
+        let started = host
+            .control_public_agent(&agent_id, ControlAction::Start)
             .await
             .unwrap();
-        resumed
+        started
             .enqueue(MessageEnvelope::new(
                 &agent_id,
                 MessageKind::OperatorPrompt,
@@ -2880,23 +2880,23 @@ mod tests {
                 TrustLevel::TrustedOperator,
                 Priority::Normal,
                 MessageBody::Text {
-                    text: "resume me".into(),
+                    text: "start me".into(),
                 },
             ))
             .await
             .unwrap();
-        wait_for_brief_count(&resumed, 2).await;
+        wait_for_brief_count(&started, 2).await;
 
         let agents = host.inner.agents.read().await;
         let entry = agents.get(&agent_id).expect("expected live runtime entry");
         assert!(
             !entry.task.is_finished(),
-            "resume should restore a live runtime loop"
+            "start should restore a live runtime loop"
         );
         drop(agents);
 
-        let briefs = resumed.storage().read_recent_briefs(10).unwrap();
-        assert!(briefs.iter().any(|brief| brief.text.contains("resume me")));
+        let briefs = started.storage().read_recent_briefs(10).unwrap();
+        assert!(briefs.iter().any(|brief| brief.text.contains("start me")));
         assert!(briefs.iter().any(|brief| brief.text.contains("done")));
     }
 

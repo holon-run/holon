@@ -289,6 +289,56 @@ pub async fn stop_task_cancels_running_background_task() -> Result<()> {
     Ok(())
 }
 
+pub async fn lifecycle_stop_interrupts_active_command_task() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    let runtime = host.default_runtime().await?;
+    let task = runtime
+        .schedule_command_task(
+            "long lifecycle-owned task".into(),
+            CommandTaskSpec {
+                cmd: "sleep 30".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 10,
+                max_output_tokens: None,
+                accepts_input: false,
+                continue_on_result: false,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    wait_until(|| {
+        let tasks = runtime.storage().latest_task_records()?;
+        Ok(tasks.iter().any(|record| {
+            record.id == task.id && record.status == holon::types::TaskStatus::Running
+        }))
+    })
+    .await?;
+
+    runtime.control(ControlAction::Stop).await?;
+
+    let stored = runtime.task_record(&task.id).await?.unwrap();
+    assert_eq!(stored.status, TaskStatus::Interrupted);
+    let detail = stored.detail.unwrap_or_default();
+    assert_eq!(detail["task_status"], "interrupted");
+    assert_eq!(detail["interrupted_reason"], "agent_stopped");
+    assert_eq!(detail["status_before_stop"], "running");
+
+    let events = runtime.recent_events(20).await?;
+    assert!(events.iter().any(|event| {
+        event.kind == "task_interrupted_on_agent_stop"
+            && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())
+    }));
+
+    let active_tasks = runtime.active_tasks(10).await?;
+    assert!(!active_tasks.iter().any(|record| record.id == task.id));
+    Ok(())
+}
+
 pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(ToolUsingProvider::new()))?;
     let runtime = host.default_runtime().await?;
@@ -1793,7 +1843,7 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
     Ok(())
 }
 
-pub async fn background_command_task_persists_terminal_state_while_runtime_paused() -> Result<()> {
+pub async fn background_command_task_persists_terminal_state_while_runtime_stopped() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
@@ -1801,9 +1851,9 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_pause
 
     let task = runtime
         .schedule_command_task(
-            "complete while paused".into(),
+            "complete while stopped".into(),
             holon::types::CommandTaskSpec {
-                cmd: "printf paused_ok".into(),
+                cmd: "printf stopped_ok".into(),
                 workdir: None,
                 shell: None,
                 login: true,
@@ -1831,7 +1881,7 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_pause
         holon::types::TaskOutputRetrievalStatus::Success
     );
     assert_eq!(output.task.status, holon::types::TaskStatus::Completed);
-    assert_eq!(output.task.output_preview, "paused_ok");
+    assert_eq!(output.task.output_preview, "stopped_ok");
     let stored = runtime.task_record(&task.id).await?.unwrap();
     assert_eq!(
         stored
@@ -1845,11 +1895,11 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_pause
     let active_tasks = runtime.active_tasks(10).await?;
     assert!(!active_tasks.iter().any(|record| record.id == task.id));
     let state = runtime.agent_state().await?;
-    assert_eq!(state.status, AgentStatus::Paused);
+    assert_eq!(state.status, AgentStatus::Stopped);
     Ok(())
 }
 
-pub async fn blocking_command_task_clears_active_state_while_runtime_paused() -> Result<()> {
+pub async fn blocking_command_task_clears_active_state_while_runtime_stopped() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
@@ -1857,9 +1907,9 @@ pub async fn blocking_command_task_clears_active_state_while_runtime_paused() ->
 
     let task = runtime
         .schedule_command_task(
-            "blocking complete while paused".into(),
+            "blocking complete while stopped".into(),
             holon::types::CommandTaskSpec {
-                cmd: "printf blocking_paused_ok".into(),
+                cmd: "printf blocking_stopped_ok".into(),
                 workdir: None,
                 shell: None,
                 login: true,
@@ -1883,7 +1933,7 @@ pub async fn blocking_command_task_clears_active_state_while_runtime_paused() ->
     .await?;
 
     let state = runtime.agent_state().await?;
-    assert_eq!(state.status, AgentStatus::Paused);
+    assert_eq!(state.status, AgentStatus::Stopped);
     assert!(!runtime
         .active_tasks(10)
         .await?

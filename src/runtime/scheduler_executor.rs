@@ -27,6 +27,15 @@ pub(super) struct ShutdownPostureOutcome {
     pub(super) aborted_run_id: Option<String>,
 }
 
+pub(super) struct ControlPostureOutcome {
+    pub(super) requested_action: ControlAction,
+    pub(super) action: ControlAction,
+    pub(super) status: AgentStatus,
+    pub(super) current_run_id: Option<String>,
+    pub(super) aborted_run_id: Option<String>,
+    pub(super) occupancy_to_release: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SleepTransitionBoundary {
     LifecycleSleep,
@@ -67,6 +76,84 @@ struct QueueCandidate {
 impl<'a> SchedulerDecisionExecutor<'a> {
     pub(super) fn new(runtime: &'a RuntimeHandle) -> Self {
         Self { runtime }
+    }
+
+    pub(super) async fn apply_control(
+        &self,
+        requested_action: ControlAction,
+    ) -> Result<ControlPostureOutcome> {
+        let action = requested_action.canonical();
+        let mut guard = self.runtime.inner.agent.lock().await;
+        let previous_status = guard.state.status.clone();
+        let previous_run_id = guard.state.current_run_id.clone();
+        let previous_sleeping_until = guard.state.sleeping_until;
+        let previous_pending_wake_hint = guard.state.pending_wake_hint.is_some();
+        let mut aborted_run_id = None;
+        let mut occupancy_to_release = None;
+
+        match action {
+            ControlAction::Start => {
+                scheduler::apply_start_projection(&mut guard.state);
+                scheduler::apply_idle_projection(&mut guard.state, &self.runtime.inner.storage)?;
+            }
+            ControlAction::Stop => {
+                if let Some(handle) = guard.current_run_abort.as_ref() {
+                    if let Ok(mut current_reason) = handle.reason.lock() {
+                        *current_reason = "agent_stopped".into();
+                    }
+                    handle.token.cancel();
+                    aborted_run_id = Some(handle.run_id.clone());
+                }
+                occupancy_to_release = guard
+                    .state
+                    .active_workspace_entry
+                    .as_ref()
+                    .and_then(|entry| entry.occupancy_id.clone());
+                if occupancy_to_release.is_none() {
+                    guard.state.active_workspace_entry = None;
+                }
+                scheduler::apply_stop_projection(&mut guard.state);
+            }
+            ControlAction::Pause | ControlAction::Resume => {
+                unreachable!("control actions are canonicalized before posture application")
+            }
+        }
+
+        self.append_posture_decision(
+            "lifecycle_control",
+            match action {
+                ControlAction::Start => "start",
+                ControlAction::Stop => "stop",
+                ControlAction::Pause | ControlAction::Resume => unreachable!(),
+            },
+            &previous_status,
+            &guard.state.status,
+            vec![
+                format!("requested_action={requested_action:?}"),
+                format!("canonical_action={action:?}"),
+                format!("previous_run_id={previous_run_id:?}"),
+                format!("next_run_id={:?}", guard.state.current_run_id),
+                format!("previous_sleeping_until={previous_sleeping_until:?}"),
+                format!("next_sleeping_until={:?}", guard.state.sleeping_until),
+                format!("previous_pending_wake_hint={previous_pending_wake_hint}"),
+                format!(
+                    "next_pending_wake_hint={}",
+                    guard.state.pending_wake_hint.is_some()
+                ),
+                format!("aborted_run_id={aborted_run_id:?}"),
+                format!("occupancy_to_release={occupancy_to_release:?}"),
+            ],
+        )?;
+        self.runtime.inner.storage.write_agent(&guard.state)?;
+
+        Ok(ControlPostureOutcome {
+            requested_action,
+            action,
+            status: guard.state.status.clone(),
+            current_run_id: guard.state.current_run_id.clone(),
+            aborted_run_id,
+            occupancy_to_release,
+        })
     }
 
     pub(super) async fn request_shutdown(

@@ -39,7 +39,7 @@ macro_rules! operator_ingress_async_tests {
 runtime_async_tests!(
     timer_tick_wakes_sleeping_session,
     wake_hint_coalesces_while_running_and_reenters_once,
-    paused_agent_ignores_wake_hint,
+    stopped_agent_ignores_wake_hint,
     notify_operator_records_default_public_and_private_child_targets,
     notify_operator_is_not_agent_facing_for_normal_profiles,
     notify_operator_prefers_reply_route_for_delivery,

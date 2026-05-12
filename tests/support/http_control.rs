@@ -703,7 +703,7 @@ pub async fn control_prompt_rejects_stopped_agent_without_queueing() -> Result<(
     Ok(())
 }
 
-pub async fn stopped_status_includes_lifecycle_resume_guidance() -> Result<()> {
+pub async fn stopped_status_includes_lifecycle_start_guidance() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -730,7 +730,7 @@ pub async fn stopped_status_includes_lifecycle_resume_guidance() -> Result<()> {
     assert_eq!(payload["lifecycle"]["wake_requires_resume"], true);
     assert_eq!(
         payload["lifecycle"]["resume_cli_hint"],
-        "holon agent resume default"
+        "holon agent start default"
     );
     assert_eq!(
         payload["lifecycle"]["resume_control_path"],
@@ -739,13 +739,13 @@ pub async fn stopped_status_includes_lifecycle_resume_guidance() -> Result<()> {
     assert!(payload["lifecycle"]["operator_hint"]
         .as_str()
         .unwrap_or_default()
-        .contains("resume before new prompts or wakes"));
+        .contains("start before new prompts or wakes"));
 
     server.abort();
     Ok(())
 }
 
-pub async fn control_wake_rejects_stopped_agent_with_resume_guidance() -> Result<()> {
+pub async fn control_wake_rejects_stopped_agent_with_start_guidance() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -775,7 +775,7 @@ pub async fn control_wake_rejects_stopped_agent_with_resume_guidance() -> Result
     assert!(payload["hint"]
         .as_str()
         .unwrap_or_default()
-        .contains("holon agent resume default"));
+        .contains("holon agent start default"));
 
     let events = runtime.storage().read_recent_events(20)?;
     assert!(!events.iter().any(|event| event.kind == "wake_requested"));
@@ -787,7 +787,7 @@ pub async fn control_wake_rejects_stopped_agent_with_resume_guidance() -> Result
     Ok(())
 }
 
-pub async fn control_resume_restores_live_runtime_loop_for_stopped_agent() -> Result<()> {
+pub async fn control_start_restores_live_runtime_loop_for_stopped_agent() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -804,21 +804,21 @@ pub async fn control_resume_restores_live_runtime_loop_for_stopped_agent() -> Re
 
     let rejected = client
         .post(format!("{base}/control/agents/default/prompt"))
-        .json(&serde_json::json!({ "text": "before resume" }))
+        .json(&serde_json::json!({ "text": "before start" }))
         .send()
         .await?;
     assert_eq!(rejected.status(), reqwest::StatusCode::CONFLICT);
 
-    let resumed = client
+    let started = client
         .post(format!("{base}/control/agents/default/control"))
-        .json(&serde_json::json!({ "action": "resume" }))
+        .json(&serde_json::json!({ "action": "start" }))
         .send()
         .await?;
-    assert!(resumed.status().is_success());
+    assert!(started.status().is_success());
 
     let accepted = client
         .post(format!("{base}/control/agents/default/prompt"))
-        .json(&serde_json::json!({ "text": "after resume" }))
+        .json(&serde_json::json!({ "text": "after start" }))
         .send()
         .await?;
     assert!(accepted.status().is_success());
@@ -831,7 +831,7 @@ pub async fn control_resume_restores_live_runtime_loop_for_stopped_agent() -> Re
             message.kind == MessageKind::OperatorPrompt
                 && matches!(
                     &message.body,
-                    holon::types::MessageBody::Text { text } if text == "after resume"
+                    holon::types::MessageBody::Text { text } if text == "after start"
                 )
         }) && briefs
             .iter()

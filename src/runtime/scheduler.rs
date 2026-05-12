@@ -630,6 +630,18 @@ pub(crate) fn apply_message_wake_projection(state: &mut AgentState) -> bool {
     false
 }
 
+pub(crate) fn apply_start_projection(state: &mut AgentState) {
+    state.status = AgentStatus::AwakeIdle;
+    state.current_run_id = None;
+}
+
+pub(crate) fn apply_stop_projection(state: &mut AgentState) {
+    state.status = AgentStatus::Stopped;
+    state.current_run_id = None;
+    state.sleeping_until = None;
+    state.pending_wake_hint = None;
+}
+
 pub(crate) fn apply_sleep_projection(
     state: &mut AgentState,
     sleeping_until: Option<DateTime<Utc>>,

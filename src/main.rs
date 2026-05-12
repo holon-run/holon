@@ -47,6 +47,7 @@ struct Cli {
 
 #[derive(Debug, Clone, PartialEq, Eq, ValueEnum)]
 enum ControlCommandAction {
+    Start,
     Pause,
     Resume,
     Stop,
@@ -56,6 +57,7 @@ enum ControlCommandAction {
 impl ControlCommandAction {
     fn as_control_action(&self) -> Option<ControlAction> {
         match self {
+            Self::Start => Some(ControlAction::Start),
             Self::Pause => Some(ControlAction::Pause),
             Self::Resume => Some(ControlAction::Resume),
             Self::Stop => Some(ControlAction::Stop),
@@ -130,7 +132,7 @@ enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
-    #[command(about = "Deprecated: use `holon agent pause|resume|stop|abort [agent-id]`")]
+    #[command(about = "Deprecated: use `holon agent start|stop|abort [agent-id]`")]
     Control {
         action: ControlCommandAction,
         #[arg(long)]
@@ -410,6 +412,9 @@ enum AgentCommands {
         template: Option<String>,
     },
     Pause {
+        agent_id: Option<String>,
+    },
+    Start {
         agent_id: Option<String>,
     },
     Resume {
@@ -1254,6 +1259,15 @@ mod tests {
 
     #[test]
     fn agent_lifecycle_commands_parse_with_optional_agent_id() {
+        let cli = Cli::parse_from(["holon", "agent", "start"]);
+        let Commands::Agent {
+            command: Some(AgentCommands::Start { agent_id }),
+        } = cli.command
+        else {
+            panic!("expected agent start command");
+        };
+        assert_eq!(agent_id, None);
+
         let cli = Cli::parse_from(["holon", "agent", "pause"]);
         let Commands::Agent {
             command: Some(AgentCommands::Pause { agent_id }),
@@ -2260,6 +2274,9 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
         }
         Some(AgentCommands::Pause { agent_id }) => {
             control_agent_lifecycle(config, agent_id, ControlAction::Pause).await
+        }
+        Some(AgentCommands::Start { agent_id }) => {
+            control_agent_lifecycle(config, agent_id, ControlAction::Start).await
         }
         Some(AgentCommands::Resume { agent_id }) => {
             control_agent_lifecycle(config, agent_id, ControlAction::Resume).await

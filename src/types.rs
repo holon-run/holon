@@ -3052,9 +3052,24 @@ impl AuditEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlAction {
+    Start,
     Pause,
     Resume,
     Stop,
+}
+
+impl ControlAction {
+    pub fn canonical(&self) -> Self {
+        match self {
+            Self::Pause => Self::Stop,
+            Self::Resume => Self::Start,
+            action => action.clone(),
+        }
+    }
+
+    pub fn is_start(&self) -> bool {
+        matches!(self.canonical(), Self::Start)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3141,9 +3156,9 @@ impl AgentLifecycleHint {
                 accepts_external_messages: false,
                 wake_requires_resume: true,
                 operator_hint: Some(
-                    "agent is administratively stopped; resume before new prompts or wakes".into(),
+                    "agent is administratively stopped; start before new prompts or wakes".into(),
                 ),
-                resume_cli_hint: Some(format!("holon agent resume {agent_id}")),
+                resume_cli_hint: Some(format!("holon agent start {agent_id}")),
                 resume_control_path: Some(format!("/control/agents/{agent_id}/control")),
             };
         }

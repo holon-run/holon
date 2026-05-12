@@ -46,7 +46,6 @@ use super::{
 pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
-    runtime.control(ControlAction::Pause).await?;
     let callback_work = holon::types::WorkItemRecord::new(
         "default",
         "keep callback watch anchored",
@@ -438,7 +437,6 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
         Arc::new(StubProvider::new("route result")),
     )?;
     let runtime = host.default_runtime().await?;
-    runtime.control(ControlAction::Pause).await?;
     let callback_work = holon::types::WorkItemRecord::new(
         "default",
         "keep public callback watch anchored",
@@ -520,7 +518,7 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     assert!(second_payload["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("resume first"));
+        .contains("start first"));
 
     wait_until(|| {
         let messages = runtime2.storage().read_recent_messages(20)?;

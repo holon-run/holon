@@ -107,9 +107,9 @@ enum ControlAction {
 }
 ```
 
-`Pause` and `Resume` should be removed or treated as deprecated request shapes
-only during a migration window. They should not remain first-class runtime
-states.
+`Pause` and `Resume` should be treated as deprecated request shapes during a
+migration window. They canonicalize to `Stop` and `Start` respectively and
+should not remain first-class runtime states.
 
 ### Status Set
 
@@ -125,7 +125,9 @@ enum AgentStatus {
 }
 ```
 
-`Paused` should be removed or made unreachable after migration.
+`Paused` should remain readable only for legacy persisted state during the
+migration window. New lifecycle control should not generate `Paused`; it should
+persist `Stopped` for non-runnable lifecycle control.
 
 `Stopped` is the only lifecycle-control gate. Other statuses are scheduler
 posture derived from runtime facts.
@@ -335,12 +337,11 @@ The event payload should include:
 ### Step 1: Document And Gate Deprecated Actions
 
 - Add this RFC.
-- Mark `Pause` and `Resume` as lifecycle concepts to remove.
-- Decide whether request-facing aliases are rejected immediately or accepted as
-  deprecated compatibility shapes.
-
-Recommended default for Holon pre-1.0: reject `pause` and `resume` once the new
-surface lands, and return guidance to use `start` or `stop`.
+- Mark `Pause` and `Resume` as lifecycle concepts to remove from the primary
+  operator surface.
+- Accept request-facing aliases as deprecated compatibility shapes:
+  `pause -> stop` and `resume -> start`.
+- Return start/stop guidance in user-facing lifecycle errors and docs.
 
 ### Step 2: Introduce `Start` And Executor Control Entry
 
@@ -349,16 +350,22 @@ surface lands, and return guidance to use `start` or `stop`.
 - Keep old action variants only as temporary parser aliases if needed.
 - Add tests for stopped queue gating and start reactivation.
 
-### Step 3: Remove `Paused`
+### Step 3: Contain Legacy `Paused`
 
-- Remove `AgentStatus::Paused` from runtime logic.
-- Delete paused branches from scheduler and message dispatch.
-- Replace paused tests with stopped/start tests.
+- Stop generating `AgentStatus::Paused` from lifecycle control.
+- Keep `AgentStatus::Paused` readable as a legacy persisted posture until a
+  storage migration removes or rewrites old ledgers.
+- Treat legacy paused agents as non-runnable in scheduler, message dispatch,
+  waiting, and task posture gates.
+- Replace lifecycle pause/resume tests with stopped/start tests while retaining
+  narrow legacy-state coverage where persisted-state compatibility matters.
 
 ### Step 4: Make Stop Resource Semantics Explicit
 
 - Abort current run on stop.
 - Release workspace occupancy on stop.
+- Clear sleep/wake autonomous posture on stop.
+- Request cancellation or interruption for runtime-owned active tasks on stop.
 - Transition runtime-owned active tasks to cancelled/interrupted according to
   task reducer rules.
 - Ensure stopped agents do not emit work-queue or wake-hint system ticks.
@@ -369,6 +376,8 @@ surface lands, and return guidance to use `start` or `stop`.
 - Message admission wake uses `admit_message_wake`.
 - Sleep transition uses `transition_to_sleep`.
 - Shutdown uses `request_shutdown`.
+- Lifecycle control uses `apply_control`, records `scheduler_posture_decision`
+  evidence, and returns external cleanup obligations to the caller.
 
 ## Verification Plan
 
