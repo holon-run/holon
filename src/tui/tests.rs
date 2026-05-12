@@ -797,11 +797,24 @@ async fn agent_overlay_stays_open_while_navigating() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.overlay = OverlayState::Agents;
+    app.agents = vec![sample_agent_summary("alpha"), sample_agent_summary("beta")];
+    app.selected_agent = 0;
+    app.connection_state = TuiConnectionState::Streaming;
+    app.status_line = "Streaming native events for agent alpha".into();
+    app.overlay = OverlayState::Agents { selected: 0 };
+
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.overlay, OverlayState::Agents);
+
+    assert_eq!(app.overlay, OverlayState::Agents { selected: 1 });
+    assert_eq!(app.selected_agent_id(), Some("alpha"));
+    assert!(matches!(
+        app.connection_state,
+        TuiConnectionState::Streaming
+    ));
+    assert!(!app.snapshot_refresh_in_flight);
+    assert_eq!(app.status_line, "Streaming native events for agent alpha");
 }
 
 #[tokio::test]
@@ -813,7 +826,7 @@ async fn agent_overlay_enter_starts_switch_without_awaiting_snapshot() {
     );
     app.agents = vec![sample_agent_summary("alpha"), sample_agent_summary("beta")];
     app.selected_agent = 1;
-    app.overlay = OverlayState::Agents;
+    app.overlay = OverlayState::Agents { selected: 1 };
     app.connection_state = TuiConnectionState::Streaming;
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -1094,7 +1107,7 @@ async fn slash_menu_enter_runs_selected_command_from_root_menu() {
         .await
         .unwrap();
 
-    assert_eq!(app.overlay, OverlayState::Agents);
+    assert_eq!(app.overlay, OverlayState::Agents { selected: 0 });
     assert_eq!(app.composer.as_str(), "");
 }
 
@@ -2647,7 +2660,7 @@ async fn agent_switch_starts_snapshot_refresh_without_awaiting_network() {
     app.connection_state = TuiConnectionState::Streaming;
     app.status_line = "Streaming native events for agent alpha".into();
 
-    app.move_agent_selection(1).await.unwrap();
+    app.begin_bootstrap_agent_index(1);
 
     assert_eq!(app.selected_agent_id(), Some("alpha"));
     assert!(matches!(

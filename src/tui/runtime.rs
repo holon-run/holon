@@ -525,17 +525,18 @@ impl TuiApp {
         }
     }
 
-    pub(super) fn next_agent_index(&self, delta: i32) -> Option<usize> {
+    pub(super) fn next_agent_index_from(&self, selected: usize, delta: i32) -> Option<usize> {
         if self.agents.is_empty() {
             return None;
         }
+        let selected = selected.min(self.agents.len().saturating_sub(1));
 
         Some(if delta > 0 {
-            (self.selected_agent + 1) % self.agents.len()
-        } else if self.selected_agent == 0 {
+            (selected + 1) % self.agents.len()
+        } else if selected == 0 {
             self.agents.len() - 1
         } else {
-            self.selected_agent - 1
+            selected - 1
         })
     }
 

@@ -8,7 +8,9 @@ pub(super) const MODEL_REASONING_EFFORT_OPTIONS: [&str; 5] =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OverlayState {
     None,
-    Agents,
+    Agents {
+        selected: usize,
+    },
     Events {
         selected_event_id: Option<String>,
         detail_scroll: u16,
@@ -49,7 +51,7 @@ pub(super) enum OverlayState {
 pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
     match &app.overlay {
         OverlayState::None => {}
-        OverlayState::Agents => draw_agents_overlay(frame, app),
+        OverlayState::Agents { selected } => draw_agents_overlay(frame, app, *selected),
         OverlayState::Events {
             selected_event_id,
             detail_scroll,
@@ -83,7 +85,7 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
     }
 }
 
-fn draw_agents_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
+fn draw_agents_overlay(frame: &mut Frame<'_>, app: &TuiApp, selected: usize) {
     let popup = centered_rect(92, 80, frame.area());
     let layout = Layout::default()
         .direction(Direction::Horizontal)
@@ -118,12 +120,13 @@ fn draw_agents_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
         .highlight_symbol("> ");
     let mut state = ListState::default();
     if !app.agents.is_empty() {
-        state.select(Some(app.selected_agent));
+        state.select(Some(selected.min(app.agents.len().saturating_sub(1))));
     }
     frame.render_stateful_widget(list, layout[0], &mut state);
 
     let text = app
-        .selected_agent_summary()
+        .agents
+        .get(selected)
         .map(render::render_summary)
         .unwrap_or_else(|| "No agent selected.".to_string());
     let detail = Paragraph::new(text)

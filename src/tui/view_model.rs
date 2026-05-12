@@ -159,7 +159,7 @@ fn overlay_hint(app: &TuiApp, slash_visible: bool) -> Option<&'static str> {
     }
     let context = match app.overlay {
         OverlayState::None => return None,
-        OverlayState::Agents => KeyContext::AgentsOverlay,
+        OverlayState::Agents { .. } => KeyContext::AgentsOverlay,
         OverlayState::Events { .. } => KeyContext::EventsOverlay,
         OverlayState::Transcript { .. }
         | OverlayState::AgentState { .. }
