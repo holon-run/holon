@@ -492,10 +492,10 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
     Ok(())
 }
 
-pub async fn paused_agent_ignores_wake_hint() -> Result<()> {
+pub async fn stopped_agent_ignores_wake_hint() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let runtime = host.default_runtime().await?;
-    runtime.control(ControlAction::Pause).await?;
+    runtime.control(ControlAction::Stop).await?;
 
     let disposition = runtime
         .submit_wake_hint(WakeHint {
@@ -518,7 +518,7 @@ pub async fn paused_agent_ignores_wake_hint() -> Result<()> {
     sleep(Duration::from_millis(150)).await;
     let state = runtime.agent_state().await?;
     let messages = runtime.storage().read_recent_messages(10)?;
-    assert_eq!(state.status, AgentStatus::Paused);
+    assert_eq!(state.status, AgentStatus::Stopped);
     assert!(state.pending_wake_hint.is_none());
     assert!(messages
         .iter()

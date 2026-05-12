@@ -173,29 +173,10 @@ impl RuntimeHandle {
     }
 
     pub async fn control(&self, action: ControlAction) -> Result<()> {
-        let occupancy_to_release = {
-            let mut occupancy_to_release = None;
-            let mut guard = self.inner.agent.lock().await;
-            match action {
-                ControlAction::Pause => guard.state.status = AgentStatus::Paused,
-                ControlAction::Resume => guard.state.status = AgentStatus::AwakeIdle,
-                ControlAction::Stop => {
-                    guard.state.status = AgentStatus::Stopped;
-                    occupancy_to_release = guard
-                        .state
-                        .active_workspace_entry
-                        .as_ref()
-                        .and_then(|entry| entry.occupancy_id.clone());
-                    if occupancy_to_release.is_none() {
-                        guard.state.active_workspace_entry = None;
-                    }
-                }
-            }
-            guard.state.current_run_id = None;
-            self.inner.storage.write_agent(&guard.state)?;
-            occupancy_to_release
-        };
-        if let Some(occupancy_id) = occupancy_to_release.as_deref() {
+        let outcome = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .apply_control(action)
+            .await?;
+        if let Some(occupancy_id) = outcome.occupancy_to_release.as_deref() {
             let bridge = self.inner.host_bridge.as_ref().ok_or_else(|| {
                 anyhow!(
                     "cannot release workspace occupancy {} without host bridge",
@@ -217,10 +198,36 @@ impl RuntimeHandle {
                 }
             }
         }
+        if matches!(outcome.action, ControlAction::Stop) {
+            let agent_id = self.agent_id().await?;
+            let active_tasks = self
+                .inner
+                .storage
+                .latest_active_task_records_for_agent(&agent_id, usize::MAX)?;
+            self.interrupt_active_tasks_for_lifecycle_stop(active_tasks)
+                .await?;
+        }
         self.inner.storage.append_event(&AuditEvent::new(
             "control_applied",
-            serde_json::json!({ "action": action }),
+            serde_json::json!({
+                "requested_action": outcome.requested_action,
+                "action": outcome.action,
+                "status": outcome.status,
+                "current_run_id": outcome.current_run_id,
+                "aborted_run_id": outcome.aborted_run_id,
+            }),
         ))?;
+        if let Some(run_id) = outcome.aborted_run_id {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "current_run_aborted",
+                serde_json::json!({
+                    "agent_id": self.agent_id().await?,
+                    "run_id": run_id,
+                    "mode": "stop",
+                    "reason": "agent_stopped",
+                }),
+            ))?;
+        }
         self.inner.notify.notify_one();
         Ok(())
     }

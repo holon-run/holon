@@ -2352,7 +2352,7 @@ pub async fn control_wake(
         .map_err(|error| match error {
             PublicAgentError::Stopped { agent_id } => stopped_agent_conflict(
                 format!(
-                    "agent {} is stopped; wake does not override stopped; resume first",
+                    "agent {} is stopped; wake does not override stopped; start first",
                     agent_id
                 ),
                 agent_id,
@@ -2748,7 +2748,7 @@ fn stopped_agent_conflict(
 ) -> (StatusCode, Json<Value>) {
     let agent_id = agent_id.into();
     let hint = format!(
-        "resume with `holon agent resume {}` or POST /control/agents/{}/control with JSON body {{\"action\":\"resume\"}}",
+        "start with `holon agent start {}` or POST /control/agents/{}/control with JSON body {{\"action\":\"start\"}}",
         agent_id, agent_id
     );
     (
@@ -2775,7 +2775,7 @@ fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<Value>) {
             not_found(format!("agent {} is archived", agent_id))
         }
         PublicAgentError::Stopped { agent_id } => stopped_agent_conflict(
-            format!("agent {} is stopped; resume first", agent_id),
+            format!("agent {} is stopped; start first", agent_id),
             agent_id,
         ),
         PublicAgentError::Runtime(error) => error_response(error),

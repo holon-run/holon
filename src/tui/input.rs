@@ -200,8 +200,7 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
     SlashCommandSpec {
         name: "/agent",
         description: "switch or control an agent",
-        usage:
-            "/agent <agent-id>|switch <agent-id>|pause [agent-id]|resume [agent-id]|stop [agent-id]",
+        usage: "/agent <agent-id>|switch <agent-id>|start [agent-id]|stop [agent-id]",
         arg_hint: SlashArgHint::Agent,
         category: SlashCommandCategory::Agent,
         arg_rule: SlashArgRule::Agent,
@@ -305,17 +304,18 @@ fn slash_command_argument_error(spec: SlashCommandSpec, args: usize) -> anyhow::
 fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
     let Some(first) = args.first() else {
         return Err(anyhow!(
-            "/agent requires an agent id or lifecycle action; usage: /agent <agent-id>|pause [agent-id]|resume [agent-id]|stop [agent-id]"
+            "/agent requires an agent id or lifecycle action; usage: /agent <agent-id>|start [agent-id]|stop [agent-id]"
         ));
     };
     match first.as_str() {
-        "pause" | "resume" | "stop" => {
+        "start" | "pause" | "resume" | "stop" => {
             if args.len() > 2 {
                 return Err(anyhow!(
                     "/agent {first} accepts at most one agent id; usage: /agent {first} [agent-id]"
                 ));
             }
             let action = match first.as_str() {
+                "start" => crate::types::ControlAction::Start,
                 "pause" => crate::types::ControlAction::Pause,
                 "resume" => crate::types::ControlAction::Resume,
                 "stop" => crate::types::ControlAction::Stop,
@@ -732,9 +732,10 @@ impl TuiApp {
                     self.status_line = format!(
                         "{} agent {agent_id}",
                         match action {
-                            crate::types::ControlAction::Pause => "Paused",
-                            crate::types::ControlAction::Resume => "Resumed",
-                            crate::types::ControlAction::Stop => "Stopped",
+                            crate::types::ControlAction::Start
+                            | crate::types::ControlAction::Resume => "Started",
+                            crate::types::ControlAction::Pause
+                            | crate::types::ControlAction::Stop => "Stopped",
                         }
                     );
                     if self.selected_agent_id() == Some(agent_id.as_str()) {
@@ -1618,10 +1619,10 @@ mod tests {
             ))
         );
         assert_eq!(
-            parse_composer_submission("/agent pause").unwrap(),
+            parse_composer_submission("/agent start").unwrap(),
             Some(ComposerSubmission::Slash(
                 SlashCommand::Agent,
-                vec!["pause".into()]
+                vec!["start".into()]
             ))
         );
         assert_eq!(
@@ -1686,7 +1687,7 @@ mod tests {
         assert!(err
             .to_string()
             .contains("expects exactly one agent id for switching"));
-        let err = parse_composer_submission("/agent pause default extra").unwrap_err();
+        let err = parse_composer_submission("/agent start default extra").unwrap_err();
         assert!(err.to_string().contains("accepts at most one agent id"));
         let err = parse_composer_submission("/agent switch").unwrap_err();
         assert!(err
@@ -1697,9 +1698,9 @@ mod tests {
     #[test]
     fn agent_slash_lifecycle_actions_map_to_control_actions() {
         assert_eq!(
-            parse_agent_slash_action(&["pause".into()]).unwrap(),
+            parse_agent_slash_action(&["start".into()]).unwrap(),
             AgentSlashAction::Control {
-                action: crate::types::ControlAction::Pause,
+                action: crate::types::ControlAction::Start,
                 agent_id: None,
             }
         );
@@ -1817,7 +1818,7 @@ mod tests {
             "/debug-prompt",
             "/display <info|verbose|debug|3|4|5>",
             "/abort",
-            "/agent <agent-id>|switch <agent-id>|pause [agent-id]|resume [agent-id]|stop [agent-id]",
+            "/agent <agent-id>|switch <agent-id>|start [agent-id]|stop [agent-id]",
             "/skills",
             "/skill-install <name>",
             "/skill-uninstall <name>",

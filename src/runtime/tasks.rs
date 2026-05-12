@@ -1178,6 +1178,71 @@ impl RuntimeHandle {
         Ok(interrupted)
     }
 
+    pub(super) async fn interrupt_active_tasks_for_lifecycle_stop(
+        &self,
+        tasks: Vec<TaskRecord>,
+    ) -> Result<Vec<TaskRecord>> {
+        let mut interrupted = Vec::new();
+        for task in tasks {
+            {
+                let mut handles = self.inner.task_handles.lock().await;
+                match handles.remove(&task.id) {
+                    Some(command_task::ManagedTaskHandle::Async(handle)) => {
+                        handle.abort();
+                    }
+                    Some(command_task::ManagedTaskHandle::Command(mut handle)) => {
+                        if let Some(cancel_tx) = handle.cancel_tx.take() {
+                            let _ = cancel_tx.send(());
+                        }
+                        if let Some(force_stop_tx) = handle.force_stop_tx.take() {
+                            let _ = force_stop_tx.send(());
+                        }
+                    }
+                    None => {}
+                }
+            }
+
+            let prior_status = task_status_name(&task.status);
+            let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+            if let Some(detail_map) = detail.as_object_mut() {
+                detail_map.insert("status_before_stop".into(), serde_json::json!(prior_status));
+                detail_map.insert("task_status".into(), serde_json::json!("interrupted"));
+                detail_map.insert(
+                    "interrupted_reason".into(),
+                    serde_json::json!("agent_stopped"),
+                );
+                detail_map.insert("interrupted_at".into(), to_json_value(&Utc::now()));
+            }
+            if task.is_worktree_child_agent_task() {
+                let _ = self
+                    .cleanup_task_owned_worktree_in_detail(
+                        &task.id,
+                        &mut detail,
+                        "agent_lifecycle_stop",
+                    )
+                    .await;
+            }
+
+            let interrupted_task = TaskRecord {
+                id: task.id.clone(),
+                agent_id: task.agent_id.clone(),
+                kind: task.kind,
+                status: TaskStatus::Interrupted,
+                created_at: task.created_at,
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: task.work_item_id.clone(),
+                summary: task.summary.clone(),
+                detail: Some(detail),
+                recovery: task.recovery.clone(),
+            };
+            self.persist_task_status_direct(&interrupted_task, "task_interrupted_on_agent_stop")
+                .await?;
+            interrupted.push(interrupted_task);
+        }
+        Ok(interrupted)
+    }
+
     pub async fn task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
         Ok(self
             .inner

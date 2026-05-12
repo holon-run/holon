@@ -346,6 +346,156 @@ async fn message_admission_does_not_wake_stopped_or_paused_agents() {
 }
 
 #[tokio::test]
+async fn control_start_hands_stopped_agent_to_scheduler_without_model_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "unused",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "queued while stopped".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    runtime
+        .control(crate::types::ControlAction::Start)
+        .await
+        .unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeIdle);
+    assert_eq!(state.pending, 1);
+    assert_eq!(provider.call_count().await, 0);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision"
+            && event.data["boundary"] == "lifecycle_control"
+            && event.data["reason"] == "start"
+            && event.data["previous_status"] == "stopped"
+            && event.data["next_status"] == "awake_idle"
+    }));
+}
+
+#[tokio::test]
+async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::Asleep;
+        guard.state.sleeping_until = Some(Utc::now() + chrono::Duration::seconds(60));
+        guard.state.pending_wake_hint = Some(PendingWakeHint {
+            reason: "wake later".into(),
+            description: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
+            source: Some("test".into()),
+            resource: None,
+            body: None,
+            content_type: None,
+            correlation_id: None,
+            causation_id: None,
+            created_at: Utc::now(),
+        });
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Stopped);
+    assert_eq!(state.sleeping_until, None);
+    assert!(state.pending_wake_hint.is_none());
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision"
+            && event.data["boundary"] == "lifecycle_control"
+            && event.data["reason"] == "stop"
+            && event.data["previous_status"] == "asleep"
+            && event.data["next_status"] == "stopped"
+    }));
+}
+
+#[tokio::test]
+async fn control_pause_is_deprecated_stop_alias() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime
+        .control(crate::types::ControlAction::Pause)
+        .await
+        .unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Stopped);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision"
+            && event.data["boundary"] == "lifecycle_control"
+            && event.data["reason"] == "stop"
+            && event.data["evidence"].as_array().is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.as_str() == Some("requested_action=Pause"))
+            })
+    }));
+}
+
+#[tokio::test]
 async fn sleep_wake_task_ignores_stale_sleeping_until() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -807,7 +957,7 @@ async fn enqueue_normalizes_wake_hint_as_runtime_owned_inspection_signal() {
 }
 
 #[tokio::test]
-async fn abort_current_run_aborts_provider_turn_and_pauses_agent() {
+async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
@@ -872,7 +1022,7 @@ async fn abort_current_run_aborts_provider_turn_and_pauses_agent() {
     .expect("aborted terminal should be persisted");
 
     let state = runtime.agent_state().await.unwrap();
-    assert_eq!(state.status, AgentStatus::Paused);
+    assert_eq!(state.status, AgentStatus::Stopped);
     assert_eq!(state.current_run_id, None);
     assert_eq!(
         state

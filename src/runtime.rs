@@ -290,8 +290,7 @@ impl RuntimeHandle {
             *reason = "operator_aborted".into();
         }
         handle.token.cancel();
-        guard.state.status = AgentStatus::Paused;
-        guard.state.current_run_id = None;
+        scheduler::apply_stop_projection(&mut guard.state);
         self.inner.storage.write_agent(&guard.state)?;
         drop(guard);
 
