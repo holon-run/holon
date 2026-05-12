@@ -157,9 +157,9 @@ fn overlay_hint(app: &TuiApp, slash_visible: bool) -> Option<&'static str> {
     if slash_visible {
         return Some(status_hint(KeyContext::SlashMenu, true));
     }
-    let context = match app.overlay {
+    let context = match &app.overlay {
         OverlayState::None => return None,
-        OverlayState::Agents => KeyContext::AgentsOverlay,
+        OverlayState::Agents { .. } => KeyContext::AgentsOverlay,
         OverlayState::Events { .. } => KeyContext::EventsOverlay,
         OverlayState::Transcript { .. }
         | OverlayState::AgentState { .. }
