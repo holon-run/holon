@@ -1307,8 +1307,26 @@ pub async fn events(
         authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     }
 
-    let all_events = runtime.all_events().map_err(error_response)?;
-    let page = event_page(&all_events, query.cursor.as_deref(), limit, order)?;
+    let cursor = query.cursor.filter(|value| !value.is_empty());
+    let page = if cursor.is_none() && order == EventPageOrder::Desc {
+        let mut tail = runtime
+            .storage()
+            .read_recent_events(limit.saturating_add(1))
+            .map_err(error_response)?;
+        let has_older = tail.len() > limit;
+        if has_older {
+            tail.remove(0);
+        }
+        tail.reverse();
+        EventPage {
+            events: tail,
+            has_older,
+            has_newer: false,
+        }
+    } else {
+        let all_events = runtime.all_events().map_err(error_response)?;
+        event_page(&all_events, cursor.as_deref(), limit, order)?
+    };
     let oldest_cursor = oldest_cursor(&page.events, order);
     let newest_cursor = newest_cursor(&page.events, order);
     let events = page
@@ -1353,8 +1371,11 @@ pub async fn events_stream(
         .poll_activity_marker()
         .map_err(error_response)?
         .events;
-    let events = runtime.all_events().map_err(error_response)?;
-    let buffered = initial_buffered_events(&events, cursor.as_deref(), event_window_limit)?;
+    let events = runtime
+        .storage()
+        .read_recent_events(event_window_limit.saturating_add(1))
+        .map_err(error_response)?;
+    let buffered = initial_buffered_events(&events, cursor.as_deref())?;
     let last_seen_cursor = cursor.or_else(|| events.last().map(|event| event.id.clone()));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
     tokio::spawn(async move {
@@ -1403,7 +1424,11 @@ pub async fn events_stream(
                 sleep(EVENT_STREAM_POLL_INTERVAL).await;
                 continue;
             }
-            let latest_events: Vec<AuditEvent> = match state.runtime.all_events() {
+            let latest_events: Vec<AuditEvent> = match state
+                .runtime
+                .storage()
+                .read_recent_events(state.event_window_limit.saturating_add(1))
+            {
                 Ok(latest_events) => latest_events,
                 Err(err) => {
                     error!("failed to load events for stream: {err}");
@@ -1436,7 +1461,6 @@ pub async fn events_stream(
 fn initial_buffered_events(
     events: &[AuditEvent],
     cursor: Option<&str>,
-    limit: usize,
 ) -> std::result::Result<VecDeque<AuditEvent>, (StatusCode, Json<Value>)> {
     let start_index = if let Some(cursor) = cursor {
         match events.iter().position(|event| event.id == cursor) {
@@ -1446,12 +1470,7 @@ fn initial_buffered_events(
     } else {
         events.len()
     };
-    Ok(events
-        .iter()
-        .skip(start_index)
-        .take(limit)
-        .cloned()
-        .collect())
+    Ok(events.iter().skip(start_index).cloned().collect())
 }
 
 fn refresh_buffered_events(
@@ -1467,12 +1486,9 @@ fn refresh_buffered_events(
     } else {
         0
     };
-    for event in latest_events.into_iter().skip(start_index) {
-        state.buffered.push_back(event);
-        if state.buffered.len() >= state.event_window_limit {
-            break;
-        }
-    }
+    state
+        .buffered
+        .extend(latest_events.into_iter().skip(start_index));
     Ok(())
 }
 

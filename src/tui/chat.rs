@@ -86,7 +86,6 @@ pub(super) struct AssistantMarkdownCell {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(super) enum ConversationCell {
     UserMessage {
         created_at: DateTime<chrono::Utc>,

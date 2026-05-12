@@ -520,7 +520,7 @@ impl LocalClient {
 
         #[cfg(unix)]
         if self.remote.is_none() && self.config.socket_path.exists() {
-            let socket_error = match self.stream_unix_events(&path, false, None).await {
+            let socket_error = match self.stream_unix_events(&path, false).await {
                 Ok(stream) => {
                     return Ok(LocalEventStream {
                         transport: EventStreamTransport::Unix(stream),
@@ -530,15 +530,14 @@ impl LocalClient {
                 Err(err) => err,
             };
             return self
-                .stream_http_events(&path, false, None)
+                .stream_http_events(&path, false)
                 .await
                 .with_context(|| {
                     format!("unix socket event stream failed before HTTP fallback: {socket_error}")
                 });
         }
 
-        self.stream_http_events(&path, self.remote.is_some(), None)
-            .await
+        self.stream_http_events(&path, self.remote.is_some()).await
     }
 
     pub async fn agent_events_page(
@@ -612,18 +611,11 @@ impl LocalClient {
         &self,
         path: &str,
         include_control_auth: bool,
-        last_event_id: Option<&str>,
     ) -> Result<LocalEventStream> {
-        if let Some(last_event_id) = last_event_id {
-            validate_header_value("Last-Event-ID", last_event_id)?;
-        }
         let request = RequestSpec::get(path);
-        let mut builder = self
+        let builder = self
             .build_http_request(&request, include_control_auth)
             .header(reqwest::header::ACCEPT, "text/event-stream");
-        if let Some(last_event_id) = last_event_id {
-            builder = builder.header("Last-Event-ID", last_event_id);
-        }
         let response =
             tokio::time::timeout(self.http_request_timeout_for_path(path), builder.send())
                 .await
@@ -743,15 +735,11 @@ impl LocalClient {
         &self,
         path: &str,
         include_control_auth: bool,
-        last_event_id: Option<&str>,
     ) -> Result<UnixEventStream> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::UnixStream;
 
         validate_unix_request_target(path)?;
-        if let Some(last_event_id) = last_event_id {
-            validate_header_value("Last-Event-ID", last_event_id)?;
-        }
 
         let mut stream = UnixStream::connect(&self.config.socket_path)
             .await
@@ -772,9 +760,6 @@ impl LocalClient {
                     authorization_header_value(token)?
                 ));
             }
-        }
-        if let Some(last_event_id) = last_event_id {
-            raw.push_str(&format!("Last-Event-ID: {last_event_id}\r\n"));
         }
         raw.push_str("Content-Length: 0\r\n\r\n");
 
@@ -1447,10 +1432,10 @@ mod tests {
 
     #[test]
     fn validate_header_value_rejects_crlf_injection() {
-        let err = validate_header_value("Last-Event-ID", "evt_123\r\nInjected: yes")
+        let err = validate_header_value("Authorization", "Bearer token\r\nInjected: yes")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("invalid Last-Event-ID header value"));
+        assert!(err.contains("invalid Authorization header value"));
     }
 
     #[test]

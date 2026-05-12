@@ -2497,7 +2497,7 @@ fn cursor_expiry_marks_refresh_required() {
 fn cursor_not_found_detection_uses_typed_http_error() {
     let err = crate::client::LocalHttpError {
         path: "/agents/default/events".into(),
-        status_code: 410,
+        status_code: 404,
         message: "cursor evt_123 was not found".into(),
         code: Some("cursor_not_found".into()),
         hint: None,

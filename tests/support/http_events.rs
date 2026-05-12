@@ -107,6 +107,18 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     assert_eq!(newer["oldest_cursor"], latest_oldest);
     assert_eq!(newer["newest_cursor"], latest_newest);
 
+    let empty_cursor: serde_json::Value = client
+        .get(format!(
+            "{base}/agents/default/events?cursor=&limit=2&order=desc"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(empty_cursor["events"].as_array().expect("events").len(), 2);
+    assert_eq!(empty_cursor["newest_cursor"], latest_newest);
+    assert_eq!(empty_cursor["oldest_cursor"], latest_oldest);
+
     server.abort();
     Ok(())
 }
