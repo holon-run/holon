@@ -849,13 +849,9 @@ impl RuntimeHandle {
 
     pub async fn run(self) -> Result<()> {
         self.bootstrap_recovery().await?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if guard.state.status == AgentStatus::Booting {
-                guard.state.status = AgentStatus::AwakeIdle;
-                self.inner.storage.write_agent(&guard.state)?;
-            }
-        }
+        scheduler_executor::SchedulerDecisionExecutor::new(&self)
+            .bootstrap_recovered()
+            .await?;
 
         loop {
             let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
