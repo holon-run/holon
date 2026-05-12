@@ -902,26 +902,9 @@ impl RuntimeHandle {
                     ) {
                         scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                     }
-                    let idle_state = {
-                        let guard = self.inner.agent.lock().await;
-                        if !matches!(
-                            guard.state.status,
-                            AgentStatus::Asleep | AgentStatus::Paused | AgentStatus::Stopped
-                        ) && guard.queue.is_empty()
-                        {
-                            drop(guard);
-                            Some(
-                                scheduler_executor::SchedulerDecisionExecutor::new(&self)
-                                    .transition_to_sleep(
-                                        None,
-                                        scheduler_executor::SleepTransitionBoundary::RunLoopIdle,
-                                    )
-                                    .await?,
-                            )
-                        } else {
-                            None
-                        }
-                    };
+                    let idle_state = scheduler_executor::SchedulerDecisionExecutor::new(&self)
+                        .transition_run_loop_idle_to_sleep()
+                        .await?;
                     if let Some(idle_state) = idle_state {
                         self.append_state_changed_events(&idle_state)?;
                     }

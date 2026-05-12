@@ -150,6 +150,55 @@ async fn run_loop_idle_sleep_records_scheduler_owned_posture_decision() {
 }
 
 #[tokio::test]
+async fn run_loop_idle_sleep_rechecks_queue_before_transition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
+        guard.queue.push(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "queued while idle".into(),
+            },
+        ));
+        guard.state.pending = guard.queue.len();
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .transition_run_loop_idle_to_sleep()
+        .await
+        .unwrap();
+
+    assert!(transition.is_none());
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeIdle);
+    assert_eq!(state.pending, 1);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision" && event.data["boundary"] == "run_loop_idle"
+    }));
+}
+
+#[tokio::test]
 async fn explicit_sleep_transition_records_scheduler_owned_posture_decision() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

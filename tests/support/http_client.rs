@@ -12,7 +12,7 @@ use std::{
 use anyhow::Result;
 use async_trait::async_trait;
 use holon::{
-    client::{EventStreamRequest, LocalClient},
+    client::{AgentStreamEvent, EventStreamRequest, LocalClient, LocalEventStream},
     config::{AppConfig, ControlAuthMode},
     daemon::RuntimeServiceHandle,
     host::RuntimeHost,
@@ -43,6 +43,18 @@ use super::{
     spawn_server_with_runtime_config, spawn_unix_server, tempdir, test_config,
     test_config_with_paths, wait_until, ParsedSseEvent,
 };
+
+async fn next_message_admitted_event(stream: &mut LocalEventStream) -> Result<AgentStreamEvent> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = stream.next_event().await?;
+            if event.event == "message_admitted" {
+                return Ok(event);
+            }
+        }
+    })
+    .await?
+}
 
 pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> Result<()> {
     let config = test_config();
@@ -192,7 +204,7 @@ pub async fn local_client_over_http_can_stream_events_with_since_query() -> Resu
             },
         )
         .await?;
-    let first_event = tokio::time::timeout(Duration::from_secs(5), stream.next_event()).await??;
+    let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
     assert_eq!(
@@ -247,7 +259,7 @@ pub async fn local_client_over_http_can_stream_events_with_last_event_id_header(
             },
         )
         .await?;
-    let first_event = tokio::time::timeout(Duration::from_secs(5), stream.next_event()).await??;
+    let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
 
@@ -298,7 +310,7 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_since_query() 
             },
         )
         .await?;
-    let first_event = tokio::time::timeout(Duration::from_secs(5), stream.next_event()).await??;
+    let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
 
@@ -336,7 +348,7 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_last_event_id_
             },
         )
         .await?;
-    let first_event = tokio::time::timeout(Duration::from_secs(5), stream.next_event()).await??;
+    let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
 
