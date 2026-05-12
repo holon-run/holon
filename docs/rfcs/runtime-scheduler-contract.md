@@ -740,7 +740,7 @@ The current implementation has landed the main characterization pieces:
 - active tasks are derived from the task ledger instead of a separate
   `active_task_ids` cache;
 - task lifecycle writes mostly pass through `TaskTransition`;
-- work-queue ticks use explicit WorkItem revision based idempotency keys;
+- work-queue ticks use explicit WorkItem revision-based idempotency keys;
 - turn-local WorkItem binding is distinct from durable current WorkItem focus;
 - scheduler replay fixtures and a debug fixture export command exist.
 
