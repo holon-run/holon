@@ -1,3 +1,5 @@
+use crate::config::CredentialStoreFile;
+
 pub mod fetch;
 pub mod policy;
 pub mod search;
@@ -115,6 +117,10 @@ impl From<&crate::config::WebSearchConfigFile> for WebSearchConfig {
 pub struct WebProviderConfig {
     pub kind: WebProviderKind,
     pub base_url: Option<String>,
+    /// Resolved API key from a credential profile (for API-backed providers).
+    /// Empty when no credential profile is configured.
+    #[serde(skip)]
+    pub api_key: String,
 }
 
 impl From<&crate::config::WebProviderConfigFile> for WebProviderConfig {
@@ -122,7 +128,39 @@ impl From<&crate::config::WebProviderConfigFile> for WebProviderConfig {
         Self {
             kind: value.kind,
             base_url: value.base_url.clone(),
+            api_key: String::new(),
         }
+    }
+}
+
+/// Materialize a resolved WebConfig from the file config and credential store.
+pub fn materialize_web_config(
+    file: &crate::config::WebConfigFile,
+    credential_store: &CredentialStoreFile,
+) -> WebConfig {
+    WebConfig {
+        fetch: WebFetchConfig::from(&file.fetch),
+        search: WebSearchConfig::from(&file.search),
+        providers: file
+            .providers
+            .iter()
+            .map(|(id, provider)| {
+                let api_key = provider
+                    .credential_profile
+                    .as_deref()
+                    .and_then(|profile| credential_store.profiles.get(profile))
+                    .map(|entry| entry.material.clone())
+                    .unwrap_or_default();
+                (
+                    id.clone(),
+                    WebProviderConfig {
+                        kind: provider.kind,
+                        base_url: provider.base_url.clone(),
+                        api_key,
+                    },
+                )
+            })
+            .collect(),
     }
 }
 
@@ -139,4 +177,98 @@ pub enum WebProviderKind {
     OpenAiNative,
     AnthropicNative,
     GeminiNative,
+}
+
+impl WebProviderKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WebProviderKind::DuckDuckGo => "duck_duck_go",
+            WebProviderKind::Searxng => "searxng",
+            WebProviderKind::Brave => "brave",
+            WebProviderKind::Tavily => "tavily",
+            WebProviderKind::Exa => "exa",
+            WebProviderKind::Perplexity => "perplexity",
+            WebProviderKind::Firecrawl => "firecrawl",
+            WebProviderKind::OpenAiNative => "open_ai_native",
+            WebProviderKind::AnthropicNative => "anthropic_native",
+            WebProviderKind::GeminiNative => "gemini_native",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{CredentialProfileFile, CredentialStoreFile, WebProviderConfigFile};
+    use std::collections::BTreeMap;
+
+    fn credential_store_with(profile: &str, material: &str) -> CredentialStoreFile {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            profile.to_string(),
+            CredentialProfileFile {
+                kind: crate::config::CredentialKind::ApiKey,
+                material: material.to_string(),
+            },
+        );
+        CredentialStoreFile { profiles }
+    }
+
+    #[test]
+    fn materialize_resolves_api_key_from_credential_profile() {
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "my_brave".to_string(),
+            WebProviderConfigFile {
+                kind: WebProviderKind::Brave,
+                base_url: None,
+                credential_profile: Some("brave_key".to_string()),
+            },
+        );
+        let file = crate::config::WebConfigFile {
+            fetch: Default::default(),
+            search: Default::default(),
+            providers,
+        };
+        let store = credential_store_with("brave_key", "test-api-key-123");
+        let config = materialize_web_config(&file, &store);
+        let provider = config.providers.get("my_brave").unwrap();
+        assert_eq!(provider.api_key, "test-api-key-123");
+        assert_eq!(provider.kind, WebProviderKind::Brave);
+    }
+
+    #[test]
+    fn materialize_empty_api_key_without_credential_profile() {
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "my_tavily".to_string(),
+            WebProviderConfigFile {
+                kind: WebProviderKind::Tavily,
+                base_url: None,
+                credential_profile: None,
+            },
+        );
+        let file = crate::config::WebConfigFile {
+            fetch: Default::default(),
+            search: Default::default(),
+            providers,
+        };
+        let store = CredentialStoreFile::default();
+        let config = materialize_web_config(&file, &store);
+        let provider = config.providers.get("my_tavily").unwrap();
+        assert!(provider.api_key.is_empty());
+    }
+
+    #[test]
+    fn materialize_missing_credential_profile_yields_empty_key() {
+        let file = crate::config::WebConfigFile::default();
+        // File with no providers but credential_profile references a non-existent profile
+        let store = credential_store_with("other", "irrelevant");
+        let config = materialize_web_config(&file, &store);
+        assert!(config.providers.is_empty());
+        // Default WebConfig has no providers
+        let default = WebConfig::default();
+        assert!(default.providers.is_empty());
+        assert_eq!(default.search.provider, "auto");
+    }
 }

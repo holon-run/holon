@@ -1158,6 +1158,7 @@ mod tests {
             validated_model_overrides: Default::default(),
             validated_unknown_model_fallback: None,
             providers: provider_registry_for_tests(None, Some("dummy"), home.join(".codex")),
+            web_config: holon::web::WebConfig::default(),
         }
     }
 

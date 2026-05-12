@@ -114,6 +114,7 @@ pub struct AppConfig {
     pub control_auth_mode: ControlAuthMode,
     pub config_file_path: PathBuf,
     pub stored_config: HolonConfigFile,
+    pub web_config: crate::web::WebConfig,
     pub default_model: ModelRef,
     pub fallback_models: Vec<ModelRef>,
     pub runtime_max_output_tokens: u32,
@@ -389,6 +390,11 @@ pub struct WebProviderConfigFile {
     pub kind: WebProviderKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// Named credential profile to load the API key from.
+    /// When set, the profile must exist in the credential store
+    /// and must be of kind `api_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -560,6 +566,7 @@ impl AppConfig {
             .transpose()?
             .or(stored_config.tui.alternate_screen)
             .unwrap_or(AltScreenMode::Auto);
+        let web_config = crate::web::materialize_web_config(&stored_config.web, &credential_store);
 
         Ok(Self {
             default_agent_id,
@@ -582,6 +589,7 @@ impl AppConfig {
             control_auth_mode,
             config_file_path,
             stored_config,
+            web_config,
             default_model,
             fallback_models,
             runtime_max_output_tokens,
@@ -1426,6 +1434,27 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             default: json!(crate::web::WebSearchConfig::default().max_results),
             allowed_values: vec![],
         },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.kind",
+            kind: "string",
+            description: "Web search provider kind: duck_duck_go, searxng, brave, tavily, exa, perplexity, firecrawl, open_ai_native, anthropic_native, gemini_native.",
+            default: Value::Null,
+            allowed_values: vec!["duck_duck_go", "searxng", "brave", "tavily", "exa", "perplexity", "firecrawl", "open_ai_native", "anthropic_native", "gemini_native"],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.base_url",
+            kind: "string",
+            description: "Optional custom base URL for the web search provider.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.credential_profile",
+            kind: "string",
+            description: "Named credential profile to load the API key from. The profile must be of kind api_key.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
     ]
 }
 
@@ -1572,6 +1601,45 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .max_results
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "web.providers" => Ok(serde_json::to_value(&config.web.providers)?),
+        key if key.starts_with("web.providers.") => {
+            let name = key.strip_prefix("web.providers.").unwrap();
+            if let Some(provider_name) = name.strip_suffix(".kind") {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .map(|p| Value::String(p.kind.as_str().to_string()))
+                    .unwrap_or(Value::Null));
+            }
+            if let Some(provider_name) = name.strip_suffix(".base_url") {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.base_url.as_ref())
+                    .map(|v| Value::String(v.clone()))
+                    .unwrap_or(Value::Null));
+            }
+            if let Some(provider_name) = name.strip_suffix(".credential_profile") {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.credential_profile.as_ref())
+                    .map(|v| Value::String(v.clone()))
+                    .unwrap_or(Value::Null));
+            }
+            if name.is_empty() {
+                return Err(anyhow!(
+                    "web.providers.<name> requires a non-empty provider name"
+                ));
+            }
+            match config.web.providers.get(name) {
+                Some(provider) => Ok(serde_json::to_value(provider)?),
+                None => Ok(Value::Null),
+            }
+        }
         _ => Err(unknown_config_key(key)),
     }
 }
@@ -1680,6 +1748,63 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "web.search.max_results" => {
             config.web.search.max_results = Some(parse_positive_usize_key(key, raw_value)?);
         }
+        key if key.starts_with("web.providers.") && key.ends_with(".kind") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".kind").unwrap();
+            if name.is_empty() {
+                return Err(anyhow!(
+                    "web.providers.<name>.kind requires a non-empty provider name"
+                ));
+            }
+            let kind: WebProviderKind = serde_json::from_str(&format!("\"{}\"", raw_value.trim()))
+                .with_context(|| format!("invalid web provider kind: {}", raw_value))?;
+            config
+                .web
+                .providers
+                .entry(name.to_string())
+                .or_insert_with(|| WebProviderConfigFile {
+                    kind,
+                    base_url: None,
+                    credential_profile: None,
+                })
+                .kind = kind;
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".base_url") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".base_url").unwrap();
+            if name.is_empty() {
+                return Err(anyhow!(
+                    "web.providers.<name>.base_url requires a non-empty provider name"
+                ));
+            }
+            let provider = config.web.providers.get_mut(name).ok_or_else(|| {
+                anyhow!("web provider {name} not found; set web.providers.{name}.kind first")
+            })?;
+            let value = raw_value.trim();
+            provider.base_url = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".credential_profile") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".credential_profile").unwrap();
+            if name.is_empty() {
+                return Err(anyhow!(
+                    "web.providers.<name>.credential_profile requires a non-empty provider name"
+                ));
+            }
+            let provider = config.web.providers.get_mut(name).ok_or_else(|| {
+                anyhow!("web provider {name} not found; set web.providers.{name}.kind first")
+            })?;
+            let value = raw_value.trim();
+            provider.credential_profile = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
         _ => return Err(unknown_config_key(key)),
     }
     Ok(())
@@ -1734,6 +1859,18 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "web.search.enabled" => config.web.search.enabled = None,
         "web.search.provider" => config.web.search.provider = None,
         "web.search.max_results" => config.web.search.max_results = None,
+        key if key.starts_with("web.providers.") => {
+            let name = key.strip_prefix("web.providers.").unwrap();
+            if name.is_empty() {
+                return Err(anyhow!(
+                    "web.providers.<name> requires a non-empty provider name"
+                ));
+            }
+            if config.web.providers.remove(name).is_none() {
+                return Err(anyhow!("web provider {name} not found"));
+            }
+            return Ok(());
+        }
         _ => return Err(unknown_config_key(key)),
     }
     Ok(())
@@ -3063,6 +3200,9 @@ fn unknown_config_key(key: &str) -> anyhow::Error {
     if is_startup_only_config_key(key) {
         return startup_only_config_key_error(key);
     }
+    if key.starts_with("web.providers.") {
+        return anyhow!("unknown web providers config key {key}; supported fields: .kind, .base_url, .credential_profile; use web.providers.<name>.kind to create a provider first");
+    }
     let supported = config_schema()
         .into_iter()
         .map(|entry| entry.key)
@@ -3188,6 +3328,7 @@ mod tests {
                 Some("anthropic-token"),
                 PathBuf::from("/tmp/codex-home"),
             ),
+            web_config: crate::web::WebConfig::default(),
         };
         TestAppConfigFixture {
             _home_dir: home_dir,

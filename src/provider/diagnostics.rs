@@ -282,6 +282,7 @@ mod tests {
                 Some("anthropic-token"),
                 PathBuf::new(),
             ),
+            web_config: crate::web::WebConfig::default(),
         };
         TestConfigFixture {
             _home_dir: home_dir,
