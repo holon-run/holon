@@ -32,7 +32,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_spawn_agent",
             PromptStability::Stable,
-            "Use SpawnAgent when you need another agent context rather than a command task. SpawnAgent selects behavior through a small `preset` surface: omit it or use `private_child` for the default bounded delegated child, or use `public_named` when you intentionally want a self-owned public agent. Provide one caller text field: `initial_message`. For `private_child`, `initial_message` is required, becomes the child's first delegation message, and is also the source for the parent-visible task label; `private_child` returns both `agent_id` and a structured `task_handle`, and you should pass `task_handle.task_id` to TaskStatus, TaskOutput, or TaskStop for supervision. For `public_named`, `agent_id` is required and `initial_message` is optional bootstrap input; it returns only `agent_id` because it is not parent-supervised through a task handle. Do not pass `summary`, `task_summary`, `prompt`, or `work_item` to SpawnAgent. When the delegated agent should start from a reusable role bootstrap, set `template` to either a simple `template_id`, an absolute local template path, or a GitHub template URL; the template only initializes that agent's own `agent_home/AGENTS.md` and agent-local skills, and later edits to the agent's local state remain authoritative. Prefer `workspace_mode=worktree` only for `private_child` when the child truly needs isolated file changes; keep inherited workspace otherwise. SpawnAgent is for bounded delegation or explicit agent creation, not for handing off overall understanding or opening an unconstrained worker swarm.".to_string(),
+            "Use SpawnAgent when you need another agent context rather than a command task. SpawnAgent selects behavior through a small `preset` surface: omit it or use `private_child` for the default bounded delegated child, or use `public_named` when you intentionally want a self-owned public agent. Provide one caller text field: `initial_message`. For `private_child`, `initial_message` is required, becomes the child's first delegation message, and is also the source for the parent-visible task label; `private_child` returns both `agent_id` and a structured `task_handle`. You may pass `task_handle.task_id` to TaskStatus, TaskOutput, TaskInput, or TaskStop when you need active supervision, intermediate output inspection, follow-up input, or explicit stop control; you do not need to poll the handle just to wait for completion because terminal child results re-enter the parent through the runtime event loop. For `public_named`, `agent_id` is required and `initial_message` is optional bootstrap input; it returns only `agent_id` because it is not parent-supervised through a task handle. Do not pass `summary`, `task_summary`, `prompt`, or `work_item` to SpawnAgent. When the delegated agent should start from a reusable role bootstrap, set `template` to either a simple `template_id`, an absolute local template path, or a GitHub template URL; the template only initializes that agent's own `agent_home/AGENTS.md` and agent-local skills, and later edits to the agent's local state remain authoritative. Prefer `workspace_mode=worktree` only for `private_child` when the child truly needs isolated file changes; keep inherited workspace otherwise. SpawnAgent is for bounded delegation or explicit agent creation, not for handing off overall understanding or opening an unconstrained worker swarm.".to_string(),
         ));
     }
     if names.contains(&"AgentGet") {
@@ -90,7 +90,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_task_control",
             PromptStability::Stable,
-            "Use TaskList to inspect background work when coordinating longer flows. TaskList is intentionally compact and only shows a digest view such as id, kind, status, summary, updated_at, and wait_policy. Use TaskStatus for structured lifecycle metadata; it returns a stable envelope with a compact `task` snapshot rather than raw output bytes or full internal task detail. Use TaskInput when a managed task explicitly needs continuation input. Command tasks accept stdin or tty input there only when they were created with interactive continuation enabled, and parent-supervised child handles accept bounded follow-up input on the same surface. Check TaskStatus before sending input so you can confirm the task kind, lifecycle state, and whether the command snapshot still advertises `accepts_input`; if the task is not currently accepting input, expect a structured rejection receipt instead of assuming transport failure. For child supervision handles, expect `input_target=child_followup` instead of stdin-style delivery. Use TaskOutput to read actual task output or wait for completion; its canonical result is `{ retrieval_status, task }`, but the command-family tool receipt shown back to the model is a compact text summary with task status, preview text, and artifact refs when present. For command tasks specifically, TaskOutput keeps bounded `output_preview` plus path-only artifact refs for full output, while TaskStatus returns coordination metadata such as `output_path`, `result_summary`, `exit_status`, and continuation hints. Use TaskStop only when a task is clearly no longer useful, is blocking progress, or has become irrelevant; it returns a structured stop receipt with the updated task snapshot, and command task stop may first report `cancelling` before the final `cancelled` result arrives. In longer sessions with multiple subtasks: (1) use TaskList to see overall task status at a glance, (2) use TaskStatus to inspect lifecycle metadata before deciding what to do next, (3) use TaskInput only when a managed task truly needs follow-up input, (4) use TaskOutput when you need the bounded preview or need to wait, (5) use TaskStop when explicit stop semantics are actually needed. These tools add value in multi-step coordination but should not be forced into simple single-turn tasks.".to_string(),
+            "Use TaskList to inspect background work when coordinating longer flows. TaskList is intentionally compact and only shows a digest view such as id, kind, status, summary, updated_at, and wait_policy. Use TaskStatus for structured lifecycle metadata; it returns a stable envelope with a compact `task` snapshot rather than raw output bytes or full internal task detail. Use TaskInput when a managed task explicitly needs continuation input. Command tasks accept stdin or tty input there only when they were created with interactive continuation enabled, and parent-supervised child handles accept bounded follow-up input on the same surface. Check TaskStatus before sending input so you can confirm the task kind, lifecycle state, and whether the command snapshot still advertises `accepts_input`; if the task is not currently accepting input, expect a structured rejection receipt instead of assuming transport failure. For child supervision handles, expect `input_target=child_followup` instead of stdin-style delivery. Use TaskOutput when you need a bounded output preview, artifact refs, or an explicit short synchronous check inside the current turn; its canonical result is `{ retrieval_status, task }`, but the command-family tool receipt shown back to the model is a compact text summary with task status, preview text, and artifact refs when present. Do not use TaskOutput polling as the default way to wait for a child agent or command task to finish; when you are simply waiting for completion, call Sleep and let the runtime wake you from the terminal TaskResult event. For command tasks specifically, TaskOutput keeps bounded `output_preview` plus path-only artifact refs for full output, while TaskStatus returns coordination metadata such as `output_path`, `result_summary`, `exit_status`, and continuation hints. Use TaskStop only when a task is clearly no longer useful, is blocking progress, or has become irrelevant; it returns a structured stop receipt with the updated task snapshot, and command task stop may first report `cancelling` before the final `cancelled` result arrives. In longer sessions with multiple subtasks: (1) use TaskList to see overall task status at a glance, (2) use TaskStatus to inspect lifecycle metadata before deciding what to do next, (3) use TaskInput only when a managed task truly needs follow-up input, (4) use TaskOutput only when you need bounded output inspection or an explicit current-turn check, (5) use Sleep when waiting for task completion without immediate intervention, and (6) use TaskStop when explicit stop semantics are actually needed. These tools add value in multi-step coordination but should not be forced into simple single-turn tasks.".to_string(),
         ));
     }
     if names.contains(&"ExecCommand") {
@@ -174,7 +174,18 @@ mod tests {
             freeform_grammar: None,
         }];
         let sections = tool_sections(&tools);
-        assert!(sections.iter().any(|s| s.name == "tool_spawn_agent"));
+        let section = sections
+            .iter()
+            .find(|s| s.name == "tool_spawn_agent")
+            .expect("spawn agent section");
+        assert!(section
+            .content
+            .contains("You may pass `task_handle.task_id`"));
+        assert!(section.content.contains("active supervision"));
+        assert!(section
+            .content
+            .contains("you do not need to poll the handle just to wait for completion"));
+        assert!(section.content.contains("runtime event loop"));
     }
 
     #[test]
@@ -241,7 +252,20 @@ mod tests {
             freeform_grammar: None,
         }];
         let sections = tool_sections(&tools);
-        assert!(sections.iter().any(|s| s.name == "tool_task_control"));
+        let section = sections
+            .iter()
+            .find(|s| s.name == "tool_task_control")
+            .expect("task control section");
+        assert!(section
+            .content
+            .contains("Do not use TaskOutput polling as the default way"));
+        assert!(section
+            .content
+            .contains("call Sleep and let the runtime wake you"));
+        assert!(section.content.contains("terminal TaskResult event"));
+        assert!(section
+            .content
+            .contains("bounded output inspection or an explicit current-turn check"));
     }
 
     #[test]
