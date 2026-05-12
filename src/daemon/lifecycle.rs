@@ -1,6 +1,7 @@
 use std::{
     ffi::OsString,
     fs,
+    future::Future,
     process::{Child, Command, Stdio},
     time::Duration,
 };
@@ -31,7 +32,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const START_STABILITY_WINDOW: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
-const UNIX_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+const UNIX_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub async fn daemon_status(config: &AppConfig) -> Result<DaemonStatusView> {
     let fingerprint = config_fingerprint(config)?;
@@ -519,12 +520,29 @@ async fn best_effort_cleanup_spawned_start(config: &AppConfig, child: &mut Child
     let _ = cleanup_daemon_state(config);
 }
 
-async fn wait_for_startup_stability(
+pub(crate) async fn wait_for_startup_stability(
     config: &AppConfig,
     child: &mut Child,
     expected_pid: u32,
     expected_fingerprint: &str,
 ) -> Result<()> {
+    wait_for_startup_stability_with_probe(config, child, expected_pid, expected_fingerprint, || {
+        probe_runtime(config)
+    })
+    .await
+}
+
+pub(crate) async fn wait_for_startup_stability_with_probe<F, Fut>(
+    config: &AppConfig,
+    child: &mut Child,
+    expected_pid: u32,
+    expected_fingerprint: &str,
+    mut probe: F,
+) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ProbeRuntime>,
+{
     let deadline = tokio::time::Instant::now() + START_STABILITY_WINDOW;
     loop {
         if let Some(exit) = child.try_wait().context("failed to inspect child status")? {
@@ -533,7 +551,7 @@ async fn wait_for_startup_stability(
             ));
         }
 
-        match probe_runtime(config).await {
+        match probe().await {
             ProbeRuntime::Running(status) => {
                 if status.pid != expected_pid {
                     return Err(anyhow!(
@@ -549,6 +567,13 @@ async fn wait_for_startup_stability(
                 }
             }
             ProbeRuntime::Stopped { occupied_socket } => {
+                if occupied_socket && tokio::time::Instant::now() >= deadline {
+                    return Ok(());
+                }
+                if should_retry_startup_stability_probe(occupied_socket, deadline) {
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                    continue;
+                }
                 return Err(anyhow!(
                     "runtime became unreachable during startup stabilization{}",
                     if occupied_socket {
@@ -570,6 +595,13 @@ async fn wait_for_startup_stability(
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+pub(crate) fn should_retry_startup_stability_probe(
+    occupied_socket: bool,
+    deadline: tokio::time::Instant,
+) -> bool {
+    occupied_socket && tokio::time::Instant::now() < deadline
 }
 
 async fn wait_for_shutdown(config: &AppConfig, timeout: Duration) -> Result<()> {
