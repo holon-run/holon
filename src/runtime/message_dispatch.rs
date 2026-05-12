@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) struct MessageDispatchPlan {
     pub(super) prior_closure: ClosureDecision,
-    pub(super) task: Option<TaskRecord>,
+    pub(super) task: Result<Option<TaskRecord>>,
     pub(super) continuation_trigger: Option<ContinuationTrigger>,
     pub(super) continuation_resolution: Option<ContinuationResolution>,
     pub(super) model_turn_allowed: bool,
@@ -18,11 +18,12 @@ impl RuntimeHandle {
     ) -> Result<MessageDispatchPlan> {
         let task = match message.kind {
             MessageKind::TaskStatus | MessageKind::TaskResult => {
-                Some(tasks::task_from_message(message, &message.agent_id)?)
+                tasks::task_from_message(message, &message.agent_id).map(Some)
             }
-            _ => None,
+            _ => Ok(None),
         };
-        let continuation_trigger = ContinuationTrigger::from_message(message, task.as_ref());
+        let continuation_trigger =
+            ContinuationTrigger::from_message(message, task.as_ref().ok().and_then(Option::as_ref));
         let continuation_resolution = continuation_trigger
             .as_ref()
             .map(|trigger| resolve_continuation(&prior_closure, trigger));
@@ -45,7 +46,8 @@ impl RuntimeHandle {
         })
     }
 
-    #[allow(dead_code)]
+    // Tests and direct runtime probes still exercise the per-message entrypoint.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) async fn process_message(
         &self,
         message: MessageEnvelope,
@@ -89,6 +91,7 @@ impl RuntimeHandle {
             model_visible,
             ..
         } = plan;
+        let task = task?;
         if let Some(trigger) = continuation_trigger.as_ref() {
             self.record_continuation_trigger_received(&message, trigger, &prior_closure)
                 .await?;

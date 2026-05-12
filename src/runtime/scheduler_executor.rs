@@ -33,7 +33,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let candidate = {
             let guard = self.runtime.inner.agent.lock().await;
             if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
-                return self.shutdown(guard).await;
+                return self.shutdown(guard);
             }
             if guard.state.status == AgentStatus::Stopped {
                 return Ok(RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len()));
@@ -54,7 +54,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         self.prepare_message(candidate).await
     }
 
-    async fn shutdown(
+    fn shutdown(
         &self,
         mut guard: tokio::sync::MutexGuard<'_, RuntimeAgent>,
     ) -> Result<RunLoopPoll> {
@@ -91,7 +91,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let (message, running_state) = {
             let mut guard = self.runtime.inner.agent.lock().await;
             if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
-                return self.shutdown(guard).await;
+                return self.shutdown(guard);
             }
             if matches!(
                 guard.state.status,

@@ -194,10 +194,10 @@ pub(crate) struct SchedulerDecision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum SchedulerBoundary {
     RunLoop,
     RunLoopIdle,
+    #[allow(dead_code)]
     MessageProcessing,
     IdleTick,
 }
