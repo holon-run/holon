@@ -97,6 +97,77 @@ async fn runtime_replays_unprocessed_queue_messages_after_restart() {
 }
 
 #[tokio::test]
+async fn runtime_records_scheduler_decision_before_dequeueing_message() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("scheduled")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "schedule me".into(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    let runtime_task = tokio::spawn(runtime.clone().run());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let events = runtime.storage().read_recent_events(200).unwrap();
+        if events
+            .iter()
+            .any(|event| event.kind == "message_processing_started")
+        {
+            let decision_index = events
+                .iter()
+                .position(|event| {
+                    event.kind == "scheduler_decision"
+                        && event.data["message_id"] == message.id.as_str()
+                        && event.data["boundary"] == "run_loop"
+                })
+                .expect("run loop scheduler decision should be recorded");
+            let processing_index = events
+                .iter()
+                .position(|event| event.kind == "message_processing_started")
+                .expect("message processing should start");
+            assert!(
+                decision_index < processing_index,
+                "scheduler decision should be recorded before message processing starts"
+            );
+            let decision = &events[decision_index];
+            assert_eq!(decision.data["decision"], "StartModelTurn");
+            assert_eq!(decision.data["model_visible"], true);
+            assert!(!events.iter().any(|event| {
+                event.kind == "scheduler_decision"
+                    && event.data["message_id"] == message.id.as_str()
+                    && event.data["boundary"] == "message_processing"
+            }));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "message was not processed before deadline"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    runtime_task.abort();
+}
+
+#[tokio::test]
 async fn runtime_interrupts_inflight_task_after_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

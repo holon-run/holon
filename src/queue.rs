@@ -37,6 +37,22 @@ impl RuntimeQueue {
             .or_else(|| self.background.pop_front())
     }
 
+    pub fn peek(&self) -> Option<&MessageEnvelope> {
+        self.interrupt
+            .front()
+            .or_else(|| self.next.front())
+            .or_else(|| self.normal.front())
+            .or_else(|| self.background.front())
+    }
+
+    pub fn pop_if_next(&mut self, message_id: &str) -> Option<MessageEnvelope> {
+        if self.peek().is_some_and(|message| message.id == message_id) {
+            self.pop()
+        } else {
+            None
+        }
+    }
+
     pub fn pop_interrupt_operator_prompt(&mut self) -> Option<MessageEnvelope> {
         let position = self.interrupt.iter().position(|message| {
             matches!(
@@ -123,6 +139,22 @@ mod tests {
             queue.pop().unwrap().body,
             MessageBody::Text { text: "n2".into() }
         );
+    }
+
+    #[test]
+    fn peek_and_pop_if_next_use_priority_head() {
+        let mut queue = RuntimeQueue::default();
+        let normal = msg(Priority::Normal, "normal");
+        let interrupt = msg(Priority::Interrupt, "interrupt");
+        let normal_id = normal.id.clone();
+        let interrupt_id = interrupt.id.clone();
+        queue.push(normal);
+        queue.push(interrupt);
+
+        assert_eq!(queue.peek().unwrap().id, interrupt_id);
+        assert!(queue.pop_if_next(&normal_id).is_none());
+        assert_eq!(queue.pop_if_next(&interrupt_id).unwrap().id, interrupt_id);
+        assert_eq!(queue.pop_if_next(&normal_id).unwrap().id, normal_id);
     }
 
     #[test]
