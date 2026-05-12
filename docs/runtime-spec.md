@@ -1825,6 +1825,10 @@ item owned by the agent.
 
 - `work_item_id` is required
 - `result_summary` is optional completion metadata
+- completion is an explicit agent assertion; it is not blocked by generic
+  active task `wait_policy`
+- completion clears `blocked_by` and cancels work-item-scoped waiting intents
+  for that work item
 
 There is no separate agent-facing `UpdateWorkPlan` tool and no separate
 work-plan storage stream. Plan and todo state live on the latest
@@ -1832,6 +1836,11 @@ work-plan storage stream. Plan and todo state live on the latest
 
 These tools are part of the explicit adoption path for work items. They do not
 require runtime-side semantic resolution of arbitrary ingress into a work item.
+Use `blocked_by` for simple durable human-readable blockers. Use work-item
+scoped waiting intents for external conditions such as PR review, CI, merge, or
+durable inbox changes. `TaskOutput(block=true)` is only a turn-local explicit
+wait for a bounded task output check; it does not create or clear durable
+work-item dependency state.
 
 Work-item updates are coordination state, not the artifact progress ledger.
 Prompt guidance should frame plan_status, plan, and todo_list updates as
@@ -2173,6 +2182,13 @@ When an external system delivers to the trigger URL:
    - `enqueue_message`: enqueues structured content as a message
    - `wake_hint`: submits a wake hint (may become `SystemTick`)
 4. Updates delivery tracking (trigger count, last triggered at)
+5. Records callback provenance including waiting intent id, external trigger
+   id, scope, source, resource, and the bound work item id when present
+
+External trigger delivery does not automatically clear `blocked_by`, cancel the
+waiting intent, or complete the work item. The delivery wakes or re-enters the
+agent with provenance; the agent must inspect the evidence and explicitly call
+`UpdateWorkItem`, `CompleteWorkItem`, or `CancelExternalTrigger` as appropriate.
 
 ### CancelExternalTrigger
 

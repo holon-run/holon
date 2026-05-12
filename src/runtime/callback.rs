@@ -171,6 +171,7 @@ impl RuntimeHandle {
                 message.metadata = Some(serde_json::json!({
                     "waiting_intent_id": waiting.id,
                     "external_trigger_id": external_trigger_id,
+                    "work_item_id": waiting.work_item_id,
                     "description": waiting.description,
                     "source": waiting.source,
                     "scope": waiting.scope,
@@ -239,9 +240,13 @@ impl RuntimeHandle {
             serde_json::json!({
                 "agent_id": agent_id,
                 "waiting_intent_id": updated_waiting.id,
+                "work_item_id": updated_waiting.work_item_id,
                 "external_trigger_id": updated_descriptor_id,
                 "scope": updated_descriptor.scope,
                 "delivery_mode": updated_descriptor.delivery_mode,
+                "source": updated_waiting.source,
+                "resource": updated_waiting.resource,
+                "trigger_count": updated_waiting.trigger_count,
                 "origin": "callback",
                 "delivery_surface": delivery_surface,
                 "disposition": disposition,

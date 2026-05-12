@@ -678,30 +678,6 @@ pub(crate) fn is_operator_interjection_message(message: &MessageEnvelope) -> boo
     )
 }
 
-pub(crate) fn active_task_blocks_work_item_completion(
-    task: &TaskRecord,
-    work_item_id: &str,
-) -> bool {
-    if !task.is_blocking() || is_terminal_task_status(&task.status) {
-        return false;
-    }
-    match task.effective_work_item_id() {
-        Some(id) => id == work_item_id,
-        None => true,
-    }
-}
-
-pub(crate) fn has_completion_blocking_task_for_work_item(
-    storage: &AppStorage,
-    agent_id: &str,
-    work_item_id: &str,
-) -> Result<bool> {
-    Ok(storage
-        .latest_active_task_records_for_agent(agent_id, usize::MAX)?
-        .iter()
-        .any(|task| active_task_blocks_work_item_completion(task, work_item_id)))
-}
-
 pub(crate) fn work_queue_tick_idempotency_key(work_item: &WorkItemRecord, reason: &str) -> String {
     format!(
         "work_queue:{}:{}:{}",

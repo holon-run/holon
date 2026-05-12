@@ -434,8 +434,10 @@ Invariants:
 - a work-queue `queued_available` tick must not mutate current work;
 - completing a work item clears it from current focus;
 - completing a work item cancels work-item-scoped waiting intents;
-- work-item completion should be blocked only by relevant blocking tasks once
-  task-to-work-item association is available.
+- work-item completion is an explicit agent assertion and should not be blocked
+  by generic task wait policy; durable waits live in `blocked_by` or
+  work-item-scoped waiting intents until the agent updates or completes the
+  work item.
 
 `current_work_item_id` and `current_turn_work_item_id` should remain distinct:
 
@@ -914,8 +916,8 @@ struct TaskRecord {
 
 This lets Holon answer scheduler questions directly:
 
-- which WorkItem is this blocking task related to?
-- can this WorkItem complete while unrelated tasks are still running?
+- which WorkItem is this task result related to?
+- can this WorkItem continue while unrelated tasks are still running?
 - should this task result satisfy the current wait?
 - how should `/tasks` and state snapshots group active work?
 
