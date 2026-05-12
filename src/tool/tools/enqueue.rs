@@ -21,6 +21,8 @@ pub(crate) const NAME: &str = "Enqueue";
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 pub(crate) enum EnqueuePriority {
+    // TODO: remove `interrupt` alias after older prompt/tool-call contexts have migrated.
+    #[serde(alias = "interrupt")]
     Interject,
     Next,
     Normal,
@@ -82,4 +84,20 @@ pub(crate) async fn execute(
             summary_text: Some(format!("enqueued follow-up: {text}")),
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_interrupt_priority_deserializes_as_interject() {
+        let args: EnqueueArgs = serde_json::from_value(serde_json::json!({
+            "text": "follow up",
+            "priority": "interrupt"
+        }))
+        .unwrap();
+
+        assert!(matches!(args.priority, Some(EnqueuePriority::Interject)));
+    }
 }

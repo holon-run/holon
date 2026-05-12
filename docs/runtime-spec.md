@@ -1215,8 +1215,9 @@ type Priority = 'interject' | 'next' | 'normal' | 'background'
 
 ### Priority Meaning
 
-- `interject`: trusted operator prompt that should be inserted at the next
-  provider/tool safe point
+- `interject`: highest-priority scheduling class. Trusted operator prompts with
+  this priority may be inserted at the next provider/tool safe point; other
+  messages still use it only as the highest queue priority.
 - `next`: should run after the current step completes
 - `normal`: default foreground work
 - `background`: low-urgency or deferred work

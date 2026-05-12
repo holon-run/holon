@@ -573,6 +573,8 @@ pub enum ContinuationClass {
 pub struct ContinuationResolution {
     pub trigger_kind: ContinuationTriggerKind,
     pub class: ContinuationClass,
+    // TODO: remove `model_visible` alias after one persisted-state upgrade window.
+    #[serde(alias = "model_visible")]
     pub model_reentry: bool,
     pub prior_closure_outcome: ClosureOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -779,6 +781,8 @@ pub enum TrustLevel {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
+    // TODO: remove `interrupt` alias after older ledgers and request clients have migrated.
+    #[serde(alias = "interrupt")]
     Interject,
     Next,
     Normal,
@@ -2781,6 +2785,8 @@ pub enum QueueEntryStatus {
     Dequeued,
     Processed,
     Interjected,
+    // TODO: remove `interrupted` alias after older queue ledgers have migrated.
+    #[serde(alias = "interrupted")]
     Aborted,
     Dropped,
 }
@@ -3318,6 +3324,36 @@ mod tests {
         assert_eq!(
             AuthorityClass::from_trust(&TrustLevel::UntrustedExternal),
             AuthorityClass::ExternalEvidence
+        );
+    }
+
+    #[test]
+    fn legacy_scheduler_contract_names_deserialize_as_current_terms() {
+        let continuation: ContinuationResolution = serde_json::from_value(serde_json::json!({
+            "trigger_kind": "task_result",
+            "class": "local_continuation",
+            "model_visible": true,
+            "prior_closure_outcome": "continuable",
+            "prior_waiting_reason": null,
+            "matched_waiting_reason": false,
+            "evidence": []
+        }))
+        .unwrap();
+        assert!(continuation.model_reentry);
+
+        let priority: Priority = serde_json::from_value(serde_json::json!("interrupt")).unwrap();
+        assert_eq!(priority, Priority::Interject);
+        assert_eq!(
+            serde_json::to_value(priority).unwrap(),
+            serde_json::json!("interject")
+        );
+
+        let status: QueueEntryStatus =
+            serde_json::from_value(serde_json::json!("interrupted")).unwrap();
+        assert_eq!(status, QueueEntryStatus::Aborted);
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            serde_json::json!("aborted")
         );
     }
 
