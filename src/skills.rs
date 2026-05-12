@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     time::Duration,
 };
 
@@ -404,6 +404,10 @@ fn command_output_with_timeout(
     command: &mut Command,
     timeout: Duration,
 ) -> std::io::Result<Option<Output>> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = command.spawn()?;
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -1517,6 +1521,23 @@ mod tests {
         for package in ["vercel-labs/agent-skills", "@scope/package", "agent-skills"] {
             validate_remote_package(package).unwrap();
         }
+    }
+
+    #[test]
+    fn command_output_with_timeout_captures_failed_process_output() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "read ignored || true; printf captured-stdout; printf captured-stderr >&2; exit 7",
+        ]);
+
+        let output = command_output_with_timeout(&mut command, Duration::from_secs(5))
+            .unwrap()
+            .expect("process should exit before timeout");
+
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(bounded_output_excerpt(&output.stdout), "captured-stdout");
+        assert_eq!(bounded_output_excerpt(&output.stderr), "captured-stderr");
     }
 
     #[test]
