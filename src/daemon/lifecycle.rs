@@ -31,7 +31,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const START_STABILITY_WINDOW: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
-const UNIX_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+const UNIX_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub async fn daemon_status(config: &AppConfig) -> Result<DaemonStatusView> {
     let fingerprint = config_fingerprint(config)?;
@@ -549,6 +549,10 @@ async fn wait_for_startup_stability(
                 }
             }
             ProbeRuntime::Stopped { occupied_socket } => {
+                if should_retry_startup_stability_probe(occupied_socket, deadline) {
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                    continue;
+                }
                 return Err(anyhow!(
                     "runtime became unreachable during startup stabilization{}",
                     if occupied_socket {
@@ -570,6 +574,13 @@ async fn wait_for_startup_stability(
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+pub(crate) fn should_retry_startup_stability_probe(
+    occupied_socket: bool,
+    deadline: tokio::time::Instant,
+) -> bool {
+    occupied_socket && tokio::time::Instant::now() < deadline
 }
 
 async fn wait_for_shutdown(config: &AppConfig, timeout: Duration) -> Result<()> {

@@ -1,4 +1,7 @@
-use super::lifecycle::{effective_config_mismatch_summary, probe_runtime, ProbeRuntime};
+use super::lifecycle::{
+    effective_config_mismatch_summary, probe_runtime, should_retry_startup_stability_probe,
+    ProbeRuntime,
+};
 use super::state::{
     persist_last_runtime_failure, DAEMON_LOG_TAIL_LINE_CHAR_LIMIT, DAEMON_LOG_TAIL_READ_BYTE_LIMIT,
 };
@@ -381,6 +384,25 @@ async fn probe_runtime_treats_non_socket_path_as_stale() {
             panic!("expected stale runtime probe, got incompatible: {details}")
         }
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn startup_stability_retries_transient_occupied_socket_probe_failure() {
+    let future_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    assert!(should_retry_startup_stability_probe(true, future_deadline));
+
+    let expired_deadline = tokio::time::Instant::now() - std::time::Duration::from_millis(1);
+    assert!(!should_retry_startup_stability_probe(
+        true,
+        expired_deadline
+    ));
+
+    let future_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    assert!(!should_retry_startup_stability_probe(
+        false,
+        future_deadline
+    ));
 }
 
 #[cfg(unix)]
