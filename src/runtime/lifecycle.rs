@@ -229,30 +229,18 @@ impl RuntimeHandle {
         self.inner
             .shutdown_requested
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let mut aborted_run_id = None;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if let Some(handle) = guard.current_run_abort.as_ref() {
-                if let Ok(mut reason) = handle.reason.lock() {
-                    *reason = "daemon_shutdown".into();
-                }
-                handle.token.cancel();
-                aborted_run_id = Some(handle.run_id.clone());
-                if matches!(guard.state.status, AgentStatus::AwakeRunning) {
-                    scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
-                } else {
-                    guard.state.current_run_id = None;
-                }
-                self.inner.storage.write_agent(&guard.state)?;
-            }
-        }
+        let outcome = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .request_shutdown(super::scheduler_executor::ShutdownReason::DaemonShutdown)
+            .await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "runtime_service_shutdown_requested",
             serde_json::json!({
-                "aborted_run_id": aborted_run_id,
+                "aborted_run_id": &outcome.aborted_run_id,
+                "status": outcome.status,
+                "current_run_id": &outcome.current_run_id,
             }),
         ))?;
-        if let Some(run_id) = aborted_run_id {
+        if let Some(run_id) = outcome.aborted_run_id {
             self.inner.storage.append_event(&AuditEvent::new(
                 "current_run_aborted",
                 serde_json::json!({
@@ -377,7 +365,6 @@ impl RuntimeHandle {
             active_task_count,
             model,
             token_usage,
-            model_availability: self.inner.model_availability.clone(),
             closure,
             execution,
             active_workspace_occupancy,
@@ -1027,12 +1014,12 @@ impl RuntimeHandle {
             chrono::Utc::now()
                 + chrono::Duration::milliseconds(i64::try_from(duration_ms).unwrap_or(i64::MAX))
         });
-        let state = {
-            let mut guard = self.inner.agent.lock().await;
-            scheduler::apply_sleep_projection(&mut guard.state, sleeping_until);
-            self.inner.storage.write_agent(&guard.state)?;
-            guard.state.clone()
-        };
+        let state = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .transition_to_sleep(
+                sleeping_until,
+                super::scheduler_executor::SleepTransitionBoundary::LifecycleSleep,
+            )
+            .await?;
         self.append_state_changed_events(&state)?;
         if let (Some(duration_ms), Some(sleeping_until)) = (duration_ms, sleeping_until) {
             self.spawn_session_sleep_wake(duration_ms, sleeping_until);

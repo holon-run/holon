@@ -180,12 +180,13 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
         .await?;
 
     let state = runtime.agent_state().await?;
-    assert_eq!(state.status, AgentStatus::AwaitingTask);
+    assert_ne!(state.status, AgentStatus::AwaitingTask);
     assert!(runtime
         .active_tasks(10)
         .await?
         .iter()
-        .any(|record| record.id == task.id));
+        .any(|record| record.id == task.id
+            && record.wait_policy() == holon::types::TaskWaitPolicy::Background));
 
     let mut saw_child_summary = false;
     for _ in 0..20 {
@@ -232,6 +233,63 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
     ));
     assert_eq!(final_summary.active_task_count, 0);
     assert!(final_summary.active_children.is_empty());
+    Ok(())
+}
+
+pub async fn parent_continues_processing_while_private_child_runs() -> Result<()> {
+    let provider = Arc::new(
+        RecordingPromptProvider::new(&["child result", "parent handled"])
+            .with_first_delay(Duration::from_millis(500)),
+    );
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
+    let runtime = host.default_runtime().await?;
+
+    let task = runtime
+        .schedule_child_agent_task(
+            "delegate slow child".into(),
+            "slow-child".into(),
+            TrustLevel::TrustedOperator,
+            holon::types::ChildAgentWorkspaceMode::Inherit,
+        )
+        .await?;
+
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "parent should continue while child runs".into(),
+            },
+        ))
+        .await?;
+
+    wait_until_async_for(Duration::from_secs(2), || {
+        let provider = provider.clone();
+        let runtime = runtime.clone();
+        let task_id = task.id.clone();
+        async move {
+            let requests = provider.captured_requests().await;
+            let saw_parent_turn = requests.iter().any(|request| {
+                request
+                    .prompt_text
+                    .contains("parent should continue while child runs")
+            });
+            let child_still_active = runtime
+                .storage()
+                .latest_active_task_records(usize::MAX)?
+                .iter()
+                .any(|record| {
+                    record.id == task_id
+                        && record.wait_policy() == holon::types::TaskWaitPolicy::Background
+                });
+            Ok(saw_parent_turn && child_still_active)
+        }
+    })
+    .await?;
+
     Ok(())
 }
 

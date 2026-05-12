@@ -8,6 +8,45 @@ pub(super) enum RunLoopPoll {
     Idle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ShutdownReason {
+    DaemonShutdown,
+}
+
+impl ShutdownReason {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            ShutdownReason::DaemonShutdown => "daemon_shutdown",
+        }
+    }
+}
+
+pub(super) struct ShutdownPostureOutcome {
+    pub(super) status: AgentStatus,
+    pub(super) current_run_id: Option<String>,
+    pub(super) aborted_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SleepTransitionBoundary {
+    LifecycleSleep,
+    RunLoopIdle,
+}
+
+impl SleepTransitionBoundary {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LifecycleSleep => "lifecycle_sleep",
+            Self::RunLoopIdle => "run_loop_idle",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BootstrapRecoveryFacts {
+    pub(super) queued_messages: usize,
+}
+
 pub(super) struct ScheduledMessage {
     pub(super) message: MessageEnvelope,
     pub(super) running_state: AgentState,
@@ -28,6 +67,128 @@ struct QueueCandidate {
 impl<'a> SchedulerDecisionExecutor<'a> {
     pub(super) fn new(runtime: &'a RuntimeHandle) -> Self {
         Self { runtime }
+    }
+
+    pub(super) async fn request_shutdown(
+        &self,
+        reason: ShutdownReason,
+    ) -> Result<ShutdownPostureOutcome> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        let mut aborted_run_id = None;
+        let mut should_write = false;
+
+        if let Some(handle) = guard.current_run_abort.as_ref() {
+            if let Ok(mut current_reason) = handle.reason.lock() {
+                *current_reason = reason.as_str().into();
+            }
+            handle.token.cancel();
+            aborted_run_id = Some(handle.run_id.clone());
+            if matches!(guard.state.status, AgentStatus::AwakeRunning) {
+                scheduler::apply_idle_projection(&mut guard.state, &self.runtime.inner.storage)?;
+            } else {
+                guard.state.current_run_id = None;
+            }
+            should_write = true;
+        } else if guard.state.current_run_id.is_some() {
+            guard.state.current_run_id = None;
+            should_write = true;
+        }
+
+        if should_write {
+            self.runtime.inner.storage.write_agent(&guard.state)?;
+        }
+
+        Ok(ShutdownPostureOutcome {
+            status: guard.state.status.clone(),
+            current_run_id: guard.state.current_run_id.clone(),
+            aborted_run_id,
+        })
+    }
+
+    pub(super) async fn bootstrap_recovered(&self) -> Result<AgentState> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        let facts = BootstrapRecoveryFacts {
+            queued_messages: guard.queue.len(),
+        };
+        if apply_bootstrap_recovered_projection(&mut guard.state, facts) {
+            self.runtime.inner.storage.write_agent(&guard.state)?;
+        }
+        Ok(guard.state.clone())
+    }
+
+    pub(super) async fn transition_to_sleep(
+        &self,
+        sleeping_until: Option<chrono::DateTime<chrono::Utc>>,
+        boundary: SleepTransitionBoundary,
+    ) -> Result<AgentState> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        let previous_status = guard.state.status.clone();
+        let previous_run_id = guard.state.current_run_id.clone();
+        scheduler::apply_sleep_projection(&mut guard.state, sleeping_until);
+        self.append_posture_decision(
+            boundary.as_str(),
+            "sleep",
+            &previous_status,
+            &guard.state.status,
+            vec![
+                format!("previous_run_id={previous_run_id:?}"),
+                format!("sleeping_until={:?}", guard.state.sleeping_until),
+            ],
+        )?;
+        self.runtime.inner.storage.write_agent(&guard.state)?;
+        Ok(guard.state.clone())
+    }
+
+    pub(super) async fn transition_run_loop_idle_to_sleep(&self) -> Result<Option<AgentState>> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        if matches!(
+            guard.state.status,
+            AgentStatus::Asleep | AgentStatus::Paused | AgentStatus::Stopped
+        ) || !guard.queue.is_empty()
+        {
+            return Ok(None);
+        }
+
+        let previous_status = guard.state.status.clone();
+        let previous_run_id = guard.state.current_run_id.clone();
+        scheduler::apply_sleep_projection(&mut guard.state, None);
+        self.append_posture_decision(
+            SleepTransitionBoundary::RunLoopIdle.as_str(),
+            "sleep",
+            &previous_status,
+            &guard.state.status,
+            vec![
+                format!("previous_run_id={previous_run_id:?}"),
+                format!("sleeping_until={:?}", guard.state.sleeping_until),
+            ],
+        )?;
+        self.runtime.inner.storage.write_agent(&guard.state)?;
+        Ok(Some(guard.state.clone()))
+    }
+
+    pub(super) async fn admit_message_wake(
+        &self,
+        message: &MessageEnvelope,
+    ) -> Result<Option<AgentState>> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        let previous_status = guard.state.status.clone();
+        let previous_sleeping_until = guard.state.sleeping_until;
+        if !scheduler::apply_message_wake_projection(&mut guard.state) {
+            return Ok(None);
+        }
+        self.append_posture_decision(
+            "message_admission",
+            "message_admission_wake",
+            &previous_status,
+            &guard.state.status,
+            vec![
+                format!("message_id={}", message.id),
+                format!("message_kind={:?}", message.kind),
+                format!("previous_sleeping_until={previous_sleeping_until:?}"),
+            ],
+        )?;
+        self.runtime.inner.storage.write_agent(&guard.state)?;
+        Ok(Some(guard.state.clone()))
     }
 
     pub(super) async fn poll(&self) -> Result<RunLoopPoll> {
@@ -137,5 +298,108 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             dispatch_plan,
             scheduler_decision: decision,
         }))
+    }
+
+    fn append_posture_decision(
+        &self,
+        boundary: &'static str,
+        reason: &'static str,
+        previous_status: &AgentStatus,
+        next_status: &AgentStatus,
+        evidence: Vec<String>,
+    ) -> Result<()> {
+        self.runtime.inner.storage.append_event(&AuditEvent::new(
+            "scheduler_posture_decision",
+            serde_json::json!({
+                "boundary": boundary,
+                "reason": reason,
+                "previous_status": previous_status,
+                "next_status": next_status,
+                "evidence": evidence,
+            }),
+        ))
+    }
+}
+
+pub(super) fn apply_bootstrap_recovered_projection(
+    state: &mut AgentState,
+    facts: BootstrapRecoveryFacts,
+) -> bool {
+    if matches!(state.status, AgentStatus::Paused | AgentStatus::Stopped) {
+        return false;
+    }
+
+    let previous_status = state.status.clone();
+    let previous_run_id = state.current_run_id.clone();
+    state.current_run_id = None;
+
+    if state.pending > 0 || facts.queued_messages > 0 || state.pending_wake_hint.is_some() {
+        state.status = AgentStatus::AwakeIdle;
+    } else if matches!(
+        state.status,
+        AgentStatus::Booting | AgentStatus::AwakeRunning | AgentStatus::AwaitingTask
+    ) {
+        state.status = AgentStatus::AwakeIdle;
+    }
+
+    state.status != previous_status || state.current_run_id != previous_run_id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bootstrap_state(status: AgentStatus) -> AgentState {
+        let mut state = AgentState::new("default");
+        state.status = status;
+        state
+    }
+
+    #[test]
+    fn bootstrap_recovery_with_queued_messages_becomes_runnable_idle() {
+        let mut state = bootstrap_state(AgentStatus::Asleep);
+        state.pending = 1;
+        assert!(apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts { queued_messages: 1 },
+        ));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.current_run_id, None);
+    }
+
+    #[test]
+    fn bootstrap_recovery_without_runnable_facts_becomes_idle() {
+        let mut state = bootstrap_state(AgentStatus::Booting);
+        assert!(apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts { queued_messages: 0 },
+        ));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+    }
+
+    #[test]
+    fn bootstrap_recovery_preserves_stopped_and_paused_gates() {
+        for status in [AgentStatus::Stopped, AgentStatus::Paused] {
+            let mut state = bootstrap_state(status.clone());
+            state.current_run_id = Some("run-1".into());
+            assert!(!apply_bootstrap_recovered_projection(
+                &mut state,
+                BootstrapRecoveryFacts { queued_messages: 1 },
+            ));
+            assert_eq!(state.status, status);
+            assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
+        }
+    }
+
+    #[test]
+    fn bootstrap_recovery_clears_non_durable_current_run() {
+        let mut state = bootstrap_state(AgentStatus::AwakeRunning);
+        state.current_run_id = Some("run-1".into());
+        assert!(apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts { queued_messages: 0 },
+        ));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.current_run_id, None);
     }
 }

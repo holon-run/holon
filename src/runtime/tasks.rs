@@ -25,7 +25,7 @@ struct TaskMessageSnapshot {
 
 fn child_agent_task_detail(workspace_mode: ChildAgentWorkspaceMode) -> serde_json::Value {
     serde_json::json!({
-        "wait_policy": crate::types::TaskWaitPolicy::Blocking,
+        "wait_policy": crate::types::TaskWaitPolicy::Background,
         "workspace_mode": workspace_mode,
     })
 }
@@ -1957,20 +1957,6 @@ impl RuntimeHandle {
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state == WorkItemState::Completed {
             return Ok(existing);
-        }
-        let has_blocking_tasks = {
-            let agent_id = self.agent_id().await?;
-            scheduler::has_completion_blocking_task_for_work_item(
-                &self.inner.storage,
-                &agent_id,
-                &work_item_id,
-            )?
-        };
-        if has_blocking_tasks {
-            return Err(anyhow!(
-                "cannot complete work item {} while blocking tasks are active",
-                work_item_id
-            ));
         }
         let record = WorkItemRecord {
             revision: existing.revision + 1,

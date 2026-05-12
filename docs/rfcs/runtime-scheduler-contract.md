@@ -320,7 +320,6 @@ The scheduler should produce one explicit decision at each boundary:
 - `StartModelTurn`
 - `ReduceMessageOnly`
 - `EmitSystemTick`
-- `WaitForTask`
 - `WaitForExternalChange`
 - `WaitForTimer`
 - `WaitForOperator`
@@ -345,19 +344,19 @@ Scheduler decisions should use a fixed priority order.
 2. queued operator interjection input may be inserted into a running turn.
 3. a queued model-reentry message may start a turn when no turn is running.
 4. terminal blocking task result may resume the model-reentry wait it satisfies.
-5. active blocking tasks mean `WaitForTask`.
-6. active waiting intents mean `WaitForExternalChange`.
-7. active timers mean `WaitForTimer`.
-8. pending wake hint means `EmitSystemTick(wake_hint)`.
-9. current runnable work item means `EmitSystemTick(continue_active)` unless an
+5. active waiting intents mean `WaitForExternalChange`.
+6. active timers mean `WaitForTimer`.
+7. pending wake hint means `EmitSystemTick(wake_hint)`.
+8. current runnable work item means `EmitSystemTick(continue_active)` unless an
    idempotency key has already been emitted for the same generation.
-10. queued runnable work item means `EmitSystemTick(queued_available)` unless an
+9. queued runnable work item means `EmitSystemTick(queued_available)` unless an
     idempotency key has already been emitted for the same generation.
-11. no runnable work and no pending inputs means `Sleep` or `StayIdle`,
+10. no runnable work and no pending inputs means `Sleep` or `StayIdle`,
     depending on host mode.
 
-This order intentionally keeps blocking facts above work-queue self-reactivate
-ticks.
+Active task records remain part of the scheduler projection for diagnostics and
+task-result reduction, but active task presence alone is not a waiting fact and
+must not block work-queue self-reactivate ticks.
 
 ## Model Visibility
 
@@ -434,8 +433,10 @@ Invariants:
 - a work-queue `queued_available` tick must not mutate current work;
 - completing a work item clears it from current focus;
 - completing a work item cancels work-item-scoped waiting intents;
-- work-item completion should be blocked only by relevant blocking tasks once
-  task-to-work-item association is available.
+- work-item completion is an explicit agent assertion and should not be blocked
+  by generic task wait policy; durable waits live in `blocked_by` or
+  work-item-scoped waiting intents until the agent updates or completes the
+  work item.
 
 `current_work_item_id` and `current_turn_work_item_id` should remain distinct:
 
@@ -775,7 +776,7 @@ Implemented by routing the normal run-loop polling path through
 Implemented by converging normal scheduler-sensitive posture writes and
 decision events:
 
-- normal `AwakeRunning`, `AwakeIdle`, `AwaitingTask`, and `Asleep` writes go
+- normal `AwakeRunning`, `AwakeIdle`, and `Asleep` writes go
   through scheduler projection helpers;
 - idle, stopped, work-queue, and wake-hint decisions are recorded as
   `scheduler_decision` events built from `SchedulerDecision`;
@@ -914,8 +915,8 @@ struct TaskRecord {
 
 This lets Holon answer scheduler questions directly:
 
-- which WorkItem is this blocking task related to?
-- can this WorkItem complete while unrelated tasks are still running?
+- which WorkItem is this task result related to?
+- can this WorkItem continue while unrelated tasks are still running?
 - should this task result satisfy the current wait?
 - how should `/tasks` and state snapshots group active work?
 

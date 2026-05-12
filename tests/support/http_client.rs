@@ -12,7 +12,7 @@ use std::{
 use anyhow::Result;
 use async_trait::async_trait;
 use holon::{
-    client::{EventStreamRequest, LocalClient},
+    client::{AgentStreamEvent, EventStreamRequest, LocalClient, LocalEventStream},
     config::{AppConfig, ControlAuthMode},
     daemon::RuntimeServiceHandle,
     host::RuntimeHost,
@@ -43,6 +43,18 @@ use super::{
     spawn_server_with_runtime_config, spawn_unix_server, tempdir, test_config,
     test_config_with_paths, wait_until, ParsedSseEvent,
 };
+
+async fn next_message_admitted_event(stream: &mut LocalEventStream) -> Result<AgentStreamEvent> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = stream.next_event().await?;
+            if event.event == "message_admitted" {
+                return Ok(event);
+            }
+        }
+    })
+    .await?
+}
 
 pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> Result<()> {
     let config = test_config();
@@ -97,6 +109,10 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
     assert_eq!(entry["identity"]["agent_id"], "default");
     assert!(entry.get("status").is_some());
     assert!(entry.get("model").is_some());
+    assert!(
+        entry.get("model_availability").is_none(),
+        "/agents/list must not embed runtime-global model availability"
+    );
     let workspace_entry = entry
         .get("active_workspace_entry")
         .expect("active workspace entry should be present");
@@ -120,6 +136,35 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
             "{heavy_field} should not be present in /agents/list"
         );
     }
+
+    let agents_payload: serde_json::Value = client
+        .get(format!("{base}/agents"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let agent = agents_payload
+        .as_array()
+        .and_then(|entries| entries.first())
+        .expect("agent list should contain default agent");
+    assert!(
+        agent.get("model_availability").is_none(),
+        "/agents must not embed runtime-global model availability"
+    );
+
+    let models_payload: serde_json::Value = client
+        .get(format!("{base}/models"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let model_availability = models_payload["model_availability"]
+        .as_array()
+        .expect("/models model_availability should be an array");
+    assert!(
+        model_availability.iter().all(|entry| entry.is_object()),
+        "/models remains the source for runtime-global model availability"
+    );
 
     let mut config = test_config();
     config.http_addr = base.trim_start_matches("http://").to_string();
@@ -159,6 +204,20 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         .any(|notification| notification.summary == "HTTP state visible operator note"));
     assert!(snapshot.cursor.is_some());
 
+    let raw_state: serde_json::Value = reqwest::Client::new()
+        .get(format!("{base}/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let raw_agent = raw_state["agent"]
+        .as_object()
+        .expect("state snapshot should include an agent object");
+    assert!(
+        !raw_agent.contains_key("model_availability"),
+        "/agents/{{agent_id}}/state must not embed runtime-global model availability"
+    );
+
     server.abort();
     Ok(())
 }
@@ -192,7 +251,7 @@ pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Res
             },
         )
         .await?;
-    let first_event = tokio::time::timeout(Duration::from_secs(5), stream.next_event()).await??;
+    let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
     assert_eq!(
@@ -234,7 +293,7 @@ pub async fn local_client_over_http_stream_without_cursor_starts_at_tail() -> Re
         .stream_agent_events("default", EventStreamRequest::default())
         .await?;
     client.control_prompt("default", "http tail live").await?;
-    let first_event = tokio::time::timeout(Duration::from_secs(5), stream.next_event()).await??;
+    let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
 
@@ -285,7 +344,7 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_cursor_query()
             },
         )
         .await?;
-    let first_event = tokio::time::timeout(Duration::from_secs(5), stream.next_event()).await??;
+    let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
 
@@ -310,7 +369,7 @@ pub async fn local_client_over_unix_socket_stream_without_cursor_starts_at_tail(
         .stream_agent_events("default", EventStreamRequest::default())
         .await?;
     client.control_prompt("default", "unix tail live").await?;
-    let first_event = tokio::time::timeout(Duration::from_secs(5), stream.next_event()).await??;
+    let first_event = next_message_admitted_event(&mut stream).await?;
     assert_eq!(first_event.event, "message_admitted");
     assert_eq!(first_event.data.event_type, "message_admitted");
 

@@ -18,6 +18,7 @@ runtime_async_tests!(
     task_output_returns_subagent_result_text,
     spawn_agent_receipt_projects_child_supervision_boundary,
     subagent_task_updates_parent_state_and_child_summary_during_lifecycle,
+    parent_continues_processing_while_private_child_runs,
     subagent_task_status_exposes_live_and_terminal_child_observability,
     blocking_subagent_result_does_not_regress_to_running_task_status,
     subagent_task_failure_propagates_failed_output_to_parent,

@@ -912,6 +912,9 @@ Delegation rules:
   parent-visible `child_agent_task` label at spawn time
 - `private_child` returns `agent_id` plus a task handle that maps onto internal
   `child_agent_task` supervision state
+- that supervision task is background by default; parent-supervised means the
+  parent can inspect/input/output/stop the child through task tools, not that
+  the parent scheduler must enter `AwaitingTask`
 - `private_child` also returns `child_agent_id`, `supervision_task_id`, and a
   `child_supervision` projection; `child_agent_id` names the private context,
   while `supervision_task_id` names the parent-visible control handle
@@ -1573,7 +1576,10 @@ Rules:
   before the dequeued message became the active run; the `awake_running`
   dispatch marker must not suppress model-visible triggers such as
   `internal_followup` or `timer_fire`
-- `TaskResult` is the canonical rejoin point for blocking delegated work.
+- `TaskResult` is the canonical rejoin point for terminal task-result
+  re-entry. This is independent from scheduler blocking; command
+  `continue_on_result` maps to terminal re-entry metadata and must not by itself
+  make the task a scheduler-blocking wait.
 - `TaskStatus` remains observational; it does not by itself create a new model turn.
 - `TimerTick` may resume local work even if the timer record has already been
   updated out of the active set.
@@ -1819,6 +1825,10 @@ item owned by the agent.
 
 - `work_item_id` is required
 - `result_summary` is optional completion metadata
+- completion is an explicit agent assertion; it is not blocked by generic
+  active task `wait_policy`
+- completion clears `blocked_by` and cancels work-item-scoped waiting intents
+  for that work item
 
 There is no separate agent-facing `UpdateWorkPlan` tool and no separate
 work-plan storage stream. Plan and todo state live on the latest
@@ -1826,6 +1836,11 @@ work-plan storage stream. Plan and todo state live on the latest
 
 These tools are part of the explicit adoption path for work items. They do not
 require runtime-side semantic resolution of arbitrary ingress into a work item.
+Use `blocked_by` for simple durable human-readable blockers. Use work-item
+scoped waiting intents for external conditions such as PR review, CI, merge, or
+durable inbox changes. `TaskOutput(block=true)` is only a turn-local explicit
+wait for a bounded task output check; it does not create or clear durable
+work-item dependency state.
 
 Work-item updates are coordination state, not the artifact progress ledger.
 Prompt guidance should frame plan_status, plan, and todo_list updates as
@@ -2167,6 +2182,13 @@ When an external system delivers to the trigger URL:
    - `enqueue_message`: enqueues structured content as a message
    - `wake_hint`: submits a wake hint (may become `SystemTick`)
 4. Updates delivery tracking (trigger count, last triggered at)
+5. Records callback provenance including waiting intent id, external trigger
+   id, scope, source, resource, and the bound work item id when present
+
+External trigger delivery does not automatically clear `blocked_by`, cancel the
+waiting intent, or complete the work item. The delivery wakes or re-enters the
+agent with provenance; the agent must inspect the evidence and explicitly call
+`UpdateWorkItem`, `CompleteWorkItem`, or `CancelExternalTrigger` as appropriate.
 
 ### CancelExternalTrigger
 
@@ -2218,7 +2240,9 @@ type TaskKind =
 
 Legacy stored task records may still deserialize `subagent_task` and
 `worktree_subagent_task`. New records should only emit `command_task`,
-`child_agent_task`, or `sleep_job`.
+`child_agent_task`, or `sleep_job`. The legacy child-agent names are
+persistence-compatibility only and do not participate in scheduler blocking
+decisions, even when older detail payloads contain `wait_policy=blocking`.
 
 ```ts
 type TaskRecoverySpec =
@@ -2229,8 +2253,31 @@ type TaskRecoverySpec =
       trust: TrustLevel
       workspace_mode: 'inherit' | 'worktree'
     }
+  | {
+      kind: 'subagent_task' // legacy, persistence compatibility only
+      summary: string
+      prompt: string
+      trust: TrustLevel
+    }
+  | {
+      kind: 'worktree_subagent_task' // legacy, persistence compatibility only
+      summary: string
+      prompt: string
+      trust: TrustLevel
+    }
   | { kind: 'command_task'; summary: string; spec: CommandTaskSpec; trust: TrustLevel }
 ```
+
+Legacy `subagent_task` and `worktree_subagent_task` recovery specs may still be
+accepted while reading old persisted records so the runtime can recover
+supervised child identity and workspace mode. They are not emitted for new
+records and do not imply scheduler blocking.
+
+For `command_task`, `CommandTaskSpec.continue_on_result` is a compatibility
+startup field for terminal result re-entry. New command task records expose that
+intent as `terminal_reentry` in task detail and `TaskStatus.task.command`, but
+the command task remains `wait_policy = background` unless another explicit
+runtime mechanism marks a task as blocking.
 
 ### Recovery Behavior
 
@@ -2353,6 +2400,8 @@ Phase-1 envelope rules:
   - `TaskStatus.task.command.output_path` may identify where command output is
     stored, but the status snapshot must not include raw output preview bytes or
     artifact arrays
+  - `TaskStatus.task.command.terminal_reentry` is the explicit command-task
+    terminal result re-entry projection; it is not a scheduler wait policy
 - for `child_agent_task`, the `task` detail carries
   `workspace_mode = inherit | worktree`; in worktree mode, worktree artifact
   metadata is reported under task detail/result metadata when available

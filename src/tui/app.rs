@@ -11,6 +11,7 @@ use tokio::{
 pub(super) struct TuiApp {
     pub(super) client: LocalClient,
     pub(super) agents: Vec<AgentSummary>,
+    pub(super) model_availability: Vec<ResolvedModelAvailability>,
     pub(super) briefs: Vec<BriefRecord>,
     pub(super) transcript: Vec<TranscriptEntry>,
     pub(super) optimistic_operator_messages: Vec<OperatorMessageRecord>,
@@ -24,6 +25,7 @@ pub(super) struct TuiApp {
     pub(super) reconnect_deadline: Option<Instant>,
     pub(super) refresh_deadline: Option<Instant>,
     pub(super) agent_list_refresh_in_flight: bool,
+    pub(super) model_availability_load_in_flight: bool,
     pub(super) snapshot_refresh_in_flight: bool,
     pub(super) stream_connect_in_flight: bool,
     pub(super) snapshot_refresh_request_id: u64,
@@ -63,6 +65,7 @@ impl TuiApp {
         Self {
             client,
             agents: Vec::new(),
+            model_availability: Vec::new(),
             briefs: Vec::new(),
             transcript: Vec::new(),
             optimistic_operator_messages: Vec::new(),
@@ -76,6 +79,7 @@ impl TuiApp {
             reconnect_deadline: None,
             refresh_deadline: None,
             agent_list_refresh_in_flight: false,
+            model_availability_load_in_flight: false,
             snapshot_refresh_in_flight: false,
             stream_connect_in_flight: false,
             snapshot_refresh_request_id: 0,

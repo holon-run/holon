@@ -240,7 +240,7 @@ async fn work_item_revision_increments_on_updates_and_completion() {
 }
 
 #[tokio::test]
-async fn work_item_completion_blocks_only_related_or_unscoped_blocking_tasks() {
+async fn work_item_completion_ignores_running_tasks_and_clears_explicit_waits() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -262,27 +262,42 @@ async fn work_item_completion_blocks_only_related_or_unscoped_blocking_tasks() {
         .create_work_item("other".into(), None, None, Vec::new())
         .await
         .unwrap();
+    let related_task = blocking_task_for_work_item("task-target", Some(&target.id));
+    runtime.storage().append_task(&related_task).unwrap();
     let unrelated_task = blocking_task_for_work_item("task-other", Some(&other.id));
     runtime.storage().append_task(&unrelated_task).unwrap();
+    let unscoped_task = blocking_task_for_work_item("task-unscoped", None);
+    runtime.storage().append_task(&unscoped_task).unwrap();
 
     let completed = runtime
         .complete_work_item(target.id.clone(), Some("target done".into()))
         .await
         .unwrap();
     assert_eq!(completed.id, target.id);
+    assert_eq!(completed.result_summary.as_deref(), Some("target done"));
 
-    let blocked = runtime
-        .create_work_item("blocked".into(), None, None, Vec::new())
+    let explicit_wait = runtime
+        .create_work_item("explicit wait".into(), None, None, Vec::new())
         .await
         .unwrap();
-    let unscoped_task = blocking_task_for_work_item("task-unscoped", None);
-    runtime.storage().append_task(&unscoped_task).unwrap();
-
-    let err = runtime
-        .complete_work_item(blocked.id.clone(), Some("too early".into()))
+    runtime
+        .update_work_item_fields(
+            explicit_wait.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("review the external result".into())),
+        )
         .await
-        .unwrap_err();
-    assert!(err.to_string().contains("cannot complete work item"));
+        .unwrap();
+
+    let completed_wait = runtime
+        .complete_work_item(explicit_wait.id.clone(), Some("confirmed done".into()))
+        .await
+        .unwrap();
+    assert_eq!(completed_wait.state, WorkItemState::Completed);
+    assert!(completed_wait.blocked_by.is_none());
 }
 
 #[tokio::test]
@@ -1092,7 +1107,7 @@ async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
 }
 
 #[tokio::test]
-async fn turn_end_work_item_commit_moves_bound_item_to_waiting_when_runtime_is_waiting() {
+async fn turn_end_work_item_commit_does_not_block_bound_item_for_active_task_presence() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -1117,10 +1132,7 @@ async fn turn_end_work_item_commit_moves_bound_item_to_waiting_when_runtime_is_w
 
     assert_eq!(committed.id, work_item_id);
     assert_eq!(committed.state, WorkItemState::Open);
-    assert_eq!(
-        committed.blocked_by.as_deref(),
-        Some("Waiting on a task result.")
-    );
+    assert_eq!(committed.blocked_by.as_deref(), None);
 }
 
 #[tokio::test]
@@ -1399,6 +1411,104 @@ async fn agent_scoped_wake_hint_preserves_external_trigger_provenance() {
         wake_hint["body"]["value"]["latest_entry_id"].as_str(),
         Some("ent_123")
     );
+}
+
+#[tokio::test]
+async fn triggered_work_item_waiting_intent_preserves_explicit_work_item_state_until_completion() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("wait for CI".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("awaiting CI success".into())),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let capability = runtime
+        .create_external_trigger(
+            "wait for CI".into(),
+            "github".into(),
+            ExternalTriggerScope::WorkItem,
+            CallbackDeliveryMode::WakeHint,
+            Some("CI run completed".into()),
+            Some("holon-run/holon#1079".into()),
+        )
+        .await
+        .unwrap();
+
+    let result = runtime
+        .deliver_callback(
+            &capability.external_trigger_id,
+            CallbackDeliveryPayload {
+                body: Some(MessageBody::Json {
+                    value: serde_json::json!({"check": "Rust", "conclusion": "success"}),
+                }),
+                content_type: Some("application/json".into()),
+                correlation_id: Some("corr-ci".into()),
+                causation_id: Some("run-123".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.disposition, CallbackIngressDisposition::Triggered);
+
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    let waiting = waiting
+        .iter()
+        .find(|record| record.id == capability.waiting_intent_id)
+        .expect("waiting intent should remain visible");
+    assert_eq!(waiting.status, WaitingIntentStatus::Active);
+    assert_eq!(waiting.trigger_count, 1);
+    assert_eq!(waiting.work_item_id.as_deref(), Some(work.id.as_str()));
+    let latest = runtime
+        .storage()
+        .latest_work_item(&work.id)
+        .unwrap()
+        .expect("work item should exist");
+    assert_eq!(latest.blocked_by.as_deref(), Some("awaiting CI success"));
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "callback_delivered"
+            && event.data["waiting_intent_id"].as_str()
+                == Some(capability.waiting_intent_id.as_str())
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+            && event.data["resource"].as_str() == Some("holon-run/holon#1079")
+            && event.data["trigger_count"].as_u64() == Some(1)
+    }));
+
+    let completed = runtime
+        .complete_work_item(work.id.clone(), Some("CI confirmed success".into()))
+        .await
+        .unwrap();
+    assert_eq!(completed.state, WorkItemState::Completed);
+    assert!(completed.blocked_by.is_none());
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    let waiting = waiting
+        .iter()
+        .find(|record| record.id == capability.waiting_intent_id)
+        .expect("waiting intent should remain auditable after completion");
+    assert_eq!(waiting.status, WaitingIntentStatus::Cancelled);
 }
 
 #[tokio::test]

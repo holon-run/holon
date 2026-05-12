@@ -58,8 +58,6 @@ impl RuntimeHandle {
             ) {
                 if guard.state.current_run_id.is_none() {
                     scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
-                } else if task.is_blocking() && !is_terminal_task_status(&task.status) {
-                    scheduler::apply_awaiting_task_projection(&mut guard.state);
                 }
             }
             self.inner.storage.write_agent(&guard.state)?;
@@ -167,11 +165,11 @@ mod tests {
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
 
-    fn task(id: &str, status: TaskStatus, blocking: bool) -> TaskRecord {
+    fn task_with_kind(id: &str, status: TaskStatus, blocking: bool, kind: TaskKind) -> TaskRecord {
         TaskRecord {
             id: id.into(),
             agent_id: "default".into(),
-            kind: TaskKind::ChildAgentTask,
+            kind,
             status,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -181,6 +179,14 @@ mod tests {
             detail: blocking.then(|| json!({ "wait_policy": "blocking" })),
             recovery: None,
         }
+    }
+
+    fn task(id: &str, status: TaskStatus, blocking: bool) -> TaskRecord {
+        task_with_kind(id, status, blocking, TaskKind::ChildAgentTask)
+    }
+
+    fn scheduler_blocking_task(id: &str, status: TaskStatus) -> TaskRecord {
+        task_with_kind(id, status, true, TaskKind::SleepJob)
     }
 
     struct RuntimeFixture {
@@ -285,7 +291,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         storage
-            .append_task(&task("blocking", TaskStatus::Running, true))
+            .append_task(&scheduler_blocking_task("blocking", TaskStatus::Running))
             .unwrap();
         storage
             .append_task(&task("background", TaskStatus::Running, false))
@@ -331,18 +337,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_terminal_task_updates_are_visible_in_ledger_projection_and_blocking_state() {
+    async fn non_terminal_task_updates_are_visible_without_scheduler_wait() {
         let runtime = runtime();
 
         runtime
-            .reduce_task_status_message(task("task-1", TaskStatus::Running, true))
+            .reduce_task_status_message(scheduler_blocking_task("task-1", TaskStatus::Running))
             .await
             .unwrap();
 
         let active_tasks = runtime.active_tasks(10).await.unwrap();
         assert!(active_tasks.iter().any(|task| task.id == "task-1"));
         let state = runtime.agent_state().await.unwrap();
-        assert_eq!(state.status, AgentStatus::AwaitingTask);
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
     }
 
     #[tokio::test]
@@ -370,28 +376,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_result_falls_back_to_awake_idle_only_when_no_blocking_tasks_remain() {
+    async fn terminal_result_keeps_scheduler_idle_with_other_running_tasks() {
         let runtime = runtime();
         runtime
-            .reduce_task_status_message(task("task-1", TaskStatus::Running, true))
+            .reduce_task_status_message(scheduler_blocking_task("task-1", TaskStatus::Running))
             .await
             .unwrap();
         runtime
-            .reduce_task_status_message(task("task-2", TaskStatus::Running, true))
+            .reduce_task_status_message(scheduler_blocking_task("task-2", TaskStatus::Running))
             .await
             .unwrap();
 
         runtime
             .reduce_task_result_message(
                 &task_result_message("task-1"),
-                task("task-1", TaskStatus::Completed, true),
+                scheduler_blocking_task("task-1", TaskStatus::Completed),
                 false,
                 None,
             )
             .await
             .unwrap();
         let state = runtime.agent_state().await.unwrap();
-        assert_eq!(state.status, AgentStatus::AwaitingTask);
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
         let active_tasks = runtime.active_tasks(10).await.unwrap();
         assert!(!active_tasks.iter().any(|task| task.id == "task-1"));
         assert!(active_tasks.iter().any(|task| task.id == "task-2"));
@@ -399,7 +405,7 @@ mod tests {
         runtime
             .reduce_task_result_message(
                 &task_result_message("task-2"),
-                task("task-2", TaskStatus::Completed, true),
+                scheduler_blocking_task("task-2", TaskStatus::Completed),
                 false,
                 None,
             )

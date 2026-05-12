@@ -9,6 +9,6 @@
   "active_work_item_waiting_intents": 0,
   "active_agent_waiting_intents": 0,
   "active_timers": 0,
-  "decision": "WaitForTask",
-  "decision_reason": "blocking_active_tasks"
+  "decision": "Sleep",
+  "decision_reason": "no_pending_scheduler_facts"
 }

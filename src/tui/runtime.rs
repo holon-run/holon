@@ -31,6 +31,7 @@ pub(super) enum TuiRuntimeMessage {
         error: String,
     },
     AgentListLoaded(Result<Vec<AgentListEntry>, String>),
+    ModelsLoaded(Result<Vec<ResolvedModelAvailability>, String>),
     SnapshotLoaded {
         request_id: u64,
         target_index: usize,
@@ -125,6 +126,34 @@ impl TuiApp {
                 .map_err(|err| err.to_string());
             let _ = tx.send(TuiRuntimeMessage::AgentListLoaded(result));
         });
+    }
+
+    pub(super) fn begin_load_models(&mut self) {
+        if self.model_availability_load_in_flight {
+            return;
+        }
+        self.model_availability_load_in_flight = true;
+        let client = self.client.clone();
+        let tx = self.runtime_tx.clone();
+        tokio::spawn(async move {
+            let result = client
+                .fetch_models()
+                .await
+                .map(|models| models.model_availability)
+                .map_err(|err| err.to_string());
+            let _ = tx.send(TuiRuntimeMessage::ModelsLoaded(result));
+        });
+    }
+
+    pub(super) fn apply_loaded_models(
+        &mut self,
+        result: Result<Vec<ResolvedModelAvailability>, String>,
+    ) {
+        self.model_availability_load_in_flight = false;
+        match result {
+            Ok(model_availability) => self.model_availability = model_availability,
+            Err(error) => self.status_line = format!("Model availability load failed: {error}"),
+        }
     }
 
     pub(super) fn apply_loaded_agents(&mut self, result: Result<Vec<AgentListEntry>, String>) {
@@ -516,17 +545,18 @@ impl TuiApp {
         }
     }
 
-    pub(super) fn next_agent_index(&self, delta: i32) -> Option<usize> {
+    pub(super) fn next_agent_index_from(&self, selected: usize, delta: i32) -> Option<usize> {
         if self.agents.is_empty() {
             return None;
         }
+        let selected = selected.min(self.agents.len().saturating_sub(1));
 
         Some(if delta > 0 {
-            (self.selected_agent + 1) % self.agents.len()
-        } else if self.selected_agent == 0 {
+            (selected + 1) % self.agents.len()
+        } else if selected == 0 {
             self.agents.len() - 1
         } else {
-            self.selected_agent - 1
+            selected - 1
         })
     }
 
@@ -583,6 +613,7 @@ impl TuiApp {
                     self.status_line = format!("Event stream disconnected: {error}");
                 }
                 TuiRuntimeMessage::AgentListLoaded(result) => self.apply_loaded_agents(result),
+                TuiRuntimeMessage::ModelsLoaded(result) => self.apply_loaded_models(result),
                 TuiRuntimeMessage::SnapshotLoaded {
                     request_id,
                     target_index,

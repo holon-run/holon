@@ -19,7 +19,7 @@ hyper = { version = "1.5", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "http1", "http2"] }
 libc = "0.2"
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["gzip", "json", "rustls-tls"], default-features = false }
 rusqlite = { version = "0.31", features = ["bundled"] }
 pulldown-cmark = "0.13"
 portable-pty = "0.9"
@@ -40,6 +40,7 @@ uuid = { version = "1.11", features = ["serde", "v4"] }
 twox-hash = { version = "2.1.2", features = ["std"] }
 
 [dev-dependencies]
+flate2 = "1.0"
 tempfile = "3.14"
 proptest = "1.6"
 

@@ -18,12 +18,15 @@ use crate::{
     system::{LocalSystem, WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::ToolRegistry,
     types::{
-        ActiveWorkspaceEntry, AgentState, AgentStatus, AuditEvent, ResolvedModelAvailability,
+        ActiveWorkspaceEntry, AgentState, AuditEvent, ResolvedModelAvailability,
         SkillActivationSource, SkillActivationState,
     },
 };
 
-use super::{workspace, InitialWorkspaceBinding, RuntimeAgent, RuntimeHandle, RuntimeInner};
+use super::{
+    scheduler_executor, workspace, InitialWorkspaceBinding, RuntimeAgent, RuntimeHandle,
+    RuntimeInner,
+};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -263,12 +266,6 @@ impl RuntimeHandle {
             }
         }
 
-        let blocking_active_tasks = snapshot
-            .active_tasks
-            .iter()
-            .filter(|task| task.is_blocking())
-            .count();
-
         state
             .active_skills
             .retain(|skill| matches!(skill.activation_state, SkillActivationState::SessionActive));
@@ -277,13 +274,12 @@ impl RuntimeHandle {
         }
         state.pending = queue.len();
         state.total_message_count = storage.count_messages().unwrap_or_default();
-        if !matches!(state.status, AgentStatus::Paused | AgentStatus::Stopped) {
-            if state.pending > 0 || state.pending_wake_hint.is_some() {
-                state.status = AgentStatus::AwakeIdle;
-            } else if blocking_active_tasks > 0 {
-                state.status = AgentStatus::AwaitingTask;
-            }
-        }
+        scheduler_executor::apply_bootstrap_recovered_projection(
+            &mut state,
+            scheduler_executor::BootstrapRecoveryFacts {
+                queued_messages: queue.len(),
+            },
+        );
 
         if let Some(reconfig) = provider_reconfig.as_ref() {
             let chain = model_catalog.provider_chain(state.model_override.as_ref());

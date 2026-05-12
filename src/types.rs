@@ -634,6 +634,10 @@ impl TaskKind {
             Self::ChildAgentTask | Self::SubagentTask | Self::WorktreeSubagentTask
         )
     }
+
+    pub fn is_legacy_child_agent_compat(self) -> bool {
+        matches!(self, Self::SubagentTask | Self::WorktreeSubagentTask)
+    }
 }
 
 impl std::fmt::Display for TaskKind {
@@ -1994,6 +1998,16 @@ pub struct TaskRecord {
 
 impl TaskRecord {
     pub fn wait_policy(&self) -> TaskWaitPolicy {
+        if self.kind.is_legacy_child_agent_compat()
+            || self.kind == TaskKind::ChildAgentTask
+            || self.recovery.as_ref().is_some_and(|recovery| {
+                recovery.is_legacy_child_agent_compat()
+                    || matches!(recovery, TaskRecoverySpec::ChildAgentTask { .. })
+            })
+        {
+            return TaskWaitPolicy::Background;
+        }
+
         self.detail
             .as_ref()
             .and_then(|detail| detail.get("wait_policy"))
@@ -2008,6 +2022,25 @@ impl TaskRecord {
 
     pub fn is_blocking(&self) -> bool {
         self.wait_policy() == TaskWaitPolicy::Blocking
+    }
+
+    pub fn terminal_reentry(&self) -> bool {
+        self.detail
+            .as_ref()
+            .and_then(|detail| detail.get("terminal_reentry"))
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                self.detail
+                    .as_ref()
+                    .and_then(|detail| detail.get("continue_on_result"))
+                    .and_then(Value::as_bool)
+            })
+            .or_else(|| {
+                self.recovery
+                    .as_ref()
+                    .map(TaskRecoverySpec::terminal_reentry)
+            })
+            .unwrap_or(false)
     }
 
     pub fn is_child_agent_task(&self) -> bool {
@@ -2071,6 +2104,8 @@ pub struct CommandTaskStatusSnapshot {
     pub exit_status: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continue_on_result: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_reentry: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_from_exec_command: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2167,6 +2202,7 @@ impl TaskStatusSnapshot {
                 result_summary: task_detail_string(&task.detail, "output_summary"),
                 exit_status: task_detail_i32(&task.detail, "exit_status"),
                 continue_on_result: task_detail_bool(&task.detail, "continue_on_result"),
+                terminal_reentry: task.terminal_reentry().then_some(true),
                 promoted_from_exec_command: task_detail_bool(
                     &task.detail,
                     "promoted_from_exec_command",
@@ -2512,6 +2548,13 @@ fn task_detail_value<'a>(detail: &'a Option<Value>, key: &str) -> Option<&'a Val
 }
 
 impl TaskRecoverySpec {
+    pub fn is_legacy_child_agent_compat(&self) -> bool {
+        matches!(
+            self,
+            TaskRecoverySpec::SubagentTask { .. } | TaskRecoverySpec::WorktreeSubagentTask { .. }
+        )
+    }
+
     pub fn child_agent_workspace_mode(&self) -> Option<ChildAgentWorkspaceMode> {
         match self {
             TaskRecoverySpec::ChildAgentTask { workspace_mode, .. } => Some(*workspace_mode),
@@ -2525,16 +2568,19 @@ impl TaskRecoverySpec {
 
     pub fn wait_policy(&self) -> TaskWaitPolicy {
         match self {
-            TaskRecoverySpec::ChildAgentTask { .. } => TaskWaitPolicy::Blocking,
-            TaskRecoverySpec::SubagentTask { .. } => TaskWaitPolicy::Blocking,
-            TaskRecoverySpec::WorktreeSubagentTask { .. } => TaskWaitPolicy::Blocking,
-            TaskRecoverySpec::CommandTask { spec, .. } => {
-                if spec.continue_on_result {
-                    TaskWaitPolicy::Blocking
-                } else {
-                    TaskWaitPolicy::Background
-                }
-            }
+            TaskRecoverySpec::ChildAgentTask { .. } => TaskWaitPolicy::Background,
+            TaskRecoverySpec::SubagentTask { .. } => TaskWaitPolicy::Background,
+            TaskRecoverySpec::WorktreeSubagentTask { .. } => TaskWaitPolicy::Background,
+            TaskRecoverySpec::CommandTask { .. } => TaskWaitPolicy::Background,
+        }
+    }
+
+    pub fn terminal_reentry(&self) -> bool {
+        match self {
+            TaskRecoverySpec::CommandTask { spec, .. } => spec.continue_on_result,
+            TaskRecoverySpec::ChildAgentTask { .. }
+            | TaskRecoverySpec::SubagentTask { .. }
+            | TaskRecoverySpec::WorktreeSubagentTask { .. } => false,
         }
     }
 }
@@ -3115,8 +3161,6 @@ pub struct AgentSummary {
     pub lifecycle: AgentLifecycleHint,
     pub model: AgentModelState,
     pub token_usage: AgentTokenUsageSummary,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_availability: Vec<ResolvedModelAvailability>,
     pub closure: ClosureDecision,
     pub execution: ExecutionSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3280,7 +3324,6 @@ impl AgentListEntry {
             identity: self.identity,
             lifecycle: self.lifecycle,
             model: self.model.into_model_state(),
-            model_availability: Vec::new(),
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),
                 total_model_rounds: 0,
@@ -3461,6 +3504,136 @@ mod tests {
         assert_eq!(
             task.child_agent_workspace_mode(),
             Some(ChildAgentWorkspaceMode::Worktree)
+        );
+        assert_eq!(task.wait_policy(), TaskWaitPolicy::Background);
+        assert!(!task.is_blocking());
+    }
+
+    #[test]
+    fn legacy_child_agent_compat_records_do_not_block_scheduler() {
+        let now = Utc::now();
+        for (kind, recovery) in [
+            (
+                TaskKind::SubagentTask,
+                TaskRecoverySpec::SubagentTask {
+                    summary: "legacy inherited".into(),
+                    prompt: "resume".into(),
+                    trust: TrustLevel::TrustedOperator,
+                },
+            ),
+            (
+                TaskKind::WorktreeSubagentTask,
+                TaskRecoverySpec::WorktreeSubagentTask {
+                    summary: "legacy worktree".into(),
+                    prompt: "resume".into(),
+                    trust: TrustLevel::TrustedOperator,
+                },
+            ),
+        ] {
+            let task = TaskRecord {
+                id: format!("task-{kind}"),
+                agent_id: "default".into(),
+                kind,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: None,
+                summary: None,
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: Some(recovery),
+            };
+            assert_eq!(task.wait_policy(), TaskWaitPolicy::Background);
+            assert!(!task.is_blocking());
+        }
+    }
+
+    #[test]
+    fn command_continue_on_result_recovery_is_terminal_reentry_not_blocking() {
+        let recovery = TaskRecoverySpec::CommandTask {
+            summary: "long command".into(),
+            spec: CommandTaskSpec {
+                cmd: "sleep 10".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 100,
+                max_output_tokens: None,
+                accepts_input: false,
+                continue_on_result: true,
+            },
+            trust: TrustLevel::TrustedOperator,
+            promoted_from_exec_command: true,
+        };
+        let task = TaskRecord {
+            id: "task-command".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("long command".into()),
+            detail: Some(serde_json::json!({
+                "continue_on_result": true,
+                "terminal_reentry": true
+            })),
+            recovery: Some(recovery),
+        };
+
+        assert_eq!(task.wait_policy(), TaskWaitPolicy::Background);
+        assert!(!task.is_blocking());
+        assert!(task.terminal_reentry());
+
+        let snapshot = TaskStatusSnapshot::from_task_record(&task);
+        let command = snapshot.command.expect("command task snapshot");
+        assert_eq!(command.continue_on_result, Some(true));
+        assert_eq!(command.terminal_reentry, Some(true));
+
+        let recovered_task = TaskRecord {
+            detail: None,
+            ..task
+        };
+        assert_eq!(recovered_task.wait_policy(), TaskWaitPolicy::Background);
+        assert!(!recovered_task.is_blocking());
+        assert!(recovered_task.terminal_reentry());
+        assert_eq!(
+            TaskStatusSnapshot::from_task_record(&recovered_task)
+                .command
+                .expect("command task snapshot")
+                .terminal_reentry,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn child_agent_recovery_is_supervision_not_scheduler_blocking() {
+        let task = TaskRecord {
+            id: "task-child".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::ChildAgentTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("delegate child".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+            recovery: Some(TaskRecoverySpec::ChildAgentTask {
+                summary: "delegate child".into(),
+                prompt: "finish child work".into(),
+                trust: TrustLevel::TrustedOperator,
+                workspace_mode: ChildAgentWorkspaceMode::Inherit,
+            }),
+        };
+
+        assert_eq!(task.wait_policy(), TaskWaitPolicy::Background);
+        assert!(!task.is_blocking());
+        assert_eq!(
+            task.child_agent_workspace_mode(),
+            Some(ChildAgentWorkspaceMode::Inherit)
         );
     }
 

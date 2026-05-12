@@ -200,7 +200,6 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
             total_model_rounds: 0,
             last_turn: None,
         },
-        model_availability: Vec::new(),
         closure: ClosureDecision {
             outcome: ClosureOutcome::Completed,
             waiting_reason: None,
@@ -798,11 +797,24 @@ async fn agent_overlay_stays_open_while_navigating() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.overlay = OverlayState::Agents;
+    app.agents = vec![sample_agent_summary("alpha"), sample_agent_summary("beta")];
+    app.selected_agent = 0;
+    app.connection_state = TuiConnectionState::Streaming;
+    app.status_line = "Streaming native events for agent alpha".into();
+    app.overlay = OverlayState::Agents { selected: 0 };
+
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.overlay, OverlayState::Agents);
+
+    assert_eq!(app.overlay, OverlayState::Agents { selected: 1 });
+    assert_eq!(app.selected_agent_id(), Some("alpha"));
+    assert!(matches!(
+        app.connection_state,
+        TuiConnectionState::Streaming
+    ));
+    assert!(!app.snapshot_refresh_in_flight);
+    assert_eq!(app.status_line, "Streaming native events for agent alpha");
 }
 
 #[tokio::test]
@@ -814,7 +826,7 @@ async fn agent_overlay_enter_starts_switch_without_awaiting_snapshot() {
     );
     app.agents = vec![sample_agent_summary("alpha"), sample_agent_summary("beta")];
     app.selected_agent = 1;
-    app.overlay = OverlayState::Agents;
+    app.overlay = OverlayState::Agents { selected: 1 };
     app.connection_state = TuiConnectionState::Streaming;
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -823,6 +835,28 @@ async fn agent_overlay_enter_starts_switch_without_awaiting_snapshot() {
 
     assert_eq!(app.overlay, OverlayState::None);
     assert_eq!(app.status_line, "Bootstrapping agent beta from /state");
+    assert!(app.snapshot_refresh_in_flight);
+}
+
+#[tokio::test]
+async fn agent_overlay_enter_clamps_stale_selection() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.agents = vec![sample_agent_summary("alpha"), sample_agent_summary("beta")];
+    app.selected_agent = 0;
+    app.overlay = OverlayState::Agents { selected: 9 };
+    app.connection_state = TuiConnectionState::Streaming;
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.overlay, OverlayState::None);
+    assert_eq!(app.status_line, "Bootstrapping agent beta from /state");
+    assert_eq!(app.selected_agent_id(), Some("alpha"));
     assert!(app.snapshot_refresh_in_flight);
 }
 
@@ -984,6 +1018,34 @@ async fn slash_model_opens_model_picker_overlay() {
         }
     );
     assert_eq!(app.composer.as_str(), "");
+    assert!(app.model_availability_load_in_flight);
+}
+
+#[tokio::test]
+async fn initialize_does_not_eagerly_load_model_availability() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    app.initialize().await;
+
+    assert!(!app.model_availability_load_in_flight);
+}
+
+#[test]
+fn loaded_models_clear_lazy_load_in_flight_flag() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.model_availability_load_in_flight = true;
+
+    app.apply_loaded_models(Ok(Vec::new()));
+
+    assert!(!app.model_availability_load_in_flight);
 }
 
 #[tokio::test]
@@ -1095,7 +1157,7 @@ async fn slash_menu_enter_runs_selected_command_from_root_menu() {
         .await
         .unwrap();
 
-    assert_eq!(app.overlay, OverlayState::Agents);
+    assert_eq!(app.overlay, OverlayState::Agents { selected: 0 });
     assert_eq!(app.composer.as_str(), "");
 }
 
@@ -2648,7 +2710,7 @@ async fn agent_switch_starts_snapshot_refresh_without_awaiting_network() {
     app.connection_state = TuiConnectionState::Streaming;
     app.status_line = "Streaming native events for agent alpha".into();
 
-    app.move_agent_selection(1).await.unwrap();
+    app.begin_bootstrap_agent_index(1);
 
     assert_eq!(app.selected_agent_id(), Some("alpha"));
     assert!(matches!(

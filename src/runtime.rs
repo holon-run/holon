@@ -810,9 +810,11 @@ impl RuntimeHandle {
             guard.state.pending = guard.queue.len();
             guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
             guard.state.total_message_count = self.inner.storage.count_messages()?;
-            scheduler::apply_message_wake_projection(&mut guard.state);
             self.inner.storage.write_agent(&guard.state)?;
         }
+        scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .admit_message_wake(&message)
+            .await?;
 
         self.inner.storage.append_event(&AuditEvent::new(
             "message_admitted",
@@ -849,13 +851,9 @@ impl RuntimeHandle {
 
     pub async fn run(self) -> Result<()> {
         self.bootstrap_recovery().await?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if guard.state.status == AgentStatus::Booting {
-                guard.state.status = AgentStatus::AwakeIdle;
-                self.inner.storage.write_agent(&guard.state)?;
-            }
-        }
+        scheduler_executor::SchedulerDecisionExecutor::new(&self)
+            .bootstrap_recovered()
+            .await?;
 
         loop {
             let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
@@ -904,20 +902,9 @@ impl RuntimeHandle {
                     ) {
                         scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                     }
-                    let idle_state = {
-                        let mut guard = self.inner.agent.lock().await;
-                        if !matches!(
-                            guard.state.status,
-                            AgentStatus::Asleep | AgentStatus::Paused | AgentStatus::Stopped
-                        ) && guard.queue.is_empty()
-                        {
-                            scheduler::apply_sleep_projection(&mut guard.state, None);
-                            self.inner.storage.write_agent(&guard.state)?;
-                            Some(guard.state.clone())
-                        } else {
-                            None
-                        }
-                    };
+                    let idle_state = scheduler_executor::SchedulerDecisionExecutor::new(&self)
+                        .transition_run_loop_idle_to_sleep()
+                        .await?;
                     if let Some(idle_state) = idle_state {
                         self.append_state_changed_events(&idle_state)?;
                     }

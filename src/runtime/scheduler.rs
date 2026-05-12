@@ -535,20 +535,6 @@ pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerD
 pub(crate) fn wait_decision_for_projection(
     projection: &SchedulerProjection,
 ) -> Option<SchedulerDecision> {
-    if projection.has_blocking_active_tasks {
-        let mut decision =
-            SchedulerDecision::new(SchedulerDecisionKind::WaitForTask, "blocking_active_tasks")
-                .liveness_only(true)
-                .evidence(format!("active_tasks={}", projection.active_tasks.len()));
-        if let Some(task) = projection
-            .active_tasks
-            .iter()
-            .find(|task| task.is_blocking())
-        {
-            decision = decision.task_id(task.id.clone());
-        }
-        return Some(decision);
-    }
     if projection.active_waiting_intents > 0 {
         return Some(
             SchedulerDecision::new(
@@ -613,7 +599,7 @@ pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
 
 pub(crate) fn projected_status_for_idle(
     state: &AgentState,
-    storage: &AppStorage,
+    _storage: &AppStorage,
 ) -> Result<AgentStatus> {
     if matches!(
         state.status,
@@ -621,11 +607,7 @@ pub(crate) fn projected_status_for_idle(
     ) {
         return Ok(state.status.clone());
     }
-    if SchedulerProjection::from_state(storage, state)?.has_blocking_active_tasks {
-        Ok(AgentStatus::AwaitingTask)
-    } else {
-        Ok(AgentStatus::AwakeIdle)
-    }
+    Ok(AgentStatus::AwakeIdle)
 }
 
 pub(crate) fn apply_idle_projection(state: &mut AgentState, storage: &AppStorage) -> Result<()> {
@@ -639,15 +621,13 @@ pub(crate) fn apply_running_projection(state: &mut AgentState, run_id: String) {
     state.current_run_id = Some(run_id);
 }
 
-pub(crate) fn apply_message_wake_projection(state: &mut AgentState) {
+pub(crate) fn apply_message_wake_projection(state: &mut AgentState) -> bool {
     if matches!(state.status, AgentStatus::Asleep | AgentStatus::Booting) {
         state.status = AgentStatus::AwakeIdle;
         state.sleeping_until = None;
+        return true;
     }
-}
-
-pub(crate) fn apply_awaiting_task_projection(state: &mut AgentState) {
-    state.status = AgentStatus::AwaitingTask;
+    false
 }
 
 pub(crate) fn apply_sleep_projection(
@@ -674,30 +654,6 @@ pub(crate) fn is_operator_interjection_message(message: &MessageEnvelope) -> boo
             Priority::Interject,
         )
     )
-}
-
-pub(crate) fn active_task_blocks_work_item_completion(
-    task: &TaskRecord,
-    work_item_id: &str,
-) -> bool {
-    if !task.is_blocking() || is_terminal_task_status(&task.status) {
-        return false;
-    }
-    match task.effective_work_item_id() {
-        Some(id) => id == work_item_id,
-        None => true,
-    }
-}
-
-pub(crate) fn has_completion_blocking_task_for_work_item(
-    storage: &AppStorage,
-    agent_id: &str,
-    work_item_id: &str,
-) -> Result<bool> {
-    Ok(storage
-        .latest_active_task_records_for_agent(agent_id, usize::MAX)?
-        .iter()
-        .any(|task| active_task_blocks_work_item_completion(task, work_item_id)))
 }
 
 pub(crate) fn work_queue_tick_idempotency_key(work_item: &WorkItemRecord, reason: &str) -> String {

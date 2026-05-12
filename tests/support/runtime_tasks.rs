@@ -21,8 +21,7 @@ use holon::{
     ingress::{WakeDisposition, WakeHint},
     policy::validate_message_kind_for_origin,
     provider::{
-        AgentProvider, ConversationMessage, ModelBlock, ProviderTurnRequest, ProviderTurnResponse,
-        StubProvider,
+        AgentProvider, ModelBlock, ProviderTurnRequest, ProviderTurnResponse, StubProvider,
     },
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{ToolCall, ToolError, ToolRegistry, ToolResult},
@@ -43,9 +42,9 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
 use crate::support::runtime_helpers::{
-    aggressive_compaction_config, git, init_git_repo, operator_transport_binding,
-    parse_tool_result_payload, parse_tool_result_value, test_config, wait_for_worktree_presence,
-    wait_until, wait_until_async, wait_until_async_for,
+    aggressive_compaction_config, delegated_prompt_text, git, init_git_repo,
+    operator_transport_binding, parse_tool_result_payload, parse_tool_result_value, test_config,
+    wait_for_worktree_presence, wait_until, wait_until_async, wait_until_async_for,
 };
 use crate::support::runtime_providers::{
     DelayedTextProvider, DelegatedBoundaryProvider, FileEditingProvider, LongShellProvider,
@@ -61,6 +60,62 @@ use crate::support::{
 
 // ============================================================================
 // Runtime tasks domain test support
+
+struct SleepThenRecordTaskResultProvider {
+    requests: Mutex<Vec<String>>,
+}
+
+impl SleepThenRecordTaskResultProvider {
+    fn new() -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn captured_requests(&self) -> Vec<String> {
+        self.requests.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl AgentProvider for SleepThenRecordTaskResultProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let prompt_text = delegated_prompt_text(&request);
+        let mut requests = self.requests.lock().await;
+        requests.push(prompt_text);
+        let call = requests.len();
+        drop(requests);
+
+        match call {
+            1 => Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::ToolUse {
+                    id: "sleep-1".into(),
+                    name: "Sleep".into(),
+                    input: json!({
+                        "reason": "wait for background command result"
+                    }),
+                }],
+                stop_reason: None,
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_usage: None,
+                request_diagnostics: None,
+            }),
+            2 => Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text {
+                    text: "background command result observed".into(),
+                }],
+                stop_reason: None,
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_usage: None,
+                request_diagnostics: None,
+            }),
+            _ => anyhow::bail!("unexpected provider call {call}"),
+        }
+    }
+}
+
 pub async fn background_task_rejoins_main_session() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
@@ -108,6 +163,90 @@ pub async fn background_task_rejoins_main_session() -> Result<()> {
             .any(|record| record.id == task.id
                 && record.status == holon::types::TaskStatus::Completed)
     );
+    Ok(())
+}
+
+pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reentry() -> Result<()> {
+    let provider = Arc::new(SleepThenRecordTaskResultProvider::new());
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
+    let runtime = host.default_runtime().await?;
+
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "sleep until the background command finishes".into(),
+            },
+        ))
+        .await?;
+
+    wait_until_async(|| {
+        let runtime = runtime.clone();
+        let provider = provider.clone();
+        async move {
+            let state = runtime.agent_state().await?;
+            Ok(
+                state.status == AgentStatus::Asleep
+                    && provider.captured_requests().await.len() == 1,
+            )
+        }
+    })
+    .await?;
+
+    let task = runtime
+        .schedule_command_task(
+            "background wake task".into(),
+            CommandTaskSpec {
+                cmd: "printf background_done".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: Some(256),
+                accepts_input: false,
+                continue_on_result: false,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    wait_until_async(|| {
+        let provider = provider.clone();
+        async move { Ok(provider.captured_requests().await.len() >= 2) }
+    })
+    .await?;
+
+    let requests = provider.captured_requests().await;
+    let reentry_prompt = requests
+        .get(1)
+        .expect("background task result should trigger model reentry");
+    assert!(
+        reentry_prompt.contains("background_done"),
+        "task result output should be visible to model: {reentry_prompt}"
+    );
+    let state = runtime.agent_state().await?;
+    assert!(state
+        .last_continuation
+        .as_ref()
+        .is_some_and(|continuation| {
+            continuation.trigger_kind == holon::types::ContinuationTriggerKind::TaskResult
+                && continuation.model_reentry
+                && continuation
+                    .evidence
+                    .iter()
+                    .any(|entry| entry == "task_background")
+        }));
+    let tasks = runtime.storage().latest_task_records()?;
+    assert!(tasks.iter().any(|record| {
+        record.id == task.id
+            && record.status == TaskStatus::Completed
+            && record.wait_policy() == holon::types::TaskWaitPolicy::Background
+    }));
     Ok(())
 }
 
@@ -909,7 +1048,9 @@ pub async fn command_task_runs_to_completion_and_persists_detail() -> Result<()>
     assert_eq!(stored.kind.as_str(), "command_task");
     let detail = stored.detail.unwrap_or_default();
     assert_eq!(detail["cmd"], "printf managed_ok");
+    assert_eq!(detail["wait_policy"], "background");
     assert_eq!(detail["continue_on_result"], false);
+    assert_eq!(detail["terminal_reentry"], false);
     let output_path = detail["output_path"]
         .as_str()
         .expect("command task should expose output_path");
@@ -1864,7 +2005,7 @@ pub async fn task_result_rejoin_preserves_runtime_provenance_not_operator_author
     Ok(())
 }
 
-pub async fn blocking_command_task_sets_awaiting_task_closure() -> Result<()> {
+pub async fn command_continue_on_result_does_not_set_awaiting_task_closure() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
@@ -1888,12 +2029,20 @@ pub async fn blocking_command_task_sets_awaiting_task_closure() -> Result<()> {
         .await?;
 
     let summary = runtime.agent_summary().await?;
-    assert_eq!(summary.agent.status, AgentStatus::AwaitingTask);
-    assert_eq!(summary.closure.outcome, ClosureOutcome::Waiting);
+    assert_ne!(summary.agent.status, AgentStatus::AwaitingTask);
+    assert_eq!(summary.closure.outcome, ClosureOutcome::Completed);
+    assert_eq!(summary.closure.waiting_reason, None);
+
+    let stored = runtime.task_record(&task.id).await?.unwrap();
     assert_eq!(
-        summary.closure.waiting_reason,
-        Some(WaitingReason::AwaitingTaskResult)
+        stored.wait_policy(),
+        holon::types::TaskWaitPolicy::Background
     );
+    assert!(!stored.is_blocking());
+    assert!(stored.terminal_reentry());
+    let detail = stored.detail.as_ref().expect("command task detail");
+    assert_eq!(detail["continue_on_result"].as_bool(), Some(true));
+    assert_eq!(detail["terminal_reentry"].as_bool(), Some(true));
 
     runtime
         .stop_task(&task.id, &TrustLevel::TrustedOperator)

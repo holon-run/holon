@@ -504,6 +504,7 @@ impl TuiApp {
 
     pub(super) async fn handle_paste(&mut self, text: &str) -> Result<()> {
         let selected_agent = self.selected_agent_summary().cloned();
+        let model_availability = self.model_availability.clone();
         match &mut self.overlay {
             OverlayState::None => {
                 let before = self.composer.as_str().to_string();
@@ -515,6 +516,7 @@ impl TuiApp {
                 filter.push_str(&paste_inline_text(text));
                 *selected = crate::tui::model_picker::clamp_model_picker_selection(
                     selected_agent.as_ref(),
+                    &model_availability,
                     filter,
                     *selected,
                 );
@@ -524,15 +526,6 @@ impl TuiApp {
             }
             _ => {}
         }
-        Ok(())
-    }
-
-    pub(super) async fn move_agent_selection(&mut self, delta: i32) -> Result<()> {
-        let Some(target_index) = self.next_agent_index(delta) else {
-            return Ok(());
-        };
-        self.chat_scroll.follow_tail();
-        self.begin_bootstrap_agent_index(target_index);
         Ok(())
     }
 
@@ -631,7 +624,9 @@ impl TuiApp {
                 self.status_line = "Opened slash command help".into();
             }
             SlashCommand::Agents => {
-                self.overlay = OverlayState::Agents;
+                self.overlay = OverlayState::Agents {
+                    selected: self.selected_agent,
+                };
                 self.status_line = "Opened agents overlay".into();
             }
             SlashCommand::Events => {
@@ -642,6 +637,9 @@ impl TuiApp {
                 self.status_line = "Opened raw events overlay".into();
             }
             SlashCommand::Model => {
+                if self.model_availability.is_empty() {
+                    self.begin_load_models();
+                }
                 self.overlay = OverlayState::ModelPicker {
                     filter: String::new(),
                     selected: 0,
@@ -832,7 +830,9 @@ impl TuiApp {
         let overlay = std::mem::replace(&mut self.overlay, OverlayState::None);
         match overlay {
             OverlayState::None => self.handle_main_key(key).await,
-            OverlayState::Agents => self.handle_agents_overlay_key(key).await,
+            OverlayState::Agents { selected } => {
+                self.handle_agents_overlay_key(key, selected).await
+            }
             OverlayState::Events {
                 selected_event_id,
                 mut detail_scroll,
@@ -958,6 +958,7 @@ impl TuiApp {
                     TuiKeyAction::OverlayMoveDown => {
                         let max = crate::tui::model_picker::model_picker_rows(
                             self.selected_agent_summary(),
+                            &self.model_availability,
                             &filter,
                         )
                         .len()
@@ -969,6 +970,7 @@ impl TuiApp {
                         filter.pop();
                         selected = crate::tui::model_picker::clamp_model_picker_selection(
                             self.selected_agent_summary(),
+                            &self.model_availability,
                             &filter,
                             selected,
                         );
@@ -978,6 +980,7 @@ impl TuiApp {
                         filter.push(ch);
                         selected = crate::tui::model_picker::clamp_model_picker_selection(
                             self.selected_agent_summary(),
+                            &self.model_availability,
                             &filter,
                             selected,
                         );
@@ -1268,30 +1271,34 @@ impl TuiApp {
         }
     }
 
-    async fn handle_agents_overlay_key(&mut self, key: KeyEvent) -> Result<()> {
+    async fn handle_agents_overlay_key(&mut self, key: KeyEvent, selected: usize) -> Result<()> {
         match resolve_key(KeyContext::AgentsOverlay, key) {
             TuiKeyAction::OverlayClose => Ok(()),
             TuiKeyAction::OverlayAccept => {
-                let agent_id = self.selected_agent_id().unwrap_or("").to_string();
-                if !agent_id.is_empty() {
+                let selected = selected.min(self.agents.len().saturating_sub(1));
+                if let Some(agent_id) = self
+                    .agents
+                    .get(selected)
+                    .map(|agent| agent.identity.agent_id.clone())
+                {
                     self.status_line = format!("Switching to agent {agent_id}");
-                    self.begin_bootstrap_agent_index(self.selected_agent);
+                    self.begin_bootstrap_agent_index(selected);
                 }
                 self.overlay = OverlayState::None;
                 Ok(())
             }
             TuiKeyAction::OverlayMoveUp => {
-                self.move_agent_selection(-1).await?;
-                self.overlay = OverlayState::Agents;
+                let selected = self.next_agent_index_from(selected, -1).unwrap_or(selected);
+                self.overlay = OverlayState::Agents { selected };
                 Ok(())
             }
             TuiKeyAction::OverlayMoveDown => {
-                self.move_agent_selection(1).await?;
-                self.overlay = OverlayState::Agents;
+                let selected = self.next_agent_index_from(selected, 1).unwrap_or(selected);
+                self.overlay = OverlayState::Agents { selected };
                 Ok(())
             }
             _ => {
-                self.overlay = OverlayState::Agents;
+                self.overlay = OverlayState::Agents { selected };
                 Ok(())
             }
         }
@@ -1304,6 +1311,7 @@ impl TuiApp {
             .to_string();
         let choice = crate::tui::model_picker::selected_model_choice(
             self.selected_agent_summary(),
+            &self.model_availability,
             filter,
             selected,
         )

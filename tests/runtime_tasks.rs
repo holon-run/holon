@@ -16,6 +16,7 @@ macro_rules! runtime_async_tests {
 
 runtime_async_tests!(
     background_task_rejoins_main_session,
+    background_command_task_result_wakes_sleeping_agent_for_model_reentry,
     stop_task_cancels_running_background_task,
     tool_use_round_trip_executes_and_returns_result,
     file_tools_can_modify_workspace_and_reenter_context,
@@ -46,7 +47,7 @@ runtime_async_tests!(
     blocking_command_task_clears_active_state_while_runtime_paused,
     command_task_result_is_canonical_follow_up_on_completion,
     task_result_rejoin_preserves_runtime_provenance_not_operator_authority,
-    blocking_command_task_sets_awaiting_task_closure,
+    command_continue_on_result_does_not_set_awaiting_task_closure,
     command_task_runner_failure_marks_task_failed_and_cleans_up,
     command_task_nonzero_exit_produces_failed_output_and_runtime_state,
     exec_command_auto_promotes_long_running_command_task,
