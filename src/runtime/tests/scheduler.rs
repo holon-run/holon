@@ -788,11 +788,12 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
             duplicate: None,
         }),
     );
+    assert!(blocked_projection.has_blocking_active_tasks);
     assert_eq!(
         work_queue_decision.kind,
-        scheduler::SchedulerDecisionKind::WaitForTask
+        scheduler::SchedulerDecisionKind::EmitSystemTick
     );
-    assert_eq!(work_queue_decision.reason, "blocking_active_tasks");
+    assert_eq!(work_queue_decision.reason, "continue_active");
 }
 
 #[test]

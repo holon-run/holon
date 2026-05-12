@@ -73,16 +73,6 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
         };
     }
 
-    if facts.active_blocking_tasks > 0 {
-        return ClosureDecision {
-            outcome: ClosureOutcome::Waiting,
-            waiting_reason: Some(WaitingReason::AwaitingTaskResult),
-            work_signal: None,
-            runtime_posture,
-            evidence,
-        };
-    }
-
     if facts.active_waiting_intents > 0 {
         return ClosureDecision {
             outcome: ClosureOutcome::Waiting,
@@ -232,17 +222,18 @@ mod tests {
     }
 
     #[test]
-    fn blocking_tasks_map_to_awaiting_task_result() {
+    fn blocking_tasks_are_metadata_not_waiting_reason() {
         let decision = derive_closure_decision(&ClosureFacts {
             active_blocking_tasks: 2,
             ..facts()
         });
 
-        assert_eq!(decision.outcome, ClosureOutcome::Waiting);
-        assert_eq!(
-            decision.waiting_reason,
-            Some(WaitingReason::AwaitingTaskResult)
-        );
+        assert_eq!(decision.outcome, ClosureOutcome::Completed);
+        assert_eq!(decision.waiting_reason, None);
+        assert!(decision
+            .evidence
+            .iter()
+            .any(|item| item == "active_blocking_tasks=2"));
     }
 
     #[test]
@@ -355,7 +346,7 @@ mod tests {
     #[test]
     fn waiting_conditions_override_runnable_work() {
         let decision = derive_closure_decision(&ClosureFacts {
-            active_blocking_tasks: 1,
+            active_waiting_intents: 1,
             work_signal: Some(WorkReactivationSignal {
                 work_item_id: "work-1".into(),
                 state: WorkItemState::Open,
@@ -367,9 +358,29 @@ mod tests {
         assert_eq!(decision.outcome, ClosureOutcome::Waiting);
         assert_eq!(
             decision.waiting_reason,
-            Some(WaitingReason::AwaitingTaskResult)
+            Some(WaitingReason::AwaitingExternalChange)
         );
         assert_eq!(decision.work_signal, None);
+    }
+
+    #[test]
+    fn blocking_tasks_do_not_override_runnable_work() {
+        let decision = derive_closure_decision(&ClosureFacts {
+            active_blocking_tasks: 1,
+            work_signal: Some(WorkReactivationSignal {
+                work_item_id: "work-1".into(),
+                state: WorkItemState::Open,
+                reactivation_mode: WorkReactivationMode::ContinueActive,
+            }),
+            ..facts()
+        });
+
+        assert_eq!(decision.outcome, ClosureOutcome::Continuable);
+        assert_eq!(decision.waiting_reason, None);
+        assert!(decision
+            .evidence
+            .iter()
+            .any(|item| item == "active_blocking_tasks=1"));
     }
 
     #[test]

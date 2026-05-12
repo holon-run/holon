@@ -45,7 +45,6 @@ impl SleepTransitionBoundary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct BootstrapRecoveryFacts {
     pub(super) queued_messages: usize,
-    pub(super) blocking_active_tasks: usize,
 }
 
 pub(super) struct ScheduledMessage {
@@ -107,23 +106,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     }
 
     pub(super) async fn bootstrap_recovered(&self) -> Result<AgentState> {
-        let agent_id = {
-            let guard = self.runtime.inner.agent.lock().await;
-            guard.state.id.clone()
-        };
-        let blocking_active_tasks = self
-            .runtime
-            .inner
-            .storage
-            .latest_active_task_records_for_agent(&agent_id, usize::MAX)?
-            .into_iter()
-            .filter(|task| task.is_blocking())
-            .count();
-
         let mut guard = self.runtime.inner.agent.lock().await;
         let facts = BootstrapRecoveryFacts {
             queued_messages: guard.queue.len(),
-            blocking_active_tasks,
         };
         if apply_bootstrap_recovered_projection(&mut guard.state, facts) {
             self.runtime.inner.storage.write_agent(&guard.state)?;
@@ -350,8 +335,6 @@ pub(super) fn apply_bootstrap_recovered_projection(
 
     if state.pending > 0 || facts.queued_messages > 0 || state.pending_wake_hint.is_some() {
         state.status = AgentStatus::AwakeIdle;
-    } else if facts.blocking_active_tasks > 0 {
-        state.status = AgentStatus::AwaitingTask;
     } else if matches!(
         state.status,
         AgentStatus::Booting | AgentStatus::AwakeRunning | AgentStatus::AwaitingTask
@@ -378,26 +361,20 @@ mod tests {
         state.pending = 1;
         assert!(apply_bootstrap_recovered_projection(
             &mut state,
-            BootstrapRecoveryFacts {
-                queued_messages: 1,
-                blocking_active_tasks: 0,
-            },
+            BootstrapRecoveryFacts { queued_messages: 1 },
         ));
         assert_eq!(state.status, AgentStatus::AwakeIdle);
         assert_eq!(state.current_run_id, None);
     }
 
     #[test]
-    fn bootstrap_recovery_with_blocking_tasks_becomes_awaiting_task() {
+    fn bootstrap_recovery_without_runnable_facts_becomes_idle() {
         let mut state = bootstrap_state(AgentStatus::Booting);
         assert!(apply_bootstrap_recovered_projection(
             &mut state,
-            BootstrapRecoveryFacts {
-                queued_messages: 0,
-                blocking_active_tasks: 2,
-            },
+            BootstrapRecoveryFacts { queued_messages: 0 },
         ));
-        assert_eq!(state.status, AgentStatus::AwaitingTask);
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
     }
 
     #[test]
@@ -407,10 +384,7 @@ mod tests {
             state.current_run_id = Some("run-1".into());
             assert!(!apply_bootstrap_recovered_projection(
                 &mut state,
-                BootstrapRecoveryFacts {
-                    queued_messages: 1,
-                    blocking_active_tasks: 1,
-                },
+                BootstrapRecoveryFacts { queued_messages: 1 },
             ));
             assert_eq!(state.status, status);
             assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
@@ -423,10 +397,7 @@ mod tests {
         state.current_run_id = Some("run-1".into());
         assert!(apply_bootstrap_recovered_projection(
             &mut state,
-            BootstrapRecoveryFacts {
-                queued_messages: 0,
-                blocking_active_tasks: 0,
-            },
+            BootstrapRecoveryFacts { queued_messages: 0 },
         ));
         assert_eq!(state.status, AgentStatus::AwakeIdle);
         assert_eq!(state.current_run_id, None);

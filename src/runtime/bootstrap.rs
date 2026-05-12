@@ -266,12 +266,6 @@ impl RuntimeHandle {
             }
         }
 
-        let blocking_active_tasks = snapshot
-            .active_tasks
-            .iter()
-            .filter(|task| task.is_blocking())
-            .count();
-
         state
             .active_skills
             .retain(|skill| matches!(skill.activation_state, SkillActivationState::SessionActive));
@@ -284,7 +278,6 @@ impl RuntimeHandle {
             &mut state,
             scheduler_executor::BootstrapRecoveryFacts {
                 queued_messages: queue.len(),
-                blocking_active_tasks,
             },
         );
 
