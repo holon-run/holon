@@ -16,6 +16,7 @@ macro_rules! runtime_async_tests {
 
 runtime_async_tests!(
     background_task_rejoins_main_session,
+    background_command_task_result_wakes_sleeping_agent_for_model_reentry,
     stop_task_cancels_running_background_task,
     tool_use_round_trip_executes_and_returns_result,
     file_tools_can_modify_workspace_and_reenter_context,

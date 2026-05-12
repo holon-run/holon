@@ -1,7 +1,7 @@
 use crate::types::{
     admission_trigger_kind_for_message_kind, ClosureDecision, ClosureOutcome, ContinuationClass,
     ContinuationResolution, ContinuationTriggerKind, MessageBody, MessageEnvelope, MessageKind,
-    TaskRecord, TaskStatus, WaitingReason,
+    TaskRecord, TaskStatus, TaskWaitPolicy, WaitingReason,
 };
 
 #[derive(Debug, Clone)]
@@ -10,6 +10,7 @@ pub(super) struct ContinuationTrigger {
     pub(super) contentful: bool,
     pub(super) task_terminal: bool,
     pub(super) task_blocking: bool,
+    pub(super) task_wait_policy: Option<TaskWaitPolicy>,
     pub(super) wake_hint_source: Option<String>,
 }
 
@@ -24,6 +25,7 @@ impl ContinuationTrigger {
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
                 task_blocking: false,
+                task_wait_policy: None,
                 wake_hint_source: None,
             }),
             MessageKind::WebhookEvent | MessageKind::CallbackEvent | MessageKind::ChannelEvent => {
@@ -32,6 +34,7 @@ impl ContinuationTrigger {
                     contentful: body_is_contentful(&message.body),
                     task_terminal: false,
                     task_blocking: false,
+                    task_wait_policy: None,
                     wake_hint_source: None,
                 })
             }
@@ -40,6 +43,7 @@ impl ContinuationTrigger {
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
                 task_blocking: false,
+                task_wait_policy: None,
                 wake_hint_source: None,
             }),
             MessageKind::InternalFollowup => Some(Self {
@@ -47,6 +51,7 @@ impl ContinuationTrigger {
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
                 task_blocking: false,
+                task_wait_policy: None,
                 wake_hint_source: None,
             }),
             MessageKind::SystemTick => Some(Self {
@@ -54,6 +59,7 @@ impl ContinuationTrigger {
                 contentful: system_tick_is_contentful(message),
                 task_terminal: false,
                 task_blocking: false,
+                task_wait_policy: None,
                 wake_hint_source: message
                     .metadata
                     .as_ref()
@@ -77,6 +83,7 @@ impl ContinuationTrigger {
                     })
                     .unwrap_or(false),
                 task_blocking: task.map(TaskRecord::is_blocking).unwrap_or(false),
+                task_wait_policy: task.map(TaskRecord::wait_policy),
                 wake_hint_source: None,
             }),
             MessageKind::TaskStatus
@@ -104,6 +111,9 @@ pub(super) fn resolve_continuation(
     if trigger.task_blocking {
         evidence.push("task_blocking".to_string());
     }
+    if trigger.task_wait_policy == Some(TaskWaitPolicy::Background) {
+        evidence.push("task_background".to_string());
+    }
     if let Some(source) = trigger.wake_hint_source.as_ref() {
         evidence.push(format!("wake_hint_source={source}"));
     }
@@ -120,10 +130,9 @@ pub(super) fn resolve_continuation(
         );
     }
 
-    let terminal_blocking_task_result = trigger.kind == ContinuationTriggerKind::TaskResult
-        && trigger.task_terminal
-        && trigger.task_blocking;
-    let model_reentry = terminal_blocking_task_result
+    let terminal_task_result =
+        trigger.kind == ContinuationTriggerKind::TaskResult && trigger.task_terminal;
+    let model_reentry = terminal_task_result
         || matches!(
             trigger.kind,
             ContinuationTriggerKind::OperatorInput
@@ -185,7 +194,7 @@ fn resolve_waiting(
     let override_allowed = trigger.kind == ContinuationTriggerKind::OperatorInput;
     if expected {
         let model_reentry = match trigger.kind {
-            ContinuationTriggerKind::TaskResult => trigger.task_terminal && trigger.task_blocking,
+            ContinuationTriggerKind::TaskResult => trigger.task_terminal,
             ContinuationTriggerKind::ExternalEvent => trigger.contentful,
             ContinuationTriggerKind::SystemTick => trigger.contentful,
             _ => true,
@@ -237,13 +246,10 @@ fn resolve_waiting(
         };
     }
 
-    if trigger.kind == ContinuationTriggerKind::TaskResult
-        && trigger.task_terminal
-        && trigger.task_blocking
-    {
-        // Terminal blocking task state is persisted before TaskResult enqueue, so
+    if trigger.kind == ContinuationTriggerKind::TaskResult && trigger.task_terminal {
+        // Terminal task state is persisted before TaskResult enqueue, so
         // resuming here cannot reopen the stale active-task wait that just ended.
-        evidence.push("terminal_blocking_task_result".to_string());
+        evidence.push("terminal_task_result".to_string());
         return ContinuationResolution {
             trigger_kind: trigger.kind,
             class: ContinuationClass::ResumeOverride,
@@ -323,6 +329,7 @@ mod tests {
                 contentful: true,
                 task_terminal: true,
                 task_blocking: true,
+                task_wait_policy: Some(TaskWaitPolicy::Blocking),
                 wake_hint_source: None,
             },
         );
@@ -339,6 +346,7 @@ mod tests {
                 contentful: false,
                 task_terminal: false,
                 task_blocking: false,
+                task_wait_policy: None,
                 wake_hint_source: Some("callback".into()),
             },
         );
@@ -355,6 +363,7 @@ mod tests {
                 contentful: true,
                 task_terminal: false,
                 task_blocking: false,
+                task_wait_policy: None,
                 wake_hint_source: None,
             },
         );
@@ -377,6 +386,7 @@ mod tests {
                 contentful: false,
                 task_terminal: false,
                 task_blocking: false,
+                task_wait_policy: None,
                 wake_hint_source: None,
             },
         );
@@ -399,11 +409,39 @@ mod tests {
                 contentful: true,
                 task_terminal: true,
                 task_blocking: true,
+                task_wait_policy: Some(TaskWaitPolicy::Blocking),
                 wake_hint_source: None,
             },
         );
         assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
         assert!(resolution.model_reentry);
+    }
+
+    #[test]
+    fn terminal_background_task_result_resumes_without_prior_wait() {
+        let resolution = resolve_continuation(
+            &ClosureDecision {
+                outcome: ClosureOutcome::Completed,
+                waiting_reason: None,
+                work_signal: None,
+                runtime_posture: RuntimePosture::Sleeping,
+                evidence: vec![],
+            },
+            &ContinuationTrigger {
+                kind: ContinuationTriggerKind::TaskResult,
+                contentful: true,
+                task_terminal: true,
+                task_blocking: false,
+                task_wait_policy: Some(TaskWaitPolicy::Background),
+                wake_hint_source: None,
+            },
+        );
+        assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
+        assert!(resolution.model_reentry);
+        assert!(resolution
+            .evidence
+            .iter()
+            .any(|entry| entry == "task_background"));
     }
 
     #[test]
@@ -415,6 +453,7 @@ mod tests {
                 contentful: true,
                 task_terminal: true,
                 task_blocking: true,
+                task_wait_policy: Some(TaskWaitPolicy::Blocking),
                 wake_hint_source: None,
             },
         );
@@ -431,6 +470,7 @@ mod tests {
                 contentful: false,
                 task_terminal: false,
                 task_blocking: false,
+                task_wait_policy: None,
                 wake_hint_source: None,
             },
         );
@@ -448,6 +488,7 @@ mod tests {
                 contentful: true,
                 task_terminal: false,
                 task_blocking: false,
+                task_wait_policy: None,
                 wake_hint_source: None,
             },
         );
