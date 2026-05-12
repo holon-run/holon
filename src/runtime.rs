@@ -12,6 +12,7 @@ mod operator;
 mod operator_dispatch;
 mod provider_turn;
 mod scheduler;
+mod scheduler_executor;
 mod subagent;
 mod task_state_reducer;
 mod task_supervisor;
@@ -862,46 +863,14 @@ impl RuntimeHandle {
             }
         }
 
-        enum RunLoopPoll {
-            Stopped(AgentState, usize),
-            Message(MessageEnvelope, AgentState, AgentState),
-            Idle,
-        }
-
         loop {
-            let poll = {
-                let mut guard = self.inner.agent.lock().await;
-                if self.inner.shutdown_requested.load(Ordering::SeqCst) {
-                    guard.state.current_run_id = None;
-                    self.inner.storage.write_agent(&guard.state)?;
-                    return Ok(());
-                }
-                if guard.state.status == AgentStatus::Stopped {
-                    RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len())
-                } else if guard.state.status == AgentStatus::Paused {
-                    RunLoopPoll::Idle
-                } else if let Some(message) = guard.queue.pop() {
-                    let run_id = Uuid::new_v4().to_string();
-                    let interrupt_token = CancellationToken::new();
-                    let prior_state = guard.state.clone();
-                    guard.state.pending = guard.queue.len();
-                    scheduler::apply_running_projection(&mut guard.state, run_id.clone());
-                    guard.current_run_interrupt = Some(CurrentRunInterruptHandle {
-                        run_id: run_id.clone(),
-                        token: interrupt_token,
-                        reason: Arc::new(StdMutex::new("operator_interrupted".into())),
-                    });
-                    guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
-                    self.inner.storage.write_agent(&guard.state)?;
-                    let running_state = guard.state.clone();
-                    RunLoopPoll::Message(message, prior_state, running_state)
-                } else {
-                    RunLoopPoll::Idle
-                }
-            };
+            let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
+                .poll()
+                .await?;
 
-            let (message, prior_state, running_state) = match poll {
-                RunLoopPoll::Stopped(state, queue_len) => {
+            let scheduled = match poll {
+                scheduler_executor::RunLoopPoll::Shutdown => return Ok(()),
+                scheduler_executor::RunLoopPoll::Stopped(state, queue_len) => {
                     let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
                         &self.inner.storage,
                         &state,
@@ -915,10 +884,8 @@ impl RuntimeHandle {
                     scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                     return Ok(());
                 }
-                RunLoopPoll::Message(message, prior_state, running_state) => {
-                    (message, prior_state, running_state)
-                }
-                RunLoopPoll::Idle => {
+                scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+                scheduler_executor::RunLoopPoll::Idle => {
                     if self.maybe_emit_pending_system_tick(None).await? {
                         continue;
                     }
@@ -965,7 +932,8 @@ impl RuntimeHandle {
                 }
             };
 
-            self.append_state_changed_events(&running_state)?;
+            let message = scheduled.message.clone();
+            self.append_state_changed_events(&scheduled.running_state)?;
             self.inner.storage.append_queue_entry(&QueueEntryRecord {
                 message_id: message.id.clone(),
                 agent_id: message.agent_id.clone(),
@@ -975,8 +943,10 @@ impl RuntimeHandle {
                 updated_at: Utc::now(),
             })?;
 
-            let prior_closure = self.closure_decision_for_state(&prior_state, None).await?;
-            if let Err(err) = self.process_message(message.clone(), prior_closure).await {
+            if let Err(err) = self
+                .process_message_with_plan(scheduled.message, scheduled.dispatch_plan)
+                .await
+            {
                 let interrupted = err.downcast_ref::<CurrentRunInterrupted>().cloned();
                 if let Some(interrupted) = interrupted.as_ref() {
                     self.inner.storage.append_queue_entry(&QueueEntryRecord {

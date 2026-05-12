@@ -197,6 +197,7 @@ pub(crate) struct SchedulerDecision {
 pub(crate) enum SchedulerBoundary {
     RunLoop,
     RunLoopIdle,
+    #[allow(dead_code)]
     MessageProcessing,
     IdleTick,
 }
