@@ -144,9 +144,54 @@ pub(crate) async fn execute(
         }
     } else if let Some(path) = path {
         let path = validate_non_empty(path, NAME, "path")?;
-        let workspace = runtime
-            .ensure_workspace_entry_for_path(PathBuf::from(&path))
-            .await?;
+        let path = PathBuf::from(&path);
+        if projection_kind == WorkspaceProjectionKind::CanonicalRoot {
+            if let Some(existing_worktree) = runtime
+                .attached_workspace_for_existing_git_worktree(&path)
+                .await?
+            {
+                let default_cwd = crate::system::workspace::normalize_path(&path)?;
+                runtime
+                    .enter_existing_git_worktree(
+                        &existing_worktree.workspace,
+                        existing_worktree.worktree_root,
+                        access_mode,
+                        cwd.or(Some(default_cwd)),
+                    )
+                    .await?;
+                let snapshot = runtime.execution_snapshot().await?;
+                let projection_kind_label = workspace_projection_kind_label(
+                    snapshot
+                        .projection_kind
+                        .unwrap_or(WorkspaceProjectionKind::GitWorktreeRoot),
+                );
+                let access_mode_label = workspace_access_mode_kind_label(access_mode);
+                let isolation_label = existing_worktree
+                    .suggested_isolation_label
+                    .unwrap_or_else(|| "worktree".into());
+                return serialize_success(
+                    NAME,
+                    &UseWorkspaceResult {
+                        workspace_id: snapshot
+                            .workspace_id
+                            .unwrap_or_else(|| AGENT_HOME_WORKSPACE_ID.to_string()),
+                        workspace_anchor: snapshot.workspace_anchor,
+                        execution_root: snapshot.execution_root,
+                        cwd: snapshot.cwd,
+                        mode: mode_arg_label(mode).to_string(),
+                        projection_kind: projection_kind_label.to_string(),
+                        access_mode: access_mode_label.to_string(),
+                        summary_text: Some(format!(
+                            "detected an existing git worktree for workspace {}; using it as an external execution root. Prefer UseWorkspace with {{\"workspace_id\":\"{}\",\"mode\":\"isolated\",\"isolation_label\":\"{}\"}} so the runtime manages lifecycle.",
+                            existing_worktree.workspace.workspace_id,
+                            existing_worktree.workspace.workspace_id,
+                            isolation_label
+                        )),
+                    },
+                );
+            }
+        }
+        let workspace = runtime.ensure_workspace_entry_for_path(path).await?;
         runtime.attach_workspace(&workspace).await?;
         runtime
             .enter_workspace(&workspace, projection_kind, access_mode, cwd, branch_name)

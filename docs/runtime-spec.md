@@ -2542,6 +2542,12 @@ With `path`, it:
 5. Binds `workspace_id`, `execution_root`, `execution_root_id`, and `cwd`
 6. Persists the active workspace state for recovery across restarts
 
+When `path` points at an existing git worktree whose parent repository is
+already attached to the agent, Holon keeps the parent repository's
+`workspace_id` and `workspace_anchor`, adopts the worktree path as an external
+execution root, and returns guidance to use `mode = "isolated"` with that
+`workspace_id` for runtime-managed worktree lifecycle.
+
 With `workspace_id`, it activates a known attached workspace without discovery.
 `workspace_id = "agent_home"` returns to the built-in AgentHome fallback.
 

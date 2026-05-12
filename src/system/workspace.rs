@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{anyhow, Result};
 use thiserror::Error;
@@ -37,6 +40,78 @@ pub struct WorkspaceView {
     execution_root_id: Option<String>,
     access_mode: Option<WorkspaceAccessMode>,
     worktree_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingGitWorktree {
+    pub worktree_root: PathBuf,
+    pub parent_workspace_anchor: PathBuf,
+    pub gitdir: PathBuf,
+}
+
+pub fn detect_existing_git_worktree(path: &Path) -> Result<Option<ExistingGitWorktree>> {
+    let normalized_path = normalize_path(path)?;
+    let mut candidate = normalized_path.as_path();
+    loop {
+        let git_file = candidate.join(".git");
+        if git_file.is_file() {
+            let content = fs::read_to_string(&git_file)?;
+            let Some(gitdir_value) = content.trim().strip_prefix("gitdir:") else {
+                return Ok(None);
+            };
+            let gitdir = normalize_path(&resolve_gitdir(candidate, gitdir_value.trim()))?;
+            let Some(parent_workspace_anchor) =
+                parent_workspace_anchor_from_worktree_gitdir(&gitdir)
+            else {
+                return Ok(None);
+            };
+            return Ok(Some(ExistingGitWorktree {
+                worktree_root: candidate.to_path_buf(),
+                parent_workspace_anchor,
+                gitdir,
+            }));
+        }
+        if git_file.is_dir() {
+            return Ok(None);
+        }
+        let Some(parent) = candidate.parent() else {
+            return Ok(None);
+        };
+        candidate = parent;
+    }
+}
+
+fn resolve_gitdir(worktree_root: &Path, gitdir: &str) -> PathBuf {
+    let gitdir = PathBuf::from(gitdir);
+    if gitdir.is_absolute() {
+        gitdir
+    } else {
+        worktree_root.join(gitdir)
+    }
+}
+
+fn parent_workspace_anchor_from_worktree_gitdir(gitdir: &Path) -> Option<PathBuf> {
+    let mut components = gitdir.components();
+    let mut anchor = PathBuf::new();
+    while let Some(component) = components.next() {
+        if component.as_os_str() == ".git" {
+            let Some(worktrees) = components.next() else {
+                return None;
+            };
+            if worktrees.as_os_str() != "worktrees" {
+                return None;
+            }
+            if components.next().is_none() {
+                return None;
+            }
+            if components.next().is_some() {
+                return None;
+            }
+            return Some(anchor);
+        }
+        anchor.push(component.as_os_str());
+    }
+    None
 }
 
 impl WorkspaceView {
@@ -240,5 +315,47 @@ mod tests {
     fn normalize_path_preserves_root_when_parent_dir_appears_at_root() {
         let normalized = normalize_path(Path::new("/../etc")).unwrap();
         assert_eq!(normalized, PathBuf::from("/etc"));
+    }
+
+    #[test]
+    fn detects_existing_git_worktree_from_gitdir_file() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("repo");
+        let worktree = dir.path().join("repo-worktree");
+        std::fs::create_dir_all(parent.join(".git").join("worktrees").join("repo-worktree"))
+            .unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                parent
+                    .join(".git")
+                    .join("worktrees")
+                    .join("repo-worktree")
+                    .display()
+            ),
+        )
+        .unwrap();
+
+        let detected = detect_existing_git_worktree(&worktree).unwrap().unwrap();
+        assert_eq!(detected.worktree_root, worktree);
+        assert_eq!(detected.parent_workspace_anchor, parent);
+    }
+
+    #[test]
+    fn does_not_treat_submodule_gitdir_file_as_worktree() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("repo");
+        let submodule = parent.join("vendor").join("lib");
+        std::fs::create_dir_all(parent.join(".git").join("modules").join("vendor/lib")).unwrap();
+        std::fs::create_dir_all(&submodule).unwrap();
+        std::fs::write(
+            submodule.join(".git"),
+            "gitdir: ../../.git/modules/vendor/lib\n",
+        )
+        .unwrap();
+
+        assert!(detect_existing_git_worktree(&submodule).unwrap().is_none());
     }
 }
