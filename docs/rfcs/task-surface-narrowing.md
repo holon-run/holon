@@ -280,7 +280,8 @@ Without breaking the surface yet:
 - describe `command_task` as the primary task-control object
 - describe `child_agent_task` as the unified supervised child-agent task
 - describe `subagent_task` and `worktree_subagent_task` as legacy record names
-  that map to `workspace_mode=inherit` and `workspace_mode=worktree`
+  that map to `workspace_mode=inherit` and `workspace_mode=worktree` for
+  persistence compatibility only, without scheduler blocking semantics
 - describe `sleep_job` as transitional delayed-reactivation language
 - describe `TaskStatus` as the preferred task metadata snapshot
 - describe `TaskGet` as a removable legacy detail shape rather than the long-
