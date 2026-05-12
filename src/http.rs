@@ -2823,7 +2823,33 @@ fn skill_install_error_response(error: anyhow::Error) -> (StatusCode, Json<Value
                 "hint": "uninstall the existing skill first or choose a different skill name",
             })),
         ),
-        Err(error) => error_response(error),
+        Err(error) => match error.downcast::<crate::skills::SkillManagerUnavailable>() {
+            Ok(unavailable) => (
+                StatusCode::FAILED_DEPENDENCY,
+                Json(json!({
+                    "ok": false,
+                    "code": "skill_manager_unavailable",
+                    "error": unavailable.to_string(),
+                    "manager": unavailable.manager,
+                    "hint": "Install Node.js/npm so `npx skills` is available, or install the skill manually into ~/.agents/skills and link it by name.",
+                })),
+            ),
+            Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallFailed>() {
+                Ok(failed) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "ok": false,
+                        "code": "remote_skill_install_failed",
+                        "error": failed.to_string(),
+                        "package": failed.package,
+                        "exit_status": failed.status,
+                        "stdout": failed.stdout,
+                        "stderr": failed.stderr,
+                    })),
+                ),
+                Err(error) => error_response(error),
+            },
+        },
     }
 }
 

@@ -378,16 +378,12 @@ fn paste_single_line_text(text: &str) -> String {
 
 impl TuiApp {
     fn should_treat_enter_as_paste_newline(&self, key: KeyEvent) -> bool {
-        const PASTE_BURST_ENTER_WINDOW: Duration = Duration::from_millis(30);
-
-        let trimmed = self.composer.as_str().trim_start();
-        if key.code != KeyCode::Enter || !key.modifiers.is_empty() || trimmed.is_empty() {
-            return false;
-        }
-        self.composer_key_burst_len > 0
-            && self
-                .composer_key_burst_last_at
-                .is_some_and(|last_at| last_at.elapsed() <= PASTE_BURST_ENTER_WINDOW)
+        should_treat_enter_as_paste_newline_state(
+            self.composer.as_str(),
+            key,
+            self.composer_key_burst_len,
+            self.composer_key_burst_last_at,
+        )
     }
 
     fn record_composer_key_edit(&mut self, action: TuiKeyAction) {
@@ -1293,6 +1289,27 @@ impl TuiApp {
     }
 }
 
+fn should_treat_enter_as_paste_newline_state(
+    composer_text: &str,
+    key: KeyEvent,
+    composer_key_burst_len: usize,
+    composer_key_burst_last_at: Option<Instant>,
+) -> bool {
+    const PASTE_BURST_ENTER_WINDOW: Duration = Duration::from_millis(30);
+
+    let trimmed = composer_text.trim_start();
+    if key.code != KeyCode::Enter
+        || !key.modifiers.is_empty()
+        || trimmed.is_empty()
+        || trimmed.starts_with('/')
+    {
+        return false;
+    }
+    composer_key_burst_len > 0
+        && composer_key_burst_last_at
+            .is_some_and(|last_at| last_at.elapsed() <= PASTE_BURST_ENTER_WINDOW)
+}
+
 fn slash_menu_enter_submission(buffer: &str, selected: SlashCommandSpec) -> String {
     let trimmed = buffer.trim();
     let Some((token, rest)) = trimmed.split_once(char::is_whitespace) else {
@@ -1416,10 +1433,12 @@ impl TuiApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_agent_slash_action, parse_composer_submission, slash_command_spec,
-        slash_menu_enter_submission, slash_menu_specs, slash_prompt_lines, AgentSlashAction,
-        ComposerSubmission, SlashCommand,
+        parse_agent_slash_action, parse_composer_submission,
+        should_treat_enter_as_paste_newline_state, slash_command_spec, slash_menu_enter_submission,
+        slash_menu_specs, slash_prompt_lines, AgentSlashAction, ComposerSubmission, SlashCommand,
     };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::time::Instant;
 
     #[test]
     fn parses_plain_chat_submission() {
@@ -1435,6 +1454,26 @@ mod tests {
             parse_composer_submission("//hello").unwrap(),
             Some(ComposerSubmission::Chat("/hello".into()))
         );
+    }
+
+    #[test]
+    fn paste_newline_heuristic_does_not_intercept_slash_commands() {
+        assert!(!should_treat_enter_as_paste_newline_state(
+            "/skills",
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            1,
+            Some(Instant::now()),
+        ));
+    }
+
+    #[test]
+    fn paste_newline_heuristic_still_applies_to_plain_text_bursts() {
+        assert!(should_treat_enter_as_paste_newline_state(
+            "hello",
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            1,
+            Some(Instant::now()),
+        ));
     }
 
     #[test]

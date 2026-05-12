@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{bail, Context, Result};
@@ -281,6 +282,132 @@ impl std::fmt::Display for SkillInstallConflict {
 
 impl std::error::Error for SkillInstallConflict {}
 
+#[derive(Debug, Clone)]
+pub struct SkillManagerUnavailable {
+    pub manager: String,
+}
+
+impl std::fmt::Display for SkillManagerUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "remote skill install requires {}", self.manager)
+    }
+}
+
+impl std::error::Error for SkillManagerUnavailable {}
+
+#[derive(Debug, Clone)]
+pub struct RemoteSkillInstallFailed {
+    pub package: String,
+    pub status: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl std::fmt::Display for RemoteSkillInstallFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.status {
+            Some(status) => write!(
+                f,
+                "remote skill install for '{}' failed with exit status {}",
+                self.package, status
+            ),
+            None => write!(
+                f,
+                "remote skill install for '{}' failed before process exit",
+                self.package
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RemoteSkillInstallFailed {}
+
+trait RemoteSkillInstaller {
+    fn add_global(&self, package: &str, skill: Option<&str>) -> Result<()>;
+}
+
+struct NpxRemoteSkillInstaller;
+
+impl RemoteSkillInstaller for NpxRemoteSkillInstaller {
+    fn add_global(&self, package: &str, skill: Option<&str>) -> Result<()> {
+        match Command::new("npx").arg("--version").output() {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SkillManagerUnavailable {
+                    manager: "npx".into(),
+                }
+                .into());
+            }
+            Err(error) => return Err(error).context("failed to check npx availability"),
+        }
+
+        let mut command = Command::new("npx");
+        command.args(["--yes", "skills", "add", package, "--global", "--yes"]);
+        if let Some(skill) = skill {
+            command.args(["--skill", skill]);
+        }
+        let output = command
+            .output()
+            .with_context(|| format!("failed to run npx skills add for {package}"))?;
+        if !output.status.success() {
+            return Err(RemoteSkillInstallFailed {
+                package: package.into(),
+                status: output.status.code(),
+                stdout: bounded_output_excerpt(&output.stdout),
+                stderr: bounded_output_excerpt(&output.stderr),
+            }
+            .into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct RecordedRemoteSkillInstall {
+    package: String,
+    skill: Option<String>,
+}
+
+#[cfg(test)]
+struct RecordingRemoteSkillInstaller {
+    calls: std::sync::Arc<std::sync::Mutex<Vec<RecordedRemoteSkillInstall>>>,
+}
+
+#[cfg(test)]
+impl RemoteSkillInstaller for RecordingRemoteSkillInstaller {
+    fn add_global(&self, package: &str, skill: Option<&str>) -> Result<()> {
+        self.calls.lock().unwrap().push(RecordedRemoteSkillInstall {
+            package: package.into(),
+            skill: skill.map(str::to_string),
+        });
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+struct UnavailableRemoteSkillInstaller;
+
+#[cfg(test)]
+impl RemoteSkillInstaller for UnavailableRemoteSkillInstaller {
+    fn add_global(&self, _package: &str, _skill: Option<&str>) -> Result<()> {
+        Err(SkillManagerUnavailable {
+            manager: "npx".into(),
+        }
+        .into())
+    }
+}
+
+fn bounded_output_excerpt(bytes: &[u8]) -> String {
+    const MAX_OUTPUT_BYTES: usize = 2048;
+    let excerpt = if bytes.len() > MAX_OUTPUT_BYTES {
+        &bytes[..MAX_OUTPUT_BYTES]
+    } else {
+        bytes
+    };
+    String::from_utf8_lossy(excerpt).to_string()
+}
+
 /// Validate that a skill name is a single path component with no traversal.
 fn validate_skill_name(name: &str) -> Result<()> {
     if name.is_empty()
@@ -319,6 +446,20 @@ pub fn install_skill_with_user_home(
     user_home: Option<&Path>,
     kind: &crate::types::SkillInstallKind,
 ) -> Result<String> {
+    install_skill_with_user_home_and_remote_installer(
+        agent_home,
+        user_home,
+        kind,
+        &NpxRemoteSkillInstaller,
+    )
+}
+
+fn install_skill_with_user_home_and_remote_installer(
+    agent_home: &Path,
+    user_home: Option<&Path>,
+    kind: &crate::types::SkillInstallKind,
+    remote_installer: &dyn RemoteSkillInstaller,
+) -> Result<String> {
     let skills_root = agent_skills_root(agent_home);
     fs::create_dir_all(&skills_root)
         .with_context(|| format!("failed to create {}", skills_root.display()))?;
@@ -347,8 +488,41 @@ pub fn install_skill_with_user_home(
         crate::types::SkillInstallKind::Local { path, mode } => {
             materialize_local_skill(&skills_root, path, mode)?
         }
+        crate::types::SkillInstallKind::Remote {
+            package,
+            skill,
+            mode,
+        } => {
+            validate_remote_package(package)?;
+            if let Some(skill) = skill {
+                validate_skill_name(skill)?;
+            }
+            remote_installer.add_global(package, skill.as_deref())?;
+            let skill_name = match skill {
+                Some(skill) => skill.as_str(),
+                None => remote_package_default_skill_name(package)?,
+            };
+            let path = resolve_user_skill_by_name(user_home, skill_name)?;
+            materialize_local_skill(&skills_root, &path, mode)?
+        }
     };
     Ok(name)
+}
+
+fn validate_remote_package(package: &str) -> Result<()> {
+    if package.trim().is_empty() {
+        bail!("remote skill package must not be empty");
+    }
+    Ok(())
+}
+
+fn remote_package_default_skill_name(package: &str) -> Result<&str> {
+    package
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("remote skill package has no usable default skill name"))
 }
 
 fn materialize_local_skill(
@@ -397,8 +571,8 @@ fn normalize_local_skill_path(path: &Path) -> Result<PathBuf> {
 }
 
 fn resolve_user_skill_by_name(user_home: Option<&Path>, name: &str) -> Result<PathBuf> {
-    let mut matches = Vec::new();
     for root in existing_skill_roots(user_home, &COMPAT_SKILL_ROOT_SUFFIXES) {
+        let mut root_matches = Vec::new();
         for skill in load_catalog_for_scope(SkillScope::User, &root)? {
             let dir_name = skill
                 .path
@@ -408,29 +582,31 @@ fn resolve_user_skill_by_name(user_home: Option<&Path>, name: &str) -> Result<Pa
                 .unwrap_or("");
             if skill.name == name || dir_name == name {
                 if let Some(skill_dir) = skill.path.parent() {
-                    matches.push(skill_dir.to_path_buf());
+                    root_matches.push(skill_dir.to_path_buf());
                 }
             }
         }
+        root_matches.sort();
+        root_matches.dedup();
+        match root_matches.as_slice() {
+            [] => {}
+            [path] => return Ok(path.clone()),
+            paths => bail!(
+                "skill '{}' matched multiple user-global skill directories under {}: {}; use an explicit path",
+                name,
+                root.display(),
+                paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
     }
-    matches.sort();
-    matches.dedup();
-    match matches.as_slice() {
-        [path] => Ok(path.clone()),
-        [] => bail!(
-            "skill '{}' is not a builtin skill and was not found in the user-global skill catalog; use an explicit path",
-            name
-        ),
-        paths => bail!(
-            "skill '{}' matched multiple user-global skill directories: {}; use an explicit path",
-            name,
-            paths
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
+    bail!(
+        "skill '{}' is not a builtin skill and was not found in the user-global skill catalog; use an explicit path",
+        name
+    )
 }
 
 fn materialize_linked_skill_ref(skills_root: &Path, path: &Path) -> Result<PathBuf> {
@@ -1203,29 +1379,95 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_user_global_skill_name_requires_explicit_path() {
+    fn named_install_prefers_agents_user_global_skill_over_compat_roots() {
         let dir = tempdir().unwrap();
         let user_home = dir.path().join("user");
-        for root in [".agents/skills", ".codex/skills"] {
+        let agent_home = dir.path().join("agent");
+        for (root, description) in [(".agents/skills", "preferred"), (".codex/skills", "compat")] {
             let source = user_home.join(root).join("demo");
             fs::create_dir_all(&source).unwrap();
             fs::write(
                 source.join(SKILL_ENTRYPOINT),
-                "---\nname: demo\ndescription: duplicate\n---\nbody",
+                format!("---\nname: demo\ndescription: {description}\n---\nbody"),
             )
             .unwrap();
         }
 
-        let error = install_skill_with_user_home(
-            &dir.path().join("agent"),
+        let installed = install_skill_with_user_home(
+            &agent_home,
             Some(&user_home),
             &crate::types::SkillInstallKind::Named {
                 name: "demo".into(),
                 mode: SkillInstallMode::Linked,
             },
         )
+        .unwrap();
+
+        assert_eq!(installed, "demo");
+        assert_eq!(
+            fs::read_link(agent_home.join("skills/demo")).unwrap(),
+            user_home.join(".agents/skills/demo")
+        );
+    }
+
+    #[test]
+    fn remote_install_requires_skill_manager() {
+        let dir = tempdir().unwrap();
+        let error = install_skill_with_user_home_and_remote_installer(
+            &dir.path().join("agent"),
+            Some(&dir.path().join("user")),
+            &crate::types::SkillInstallKind::Remote {
+                package: "vercel-labs/agent-skills".into(),
+                skill: Some("demo".into()),
+                mode: SkillInstallMode::Linked,
+            },
+            &UnavailableRemoteSkillInstaller,
+        )
         .unwrap_err();
 
-        assert!(error.to_string().contains("matched multiple"));
+        let unavailable = error
+            .downcast_ref::<SkillManagerUnavailable>()
+            .expect("missing remote manager should be structured");
+        assert_eq!(unavailable.manager, "npx");
+    }
+
+    #[test]
+    fn remote_install_adds_global_skill_non_interactively_then_links_to_agent() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        let agent_home = dir.path().join("agent");
+        let source = user_home.join(".agents/skills/demo");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join(SKILL_ENTRYPOINT),
+            "---\nname: demo\ndescription: remote\n---\nbody",
+        )
+        .unwrap();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let installer = RecordingRemoteSkillInstaller {
+            calls: calls.clone(),
+        };
+
+        let installed = install_skill_with_user_home_and_remote_installer(
+            &agent_home,
+            Some(&user_home),
+            &crate::types::SkillInstallKind::Remote {
+                package: "vercel-labs/agent-skills".into(),
+                skill: Some("demo".into()),
+                mode: SkillInstallMode::Linked,
+            },
+            &installer,
+        )
+        .unwrap();
+
+        assert_eq!(installed, "demo");
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].package, "vercel-labs/agent-skills");
+        assert_eq!(calls[0].skill.as_deref(), Some("demo"));
+        assert_eq!(
+            fs::read_link(agent_home.join("skills/demo")).unwrap(),
+            user_home.join(".agents/skills/demo")
+        );
     }
 }

@@ -452,6 +452,10 @@ enum SkillsCommands {
         #[arg(long)]
         builtin: bool,
         #[arg(long)]
+        remote: bool,
+        #[arg(long)]
+        skill: Option<String>,
+        #[arg(long)]
         copy: bool,
         #[arg(long)]
         agent: Option<String>,
@@ -1455,6 +1459,40 @@ mod tests {
     }
 
     #[test]
+    fn skills_install_remote_cli_builds_remote_request() {
+        let cli = Cli::parse_from([
+            "holon",
+            "skills",
+            "install",
+            "vercel-labs/agent-skills",
+            "--remote",
+            "--skill",
+            "pr-review",
+        ]);
+        let Commands::Skills {
+            command:
+                SkillsCommands::Install {
+                    name_or_path,
+                    builtin,
+                    remote,
+                    skill,
+                    copy,
+                    agent,
+                },
+        } = cli.command
+        else {
+            panic!("expected skills install command");
+        };
+
+        assert_eq!(name_or_path, "vercel-labs/agent-skills");
+        assert!(!builtin);
+        assert!(remote);
+        assert_eq!(skill.as_deref(), Some("pr-review"));
+        assert!(!copy);
+        assert_eq!(agent, None);
+    }
+
+    #[test]
     fn unspecified_listen_accepts_explicit_advertise_url() {
         let mut config = test_config();
         let advertise = apply_serve_options(
@@ -2284,13 +2322,32 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         SkillsCommands::Install {
             name_or_path,
             builtin,
+            remote,
+            skill,
             copy,
             agent,
         } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let kind = if builtin {
+                if remote || skill.is_some() {
+                    anyhow::bail!("--builtin cannot be combined with --remote or --skill");
+                }
                 holon::types::SkillInstallKind::Builtin { name: name_or_path }
+            } else if remote {
+                let mode = if copy {
+                    holon::types::SkillInstallMode::Copied
+                } else {
+                    holon::types::SkillInstallMode::Linked
+                };
+                holon::types::SkillInstallKind::Remote {
+                    package: name_or_path,
+                    skill,
+                    mode,
+                }
             } else {
+                if skill.is_some() {
+                    anyhow::bail!("--skill requires --remote");
+                }
                 build_skill_install_kind(&name_or_path, copy)?
             };
             post_control_json(
