@@ -1996,11 +1996,15 @@ impl RuntimeHandle {
         }
         if wrote_item {
             if record.plan.is_some() {
-                crate::work_item_plan::ensure_plan_artifact(
-                    self.agent_home().as_path(),
-                    &record,
-                    None,
-                )?;
+                let plan_path =
+                    crate::work_item_plan::plan_path(self.agent_home().as_path(), &record.id);
+                if !plan_path.exists() {
+                    crate::work_item_plan::ensure_plan_artifact(
+                        self.agent_home().as_path(),
+                        &record,
+                        None,
+                    )?;
+                }
                 record.plan = None;
             }
             record.revision = existing.revision + 1;
