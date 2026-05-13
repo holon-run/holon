@@ -118,7 +118,7 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         Some("resume after workflow completes"),
     )
     .await?;
-    let _completed = test_work_item(
+    let mut completed = test_work_item(
         &runtime,
         "Already shipped shadow-state cleanup",
         WorkItemState::Completed,
@@ -126,6 +126,9 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         None,
     )
     .await?;
+    completed.result_summary = Some("Promoted cleanup completion report.".into());
+    completed.updated_at = Utc::now();
+    runtime.storage().append_work_item(&completed)?;
 
     for idx in 0..4 {
         runtime.storage().append_message(&MessageEnvelope::new(
@@ -175,9 +178,12 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
     assert!(queued_blocked_section
         .content
         .contains(waiting.objective.as_str()));
-    assert!(!queued_blocked_section
+    assert!(queued_blocked_section
         .content
         .contains("Already shipped shadow-state cleanup"));
+    assert!(queued_blocked_section
+        .content
+        .contains("Completion report: Promoted cleanup completion report."));
 
     Ok(())
 }

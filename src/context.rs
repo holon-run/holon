@@ -9,7 +9,8 @@ use crate::{
         AdmissionContext, AgentState, AuthorityClass, BriefRecord, ContextEpisodeRecord,
         ContinuationClass, ContinuationResolution, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TodoItemState,
-        ToolExecutionRecord, TrustLevel, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
+        ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord,
+        WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
 
@@ -60,16 +61,15 @@ pub fn build_context(
         storage.read_messages_from(agent.compacted_message_count, config.recent_messages)?;
     let briefs = storage.read_recent_briefs(config.recent_briefs)?;
     let tools = storage.read_recent_tool_executions(config.recent_messages)?;
+    let transcript = storage.read_recent_transcript(config.recent_messages)?;
+    let active_waiting_intents = storage
+        .latest_waiting_intents()?
+        .into_iter()
+        .filter(|intent| intent.status == WaitingIntentStatus::Active)
+        .collect::<Vec<_>>();
     let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
     let work_queue_projection = storage.work_queue_prompt_projection()?;
     let current_work_item = work_queue_projection.current.as_ref();
-    let queued_blocked_items = work_queue_projection
-        .readiness
-        .iter()
-        .filter(|item| {
-            !item.is_current && item.work_item.state == crate::types::WorkItemState::Open
-        })
-        .collect::<Vec<_>>();
 
     let current_input_reserved_budget =
         reserve_current_input_budget(config.prompt_budget_estimated_tokens);
@@ -214,20 +214,33 @@ pub fn build_context(
             &mut remaining_budget,
             turn_section(
                 "current_work_item",
-                render_current_work_item(work_item, storage.data_dir()),
+                render_current_work_item(work_item, storage.data_dir(), &active_waiting_intents),
             ),
         );
     }
 
-    if !queued_blocked_items.is_empty() {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
-            turn_section(
-                "queued_blocked_work_items",
-                render_queued_blocked_work_items(&queued_blocked_items, storage.data_dir()),
-            ),
-        );
+    if let Some(work_item) = current_work_item {
+        if let Some(content) =
+            render_current_work_item_process_trace(work_item, &briefs, &tools, &transcript)
+        {
+            push_budgeted_section(
+                &mut sections,
+                &mut remaining_budget,
+                turn_section("current_work_item_process_trace", content),
+            );
+        }
+    }
+
+    if work_queue_projection.has_non_current_candidates() {
+        let candidates =
+            render_work_item_candidates(&work_queue_projection, storage, storage.data_dir())?;
+        if let Some(content) = candidates {
+            push_budgeted_section(
+                &mut sections,
+                &mut remaining_budget,
+                turn_section("queued_blocked_work_items", content),
+            );
+        }
     }
 
     push_budgeted_section(
@@ -501,7 +514,11 @@ fn render_brief(brief: &BriefRecord) -> String {
     format!("- [{:?}] {}", brief.kind, brief.text)
 }
 
-fn render_current_work_item(work_item: &WorkItemRecord, agent_home: &std::path::Path) -> String {
+fn render_current_work_item(
+    work_item: &WorkItemRecord,
+    agent_home: &std::path::Path,
+    active_waiting_intents: &[WaitingIntentRecord],
+) -> String {
     let mut lines = vec![
         "Current work item:".to_string(),
         format!("- Id: {}", work_item.id),
@@ -530,6 +547,25 @@ fn render_current_work_item(work_item: &WorkItemRecord, agent_home: &std::path::
     if let Some(blocked_by) = work_item.blocked_by.as_deref() {
         lines.push(format!("- Blocked by: {blocked_by}"));
     }
+    let waits = active_waiting_intents
+        .iter()
+        .filter(|intent| intent.work_item_id.as_deref() == Some(work_item.id.as_str()))
+        .collect::<Vec<_>>();
+    if !waits.is_empty() {
+        lines.push("- Active waits:".to_string());
+        lines.extend(waits.into_iter().take(4).map(|intent| {
+            let triggered = intent
+                .last_triggered_at
+                .map(|at| format!(" :: last_triggered_at={at}"))
+                .unwrap_or_default();
+            let resource = intent
+                .resource
+                .as_deref()
+                .map(|resource| format!(" :: resource={resource}"))
+                .unwrap_or_default();
+            format!("  - {}{resource}{triggered}", intent.description)
+        }));
+    }
     lines.join("\n")
 }
 
@@ -541,13 +577,155 @@ fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'st
     }
 }
 
-fn render_queued_blocked_work_items(
-    items: &[&crate::storage::WorkItemReadinessProjection],
+fn render_current_work_item_process_trace(
+    work_item: &WorkItemRecord,
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
+) -> Option<String> {
+    let mut lines = vec!["Recent current WorkItem process trace:".to_string()];
+    let mut added = 0usize;
+    for brief in briefs
+        .iter()
+        .rev()
+        .filter(|brief| brief.work_item_id.as_deref() == Some(work_item.id.as_str()))
+        .take(3)
+    {
+        lines.push(format!(
+            "- brief:{:?} {}",
+            brief.kind,
+            truncate_text(&brief.text.replace('\n', " "), 180)
+        ));
+        added += 1;
+    }
+    for tool in tools
+        .iter()
+        .rev()
+        .filter(|tool| tool.work_item_id.as_deref() == Some(work_item.id.as_str()))
+        .take(4)
+    {
+        lines.push(format!(
+            "- tool:{} {}",
+            tool.tool_name,
+            truncate_text(&tool.summary.replace('\n', " "), 180)
+        ));
+        added += 1;
+    }
+    for entry in transcript
+        .iter()
+        .rev()
+        .filter(|entry| entry.kind == TranscriptEntryKind::AssistantRound)
+        .filter(|entry| entry.data["work_item_id"].as_str() == Some(work_item.id.as_str()))
+        .take(2)
+    {
+        if let Some(text) = assistant_round_text_preview(entry) {
+            lines.push(format!("- assistant_round: {}", truncate_text(&text, 180)));
+            added += 1;
+        }
+    }
+    (added > 0).then(|| lines.join("\n"))
+}
+
+fn assistant_round_text_preview(entry: &TranscriptEntry) -> Option<String> {
+    let text = entry
+        .data
+        .get("blocks")?
+        .as_array()?
+        .iter()
+        .filter_map(|block| {
+            block
+                .get("Text")
+                .and_then(|value| value.get("text"))
+                .or_else(|| block.get("text"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn render_work_item_candidates(
+    projection: &crate::storage::WorkQueuePromptProjection,
+    storage: &AppStorage,
     agent_home: &std::path::Path,
-) -> String {
-    let mut lines = vec!["Queued and blocked work items:".to_string()];
+) -> Result<Option<String>> {
+    let mut lines = vec!["Work item candidates by scheduler ranking:".to_string()];
+    append_candidate_group(
+        &mut lines,
+        "Triggered work items:",
+        &projection.triggered_blocked,
+        storage,
+        agent_home,
+    )?;
+    append_candidate_group(
+        &mut lines,
+        "Queued runnable work items:",
+        &projection.queued_runnable,
+        storage,
+        agent_home,
+    )?;
+    append_candidate_group(
+        &mut lines,
+        "Waiting for operator:",
+        &projection.waiting_for_operator,
+        storage,
+        agent_home,
+    )?;
+    append_candidate_group(
+        &mut lines,
+        "Blocked work items:",
+        &projection.blocked,
+        storage,
+        agent_home,
+    )?;
+    append_candidate_group(
+        &mut lines,
+        "Recently completed work items:",
+        &projection.completed_recent,
+        storage,
+        agent_home,
+    )?;
+    if lines.len() == 1 {
+        return Ok(None);
+    }
+    Ok(Some(lines.join("\n")))
+}
+
+fn append_candidate_group(
+    lines: &mut Vec<String>,
+    title: &str,
+    items: &[crate::storage::WorkItemReadinessProjection],
+    storage: &AppStorage,
+    agent_home: &std::path::Path,
+) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let items = items
+        .iter()
+        .filter(|item| !item.is_current)
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return Ok(());
+    }
+    let mut title_pushed = false;
     for item in items {
         let record = item.record();
+        let completion_report = if record.state == crate::types::WorkItemState::Completed {
+            let report = completion_report_for_work_item(storage, record)?;
+            if report.is_none() {
+                continue;
+            }
+            report
+        } else {
+            None
+        };
+        if !title_pushed {
+            lines.push(title.to_string());
+            title_pushed = true;
+        }
         let view = match item.candidate_class {
             crate::storage::WorkItemCandidateClass::TriggeredBlocked => "triggered_blocked",
             crate::storage::WorkItemCandidateClass::QueuedRunnable => "queued_runnable",
@@ -567,11 +745,34 @@ fn render_queued_blocked_work_items(
             summary.push_str(&format!(" :: blocked_by={blocked_by}"));
         }
         lines.push(summary);
+        if let Some(report) = completion_report {
+            lines.push(format!(
+                "  - Completion report: {}",
+                truncate_text(&report.replace('\n', " "), 240)
+            ));
+        }
         lines.extend(render_work_item_plan_artifact_lines(
             record, agent_home, "  - ",
         ));
     }
-    lines.join("\n")
+    Ok(())
+}
+
+fn completion_report_for_work_item(
+    storage: &AppStorage,
+    record: &WorkItemRecord,
+) -> Result<Option<String>> {
+    if let Some(summary) = record
+        .result_summary
+        .as_ref()
+        .filter(|text| !text.is_empty())
+    {
+        return Ok(Some(summary.clone()));
+    }
+    Ok(storage
+        .latest_delivery_summary(&record.id)?
+        .map(|summary| summary.text)
+        .filter(|text| !text.is_empty()))
 }
 
 fn render_work_item_plan_artifact_lines(
@@ -1400,9 +1601,11 @@ mod tests {
         storage::AppStorage,
         types::{
             AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-            AgentVisibility, BriefKind, BriefRecord, ContextEpisodeRecord, ContinuationTriggerKind,
-            EpisodeBoundaryReason, LoadedAgentsMd, MessageKind, MessageOrigin, Priority,
-            ToolExecutionRecord, ToolExecutionStatus, TrustLevel, WorkItemState,
+            AgentVisibility, BriefKind, BriefRecord, CallbackDeliveryMode, ContextEpisodeRecord,
+            ContinuationTriggerKind, EpisodeBoundaryReason, ExternalTriggerScope, LoadedAgentsMd,
+            MessageKind, MessageOrigin, Priority, TodoItem, TodoItemState, ToolExecutionRecord,
+            ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+            WaitingIntentRecord, WaitingIntentStatus, WorkItemState,
         },
     };
 
@@ -2312,16 +2515,79 @@ mod tests {
         );
         active.plan = Some("Persist the work item store and project it into prompts.".into());
         active.todo_list = vec![
-            crate::types::TodoItem {
+            TodoItem {
                 text: "Persist work-item store".into(),
-                state: crate::types::TodoItemState::Completed,
+                state: TodoItemState::Completed,
             },
-            crate::types::TodoItem {
+            TodoItem {
                 text: "Project active item into prompt".into(),
-                state: crate::types::TodoItemState::InProgress,
+                state: TodoItemState::InProgress,
             },
         ];
         storage.append_work_item(&active).unwrap();
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-current".into(),
+                agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
+                work_item_id: Some(active.id.clone()),
+                description: "wait for CI webhook".into(),
+                source: "github".into(),
+                resource: Some("pull/1099".into()),
+                condition: Some("ci completed".into()),
+                delivery_mode: CallbackDeliveryMode::EnqueueMessage,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "cb-current".into(),
+                created_at: chrono::Utc::now(),
+                cancelled_at: None,
+                last_triggered_at: Some(chrono::Utc::now()),
+                trigger_count: 1,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+        storage
+            .append_brief(&BriefRecord {
+                work_item_id: Some(active.id.clone()),
+                ..BriefRecord::new(
+                    "default",
+                    BriefKind::Result,
+                    "Bound brief captured current WorkItem evidence.",
+                    None,
+                    None,
+                )
+            })
+            .unwrap();
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-current".into(),
+                agent_id: "default".into(),
+                work_item_id: Some(active.id.clone()),
+                turn_index: 1,
+                tool_name: "ExecCommand".into(),
+                created_at: chrono::Utc::now(),
+                completed_at: Some(chrono::Utc::now()),
+                duration_ms: 10,
+                trust: TrustLevel::TrustedOperator,
+                status: ToolExecutionStatus::Success,
+                input: json!({"cmd": "cargo test -p holon context"}),
+                output: json!({}),
+                summary: "Verified current WorkItem projection".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+        storage
+            .append_transcript_entry(&TranscriptEntry::new(
+                "default",
+                TranscriptEntryKind::AssistantRound,
+                Some(1),
+                None,
+                json!({
+                    "work_item_id": active.id.clone(),
+                    "blocks": [{"text": "Assistant summarized current WorkItem progress."}]
+                }),
+            ))
+            .unwrap();
 
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(active.id.clone());
@@ -2362,10 +2628,27 @@ mod tests {
         assert!(active_section
             .content
             .contains("Project active item into prompt"));
+        assert!(active_section.content.contains("Active waits:"));
+        assert!(active_section.content.contains("wait for CI webhook"));
+
+        let trace_section = built
+            .sections
+            .iter()
+            .find(|section| section.name == "current_work_item_process_trace")
+            .expect("current_work_item_process_trace section should be present");
+        assert!(trace_section
+            .content
+            .contains("Bound brief captured current WorkItem evidence"));
+        assert!(trace_section
+            .content
+            .contains("Verified current WorkItem projection"));
+        assert!(trace_section
+            .content
+            .contains("Assistant summarized current WorkItem progress"));
     }
 
     #[test]
-    fn build_context_includes_compact_queued_waiting_work_item_summary_and_omits_completed() {
+    fn build_context_includes_ranked_work_item_candidates_and_completion_reports() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
@@ -2380,6 +2663,13 @@ mod tests {
             },
         );
 
+        let mut triggered = crate::types::WorkItemRecord::new(
+            "default",
+            "Resume triggered CI follow-up",
+            crate::types::WorkItemState::Open,
+        );
+        triggered.blocked_by = Some("waiting for CI".into());
+        triggered.plan = Some("Handle the triggered CI result.".into());
         let mut queued = crate::types::WorkItemRecord::new(
             "default",
             "Queue follow-up verification",
@@ -2394,16 +2684,39 @@ mod tests {
             "Wait for operator confirmation",
             crate::types::WorkItemState::Open,
         );
-        waiting.blocked_by = Some("needs explicit approval before completion".into());
+        waiting.plan_status = crate::types::WorkItemPlanStatus::NeedsInput;
         waiting.plan = Some("Wait for the operator answer before retrying.".into());
-        let completed = crate::types::WorkItemRecord::new(
+        let mut completed = crate::types::WorkItemRecord::new(
             "default",
             "Already finished item",
             crate::types::WorkItemState::Completed,
         );
+        completed.result_summary = Some("Promoted completion report only.".into());
+        storage.append_work_item(&triggered).unwrap();
         storage.append_work_item(&queued).unwrap();
         storage.append_work_item(&waiting).unwrap();
         storage.append_work_item(&completed).unwrap();
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-triggered".into(),
+                agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
+                work_item_id: Some(triggered.id.clone()),
+                description: "CI completed".into(),
+                source: "github".into(),
+                resource: Some("pull/1099".into()),
+                condition: Some("ci completed".into()),
+                delivery_mode: CallbackDeliveryMode::EnqueueMessage,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "cb-triggered".into(),
+                created_at: chrono::Utc::now(),
+                cancelled_at: None,
+                last_triggered_at: Some(chrono::Utc::now()),
+                trigger_count: 1,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
 
         let built = build_context(
             &storage,
@@ -2427,17 +2740,28 @@ mod tests {
             .iter()
             .find(|section| section.name == "queued_blocked_work_items")
             .expect("queued_blocked_work_items section should be present");
-        assert!(summary.content.contains("Queue follow-up verification"));
-        assert!(summary.content.contains("Wait for operator confirmation"));
         assert!(summary
             .content
-            .contains("needs explicit approval before completion"));
+            .contains("Work item candidates by scheduler ranking:"));
+        assert!(summary.content.contains("Triggered work items:"));
+        assert!(summary.content.contains("Resume triggered CI follow-up"));
+        assert!(summary.content.contains("[triggered_blocked]"));
+        assert!(summary.content.contains("Queued runnable work items:"));
+        assert!(summary.content.contains("Queue follow-up verification"));
+        assert!(summary.content.contains("[queued_runnable]"));
+        assert!(summary.content.contains("Waiting for operator:"));
+        assert!(summary.content.contains("Wait for operator confirmation"));
+        assert!(summary.content.contains("[waiting_for_operator]"));
+        assert!(summary.content.contains("Recently completed work items:"));
+        assert!(summary.content.contains("Already finished item"));
+        assert!(summary
+            .content
+            .contains("Completion report: Promoted completion report only."));
         assert!(summary.content.contains("Plan artifact:"));
         assert!(summary.content.contains("Plan preview:"));
         assert!(summary.content.contains("Verify the queued path."));
         assert!(summary.content.contains("Plan preview complete: false"));
         assert!(summary.content.contains("Plan preview complete: true"));
-        assert!(!summary.content.contains("Already finished item"));
     }
 
     #[test]
