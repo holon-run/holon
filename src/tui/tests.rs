@@ -3074,7 +3074,7 @@ fn pipeline_single_turn_presentation_jsonl() {
         "should contain process_execution_requested event"
     );
     assert!(
-        seen_assistant || seen_command,
+        seen_assistant,
         "should contain assistant_round_recorded event"
     );
     assert!(seen_turn_terminal, "should contain turn_terminal event");
