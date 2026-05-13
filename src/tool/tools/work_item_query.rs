@@ -85,8 +85,15 @@ pub(crate) async fn view_for_record(
 ) -> Result<WorkItemView> {
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
         && record.state == WorkItemState::Open;
-    let plan_artifact =
-        crate::work_item_plan::ensure_plan_artifact(runtime.agent_home().as_path(), &record, None)?;
+    let mut record = record;
+    crate::work_item_plan::refresh_plan_artifact_metadata(
+        runtime.agent_home().as_path(),
+        &mut record,
+    )?;
+    let plan_artifact = record
+        .plan_artifact
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("missing plan artifact for work item {}", record.id))?;
     let todo_list = if include_todo_list {
         record.todo_list.clone()
     } else {
