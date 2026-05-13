@@ -1806,8 +1806,15 @@ The runtime exposes explicit trusted action tools for work-item state:
 
 - `objective` is required
 - `plan_status` is optional
-- `plan` is optional durable prose
+- `plan` is optional initial durable prose that seeds
+  `agent_home/work-items/<work_item_id>/plan.md`
 - `todo_list` is optional full checklist snapshot
+
+Work item read surfaces return `plan_artifact` instead of full inline plan
+text. The descriptor includes the absolute `path`, `hash`, `bytes`,
+`updated_at`, a bounded `preview`, and `preview_complete`. Agents should read,
+grep, or edit `plan_artifact.path` directly when the preview is incomplete or
+the plan body needs changes.
 
 `PickWorkItem` sets `AgentState.current_work_item_id` to an existing open work
 item owned by the agent.
@@ -1817,7 +1824,6 @@ item owned by the agent.
 - `work_item_id` is required
 - `objective` is optional
 - `plan_status` is optional
-- `plan` is optional and nullable
 - `todo_list` is optional and uses full-snapshot replacement semantics
 - `blocked_by` is optional and nullable
 
@@ -1831,8 +1837,10 @@ item owned by the agent.
   for that work item
 
 There is no separate agent-facing `UpdateWorkPlan` tool and no separate
-work-plan storage stream. Plan and todo state live on the latest
-`WorkItemRecord` snapshot.
+work-plan storage stream. Plan body state lives in the AgentHome plan artifact;
+`WorkItemRecord.plan` is legacy compatibility state and is not the current
+agent-facing read/write contract. `plan_status` and `todo_list` remain explicit
+WorkItem state.
 
 These tools are part of the explicit adoption path for work items. They do not
 require runtime-side semantic resolution of arbitrary ingress into a work item.
@@ -1843,12 +1851,13 @@ wait for a bounded task output check; it does not create or clear durable
 work-item dependency state.
 
 Work-item updates are coordination state, not the artifact progress ledger.
-Prompt guidance should frame plan_status, plan, and todo_list updates as
+Prompt guidance should frame plan_status, todo_list, and blocker updates as
 bookkeeping after material progress such as a file mutation, verification
-result, blocker discovery, or completed inspection objective. A successful
-work-item mutation may invalidate turn-local checkpoint state because the
-runtime focus changed, but failed tool inputs and `ExecCommand` calls do not
-invalidate checkpoint anchors by command-name heuristics.
+result, blocker discovery, or completed inspection objective. Plan body changes
+belong in the plan artifact file. A successful work-item mutation may
+invalidate turn-local checkpoint state because the runtime focus changed, but
+failed tool inputs and `ExecCommand` calls do not invalidate checkpoint anchors
+by command-name heuristics.
 
 During a long provider turn, the runtime may inject a provider-only work-item
 progress reminder when many consecutive provider rounds complete without a

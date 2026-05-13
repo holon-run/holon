@@ -15,6 +15,7 @@ use super::{
     work_item_action::{
         convert_todo_list, parse_work_item_action_args, TodoItemArgs, WorkItemMutationResult,
     },
+    work_item_query::{query_context, view_for_record},
     BuiltinToolDefinition,
 };
 
@@ -56,7 +57,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<CreateWorkItemArgs>(
             NAME,
-            "Create a new open work item for a genuinely separate objective with an independent lifecycle. Use plan for durable task understanding and todo_list only for progress checklist items. Continuous discussion, planning, candidate screening, and option comparison should usually update the current work item instead. Do not create a new work item just to refine, narrow, or switch candidates inside the current task; use UpdateWorkItem.objective, UpdateWorkItem.plan, and UpdateWorkItem.todo_list for that.",
+            "Create a new open work item for a genuinely separate objective with an independent lifecycle. Optional plan seeds the work item's AgentHome plan.md artifact; edit that file directly for later plan changes. Use todo_list only for progress checklist items. Continuous discussion, planning, candidate screening, and option comparison should usually update the current work item instead. Do not create a new work item just to refine, narrow, or switch candidates inside the current task; use UpdateWorkItem.objective, UpdateWorkItem.plan_status, and UpdateWorkItem.todo_list for state updates.",
         )?,
     })
 }
@@ -86,5 +87,7 @@ pub(crate) async fn execute(
             todo_list,
         )
         .await?;
+    let context = query_context(runtime).await?;
+    let work_item = view_for_record(runtime, &context, work_item, true).await?;
     serialize_success(NAME, &WorkItemMutationResult::new(work_item))
 }

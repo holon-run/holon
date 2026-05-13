@@ -23,8 +23,6 @@ pub(crate) const NAME: &str = "GetWorkItem";
 pub(crate) struct GetWorkItemArgs {
     pub(crate) work_item_id: String,
     #[serde(default)]
-    pub(crate) include_plan: bool,
-    #[serde(default)]
     pub(crate) include_todo_list: bool,
 }
 
@@ -39,7 +37,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<GetWorkItemArgs>(
             NAME,
-            "Read one work item by id, including its open/completed lifecycle view, current focus flag, and optional plan and todo_list fields.",
+            "Read one work item by id, including its lifecycle view, current focus flag, plan artifact descriptor, bounded plan preview, and optional todo_list.",
         )?,
     })
 }
@@ -62,13 +60,6 @@ pub(crate) async fn execute(
             )
         })?;
     let context = query_context(runtime).await?;
-    let work_item = view_for_record(
-        runtime,
-        &context,
-        record,
-        args.include_plan,
-        args.include_todo_list,
-    )
-    .await?;
+    let work_item = view_for_record(runtime, &context, record, args.include_todo_list).await?;
     serialize_success(NAME, &GetWorkItemResult { context, work_item })
 }

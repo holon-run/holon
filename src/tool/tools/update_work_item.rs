@@ -16,6 +16,7 @@ use super::{
     work_item_action::{
         convert_todo_list, parse_work_item_action_args, TodoItemArgs, WorkItemMutationResult,
     },
+    work_item_query::{query_context, view_for_record},
     BuiltinToolDefinition,
 };
 
@@ -30,8 +31,6 @@ pub(crate) struct UpdateWorkItemArgs {
     #[serde(default)]
     pub(crate) plan_status: Option<WorkItemPlanStatusArg>,
     #[serde(default)]
-    pub(crate) plan: Option<Option<String>>,
-    #[serde(default)]
     pub(crate) todo_list: Option<Vec<TodoItemArgs>>,
     #[serde(default)]
     pub(crate) blocked_by: Option<Option<String>>,
@@ -42,7 +41,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<UpdateWorkItemArgs>(
             NAME,
-            "Update mutable fields for an existing work item. Use objective to refine the short target, plan to replace durable task understanding, and todo_list to replace the full progress checklist snapshot.",
+            "Update mutable state fields for an existing work item. Use objective to refine the short target, plan_status for planning state, todo_list to replace the full progress checklist snapshot, and blocked_by for blockers. Edit the plan_artifact.path file directly for plan body changes.",
         )?,
     })
 }
@@ -62,14 +61,6 @@ pub(crate) async fn execute(
     let blocked_by = args
         .blocked_by
         .map(|value| value.and_then(|inner| normalize_optional_non_empty(Some(inner))));
-    let plan = args
-        .plan
-        .map(|value| {
-            value
-                .map(|inner| validate_non_empty(inner, NAME, "plan"))
-                .transpose()
-        })
-        .transpose()?;
     let todo_list = args
         .todo_list
         .map(|items| convert_todo_list(NAME, items))
@@ -79,10 +70,12 @@ pub(crate) async fn execute(
             work_item_id,
             objective,
             args.plan_status.map(Into::into),
-            plan,
+            None,
             todo_list,
             blocked_by,
         )
         .await?;
+    let context = query_context(runtime).await?;
+    let work_item = view_for_record(runtime, &context, work_item, true).await?;
     serialize_success(NAME, &WorkItemMutationResult::new(work_item))
 }

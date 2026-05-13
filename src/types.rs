@@ -2629,6 +2629,16 @@ pub enum WorkItemReadiness {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkItemPlanArtifact {
+    pub path: PathBuf,
+    pub hash: String,
+    pub bytes: u64,
+    pub updated_at: DateTime<Utc>,
+    pub preview: String,
+    pub preview_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemRecord {
     pub id: String,
     #[serde(alias = "session_id")]

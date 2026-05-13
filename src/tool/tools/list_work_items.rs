@@ -45,8 +45,6 @@ pub(crate) struct ListWorkItemsArgs {
     #[serde(default)]
     pub(crate) limit: Option<usize>,
     #[serde(default)]
-    pub(crate) include_plan: bool,
-    #[serde(default)]
     pub(crate) include_todo_list: bool,
 }
 
@@ -90,16 +88,7 @@ pub(crate) async fn execute(
     let selected = matching.into_iter().take(limit).collect::<Vec<_>>();
     let mut work_items = Vec::with_capacity(selected.len());
     for record in selected {
-        work_items.push(
-            view_for_record(
-                runtime,
-                &context,
-                record,
-                args.include_plan,
-                args.include_todo_list,
-            )
-            .await?,
-        );
+        work_items.push(view_for_record(runtime, &context, record, args.include_todo_list).await?);
     }
     serialize_success(
         NAME,

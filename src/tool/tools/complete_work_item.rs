@@ -10,7 +10,12 @@ use crate::{
     types::{ToolCapabilityFamily, TrustLevel},
 };
 
-use super::{serialize_success, work_item_action::WorkItemMutationResult, BuiltinToolDefinition};
+use super::{
+    serialize_success,
+    work_item_action::WorkItemMutationResult,
+    work_item_query::{query_context, view_for_record},
+    BuiltinToolDefinition,
+};
 
 pub(crate) const NAME: &str = "CompleteWorkItem";
 
@@ -46,5 +51,7 @@ pub(crate) async fn execute(
             normalize_optional_non_empty(args.result_summary),
         )
         .await?;
+    let context = query_context(runtime).await?;
+    let work_item = view_for_record(runtime, &context, work_item, true).await?;
     serialize_success(NAME, &WorkItemMutationResult::new(work_item))
 }
