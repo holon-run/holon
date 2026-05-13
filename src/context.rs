@@ -567,15 +567,12 @@ fn render_work_item_plan_artifact_lines(
     agent_home: &std::path::Path,
     prefix: &str,
 ) -> Vec<String> {
-    let plan_path = crate::work_item_plan::plan_path(agent_home, &work_item.id);
-    let plan_artifact = if plan_path.exists() || work_item.plan.is_some() {
-        crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None).ok()
-    } else {
-        None
-    };
+    let plan_artifact =
+        crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None).ok();
     let Some(plan_artifact) = plan_artifact else {
         return Vec::new();
     };
+    let preview_indent = " ".repeat(prefix.chars().count());
     let mut lines = vec![
         format!("{prefix}Plan artifact: {}", plan_artifact.path.display()),
         format!(
@@ -589,7 +586,7 @@ fn render_work_item_plan_artifact_lines(
             plan_artifact
                 .preview
                 .lines()
-                .map(|line| format!("  {line}")),
+                .map(|line| format!("{preview_indent}{line}")),
         );
     }
     lines
@@ -2337,7 +2334,7 @@ mod tests {
             .content
             .contains("storage and recovery foundation"));
         assert!(active_section.content.contains("Plan artifact:"));
-        assert!(active_section.content.contains("work-items/"));
+        assert!(active_section.content.contains("work-items"));
         assert!(active_section
             .content
             .contains("Plan preview complete: true"));

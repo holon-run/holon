@@ -115,7 +115,11 @@ fn render_context_snapshot(
         &[],
         continuation,
     )?;
-    Ok(prompt.rendered_context_attachment)
+    let agent_home = storage.data_dir().display().to_string();
+    Ok(prompt
+        .rendered_context_attachment
+        .replace(&agent_home, "$AGENT_HOME")
+        .replace('\\', "/"))
 }
 
 fn assert_snapshot(actual: &str, expected: &str) {
@@ -235,6 +239,8 @@ Current work item:
 - Readiness: Blocked
 - Objective: Ship prompt snapshot coverage
 - Plan status: draft
+- Plan artifact: $AGENT_HOME/work-items/work_prompt/plan.md
+- Plan preview complete: true
 - Todo list:
   - [in_progress] Capture baseline operator layout
   - [pending] Cover callback and task result surfaces
@@ -563,6 +569,8 @@ Current work item:
 - Readiness: Blocked
 - Objective: Complete snapshot coverage expansion
 - Plan status: draft
+- Plan artifact: $AGENT_HOME/work-items/work_active/plan.md
+- Plan preview complete: true
 - Todo list:
   - [in_progress] Add active work with queued work test
   - [pending] Add post-compaction snapshot tests
@@ -571,6 +579,8 @@ Current work item:
 ## queued_blocked_work_items
 Queued and blocked work items:
 - [blocked] work_queued :: Review and merge PR #485 :: blocked_by=blocked on active work completion
+  - Plan artifact: $AGENT_HOME/work-items/work_queued/plan.md
+  - Plan preview complete: true
 
 ## context_contract
 {CONTEXT_CONTRACT}
@@ -653,6 +663,8 @@ Current work item:
 - Readiness: Blocked
 - Objective: Test delta absence
 - Plan status: draft
+- Plan artifact: $AGENT_HOME/work-items/work_no_delta/plan.md
+- Plan preview complete: true
 - Todo list:
   - [in_progress] Verify delta absence
 - Blocked by: verifying snapshot without delta
@@ -777,6 +789,8 @@ Current work item:
 - Readiness: Blocked
 - Objective: Handle CI callback
 - Plan status: draft
+- Plan artifact: $AGENT_HOME/work-items/work_ci/plan.md
+- Plan preview complete: true
 - Todo list:
   - [completed] Wait for CI callback
   - [in_progress] Process CI result
@@ -895,6 +909,8 @@ Current work item:
 - Readiness: Blocked
 - Objective: External service integration
 - Plan status: draft
+- Plan artifact: $AGENT_HOME/work-items/work_waiting/plan.md
+- Plan preview complete: true
 - Todo list:
   - [in_progress] Wait for rate limit reset
   - [pending] Retry API request
@@ -1039,6 +1055,8 @@ Current work item:
 - Readiness: Blocked
 - Objective: Long-running task with compaction
 - Plan status: draft
+- Plan artifact: $AGENT_HOME/work-items/work_compaction/plan.md
+- Plan preview complete: true
 - Todo list:
   - [completed] Complete initial phase
   - [in_progress] Work on expanded coverage
@@ -1186,6 +1204,8 @@ Current work item:
 - Readiness: Blocked
 - Objective: Test execution and verification
 - Plan status: draft
+- Plan artifact: $AGENT_HOME/work-items/work_test/plan.md
+- Plan preview complete: true
 - Todo list:
   - [completed] Execute cargo test
   - [in_progress] Verify test results
