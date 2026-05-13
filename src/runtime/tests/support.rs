@@ -176,7 +176,7 @@ pub(crate) async fn seed_bound_work_item(
     }
     if state == WorkItemState::Completed {
         record = runtime
-            .complete_work_item(record.id.clone(), summary.map(str::to_string))
+            .complete_work_item(record.id.clone(), summary.map(str::to_string), Vec::new())
             .await
             .unwrap();
     }

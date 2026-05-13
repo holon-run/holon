@@ -1760,14 +1760,17 @@ Scheduler readiness is also a derived view:
 `open` is a lifecycle state only. It must not be used by itself as evidence
 that scheduler-owned continuation is allowed.
 
-The runtime persists a `DeliverySummaryRecord` when `CompleteWorkItem` receives
-an explicit `result_summary`. It is associated with the completed work item and
-is separate from raw terminal assistant text.
+The runtime persists a `DeliverySummaryRecord` when an assistant round includes
+operator-facing report text and exactly one successful focused
+`CompleteWorkItem` call. The tool call marks the work item completed; after that
+state transition succeeds, the runtime promotes the same-round assistant text
+into the WorkItem result summary, delivery summary, and result brief.
 
-Delivery summaries are explicit-only in this release line. The turn-end and
+Completion reports are explicit-only in this release line. The turn-end and
 work-item lifecycle do not synthesize fallback summaries from runtime evidence.
-If `CompleteWorkItem` omits `result_summary`, no `DeliverySummaryRecord` is
-created.
+If `CompleteWorkItem` succeeds without same-round report text, no canonical
+completion report or `DeliverySummaryRecord` is created, and the tool result
+surfaces a structured warning.
 
 `run_once.final_text` prefers the newest completed work item's
 `DeliverySummaryRecord.text` over the raw terminal assistant message. The raw

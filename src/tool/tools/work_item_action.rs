@@ -75,10 +75,30 @@ fn work_item_action_recovery_hint(tool_name: &str) -> &'static str {
 #[derive(Serialize)]
 pub(crate) struct WorkItemMutationResult {
     pub(crate) work_item: WorkItemView,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) warnings: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) completed_transition: Option<bool>,
 }
 
 impl WorkItemMutationResult {
     pub(crate) fn new(work_item: WorkItemView) -> Self {
-        Self { work_item }
+        Self {
+            work_item,
+            warnings: Vec::new(),
+            completed_transition: None,
+        }
+    }
+
+    pub(crate) fn with_completion_transition(
+        work_item: WorkItemView,
+        warnings: Vec<serde_json::Value>,
+        completed_transition: bool,
+    ) -> Self {
+        Self {
+            work_item,
+            warnings,
+            completed_transition: Some(completed_transition),
+        }
     }
 }

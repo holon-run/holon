@@ -3,10 +3,10 @@ use super::{task_state_reducer, *};
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
-    AgentProfilePreset, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot, DeliverySummaryRecord,
-    FailureArtifact, FailureArtifactCategory, SpawnAgentResult, TaskHandle, TaskInputResult,
-    TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot,
-    TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemDelegationRecord,
+    AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot,
+    DeliverySummaryRecord, FailureArtifact, FailureArtifactCategory, SpawnAgentResult, TaskHandle,
+    TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus,
+    TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemDelegationRecord,
     WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
     CHILD_AGENT_TASK_KIND,
 };
@@ -2129,6 +2129,7 @@ impl RuntimeHandle {
         &self,
         work_item_id: String,
         result_summary: Option<String>,
+        warnings: Vec<serde_json::Value>,
     ) -> Result<WorkItemRecord> {
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
@@ -2180,10 +2181,104 @@ impl RuntimeHandle {
             serde_json::json!({
                 "action": "completed",
                 "record": record,
+                "warnings": warnings.clone(),
+                "warning_count": warnings.len(),
             }),
         ))?;
         self.inner.notify.notify_one();
         Ok(record)
+    }
+
+    pub async fn promote_work_item_completion_report(
+        &self,
+        work_item_id: String,
+        report_text: String,
+        source_turn_index: Option<u64>,
+        source_round: Option<usize>,
+        warnings: Vec<serde_json::Value>,
+    ) -> Result<WorkItemRecord> {
+        let agent_id = self.agent_id().await?;
+        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        if existing.state != WorkItemState::Completed {
+            return Err(anyhow!(
+                "cannot promote completion report for open work item {}",
+                work_item_id
+            ));
+        }
+        let report_text = report_text.trim();
+        if report_text.is_empty() {
+            return Ok(existing);
+        }
+        if existing.result_summary.as_deref() == Some(report_text) {
+            return Ok(existing);
+        }
+        let record = WorkItemRecord {
+            revision: existing.revision + 1,
+            result_summary: Some(report_text.to_string()),
+            updated_at: Utc::now(),
+            ..existing
+        };
+        self.inner.storage.append_work_item(&record)?;
+        let evidence = serde_json::json!({
+            "source": "same_round_complete_work_item",
+            "source_turn_index": source_turn_index,
+            "source_round": source_round,
+            "warnings": warnings.clone(),
+        });
+        let delivery_summary = DeliverySummaryRecord::new(
+            agent_id.clone(),
+            record.id.clone(),
+            report_text,
+            source_turn_index,
+            Some(evidence.clone()),
+        );
+        self.inner
+            .storage
+            .append_delivery_summary(&delivery_summary)?;
+        let mut brief =
+            BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
+        brief.work_item_id = Some(record.id.clone());
+        brief.workspace_id = record.workspace_id.clone();
+        self.persist_brief(&brief).await?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_completion_report_promoted",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "work_item_id": record.id.clone(),
+                "revision": record.revision,
+                "source_turn_index": source_turn_index,
+                "source_round": source_round,
+                "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
+                "warnings": warnings.clone(),
+                "warning_count": warnings.len(),
+                "delivery_summary_id": delivery_summary.id,
+                "brief_id": brief.id,
+            }),
+        ))?;
+        Ok(record)
+    }
+
+    pub async fn record_work_item_completion_warning(
+        &self,
+        work_item_id: String,
+        kind: &str,
+        message: &str,
+        source_turn_index: Option<u64>,
+        source_round: Option<usize>,
+    ) -> Result<()> {
+        let agent_id = self.agent_id().await?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_completion_warning",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "work_item_id": work_item_id,
+                "kind": kind,
+                "message": message,
+                "source_turn_index": source_turn_index,
+                "source_round": source_round,
+            }),
+        ))?;
+        Ok(())
     }
 
     fn validate_owned_work_item(

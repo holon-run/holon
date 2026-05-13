@@ -1946,7 +1946,7 @@ impl TurnExecution<'_> {
             let request_diagnostics = response.request_diagnostics.clone();
             let model_attempt_state = provider_attempt_model_state(attempt_timeline.as_ref());
 
-            let (turn_index, run_id) = {
+            let (turn_index, run_id, round_work_item_id) = {
                 let mut guard = runtime.inner.agent.lock().await;
                 guard.state.total_input_tokens += response.input_tokens;
                 guard.state.total_output_tokens += response.output_tokens;
@@ -1958,7 +1958,15 @@ impl TurnExecution<'_> {
                 guard.state.last_requested_model = model_attempt_state.requested_model.clone();
                 guard.state.last_active_model = model_attempt_state.active_model.clone();
                 runtime.inner.storage.write_agent(&guard.state)?;
-                (guard.state.turn_index, guard.state.current_run_id.clone())
+                (
+                    guard.state.turn_index,
+                    guard.state.current_run_id.clone(),
+                    guard
+                        .state
+                        .current_turn_work_item_id
+                        .clone()
+                        .or_else(|| guard.state.current_work_item_id.clone()),
+                )
             };
 
             let assistant_blocks = response.blocks.clone();
@@ -2022,6 +2030,7 @@ impl TurnExecution<'_> {
                     "turn_index": turn_index,
                     "run_id": run_id,
                     "round": round,
+                    "work_item_id": round_work_item_id.clone(),
                     "stop_reason": stop_reason,
                     "context_build_ms": context_build_ms,
                     "provider_round_ms": provider_round_ms,
@@ -2124,6 +2133,7 @@ impl TurnExecution<'_> {
                         None,
                         serde_json::json!({
                             "blocks": &completed_round_assistant_blocks,
+                            "work_item_id": round_work_item_id.clone(),
                             "token_usage": token_usage,
                             "provider_cache_usage": cache_usage,
                             "prompt_cache_key": effective_prompt.cache_identity.prompt_cache_key.clone(),
@@ -2146,6 +2156,7 @@ impl TurnExecution<'_> {
                     "turn_index": turn_index,
                     "run_id": run_id,
                     "round": round,
+                    "work_item_id": round_work_item_id.clone(),
                     "stop_reason": stop_reason,
                     "text_preview": if combined_text.is_empty() {
                         None::<String>
@@ -2444,6 +2455,14 @@ impl TurnExecution<'_> {
                     tool_result_envelopes.push(result.envelope);
                     continue;
                 }
+                let pre_tool_work_item_id = {
+                    let guard = runtime.inner.agent.lock().await;
+                    guard
+                        .state
+                        .current_turn_work_item_id
+                        .clone()
+                        .or_else(|| guard.state.current_work_item_id.clone())
+                };
                 let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
                 {
                     tokio::select! {
@@ -2465,17 +2484,24 @@ impl TurnExecution<'_> {
                         let result_content =
                             crate::tool::tools::render_tool_result_for_model(&result)?;
                         let duration_ms = record.duration_ms;
-                        let (turn_index, run_id, work_item_id) = {
+                        let (turn_index, run_id, current_work_item_id) = {
                             let guard = runtime.inner.agent.lock().await;
                             (
                                 guard.state.turn_index,
                                 guard.state.current_run_id.clone(),
-                                guard.state.current_turn_work_item_id.clone(),
+                                guard
+                                    .state
+                                    .current_turn_work_item_id
+                                    .clone()
+                                    .or_else(|| guard.state.current_work_item_id.clone()),
                             )
                         };
                         record.turn_index = turn_index;
                         if record.work_item_id.is_none() {
-                            record.work_item_id = work_item_id;
+                            record.work_item_id = pre_tool_work_item_id
+                                .clone()
+                                .or(current_work_item_id)
+                                .or_else(|| result_work_item_id(&result.envelope));
                         }
 
                         if result.should_sleep {
@@ -2500,6 +2526,7 @@ impl TurnExecution<'_> {
                                 "tool_name": tool_name,
                                 "turn_index": turn_index,
                                 "run_id": run_id,
+                                "work_item_id": record.work_item_id.clone(),
                                 "exec_command_cmd": command_preview_field(&call),
                                 "exec_command_batch_items": command_batch_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
@@ -2571,6 +2598,16 @@ impl TurnExecution<'_> {
                 }
             }
             runtime
+                .promote_round_completion_report_if_present(
+                    agent_id,
+                    round,
+                    turn_index,
+                    &combined_text,
+                    &mut tool_results,
+                    &mut tool_result_envelopes,
+                )
+                .await?;
+            runtime
                 .inner
                 .storage
                 .append_transcript_entry(&TranscriptEntry::new(
@@ -2632,6 +2669,168 @@ impl TurnExecution<'_> {
             }
         }
     }
+}
+
+impl RuntimeHandle {
+    async fn promote_round_completion_report_if_present(
+        &self,
+        agent_id: &str,
+        round: usize,
+        turn_index: u64,
+        combined_text: &str,
+        tool_results: &mut [ToolResultBlock],
+        tool_result_envelopes: &mut [ToolResultEnvelope],
+    ) -> Result<()> {
+        let completion_indexes = tool_result_envelopes
+            .iter()
+            .enumerate()
+            .filter(|(_, envelope)| {
+                envelope.tool_name == "CompleteWorkItem"
+                    && envelope.status == ToolResultStatus::Success
+                    && envelope
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.get("completed_transition"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+            })
+            .filter_map(|(index, envelope)| result_work_item_id(envelope).map(|id| (index, id)))
+            .collect::<Vec<_>>();
+        if completion_indexes.is_empty() {
+            return Ok(());
+        }
+
+        if completion_indexes.len() != 1 {
+            for (index, work_item_id) in completion_indexes {
+                let warning = completion_report_warning(
+                    "completion_report_not_promoted_multiple_completions",
+                    "Completion report was not promoted because this round completed multiple work items.",
+                );
+                append_completion_warning(&mut tool_result_envelopes[index], warning.clone());
+                update_tool_result_block_content(
+                    index,
+                    tool_results,
+                    &tool_result_envelopes[index],
+                )?;
+                self.record_work_item_completion_warning(
+                    work_item_id,
+                    "completion_report_not_promoted_multiple_completions",
+                    "Completion report was not promoted because this round completed multiple work items.",
+                    Some(turn_index),
+                    Some(round),
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        let (index, work_item_id) = completion_indexes
+            .into_iter()
+            .next()
+            .expect("checked non-empty");
+        let report_text = combined_text.trim();
+        if report_text.is_empty() {
+            let warning = completion_report_warning(
+                "missing_completion_report",
+                "CompleteWorkItem succeeded without same-round operator-facing report text; no canonical completion report was promoted.",
+            );
+            append_completion_warning(&mut tool_result_envelopes[index], warning.clone());
+            update_tool_result_block_content(index, tool_results, &tool_result_envelopes[index])?;
+            self.record_work_item_completion_warning(
+                work_item_id,
+                "missing_completion_report",
+                "CompleteWorkItem succeeded without same-round operator-facing report text; no canonical completion report was promoted.",
+                Some(turn_index),
+                Some(round),
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let warnings = envelope_warnings(&tool_result_envelopes[index]);
+        self.promote_work_item_completion_report(
+            work_item_id.clone(),
+            report_text.to_string(),
+            Some(turn_index),
+            Some(round),
+            warnings,
+        )
+        .await?;
+        if let Some(result) = tool_result_envelopes[index].result.as_mut() {
+            if let Some(object) = result.as_object_mut() {
+                object.insert("completion_report_promoted".into(), serde_json::json!(true));
+                object.insert(
+                    "completion_report_source".into(),
+                    serde_json::json!("same_assistant_round"),
+                );
+            }
+        }
+        update_tool_result_block_content(index, tool_results, &tool_result_envelopes[index])?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_completion_report_candidate_promoted",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "work_item_id": work_item_id,
+                "turn_index": turn_index,
+                "round": round,
+                "text_preview": truncate_preview(report_text, ROUND_TEXT_PREVIEW_LIMIT),
+            }),
+        ))?;
+        Ok(())
+    }
+}
+
+fn result_work_item_id(envelope: &ToolResultEnvelope) -> Option<String> {
+    envelope
+        .result
+        .as_ref()?
+        .get("work_item")?
+        .get("id")?
+        .as_str()
+        .map(ToString::to_string)
+}
+
+fn envelope_warnings(envelope: &ToolResultEnvelope) -> Vec<Value> {
+    envelope
+        .result
+        .as_ref()
+        .and_then(|result| result.get("warnings"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn completion_report_warning(kind: &str, message: &str) -> Value {
+    serde_json::json!({
+        "kind": kind,
+        "message": message,
+    })
+}
+
+fn append_completion_warning(envelope: &mut ToolResultEnvelope, warning: Value) {
+    let Some(result) = envelope.result.as_mut() else {
+        return;
+    };
+    let Some(object) = result.as_object_mut() else {
+        return;
+    };
+    let warnings = object
+        .entry("warnings")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(array) = warnings.as_array_mut() {
+        array.push(warning);
+    }
+}
+
+fn update_tool_result_block_content(
+    index: usize,
+    tool_results: &mut [ToolResultBlock],
+    envelope: &ToolResultEnvelope,
+) -> Result<()> {
+    if let Some(block) = tool_results.get_mut(index) {
+        block.content = serde_json::to_string(envelope)?;
+    }
+    Ok(())
 }
 
 fn command_preview_field(call: &ToolCall) -> Option<String> {

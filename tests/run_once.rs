@@ -176,14 +176,13 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
             return Ok(ProviderTurnResponse {
                 blocks: vec![
                     ModelBlock::Text {
-                        text: "Fixed two test annotation issues.".into(),
+                        text: "Implemented broad prompt/context snapshot coverage".into(),
                     },
                     ModelBlock::ToolUse {
                         id: "work-fixup".into(),
                         name: "CompleteWorkItem".into(),
                         input: json!({
-                            "work_item_id": work_item_id.clone(),
-                            "result_summary": "Implemented broad prompt/context snapshot coverage"
+                            "work_item_id": work_item_id.clone()
                         }),
                     },
                 ],
