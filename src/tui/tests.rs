@@ -2904,3 +2904,183 @@ fn history_navigation_browses_multiple_entries() {
     assert_eq!(app.history_index, None);
     assert!(app.composer.is_empty());
 }
+
+// ── Pipeline integration tests ────────────────────────────────────────────
+
+/// Helper: build a `StreamEventEnvelope` with the given fields.
+fn pipeline_event_envelope(
+    id: &str,
+    seq: u64,
+    agent_id: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+) -> StreamEventEnvelope {
+    StreamEventEnvelope {
+        id: id.into(),
+        seq,
+        ts: Utc::now(),
+        agent_id: agent_id.into(),
+        event_type: event_type.into(),
+        projection: None,
+        provenance: None,
+        payload,
+    }
+}
+
+/// Helper: build an `AgentStreamEvent` for a known kind.
+fn pipeline_event(
+    id: &str,
+    seq: u64,
+    agent_id: &str,
+    kind: &str,
+    payload: serde_json::Value,
+) -> AgentStreamEvent {
+    AgentStreamEvent {
+        id: id.into(),
+        event: kind.into(),
+        data: pipeline_event_envelope(id, seq, agent_id, kind, payload),
+    }
+}
+
+/// Basic end-to-end pipeline test: drive a minimal agent through a single
+/// turn (`echo hello`) and verify all expected entries land in
+/// `presentation.jsonl` with valid JSON structure and correct display-level
+/// decisions.
+#[test]
+fn pipeline_single_turn_presentation_jsonl() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let log_writer =
+        crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_root = log_writer.root().to_path_buf();
+    let mut app = TuiApp::new(client, log_writer);
+
+    // Bootstrap projection so events have a home.
+    let snapshot = sample_snapshot("default", "evt-0");
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    let projection = app.projection.as_mut().unwrap();
+
+    // Simulate a complete single turn: ExecCommand("echo hello").
+    projection.apply_event(
+        pipeline_event(
+            "evt-1",
+            1,
+            "default",
+            "process_execution_requested",
+            json!({ "exec_command_cmd": "echo hello" }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-2",
+            2,
+            "default",
+            "tool_executed",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "echo hello",
+                "duration_ms": 5,
+                "exit_status": 0,
+                "stdout_preview": "hello"
+            }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-3",
+            3,
+            "default",
+            "assistant_round_recorded",
+            json!({ "round": 1, "text_preview": "Done — echo hello succeeded." }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-4",
+            4,
+            "default",
+            "turn_terminal",
+            json!({ "kind": "completed" }),
+        ),
+        &app.log_writer,
+    );
+
+    // ── Verify presentation.jsonl ──────────────────────────────────────
+    let presentation_path = log_root.join("presentation.jsonl");
+    assert!(
+        presentation_path.exists(),
+        "presentation.jsonl should exist after pipeline events"
+    );
+
+    let raw = std::fs::read_to_string(&presentation_path).unwrap();
+    let lines: Vec<&str> = raw.trim().lines().collect();
+    assert!(!lines.is_empty(), "presentation.jsonl should have records");
+
+    let mut seen_command = false;
+    let mut seen_assistant = false;
+    let mut seen_turn_terminal = false;
+    let mut seen_tool_executed = false;
+
+    for line in &lines {
+        let record: serde_json::Value =
+            serde_json::from_str(line).expect("every line must be valid JSON");
+
+        let reducer_kinds: Vec<&str> = record["reducer_event_kinds"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        if reducer_kinds.contains(&"process_execution_requested") {
+            seen_command = true;
+            assert_eq!(record["item_kind"], "command_executed");
+        }
+        if reducer_kinds.contains(&"assistant_round_recorded") {
+            seen_assistant = true;
+            assert_eq!(record["item_kind"], "assistant_progress");
+        }
+        if reducer_kinds.contains(&"tool_executed") {
+            seen_tool_executed = true;
+        }
+        if reducer_kinds.contains(&"turn_terminal") {
+            seen_turn_terminal = true;
+        }
+
+        // Verify display-level decisions: for each display level (3,4,5),
+        // decision must be "shown" iff min_display_level ≤ that level.
+        let min_level = record["min_display_level"].as_u64().unwrap_or(0) as u8;
+        let displays = record["displays"]
+            .as_array()
+            .expect("displays must be an array");
+        for display in displays {
+            let dl = display["display_level"].as_u64().unwrap() as u8;
+            let decision = display["decision"].as_str().unwrap();
+            if min_level <= dl {
+                assert_eq!(
+                    decision, "shown",
+                    "min_display_level={min_level} ≤ display_level={dl} → decision must be shown"
+                );
+            } else {
+                assert_eq!(
+                    decision, "hidden",
+                    "min_display_level={min_level} > display_level={dl} → decision must be hidden"
+                );
+            }
+        }
+    }
+
+    assert!(
+        seen_command,
+        "should contain process_execution_requested event"
+    );
+    assert!(
+        seen_assistant,
+        "should contain assistant_round_recorded event"
+    );
+    assert!(seen_tool_executed, "should contain tool_executed event");
+    assert!(seen_turn_terminal, "should contain turn_terminal event");
+}
