@@ -1,6 +1,7 @@
 #[cfg(test)]
 use std::sync::Arc;
 use std::{
+    env,
     fs::{self, OpenOptions},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -14,9 +15,15 @@ use serde_json::Value;
 use super::projection::ProjectionEventRecord;
 use crate::presentation::{PresentationItem, Renderable, RenderedCell, TimedItem};
 
+const PRESENTATION_LOG_ENV: &str = "HOLON_TUI_PRESENTATION_LOG";
+const PRESENTATION_LOG_MAX_BYTES_ENV: &str = "HOLON_TUI_PRESENTATION_LOG_MAX_BYTES";
+const DEFAULT_PRESENTATION_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub(crate) struct TuiLogWriter {
     root: PathBuf,
+    presentation_logging_enabled: bool,
+    presentation_log_max_bytes: u64,
     #[cfg(test)]
     _tempdir: Option<Arc<tempfile::TempDir>>,
 }
@@ -28,6 +35,8 @@ impl TuiLogWriter {
             .with_context(|| format!("failed to create {}", root.display()))?;
         Ok(Self {
             root,
+            presentation_logging_enabled: presentation_logging_enabled_from_env(),
+            presentation_log_max_bytes: presentation_log_max_bytes_from_env(),
             #[cfg(test)]
             _tempdir: None,
         })
@@ -41,15 +50,36 @@ impl TuiLogWriter {
             .with_context(|| format!("failed to create {}", root.display()))?;
         Ok(Self {
             root,
+            presentation_logging_enabled: false,
+            presentation_log_max_bytes: DEFAULT_PRESENTATION_LOG_MAX_BYTES,
             _tempdir: Some(tempdir),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_temp_with_presentation_logging(max_bytes: u64) -> Result<Self> {
+        let mut writer = Self::new_temp()?;
+        writer.presentation_logging_enabled = true;
+        writer.presentation_log_max_bytes = max_bytes;
+        Ok(writer)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 
     pub(crate) fn write_event(&self, event: &ProjectionEventRecord) -> Result<()> {
         if is_error_log_event(&event.kind) {
             append_jsonl(
                 &self.root.join("errors.jsonl"),
-                &PersistedErrorLogRecord::from_event(event),
+                &PersistedTuiEventLogRecord::from_event(event),
+            )?;
+        }
+        if is_turn_log_event(&event.kind) {
+            append_jsonl(
+                &self.root.join("turns.jsonl"),
+                &PersistedTuiEventLogRecord::from_event(event),
             )?;
         }
 
@@ -61,29 +91,27 @@ impl TuiLogWriter {
         reducer_events: &[ProjectionEventRecord],
         items: &[TimedItem],
     ) -> Result<()> {
-        let path = self.root.join("presentation.jsonl");
-        let mut writer = BufWriter::new(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .with_context(|| format!("failed to open {}", path.display()))?,
-        );
-        for item in items {
-            let line = serde_json::to_string(&PersistedPresentationLogRecord::from_timed_item(
-                reducer_events,
-                item,
-            ))?;
-            writeln!(writer, "{line}")?;
+        if !self.presentation_logging_enabled || items.is_empty() {
+            return Ok(());
         }
-        writer.flush()?;
+        let path = self.root.join("presentation.jsonl");
+        let lines = items
+            .iter()
+            .map(|item| {
+                serde_json::to_string(&PersistedPresentationLogRecord::from_timed_item(
+                    reducer_events,
+                    item,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        append_bounded_jsonl_lines(&path, lines.as_slice(), self.presentation_log_max_bytes)?;
 
         Ok(())
     }
 }
 
 #[derive(Debug, Serialize)]
-struct PersistedErrorLogRecord<'a> {
+struct PersistedTuiEventLogRecord<'a> {
     ts: DateTime<Utc>,
     event_id: &'a str,
     seq: u64,
@@ -92,7 +120,7 @@ struct PersistedErrorLogRecord<'a> {
     payload: &'a Value,
 }
 
-impl<'a> PersistedErrorLogRecord<'a> {
+impl<'a> PersistedTuiEventLogRecord<'a> {
     fn from_event(event: &'a ProjectionEventRecord) -> Self {
         Self {
             ts: event.ts,
@@ -224,7 +252,25 @@ fn presentation_item_kind(item: &PresentationItem) -> &'static str {
 }
 
 fn is_error_log_event(kind: &str) -> bool {
-    matches!(kind, "runtime_error" | "turn_terminal")
+    matches!(kind, "runtime_error")
+}
+
+fn is_turn_log_event(kind: &str) -> bool {
+    matches!(kind, "turn_terminal")
+}
+
+fn presentation_logging_enabled_from_env() -> bool {
+    env::var(PRESENTATION_LOG_ENV)
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on" | "debug"))
+}
+
+fn presentation_log_max_bytes_from_env() -> u64 {
+    env::var(PRESENTATION_LOG_MAX_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_PRESENTATION_LOG_MAX_BYTES)
 }
 
 fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -235,6 +281,62 @@ fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .with_context(|| format!("failed to open {}", path.display()))?;
     let line = serde_json::to_string(value)?;
     writeln!(file, "{line}")?;
+    Ok(())
+}
+
+fn append_bounded_jsonl_lines(path: &Path, lines: &[String], max_bytes: u64) -> Result<()> {
+    let mut current_size = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let mut writer: Option<BufWriter<std::fs::File>> = None;
+
+    for line in lines {
+        let incoming_bytes = line.len() as u64 + 1;
+        if incoming_bytes > max_bytes {
+            continue;
+        }
+        if current_size.saturating_add(incoming_bytes) > max_bytes {
+            if let Some(mut open_writer) = writer.take() {
+                open_writer.flush()?;
+            }
+            rotate_jsonl(path)?;
+            current_size = 0;
+        }
+        if writer.is_none() {
+            writer = Some(BufWriter::new(
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .with_context(|| format!("failed to open {}", path.display()))?,
+            ));
+        }
+        if let Some(open_writer) = writer.as_mut() {
+            writeln!(open_writer, "{line}")?;
+        }
+        current_size += incoming_bytes;
+    }
+
+    if let Some(mut open_writer) = writer {
+        open_writer.flush()?;
+    }
+    Ok(())
+}
+
+fn rotate_jsonl(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let rotated = path.with_extension("jsonl.1");
+    if rotated.exists() {
+        fs::remove_file(&rotated)
+            .with_context(|| format!("failed to remove {}", rotated.display()))?;
+    }
+    fs::rename(path, &rotated).with_context(|| {
+        format!(
+            "failed to rotate {} to {}",
+            path.display(),
+            rotated.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -249,8 +351,48 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn presentation_log_records_display_decisions_without_raw_conversation_log() {
+    fn presentation_log_is_disabled_by_default() {
         let writer = TuiLogWriter::new_temp().unwrap();
+        let event = ProjectionEventRecord {
+            id: "evt_1".into(),
+            seq: 7,
+            ts: Utc::now(),
+            kind: "brief_created".into(),
+            lane: ProjectionEventLane::Timeline,
+            summary: "completed work".into(),
+            presentation: OperatorEventPresentation {
+                visibility: OperatorVisibility::TurnResult,
+                category: OperatorEventCategory::Brief,
+                title: "Holon".into(),
+                body: Some("completed work".into()),
+                summary: "completed work".into(),
+                source_event_kind: "brief_created".into(),
+            },
+            payload: json!({ "id": "brief_1", "text": "completed work" }),
+        };
+        let item = TimedItem {
+            ts: event.ts,
+            item: PresentationItem::AssistantResult {
+                brief_id: Some("brief_1".into()),
+                body: "completed work".into(),
+                outcome: Outcome::Success,
+            },
+        };
+
+        writer
+            .write_event(&event)
+            .and_then(|_| writer.write_presentation_items(std::slice::from_ref(&event), &[item]))
+            .unwrap();
+
+        assert!(
+            !writer.root.join("presentation.jsonl").exists(),
+            "presentation logging is debug instrumentation and must default off"
+        );
+    }
+
+    #[test]
+    fn presentation_log_records_display_decisions_without_raw_conversation_log_when_enabled() {
+        let writer = TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
         let event = ProjectionEventRecord {
             id: "evt_1".into(),
             seq: 7,
@@ -303,7 +445,7 @@ mod tests {
 
     #[test]
     fn presentation_log_marks_lower_display_levels_hidden() {
-        let writer = TuiLogWriter::new_temp().unwrap();
+        let writer = TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
         let event = ProjectionEventRecord {
             id: "evt_debug".into(),
             seq: 9,
@@ -339,5 +481,140 @@ mod tests {
         assert_eq!(record["displays"][0]["decision"], "hidden");
         assert_eq!(record["displays"][1]["decision"], "hidden");
         assert_eq!(record["displays"][2]["decision"], "shown");
+    }
+
+    #[test]
+    fn presentation_log_rotates_when_enabled_debug_log_reaches_limit() {
+        let writer = TuiLogWriter::new_temp_with_presentation_logging(1800).unwrap();
+        let event = ProjectionEventRecord {
+            id: "evt_debug".into(),
+            seq: 9,
+            ts: Utc::now(),
+            kind: "provider_round_completed".into(),
+            lane: ProjectionEventLane::Debug,
+            summary: "provider completed".into(),
+            presentation: OperatorEventPresentation {
+                visibility: OperatorVisibility::Trace,
+                category: OperatorEventCategory::Trace,
+                title: "Provider".into(),
+                body: None,
+                summary: "provider completed".into(),
+                source_event_kind: "provider_round_completed".into(),
+            },
+            payload: json!({ "model": "test-model" }),
+        };
+        let item = TimedItem {
+            ts: event.ts,
+            item: PresentationItem::GenericEvent {
+                kind: "provider_round_completed".into(),
+                summary: "provider completed".into(),
+            },
+        };
+
+        for _ in 0..8 {
+            writer
+                .write_presentation_items(std::slice::from_ref(&event), std::slice::from_ref(&item))
+                .unwrap();
+        }
+
+        let path = writer.root.join("presentation.jsonl");
+        let rotated = writer.root.join("presentation.jsonl.1");
+        assert!(path.exists());
+        assert!(rotated.exists());
+        assert!(path.metadata().unwrap().len() <= writer.presentation_log_max_bytes);
+        assert!(rotated.metadata().unwrap().len() <= writer.presentation_log_max_bytes);
+    }
+
+    #[test]
+    fn presentation_log_drops_single_records_larger_than_limit() {
+        let writer = TuiLogWriter::new_temp_with_presentation_logging(128).unwrap();
+        let event = ProjectionEventRecord {
+            id: "evt_large".into(),
+            seq: 9,
+            ts: Utc::now(),
+            kind: "provider_round_completed".into(),
+            lane: ProjectionEventLane::Debug,
+            summary: "provider completed".repeat(100),
+            presentation: OperatorEventPresentation {
+                visibility: OperatorVisibility::Trace,
+                category: OperatorEventCategory::Trace,
+                title: "Provider".into(),
+                body: None,
+                summary: "provider completed".repeat(100),
+                source_event_kind: "provider_round_completed".into(),
+            },
+            payload: json!({ "model": "test-model" }),
+        };
+        let item = TimedItem {
+            ts: event.ts,
+            item: PresentationItem::GenericEvent {
+                kind: "provider_round_completed".into(),
+                summary: "provider completed".repeat(100),
+            },
+        };
+
+        writer
+            .write_presentation_items(std::slice::from_ref(&event), std::slice::from_ref(&item))
+            .unwrap();
+
+        assert!(!writer.root.join("presentation.jsonl").exists());
+    }
+
+    #[test]
+    fn turn_terminal_records_are_routed_to_turns_not_errors() {
+        let writer = TuiLogWriter::new_temp().unwrap();
+        let event = ProjectionEventRecord {
+            id: "evt_terminal".into(),
+            seq: 10,
+            ts: Utc::now(),
+            kind: "turn_terminal".into(),
+            lane: ProjectionEventLane::Debug,
+            summary: "turn completed".into(),
+            presentation: OperatorEventPresentation {
+                visibility: OperatorVisibility::Trace,
+                category: OperatorEventCategory::Trace,
+                title: "Turn".into(),
+                body: None,
+                summary: "turn completed".into(),
+                source_event_kind: "turn_terminal".into(),
+            },
+            payload: json!({ "kind": "completed" }),
+        };
+
+        writer.write_event(&event).unwrap();
+
+        assert!(!writer.root.join("errors.jsonl").exists());
+        let line = fs::read_to_string(writer.root.join("turns.jsonl")).unwrap();
+        let record: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(record["kind"], "turn_terminal");
+    }
+
+    #[test]
+    fn runtime_errors_are_routed_to_errors_not_turns() {
+        let writer = TuiLogWriter::new_temp().unwrap();
+        let event = ProjectionEventRecord {
+            id: "evt_error".into(),
+            seq: 11,
+            ts: Utc::now(),
+            kind: "runtime_error".into(),
+            lane: ProjectionEventLane::Debug,
+            summary: "runtime failed".into(),
+            presentation: OperatorEventPresentation {
+                visibility: OperatorVisibility::Trace,
+                category: OperatorEventCategory::Trace,
+                title: "Runtime".into(),
+                body: None,
+                summary: "runtime failed".into(),
+                source_event_kind: "runtime_error".into(),
+            },
+            payload: json!({ "error": "failed" }),
+        };
+
+        writer.write_event(&event).unwrap();
+
+        assert!(!writer.root.join("turns.jsonl").exists());
+        let line = fs::read_to_string(writer.root.join("errors.jsonl")).unwrap();
+        let record: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(record["kind"], "runtime_error");
     }
 }

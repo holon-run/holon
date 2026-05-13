@@ -290,6 +290,32 @@ fn operator_origin_detection_accepts_structured_origin() {
 }
 
 #[test]
+fn collect_chat_items_does_not_write_presentation_debug_log() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let log_writer =
+        crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
+    let mut app = TuiApp::new(client, log_writer);
+    let mut snapshot = sample_snapshot("default", "evt-assistant");
+    snapshot.events_tail = vec![StreamEventEnvelope {
+        id: "evt-assistant".into(),
+        seq: 1,
+        ts: Utc::now(),
+        agent_id: "default".into(),
+        event_type: "assistant_round_recorded".into(),
+        projection: None,
+        provenance: None,
+        payload: json!({ "round": 1, "text_preview": "history progress" }),
+    }];
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+    let first = collect_chat_items(&app);
+    let second = collect_chat_items(&app);
+
+    assert_eq!(first, second);
+    assert!(!app.log_writer.root().join("presentation.jsonl").exists());
+}
+
+#[test]
 fn header_view_model_shows_agent_status_without_contract() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(

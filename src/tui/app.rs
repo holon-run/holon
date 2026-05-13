@@ -1,7 +1,6 @@
 use super::chat::CachedChatText;
 use super::state::{tui_state_path, TuiClientState};
 use super::*;
-use std::cell::RefCell;
 use std::path::PathBuf;
 use tokio::{
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -50,8 +49,7 @@ pub(super) struct TuiApp {
     pub(super) display_mode: OperatorDisplayMode,
     pub(crate) status_line: String,
     pub(super) should_quit: bool,
-    pub(super) chat_text_cache: RefCell<Option<CachedChatText>>,
-    pub(super) presentation_log_signature: RefCell<Option<String>>,
+    pub(super) chat_text_cache: std::cell::RefCell<Option<CachedChatText>>,
     pub(super) input_history: Vec<String>,
     pub(super) history_index: Option<usize>,
     pub(super) log_writer: TuiLogWriter,
@@ -107,8 +105,7 @@ impl TuiApp {
             display_mode: OperatorDisplayMode::DEFAULT,
             status_line: format!("Connecting to {connection_summary}..."),
             should_quit: false,
-            chat_text_cache: RefCell::new(None),
-            presentation_log_signature: RefCell::new(None),
+            chat_text_cache: std::cell::RefCell::new(None),
             input_history: Vec::new(),
             history_index: None,
             log_writer,
