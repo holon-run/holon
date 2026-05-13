@@ -875,6 +875,19 @@ impl AppStorage {
         Ok(latest.into_values().collect())
     }
 
+    pub fn latest_waiting_intent(
+        &self,
+        agent_id: &str,
+        waiting_intent_id: &str,
+    ) -> Result<Option<WaitingIntentRecord>> {
+        read_latest_jsonl_matching(
+            &self.waiting_intents_path,
+            |record: &WaitingIntentRecord| {
+                record.agent_id == agent_id && record.id == waiting_intent_id
+            },
+        )
+    }
+
     pub fn latest_external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
         let records = self.read_recent_external_triggers(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
@@ -1598,6 +1611,59 @@ mod tests {
         assert_eq!(found.delegation_id, older.delegation_id);
         assert_eq!(found.state, WorkItemDelegationState::Completed);
         assert_eq!(found.result_summary.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn latest_waiting_intent_scans_from_tail_for_agent_and_id() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        fs::write(
+            &storage.waiting_intents_path,
+            "{not valid json and should not be parsed}\n",
+        )
+        .unwrap();
+        let now = Utc::now();
+        let older = WaitingIntentRecord {
+            id: "wait-1".into(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::WorkItem,
+            work_item_id: Some("work-old".into()),
+            description: "older wait".into(),
+            source: "test".into(),
+            resource: None,
+            condition: None,
+            delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-1".into(),
+            created_at: now,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        };
+        let other_agent = WaitingIntentRecord {
+            agent_id: "other".into(),
+            work_item_id: Some("work-other".into()),
+            ..older.clone()
+        };
+        let latest = WaitingIntentRecord {
+            work_item_id: Some("work-new".into()),
+            trigger_count: 1,
+            last_triggered_at: Some(now),
+            ..older.clone()
+        };
+
+        storage.append_waiting_intent(&older).unwrap();
+        storage.append_waiting_intent(&other_agent).unwrap();
+        storage.append_waiting_intent(&latest).unwrap();
+
+        let found = storage
+            .latest_waiting_intent("default", "wait-1")
+            .unwrap()
+            .expect("latest waiting intent should be found");
+        assert_eq!(found.work_item_id.as_deref(), Some("work-new"));
+        assert_eq!(found.trigger_count, 1);
     }
 
     #[test]

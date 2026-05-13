@@ -14,7 +14,6 @@ impl RuntimeHandle {
             scope: hint.scope.clone(),
             waiting_intent_id: hint.waiting_intent_id.clone(),
             external_trigger_id: hint.external_trigger_id.clone(),
-            work_item_id: hint.work_item_id.clone(),
             resource: hint.resource.clone(),
             body: hint.body.clone(),
             content_type: hint.content_type.clone(),
@@ -22,6 +21,9 @@ impl RuntimeHandle {
             causation_id: hint.causation_id.clone(),
             created_at: Utc::now(),
         };
+        let work_item_id = self
+            .waiting_intent_work_item_id(hint.waiting_intent_id.as_deref())
+            .await?;
 
         let mut trigger_now = false;
         let disposition = {
@@ -64,7 +66,7 @@ impl RuntimeHandle {
                 "scope": hint.scope,
                 "waiting_intent_id": hint.waiting_intent_id,
                 "external_trigger_id": hint.external_trigger_id,
-                "work_item_id": hint.work_item_id,
+                "work_item_id": work_item_id,
                 "resource": hint.resource,
                 "body": hint.body,
                 "content_type": hint.content_type,
@@ -295,6 +297,20 @@ impl RuntimeHandle {
             return Ok(Some(record.id));
         }
         Ok(None)
+    }
+
+    pub(super) async fn waiting_intent_work_item_id(
+        &self,
+        waiting_intent_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        let Some(waiting_intent_id) = waiting_intent_id else {
+            return Ok(None);
+        };
+        Ok(self
+            .inner
+            .storage
+            .latest_waiting_intent(&self.agent_id().await?, waiting_intent_id)?
+            .and_then(|record| record.work_item_id))
     }
 
     pub async fn cancel_waiting(&self, waiting_intent_id: &str) -> Result<CancelWaitingResult> {

@@ -1580,8 +1580,6 @@ pub struct PendingWakeHint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_trigger_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub work_item_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
     pub body: Option<MessageBody>,
     pub content_type: Option<String>,
