@@ -207,6 +207,7 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "turn_started" => OperatorEventCategory::Message,
         "work_item_written"
         | "work_item_picked"
+        | "work_item_focus_released"
         | "work_item_enqueue_requested"
         | "work_item_turn_end_committed"
         | "work_item_turn_end_commit_skipped"
@@ -405,6 +406,9 @@ fn event_text(
         "task_child_spawned" => task_child_spawned_text(payload, fallback_summary),
         "task_input_delivered" => task_input_delivered_text(payload, fallback_summary),
         "work_item_picked" => simple_event_text("Work item picked", work_item_body(payload)),
+        "work_item_focus_released" => {
+            simple_event_text("Work item focus released", work_item_body(payload))
+        }
         "work_item_enqueue_requested" => {
             simple_event_text("Work item enqueue requested", work_item_body(payload))
         }
@@ -1735,6 +1739,7 @@ mod tests {
         "truncated_mutation_tool_call_rejected",
         "work_item_written",
         "work_item_picked",
+        "work_item_focus_released",
         "work_item_enqueue_requested",
         "work_item_turn_end_committed",
         "work_item_turn_end_commit_skipped",
