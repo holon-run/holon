@@ -40,6 +40,19 @@ pub struct WorkQueuePromptProjection {
     pub completed_recent: Vec<WorkItemReadinessProjection>,
 }
 
+impl WorkQueuePromptProjection {
+    pub fn has_non_current_candidates(&self) -> bool {
+        self.triggered_blocked.iter().any(|item| !item.is_current)
+            || self.queued_runnable.iter().any(|item| !item.is_current)
+            || self
+                .waiting_for_operator
+                .iter()
+                .any(|item| !item.is_current)
+            || self.blocked.iter().any(|item| !item.is_current)
+            || self.completed_recent.iter().any(|item| !item.is_current)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkItemReadinessProjection {
     pub work_item: WorkItemRecord,

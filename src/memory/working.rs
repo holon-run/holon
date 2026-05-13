@@ -158,13 +158,7 @@ pub fn derive_working_memory_snapshot(
     let todo_list = current_work_item
         .map(|item| item.todo_list.clone())
         .unwrap_or_default();
-    let queued_waiting_followups = projection
-        .queued_blocked
-        .iter()
-        .filter(|item| Some(item.id.as_str()) != current_work_item.map(|anchor| anchor.id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    let pending_followups = collect_pending_followups(current_work_item, &queued_waiting_followups);
+    let pending_followups = collect_pending_followups(current_work_item, &projection);
     let waiting_on = collect_waiting_on(&active_waiting, current_work_item_id, current_closure);
     let working_set_files = collect_working_set_files(&memory_tools);
 
@@ -378,7 +372,7 @@ fn merge_pending_delta(
 
 fn collect_pending_followups(
     current_work_item: Option<&WorkItemRecord>,
-    queued_waiting: &[WorkItemRecord],
+    projection: &crate::storage::WorkQueuePromptProjection,
 ) -> Vec<String> {
     let mut items = Vec::new();
 
@@ -397,9 +391,57 @@ fn collect_pending_followups(
         );
     }
     items.extend(
-        queued_waiting
+        projection
+            .triggered_blocked
             .iter()
-            .map(|item| format!("queued: {}", truncate_line(&item.objective, 120))),
+            .filter(|item| !item.is_current)
+            .map(|item| {
+                format!(
+                    "triggered: {}",
+                    truncate_line(&item.record().objective, 120)
+                )
+            }),
+    );
+    items.extend(
+        projection
+            .queued_runnable
+            .iter()
+            .filter(|item| !item.is_current)
+            .map(|item| format!("queued: {}", truncate_line(&item.record().objective, 120))),
+    );
+    items.extend(
+        projection
+            .waiting_for_operator
+            .iter()
+            .filter(|item| !item.is_current)
+            .take(2)
+            .map(|item| {
+                format!(
+                    "waiting_for_operator: {}",
+                    truncate_line(&item.record().objective, 120)
+                )
+            }),
+    );
+    items.extend(
+        projection
+            .blocked
+            .iter()
+            .filter(|item| !item.is_current)
+            .take(2)
+            .map(|item| format!("blocked: {}", truncate_line(&item.record().objective, 120))),
+    );
+    items.extend(
+        projection
+            .completed_recent
+            .iter()
+            .filter(|item| !item.is_current)
+            .filter_map(|item| {
+                item.record()
+                    .result_summary
+                    .as_ref()
+                    .map(|summary| format!("completed: {}", truncate_line(summary, 120)))
+            })
+            .take(2),
     );
 
     dedup_owned(items, MEMORY_FOLLOWUP_LIMIT)
@@ -759,10 +801,11 @@ mod tests {
     use crate::{
         storage::AppStorage,
         types::{
-            AgentState, BriefKind, BriefRecord, CallbackDeliveryMode, ClosureDecision, MessageBody,
-            MessageEnvelope, MessageKind, MessageOrigin, Priority, RuntimePosture, TodoItem,
-            TodoItemState, ToolExecutionRecord, ToolExecutionStatus, TrustLevel,
-            WaitingIntentRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemState,
+            AgentState, BriefKind, BriefRecord, CallbackDeliveryMode, ClosureDecision,
+            ExternalTriggerScope, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
+            Priority, RuntimePosture, TodoItem, TodoItemState, ToolExecutionRecord,
+            ToolExecutionStatus, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
+            WaitingReason, WorkItemRecord, WorkItemState,
         },
     };
 
@@ -811,6 +854,61 @@ mod tests {
         ];
         storage.append_work_item(&active).unwrap();
         set_current_work_item(&storage, &active.id);
+        let mut triggered = WorkItemRecord::new(
+            "default",
+            "inspect triggered CI result",
+            WorkItemState::Open,
+        );
+        triggered.blocked_by = Some("waiting for CI".into());
+        storage.append_work_item(&triggered).unwrap();
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-triggered".into(),
+                agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
+                work_item_id: Some(triggered.id.clone()),
+                description: "CI webhook fired".into(),
+                source: "github".into(),
+                resource: Some("pull/1099".into()),
+                condition: Some("ci completed".into()),
+                delivery_mode: CallbackDeliveryMode::EnqueueMessage,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "cb-triggered".into(),
+                created_at: Utc::now(),
+                cancelled_at: None,
+                last_triggered_at: Some(Utc::now()),
+                trigger_count: 1,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+        let queued = WorkItemRecord::new(
+            "default",
+            "queue follow-up snapshot assertions",
+            WorkItemState::Open,
+        );
+        storage.append_work_item(&queued).unwrap();
+        storage
+            .append_work_item(&WorkItemRecord::new(
+                "default",
+                "completed without report one",
+                WorkItemState::Completed,
+            ))
+            .unwrap();
+        storage
+            .append_work_item(&WorkItemRecord::new(
+                "default",
+                "completed without report two",
+                WorkItemState::Completed,
+            ))
+            .unwrap();
+        let mut completed = WorkItemRecord::new(
+            "default",
+            "completed report selection",
+            WorkItemState::Completed,
+        );
+        completed.result_summary = Some("Selected promoted completion report.".into());
+        storage.append_work_item(&completed).unwrap();
         storage
             .append_brief(&BriefRecord::new(
                 "default",
@@ -902,6 +1000,18 @@ mod tests {
             .waiting_on
             .iter()
             .any(|item| item.contains("wait for CI webhook")));
+        assert!(snapshot
+            .pending_followups
+            .iter()
+            .any(|item| item == "triggered: inspect triggered CI result"));
+        assert!(snapshot
+            .pending_followups
+            .iter()
+            .any(|item| item == "queued: queue follow-up snapshot assertions"));
+        assert!(snapshot
+            .pending_followups
+            .iter()
+            .any(|item| item == "completed: Selected promoted completion report."));
     }
 
     #[test]
