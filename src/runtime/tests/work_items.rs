@@ -727,6 +727,89 @@ async fn update_work_item_can_refine_objective() {
 }
 
 #[tokio::test]
+async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let mut legacy = WorkItemRecord::new("default", "Migrate inline plan", WorkItemState::Open);
+    legacy.id = "legacy-plan-item".into();
+    legacy.plan = Some("Keep this legacy plan body in the artifact.".into());
+    runtime.inner.storage.append_work_item(&legacy).unwrap();
+
+    let updated = runtime
+        .update_work_item_fields(
+            legacy.id.clone(),
+            Some("Migrate inline plan without copying it".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(updated.revision, legacy.revision + 1);
+    assert!(updated.plan.is_none());
+    let latest = runtime.latest_work_item(&legacy.id).await.unwrap().unwrap();
+    assert!(latest.plan.is_none());
+    assert_eq!(latest.objective, "Migrate inline plan without copying it");
+
+    let plan_path = crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &legacy.id);
+    assert_eq!(
+        std::fs::read_to_string(&plan_path).unwrap(),
+        "Keep this legacy plan body in the artifact."
+    );
+    let artifact = crate::work_item_plan::describe_plan_artifact(&plan_path).unwrap();
+    assert_eq!(
+        artifact.preview,
+        "Keep this legacy plan body in the artifact."
+    );
+    assert!(artifact.preview_complete);
+
+    let mut legacy_with_artifact =
+        WorkItemRecord::new("default", "Keep existing artifact", WorkItemState::Open);
+    legacy_with_artifact.id = "legacy-plan-item-with-artifact".into();
+    legacy_with_artifact.plan = Some("Stale inline plan body.".into());
+    runtime
+        .inner
+        .storage
+        .append_work_item(&legacy_with_artifact)
+        .unwrap();
+    let existing_plan_path =
+        crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &legacy_with_artifact.id);
+    std::fs::create_dir_all(existing_plan_path.parent().unwrap()).unwrap();
+    std::fs::write(&existing_plan_path, "Existing artifact body.").unwrap();
+
+    let updated_with_artifact = runtime
+        .update_work_item_fields(
+            legacy_with_artifact.id.clone(),
+            Some("Keep artifact while clearing inline plan".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(updated_with_artifact.plan.is_none());
+    assert_eq!(
+        std::fs::read_to_string(&existing_plan_path).unwrap(),
+        "Existing artifact body."
+    );
+}
+
+#[tokio::test]
 async fn update_work_item_can_refine_objective_and_todo_list_together() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
