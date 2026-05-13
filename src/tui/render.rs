@@ -49,6 +49,7 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
     let body = chat_text_for_width(app, area.width.max(1));
     let max_scroll = paragraph_max_scroll_unframed(&body, area);
     app.chat_max_scroll = max_scroll;
+    app.chat_scroll.apply_history_prepend_adjustment(max_scroll);
     let scroll = app.chat_scroll.effective_scroll(max_scroll);
     let paragraph = Paragraph::new(body)
         .scroll((scroll, 0))

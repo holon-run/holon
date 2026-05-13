@@ -2378,7 +2378,7 @@ async fn snapshot_refresh_preserves_sse_only_transcript_entries() {
         0,
         "default".into(),
         None,
-        Ok(sample_snapshot("default", "cursor-2")),
+        Ok((sample_snapshot("default", "cursor-2"), None, false)),
     );
 
     assert!(app

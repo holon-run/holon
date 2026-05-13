@@ -1136,10 +1136,12 @@ impl TuiApp {
             TuiKeyAction::ChatScroll(action) => {
                 self.chat_scroll
                     .scroll_with_key(scroll_action_key_code(action), self.chat_max_scroll);
+                self.maybe_begin_load_older_events();
             }
             TuiKeyAction::HistoryPrevious | TuiKeyAction::HistoryNext => {
                 self.chat_scroll
                     .scroll_with_key(key.code, self.chat_max_scroll);
+                self.maybe_begin_load_older_events();
             }
             action => {
                 let before = self.composer.as_str().to_string();
