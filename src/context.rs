@@ -941,6 +941,12 @@ fn render_wake_hint_context(message: &MessageEnvelope) -> Option<String> {
     {
         lines.push(format!("- Waiting intent id: {waiting_intent_id}"));
     }
+    if let Some(work_item_id) = wake_hint
+        .get("work_item_id")
+        .and_then(serde_json::Value::as_str)
+    {
+        lines.push(format!("- Work item id: {work_item_id}"));
+    }
     if let Some(description) = wake_hint
         .get("description")
         .and_then(serde_json::Value::as_str)

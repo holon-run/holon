@@ -193,6 +193,7 @@ impl RuntimeHandle {
                         scope: Some(waiting.scope.clone()),
                         waiting_intent_id: Some(waiting.id.clone()),
                         external_trigger_id: Some(descriptor.external_trigger_id.clone()),
+                        work_item_id: waiting.work_item_id.clone(),
                         resource: waiting.resource.clone(),
                         body: payload.body.clone(),
                         content_type: payload.content_type.clone(),

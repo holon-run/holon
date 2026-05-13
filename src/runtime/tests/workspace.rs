@@ -218,6 +218,7 @@ async fn current_closure_returns_none_while_pending_wake_hint_remains() {
             scope: None,
             waiting_intent_id: None,
             external_trigger_id: None,
+            work_item_id: None,
             source: None,
             resource: None,
             body: None,

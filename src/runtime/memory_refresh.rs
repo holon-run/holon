@@ -572,6 +572,7 @@ impl RuntimeHandle {
                 "scope": pending.scope,
                 "waiting_intent_id": pending.waiting_intent_id,
                 "external_trigger_id": pending.external_trigger_id,
+                "work_item_id": pending.work_item_id,
                 "resource": pending.resource,
                 "body": pending.body,
                 "content_type": pending.content_type,
@@ -580,6 +581,7 @@ impl RuntimeHandle {
                 "created_at": pending.created_at,
             }
         }));
+        message.work_item_id = pending.work_item_id.clone();
         message.correlation_id = correlation_id;
         message.causation_id = causation_id;
         self.inner.storage.append_event(&AuditEvent::new(
@@ -911,6 +913,7 @@ mod tests {
             scope: None,
             waiting_intent_id: None,
             external_trigger_id: None,
+            work_item_id: None,
             source: Some("test".to_string()),
             resource: None,
             body: None,
@@ -1403,6 +1406,7 @@ mod tests {
             scope: None,
             waiting_intent_id: None,
             external_trigger_id: None,
+            work_item_id: None,
             source: Some("test-source".to_string()),
             resource: Some("test-resource".to_string()),
             body: Some(MessageBody::Json {
