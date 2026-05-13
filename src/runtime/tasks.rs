@@ -1892,11 +1892,11 @@ impl RuntimeHandle {
         if let Some(plan_status) = plan_status {
             record.plan_status = plan_status;
         }
-        crate::work_item_plan::ensure_plan_artifact(
+        record.plan_artifact = Some(crate::work_item_plan::ensure_plan_artifact(
             self.agent_home().as_path(),
             &record,
             plan.as_deref(),
-        )?;
+        )?);
         record.plan = None;
         record.todo_list = todo_list;
         record.workspace_id = self
@@ -1995,20 +1995,22 @@ impl RuntimeHandle {
             wrote_item = true;
         }
         if wrote_item {
-            if record.plan.is_some() {
-                let plan_path =
-                    crate::work_item_plan::plan_path(self.agent_home().as_path(), &record.id);
-                if !plan_path.exists() {
-                    crate::work_item_plan::ensure_plan_artifact(
-                        self.agent_home().as_path(),
-                        &record,
-                        None,
-                    )?;
-                }
-                record.plan = None;
-            }
+            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+                self.agent_home().as_path(),
+                &mut record,
+            )?;
             record.revision = existing.revision + 1;
             self.inner.storage.append_work_item(&record)?;
+            if plan_artifact_changed && record.plan_artifact != existing.plan_artifact {
+                self.inner.storage.append_event(&AuditEvent::new(
+                    "work_item_plan_artifact_refreshed",
+                    serde_json::json!({
+                        "work_item_id": record.id.clone(),
+                        "revision": record.revision,
+                        "plan_artifact": record.plan_artifact.clone(),
+                    }),
+                ))?;
+            }
             self.inner.storage.append_event(&AuditEvent::new(
                 "work_item_written",
                 serde_json::json!({
@@ -2035,7 +2037,7 @@ impl RuntimeHandle {
         if existing.state == WorkItemState::Completed {
             return Ok(existing);
         }
-        let record = WorkItemRecord {
+        let mut record = WorkItemRecord {
             revision: existing.revision + 1,
             state: WorkItemState::Completed,
             blocked_by: None,
@@ -2043,7 +2045,21 @@ impl RuntimeHandle {
             updated_at: Utc::now(),
             ..existing
         };
+        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+            self.agent_home().as_path(),
+            &mut record,
+        )?;
         self.inner.storage.append_work_item(&record)?;
+        if plan_artifact_changed {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_plan_artifact_refreshed",
+                serde_json::json!({
+                    "work_item_id": record.id.clone(),
+                    "revision": record.revision,
+                    "plan_artifact": record.plan_artifact.clone(),
+                }),
+            ))?;
+        }
         if let Some(result_summary) = result_summary {
             self.inner
                 .storage

@@ -89,25 +89,32 @@ impl RuntimeHandle {
             }
             None => None,
         };
-        let wrote_new_snapshot =
+        let mut refreshed = latest.clone();
+        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+            self.agent_home().as_path(),
+            &mut refreshed,
+        )?;
+        let work_item_state_changed =
             latest.state == WorkItemState::Open && latest.blocked_by != blocked_by;
+        let wrote_new_snapshot = work_item_state_changed || plan_artifact_changed;
         let committed = if wrote_new_snapshot {
             let record = crate::types::WorkItemRecord {
-                id: latest.id.clone(),
-                agent_id: latest.agent_id.clone(),
-                workspace_id: latest.workspace_id.clone(),
                 revision: latest.revision + 1,
-                objective: latest.objective.clone(),
-                state: latest.state.clone(),
-                plan_status: latest.plan_status,
-                plan: latest.plan.clone(),
-                todo_list: latest.todo_list.clone(),
                 blocked_by,
-                result_summary: latest.result_summary.clone(),
-                created_at: latest.created_at,
                 updated_at: chrono::Utc::now(),
+                ..refreshed
             };
             self.inner.storage.append_work_item(&record)?;
+            if plan_artifact_changed {
+                self.inner.storage.append_event(&AuditEvent::new(
+                    "work_item_plan_artifact_refreshed",
+                    serde_json::json!({
+                        "work_item_id": record.id.clone(),
+                        "revision": record.revision,
+                        "plan_artifact": record.plan_artifact.clone(),
+                    }),
+                ))?;
+            }
             self.inner.storage.append_event(&AuditEvent::new(
                 "work_item_written",
                 serde_json::json!({
@@ -128,6 +135,8 @@ impl RuntimeHandle {
                 "work_item_id": committed.id,
                 "committed_state": committed.state,
                 "wrote_new_snapshot": wrote_new_snapshot,
+                "plan_artifact_changed": plan_artifact_changed,
+                "work_item_state_changed": work_item_state_changed,
                 "closure": closure,
             }),
         ))?;

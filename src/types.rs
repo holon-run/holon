@@ -2652,6 +2652,8 @@ pub struct WorkItemRecord {
     pub plan_status: WorkItemPlanStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_artifact: Option<WorkItemPlanArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub todo_list: Vec<TodoItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2678,6 +2680,7 @@ impl WorkItemRecord {
             state,
             plan_status: WorkItemPlanStatus::Draft,
             plan: None,
+            plan_artifact: None,
             todo_list: Vec::new(),
             blocked_by: None,
             result_summary: None,

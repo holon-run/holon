@@ -41,6 +41,18 @@ pub(crate) fn ensure_plan_artifact(
     describe_plan_artifact(&path)
 }
 
+pub(crate) fn refresh_plan_artifact_metadata(
+    agent_home: &Path,
+    record: &mut WorkItemRecord,
+) -> Result<bool> {
+    let previous = record.plan_artifact.clone();
+    let had_inline_plan = record.plan.is_some();
+    let artifact = ensure_plan_artifact(agent_home, record, None)?;
+    record.plan = None;
+    record.plan_artifact = Some(artifact);
+    Ok(had_inline_plan || record.plan_artifact != previous)
+}
+
 pub(crate) fn describe_plan_artifact(path: &Path) -> Result<WorkItemPlanArtifact> {
     let mut file =
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
