@@ -26,12 +26,12 @@ pub(super) fn work_queue_reactivation_signal(
         }
     }
     projection
-        .queued_blocked
+        .queued_runnable
         .iter()
-        .find(|item| item.is_runnable())
+        .next()
         .map(|queued| WorkReactivationSignal {
-            work_item_id: queued.id.clone(),
-            state: queued.state.clone(),
+            work_item_id: queued.work_item.id.clone(),
+            state: queued.work_item.state.clone(),
             reactivation_mode: WorkReactivationMode::ActivateQueued,
         })
 }
@@ -56,10 +56,10 @@ fn idle_tick_trigger_from_state(
             }
         }
         projection
-            .queued_blocked
+            .queued_runnable
             .into_iter()
-            .find(|item| item.is_runnable())
-            .map(IdleTickTrigger::WorkQueueQueued)
+            .next()
+            .map(|item| IdleTickTrigger::WorkQueueQueued(item.work_item))
     }
 }
 

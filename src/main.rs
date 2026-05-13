@@ -1732,7 +1732,11 @@ fn export_scheduler_fixture(
         &serde_json::json!({
             "current_work_item_id": work_queue.current.as_ref().map(|item| item.id.clone()),
             "current_work_item_revision": work_queue.current.as_ref().map(|item| item.revision),
-            "queued_work_items": work_queue.queued_blocked.iter().filter(|item| item.is_runnable()).count(),
+            "queued_work_items": work_queue.queued_runnable.len(),
+            "triggered_blocked_work_items": work_queue.triggered_blocked.len(),
+            "waiting_for_operator_work_items": work_queue.waiting_for_operator.len(),
+            "blocked_work_items": work_queue.blocked.len(),
+            "completed_recent_work_items": work_queue.completed_recent.len(),
             "active_tasks": active_tasks.len(),
             "has_blocking_active_tasks": has_blocking_active_tasks,
             "pending_wake_hint": agent.pending_wake_hint.is_some(),

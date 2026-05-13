@@ -98,10 +98,9 @@ impl SchedulerProjection {
             storage.latest_active_task_records_for_agent(&snapshot.id, usize::MAX)?;
         let has_blocking_active_tasks = active_tasks.iter().any(TaskRecord::is_blocking);
         let queued_runnable_work_items = work_queue
-            .queued_blocked
+            .queued_runnable
             .iter()
-            .filter(|item| item.is_runnable())
-            .cloned()
+            .map(|item| item.work_item.clone())
             .collect::<Vec<_>>();
         let active_waiting_intents = storage
             .latest_waiting_intents()?
