@@ -35,6 +35,7 @@ fn work_item_record_revision_defaults_for_old_records() {
     });
     let record: WorkItemRecord = serde_json::from_value(value).unwrap();
     assert_eq!(record.revision, 1);
+    assert!(record.plan_artifact.is_none());
 }
 
 #[tokio::test]
@@ -616,6 +617,144 @@ async fn work_item_plan_artifact_refreshes_after_direct_file_edit() {
         .as_str()
         .unwrap()
         .contains("expanded plan line"));
+}
+
+#[tokio::test]
+async fn turn_end_refreshes_changed_work_item_plan_artifact_snapshot() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item(
+            "Refresh artifact at turn end".into(),
+            Some(WorkItemPlanStatus::Ready),
+            Some("initial plan".into()),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let original_artifact = work.plan_artifact.clone().unwrap();
+    let plan_path = original_artifact.path.clone();
+    std::fs::write(&plan_path, "changed plan body").unwrap();
+    bind_turn_to_work_item(&runtime, &work.id).await;
+
+    let committed = runtime
+        .maybe_commit_turn_end_work_item_transition()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(committed.id, work.id);
+    assert_eq!(committed.revision, work.revision + 1);
+    assert_eq!(committed.plan_status, WorkItemPlanStatus::Ready);
+    assert_ne!(
+        committed.plan_artifact.as_ref().unwrap().hash,
+        original_artifact.hash
+    );
+    assert_eq!(
+        committed.plan_artifact.as_ref().unwrap().preview,
+        "changed plan body"
+    );
+    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    assert_eq!(
+        latest.plan_artifact.as_ref().unwrap().hash,
+        committed.plan_artifact.as_ref().unwrap().hash
+    );
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "work_item_plan_artifact_refreshed"
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())));
+}
+
+#[tokio::test]
+async fn turn_end_work_item_plan_artifact_refresh_is_noop_when_unchanged() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item(
+            "Keep unchanged artifact stable".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            Some("unchanged plan".into()),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    bind_turn_to_work_item(&runtime, &work.id).await;
+
+    let committed = runtime
+        .maybe_commit_turn_end_work_item_transition()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(committed.revision, work.revision);
+    assert_eq!(committed.plan_status, WorkItemPlanStatus::NeedsInput);
+    assert_eq!(committed.plan_artifact, work.plan_artifact);
+    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    assert_eq!(latest.revision, work.revision);
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == "work_item_plan_artifact_refreshed"));
+}
+
+#[tokio::test]
+async fn complete_work_item_refreshes_latest_plan_artifact_snapshot() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item(
+            "Complete with latest artifact".into(),
+            Some(WorkItemPlanStatus::Ready),
+            Some("initial completion plan".into()),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let plan_path = work.plan_artifact.as_ref().unwrap().path.clone();
+    std::fs::write(&plan_path, "completion plan after direct edit").unwrap();
+    let expected = crate::work_item_plan::describe_plan_artifact(&plan_path).unwrap();
+
+    let completed = runtime
+        .complete_work_item(work.id.clone(), Some("done".into()))
+        .await
+        .unwrap();
+
+    assert_eq!(completed.state, WorkItemState::Completed);
+    assert_eq!(completed.plan_status, WorkItemPlanStatus::Ready);
+    assert_eq!(completed.plan_artifact.as_ref(), Some(&expected));
+    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    assert_eq!(latest.plan_artifact.as_ref(), Some(&expected));
 }
 
 #[tokio::test]
