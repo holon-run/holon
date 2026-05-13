@@ -14,7 +14,10 @@ use super::logging::TuiLogWriter;
 
 pub(crate) use crate::operator_event::{OperatorDisplayMode, OperatorVisibility};
 use crate::{
-    client::{AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StateWorkspaceSnapshot},
+    client::{
+        AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StateWorkspaceSnapshot,
+        StreamEventEnvelope,
+    },
     operator_event::{
         is_activity_reset_event_kind, is_durable_operator_event_kind, present_operator_event,
         OperatorEventCategory, OperatorEventPresentation, OperatorPresentationContext,
@@ -33,6 +36,7 @@ const TRANSCRIPT_TAIL_LIMIT: usize = 100;
 const TASK_TAIL_LIMIT: usize = 50;
 const TIMER_TAIL_LIMIT: usize = 50;
 const EVENT_LOG_LIMIT: usize = 256;
+const EVENT_HISTORY_LOG_LIMIT: usize = 4096;
 const DURABLE_CONVERSATION_LOG_LIMIT: usize = 256;
 static TUI_LOG_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
 
@@ -86,6 +90,8 @@ pub(crate) struct TuiProjection {
     pub(crate) operator_notifications: Vec<crate::types::OperatorNotificationRecord>,
     pub(crate) workspace: StateWorkspaceSnapshot,
     pub(crate) cursor: Option<String>,
+    pub(crate) history_oldest_cursor: Option<String>,
+    pub(crate) history_has_older: bool,
     pub(crate) stale_slices: BTreeSet<ProjectionSlice>,
     event_log: Vec<ProjectionEventRecord>,
     durable_conversation_log: Vec<ProjectionEventRecord>,
@@ -114,6 +120,8 @@ impl TuiProjection {
             operator_notifications,
             workspace: snapshot.workspace,
             cursor: snapshot.cursor,
+            history_oldest_cursor: None,
+            history_has_older: false,
             stale_slices: BTreeSet::new(),
             event_log: Vec::new(),
             durable_conversation_log: Vec::new(),
@@ -129,15 +137,68 @@ impl TuiProjection {
     pub(crate) fn inherit_recent_event_logs_from(&mut self, previous: &mut Self) {
         self.event_log = mem::take(&mut previous.event_log);
         self.durable_conversation_log = mem::take(&mut previous.durable_conversation_log);
+        self.history_oldest_cursor = previous.history_oldest_cursor.take();
+        self.history_has_older = previous.history_has_older;
         if let Some(last_event) = self.event_log.last() {
             self.cursor = Some(last_event.id.clone());
         }
     }
 
+    pub(crate) fn set_event_history_state(
+        &mut self,
+        oldest_cursor: Option<String>,
+        has_older: bool,
+    ) {
+        self.history_oldest_cursor = oldest_cursor;
+        self.history_has_older = has_older;
+    }
+
+    pub(crate) fn prepend_event_history_page(
+        &mut self,
+        mut events: Vec<StreamEventEnvelope>,
+        oldest_cursor: Option<String>,
+        has_older: bool,
+    ) -> usize {
+        self.history_oldest_cursor = oldest_cursor;
+        self.history_has_older = has_older;
+        if events.is_empty() {
+            return 0;
+        }
+
+        let existing_ids = self
+            .event_log
+            .iter()
+            .map(|event| event.id.clone())
+            .collect::<BTreeSet<_>>();
+        events.reverse();
+
+        let mut prepended = Vec::new();
+        for envelope in events {
+            if existing_ids.contains(&envelope.id) {
+                continue;
+            }
+            prepended.push(self.projection_event_record_from_envelope(envelope));
+        }
+        let added = prepended.len();
+        if added == 0 {
+            return 0;
+        }
+
+        prepended.extend(mem::take(&mut self.event_log));
+        self.event_log = prepended;
+        self.rebuild_durable_conversation_log();
+        added
+    }
+
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
         let presentation_context = self.operator_presentation_context();
         let record = projection_event_record_from_stream_event(&event, &presentation_context);
-        push_limited(&mut self.event_log, record.clone(), EVENT_LOG_LIMIT);
+        let event_log_limit = if self.history_oldest_cursor.is_some() || self.history_has_older {
+            EVENT_HISTORY_LOG_LIMIT
+        } else {
+            EVENT_LOG_LIMIT
+        };
+        push_limited(&mut self.event_log, record.clone(), event_log_limit);
         if is_durable_conversation_kind(&record.kind) {
             push_limited(
                 &mut self.durable_conversation_log,
@@ -394,15 +455,9 @@ impl TuiProjection {
         }
     }
 
-    fn seed_event_log(&mut self, events_tail: Vec<crate::client::StreamEventEnvelope>) {
+    fn seed_event_log(&mut self, events_tail: Vec<StreamEventEnvelope>) {
         for envelope in events_tail {
-            let event = AgentStreamEvent {
-                id: envelope.id.clone(),
-                event: envelope.event_type.clone(),
-                data: envelope,
-            };
-            let presentation_context = self.operator_presentation_context();
-            let record = projection_event_record_from_stream_event(&event, &presentation_context);
+            let record = self.projection_event_record_from_envelope(envelope);
             push_limited(&mut self.event_log, record, EVENT_LOG_LIMIT);
         }
         if let Some(last_event) = self.event_log.last() {
@@ -410,6 +465,31 @@ impl TuiProjection {
                 self.cursor = Some(last_event.id.clone());
             }
         }
+    }
+
+    fn projection_event_record_from_envelope(
+        &self,
+        envelope: StreamEventEnvelope,
+    ) -> ProjectionEventRecord {
+        let event = AgentStreamEvent {
+            id: envelope.id.clone(),
+            event: envelope.event_type.clone(),
+            data: envelope,
+        };
+        let presentation_context = self.operator_presentation_context();
+        projection_event_record_from_stream_event(&event, &presentation_context)
+    }
+
+    fn rebuild_durable_conversation_log(&mut self) {
+        self.durable_conversation_log = self
+            .event_log
+            .iter()
+            .filter(|record| is_durable_conversation_kind(&record.kind))
+            .rev()
+            .take(DURABLE_CONVERSATION_LOG_LIMIT)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.durable_conversation_log.reverse();
     }
 
     pub(crate) fn event_log(&self) -> &[ProjectionEventRecord] {
@@ -1398,6 +1478,62 @@ mod tests {
             projection.durable_conversation_events().next().is_none(),
             "events_tail should seed the raw inspector, not durable conversation history"
         );
+    }
+
+    #[test]
+    fn projection_prepends_older_event_page_and_updates_history_cursor() {
+        let mut snapshot = sample_snapshot();
+        snapshot.events_tail = vec![StreamEventEnvelope {
+            id: "evt-newer".into(),
+            seq: 3,
+            ts: Utc::now(),
+            agent_id: "default".into(),
+            event_type: "tool_executed".into(),
+            projection: None,
+            provenance: None,
+            payload: json!({ "tool_name": "ExecCommand" }),
+        }];
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+
+        let added = projection.prepend_event_history_page(
+            vec![
+                StreamEventEnvelope {
+                    id: "evt-older-2".into(),
+                    seq: 2,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    projection: None,
+                    provenance: None,
+                    payload: json!({ "tool_name": "ExecCommand" }),
+                },
+                StreamEventEnvelope {
+                    id: "evt-older-1".into(),
+                    seq: 1,
+                    ts: Utc::now(),
+                    agent_id: "default".into(),
+                    event_type: "tool_executed".into(),
+                    projection: None,
+                    provenance: None,
+                    payload: json!({ "tool_name": "ExecCommand" }),
+                },
+            ],
+            Some("evt-older-1".into()),
+            true,
+        );
+
+        let ids = projection
+            .event_log()
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(added, 2);
+        assert_eq!(ids, vec!["evt-older-1", "evt-older-2", "evt-newer"]);
+        assert_eq!(
+            projection.history_oldest_cursor.as_deref(),
+            Some("evt-older-1")
+        );
+        assert!(projection.history_has_older);
     }
 
     #[test]

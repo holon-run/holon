@@ -8,6 +8,7 @@ use crossterm::event::KeyCode;
 pub(super) struct ChatScrollState {
     follow_tail: bool,
     offset_from_bottom: u16,
+    pending_prepend_anchor: Option<u16>,
 }
 
 impl ChatScrollState {
@@ -15,12 +16,14 @@ impl ChatScrollState {
         Self {
             follow_tail: true,
             offset_from_bottom: 0,
+            pending_prepend_anchor: None,
         }
     }
 
     pub(super) fn follow_tail(&mut self) {
         self.follow_tail = true;
         self.offset_from_bottom = 0;
+        self.pending_prepend_anchor = None;
     }
 
     pub(super) fn scroll_with_key(&mut self, key: KeyCode, max_scroll: u16) {
@@ -44,6 +47,24 @@ impl ChatScrollState {
         } else {
             max_scroll.saturating_sub(self.offset_from_bottom.min(max_scroll))
         }
+    }
+
+    pub(super) fn is_at_top(self, max_scroll: u16) -> bool {
+        !self.follow_tail && self.effective_scroll(max_scroll) == 0
+    }
+
+    pub(super) fn prepare_for_history_prepend(&mut self, max_scroll: u16) {
+        if self.follow_tail {
+            return;
+        }
+        self.offset_from_bottom = self.offset_from_bottom.min(max_scroll);
+        self.pending_prepend_anchor = Some(max_scroll);
+    }
+
+    pub(super) fn apply_history_prepend_adjustment(&mut self, _max_scroll: u16) {
+        let Some(_previous_max_scroll) = self.pending_prepend_anchor.take() else {
+            return;
+        };
     }
 
     #[cfg(test)]
@@ -936,6 +957,18 @@ mod tests {
         );
         let rendered = progress_event_body(&event);
         assert_eq!(rendered, "Command finished: git status --short --branch");
+    }
+
+    #[test]
+    fn chat_scroll_preserves_view_after_history_prepend() {
+        let mut scroll = super::ChatScrollState::new();
+        scroll.scroll_with_key(crossterm::event::KeyCode::Home, 20);
+        assert_eq!(scroll.effective_scroll(20), 0);
+
+        scroll.prepare_for_history_prepend(20);
+        scroll.apply_history_prepend_adjustment(35);
+
+        assert_eq!(scroll.effective_scroll(35), 15);
     }
 
     #[test]

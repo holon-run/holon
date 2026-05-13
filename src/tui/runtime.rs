@@ -2,8 +2,8 @@ use super::projection::ProjectionSlice;
 use super::state::TuiClientState;
 use super::*;
 use crate::client::{
-    AgentStateSnapshot, AgentStreamEvent, EventPageRequest, EventStreamRequest, LocalEventStream,
-    LocalHttpError,
+    AgentStateSnapshot, AgentStreamEvent, EventPageRequest, EventPageResponse, EventStreamRequest,
+    LocalEventStream, LocalHttpError,
 };
 use tokio::sync::mpsc;
 
@@ -14,6 +14,7 @@ const BRIEF_LIMIT: usize = 24;
 const TRANSCRIPT_LIMIT: usize = 40;
 const TASK_LIMIT: usize = 40;
 const OPTIMISTIC_OPERATOR_MESSAGE_LIMIT: usize = 64;
+const EVENT_HISTORY_PAGE_LIMIT: usize = 128;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -37,7 +38,12 @@ pub(super) enum TuiRuntimeMessage {
         target_index: usize,
         agent_id: String,
         checkpoint: Option<TuiRuntimeCheckpoint>,
-        result: Result<AgentStateSnapshot, String>,
+        result: Result<SnapshotBootstrapResult, String>,
+    },
+    EventHistoryPageLoaded {
+        request_id: u64,
+        agent_id: String,
+        result: Result<EventPageResponse, String>,
     },
     EventStreamOpened {
         request_id: u64,
@@ -45,6 +51,8 @@ pub(super) enum TuiRuntimeMessage {
         result: Result<LocalEventStream, EventStreamOpenError>,
     },
 }
+
+type SnapshotBootstrapResult = (AgentStateSnapshot, Option<String>, bool);
 
 pub(super) struct EventStreamOpenError {
     message: String,
@@ -343,8 +351,10 @@ impl TuiApp {
         self.reconnect_attempt = 0;
         self.snapshot_refresh_in_flight = false;
         self.stream_connect_in_flight = false;
+        self.event_history_load_in_flight = false;
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
+        self.event_history_request_id = self.event_history_request_id.saturating_add(1);
     }
 
     pub(super) fn begin_bootstrap_selected_agent(&mut self) {
@@ -366,6 +376,8 @@ impl TuiApp {
         self.reconnect_deadline = None;
         self.snapshot_refresh_in_flight = true;
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
+        self.event_history_load_in_flight = false;
+        self.event_history_request_id = self.event_history_request_id.saturating_add(1);
         let request_id = self.snapshot_refresh_request_id;
         self.connection_state = TuiConnectionState::Bootstrapping;
         self.status_line = format!("Bootstrapping agent {agent_id} from /state");
@@ -387,9 +399,11 @@ impl TuiApp {
                         )
                         .await?;
                     events_page.events.reverse();
+                    let oldest_cursor = events_page.oldest_cursor;
+                    let has_older = events_page.has_older;
                     snapshot.events_tail = events_page.events;
                     snapshot.cursor = events_page.newest_cursor.or(snapshot.cursor);
-                    anyhow::Ok(snapshot)
+                    anyhow::Ok((snapshot, oldest_cursor, has_older))
                 }
                 .await
                 .map_err(|err| err.to_string());
@@ -410,14 +424,14 @@ impl TuiApp {
         target_index: usize,
         agent_id: String,
         checkpoint: Option<TuiRuntimeCheckpoint>,
-        result: Result<AgentStateSnapshot, String>,
+        result: Result<SnapshotBootstrapResult, String>,
     ) {
         if request_id != self.snapshot_refresh_request_id {
             return;
         }
         self.snapshot_refresh_in_flight = false;
-        let snapshot = match result {
-            Ok(snapshot) => snapshot,
+        let (snapshot, oldest_cursor, has_older) = match result {
+            Ok(result) => result,
             Err(err) => {
                 if let Some(checkpoint) = checkpoint {
                     self.restore_runtime_checkpoint(checkpoint);
@@ -432,6 +446,7 @@ impl TuiApp {
         };
         let switching_agents = target_index != self.selected_agent;
         let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.set_event_history_state(oldest_cursor, has_older);
         if !switching_agents {
             if let Some(previous) = self.projection.as_mut() {
                 projection.inherit_recent_event_logs_from(previous);
@@ -627,6 +642,11 @@ impl TuiApp {
                     checkpoint,
                     result,
                 ),
+                TuiRuntimeMessage::EventHistoryPageLoaded {
+                    request_id,
+                    agent_id,
+                    result,
+                } => self.apply_event_history_page_result(request_id, agent_id, result),
                 TuiRuntimeMessage::EventStreamOpened {
                     request_id,
                     agent_id,
@@ -652,6 +672,100 @@ impl TuiApp {
             self.last_event_at = Some(Local::now());
             self.apply_projection_view();
             self.schedule_projection_refresh_if_stale();
+        }
+    }
+
+    pub(super) fn maybe_begin_load_older_events(&mut self) {
+        if self.event_history_load_in_flight {
+            return;
+        }
+        if !self.chat_scroll.is_at_top(self.chat_max_scroll) {
+            return;
+        }
+        let Some(agent_id) = self.selected_agent_id().map(ToString::to_string) else {
+            return;
+        };
+        let Some(projection) = self.projection.as_ref() else {
+            return;
+        };
+        if !projection.history_has_older {
+            return;
+        }
+        let Some(cursor) = projection.history_oldest_cursor.clone() else {
+            return;
+        };
+
+        self.event_history_load_in_flight = true;
+        self.event_history_request_id = self.event_history_request_id.saturating_add(1);
+        let request_id = self.event_history_request_id;
+        let client = self.client.clone();
+        let tx = self.runtime_tx.clone();
+        self.status_line = "Loading older events".into();
+        tokio::spawn({
+            let agent_id = agent_id.clone();
+            async move {
+                let result = client
+                    .agent_events_page(
+                        &agent_id,
+                        EventPageRequest {
+                            cursor: Some(cursor),
+                            limit: Some(EVENT_HISTORY_PAGE_LIMIT),
+                            order: Some("desc".into()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map_err(|err| err.to_string());
+                let _ = tx.send(TuiRuntimeMessage::EventHistoryPageLoaded {
+                    request_id,
+                    agent_id,
+                    result,
+                });
+            }
+        });
+    }
+
+    pub(super) fn apply_event_history_page_result(
+        &mut self,
+        request_id: u64,
+        agent_id: String,
+        result: Result<EventPageResponse, String>,
+    ) {
+        if request_id != self.event_history_request_id {
+            return;
+        }
+        self.event_history_load_in_flight = false;
+        let page = match result {
+            Ok(page) => page,
+            Err(error) => {
+                self.status_line = format!("Older event load failed for {agent_id}: {error}");
+                return;
+            }
+        };
+        self.chat_scroll
+            .prepare_for_history_prepend(self.chat_max_scroll);
+        let (added, has_older) = {
+            let Some(projection) = self.projection.as_mut() else {
+                return;
+            };
+            if projection.agent.identity.agent_id != agent_id {
+                return;
+            }
+            let added = projection.prepend_event_history_page(
+                page.events,
+                page.oldest_cursor,
+                page.has_older,
+            );
+            (added, projection.history_has_older)
+        };
+        if added > 0 {
+            self.chat_text_cache.borrow_mut().take();
+            self.apply_projection_view();
+            self.status_line = format!("Loaded {added} older events");
+        } else if has_older {
+            self.status_line = "No new older events in page".into();
+        } else {
+            self.status_line = "Reached beginning of event history".into();
         }
     }
 
@@ -777,8 +891,10 @@ impl TuiApp {
         self.reconnect_deadline = None;
         self.snapshot_refresh_in_flight = false;
         self.stream_connect_in_flight = false;
+        self.event_history_load_in_flight = false;
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
+        self.event_history_request_id = self.event_history_request_id.saturating_add(1);
         self.connection_state = TuiConnectionState::Disconnected {
             reason: reason.clone(),
         };
