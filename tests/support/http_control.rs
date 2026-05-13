@@ -92,7 +92,8 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     assert!(state_payload["session"].is_object());
     assert!(state_payload["tasks"].is_array());
     assert!(state_payload["transcript_tail"].is_array());
-    assert!(state_payload["briefs_tail"].is_array());
+    assert!(state_payload.get("briefs_tail").is_none());
+    assert!(state_payload.get("brief").is_none());
     assert!(state_payload["timers"].is_array());
     assert!(state_payload["work_items"].is_array());
     assert!(state_payload.get("work_plan").is_none());
@@ -189,11 +190,6 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     );
 
     let snapshot = local_client.agent_state_snapshot("default").await?;
-    assert!(!snapshot.briefs_tail.is_empty());
-    assert_eq!(
-        snapshot.brief.as_ref().map(|brief| brief.id.clone()),
-        snapshot.briefs_tail.last().map(|brief| brief.id.clone())
-    );
     assert!(snapshot
         .timers
         .iter()

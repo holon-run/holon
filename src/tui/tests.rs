@@ -243,7 +243,6 @@ fn sample_snapshot(agent_id: &str, cursor: &str) -> AgentStateSnapshot {
         tasks: Vec::new(),
         transcript_tail: Vec::new(),
         operator_messages: Vec::new(),
-        briefs_tail: Vec::new(),
         timers: Vec::new(),
         work_items: Vec::new(),
         waiting_intents: Vec::new(),
@@ -251,10 +250,33 @@ fn sample_snapshot(agent_id: &str, cursor: &str) -> AgentStateSnapshot {
         operator_notifications: Vec::new(),
         workspace: StateWorkspaceSnapshot::default(),
         execution: None,
-        brief: None,
         events_tail: Vec::new(),
         cursor: Some(cursor.into()),
     }
+}
+
+fn apply_brief_event(app: &mut TuiApp, brief: BriefRecord) {
+    let event_id = format!("evt-{}", brief.id);
+    let projection = app.projection.get_or_insert_with(|| {
+        TuiProjection::from_snapshot(sample_snapshot(&brief.agent_id, "evt-0"))
+    });
+    projection.apply_event(
+        AgentStreamEvent {
+            id: event_id.clone(),
+            event: "brief_created".into(),
+            data: StreamEventEnvelope {
+                id: event_id,
+                seq: 0,
+                ts: brief.created_at,
+                agent_id: brief.agent_id.clone(),
+                event_type: "brief_created".into(),
+                projection: None,
+                provenance: None,
+                payload: serde_json::to_value(brief).unwrap(),
+            },
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
 }
 
 fn rendered_buffer_text(terminal: &Terminal<TestBackend>) -> String {
@@ -520,18 +542,21 @@ fn build_chat_text_includes_structured_operator_messages() {
             }
         }),
     }];
-    app.briefs = vec![BriefRecord {
-        id: "brief-1".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: Utc::now(),
-        text: "I started a worktree task.".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: Utc::now(),
+            text: "I started a worktree task.".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
 
     let lines: Vec<String> = build_chat_text(&collect_chat_items(&app))
         .lines
@@ -540,7 +565,7 @@ fn build_chat_text_includes_structured_operator_messages() {
         .collect();
     assert!(lines.iter().any(|line| line.contains("› ")));
     assert!(lines.iter().any(|line| line.contains("Fix the failing CI")));
-    assert!(lines.iter().any(|line| line.contains("• ")));
+    assert!(lines.iter().any(|line| line.contains("! ")));
     assert!(lines
         .iter()
         .any(|line| line.contains("I started a worktree task.")));
@@ -553,18 +578,21 @@ fn build_chat_text_inlines_message_header_with_first_body_line() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.briefs = vec![BriefRecord {
-        id: "brief-1".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: Utc::now(),
-        text: "First line\nSecond line".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: Utc::now(),
+            text: "First line\nSecond line".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
 
     let lines: Vec<String> = build_chat_text(&collect_chat_items(&app))
         .lines
@@ -573,7 +601,7 @@ fn build_chat_text_inlines_message_header_with_first_body_line() {
         .collect();
     assert!(lines
         .iter()
-        .any(|line| line.contains("• ") && line.contains("First line")));
+        .any(|line| line.contains("! ") && line.contains("First line")));
     assert!(lines.iter().any(|line| line.contains("Second line")));
 }
 
@@ -1352,18 +1380,21 @@ fn chat_text_renders_markdown_body() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.briefs = vec![BriefRecord {
-        id: "brief-1".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: Utc::now(),
-        text: "**Done**\n- first\n- second".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: Utc::now(),
+            text: "**Done**\n- first\n- second".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
 
     let lines: Vec<String> = build_chat_text(&collect_chat_items(&app))
         .lines
@@ -1371,66 +1402,51 @@ fn chat_text_renders_markdown_body() {
         .map(|line| line.spans.into_iter().map(|span| span.content).collect())
         .collect();
     assert!(lines.iter().any(|line| line.contains("Done")));
-    assert!(lines.iter().any(|line| line.contains("  - first")));
-    assert!(lines.iter().any(|line| line.contains("  - second")));
+    assert!(lines.iter().any(|line| line.contains("first")));
+    assert!(lines.iter().any(|line| line.contains("second")));
 }
 
 #[test]
-fn chat_text_keeps_markdown_block_separator_unindented() {
+fn chat_text_renders_brief_events_from_projection() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.briefs = vec![BriefRecord {
-        id: "brief-1".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: Utc::now(),
-        text: "### Title\n\nBody".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: Utc::now(),
+            text: "### Title\n\nBody".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
 
-    let lines = build_chat_text(&collect_chat_items(&app)).lines;
-    let title_index = lines
-        .iter()
-        .position(|line| {
-            let rendered_line: String = line
-                .spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect();
-            rendered_line.contains("### Title")
-        })
-        .expect("heading should render");
-    let blank_line = lines
-        .get(title_index + 1)
-        .expect("markdown block separator should render");
-    assert!(blank_line.spans.is_empty());
-
-    let body_line = lines
-        .get(title_index + 2)
-        .expect("heading body should render");
-    let rendered_body: String = body_line
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
+    let rendered: String = build_chat_text(&collect_chat_items(&app))
+        .lines
+        .into_iter()
+        .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(rendered_body.ends_with("Body"));
+    assert!(rendered.contains("Title"));
+    assert!(rendered.contains("Body"));
 }
 
 #[test]
-fn chat_text_skips_ack_briefs() {
+fn chat_text_renders_ack_and_result_brief_events() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.briefs = vec![
+    apply_brief_event(
+        &mut app,
         BriefRecord {
             id: "brief-ack".into(),
             agent_id: "default".into(),
@@ -1443,6 +1459,9 @@ fn chat_text_skips_ack_briefs() {
             related_message_id: Some("msg-1".into()),
             related_task_id: None,
         },
+    );
+    apply_brief_event(
+        &mut app,
         BriefRecord {
             id: "brief-result".into(),
             agent_id: "default".into(),
@@ -1455,14 +1474,14 @@ fn chat_text_skips_ack_briefs() {
             related_message_id: None,
             related_task_id: None,
         },
-    ];
+    );
 
     let rendered: String = build_chat_text(&collect_chat_items(&app))
         .lines
         .into_iter()
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(!rendered.contains("Queued work: duplicate"));
+    assert!(rendered.contains("Queued work: duplicate"));
     assert!(rendered.contains("Real response"));
 }
 
@@ -1473,27 +1492,29 @@ fn chat_text_summarizes_task_brief_output() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.briefs = vec![BriefRecord {
-        id: "brief-task".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: Utc::now(),
-        text: "Task task-1 completed: line one\nline two\nline three".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: Some("task-1".into()),
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-task".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: Utc::now(),
+            text: "Task task-1 completed: line one\nline two\nline three".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: Some("task-1".into()),
+        },
+    );
 
     let rendered: String = build_chat_text(&collect_chat_items(&app))
         .lines
         .into_iter()
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(rendered.contains("Task task-1: Task task-1 completed: line one"));
-    assert!(rendered.contains("Task output is available in the Tasks pane."));
-    assert!(!rendered.contains("line two"));
+    assert!(rendered.contains("Task task-1 completed: line one"));
+    assert!(rendered.contains("line two"));
 }
 
 #[test]
@@ -1946,21 +1967,25 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
     let ts = Utc::now();
-    app.briefs = vec![BriefRecord {
-        id: "brief-latest".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: ts + chrono::Duration::seconds(10),
-        text: "Latest durable response".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-latest".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: ts + chrono::Duration::seconds(10),
+            text: "Latest durable response".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
     let mut snapshot = sample_snapshot("default", "evt-0");
     snapshot.agent.agent.status = AgentStatus::AwakeRunning;
     let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.inherit_recent_event_logs_from(app.projection.as_mut().unwrap());
     projection.apply_event(
         AgentStreamEvent {
             id: "evt-tool".into(),
@@ -2064,22 +2089,25 @@ fn collect_chat_items_orders_equal_timestamps_deterministically() {
             "body": { "type": "text", "text": "same instant" }
         }),
     }];
-    app.briefs = vec![BriefRecord {
-        id: "brief-1".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: ts,
-        text: "same instant".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: ts,
+            text: "same instant".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
 
     let items = collect_chat_items(&app);
     assert!(matches!(items[0], ConversationCell::UserMessage { .. }));
-    assert!(matches!(items[1], ConversationCell::AssistantMarkdown(_)));
+    assert!(matches!(items[1], ConversationCell::SystemNotice { .. }));
 }
 
 #[test]
@@ -2437,7 +2465,7 @@ fn snapshot_refresh_failure_updates_status_line() {
 }
 
 #[test]
-fn chat_text_keeps_long_brief_content() {
+fn chat_text_uses_presentation_summary_for_long_brief_events() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -2448,25 +2476,29 @@ fn chat_text_keeps_long_brief_content() {
         "intro ".repeat(220),
         "tail marker that used to be trimmed away"
     );
-    app.briefs = vec![BriefRecord {
-        id: "brief-1".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: Utc::now(),
-        text: long_text,
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: Utc::now(),
+            text: long_text,
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
 
     let rendered: String = build_chat_text(&collect_chat_items(&app))
         .lines
         .into_iter()
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(rendered.contains("tail marker that used to be trimmed away"));
+    assert!(rendered.contains("intro"));
+    assert!(!rendered.contains("tail marker that used to be trimmed away"));
 }
 
 #[test]
@@ -2477,18 +2509,21 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
     let first_created_at = Utc::now();
-    app.briefs = vec![BriefRecord {
-        id: "brief-1".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: first_created_at,
-        text: "**Done**".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: first_created_at,
+            text: "**Done**".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
 
     let first = chat_text(&app);
     let second = chat_text(&app);
@@ -2500,18 +2535,25 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
         assert_eq!(cached.cells, collect_chat_items(&app));
     }
 
-    app.briefs = vec![BriefRecord {
-        id: "brief-2".into(),
-        agent_id: "default".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Failure,
-        created_at: first_created_at,
-        text: "**Failed**".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
+        "default",
+        "evt-reset",
+    )));
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-2".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Failure,
+            created_at: first_created_at,
+            text: "**Failed**".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
 
     let refreshed = chat_text(&app);
     let refreshed_lines: Vec<String> = refreshed
@@ -2526,7 +2568,7 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
     assert_eq!(cached.cells, collect_chat_items(&app));
 
     drop(cache_ref);
-    app.briefs.clear();
+    app.projection = None;
     let placeholder = chat_text(&app);
     let placeholder_text: String = placeholder
         .lines
@@ -2703,25 +2745,27 @@ fn apply_agent_list_clears_stale_projection_when_selected_agent_disappears() {
     app.projection = Some(crate::tui::projection::TuiProjection::from_snapshot(
         sample_snapshot("beta", "cursor-1"),
     ));
-    app.briefs = vec![BriefRecord {
-        id: "brief-1".into(),
-        agent_id: "beta".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        kind: BriefKind::Result,
-        created_at: Utc::now(),
-        text: "stale brief".into(),
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-    }];
+    apply_brief_event(
+        &mut app,
+        BriefRecord {
+            id: "brief-1".into(),
+            agent_id: "beta".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            work_item_id: None,
+            kind: BriefKind::Result,
+            created_at: Utc::now(),
+            text: "stale brief".into(),
+            attachments: None,
+            related_message_id: None,
+            related_task_id: None,
+        },
+    );
 
     let change = app.apply_agent_list(vec![sample_agent_summary("gamma")]);
 
     assert_eq!(change, AgentListChange::RequiresBootstrap);
     assert_eq!(app.selected_agent_id(), Some("gamma"));
     assert!(app.projection.is_none());
-    assert!(app.briefs.is_empty());
 }
 
 #[tokio::test]

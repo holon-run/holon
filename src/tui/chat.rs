@@ -106,15 +106,7 @@ impl ChatScrollState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CachedChatRole {
     Operator,
-    Agent,
     System,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct AssistantMarkdownCell {
-    created_at: DateTime<chrono::Utc>,
-    agent_id: String,
-    markdown: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,7 +116,6 @@ pub(super) enum ConversationCell {
         body: String,
         status: Option<OperatorMessageStatus>,
     },
-    AssistantMarkdown(AssistantMarkdownCell),
     ActiveActivity {
         created_at: DateTime<chrono::Utc>,
         speaker: String,
@@ -191,23 +182,6 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         push_pending_operator_message_cell(&mut cells, &mut visible_operator_message_ids, message);
     }
 
-    let event_brief_ids = projection_brief_ids(app);
-    for brief in &app.briefs {
-        if matches!(brief.kind, crate::types::BriefKind::Ack) || event_brief_ids.contains(&brief.id)
-        {
-            continue;
-        }
-        cells.push(ConversationCell::AssistantMarkdown(AssistantMarkdownCell {
-            created_at: brief.created_at,
-            agent_id: match brief.kind {
-                crate::types::BriefKind::Result => "Holon".to_string(),
-                crate::types::BriefKind::Failure => "Holon (failed)".to_string(),
-                crate::types::BriefKind::Ack => unreachable!("ack briefs are filtered above"),
-            },
-            markdown: render_brief_body(brief),
-        }));
-    }
-
     if let Some(projection) = app.projection.as_ref() {
         // New pipeline: events → PresentationItems → RenderedCells → ConversationCells
         let level = app.display_mode.display_level();
@@ -243,21 +217,6 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         cells.push(active_item);
     }
     cells
-}
-
-fn projection_brief_ids(app: &TuiApp) -> std::collections::BTreeSet<String> {
-    app.projection
-        .as_ref()
-        .map(|projection| {
-            projection
-                .event_log()
-                .iter()
-                .filter(|event| event.kind == "brief_created")
-                .filter_map(|event| event.payload.get("id").and_then(serde_json::Value::as_str))
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn operator_message_statuses(
@@ -298,14 +257,12 @@ impl ConversationCell {
             Self::UserMessage { created_at, .. }
             | Self::ActiveActivity { created_at, .. }
             | Self::SystemNotice { created_at, .. } => *created_at,
-            Self::AssistantMarkdown(cell) => cell.created_at,
         }
     }
 
     fn role(&self) -> CachedChatRole {
         match self {
             Self::UserMessage { .. } => CachedChatRole::Operator,
-            Self::AssistantMarkdown(_) => CachedChatRole::Agent,
             Self::ActiveActivity { .. } | Self::SystemNotice { .. } => CachedChatRole::System,
         }
     }
@@ -313,7 +270,6 @@ impl ConversationCell {
     fn sort_speaker(&self) -> &str {
         match self {
             Self::UserMessage { .. } => "You",
-            Self::AssistantMarkdown(cell) => &cell.agent_id,
             Self::ActiveActivity { speaker, .. } | Self::SystemNotice { speaker, .. } => speaker,
         }
     }
@@ -323,7 +279,6 @@ impl ConversationCell {
             Self::UserMessage { body, .. }
             | Self::ActiveActivity { body, .. }
             | Self::SystemNotice { body, .. } => body,
-            Self::AssistantMarkdown(cell) => &cell.markdown,
         }
     }
 
@@ -334,7 +289,6 @@ impl ConversationCell {
                 body,
                 status,
             } => render_operator_message_lines(*created_at, body, status.clone(), width),
-            Self::AssistantMarkdown(cell) => cell.render_lines(width),
             Self::ActiveActivity { speaker, body, .. } => {
                 render_active_activity_lines(speaker, body)
             }
@@ -348,18 +302,6 @@ impl ConversationCell {
                 false,
             ),
         }
-    }
-}
-
-impl AssistantMarkdownCell {
-    fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
-        render_prefixed_markdown_lines(
-            self.created_at,
-            &self.markdown,
-            CachedChatRole::Agent,
-            width,
-            true,
-        )
     }
 }
 
@@ -532,7 +474,6 @@ fn chat_prefix_spans(
 ) -> Vec<Span<'static>> {
     let (marker, marker_style) = match role {
         CachedChatRole::Operator => ("› ", Style::default().add_modifier(Modifier::BOLD)),
-        CachedChatRole::Agent => ("• ", Style::default().add_modifier(Modifier::DIM)),
         CachedChatRole::System => (
             "! ",
             Style::default()
@@ -579,8 +520,7 @@ fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
 fn chat_role_rank(role: CachedChatRole) -> u8 {
     match role {
         CachedChatRole::Operator => 0,
-        CachedChatRole::Agent => 1,
-        CachedChatRole::System => 2,
+        CachedChatRole::System => 1,
     }
 }
 
@@ -864,25 +804,6 @@ fn progress_event_body(event: &crate::tui::projection::ProjectionEventRecord) ->
         return event.summary.clone();
     }
     conversation_event_body(event)
-}
-
-fn render_brief_body(brief: &BriefRecord) -> String {
-    if let Some(task_id) = brief.related_task_id.as_deref() {
-        let preview = brief
-            .text
-            .lines()
-            .next()
-            .map(collapse_whitespace)
-            .unwrap_or_default();
-        let preview = trim_preview(&preview, 160);
-        if brief.text.contains('\n') || brief.text.chars().count() > 160 {
-            return format!(
-                "Task {task_id}: {preview}\n_Task output is available in the Tasks pane._"
-            );
-        }
-        return format!("Task {task_id}: {preview}");
-    }
-    brief.text.clone()
 }
 
 fn collapse_whitespace(input: &str) -> String {

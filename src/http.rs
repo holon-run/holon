@@ -55,7 +55,7 @@ use crate::{
     system::{ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary},
     types::{
         ActiveWorkspaceEntry, AdmissionContext, AgentRegistryStatus, AgentSummary, AgentVisibility,
-        AuditEvent, BriefRecord, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
+        AuditEvent, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
         ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageKind,
         MessageOrigin, OperatorMessageRecord, OperatorNotificationRecord, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
@@ -432,7 +432,6 @@ struct AgentStateSnapshot {
     tasks: Vec<TaskRecord>,
     transcript_tail: Vec<TranscriptEntry>,
     operator_messages: Vec<OperatorMessageRecord>,
-    briefs_tail: Vec<BriefRecord>,
     timers: Vec<TimerRecord>,
     work_items: Vec<WorkItemRecord>,
     waiting_intents: Vec<WaitingIntentRecord>,
@@ -441,8 +440,6 @@ struct AgentStateSnapshot {
     workspace: StateWorkspaceSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<ExecutionSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    brief: Option<BriefRecord>,
     events_tail: Vec<StreamEventEnvelope>,
     cursor: Option<String>,
 }
@@ -942,8 +939,6 @@ pub async fn agent_state(
         .recent_operator_messages(STATE_BOOTSTRAP_OPERATOR_MESSAGE_LIMIT)
         .await
         .map_err(error_response)?;
-    let briefs_tail = runtime.recent_briefs(24).await.map_err(error_response)?;
-    let brief = briefs_tail.last().cloned();
     let timers = runtime.recent_timers(50).await.map_err(error_response)?;
     let mut work_items = runtime.latest_work_items().await.map_err(error_response)?;
     sort_state_work_items(&mut work_items);
@@ -975,7 +970,6 @@ pub async fn agent_state(
         tasks,
         transcript_tail,
         operator_messages,
-        briefs_tail,
         timers,
         work_items,
         waiting_intents,
@@ -983,7 +977,6 @@ pub async fn agent_state(
         operator_notifications,
         execution: Some(execution),
         workspace,
-        brief,
         events_tail,
         cursor,
     }))
