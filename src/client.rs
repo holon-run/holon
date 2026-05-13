@@ -10,8 +10,8 @@ use crate::{
     config::AppConfig,
     daemon::{RuntimeShutdownResponse, RuntimeStatusResponse},
     http::{
-        AttachWorkspaceRequest, ClearAgentModelRequest, ControlPromptRequest, DebugPromptRequest,
-        DetachWorkspaceRequest, ExitWorkspaceRequest, SetAgentModelRequest,
+        AttachWorkspaceRequest, ClearAgentModelRequest, ControlPromptRequest, CreateAgentRequest,
+        DebugPromptRequest, DetachWorkspaceRequest, ExitWorkspaceRequest, SetAgentModelRequest,
     },
     model_catalog::BuiltInModelMetadata,
     system::ExecutionSnapshot,
@@ -394,6 +394,17 @@ impl LocalClient {
             &crate::http::ControlRequest {
                 action,
                 trust: Some(TrustLevel::TrustedOperator),
+            },
+        )
+        .await
+    }
+
+    pub async fn create_agent(&self, agent_id: &str) -> Result<Value> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/create"),
+            &CreateAgentRequest {
+                trust: Some(TrustLevel::TrustedOperator),
+                template: None,
             },
         )
         .await
