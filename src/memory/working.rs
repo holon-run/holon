@@ -434,13 +434,14 @@ fn collect_pending_followups(
         projection
             .completed_recent
             .iter()
-            .take(2)
+            .filter(|item| !item.is_current)
             .filter_map(|item| {
                 item.record()
                     .result_summary
                     .as_ref()
                     .map(|summary| format!("completed: {}", truncate_line(summary, 120)))
-            }),
+            })
+            .take(2),
     );
 
     dedup_owned(items, MEMORY_FOLLOWUP_LIMIT)
@@ -887,6 +888,20 @@ mod tests {
             WorkItemState::Open,
         );
         storage.append_work_item(&queued).unwrap();
+        storage
+            .append_work_item(&WorkItemRecord::new(
+                "default",
+                "completed without report one",
+                WorkItemState::Completed,
+            ))
+            .unwrap();
+        storage
+            .append_work_item(&WorkItemRecord::new(
+                "default",
+                "completed without report two",
+                WorkItemState::Completed,
+            ))
+            .unwrap();
         let mut completed = WorkItemRecord::new(
             "default",
             "completed report selection",

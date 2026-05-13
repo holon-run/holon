@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 
 use crate::{
@@ -7,10 +9,11 @@ use crate::{
     tool::helpers::truncate_text,
     types::{
         AdmissionContext, AgentState, AuthorityClass, BriefRecord, ContextEpisodeRecord,
-        ContinuationClass, ContinuationResolution, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TodoItemState,
-        ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord,
-        WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
+        ContinuationClass, ContinuationResolution, ExternalTriggerScope, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView,
+        TodoItemState, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        WaitingIntentRecord, WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta,
+        WorkingMemorySnapshot,
     },
 };
 
@@ -65,6 +68,8 @@ pub fn build_context(
     let active_waiting_intents = storage
         .latest_waiting_intents()?
         .into_iter()
+        .filter(|intent| intent.agent_id == agent.id)
+        .filter(|intent| intent.scope == ExternalTriggerScope::WorkItem)
         .filter(|intent| intent.status == WaitingIntentStatus::Active)
         .collect::<Vec<_>>();
     let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
@@ -232,8 +237,12 @@ pub fn build_context(
     }
 
     if work_queue_projection.has_non_current_candidates() {
-        let candidates =
-            render_work_item_candidates(&work_queue_projection, storage, storage.data_dir())?;
+        let candidates = render_work_item_candidates(
+            &work_queue_projection,
+            storage,
+            &agent.id,
+            storage.data_dir(),
+        )?;
         if let Some(content) = candidates {
             push_budgeted_section(
                 &mut sections,
@@ -588,6 +597,7 @@ fn render_current_work_item_process_trace(
     for brief in briefs
         .iter()
         .rev()
+        .filter(|brief| brief.agent_id == work_item.agent_id)
         .filter(|brief| brief.work_item_id.as_deref() == Some(work_item.id.as_str()))
         .take(3)
     {
@@ -601,6 +611,7 @@ fn render_current_work_item_process_trace(
     for tool in tools
         .iter()
         .rev()
+        .filter(|tool| tool.agent_id == work_item.agent_id)
         .filter(|tool| tool.work_item_id.as_deref() == Some(work_item.id.as_str()))
         .take(4)
     {
@@ -614,6 +625,7 @@ fn render_current_work_item_process_trace(
     for entry in transcript
         .iter()
         .rev()
+        .filter(|entry| entry.agent_id == work_item.agent_id)
         .filter(|entry| entry.kind == TranscriptEntryKind::AssistantRound)
         .filter(|entry| entry.data["work_item_id"].as_str() == Some(work_item.id.as_str()))
         .take(2)
@@ -633,6 +645,11 @@ fn assistant_round_text_preview(entry: &TranscriptEntry) -> Option<String> {
         .as_array()?
         .iter()
         .filter_map(|block| {
+            if let Some(kind) = block.get("type").and_then(serde_json::Value::as_str) {
+                if kind != "text" {
+                    return None;
+                }
+            }
             block
                 .get("Text")
                 .and_then(|value| value.get("text"))
@@ -649,42 +666,44 @@ fn assistant_round_text_preview(entry: &TranscriptEntry) -> Option<String> {
 fn render_work_item_candidates(
     projection: &crate::storage::WorkQueuePromptProjection,
     storage: &AppStorage,
+    agent_id: &str,
     agent_home: &std::path::Path,
 ) -> Result<Option<String>> {
+    let completion_reports = latest_delivery_summary_text_by_work_item(storage, agent_id)?;
     let mut lines = vec!["Work item candidates by scheduler ranking:".to_string()];
     append_candidate_group(
         &mut lines,
         "Triggered work items:",
         &projection.triggered_blocked,
-        storage,
+        &completion_reports,
         agent_home,
     )?;
     append_candidate_group(
         &mut lines,
         "Queued runnable work items:",
         &projection.queued_runnable,
-        storage,
+        &completion_reports,
         agent_home,
     )?;
     append_candidate_group(
         &mut lines,
         "Waiting for operator:",
         &projection.waiting_for_operator,
-        storage,
+        &completion_reports,
         agent_home,
     )?;
     append_candidate_group(
         &mut lines,
         "Blocked work items:",
         &projection.blocked,
-        storage,
+        &completion_reports,
         agent_home,
     )?;
     append_candidate_group(
         &mut lines,
         "Recently completed work items:",
         &projection.completed_recent,
-        storage,
+        &completion_reports,
         agent_home,
     )?;
     if lines.len() == 1 {
@@ -697,7 +716,7 @@ fn append_candidate_group(
     lines: &mut Vec<String>,
     title: &str,
     items: &[crate::storage::WorkItemReadinessProjection],
-    storage: &AppStorage,
+    completion_reports: &BTreeMap<String, String>,
     agent_home: &std::path::Path,
 ) -> Result<()> {
     if items.is_empty() {
@@ -714,7 +733,7 @@ fn append_candidate_group(
     for item in items {
         let record = item.record();
         let completion_report = if record.state == crate::types::WorkItemState::Completed {
-            let report = completion_report_for_work_item(storage, record)?;
+            let report = completion_report_for_work_item(completion_reports, record);
             if report.is_none() {
                 continue;
             }
@@ -759,20 +778,39 @@ fn append_candidate_group(
 }
 
 fn completion_report_for_work_item(
-    storage: &AppStorage,
+    completion_reports: &BTreeMap<String, String>,
     record: &WorkItemRecord,
-) -> Result<Option<String>> {
+) -> Option<String> {
     if let Some(summary) = record
         .result_summary
         .as_ref()
         .filter(|text| !text.is_empty())
     {
-        return Ok(Some(summary.clone()));
+        return Some(summary.clone());
     }
-    Ok(storage
-        .latest_delivery_summary(&record.id)?
-        .map(|summary| summary.text)
-        .filter(|text| !text.is_empty()))
+    completion_reports
+        .get(&record.id)
+        .filter(|text| !text.is_empty())
+        .cloned()
+}
+
+fn latest_delivery_summary_text_by_work_item(
+    storage: &AppStorage,
+    agent_id: &str,
+) -> Result<BTreeMap<String, String>> {
+    let mut summaries = BTreeMap::new();
+    for summary in storage
+        .read_recent_delivery_summaries(usize::MAX)?
+        .into_iter()
+        .rev()
+        .filter(|summary| summary.agent_id == agent_id)
+        .filter(|summary| !summary.text.is_empty())
+    {
+        summaries
+            .entry(summary.work_item_id)
+            .or_insert(summary.text);
+    }
+    Ok(summaries)
 }
 
 fn render_work_item_plan_artifact_lines(
@@ -2547,12 +2585,46 @@ mod tests {
             })
             .unwrap();
         storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-other-agent".into(),
+                agent_id: "other-agent".into(),
+                scope: ExternalTriggerScope::WorkItem,
+                work_item_id: Some(active.id.clone()),
+                description: "other agent wait must not leak".into(),
+                source: "github".into(),
+                resource: Some("pull/other".into()),
+                condition: Some("ci completed".into()),
+                delivery_mode: CallbackDeliveryMode::EnqueueMessage,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "cb-other".into(),
+                created_at: chrono::Utc::now(),
+                cancelled_at: None,
+                last_triggered_at: Some(chrono::Utc::now()),
+                trigger_count: 1,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+        storage
             .append_brief(&BriefRecord {
                 work_item_id: Some(active.id.clone()),
                 ..BriefRecord::new(
                     "default",
                     BriefKind::Result,
                     "Bound brief captured current WorkItem evidence.",
+                    None,
+                    None,
+                )
+            })
+            .unwrap();
+        storage
+            .append_brief(&BriefRecord {
+                agent_id: "other-agent".into(),
+                work_item_id: Some(active.id.clone()),
+                ..BriefRecord::new(
+                    "default",
+                    BriefKind::Result,
+                    "Other agent brief must not leak.",
                     None,
                     None,
                 )
@@ -2577,6 +2649,24 @@ mod tests {
             })
             .unwrap();
         storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-other-agent".into(),
+                agent_id: "other-agent".into(),
+                work_item_id: Some(active.id.clone()),
+                turn_index: 1,
+                tool_name: "ExecCommand".into(),
+                created_at: chrono::Utc::now(),
+                completed_at: Some(chrono::Utc::now()),
+                duration_ms: 10,
+                trust: TrustLevel::TrustedOperator,
+                status: ToolExecutionStatus::Success,
+                input: json!({"cmd": "echo other"}),
+                output: json!({}),
+                summary: "Other agent tool must not leak".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+        storage
             .append_transcript_entry(&TranscriptEntry::new(
                 "default",
                 TranscriptEntryKind::AssistantRound,
@@ -2584,7 +2674,22 @@ mod tests {
                 None,
                 json!({
                     "work_item_id": active.id.clone(),
-                    "blocks": [{"text": "Assistant summarized current WorkItem progress."}]
+                    "blocks": [
+                        {"type": "thinking", "text": "Provider thinking must not leak."},
+                        {"type": "text", "text": "Assistant summarized current WorkItem progress."}
+                    ]
+                }),
+            ))
+            .unwrap();
+        storage
+            .append_transcript_entry(&TranscriptEntry::new(
+                "other-agent",
+                TranscriptEntryKind::AssistantRound,
+                Some(1),
+                None,
+                json!({
+                    "work_item_id": active.id.clone(),
+                    "blocks": [{"type": "text", "text": "Other agent transcript must not leak."}]
                 }),
             ))
             .unwrap();
@@ -2630,6 +2735,9 @@ mod tests {
             .contains("Project active item into prompt"));
         assert!(active_section.content.contains("Active waits:"));
         assert!(active_section.content.contains("wait for CI webhook"));
+        assert!(!active_section
+            .content
+            .contains("other agent wait must not leak"));
 
         let trace_section = built
             .sections
@@ -2645,6 +2753,18 @@ mod tests {
         assert!(trace_section
             .content
             .contains("Assistant summarized current WorkItem progress"));
+        assert!(!trace_section
+            .content
+            .contains("Provider thinking must not leak"));
+        assert!(!trace_section
+            .content
+            .contains("Other agent brief must not leak"));
+        assert!(!trace_section
+            .content
+            .contains("Other agent tool must not leak"));
+        assert!(!trace_section
+            .content
+            .contains("Other agent transcript must not leak"));
     }
 
     #[test]
