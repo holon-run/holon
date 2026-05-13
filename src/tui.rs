@@ -39,7 +39,7 @@ mod chat;
 mod composer;
 mod input;
 mod keymap;
-mod logging;
+pub(crate) mod logging;
 mod model_picker;
 mod overlay;
 pub(crate) mod projection;

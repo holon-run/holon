@@ -4,6 +4,7 @@ mod scheduler;
 mod support;
 mod task_recovery;
 mod timers;
+mod tui_pipeline_e2e;
 mod turns;
 mod wake_hints;
 mod work_items;
