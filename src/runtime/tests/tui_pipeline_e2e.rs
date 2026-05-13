@@ -12,11 +12,10 @@ use crate::{
     types::{
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
-        AgentSummary, AgentTokenUsageSummary, AgentVisibility, ChildAgentSummary,
-        ClosureDecision, ClosureOutcome,
-        ExternalTriggerSummary, LoadedAgentsMdView, OperatorNotificationRecord, RuntimePosture,
-        SkillsRuntimeView, TokenUsage, TrustLevel, TurnTerminalKind, WaitingIntentSummary,
-        WorkspaceOccupancyRecord,
+        AgentSummary, AgentTokenUsageSummary, AgentVisibility, ChildAgentSummary, ClosureDecision,
+        ClosureOutcome, ExternalTriggerSummary, LoadedAgentsMdView, OperatorNotificationRecord,
+        RuntimePosture, SkillsRuntimeView, TokenUsage, TrustLevel, TurnTerminalKind,
+        WaitingIntentSummary, WorkspaceOccupancyRecord,
     },
 };
 use serde_json::json;
@@ -115,7 +114,11 @@ fn minimal_snapshot(agent_id: &str, cursor: &str) -> AgentStateSnapshot {
 }
 
 /// Convert an `AuditEvent` from storage into an `AgentStreamEvent` for the TUI projection.
-fn audit_to_stream_event(event: &crate::types::AuditEvent, seq: u64, agent_id: &str) -> AgentStreamEvent {
+fn audit_to_stream_event(
+    event: &crate::types::AuditEvent,
+    seq: u64,
+    agent_id: &str,
+) -> AgentStreamEvent {
     AgentStreamEvent {
         id: event.id.clone(),
         event: event.kind.clone(),
@@ -147,11 +150,7 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
     // First provider call: the agent decides to run `echo ok`.
     // Second provider call: after seeing the tool result, the agent responds.
     let provider = ScriptedAgentProvider::new([
-        ScriptedProviderStep::tool_use(
-            "toolu_01",
-            "ExecCommand",
-            json!({ "cmd": "echo ok" }),
-        ),
+        ScriptedProviderStep::tool_use("toolu_01", "ExecCommand", json!({ "cmd": "echo ok" })),
         ScriptedProviderStep::text("Command completed — echo ok succeeded."),
     ]);
 
@@ -221,8 +220,7 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
     );
 
     // Bootstrap projection and feed all audit events through it.
-    let mut projection =
-        TuiProjection::from_snapshot(minimal_snapshot("default", "cursor-0"));
+    let mut projection = TuiProjection::from_snapshot(minimal_snapshot("default", "cursor-0"));
 
     for (idx, event) in events.iter().enumerate() {
         let stream_event = audit_to_stream_event(event, (idx + 1) as u64, "default");
@@ -274,10 +272,10 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
         }
     }
 
-    assert!(seen_command, "should contain process_execution_requested record");
-    assert!(seen_shown, "at least one record should have decision=shown");
     assert!(
-        seen_turn_terminal,
-        "should contain turn_terminal record"
+        seen_command,
+        "should contain process_execution_requested record"
     );
+    assert!(seen_shown, "at least one record should have decision=shown");
+    assert!(seen_turn_terminal, "should contain turn_terminal record");
 }
