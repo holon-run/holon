@@ -95,13 +95,16 @@ impl TuiLogWriter {
             return Ok(());
         }
         let path = self.root.join("presentation.jsonl");
-        for item in items {
-            let line = serde_json::to_string(&PersistedPresentationLogRecord::from_timed_item(
-                reducer_events,
-                item,
-            ))?;
-            append_bounded_jsonl_line(&path, &line, self.presentation_log_max_bytes)?;
-        }
+        let lines = items
+            .iter()
+            .map(|item| {
+                serde_json::to_string(&PersistedPresentationLogRecord::from_timed_item(
+                    reducer_events,
+                    item,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        append_bounded_jsonl_lines(&path, lines.as_slice(), self.presentation_log_max_bytes)?;
 
         Ok(())
     }
@@ -281,24 +284,40 @@ fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
-fn append_bounded_jsonl_line(path: &Path, line: &str, max_bytes: u64) -> Result<()> {
-    let incoming_bytes = line.len() as u64 + 1;
-    if path
-        .metadata()
-        .map(|metadata| metadata.len().saturating_add(incoming_bytes) > max_bytes)
-        .unwrap_or(false)
-    {
-        rotate_jsonl(path)?;
+fn append_bounded_jsonl_lines(path: &Path, lines: &[String], max_bytes: u64) -> Result<()> {
+    let mut current_size = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let mut writer: Option<BufWriter<std::fs::File>> = None;
+
+    for line in lines {
+        let incoming_bytes = line.len() as u64 + 1;
+        if incoming_bytes > max_bytes {
+            continue;
+        }
+        if current_size.saturating_add(incoming_bytes) > max_bytes {
+            if let Some(mut open_writer) = writer.take() {
+                open_writer.flush()?;
+            }
+            rotate_jsonl(path)?;
+            current_size = 0;
+        }
+        if writer.is_none() {
+            writer = Some(BufWriter::new(
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .with_context(|| format!("failed to open {}", path.display()))?,
+            ));
+        }
+        if let Some(open_writer) = writer.as_mut() {
+            writeln!(open_writer, "{line}")?;
+        }
+        current_size += incoming_bytes;
     }
-    let mut writer = BufWriter::new(
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .with_context(|| format!("failed to open {}", path.display()))?,
-    );
-    writeln!(writer, "{line}")?;
-    writer.flush()?;
+
+    if let Some(mut open_writer) = writer {
+        open_writer.flush()?;
+    }
     Ok(())
 }
 
@@ -504,6 +523,41 @@ mod tests {
         assert!(rotated.exists());
         assert!(path.metadata().unwrap().len() <= writer.presentation_log_max_bytes);
         assert!(rotated.metadata().unwrap().len() <= writer.presentation_log_max_bytes);
+    }
+
+    #[test]
+    fn presentation_log_drops_single_records_larger_than_limit() {
+        let writer = TuiLogWriter::new_temp_with_presentation_logging(128).unwrap();
+        let event = ProjectionEventRecord {
+            id: "evt_large".into(),
+            seq: 9,
+            ts: Utc::now(),
+            kind: "provider_round_completed".into(),
+            lane: ProjectionEventLane::Debug,
+            summary: "provider completed".repeat(100),
+            presentation: OperatorEventPresentation {
+                visibility: OperatorVisibility::Trace,
+                category: OperatorEventCategory::Trace,
+                title: "Provider".into(),
+                body: None,
+                summary: "provider completed".repeat(100),
+                source_event_kind: "provider_round_completed".into(),
+            },
+            payload: json!({ "model": "test-model" }),
+        };
+        let item = TimedItem {
+            ts: event.ts,
+            item: PresentationItem::GenericEvent {
+                kind: "provider_round_completed".into(),
+                summary: "provider completed".repeat(100),
+            },
+        };
+
+        writer
+            .write_presentation_items(std::slice::from_ref(&event), std::slice::from_ref(&item))
+            .unwrap();
+
+        assert!(!writer.root.join("presentation.jsonl").exists());
     }
 
     #[test]

@@ -1,7 +1,6 @@
 use super::*;
-use crate::operator_event::OperatorEventCategory;
 use crate::presentation::{PresentationItem, PresentationReducer, Renderable};
-use crate::tui::projection::ProjectionEventRecord;
+use crate::tui::projection::{is_presentation_reducer_event, ProjectionEventRecord};
 use crossterm::event::KeyCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,10 +215,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             .event_log()
             .iter()
             .cloned()
-            .filter(|e| {
-                e.kind != "message_enqueued"
-                    && !matches!(e.presentation.category, OperatorEventCategory::StateSync)
-            })
+            .filter(is_presentation_reducer_event)
             .collect();
 
         let mut reducer = PresentationReducer::new();

@@ -38,7 +38,8 @@ const TIMER_TAIL_LIMIT: usize = 50;
 const EVENT_LOG_LIMIT: usize = 256;
 const EVENT_HISTORY_LOG_LIMIT: usize = 4096;
 const DURABLE_CONVERSATION_LOG_LIMIT: usize = 256;
-static TUI_LOG_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
+static TUI_EVENT_LOG_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
+static TUI_PRESENTATION_LOG_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ProjectionSlice {
@@ -227,7 +228,7 @@ impl TuiProjection {
             );
         }
         if let Err(error) = log_writer.write_event(&record) {
-            if !TUI_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
+            if !TUI_EVENT_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
                 tracing::warn!("failed to persist TUI log event: {error}");
             }
         }
@@ -235,10 +236,15 @@ impl TuiProjection {
             let timed_items = self
                 .presentation_reducer
                 .reduce(std::slice::from_ref(&record));
-            if let Err(error) = log_writer
-                .write_presentation_items(std::slice::from_ref(&record), timed_items.as_slice())
+            let (reducer_events, log_items) = presentation_debug_items_for_event(
+                self.event_log.as_slice(),
+                &record,
+                timed_items.as_slice(),
+            );
+            if let Err(error) =
+                log_writer.write_presentation_items(reducer_events.as_slice(), log_items.as_slice())
             {
-                if !TUI_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
+                if !TUI_PRESENTATION_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
                     tracing::warn!("failed to persist TUI presentation log: {error}");
                 }
             }
@@ -1171,16 +1177,48 @@ fn operator_message_from_enqueued(message: &MessageEnvelope) -> OperatorMessageR
     }
 }
 
-pub(crate) fn is_durable_conversation_kind(kind: &str) -> bool {
-    is_durable_operator_event_kind(kind)
-}
-
-fn is_presentation_reducer_event(event: &ProjectionEventRecord) -> bool {
+pub(crate) fn is_presentation_reducer_event(event: &ProjectionEventRecord) -> bool {
     event.kind != "message_enqueued"
         && !matches!(
             event.presentation.category,
             OperatorEventCategory::StateSync
         )
+}
+
+pub(crate) fn is_durable_conversation_kind(kind: &str) -> bool {
+    is_durable_operator_event_kind(kind)
+}
+
+fn presentation_debug_items_for_event(
+    event_log: &[ProjectionEventRecord],
+    record: &ProjectionEventRecord,
+    timed_items: &[crate::presentation::TimedItem],
+) -> (
+    Vec<ProjectionEventRecord>,
+    Vec<crate::presentation::TimedItem>,
+) {
+    if record.kind == "process_execution_requested" {
+        return (Vec::new(), Vec::new());
+    }
+    if matches!(
+        record.kind.as_str(),
+        "tool_executed" | "tool_execution_failed"
+    ) {
+        if let Some(previous) = event_log
+            .iter()
+            .rev()
+            .nth(1)
+            .filter(|event| event.kind == "process_execution_requested")
+        {
+            let reducer_events = vec![previous.clone(), record.clone()];
+            let mut reducer = crate::presentation::PresentationReducer::new();
+            let items = reducer.reduce(reducer_events.as_slice());
+            if !items.is_empty() {
+                return (reducer_events, items);
+            }
+        }
+    }
+    (vec![record.clone()], timed_items.to_vec())
 }
 
 fn is_activity_reset_kind(kind: &str) -> bool {
@@ -1546,6 +1584,42 @@ mod tests {
         assert_eq!(
             record["reducer_event_ids"],
             json!(["evt-assistant_round_recorded"])
+        );
+    }
+
+    #[test]
+    fn presentation_debug_log_uses_adjacent_command_window() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let writer =
+            crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
+
+        projection.apply_event(
+            sample_event(
+                "process_execution_requested",
+                json!({ "exec_command_cmd": "cargo test" }),
+            ),
+            &writer,
+        );
+        projection.apply_event(
+            sample_event(
+                "tool_executed",
+                json!({
+                    "tool_name": "ExecCommand",
+                    "exec_command_cmd": "cargo test",
+                    "duration_ms": 12,
+                    "exit_status": 0,
+                    "stdout_preview": "ok"
+                }),
+            ),
+            &writer,
+        );
+
+        let line = std::fs::read_to_string(writer.root().join("presentation.jsonl")).unwrap();
+        let record: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(record["item_kind"], "command_executed");
+        assert_eq!(
+            record["reducer_event_ids"],
+            json!(["evt-process_execution_requested", "evt-tool_executed"])
         );
     }
 
