@@ -145,15 +145,18 @@ impl TuiProjection {
                 DURABLE_CONVERSATION_LOG_LIMIT,
             );
         }
-        if let Err(error) = log_writer.write_event(&record) {
+        let timed_items = self
+            .presentation_reducer
+            .reduce(std::slice::from_ref(&record));
+        if let Err(error) = log_writer
+            .write_event(&record)
+            .and_then(|_| log_writer.write_presentation_items(&[&record], &timed_items))
+        {
             if !TUI_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
                 tracing::warn!("failed to persist TUI log event: {error}");
             }
         }
         self.cursor = Some(event.id.clone());
-
-        // Feed into presentation reducer for live item tracking
-        let _ = self.presentation_reducer.reduce(&[record.clone()]);
 
         match event.data.event_type.as_str() {
             "agent_state_changed" | "session_state_changed" => {

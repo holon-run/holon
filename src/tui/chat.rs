@@ -270,18 +270,6 @@ fn push_pending_operator_message_cell(
     });
 }
 
-pub(super) fn is_chat_visible_conversation_event(
-    event: &crate::tui::projection::ProjectionEventRecord,
-) -> bool {
-    event.presentation.is_conversation_candidate()
-        && matches!(
-            event.presentation.visibility,
-            crate::operator_event::OperatorVisibility::ActionRequired
-                | crate::operator_event::OperatorVisibility::TurnResult
-                | crate::operator_event::OperatorVisibility::WorkDone
-        )
-}
-
 impl ConversationCell {
     pub(super) fn created_at(&self) -> DateTime<chrono::Utc> {
         match self {
@@ -893,10 +881,7 @@ fn trim_preview(input: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        assistant_message_from_event, is_chat_visible_conversation_event, latest_action_event,
-        progress_event_body,
-    };
+    use super::{assistant_message_from_event, latest_action_event, progress_event_body};
     use crate::operator_event::{present_operator_event, OperatorPresentationContext};
     use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
     use chrono::Utc;
@@ -962,31 +947,6 @@ mod tests {
         );
         let rendered = progress_event_body(&event);
         assert_eq!(rendered, "Slept");
-    }
-
-    #[test]
-    fn chat_visible_conversation_events_are_user_facing_only() {
-        assert!(is_chat_visible_conversation_event(&event(
-            "operator_notification_requested",
-            "needs input",
-            json!({})
-        )));
-        assert!(is_chat_visible_conversation_event(&event(
-            "runtime_error",
-            "runtime error",
-            json!({})
-        )));
-
-        assert!(!is_chat_visible_conversation_event(&event(
-            "workspace_attached",
-            "workspace",
-            json!({})
-        )));
-        assert!(!is_chat_visible_conversation_event(&event(
-            "provider_round_completed",
-            "round",
-            json!({})
-        )));
     }
 
     #[test]
