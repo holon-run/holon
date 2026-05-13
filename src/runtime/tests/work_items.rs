@@ -57,12 +57,17 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .await
         .unwrap();
     runtime.pick_work_item(active.id.clone()).await.unwrap();
+    std::fs::write(
+        crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &active.id),
+        "Inspect query surface behavior.",
+    )
+    .unwrap();
     runtime
         .update_work_item_fields(
             active.id.clone(),
             None,
             None,
-            Some(Some("Inspect query surface behavior.".into())),
+            None,
             Some(vec![crate::types::TodoItem {
                 text: "inspect query surface".into(),
                 state: crate::types::TodoItemState::InProgress,
@@ -94,7 +99,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
             &crate::tool::ToolCall {
                 id: "active".into(),
                 name: "ListWorkItems".into(),
-                input: serde_json::json!({"filter": "current", "include_plan": true, "include_todo_list": true}),
+                input: serde_json::json!({"filter": "current", "include_todo_list": true}),
             },
         )
         .await
@@ -111,8 +116,12 @@ async fn work_item_query_tools_return_current_open_done_views() {
     assert_eq!(active_item["is_current"].as_bool(), Some(true));
     assert_eq!(active_item["is_runnable"].as_bool(), Some(true));
     assert_eq!(
-        active_item["plan"].as_str(),
+        active_item["plan_artifact"]["preview"].as_str(),
         Some("Inspect query surface behavior.")
+    );
+    assert_eq!(
+        active_item["plan_artifact"]["preview_complete"].as_bool(),
+        Some(true)
     );
     assert_eq!(active_item["todo_list"].as_array().unwrap().len(), 1);
     assert_eq!(
@@ -460,9 +469,13 @@ async fn work_item_tools_use_objective_plan_and_todo_list_shape() {
         Some("ready")
     );
     assert_eq!(
-        create_payload["work_item"]["plan"].as_str(),
+        create_payload["work_item"]["plan_artifact"]["preview"].as_str(),
         Some("1. Inspect current contract\n2. Update tool shape\n3. Verify regression")
     );
+    let plan_path = create_payload["work_item"]["plan_artifact"]["path"]
+        .as_str()
+        .unwrap();
+    assert!(std::path::Path::new(plan_path).is_file());
     assert_eq!(
         create_payload["work_item"]["todo_list"][0]["state"].as_str(),
         Some("completed")
@@ -487,7 +500,6 @@ async fn work_item_tools_use_objective_plan_and_todo_list_shape() {
                 name: "GetWorkItem".into(),
                 input: serde_json::json!({
                     "work_item_id": work_item_id,
-                    "include_plan": true,
                     "include_todo_list": true
                 }),
             },
@@ -500,6 +512,11 @@ async fn work_item_tools_use_objective_plan_and_todo_list_shape() {
         Some("in_progress")
     );
     assert!(get_payload["work_item"]["todo_list"][1]["status"].is_null());
+    assert!(get_payload["work_item"]["plan"].is_null());
+    assert_eq!(
+        get_payload["work_item"]["plan_artifact"]["path"].as_str(),
+        Some(plan_path)
+    );
 
     let returned_items = get_payload["work_item"]["todo_list"].clone();
     let (update_result, _) = registry
@@ -524,6 +541,136 @@ async fn work_item_tools_use_objective_plan_and_todo_list_shape() {
         Some("in_progress")
     );
     assert!(update_payload["work_item"]["todo_list"][1]["status"].is_null());
+}
+
+#[tokio::test]
+async fn work_item_plan_artifact_refreshes_after_direct_file_edit() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let work_item = runtime
+        .create_work_item(
+            "Refresh plan descriptor".into(),
+            Some(WorkItemPlanStatus::Ready),
+            Some("short plan".into()),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+    let (first_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "first".into(),
+                name: "GetWorkItem".into(),
+                input: serde_json::json!({"work_item_id": work_item.id.clone()}),
+            },
+        )
+        .await
+        .unwrap();
+    let first_payload = first_result.envelope.result.unwrap();
+    let artifact = &first_payload["work_item"]["plan_artifact"];
+    let plan_path = artifact["path"].as_str().unwrap();
+    let first_hash = artifact["hash"].as_str().unwrap().to_string();
+    assert_eq!(artifact["preview"].as_str(), Some("short plan"));
+    assert_eq!(artifact["preview_complete"].as_bool(), Some(true));
+
+    std::fs::write(
+        plan_path,
+        format!("{}\nend", "expanded plan line\n".repeat(200)),
+    )
+    .unwrap();
+
+    let (second_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "second".into(),
+                name: "GetWorkItem".into(),
+                input: serde_json::json!({"work_item_id": work_item.id.clone()}),
+            },
+        )
+        .await
+        .unwrap();
+    let second_payload = second_result.envelope.result.unwrap();
+    let refreshed = &second_payload["work_item"]["plan_artifact"];
+    assert_ne!(refreshed["hash"].as_str(), Some(first_hash.as_str()));
+    assert!(refreshed["bytes"].as_u64().unwrap() > artifact["bytes"].as_u64().unwrap());
+    assert_eq!(refreshed["preview_complete"].as_bool(), Some(false));
+    assert!(refreshed["preview"]
+        .as_str()
+        .unwrap()
+        .contains("expanded plan line"));
+}
+
+#[tokio::test]
+async fn work_item_read_tools_reject_legacy_include_plan_argument() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let work_item = runtime
+        .create_work_item("Reject old read args".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+
+    for (tool_name, input) in [
+        (
+            "GetWorkItem",
+            serde_json::json!({"work_item_id": work_item.id.clone(), "include_plan": true}),
+        ),
+        (
+            "ListWorkItems",
+            serde_json::json!({"filter": "current", "include_plan": true}),
+        ),
+    ] {
+        let error = registry
+            .execute(
+                &runtime,
+                "default",
+                &TrustLevel::TrustedOperator,
+                &crate::tool::ToolCall {
+                    id: format!("{tool_name}-legacy-include-plan"),
+                    name: tool_name.into(),
+                    input,
+                },
+            )
+            .await
+            .unwrap_err();
+        let tool_error = crate::tool::ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        let parse_error = tool_error
+            .details
+            .as_ref()
+            .and_then(|details| details.get("parse_error"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(parse_error.contains("unknown field `include_plan`"));
+    }
 }
 
 #[tokio::test]
@@ -580,7 +727,7 @@ async fn update_work_item_can_refine_objective() {
 }
 
 #[tokio::test]
-async fn update_work_item_can_refine_objective_and_plan_together() {
+async fn update_work_item_can_refine_objective_and_todo_list_together() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -610,7 +757,6 @@ async fn update_work_item_can_refine_objective_and_plan_together() {
                 input: serde_json::json!({
                     "work_item_id": work_item.id.clone(),
                     "objective": "Fix issue #869 by allowing objective refinement",
-                    "plan": "Extend UpdateWorkItem schema, then verify persistence.",
                     "todo_list": [
                         { "text": "extend UpdateWorkItem schema", "state": "completed" },
                         { "text": "verify target update persistence", "state": "in_progress" }

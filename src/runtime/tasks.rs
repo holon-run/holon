@@ -1892,7 +1892,12 @@ impl RuntimeHandle {
         if let Some(plan_status) = plan_status {
             record.plan_status = plan_status;
         }
-        record.plan = plan;
+        crate::work_item_plan::ensure_plan_artifact(
+            self.agent_home().as_path(),
+            &record,
+            plan.as_deref(),
+        )?;
+        record.plan = None;
         record.todo_list = todo_list;
         record.workspace_id = self
             .agent_state()
@@ -1954,7 +1959,7 @@ impl RuntimeHandle {
         work_item_id: String,
         objective: Option<String>,
         plan_status: Option<WorkItemPlanStatus>,
-        plan: Option<Option<String>>,
+        _plan: Option<Option<String>>,
         todo_list: Option<Vec<TodoItem>>,
         blocked_by: Option<Option<String>>,
     ) -> Result<WorkItemRecord> {
@@ -1976,11 +1981,6 @@ impl RuntimeHandle {
         }
         if let Some(plan_status) = plan_status {
             record.plan_status = plan_status;
-            record.updated_at = Utc::now();
-            wrote_item = true;
-        }
-        if let Some(plan) = plan {
-            record.plan = plan;
             record.updated_at = Utc::now();
             wrote_item = true;
         }

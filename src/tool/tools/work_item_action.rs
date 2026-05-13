@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     tool::helpers::{parse_tool_args_with_recovery_hint, validate_non_empty},
-    types::{TodoItem, TodoItemState, WorkItemRecord},
+    types::{TodoItem, TodoItemState},
 };
+
+use super::work_item_query::WorkItemView;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -72,11 +74,11 @@ fn work_item_action_recovery_hint(tool_name: &str) -> &'static str {
 
 #[derive(Serialize)]
 pub(crate) struct WorkItemMutationResult {
-    pub(crate) work_item: WorkItemRecord,
+    pub(crate) work_item: WorkItemView,
 }
 
 impl WorkItemMutationResult {
-    pub(crate) fn new(work_item: WorkItemRecord) -> Self {
+    pub(crate) fn new(work_item: WorkItemView) -> Self {
         Self { work_item }
     }
 }

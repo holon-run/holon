@@ -209,7 +209,10 @@ pub fn build_context(
         push_budgeted_section(
             &mut sections,
             &mut remaining_budget,
-            turn_section("current_work_item", render_current_work_item(work_item)),
+            turn_section(
+                "current_work_item",
+                render_current_work_item(work_item, storage.data_dir()),
+            ),
         );
     }
 
@@ -495,7 +498,7 @@ fn render_brief(brief: &BriefRecord) -> String {
     format!("- [{:?}] {}", brief.kind, brief.text)
 }
 
-fn render_current_work_item(work_item: &WorkItemRecord) -> String {
+fn render_current_work_item(work_item: &WorkItemRecord, agent_home: &std::path::Path) -> String {
     let mut lines = vec![
         "Current work item:".to_string(),
         format!("- Id: {}", work_item.id),
@@ -507,9 +510,26 @@ fn render_current_work_item(work_item: &WorkItemRecord) -> String {
             work_item_plan_status_label(work_item.plan_status)
         ),
     ];
-    if let Some(plan) = work_item.plan.as_deref() {
-        lines.push("- Plan:".to_string());
-        lines.extend(plan.lines().map(|line| format!("  {line}")));
+    let plan_path = crate::work_item_plan::plan_path(agent_home, &work_item.id);
+    if let Ok(Some(plan_artifact)) = plan_path
+        .exists()
+        .then(|| crate::work_item_plan::describe_plan_artifact(&plan_path))
+        .transpose()
+    {
+        lines.push(format!("- Plan artifact: {}", plan_artifact.path.display()));
+        lines.push(format!(
+            "- Plan preview complete: {}",
+            plan_artifact.preview_complete
+        ));
+        if !plan_artifact.preview.is_empty() {
+            lines.push("- Plan preview:".to_string());
+            lines.extend(
+                plan_artifact
+                    .preview
+                    .lines()
+                    .map(|line| format!("  {line}")),
+            );
+        }
     }
     if !work_item.todo_list.is_empty() {
         lines.push("- Todo list:".to_string());

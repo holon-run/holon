@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     runtime::RuntimeHandle,
-    types::{TodoItem, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState},
+    types::{
+        TodoItem, WorkItemPlanArtifact, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord,
+        WorkItemState,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,8 +38,7 @@ pub(crate) struct WorkItemView {
     pub(crate) is_current: bool,
     pub(crate) is_runnable: bool,
     pub(crate) plan_status: WorkItemPlanStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) plan: Option<String>,
+    pub(crate) plan_artifact: WorkItemPlanArtifact,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) todo_list: Vec<TodoItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,13 +81,12 @@ pub(crate) async fn view_for_record(
     runtime: &RuntimeHandle,
     context: &WorkItemQueryContext,
     record: WorkItemRecord,
-    include_plan: bool,
     include_todo_list: bool,
 ) -> Result<WorkItemView> {
-    let _ = runtime;
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
         && record.state == WorkItemState::Open;
-    let plan = include_plan.then(|| record.plan.clone()).flatten();
+    let plan_artifact =
+        crate::work_item_plan::ensure_plan_artifact(runtime.agent_home().as_path(), &record, None)?;
     let todo_list = if include_todo_list {
         record.todo_list.clone()
     } else {
@@ -105,7 +106,7 @@ pub(crate) async fn view_for_record(
         is_current,
         is_runnable: readiness == WorkItemReadiness::Runnable,
         plan_status: record.plan_status,
-        plan,
+        plan_artifact,
         todo_list,
         blocked_by: record.blocked_by,
         created_at: record.created_at,

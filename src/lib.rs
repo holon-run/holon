@@ -31,6 +31,7 @@ pub mod tui;
 mod tui_markdown;
 pub mod types;
 pub mod web;
+pub mod work_item_plan;
 
 #[cfg(test)]
 mod worktree_tests;
