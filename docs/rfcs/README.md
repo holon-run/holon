@@ -16,6 +16,7 @@ For a short architecture map and reading path, see
 - [Continuation Trigger](./continuation-trigger.md)
 - [Objective, Delta, and Acceptance Boundary](./objective-delta-and-acceptance-boundary.md)
 - [Work Item Runtime Model](./work-item-runtime-model.md)
+- [Work Item Centered Agent Runtime](./work-item-centered-agent-runtime.md)
 - [Long-Lived Context Memory](./long-lived-context-memory.md)
 - [Agent and Workspace Memory](./agent-and-workspace-memory.md)
 - [Turn-Local Context Compaction](./turn-local-context-compaction.md)

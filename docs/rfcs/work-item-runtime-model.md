@@ -15,8 +15,8 @@ The current direction is:
 
 - `WorkItem` is the goal-oriented runtime anchor.
 - `objective` is the short current-work target.
-- `plan` is a durable natural-language plan, similar to the useful artifact
-  produced by Codex or Claude Code plan mode.
+- `plan_artifact` points to a durable natural-language plan file, similar to
+  the useful artifact produced by Claude Code plan mode.
 - `todo_list` is a small structured progress checklist under the plan.
 - `blocked_by` is WorkItem-level, not todo-item-level.
 - external queues and routing systems stay outside the agent-owned current
@@ -138,7 +138,7 @@ The minimal WorkItem state is:
 - `objective`
 - `state`
 - `plan_status`
-- `plan`
+- `plan_artifact`
 - `todo_list`
 - `blocked_by`
 - `result_summary`
@@ -163,7 +163,7 @@ Fix GitHub issue #862 and open a PR
 
 `objective` replaces the old delivery-target framing. It is a runtime anchor,
 not merely a UI title, but it is still intentionally short. Detailed task
-understanding belongs in `plan`.
+understanding belongs in the WorkItem plan artifact.
 
 ### `state`
 
@@ -210,11 +210,36 @@ from `draft` to `ready` when the task boundary is clear. It should use
 `needs_input` only for real ambiguity, missing authority, or an external
 decision.
 
-### `plan`
+### `plan_artifact`
 
-`plan` is durable markdown or plain text.
+`plan_artifact` is the descriptor for a durable markdown plan file owned by the
+WorkItem.
 
-It is the WorkItem's stable task-understanding artifact. It may include:
+The plan body lives in AgentHome, for example:
+
+```text
+agent_home/work-items/<work_item_id>/plan.md
+```
+
+AgentHome is the agent's default durable workspace. The plan file is not stored
+inside the project workspace and should not be committed with user code.
+
+The WorkItem ledger stores plan metadata, not the full plan body. The first
+descriptor version is path-first:
+
+- absolute `path`;
+- content hash;
+- byte size;
+- updated timestamp;
+- preview text;
+- `preview_complete`.
+
+`path` is the agent-facing locator. It lets the agent read, grep, or shell-edit
+the plan regardless of the active workspace. Workspace-relative identity can be
+added later after AgentHome has a globally unique workspace id.
+
+The file itself is the WorkItem's stable task-understanding artifact. It may
+include:
 
 - task interpretation;
 - scope and non-goals;
@@ -222,8 +247,9 @@ It is the WorkItem's stable task-understanding artifact. It may include:
 - verification approach;
 - notable risks or assumptions.
 
-The plan should be concise enough to inject after compaction and rich enough to
-prevent objective drift.
+The plan should be concise enough to scan and rich enough to prevent objective
+drift. It does not need to fit into every model request because agents can read,
+grep, and patch the file on demand.
 
 Example:
 
@@ -240,8 +266,8 @@ test compile failure proves the support split requires it.
 Verify with the focused runtime compaction tests and any affected test targets.
 ```
 
-The plan is not a progress checklist. It is allowed to change, but changing it
-means the agent is changing its durable interpretation of the work.
+The plan is not a progress checklist. It is allowed to change, but changing the
+plan file means the agent is changing its durable interpretation of the work.
 
 ### `todo_list`
 
@@ -260,8 +286,8 @@ The item state set is intentionally the Codex-style three-state model:
 
 There is no todo-item-level `blocked` state in the first model. If the whole
 objective cannot currently advance, the WorkItem uses `blocked_by`. If a single
-step no longer makes sense, the agent should update the plan or replace the
-todo list.
+step no longer makes sense, the agent should edit the plan artifact or replace
+the todo list.
 
 At most one item should normally be `in_progress`.
 
@@ -277,7 +303,7 @@ It means the objective cannot currently be advanced by the agent. Examples:
 - missing authority or unavailable dependency.
 
 If only one step is awkward but the objective can still progress, do not set
-`blocked_by`. Update `todo_list` or refine the plan instead.
+`blocked_by`. Update `todo_list` or refine the plan artifact instead.
 
 External waits should be represented through the waiting plane, timers,
 callbacks, or inbox subscriptions. `blocked_by` should explain the blocker; it
@@ -292,11 +318,11 @@ The runtime should support this daemon-friendly flow:
 
 1. create or pick a WorkItem with a short `objective`;
 2. inspect the source task, code, local docs, and relevant external context;
-3. write a durable `plan` and set `plan_status`;
+3. edit the durable WorkItem plan artifact and set `plan_status`;
 4. maintain a `todo_list` as execution progress;
 5. implement once the plan is `ready`;
-6. if the implementation needs to change the task interpretation, update the
-   plan before continuing;
+6. if the implementation needs to change the task interpretation, edit the plan
+   artifact before continuing;
 7. mark the WorkItem completed when the objective is satisfied.
 
 This is a tool protocol, not a UI-only state. A TUI can render "planning" or
@@ -314,17 +340,18 @@ explicit resolution:
 - update an existing open or blocked WorkItem;
 - remain informational only.
 
-The boundary is the `objective`, interpreted through the `plan`.
+The boundary is the `objective`, interpreted through the plan artifact.
 
 If newly discovered work is required to complete the same objective, it should
-stay inside the current WorkItem and update the plan or todo list.
+stay inside the current WorkItem and edit the plan artifact or update the todo
+list.
 
 If newly discovered work forms a different objective, it may become a different
 WorkItem or be handed to an external queue/backlog.
 
 Agents should not create new WorkItems merely to narrow the current task after
-inspection. They should update `objective`, `plan`, and `todo_list` on the same
-WorkItem.
+inspection. They should update `objective`, edit the plan artifact, and update
+`todo_list` on the same WorkItem.
 
 ## Work Queue And Focus
 
@@ -384,7 +411,7 @@ The persisted record owns:
 - objective text;
 - lifecycle state;
 - plan status;
-- durable plan text;
+- durable plan artifact metadata;
 - todo-list snapshot;
 - blocker text;
 - completion summary metadata.
@@ -403,6 +430,10 @@ WorkItem lifecycle state.
 The first implementation may store WorkItem updates append-only, following the
 same persistence style as other runtime snapshots.
 
+The plan body should not be duplicated into every WorkItem snapshot. Runtime
+snapshots record the descriptor and refreshed preview metadata. The preview is a
+cache; the plan file is the source of truth.
+
 ## Prompt Projection
 
 At the start of a turn, the runtime should inject a compact work summary.
@@ -413,21 +444,23 @@ For the current WorkItem, projection should include:
 - `objective`
 - `state`
 - `plan_status`
-- `plan`
+- `plan_artifact` descriptor with preview and `preview_complete`
 - `todo_list`
 - `blocked_by` when present
 
 The projection should make priority clear:
 
 1. `objective` says what work this is;
-2. `plan` says the durable interpretation and approach;
+2. the plan artifact says the durable interpretation and approach;
 3. `todo_list` says current progress.
 
 The agent should not treat `todo_list` as the task boundary. If `objective`,
-`plan`, and `todo_list` conflict, the plan is the stronger semantic anchor.
+the plan artifact, and `todo_list` conflict, the plan is the stronger semantic
+anchor.
 
 Other open WorkItems should be summarized compactly by id, objective, state,
-and blocker. Completed WorkItems should not be injected by default.
+plan artifact preview, readiness, current todo, and blocker. Completed
+WorkItems should not be injected by default.
 
 If the agent changes focus during a turn, the tool result must return the new
 current WorkItem snapshot and state that subsequent tool calls in the turn are
@@ -446,8 +479,9 @@ The initial tools are:
 - `GetWorkItem`
 - `ListWorkItems`
 
-There is no separate WorkPlan tool in this model. `plan` is a field on
-WorkItem, and `todo_list` is the structured checklist field.
+There is no separate WorkPlan tool in this model. The plan body is a normal
+AgentHome file artifact owned by the WorkItem, and `todo_list` is the structured
+checklist field.
 
 ### CreateWorkItem
 
@@ -458,11 +492,12 @@ Shape:
 
 - `objective` required
 - `plan_status` optional
-- `plan` optional
 - `todo_list` optional
 
-Agents should create a draft WorkItem when bounded inspection is needed before
-the plan is ready.
+`CreateWorkItem` should create the WorkItem plan file under AgentHome and return
+its artifact descriptor. Agents should create a draft WorkItem when bounded
+inspection is needed before the plan is ready, then edit the plan file directly
+with normal file tools.
 
 ### PickWorkItem
 
@@ -487,7 +522,6 @@ Shape:
 - `work_item_id` required
 - `objective` optional
 - `plan_status` optional
-- `plan` optional
 - `todo_list` optional
 - `blocked_by` optional
 
@@ -496,9 +530,6 @@ Shape:
 
 `plan_status`
 - records whether the durable plan is draft, ready, or needs input.
-
-`plan`
-- replaces the durable plan text.
 
 `todo_list`
 - replaces the full checklist snapshot.
@@ -512,8 +543,9 @@ Todo item states are:
 - `in_progress`
 - `completed`
 
-The agent should use `UpdateWorkItem` to update the plan before making a scope
-or interpretation change visible in code.
+The agent should edit the WorkItem plan file before making a scope or
+interpretation change visible in code, then use `UpdateWorkItem` to update
+`plan_status`, `todo_list`, or other WorkItem state as needed.
 
 ### CompleteWorkItem
 
@@ -533,8 +565,13 @@ delivery summaries.
 
 Read shapes:
 
-- `GetWorkItem(work_item_id, include_plan?, include_todo_list?)`
-- `ListWorkItems(filter?, limit?, include_plan?, include_todo_list?)`
+- `GetWorkItem(work_item_id, include_todo_list?)`
+- `ListWorkItems(filter?, limit?, include_todo_list?)`
+
+`include_plan` is deprecated and should be removed from the contract. WorkItem
+read tools should always return a plan artifact descriptor and bounded preview,
+never the full plan body. The preview must include a `preview_complete` marker
+so the agent can tell whether reading the artifact file is necessary.
 
 Useful initial filters are:
 
@@ -562,7 +599,7 @@ This keeps the first version simple:
 - prompt projection reads one stable snapshot.
 
 Todo items should be operational progress markers, not durable scope records.
-The durable scope and approach belong in `plan`.
+The durable scope and approach belong in the WorkItem plan artifact.
 
 ## Delegation And Child Agents
 
@@ -654,7 +691,8 @@ The initial default bias should be conservative:
 - if the agent does not pick a different WorkItem, keep the current WorkItem;
 - if the plan is not ready and the task is nontrivial, stay in planning or mark
   `needs_input`;
-- if the agent needs to change interpretation, update `plan` before patching;
+- if the agent needs to change interpretation, edit the plan artifact before
+  patching;
 - blocked state should be explicit through `blocked_by`;
 - completion should require explicit completion action.
 
@@ -662,10 +700,10 @@ The initial default bias should be conservative:
 
 This RFC currently assumes:
 
-- WorkItem boundaries are determined by `objective`, interpreted through
-  `plan`;
+- WorkItem boundaries are determined by `objective`, interpreted through the
+  plan artifact;
 - `objective` replaces the old delivery-target framing;
-- `plan` is the durable plan-mode artifact;
+- the plan body is a durable AgentHome file artifact;
 - `todo_list` is only the structured progress checklist;
 - todo item states are `pending`, `in_progress`, and `completed`;
 - item-level blocked state is omitted;
