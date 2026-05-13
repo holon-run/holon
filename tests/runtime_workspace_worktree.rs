@@ -17,6 +17,7 @@ macro_rules! runtime_async_tests {
 runtime_async_tests!(
     task_output_returns_worktree_subagent_result_text,
     enter_worktree_tool_switches_workspace_and_restores_on_reload,
+    use_workspace_path_adopts_attached_parent_for_existing_git_worktree,
     enter_workspace_conflict_preserves_existing_occupancy,
     detach_workspace_persists_empty_binding_across_restart,
     enter_worktree_projection_honors_requested_cwd,

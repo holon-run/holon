@@ -27,6 +27,22 @@ fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBu
     Ok(selected_cwd)
 }
 
+pub(crate) struct ExistingGitWorktreeWorkspace {
+    pub(crate) workspace: WorkspaceEntry,
+    pub(crate) worktree_root: PathBuf,
+    pub(crate) suggested_isolation_label: Option<String>,
+}
+
+fn workspace_paths_match(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 impl RuntimeHandle {
     pub(super) async fn maybe_commit_turn_end_work_item_transition(
         &self,
@@ -728,6 +744,36 @@ impl RuntimeHandle {
         Ok(workspace)
     }
 
+    pub(crate) async fn attached_workspace_for_existing_git_worktree(
+        &self,
+        path: &Path,
+    ) -> Result<Option<ExistingGitWorktreeWorkspace>> {
+        let Some(detected) = crate::system::workspace::detect_existing_git_worktree(path)? else {
+            return Ok(None);
+        };
+        let state = self.agent_state().await?;
+        let known = self.inner.storage.latest_workspace_entries()?;
+        let Some(workspace) = known.into_iter().find(|entry| {
+            workspace_paths_match(&entry.workspace_anchor, &detected.parent_workspace_anchor)
+                && state
+                    .attached_workspaces
+                    .iter()
+                    .any(|id| id == &entry.workspace_id)
+        }) else {
+            return Ok(None);
+        };
+        let suggested_isolation_label = detected
+            .worktree_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToString::to_string);
+        Ok(Some(ExistingGitWorktreeWorkspace {
+            workspace,
+            worktree_root: detected.worktree_root,
+            suggested_isolation_label,
+        }))
+    }
+
     pub(crate) async fn workspace_entry_for_use(
         &self,
         workspace_id: &str,
@@ -982,6 +1028,147 @@ impl RuntimeHandle {
                 "boundary": crate::system::HostLocalBoundary::from_parts(
                     &self.agent_state().await?.execution_profile,
                     Some(projection_kind),
+                    Some(access_mode),
+                    Some(execution_root_id),
+                ).audit_metadata(),
+            }),
+        ))?;
+        Ok(())
+    }
+
+    pub async fn enter_existing_git_worktree(
+        &self,
+        workspace: &WorkspaceEntry,
+        worktree_root: PathBuf,
+        access_mode: WorkspaceAccessMode,
+        cwd: Option<PathBuf>,
+    ) -> Result<()> {
+        let agent_id = self.agent_id().await?;
+        let existing_state = self.agent_state().await?;
+        if existing_state
+            .active_workspace_entry
+            .as_ref()
+            .is_some_and(|entry| entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot)
+        {
+            return Err(anyhow!(
+                "agent {} is already using an isolated execution root; use UseWorkspace with a direct workspace before entering another git worktree root",
+                agent_id
+            ));
+        }
+        if !existing_state
+            .attached_workspaces
+            .iter()
+            .any(|id| id == &workspace.workspace_id)
+        {
+            return Err(anyhow!(
+                "workspace {} is not attached to agent {}",
+                workspace.workspace_id,
+                existing_state.id
+            ));
+        }
+        crate::system::ensure_workspace_projection_allowed(
+            &crate::system::HostLocalBoundary::from_parts(
+                &existing_state.execution_profile,
+                existing_state
+                    .active_workspace_entry
+                    .as_ref()
+                    .map(|entry| entry.projection_kind),
+                existing_state
+                    .active_workspace_entry
+                    .as_ref()
+                    .map(|entry| entry.access_mode),
+                existing_state
+                    .active_workspace_entry
+                    .as_ref()
+                    .map(|entry| entry.execution_root_id.clone()),
+            ),
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            "enter_existing_git_worktree",
+        )?;
+
+        let execution_root = crate::system::workspace::normalize_path(&worktree_root)?;
+        let selected_cwd = resolve_enter_cwd(&execution_root, cwd.as_deref())?;
+        let execution_root_id = Self::build_execution_root_id(
+            &workspace.workspace_id,
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            &execution_root,
+        )?;
+        let occupancy = if let Some(bridge) = self.inner.host_bridge.as_ref() {
+            bridge
+                .acquire_workspace_occupancy(
+                    &workspace.workspace_id,
+                    &execution_root_id,
+                    &agent_id,
+                    access_mode,
+                )
+                .await?
+        } else {
+            None
+        };
+        let entry = ActiveWorkspaceEntry {
+            workspace_id: workspace.workspace_id.clone(),
+            workspace_anchor: workspace.workspace_anchor.clone(),
+            execution_root_id: execution_root_id.clone(),
+            execution_root: execution_root.clone(),
+            projection_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+            access_mode,
+            cwd: selected_cwd.clone(),
+            occupancy_id: occupancy.as_ref().map(|record| record.occupancy_id.clone()),
+            projection_metadata: Some(serde_json::json!({
+                "detected_kind": "existing_git_worktree",
+                "ownership": "external",
+                "worktree_root": execution_root,
+            })),
+        };
+        let previous_occupancy_id = existing_state
+            .active_workspace_entry
+            .as_ref()
+            .and_then(|existing_entry| existing_entry.occupancy_id.clone());
+        let new_occupancy_id = entry.occupancy_id.clone();
+
+        let write_result: Result<()> = async {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state.active_workspace_entry = Some(entry.clone());
+            guard.state.worktree_session = None;
+            self.inner.storage.write_agent(&guard.state)?;
+            self.inner.storage.mark_memory_index_dirty()?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = write_result {
+            if let Some(occupancy_id) = new_occupancy_id.as_deref() {
+                if previous_occupancy_id.as_deref() != Some(occupancy_id) {
+                    if let Some(bridge) = self.inner.host_bridge.as_ref() {
+                        let _ = bridge.release_workspace_occupancy(occupancy_id).await;
+                    }
+                }
+            }
+            return Err(error);
+        }
+        if let Some(previous_occupancy_id) = previous_occupancy_id.as_deref() {
+            if new_occupancy_id.as_deref() != Some(previous_occupancy_id) {
+                if let Some(bridge) = self.inner.host_bridge.as_ref() {
+                    let _ = bridge
+                        .release_workspace_occupancy(previous_occupancy_id)
+                        .await?;
+                }
+            }
+        }
+        self.inner.storage.append_event(&AuditEvent::new(
+            "workspace_entered",
+            serde_json::json!({
+                "workspace_id": workspace.workspace_id,
+                "workspace_anchor": workspace.workspace_anchor,
+                "execution_root_id": execution_root_id,
+                "execution_root": execution_root,
+                "projection_kind": WorkspaceProjectionKind::GitWorktreeRoot,
+                "access_mode": access_mode,
+                "cwd": selected_cwd,
+                "detected_kind": "existing_git_worktree",
+                "ownership": "external",
+                "boundary": crate::system::HostLocalBoundary::from_parts(
+                    &self.agent_state().await?.execution_profile,
+                    Some(WorkspaceProjectionKind::GitWorktreeRoot),
                     Some(access_mode),
                     Some(execution_root_id),
                 ).audit_metadata(),

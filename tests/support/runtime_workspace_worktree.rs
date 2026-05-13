@@ -163,6 +163,88 @@ pub async fn enter_worktree_tool_switches_workspace_and_restores_on_reload() -> 
     Ok(())
 }
 
+pub async fn use_workspace_path_adopts_attached_parent_for_existing_git_worktree() -> Result<()> {
+    let config = test_config();
+    let workspace = config.workspace_dir.clone();
+    std::fs::create_dir_all(&workspace)?;
+    init_git_repo(&workspace)?;
+    let external_worktree = workspace
+        .parent()
+        .expect("workspace should have parent")
+        .join(format!("manual-worktree-{}", uuid::Uuid::new_v4().simple()));
+    git(
+        &workspace,
+        &[
+            "worktree",
+            "add",
+            external_worktree.to_str().expect("utf8 worktree path"),
+            "-b",
+            "manual-worktree",
+        ],
+    )?;
+
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+    let original_workspace_id = runtime
+        .agent_state()
+        .await?
+        .active_workspace_entry
+        .as_ref()
+        .map(|entry| entry.workspace_id.clone())
+        .expect("default workspace should be active");
+
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-use-existing-worktree".into(),
+                name: "UseWorkspace".into(),
+                input: json!({ "path": external_worktree }),
+            },
+        )
+        .await?;
+    let value = parse_tool_result_payload(&result)?;
+
+    assert_eq!(value["workspace_id"], original_workspace_id);
+    assert_eq!(
+        PathBuf::from(value["workspace_anchor"].as_str().unwrap()),
+        workspace
+    );
+    assert_eq!(
+        PathBuf::from(value["execution_root"].as_str().unwrap()),
+        external_worktree
+    );
+    assert_eq!(value["projection_kind"], "git_worktree_root");
+    let summary = result.summary_text().unwrap_or_default();
+    assert!(summary.contains("detected an existing git worktree"));
+    assert!(summary.contains("\"mode\":\"isolated\""));
+
+    let state = runtime.agent_state().await?;
+    let active = state
+        .active_workspace_entry
+        .expect("external worktree should be active");
+    assert_eq!(active.workspace_id, original_workspace_id);
+    assert_eq!(active.workspace_anchor, workspace);
+    assert_eq!(active.execution_root, external_worktree);
+    assert_eq!(
+        active.projection_kind,
+        WorkspaceProjectionKind::GitWorktreeRoot
+    );
+    assert!(state.worktree_session.is_none());
+    assert_eq!(
+        active
+            .projection_metadata
+            .as_ref()
+            .and_then(|metadata| metadata["ownership"].as_str()),
+        Some("external")
+    );
+    Ok(())
+}
+
 pub async fn enter_workspace_conflict_preserves_existing_occupancy() -> Result<()> {
     let config = test_config();
     let workspace = config.workspace_dir.clone();
