@@ -69,6 +69,7 @@ impl SlashCommandCategory {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AgentSlashAction {
     Switch(String),
+    Create(String),
     Control {
         action: crate::types::ControlAction,
         agent_id: Option<String>,
@@ -200,7 +201,7 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
     SlashCommandSpec {
         name: "/agent",
         description: "switch or control an agent",
-        usage: "/agent <agent-id>|switch <agent-id>|start [agent-id]|stop [agent-id]",
+        usage: "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]",
         arg_hint: SlashArgHint::Agent,
         category: SlashCommandCategory::Agent,
         arg_rule: SlashArgRule::Agent,
@@ -304,7 +305,7 @@ fn slash_command_argument_error(spec: SlashCommandSpec, args: usize) -> anyhow::
 fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
     let Some(first) = args.first() else {
         return Err(anyhow!(
-            "/agent requires an agent id or lifecycle action; usage: /agent <agent-id>|start [agent-id]|stop [agent-id]"
+            "/agent requires a subcommand; usage: /agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]"
         ));
     };
     match first.as_str() {
@@ -334,17 +335,17 @@ fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
             }
             Ok(AgentSlashAction::Switch(args[1].clone()))
         }
-        "status" | "abort" | "list" | "model" | "wake" => Err(anyhow!(
-            "/agent {first} is not supported in the TUI yet; use /agent switch {first} to select an agent with that id"
-        )),
-        _ => {
-            if args.len() != 1 {
+        "create" => {
+            if args.len() != 2 {
                 return Err(anyhow!(
-                    "/agent expects exactly one agent id for switching; usage: /agent <agent-id>"
+                    "/agent create expects exactly one agent name; usage: /agent create <name>"
                 ));
             }
-            Ok(AgentSlashAction::Switch(first.clone()))
+            Ok(AgentSlashAction::Create(args[1].clone()))
         }
+        _ => Err(anyhow!(
+            "unknown /agent subcommand '{first}'; use /agent switch {first} to switch agents"
+        )),
     }
 }
 
@@ -722,6 +723,12 @@ impl TuiApp {
                     self.overlay = OverlayState::None;
                     self.begin_bootstrap_agent_index(target_index);
                     self.status_line = format!("Switching to agent {requested_agent_id}");
+                }
+                AgentSlashAction::Create(agent_id) => {
+                    self.client.create_agent(&agent_id).await?;
+                    self.overlay = OverlayState::None;
+                    self.status_line = format!("Created agent {agent_id}");
+                    self.schedule_agent_list_refresh();
                 }
                 AgentSlashAction::Control { action, agent_id } => {
                     let agent_id = agent_id
@@ -1614,13 +1621,6 @@ mod tests {
             Some(ComposerSubmission::Slash(SlashCommand::Abort, vec![]))
         );
         assert_eq!(
-            parse_composer_submission("/agent default").unwrap(),
-            Some(ComposerSubmission::Slash(
-                SlashCommand::Agent,
-                vec!["default".into()]
-            ))
-        );
-        assert_eq!(
             parse_composer_submission("/agent start").unwrap(),
             Some(ComposerSubmission::Slash(
                 SlashCommand::Agent,
@@ -1649,6 +1649,13 @@ mod tests {
             ))
         );
         assert_eq!(
+            parse_composer_submission("/agent create worker").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::Agent,
+                vec!["create".into(), "worker".into()]
+            ))
+        );
+        assert_eq!(
             parse_composer_submission("/display 4").unwrap(),
             Some(ComposerSubmission::Slash(
                 SlashCommand::Display,
@@ -1672,9 +1679,7 @@ mod tests {
     #[test]
     fn slash_commands_require_arguments_for_agent() {
         let err = parse_composer_submission("/agent").unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("requires an agent id or lifecycle action"));
+        assert!(err.to_string().contains("requires a subcommand"));
     }
 
     #[test]
@@ -1688,13 +1693,17 @@ mod tests {
         let err = parse_composer_submission("/agent default extra").unwrap_err();
         assert!(err
             .to_string()
-            .contains("expects exactly one agent id for switching"));
+            .contains("unknown /agent subcommand 'default'"));
         let err = parse_composer_submission("/agent start default extra").unwrap_err();
         assert!(err.to_string().contains("accepts at most one agent id"));
         let err = parse_composer_submission("/agent switch").unwrap_err();
         assert!(err
             .to_string()
             .contains("switch expects exactly one agent id"));
+        let err = parse_composer_submission("/agent create").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("create expects exactly one agent name"));
     }
 
     #[test]
@@ -1721,15 +1730,17 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_agent_slash_action(&["default".into()]).unwrap(),
-            AgentSlashAction::Switch("default".into())
-        );
-        assert_eq!(
             parse_agent_slash_action(&["switch".into(), "pause".into()]).unwrap(),
             AgentSlashAction::Switch("pause".into())
         );
+        assert_eq!(
+            parse_agent_slash_action(&["create".into(), "worker".into()]).unwrap(),
+            AgentSlashAction::Create("worker".into())
+        );
         let err = parse_agent_slash_action(&["status".into()]).unwrap_err();
-        assert!(err.to_string().contains("use /agent switch status"));
+        assert!(err
+            .to_string()
+            .contains("unknown /agent subcommand 'status'"));
     }
 
     #[test]
@@ -1820,7 +1831,7 @@ mod tests {
             "/debug-prompt",
             "/display <info|verbose|debug|3|4|5>",
             "/abort",
-            "/agent <agent-id>|switch <agent-id>|start [agent-id]|stop [agent-id]",
+            "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]",
             "/skills",
             "/skill-install <name>",
             "/skill-uninstall <name>",
