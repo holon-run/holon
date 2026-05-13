@@ -1886,6 +1886,56 @@ async fn triggered_work_item_waiting_intent_preserves_explicit_work_item_state_u
     assert_eq!(waiting.status, WaitingIntentStatus::Active);
     assert_eq!(waiting.trigger_count, 1);
     assert_eq!(waiting.work_item_id.as_deref(), Some(work.id.as_str()));
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    let tick = messages
+        .iter()
+        .find(|message| message.kind == MessageKind::SystemTick)
+        .expect("work item wake hint should emit a system tick");
+    assert_eq!(tick.work_item_id.as_deref(), Some(work.id.as_str()));
+    let wake_hint = tick
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("wake_hint"))
+        .expect("wake hint metadata should exist");
+    assert_eq!(wake_hint["scope"].as_str(), Some("work_item"));
+    assert_eq!(wake_hint["work_item_id"].as_str(), Some(work.id.as_str()));
+    assert_eq!(
+        wake_hint["waiting_intent_id"].as_str(),
+        Some(capability.waiting_intent_id.as_str())
+    );
+    let projection = runtime.storage().work_queue_prompt_projection().unwrap();
+    assert_eq!(
+        projection
+            .triggered_blocked
+            .iter()
+            .map(|item| item.work_item.objective.as_str())
+            .collect::<Vec<_>>(),
+        vec!["wait for CI"]
+    );
+
+    let repeated = runtime
+        .deliver_callback(
+            &capability.external_trigger_id,
+            CallbackDeliveryPayload {
+                body: Some(MessageBody::Json {
+                    value: serde_json::json!({"check": "Rust", "conclusion": "success", "attempt": 2}),
+                }),
+                content_type: Some("application/json".into()),
+                correlation_id: Some("corr-ci".into()),
+                causation_id: Some("run-124".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated.disposition, CallbackIngressDisposition::Coalesced);
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    let waiting = waiting
+        .iter()
+        .find(|record| record.id == capability.waiting_intent_id)
+        .expect("waiting intent should remain active after repeated trigger");
+    assert_eq!(waiting.status, WaitingIntentStatus::Active);
+    assert_eq!(waiting.trigger_count, 2);
+    assert_eq!(waiting.work_item_id.as_deref(), Some(work.id.as_str()));
     let latest = runtime
         .storage()
         .latest_work_item(&work.id)

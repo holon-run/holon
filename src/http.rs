@@ -2492,6 +2492,7 @@ pub async fn control_wake(
             scope: None,
             waiting_intent_id: None,
             external_trigger_id: None,
+            work_item_id: None,
             resource: None,
             body: None,
             content_type: None,
