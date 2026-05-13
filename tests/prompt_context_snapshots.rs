@@ -578,7 +578,7 @@ Current work item:
 
 ## queued_blocked_work_items
 Queued and blocked work items:
-- [blocked] work_queued :: Review and merge PR #485 :: blocked_by=blocked on active work completion
+- [blocked] work_queued :: Review and merge PR #485 :: current_todo=Review expanded snapshot coverage changes :: blocked_by=blocked on active work completion
   - Plan artifact: $AGENT_HOME/work-items/work_queued/plan.md
   - Plan preview complete: true
 

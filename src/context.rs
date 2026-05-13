@@ -64,8 +64,11 @@ pub fn build_context(
     let work_queue_projection = storage.work_queue_prompt_projection()?;
     let current_work_item = work_queue_projection.current.as_ref();
     let queued_blocked_items = work_queue_projection
-        .queued_blocked
+        .readiness
         .iter()
+        .filter(|item| {
+            !item.is_current && item.work_item.state == crate::types::WorkItemState::Open
+        })
         .collect::<Vec<_>>();
 
     let current_input_reserved_budget =
@@ -539,24 +542,33 @@ fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'st
 }
 
 fn render_queued_blocked_work_items(
-    items: &[&WorkItemRecord],
+    items: &[&crate::storage::WorkItemReadinessProjection],
     agent_home: &std::path::Path,
 ) -> String {
     let mut lines = vec!["Queued and blocked work items:".to_string()];
     for item in items {
-        let view = match item.readiness() {
-            crate::types::WorkItemReadiness::Runnable => "queued",
-            crate::types::WorkItemReadiness::WaitingForOperator => "waiting_for_operator",
-            crate::types::WorkItemReadiness::Blocked => "blocked",
-            crate::types::WorkItemReadiness::Completed => "completed",
+        let record = item.record();
+        let view = match item.candidate_class {
+            crate::storage::WorkItemCandidateClass::TriggeredBlocked => "triggered_blocked",
+            crate::storage::WorkItemCandidateClass::QueuedRunnable => "queued_runnable",
+            crate::storage::WorkItemCandidateClass::WaitingForOperator => "waiting_for_operator",
+            crate::storage::WorkItemCandidateClass::Blocked => "blocked",
+            crate::storage::WorkItemCandidateClass::CompletedRecent => "completed_recent",
+            crate::storage::WorkItemCandidateClass::CurrentRunnable => "current_runnable",
         };
-        let mut summary = format!("- [{view}] {} :: {}", item.id, item.objective);
-        if let Some(blocked_by) = item.blocked_by.as_deref() {
+        let mut summary = format!("- [{view}] {} :: {}", record.id, record.objective);
+        if let Some(todo) = item.current_todo.as_ref() {
+            summary.push_str(&format!(" :: current_todo={}", todo.text));
+        }
+        if let Some(triggered_at) = item.last_triggered_at {
+            summary.push_str(&format!(" :: last_triggered_at={triggered_at}"));
+        }
+        if let Some(blocked_by) = record.blocked_by.as_deref() {
             summary.push_str(&format!(" :: blocked_by={blocked_by}"));
         }
         lines.push(summary);
         lines.extend(render_work_item_plan_artifact_lines(
-            item, agent_home, "  - ",
+            record, agent_home, "  - ",
         ));
     }
     lines.join("\n")

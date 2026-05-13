@@ -13,11 +13,12 @@ use serde_json::Value;
 
 use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, ContextEpisodeRecord,
-    DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope, OperatorDeliveryRecord,
-    OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, TaskRecord, TaskStatus,
-    TimerRecord, ToolExecutionRecord, TranscriptEntry, WaitingIntentRecord,
-    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkItemState,
-    WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
+    DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope, MessageEnvelope,
+    OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord,
+    TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
+    TranscriptEntry, WaitingIntentRecord, WaitingIntentStatus, WorkItemDelegationRecord,
+    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemState, WorkingMemoryDelta,
+    WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -30,6 +31,41 @@ const RUNTIME_CACHE_DIR: &str = "cache";
 pub struct WorkQueuePromptProjection {
     pub current: Option<WorkItemRecord>,
     pub queued_blocked: Vec<WorkItemRecord>,
+    pub readiness: Vec<WorkItemReadinessProjection>,
+    pub current_runnable: Option<WorkItemReadinessProjection>,
+    pub triggered_blocked: Vec<WorkItemReadinessProjection>,
+    pub queued_runnable: Vec<WorkItemReadinessProjection>,
+    pub waiting_for_operator: Vec<WorkItemReadinessProjection>,
+    pub blocked: Vec<WorkItemReadinessProjection>,
+    pub completed_recent: Vec<WorkItemReadinessProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkItemReadinessProjection {
+    pub work_item: WorkItemRecord,
+    pub readiness: WorkItemReadiness,
+    pub candidate_class: WorkItemCandidateClass,
+    pub is_current: bool,
+    pub has_active_waits: bool,
+    pub has_triggered_waits: bool,
+    pub last_triggered_at: Option<DateTime<Utc>>,
+    pub current_todo: Option<TodoItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkItemCandidateClass {
+    CurrentRunnable,
+    TriggeredBlocked,
+    QueuedRunnable,
+    WaitingForOperator,
+    Blocked,
+    CompletedRecent,
+}
+
+impl WorkItemReadinessProjection {
+    pub fn record(&self) -> &WorkItemRecord {
+        &self.work_item
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -612,6 +648,95 @@ impl AppStorage {
             .filter(|item| item.state == WorkItemState::Open)
             .cloned();
 
+        let active_waits = self
+            .latest_waiting_intents()?
+            .into_iter()
+            .filter(|intent| intent.status == WaitingIntentStatus::Active)
+            .filter(|intent| intent.scope == ExternalTriggerScope::WorkItem)
+            .filter_map(|intent| intent.work_item_id.map(|id| (id, intent.last_triggered_at)))
+            .fold(
+                std::collections::BTreeMap::<String, Option<DateTime<Utc>>>::new(),
+                |mut acc, (id, triggered_at)| {
+                    let slot = acc.entry(id).or_insert(None);
+                    *slot = match (*slot, triggered_at) {
+                        (Some(left), Some(right)) => Some(left.max(right)),
+                        (None, Some(right)) => Some(right),
+                        (existing, None) => existing,
+                    };
+                    acc
+                },
+            );
+        let mut readiness = latest
+            .values()
+            .cloned()
+            .map(|item| {
+                let is_current = current_work_item_id.as_deref() == Some(item.id.as_str())
+                    && item.state == WorkItemState::Open;
+                let last_triggered_at = active_waits.get(&item.id).copied().flatten();
+                let has_active_waits = active_waits.contains_key(&item.id);
+                let has_triggered_waits = last_triggered_at.is_some();
+                let readiness = item.readiness();
+                let candidate_class = if is_current && readiness == WorkItemReadiness::Runnable {
+                    WorkItemCandidateClass::CurrentRunnable
+                } else if item.state == WorkItemState::Completed {
+                    WorkItemCandidateClass::CompletedRecent
+                } else if has_triggered_waits && item.blocked_by.is_some() {
+                    WorkItemCandidateClass::TriggeredBlocked
+                } else if readiness == WorkItemReadiness::Runnable {
+                    WorkItemCandidateClass::QueuedRunnable
+                } else if readiness == WorkItemReadiness::WaitingForOperator {
+                    WorkItemCandidateClass::WaitingForOperator
+                } else {
+                    WorkItemCandidateClass::Blocked
+                };
+                WorkItemReadinessProjection {
+                    current_todo: current_todo(&item),
+                    work_item: item,
+                    readiness,
+                    candidate_class,
+                    is_current,
+                    has_active_waits,
+                    has_triggered_waits,
+                    last_triggered_at,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        readiness.sort_by(compare_readiness_projection_order);
+        let current_runnable = readiness
+            .iter()
+            .find(|item| item.candidate_class == WorkItemCandidateClass::CurrentRunnable)
+            .cloned();
+        let triggered_blocked = readiness
+            .iter()
+            .filter(|item| item.candidate_class == WorkItemCandidateClass::TriggeredBlocked)
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>();
+        let queued_runnable = readiness
+            .iter()
+            .filter(|item| item.candidate_class == WorkItemCandidateClass::QueuedRunnable)
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>();
+        let waiting_for_operator = readiness
+            .iter()
+            .filter(|item| item.candidate_class == WorkItemCandidateClass::WaitingForOperator)
+            .cloned()
+            .collect::<Vec<_>>();
+        let blocked = readiness
+            .iter()
+            .filter(|item| item.candidate_class == WorkItemCandidateClass::Blocked)
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>();
+        let completed_recent = readiness
+            .iter()
+            .filter(|item| item.candidate_class == WorkItemCandidateClass::CompletedRecent)
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>();
+
         let mut queued_blocked = latest
             .values()
             .filter(|item| {
@@ -625,6 +750,13 @@ impl AppStorage {
         Ok(WorkQueuePromptProjection {
             current,
             queued_blocked,
+            readiness,
+            current_runnable,
+            triggered_blocked,
+            queued_runnable,
+            waiting_for_operator,
+            blocked,
+            completed_recent,
         })
     }
 
@@ -1060,6 +1192,38 @@ where
     }
 }
 
+fn compare_readiness_projection_order(
+    left: &WorkItemReadinessProjection,
+    right: &WorkItemReadinessProjection,
+) -> std::cmp::Ordering {
+    candidate_class_rank(left.candidate_class)
+        .cmp(&candidate_class_rank(right.candidate_class))
+        .then_with(|| match left.candidate_class {
+            WorkItemCandidateClass::TriggeredBlocked => {
+                compare_timestamp_desc_option(left.last_triggered_at, right.last_triggered_at)
+                    .then_with(|| {
+                        compare_timestamp_desc(
+                            left.work_item.updated_at,
+                            right.work_item.updated_at,
+                        )
+                    })
+            }
+            WorkItemCandidateClass::QueuedRunnable => {
+                compare_timestamp_asc(left.work_item.updated_at, right.work_item.updated_at)
+                    .then_with(|| {
+                        compare_timestamp_asc(left.work_item.created_at, right.work_item.created_at)
+                    })
+            }
+            WorkItemCandidateClass::WaitingForOperator
+            | WorkItemCandidateClass::Blocked
+            | WorkItemCandidateClass::CompletedRecent => {
+                compare_timestamp_desc(left.work_item.updated_at, right.work_item.updated_at)
+            }
+            WorkItemCandidateClass::CurrentRunnable => std::cmp::Ordering::Equal,
+        })
+        .then_with(|| left.work_item.id.cmp(&right.work_item.id))
+}
+
 fn compare_queue_display_order(
     left: &WorkItemRecord,
     right: &WorkItemRecord,
@@ -1075,8 +1239,44 @@ fn blocked_rank(record: &WorkItemRecord) -> u8 {
     u8::from(record.blocked_by.is_some())
 }
 
+fn candidate_class_rank(class: WorkItemCandidateClass) -> u8 {
+    match class {
+        WorkItemCandidateClass::CurrentRunnable => 0,
+        WorkItemCandidateClass::TriggeredBlocked => 1,
+        WorkItemCandidateClass::QueuedRunnable => 2,
+        WorkItemCandidateClass::WaitingForOperator => 3,
+        WorkItemCandidateClass::Blocked => 4,
+        WorkItemCandidateClass::CompletedRecent => 5,
+    }
+}
+
 fn compare_timestamp_asc(left: DateTime<Utc>, right: DateTime<Utc>) -> std::cmp::Ordering {
     left.cmp(&right)
+}
+
+fn compare_timestamp_desc(left: DateTime<Utc>, right: DateTime<Utc>) -> std::cmp::Ordering {
+    right.cmp(&left)
+}
+
+fn compare_timestamp_desc_option(
+    left: Option<DateTime<Utc>>,
+    right: Option<DateTime<Utc>>,
+) -> std::cmp::Ordering {
+    right.cmp(&left)
+}
+
+fn current_todo(record: &WorkItemRecord) -> Option<TodoItem> {
+    record
+        .todo_list
+        .iter()
+        .find(|item| item.state == TodoItemState::InProgress)
+        .or_else(|| {
+            record
+                .todo_list
+                .iter()
+                .find(|item| item.state == TodoItemState::Pending)
+        })
+        .cloned()
 }
 
 fn file_activity_marker(path: &Path) -> Result<FileActivityMarker> {
@@ -1117,7 +1317,8 @@ mod tests {
     use crate::types::{
         AgentState, AgentStatus, EpisodeBoundaryReason, Priority, QueueEntryRecord,
         QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem,
-        TodoItemState, TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkItemState,
+        TodoItemState, TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkItemPlanStatus,
+        WorkItemState,
     };
 
     use super::*;
@@ -1606,6 +1807,129 @@ mod tests {
         assert_eq!(
             rendered,
             vec!["queued first", "queued second", "waiting item"]
+        );
+    }
+
+    #[test]
+    fn storage_work_queue_projection_derives_candidate_classes_and_current_todo() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let mut current = WorkItemRecord::new("default", "current runnable", WorkItemState::Open);
+        current.updated_at = now;
+        current.todo_list = vec![
+            TodoItem {
+                text: "pending current".into(),
+                state: TodoItemState::Pending,
+            },
+            TodoItem {
+                text: "active current".into(),
+                state: TodoItemState::InProgress,
+            },
+        ];
+        let mut triggered =
+            WorkItemRecord::new("default", "triggered blocked", WorkItemState::Open);
+        triggered.blocked_by = Some("waiting for callback".into());
+        triggered.updated_at = now - chrono::Duration::minutes(1);
+        let mut queued = WorkItemRecord::new("default", "queued runnable", WorkItemState::Open);
+        queued.updated_at = now - chrono::Duration::minutes(3);
+        let mut waiting = WorkItemRecord::new("default", "operator decision", WorkItemState::Open);
+        waiting.plan_status = WorkItemPlanStatus::NeedsInput;
+        waiting.updated_at = now - chrono::Duration::minutes(2);
+        let mut blocked = WorkItemRecord::new("default", "plain blocked", WorkItemState::Open);
+        blocked.blocked_by = Some("external review".into());
+        blocked.updated_at = now - chrono::Duration::minutes(4);
+        let mut completed =
+            WorkItemRecord::new("default", "recently completed", WorkItemState::Completed);
+        completed.updated_at = now - chrono::Duration::minutes(5);
+
+        for item in [
+            &current, &triggered, &queued, &waiting, &blocked, &completed,
+        ] {
+            storage.append_work_item(item).unwrap();
+        }
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-triggered".into(),
+                agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
+                work_item_id: Some(triggered.id.clone()),
+                description: "triggered wait".into(),
+                source: "test".into(),
+                resource: None,
+                condition: None,
+                delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "trigger-1".into(),
+                created_at: now,
+                cancelled_at: None,
+                last_triggered_at: Some(now),
+                trigger_count: 1,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(current.id.clone());
+        storage.write_agent(&agent).unwrap();
+
+        let projection = storage.work_queue_prompt_projection().unwrap();
+
+        assert_eq!(
+            projection
+                .current_runnable
+                .as_ref()
+                .map(|item| item.work_item.objective.as_str()),
+            Some("current runnable")
+        );
+        assert_eq!(
+            projection
+                .current_runnable
+                .as_ref()
+                .and_then(|item| item.current_todo.as_ref())
+                .map(|todo| todo.text.as_str()),
+            Some("active current")
+        );
+        assert_eq!(
+            projection
+                .triggered_blocked
+                .iter()
+                .map(|item| item.work_item.objective.as_str())
+                .collect::<Vec<_>>(),
+            vec!["triggered blocked"]
+        );
+        assert_eq!(
+            projection
+                .queued_runnable
+                .iter()
+                .map(|item| item.work_item.objective.as_str())
+                .collect::<Vec<_>>(),
+            vec!["queued runnable"]
+        );
+        assert_eq!(
+            projection
+                .waiting_for_operator
+                .iter()
+                .map(|item| item.work_item.objective.as_str())
+                .collect::<Vec<_>>(),
+            vec!["operator decision"]
+        );
+        assert_eq!(
+            projection
+                .blocked
+                .iter()
+                .map(|item| item.work_item.objective.as_str())
+                .collect::<Vec<_>>(),
+            vec!["plain blocked"]
+        );
+        assert_eq!(
+            projection
+                .completed_recent
+                .iter()
+                .map(|item| item.work_item.objective.as_str())
+                .collect::<Vec<_>>(),
+            vec!["recently completed"]
         );
     }
 
