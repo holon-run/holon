@@ -549,17 +549,23 @@ interpretation change visible in code, then use `UpdateWorkItem` to update
 
 ### CompleteWorkItem
 
-`CompleteWorkItem` marks a WorkItem completed and optionally records a short
-result summary.
+`CompleteWorkItem` marks a WorkItem completed.
 
 Shape:
 
 - `work_item_id` required
-- `result_summary` optional
 
-`result_summary` is not a full progress log. Detailed evidence remains in
-transcript, tool records, briefs, verification output, PRs, issues, and
-delivery summaries.
+The target tool contract should not ask the agent to duplicate the completion
+report in a tool argument.
+
+When the same assistant round contains both operator-facing completion report
+text and a successful `CompleteWorkItem` call for the focused WorkItem, the
+runtime should promote that text into the WorkItem result summary, delivery
+summary, and completion brief.
+
+The promoted result summary is not a full progress log. Detailed evidence
+remains in transcript, tool records, briefs, verification output, PRs, issues,
+and delivery summaries.
 
 ### Read Tools
 

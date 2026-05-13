@@ -22,7 +22,8 @@ The direction is:
   reactivation signals;
 - context compaction should preserve current WorkItem truth and compress older
   WorkItem history around completed reports and process notes;
-- `CompleteWorkItem.result_summary` should become the canonical report for a
+- a successful `CompleteWorkItem` should promote the same assistant round's
+  operator-facing completion report text into the canonical report for a
   completed WorkItem.
 
 This RFC is intentionally cross-cutting. It does not replace the lower-level
@@ -164,8 +165,15 @@ future resumption.
 
 ### Result Report
 
-The final WorkItem completion report. The canonical source should be
-`CompleteWorkItem.result_summary`.
+The final WorkItem completion report.
+
+The canonical source should be an explicit operator-facing assistant text block
+emitted in the same assistant round as a successful `CompleteWorkItem` call. The
+tool call marks the WorkItem completed; the same-round text is promoted by the
+runtime into the WorkItem result report and completion brief.
+
+`CompleteWorkItem` should not require a duplicate `result_summary` argument in
+the target contract.
 
 ### Readiness
 
@@ -424,10 +432,26 @@ WorkItem mutations. They should capture:
 - important tool outputs;
 - scope changes.
 
-The completion report should be `CompleteWorkItem.result_summary`. This report
-should be the canonical short answer for what the WorkItem accomplished. Other
-briefs may cite or render it, but should not compete with it as the durable
-source of truth.
+Most assistant messages remain process trace. A completion report is the
+exception: when an assistant round contains both operator-facing report text and
+a successful `CompleteWorkItem` call for the focused WorkItem, the runtime should
+promote that text into the canonical short answer for what the WorkItem
+accomplished.
+
+The report promotion rules should be explicit:
+
+- the assistant round must contain non-empty text and exactly one successful
+  focused `CompleteWorkItem` completion;
+- the text should be written as a final operator-facing report, not as a plan,
+  progress note, or "I will complete this" preamble;
+- promotion happens only after the `CompleteWorkItem` tool succeeds;
+- if completion succeeds with structured warnings, such as unfinished todos, the
+  promoted report must preserve or surface those warnings;
+- if the round completes multiple WorkItems, the runtime should not guess which
+  WorkItem owns the text unless the implementation has an explicit binding rule.
+
+Other briefs may cite or render the promoted report, but should not compete with
+it as the durable source of truth.
 
 ## Context And Compaction
 
@@ -462,15 +486,26 @@ default. It should preserve selected process notes and completed reports.
 
 ## Briefs And Operator Output
 
-The operator-visible final brief for a WorkItem should align with
-`CompleteWorkItem.result_summary`.
+The operator-visible completion brief for a WorkItem should be the promoted
+completion report text from the assistant round that successfully completed the
+WorkItem.
 
 During execution, assistant messages can remain conversational process updates.
 The runtime should not require every assistant message to become a durable
 report.
 
-When a WorkItem completes, the runtime can generate or surface a completion
-brief from the WorkItem result summary.
+When a WorkItem completes with a same-round completion report candidate, the
+runtime should persist:
+
+- a `DeliverySummaryRecord` for the completed WorkItem;
+- a `BriefRecord(kind=result, work_item_id=...)` or equivalent operator delivery
+  projection using the same text;
+- a WorkItem result report projection that context and compaction can read.
+
+If a WorkItem is completed without same-round report text, completion may still
+succeed, but the runtime should not synthesize a generic result report from
+arbitrary runtime evidence. It should surface a structured warning so the agent
+can produce a proper report in a follow-up turn if needed.
 
 ## Relationship To Other RFCs
 
@@ -505,8 +540,9 @@ A plausible sequence is:
    switching away from runnable current work.
 6. Bind assistant rounds, briefs, and relevant events to current WorkItem where
    provenance is trusted.
-7. Make `CompleteWorkItem.result_summary` the canonical WorkItem completion
-   report in briefs and compaction.
+7. Remove `CompleteWorkItem.result_summary` from the target tool contract and
+   promote same-round assistant completion report text into the canonical
+   WorkItem report, delivery summary, and completion brief.
 8. Add WorkItem-centered compaction policy for current, queued, blocked,
    triggered, and completed WorkItems.
 
@@ -523,8 +559,8 @@ Add tests at several layers:
   releases focus;
 - context snapshot tests proving current WorkItem and active todos survive
   compaction;
-- transcript/brief tests proving WorkItem result summaries are surfaced as
-  completion reports;
+- transcript/brief tests proving same-round `CompleteWorkItem` completion report
+  text is promoted into WorkItem reports and operator-visible completion briefs;
 - TUI/state projection tests for candidate classes.
 
 ## Decisions
@@ -552,8 +588,8 @@ Suggested event payload fields:
 }
 ```
 
-Reason should not be written into `blocked_by`, the plan artifact,
-`result_summary`, or agent state.
+Reason should not be written into `blocked_by`, the plan artifact, the
+completion report, or agent state.
 
 ### Picking Blocked WorkItems
 
@@ -588,10 +624,37 @@ Process notes should initially be a projection/compaction product derived from:
 - tool executions;
 - WorkItem mutation history;
 - briefs;
-- `CompleteWorkItem.result_summary`.
+- promoted WorkItem completion reports.
 
 Add a dedicated `WorkItemProcessNoteRecord` only if durable edited notes need to
 be referenced, synced, displayed, or retained independently of their sources.
+
+### CompleteWorkItem Completion Report Source
+
+The target `CompleteWorkItem` contract should not ask the model to pass
+`result_summary`.
+
+Instead, the agent should write the final completion report as assistant text in
+the same round that calls `CompleteWorkItem`. The runtime should treat that text
+as a completion-report candidate, execute the tool call, and promote the text
+only if the completion succeeds.
+
+This keeps the agent from writing the same result twice:
+
+1. once inside a tool argument;
+2. again as the operator-facing final response.
+
+It also keeps responsibilities separated:
+
+- `CompleteWorkItem` is the state transition;
+- assistant text is the operator-facing report;
+- runtime promotion binds the report to the completed WorkItem, delivery summary,
+  and completion brief.
+
+Promotion should be conservative. Arbitrary assistant progress text must not
+become a result report just because the WorkItem was current. If there is no
+same-round report text, the WorkItem may still complete, but there is no
+canonical result report until the agent produces one explicitly.
 
 ### CompleteWorkItem With Unfinished Todos
 
