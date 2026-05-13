@@ -46,7 +46,7 @@ Process execution guarantees:
   - secret_isolation: not_enforced
   - child_process_containment: not_enforced"#;
 
-const CONTEXT_CONTRACT: &str = r#"Interpret the memory block with this priority: current work item objective first, durable plan second, todo_list third, working memory delta next, and rolling working memory after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and `plan` as the ground truth unless the current input explicitly changes it."#;
+const CONTEXT_CONTRACT: &str = r#"Interpret the memory block with this priority: current work item objective first, durable plan artifact second, todo_list third, working memory delta next, and rolling working memory after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and plan artifact as the ground truth unless the current input explicitly changes it."#;
 
 fn sample_identity() -> AgentIdentityView {
     AgentIdentityView {

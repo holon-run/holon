@@ -47,7 +47,7 @@ The key distinction is:
 Each work item can contain:
 
 - **objective** — short statement of the goal
-- **plan** — durable description of the intended approach
+- **plan artifact** — durable markdown file describing the intended approach
 - **plan status** — `draft`, `ready`, or `needs_input`
 - **todo list** — checklist of meaningful progress steps
 - **blocked by** — specific blocker when progress cannot continue
@@ -60,7 +60,7 @@ Typical work-item operations:
 
 - `CreateWorkItem` — create a new tracked objective
 - `PickWorkItem` — make an open item the current focus
-- `UpdateWorkItem` — refine objective, plan, blocker, or todo list
+- `UpdateWorkItem` — refine objective, plan status, blocker, or todo list
 - `ListWorkItems` — inspect current, open, blocked, or completed work
 - `GetWorkItem` — inspect one work item in detail
 - `CompleteWorkItem` — mark the objective done
@@ -69,7 +69,7 @@ Typical work-item operations:
 
 1. Inspect whether the objective already has an open work item
 2. Create one only if the objective has its own lifecycle
-3. Add a durable plan once the acceptance boundary is clear
+3. Edit the durable plan artifact once the acceptance boundary is clear
 4. Update the todo list after material progress
 5. Record blockers explicitly instead of silently broadening scope
 6. Complete the item only after acceptance evidence exists

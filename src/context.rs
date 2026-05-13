@@ -222,7 +222,7 @@ pub fn build_context(
             &mut remaining_budget,
             turn_section(
                 "queued_blocked_work_items",
-                render_queued_blocked_work_items(&queued_blocked_items),
+                render_queued_blocked_work_items(&queued_blocked_items, storage.data_dir()),
             ),
         );
     }
@@ -232,7 +232,7 @@ pub fn build_context(
         &mut remaining_budget,
         section(
             "context_contract",
-            "Interpret the memory block with this priority: current work item objective first, durable plan second, todo_list third, working memory delta next, and rolling working memory after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and `plan` as the ground truth unless the current input explicitly changes it."
+            "Interpret the memory block with this priority: current work item objective first, durable plan artifact second, todo_list third, working memory delta next, and rolling working memory after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and plan artifact as the ground truth unless the current input explicitly changes it."
                 .to_string(),
         ),
     );
@@ -510,28 +510,9 @@ fn render_current_work_item(work_item: &WorkItemRecord, agent_home: &std::path::
             work_item_plan_status_label(work_item.plan_status)
         ),
     ];
-    let plan_path = crate::work_item_plan::plan_path(agent_home, &work_item.id);
-    let plan_artifact = if plan_path.exists() || work_item.plan.is_some() {
-        crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None).ok()
-    } else {
-        None
-    };
-    if let Some(plan_artifact) = plan_artifact {
-        lines.push(format!("- Plan artifact: {}", plan_artifact.path.display()));
-        lines.push(format!(
-            "- Plan preview complete: {}",
-            plan_artifact.preview_complete
-        ));
-        if !plan_artifact.preview.is_empty() {
-            lines.push("- Plan preview:".to_string());
-            lines.extend(
-                plan_artifact
-                    .preview
-                    .lines()
-                    .map(|line| format!("  {line}")),
-            );
-        }
-    }
+    lines.extend(render_work_item_plan_artifact_lines(
+        work_item, agent_home, "- ",
+    ));
     if !work_item.todo_list.is_empty() {
         lines.push("- Todo list:".to_string());
         lines.extend(work_item.todo_list.iter().map(|item| {
@@ -557,9 +538,12 @@ fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'st
     }
 }
 
-fn render_queued_blocked_work_items(items: &[&WorkItemRecord]) -> String {
+fn render_queued_blocked_work_items(
+    items: &[&WorkItemRecord],
+    agent_home: &std::path::Path,
+) -> String {
     let mut lines = vec!["Queued and blocked work items:".to_string()];
-    lines.extend(items.iter().map(|item| {
+    for item in items {
         let view = match item.readiness() {
             crate::types::WorkItemReadiness::Runnable => "queued",
             crate::types::WorkItemReadiness::WaitingForOperator => "waiting_for_operator",
@@ -570,9 +554,45 @@ fn render_queued_blocked_work_items(items: &[&WorkItemRecord]) -> String {
         if let Some(blocked_by) = item.blocked_by.as_deref() {
             summary.push_str(&format!(" :: blocked_by={blocked_by}"));
         }
-        summary
-    }));
+        lines.push(summary);
+        lines.extend(render_work_item_plan_artifact_lines(
+            item, agent_home, "  - ",
+        ));
+    }
     lines.join("\n")
+}
+
+fn render_work_item_plan_artifact_lines(
+    work_item: &WorkItemRecord,
+    agent_home: &std::path::Path,
+    prefix: &str,
+) -> Vec<String> {
+    let plan_path = crate::work_item_plan::plan_path(agent_home, &work_item.id);
+    let plan_artifact = if plan_path.exists() || work_item.plan.is_some() {
+        crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None).ok()
+    } else {
+        None
+    };
+    let Some(plan_artifact) = plan_artifact else {
+        return Vec::new();
+    };
+    let mut lines = vec![
+        format!("{prefix}Plan artifact: {}", plan_artifact.path.display()),
+        format!(
+            "{prefix}Plan preview complete: {}",
+            plan_artifact.preview_complete
+        ),
+    ];
+    if !plan_artifact.preview.is_empty() {
+        lines.push(format!("{prefix}Plan preview:"));
+        lines.extend(
+            plan_artifact
+                .preview
+                .lines()
+                .map(|line| format!("  {line}")),
+        );
+    }
+    lines
 }
 
 fn working_memory_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
@@ -2316,6 +2336,14 @@ mod tests {
         assert!(active_section
             .content
             .contains("storage and recovery foundation"));
+        assert!(active_section.content.contains("Plan artifact:"));
+        assert!(active_section.content.contains("work-items/"));
+        assert!(active_section
+            .content
+            .contains("Plan preview complete: true"));
+        assert!(active_section
+            .content
+            .contains("Persist the work item store and project it into prompts."));
         assert!(active_section
             .content
             .contains("Project active item into prompt"));
@@ -2337,17 +2365,22 @@ mod tests {
             },
         );
 
-        let queued = crate::types::WorkItemRecord::new(
+        let mut queued = crate::types::WorkItemRecord::new(
             "default",
             "Queue follow-up verification",
             crate::types::WorkItemState::Open,
         );
+        queued.plan = Some(format!(
+            "Verify the queued path.\n{}",
+            "queued detail ".repeat(200)
+        ));
         let mut waiting = crate::types::WorkItemRecord::new(
             "default",
             "Wait for operator confirmation",
             crate::types::WorkItemState::Open,
         );
         waiting.blocked_by = Some("needs explicit approval before completion".into());
+        waiting.plan = Some("Wait for the operator answer before retrying.".into());
         let completed = crate::types::WorkItemRecord::new(
             "default",
             "Already finished item",
@@ -2384,6 +2417,11 @@ mod tests {
         assert!(summary
             .content
             .contains("needs explicit approval before completion"));
+        assert!(summary.content.contains("Plan artifact:"));
+        assert!(summary.content.contains("Plan preview:"));
+        assert!(summary.content.contains("Verify the queued path."));
+        assert!(summary.content.contains("Plan preview complete: false"));
+        assert!(summary.content.contains("Plan preview complete: true"));
         assert!(!summary.content.contains("Already finished item"));
     }
 

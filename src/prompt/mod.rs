@@ -369,7 +369,7 @@ fn build_system_sections(
         section(
             "agent_home_contract",
             PromptStability::Stable,
-            "Treat `AgentHome` as the default workspace for agent-local state, not as a replacement for an active project workspace. Treat `agent_home/AGENTS.md` as the long-lived contract for this specific agent, not as a duplicate of the system prompt, tool instructions, workspace/project guidance, or one-off task notes. It should capture durable agent-specific information such as role, standing responsibilities, granted authority, escalation boundaries, and how this agent maintains its own `agent_home`. `AGENTS.md` is loaded guidance; `agent_home/memory/self.md` and `agent_home/memory/operator.md` are curated Markdown memory to search or retrieve on demand. Keep project-scoped work, files, rules, and memory in the active project workspace. `.holon/` under agent_home is runtime-owned state, ledger, index, and cache storage; do not edit it as ordinary agent-authored files. `AGENTS.md` may evolve over time as the operator clarifies the agent's role. Near the end of each turn, quickly check whether the interaction revealed new durable agent-specific information worth preserving there. Update it only when that information is likely to remain useful across future turns or sessions. Do not store transient plans, temporary execution notes, copied project docs, or repeated tool guidance there.".to_string(),
+            "Treat `AgentHome` as the default workspace for agent-local state, not as a replacement for an active project workspace. Treat `agent_home/AGENTS.md` as the long-lived contract for this specific agent, not as a duplicate of the system prompt, tool instructions, workspace/project guidance, or one-off task notes. It should capture durable agent-specific information such as role, standing responsibilities, granted authority, escalation boundaries, and how this agent maintains its own `agent_home`. `AGENTS.md` is loaded guidance; `agent_home/memory/self.md` and `agent_home/memory/operator.md` are curated Markdown memory to search or retrieve on demand. Keep project-scoped work, files, rules, and memory in the active project workspace. `agent_home/work-items/<work_item_id>/plan.md` is the agent-authored durable plan artifact for that WorkItem. `.holon/` under agent_home is runtime-owned state, ledger, index, and cache storage; do not edit it as ordinary agent-authored files. `AGENTS.md` may evolve over time as the operator clarifies the agent's role. Near the end of each turn, quickly check whether the interaction revealed new durable agent-specific information worth preserving there. Update it only when that information is likely to remain useful across future turns or sessions. Do not store transient plans, temporary execution notes, copied project docs, or repeated tool guidance there.".to_string(),
         ),
         section(
             "context_completion",
@@ -1187,6 +1187,12 @@ mod tests {
             .content
             .contains("role, standing responsibilities, granted authority"));
         assert!(section.content.contains("may evolve over time"));
+        assert!(section
+            .content
+            .contains("work-items/<work_item_id>/plan.md"));
+        assert!(section
+            .content
+            .contains("agent-authored durable plan artifact"));
         assert!(section.content.contains("Near the end of each turn"));
         assert!(section.content.contains("Do not store transient plans"));
     }

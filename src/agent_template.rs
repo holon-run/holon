@@ -759,6 +759,7 @@ pub fn ensure_agent_home_layout(agent_home: &Path) -> Result<()> {
         agent_home.join("memory"),
         agent_home.join("notes"),
         agent_home.join("work"),
+        agent_home.join("work-items"),
         agent_home.join("skills"),
         agent_home.join(".holon/state"),
         agent_home.join(".holon/ledger"),
