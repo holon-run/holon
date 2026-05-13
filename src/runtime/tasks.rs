@@ -1995,6 +1995,16 @@ impl RuntimeHandle {
             wrote_item = true;
         }
         if wrote_item {
+            let plan_path =
+                crate::work_item_plan::plan_path(self.agent_home().as_path(), &record.id);
+            if record.plan.is_some() || plan_path.exists() {
+                crate::work_item_plan::ensure_plan_artifact(
+                    self.agent_home().as_path(),
+                    &record,
+                    None,
+                )?;
+                record.plan = None;
+            }
             record.revision = existing.revision + 1;
             self.inner.storage.append_work_item(&record)?;
             self.inner.storage.append_event(&AuditEvent::new(
