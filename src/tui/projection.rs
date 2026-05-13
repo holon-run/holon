@@ -152,9 +152,6 @@ impl TuiProjection {
         }
         self.cursor = Some(event.id.clone());
 
-        // Feed into presentation reducer for live item tracking
-        let _ = self.presentation_reducer.reduce(&[record.clone()]);
-
         match event.data.event_type.as_str() {
             "agent_state_changed" | "session_state_changed" => {
                 if let Some(state) = decode_payload::<AgentState>(&event.data.payload) {
