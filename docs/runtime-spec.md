@@ -1787,9 +1787,16 @@ When work items exist, prompt context should project them explicitly.
 
 Early rollout projection rules are:
 
-- project the full current `WorkItemRecord`, including plan and todo_list
-- project only compact entries for queued and blocked open items
-- exclude completed items from the normal prompt projection
+- project the full current `WorkItemRecord`, including plan artifact preview,
+  todo_list, blocker, and active WorkItem-scoped waits
+- project recent current-WorkItem process trace from bound briefs, tool
+  executions, and assistant transcript text blocks, without promoting provider
+  thinking or other-agent records
+- project non-current candidates using the shared readiness projection:
+  `triggered_blocked`, `queued_runnable`, `waiting_for_operator`, `blocked`,
+  and `completed_recent`
+- project completed items only through explicit promoted completion reports;
+  do not infer reports from arbitrary transcript text
 - if no work items exist yet, preserve the current message-driven prompt path
   without synthesizing a bootstrap work item
 
