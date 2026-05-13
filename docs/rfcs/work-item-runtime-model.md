@@ -462,7 +462,9 @@ Other open WorkItems should be summarized compactly by id, objective, state,
 plan artifact preview, readiness, current todo, and blocker. Completed
 WorkItems should not replay raw transcript by default. They may appear as
 bounded recent completed summaries only when they have an explicit promoted
-completion report (`result_summary` or matching `DeliverySummaryRecord`).
+completion report: prefer a non-empty `WorkItemRecord.result_summary`; otherwise
+use the newest non-empty `DeliverySummaryRecord.text` for the same work item
+(see "Work-Queue Prompt Projection" in `docs/runtime-spec.md`).
 
 If the agent changes focus during a turn, the tool result must return the new
 current WorkItem snapshot and state that subsequent tool calls in the turn are

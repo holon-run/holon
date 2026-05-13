@@ -1793,8 +1793,8 @@ Early rollout projection rules are:
   executions, and assistant transcript text blocks, without promoting provider
   thinking or other-agent records
 - project non-current candidates using the shared readiness projection:
-  triggered blocked, queued runnable, waiting-for-operator, blocked, and
-  recently completed
+  `triggered_blocked`, `queued_runnable`, `waiting_for_operator`, `blocked`,
+  and `completed_recent`
 - project completed items only through explicit promoted completion reports;
   do not infer reports from arbitrary transcript text
 - if no work items exist yet, preserve the current message-driven prompt path
