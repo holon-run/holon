@@ -21,6 +21,48 @@ fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> Tas
     }
 }
 
+struct CompleteWorkItemReportProvider {
+    work_item_id: String,
+    report_text: Option<String>,
+    calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl AgentProvider for CompleteWorkItemReportProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let blocks = if *calls == 1 {
+            let mut blocks = Vec::new();
+            if let Some(report_text) = &self.report_text {
+                blocks.push(ModelBlock::Text {
+                    text: report_text.clone(),
+                });
+            }
+            blocks.push(ModelBlock::ToolUse {
+                id: "complete-work".into(),
+                name: "CompleteWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": self.work_item_id.clone(),
+                }),
+            });
+            blocks
+        } else {
+            vec![ModelBlock::Text {
+                text: "done".into(),
+            }]
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
 #[test]
 fn work_item_record_revision_defaults_for_old_records() {
     let value = serde_json::json!({
@@ -86,7 +128,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .await
         .unwrap();
     let completed = runtime
-        .complete_work_item(completed.id.clone(), None)
+        .complete_work_item(completed.id.clone(), None, Vec::new())
         .await
         .unwrap();
     bind_turn_to_work_item(&runtime, &active.id).await;
@@ -243,7 +285,7 @@ async fn work_item_revision_increments_on_updates_and_completion() {
     assert_eq!(updated.revision, 2);
 
     let completed = runtime
-        .complete_work_item(updated.id.clone(), Some("done".into()))
+        .complete_work_item(updated.id.clone(), Some("done".into()), Vec::new())
         .await
         .unwrap();
     assert_eq!(completed.revision, 3);
@@ -280,7 +322,7 @@ async fn work_item_completion_ignores_running_tasks_and_clears_explicit_waits() 
     runtime.storage().append_task(&unscoped_task).unwrap();
 
     let completed = runtime
-        .complete_work_item(target.id.clone(), Some("target done".into()))
+        .complete_work_item(target.id.clone(), Some("target done".into()), Vec::new())
         .await
         .unwrap();
     assert_eq!(completed.id, target.id);
@@ -303,7 +345,11 @@ async fn work_item_completion_ignores_running_tasks_and_clears_explicit_waits() 
         .unwrap();
 
     let completed_wait = runtime
-        .complete_work_item(explicit_wait.id.clone(), Some("confirmed done".into()))
+        .complete_work_item(
+            explicit_wait.id.clone(),
+            Some("confirmed done".into()),
+            Vec::new(),
+        )
         .await
         .unwrap();
     assert_eq!(completed_wait.state, WorkItemState::Completed);
@@ -784,7 +830,7 @@ async fn complete_work_item_refreshes_latest_plan_artifact_snapshot() {
     let expected = crate::work_item_plan::describe_plan_artifact(&plan_path).unwrap();
 
     let completed = runtime
-        .complete_work_item(work.id.clone(), Some("done".into()))
+        .complete_work_item(work.id.clone(), Some("done".into()), Vec::new())
         .await
         .unwrap();
 
@@ -1299,6 +1345,377 @@ async fn interactive_tool_execution_binds_current_turn_work_item() {
     assert_eq!(
         tools[0].work_item_id.as_deref(),
         Some(work_item.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item("ship completion report".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(work_item.id.clone())
+        .await
+        .unwrap();
+
+    let report_text = "Implemented completion report promotion and verified focused tests.";
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CompleteWorkItemReportProvider {
+            work_item_id: work_item.id.clone(),
+            report_text: Some(report_text.into()),
+            calls: Mutex::new(0),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        TrustLevel::TrustedOperator,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "finish the tracked work".into(),
+        },
+    );
+
+    runtime
+        .process_interactive_message(
+            &message,
+            None,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.state, WorkItemState::Completed);
+    assert_eq!(completed.result_summary.as_deref(), Some(report_text));
+    let summary = runtime
+        .storage()
+        .latest_delivery_summary(&work_item.id)
+        .unwrap()
+        .expect("completion report should persist delivery summary");
+    assert_eq!(summary.text, report_text);
+    let briefs = runtime.recent_briefs(10).await.unwrap();
+    assert!(briefs.iter().any(|brief| {
+        brief.kind == BriefKind::Result
+            && brief.work_item_id.as_deref() == Some(work_item.id.as_str())
+            && brief.text == report_text
+    }));
+    let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+    let complete_tool = tools
+        .iter()
+        .find(|tool| tool.tool_name == "CompleteWorkItem")
+        .expect("completion tool should be recorded");
+    assert_eq!(
+        complete_tool.work_item_id.as_deref(),
+        Some(work_item.id.as_str())
+    );
+    let transcript = runtime.storage().read_recent_transcript(10).unwrap();
+    let assistant_round = transcript
+        .iter()
+        .find(|entry| entry.kind == crate::types::TranscriptEntryKind::AssistantRound)
+        .expect("assistant round should be recorded");
+    assert_eq!(
+        assistant_round.data["work_item_id"].as_str(),
+        Some(work_item.id.as_str())
+    );
+    let tool_results = transcript
+        .iter()
+        .find(|entry| entry.kind == crate::types::TranscriptEntryKind::ToolResults)
+        .expect("tool results should be recorded");
+    let tool_result: serde_json::Value =
+        serde_json::from_str(tool_results.data["results"][0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        tool_result["result"]["completion_report_promoted"].as_bool(),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn complete_work_item_without_same_round_report_warns_without_summary() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item("complete without report".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(work_item.id.clone())
+        .await
+        .unwrap();
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CompleteWorkItemReportProvider {
+            work_item_id: work_item.id.clone(),
+            report_text: None,
+            calls: Mutex::new(0),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        TrustLevel::TrustedOperator,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "finish the tracked work".into(),
+        },
+    );
+
+    runtime
+        .process_interactive_message(
+            &message,
+            None,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.state, WorkItemState::Completed);
+    assert_eq!(completed.result_summary, None);
+    assert!(runtime
+        .storage()
+        .latest_delivery_summary(&work_item.id)
+        .unwrap()
+        .is_none());
+    let transcript = runtime.storage().read_recent_transcript(10).unwrap();
+    let tool_results = transcript
+        .iter()
+        .find(|entry| entry.kind == crate::types::TranscriptEntryKind::ToolResults)
+        .expect("tool results should be recorded");
+    let tool_result: serde_json::Value =
+        serde_json::from_str(tool_results.data["results"][0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        tool_result["result"]["warnings"][0]["kind"].as_str(),
+        Some("missing_completion_report")
+    );
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_completion_warning"
+            && event.data["kind"].as_str() == Some("missing_completion_report")
+            && event.data["work_item_id"].as_str() == Some(work_item.id.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn repeated_complete_work_item_does_not_overwrite_existing_report() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item("already completed".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    seed_runtime
+        .complete_work_item(
+            work_item.id.clone(),
+            Some("Original completion report".into()),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CompleteWorkItemReportProvider {
+            work_item_id: work_item.id.clone(),
+            report_text: Some("Replacement report should not be promoted".into()),
+            calls: Mutex::new(0),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        TrustLevel::TrustedOperator,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "repeat completion".into(),
+        },
+    );
+
+    runtime
+        .process_interactive_message(
+            &message,
+            None,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        completed.result_summary.as_deref(),
+        Some("Original completion report")
+    );
+    let summary = runtime
+        .storage()
+        .latest_delivery_summary(&work_item.id)
+        .unwrap()
+        .expect("original delivery summary should remain");
+    assert_eq!(summary.text, "Original completion report");
+    let transcript = runtime.storage().read_recent_transcript(10).unwrap();
+    let tool_results = transcript
+        .iter()
+        .find(|entry| entry.kind == crate::types::TranscriptEntryKind::ToolResults)
+        .expect("tool results should be recorded");
+    let tool_result: serde_json::Value =
+        serde_json::from_str(tool_results.data["results"][0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        tool_result["result"]["completed_transition"].as_bool(),
+        Some(false)
+    );
+    assert_ne!(
+        tool_result["result"]["completion_report_promoted"].as_bool(),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("finish todos".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            None,
+            None,
+            None,
+            Some(vec![
+                TodoItem {
+                    text: "still pending".into(),
+                    state: TodoItemState::Pending,
+                },
+                TodoItem {
+                    text: "actively checking".into(),
+                    state: TodoItemState::InProgress,
+                },
+            ]),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "complete".into(),
+                name: "CompleteWorkItem".into(),
+                input: serde_json::json!({"work_item_id": work_item.id}),
+            },
+        )
+        .await
+        .unwrap();
+    let payload = result.envelope.result.unwrap();
+    assert_eq!(
+        payload["warnings"][0]["kind"].as_str(),
+        Some("unfinished_todos")
+    );
+    assert_eq!(payload["warnings"][0]["pending_count"].as_u64(), Some(1));
+    assert_eq!(
+        payload["warnings"][0]["in_progress_count"].as_u64(),
+        Some(1)
+    );
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    let completed_event = events
+        .iter()
+        .find(|event| {
+            event.kind == "work_item_written" && event.data["action"].as_str() == Some("completed")
+        })
+        .expect("completion event should be recorded");
+    assert_eq!(completed_event.data["warning_count"].as_u64(), Some(1));
+    assert_eq!(
+        completed_event.data["warnings"][0]["kind"].as_str(),
+        Some("unfinished_todos")
     );
 }
 
@@ -1954,7 +2371,11 @@ async fn triggered_work_item_waiting_intent_preserves_explicit_work_item_state_u
     }));
 
     let completed = runtime
-        .complete_work_item(work.id.clone(), Some("CI confirmed success".into()))
+        .complete_work_item(
+            work.id.clone(),
+            Some("CI confirmed success".into()),
+            Vec::new(),
+        )
         .await
         .unwrap();
     assert_eq!(completed.state, WorkItemState::Completed);
@@ -2000,7 +2421,11 @@ async fn completing_work_item_cancels_work_item_scoped_external_trigger() {
         .unwrap();
 
     runtime
-        .complete_work_item(work.id.clone(), Some("review no longer needed".into()))
+        .complete_work_item(
+            work.id.clone(),
+            Some("review no longer needed".into()),
+            Vec::new(),
+        )
         .await
         .unwrap();
 
@@ -2229,7 +2654,11 @@ async fn reconcile_waiting_contract_cancels_old_waits_after_active_work_switch()
         .created_at;
 
     runtime
-        .complete_work_item(old_work.id.clone(), Some("old work done".into()))
+        .complete_work_item(
+            old_work.id.clone(),
+            Some("old work done".into()),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let new_work = runtime
@@ -2318,7 +2747,11 @@ async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_s
         .created_at;
 
     runtime
-        .complete_work_item(old_work.id.clone(), Some("old work done".into()))
+        .complete_work_item(
+            old_work.id.clone(),
+            Some("old work done".into()),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let new_work = runtime

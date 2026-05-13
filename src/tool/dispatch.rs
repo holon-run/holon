@@ -661,6 +661,23 @@ mod tests {
     }
 
     #[test]
+    fn complete_work_item_schema_keeps_completion_report_out_of_tool_input() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let complete_work_item = registry
+            .tool_specs()
+            .unwrap()
+            .into_iter()
+            .find(|spec| spec.name == "CompleteWorkItem")
+            .expect("CompleteWorkItem should be present");
+
+        assert!(complete_work_item.input_schema["properties"]["work_item_id"].is_object());
+        assert!(complete_work_item.input_schema["properties"]["result_summary"].is_null());
+        assert!(complete_work_item
+            .description
+            .contains("assistant text in the same round"));
+    }
+
+    #[test]
     fn emitted_tool_schemas_remain_strict_for_all_exposed_tools() {
         let registry = ToolRegistry::new(PathBuf::from("."));
 
