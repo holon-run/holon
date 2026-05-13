@@ -3024,6 +3024,7 @@ fn pipeline_single_turn_presentation_jsonl() {
     let mut seen_command = false;
     let mut seen_assistant = false;
     let mut seen_turn_terminal = false;
+    let mut seen_tool_executed = false;
 
     for line in &lines {
         let record: serde_json::Value =
@@ -3041,6 +3042,9 @@ fn pipeline_single_turn_presentation_jsonl() {
         if reducer_kinds.contains(&"assistant_round_recorded") {
             seen_assistant = true;
             assert_eq!(record["item_kind"], "assistant_progress");
+        }
+        if reducer_kinds.contains(&"tool_executed") {
+            seen_tool_executed = true;
         }
         if reducer_kinds.contains(&"turn_terminal") {
             seen_turn_terminal = true;
@@ -3076,6 +3080,10 @@ fn pipeline_single_turn_presentation_jsonl() {
     assert!(
         seen_assistant,
         "should contain assistant_round_recorded event"
+    );
+    assert!(
+        seen_tool_executed,
+        "should contain tool_executed event"
     );
     assert!(seen_turn_terminal, "should contain turn_terminal event");
 }
