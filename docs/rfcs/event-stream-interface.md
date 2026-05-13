@@ -727,7 +727,6 @@ bootstrap from a single request.
   "session": {},
   "tasks": [],
   "transcript_tail": [],
-  "briefs_tail": [],
   "timers": [],
   "work_items": [],
   "work_plan": null,
@@ -749,8 +748,6 @@ bootstrap from a single request.
   - current task snapshots relevant to the TUI
 - `transcript_tail`
   - recent transcript entries
-- `briefs_tail`
-  - recent operator-facing briefs
 - `timers`
   - current timer records when relevant
 - `work_items`
@@ -765,6 +762,10 @@ bootstrap from a single request.
   - current workspace/worktree summary needed by the TUI
 - `cursor`
   - replay cursor for the subsequent event stream
+
+Explicit brief record retrieval remains available through
+`GET /agents/:id/briefs`; the aggregate `/state` bootstrap payload does not
+embed `briefs_tail` or a latest `brief`.
 
 The server does not need to expose all possible historical records here. It
 does need to expose enough current state that a client can rebuild its local

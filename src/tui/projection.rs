@@ -280,10 +280,6 @@ impl TuiProjection {
                     self.mark_stale([ProjectionSlice::TranscriptTail]);
                 }
             }
-            "brief_created" => {
-                // Chat rendering is derived from event presentation. Clients
-                // that need explicit brief records should use /briefs.
-            }
             "task_created" | "task_status_updated" | "task_result_received" => {
                 if let Some(task) = decode_payload::<TaskRecord>(&event.data.payload) {
                     upsert_active_task(&mut self.tasks, task);
