@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::operator_event::OperatorEventCategory;
 use crate::tui::projection::ProjectionEventRecord;
+use crate::types::{BriefKind, BriefRecord};
 
 // ── Supporting types ───────────────────────────────────────────────────────
 
@@ -618,8 +619,11 @@ impl PresentationReducer {
                             continue;
                         }
                     }
+                }
+
+                "brief_created" => {
                     items.push(TimedItem {
-                        item: self.event_to_presentation(event),
+                        item: brief_result_item(event),
                         ts: event.ts,
                     });
                 }
@@ -781,6 +785,8 @@ impl PresentationReducer {
                     });
                 }
 
+                kind if is_suppressed_known_runtime_event(kind) => {}
+
                 _ => {
                     items.push(TimedItem {
                         item: self.event_to_presentation(event),
@@ -859,6 +865,32 @@ impl PresentationReducer {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+fn brief_result_item(event: &ProjectionEventRecord) -> PresentationItem {
+    match serde_json::from_value::<BriefRecord>(event.payload.clone()) {
+        Ok(brief) => PresentationItem::AssistantResult {
+            brief_id: Some(brief.id),
+            body: brief.text,
+            outcome: match brief.kind {
+                BriefKind::Failure => Outcome::Failure,
+                BriefKind::Result => Outcome::Success,
+                BriefKind::Ack => Outcome::Neutral,
+            },
+        },
+        Err(_) => PresentationItem::AssistantResult {
+            brief_id: None,
+            body: event.summary.clone(),
+            outcome: Outcome::Neutral,
+        },
+    }
+}
+
+fn is_suppressed_known_runtime_event(kind: &str) -> bool {
+    matches!(
+        kind,
+        "scheduler_decision" | "message_admitted" | "message_processing_started" | "turn_started"
+    )
+}
 
 fn truncate_text(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
@@ -1214,6 +1246,82 @@ mod tests {
                 assert_eq!(tokens.output, 200);
             }
             other => panic!("expected ProviderRound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_brief_created_uses_brief_text_without_event_label() {
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "completed the task",
+            None,
+            None,
+        );
+        let event = make_event("brief_created", "Brief: completed the task", json!(brief));
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantResult { body, outcome, .. } => {
+                assert_eq!(body, "completed the task");
+                assert_eq!(*outcome, Outcome::Success);
+                assert!(!body.contains("Brief:"));
+            }
+            other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_failure_brief_preserves_failure_outcome() {
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Failure,
+            "provider transport failed",
+            None,
+            None,
+        );
+        let event = make_event(
+            "brief_created",
+            "Brief: provider transport failed",
+            json!(brief),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantResult { body, outcome, .. } => {
+                assert_eq!(body, "provider transport failed");
+                assert_eq!(*outcome, Outcome::Failure);
+            }
+            other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_suppresses_known_runtime_noise_but_keeps_unknown_debug_fallback() {
+        let scheduler = make_event(
+            "scheduler_decision",
+            "Scheduler decision: sleep",
+            json!({"decision": "sleep"}),
+        );
+        let unknown = make_event("unknown_runtime_event", "unknown runtime detail", json!({}));
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[scheduler, unknown]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::GenericEvent { kind, summary } => {
+                assert_eq!(kind, "unknown_runtime_event");
+                assert_eq!(summary, "unknown runtime detail");
+                assert_eq!(items[0].item.min_display_level(), 5);
+            }
+            other => panic!("expected GenericEvent fallback, got {:?}", other),
         }
     }
 
