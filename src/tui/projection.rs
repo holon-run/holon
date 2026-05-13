@@ -92,6 +92,7 @@ pub(crate) struct TuiProjection {
     pub(crate) cursor: Option<String>,
     pub(crate) history_oldest_cursor: Option<String>,
     pub(crate) history_has_older: bool,
+    history_paging_active: bool,
     pub(crate) stale_slices: BTreeSet<ProjectionSlice>,
     event_log: Vec<ProjectionEventRecord>,
     durable_conversation_log: Vec<ProjectionEventRecord>,
@@ -122,6 +123,7 @@ impl TuiProjection {
             cursor: snapshot.cursor,
             history_oldest_cursor: None,
             history_has_older: false,
+            history_paging_active: false,
             stale_slices: BTreeSet::new(),
             event_log: Vec::new(),
             durable_conversation_log: Vec::new(),
@@ -139,6 +141,7 @@ impl TuiProjection {
         self.durable_conversation_log = mem::take(&mut previous.durable_conversation_log);
         self.history_oldest_cursor = previous.history_oldest_cursor.take();
         self.history_has_older = previous.history_has_older;
+        self.history_paging_active = previous.history_paging_active;
         if let Some(last_event) = self.event_log.last() {
             self.cursor = Some(last_event.id.clone());
         }
@@ -159,9 +162,15 @@ impl TuiProjection {
         oldest_cursor: Option<String>,
         has_older: bool,
     ) -> usize {
-        self.history_oldest_cursor = oldest_cursor;
-        self.history_has_older = has_older;
+        self.history_paging_active = true;
+        let available = EVENT_HISTORY_LOG_LIMIT.saturating_sub(self.event_log.len());
+        if available == 0 {
+            self.history_has_older = false;
+            return 0;
+        }
         if events.is_empty() {
+            self.history_oldest_cursor = oldest_cursor;
+            self.history_has_older = has_older;
             return 0;
         }
 
@@ -179,11 +188,22 @@ impl TuiProjection {
             }
             prepended.push(self.projection_event_record_from_envelope(envelope));
         }
+        let capped = prepended.len() > available;
+        if capped {
+            let first_retained = prepended.len() - available;
+            prepended.drain(0..first_retained);
+        }
         let added = prepended.len();
         if added == 0 {
+            self.history_oldest_cursor = oldest_cursor;
+            self.history_has_older = has_older;
             return 0;
         }
 
+        self.history_oldest_cursor = prepended.first().map(|event| event.id.clone());
+        self.history_has_older = has_older
+            && !capped
+            && self.event_log.len().saturating_add(added) < EVENT_HISTORY_LOG_LIMIT;
         prepended.extend(mem::take(&mut self.event_log));
         self.event_log = prepended;
         self.rebuild_durable_conversation_log();
@@ -193,7 +213,7 @@ impl TuiProjection {
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
         let presentation_context = self.operator_presentation_context();
         let record = projection_event_record_from_stream_event(&event, &presentation_context);
-        let event_log_limit = if self.history_oldest_cursor.is_some() || self.history_has_older {
+        let event_log_limit = if self.history_paging_active {
             EVENT_HISTORY_LOG_LIMIT
         } else {
             EVENT_LOG_LIMIT
@@ -494,6 +514,12 @@ impl TuiProjection {
 
     pub(crate) fn event_log(&self) -> &[ProjectionEventRecord] {
         &self.event_log
+    }
+
+    pub(crate) fn event_history_at_local_cap(&self) -> bool {
+        self.history_paging_active
+            && !self.history_has_older
+            && self.event_log.len() >= EVENT_HISTORY_LOG_LIMIT
     }
 
     pub(crate) fn timeline_events(&self) -> impl Iterator<Item = &ProjectionEventRecord> {
@@ -1483,40 +1509,13 @@ mod tests {
     #[test]
     fn projection_prepends_older_event_page_and_updates_history_cursor() {
         let mut snapshot = sample_snapshot();
-        snapshot.events_tail = vec![StreamEventEnvelope {
-            id: "evt-newer".into(),
-            seq: 3,
-            ts: Utc::now(),
-            agent_id: "default".into(),
-            event_type: "tool_executed".into(),
-            projection: None,
-            provenance: None,
-            payload: json!({ "tool_name": "ExecCommand" }),
-        }];
+        snapshot.events_tail = vec![sample_event_envelope("evt-newer", 3)];
         let mut projection = TuiProjection::from_snapshot(snapshot);
 
         let added = projection.prepend_event_history_page(
             vec![
-                StreamEventEnvelope {
-                    id: "evt-older-2".into(),
-                    seq: 2,
-                    ts: Utc::now(),
-                    agent_id: "default".into(),
-                    event_type: "tool_executed".into(),
-                    projection: None,
-                    provenance: None,
-                    payload: json!({ "tool_name": "ExecCommand" }),
-                },
-                StreamEventEnvelope {
-                    id: "evt-older-1".into(),
-                    seq: 1,
-                    ts: Utc::now(),
-                    agent_id: "default".into(),
-                    event_type: "tool_executed".into(),
-                    projection: None,
-                    provenance: None,
-                    payload: json!({ "tool_name": "ExecCommand" }),
-                },
+                sample_event_envelope("evt-older-2", 2),
+                sample_event_envelope("evt-older-1", 1),
             ],
             Some("evt-older-1".into()),
             true,
@@ -1534,6 +1533,49 @@ mod tests {
             Some("evt-older-1")
         );
         assert!(projection.history_has_older);
+    }
+
+    #[test]
+    fn projection_caps_prepended_history_and_keeps_cursor_on_retained_oldest() {
+        let mut snapshot = sample_snapshot();
+        snapshot.events_tail = vec![sample_event_envelope("evt-live", 5000)];
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+
+        let first_page = (0..4090)
+            .rev()
+            .map(|seq| sample_event_envelope(&format!("evt-page-a-{seq}"), seq))
+            .collect::<Vec<_>>();
+        let first_added =
+            projection.prepend_event_history_page(first_page, Some("evt-page-a-0".into()), true);
+        assert_eq!(first_added, 4090);
+        assert_eq!(projection.event_log().len(), 4091);
+        assert!(projection.history_has_older);
+
+        let second_page = (4090..4110)
+            .rev()
+            .map(|seq| sample_event_envelope(&format!("evt-page-b-{seq}"), seq))
+            .collect::<Vec<_>>();
+        let second_added = projection.prepend_event_history_page(
+            second_page,
+            Some("evt-page-b-4090".into()),
+            true,
+        );
+
+        assert_eq!(second_added, 5);
+        assert_eq!(projection.event_log().len(), 4096);
+        assert_eq!(
+            projection
+                .event_log()
+                .first()
+                .map(|event| event.id.as_str()),
+            Some("evt-page-b-4105")
+        );
+        assert_eq!(
+            projection.history_oldest_cursor.as_deref(),
+            Some("evt-page-b-4105")
+        );
+        assert!(!projection.history_has_older);
+        assert!(projection.event_history_at_local_cap());
     }
 
     #[test]
@@ -2386,16 +2428,34 @@ mod tests {
         AgentStreamEvent {
             id: format!("evt-{kind}"),
             event: kind.to_string(),
-            data: StreamEventEnvelope {
-                id: format!("evt-{kind}"),
-                seq: 1,
-                ts: Utc::now(),
-                agent_id: "default".into(),
-                event_type: kind.to_string(),
-                projection: None,
-                provenance: None,
-                payload,
-            },
+            data: sample_event_envelope_with_payload(&format!("evt-{kind}"), 1, kind, payload),
+        }
+    }
+
+    fn sample_event_envelope(id: &str, seq: u64) -> StreamEventEnvelope {
+        sample_event_envelope_with_payload(
+            id,
+            seq,
+            "tool_executed",
+            json!({ "tool_name": "ExecCommand" }),
+        )
+    }
+
+    fn sample_event_envelope_with_payload(
+        id: &str,
+        seq: u64,
+        kind: &str,
+        payload: Value,
+    ) -> StreamEventEnvelope {
+        StreamEventEnvelope {
+            id: id.into(),
+            seq,
+            ts: Utc::now(),
+            agent_id: "default".into(),
+            event_type: kind.into(),
+            projection: None,
+            provenance: None,
+            payload,
         }
     }
 

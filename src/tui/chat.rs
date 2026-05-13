@@ -8,7 +8,13 @@ use crossterm::event::KeyCode;
 pub(super) struct ChatScrollState {
     follow_tail: bool,
     offset_from_bottom: u16,
-    pending_prepend_anchor: Option<u16>,
+    pending_prepend_anchor: Option<HistoryPrependAnchor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HistoryPrependAnchor {
+    max_scroll: u16,
+    scroll: u16,
 }
 
 impl ChatScrollState {
@@ -58,13 +64,19 @@ impl ChatScrollState {
             return;
         }
         self.offset_from_bottom = self.offset_from_bottom.min(max_scroll);
-        self.pending_prepend_anchor = Some(max_scroll);
+        self.pending_prepend_anchor = Some(HistoryPrependAnchor {
+            max_scroll,
+            scroll: self.effective_scroll(max_scroll),
+        });
     }
 
-    pub(super) fn apply_history_prepend_adjustment(&mut self, _max_scroll: u16) {
-        let Some(_previous_max_scroll) = self.pending_prepend_anchor.take() else {
+    pub(super) fn apply_history_prepend_adjustment(&mut self, max_scroll: u16) {
+        let Some(anchor) = self.pending_prepend_anchor.take() else {
             return;
         };
+        let added_scroll_rows = max_scroll.saturating_sub(anchor.max_scroll);
+        let preserved_scroll = anchor.scroll.saturating_add(added_scroll_rows);
+        self.offset_from_bottom = max_scroll.saturating_sub(preserved_scroll.min(max_scroll));
     }
 
     #[cfg(test)]

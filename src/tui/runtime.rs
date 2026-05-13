@@ -764,6 +764,12 @@ impl TuiApp {
             self.status_line = format!("Loaded {added} older events");
         } else if has_older {
             self.status_line = "No new older events in page".into();
+        } else if self
+            .projection
+            .as_ref()
+            .is_some_and(|projection| projection.event_history_at_local_cap())
+        {
+            self.status_line = "Reached local event history limit".into();
         } else {
             self.status_line = "Reached beginning of event history".into();
         }
