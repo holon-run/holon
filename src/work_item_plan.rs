@@ -1,5 +1,7 @@
 use std::{
     fs,
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -40,13 +42,19 @@ pub(crate) fn ensure_plan_artifact(
 }
 
 pub(crate) fn describe_plan_artifact(path: &Path) -> Result<WorkItemPlanArtifact> {
-    let content = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let metadata =
-        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("failed to stat {}", path.display()))?;
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)
+        .with_context(|| format!("failed to read {}", path.display()))?;
     let hash = format!("sha256:{:x}", Sha256::digest(&content));
     let text = String::from_utf8_lossy(&content);
-    let preview = text.chars().take(PLAN_PREVIEW_CHARS).collect::<String>();
-    let preview_complete = text.chars().count() <= PLAN_PREVIEW_CHARS;
+    let mut chars = text.chars();
+    let preview = chars.by_ref().take(PLAN_PREVIEW_CHARS).collect::<String>();
+    let preview_complete = chars.next().is_none();
     let updated_at = metadata
         .modified()
         .ok()

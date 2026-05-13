@@ -511,11 +511,12 @@ fn render_current_work_item(work_item: &WorkItemRecord, agent_home: &std::path::
         ),
     ];
     let plan_path = crate::work_item_plan::plan_path(agent_home, &work_item.id);
-    if let Ok(Some(plan_artifact)) = plan_path
-        .exists()
-        .then(|| crate::work_item_plan::describe_plan_artifact(&plan_path))
-        .transpose()
-    {
+    let plan_artifact = if plan_path.exists() || work_item.plan.is_some() {
+        crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None).ok()
+    } else {
+        None
+    };
+    if let Some(plan_artifact) = plan_artifact {
         lines.push(format!("- Plan artifact: {}", plan_artifact.path.display()));
         lines.push(format!(
             "- Plan preview complete: {}",
