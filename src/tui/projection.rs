@@ -231,6 +231,18 @@ impl TuiProjection {
                 tracing::warn!("failed to persist TUI log event: {error}");
             }
         }
+        if is_presentation_reducer_event(&record) {
+            let timed_items = self
+                .presentation_reducer
+                .reduce(std::slice::from_ref(&record));
+            if let Err(error) = log_writer
+                .write_presentation_items(std::slice::from_ref(&record), timed_items.as_slice())
+            {
+                if !TUI_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!("failed to persist TUI presentation log: {error}");
+                }
+            }
+        }
         self.cursor = Some(event.id.clone());
 
         match event.data.event_type.as_str() {
@@ -1163,6 +1175,14 @@ pub(crate) fn is_durable_conversation_kind(kind: &str) -> bool {
     is_durable_operator_event_kind(kind)
 }
 
+fn is_presentation_reducer_event(event: &ProjectionEventRecord) -> bool {
+    event.kind != "message_enqueued"
+        && !matches!(
+            event.presentation.category,
+            OperatorEventCategory::StateSync
+        )
+}
+
 fn is_activity_reset_kind(kind: &str) -> bool {
     is_activity_reset_event_kind(kind)
 }
@@ -1504,6 +1524,45 @@ mod tests {
             projection.durable_conversation_events().next().is_none(),
             "events_tail should seed the raw inspector, not durable conversation history"
         );
+    }
+
+    #[test]
+    fn stream_event_writes_enabled_presentation_debug_log_incrementally() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let writer =
+            crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
+
+        projection.apply_event(
+            sample_event(
+                "assistant_round_recorded",
+                json!({ "round": 1, "text_preview": "streamed assistant progress" }),
+            ),
+            &writer,
+        );
+
+        let line = std::fs::read_to_string(writer.root().join("presentation.jsonl")).unwrap();
+        let record: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(record["item_kind"], "assistant_progress");
+        assert_eq!(
+            record["reducer_event_ids"],
+            json!(["evt-assistant_round_recorded"])
+        );
+    }
+
+    #[test]
+    fn stream_event_does_not_write_presentation_debug_log_by_default() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let writer = crate::tui::logging::TuiLogWriter::new_temp().unwrap();
+
+        projection.apply_event(
+            sample_event(
+                "assistant_round_recorded",
+                json!({ "round": 1, "text_preview": "streamed assistant progress" }),
+            ),
+            &writer,
+        );
+
+        assert!(!writer.root().join("presentation.jsonl").exists());
     }
 
     #[test]
