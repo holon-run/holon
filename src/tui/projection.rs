@@ -31,7 +31,6 @@ use crate::{
     },
 };
 
-const BRIEF_TAIL_LIMIT: usize = 24;
 const TRANSCRIPT_TAIL_LIMIT: usize = 100;
 const TASK_TAIL_LIMIT: usize = 50;
 const TIMER_TAIL_LIMIT: usize = 50;
@@ -47,7 +46,6 @@ pub(crate) enum ProjectionSlice {
     Session,
     Tasks,
     TranscriptTail,
-    BriefsTail,
     Timers,
     WorkItems,
     WaitingIntents,
@@ -83,7 +81,6 @@ pub(crate) struct TuiProjection {
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) transcript_tail: Vec<TranscriptEntry>,
     pub(crate) operator_messages: Vec<OperatorMessageRecord>,
-    pub(crate) briefs_tail: Vec<BriefRecord>,
     pub(crate) timers: Vec<TimerRecord>,
     pub(crate) work_items: Vec<WorkItemRecord>,
     pub(crate) waiting_intents: Vec<WaitingIntentRecord>,
@@ -114,7 +111,6 @@ impl TuiProjection {
             tasks,
             transcript_tail: snapshot.transcript_tail,
             operator_messages: snapshot.operator_messages,
-            briefs_tail: snapshot.briefs_tail,
             timers: snapshot.timers,
             work_items: snapshot.work_items,
             waiting_intents: snapshot.waiting_intents,
@@ -285,17 +281,8 @@ impl TuiProjection {
                 }
             }
             "brief_created" => {
-                if let Some(brief) = decode_payload::<BriefRecord>(&event.data.payload) {
-                    push_limited_sorted(
-                        &mut self.briefs_tail,
-                        brief,
-                        BRIEF_TAIL_LIMIT,
-                        |left, right| left.created_at.cmp(&right.created_at),
-                    );
-                    self.stale_slices.remove(&ProjectionSlice::BriefsTail);
-                } else {
-                    self.mark_stale([ProjectionSlice::BriefsTail]);
-                }
+                // Chat rendering is derived from event presentation. Clients
+                // that need explicit brief records should use /briefs.
             }
             "task_created" | "task_status_updated" | "task_result_received" => {
                 if let Some(task) = decode_payload::<TaskRecord>(&event.data.payload) {
@@ -1497,7 +1484,6 @@ mod tests {
         let projection = TuiProjection::from_snapshot(snapshot.clone());
 
         assert_eq!(projection.agent.identity.agent_id, "default");
-        assert_eq!(projection.briefs_tail.len(), snapshot.briefs_tail.len());
         assert_eq!(
             projection.transcript_tail.len(),
             snapshot.transcript_tail.len()
@@ -1744,10 +1730,10 @@ mod tests {
             &test_log_writer(),
         );
 
-        assert_eq!(
-            projection.briefs_tail.last().map(|item| item.text.as_str()),
-            Some("streamed brief")
-        );
+        assert!(projection
+            .event_log()
+            .iter()
+            .any(|event| event.kind == "brief_created"));
         assert_eq!(
             projection
                 .transcript_tail
@@ -2641,13 +2627,6 @@ mod tests {
                 data: json!({ "body": { "type": "text", "text": "hi" } }),
             }],
             operator_messages: Vec::new(),
-            briefs_tail: vec![BriefRecord::new(
-                "default",
-                BriefKind::Ack,
-                "queued",
-                Some("msg-1".into()),
-                None,
-            )],
             timers: vec![TimerRecord {
                 id: "timer-1".into(),
                 agent_id: "default".into(),
@@ -2732,7 +2711,6 @@ mod tests {
                 }),
             },
             execution: None,
-            brief: None,
             events_tail: Vec::new(),
             cursor: Some("evt-bootstrap".into()),
         }

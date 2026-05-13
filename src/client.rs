@@ -107,8 +107,6 @@ pub struct AgentStateSnapshot {
     #[serde(default)]
     pub operator_messages: Vec<OperatorMessageRecord>,
     #[serde(default)]
-    pub briefs_tail: Vec<BriefRecord>,
-    #[serde(default)]
     pub timers: Vec<TimerRecord>,
     #[serde(default)]
     pub work_items: Vec<WorkItemRecord>,
@@ -122,8 +120,6 @@ pub struct AgentStateSnapshot {
     pub workspace: StateWorkspaceSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionSnapshot>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brief: Option<BriefRecord>,
     #[serde(default)]
     pub events_tail: Vec<StreamEventEnvelope>,
     pub cursor: Option<String>,

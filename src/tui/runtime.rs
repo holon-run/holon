@@ -10,7 +10,6 @@ use tokio::sync::mpsc;
 const STREAM_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const REFRESH_RETRY_DELAY: Duration = Duration::from_secs(1);
 const AGENT_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
-const BRIEF_LIMIT: usize = 24;
 const TRANSCRIPT_LIMIT: usize = 40;
 const TASK_LIMIT: usize = 40;
 const OPTIMISTIC_OPERATOR_MESSAGE_LIMIT: usize = 64;
@@ -339,7 +338,6 @@ impl TuiApp {
 
     pub(super) fn clear_projection_view(&mut self) {
         self.stop_stream_task();
-        self.briefs.clear();
         self.transcript.clear();
         self.optimistic_operator_messages.clear();
         self.tasks.clear();
@@ -794,15 +792,6 @@ impl TuiApp {
             projection.transcript_tail.clone()
         };
 
-        self.briefs = projection
-            .briefs_tail
-            .iter()
-            .cloned()
-            .rev()
-            .take(BRIEF_LIMIT)
-            .collect::<Vec<_>>();
-        self.briefs.reverse();
-
         self.transcript = merged_transcript
             .iter()
             .cloned()
@@ -960,7 +949,6 @@ impl TuiApp {
                 ProjectionSlice::Session => "session",
                 ProjectionSlice::Tasks => "tasks",
                 ProjectionSlice::TranscriptTail => "transcript",
-                ProjectionSlice::BriefsTail => "briefs",
                 ProjectionSlice::Timers => "timers",
                 ProjectionSlice::WorkItems => "work-items",
                 ProjectionSlice::WaitingIntents => "waiting",
