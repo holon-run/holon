@@ -888,12 +888,7 @@ fn brief_result_item(event: &ProjectionEventRecord) -> PresentationItem {
 fn is_suppressed_known_runtime_event(kind: &str) -> bool {
     matches!(
         kind,
-        "scheduler_decision"
-            | "message_admitted"
-            | "message_processing_started"
-            | "message_processing_completed"
-            | "message_processed"
-            | "turn_started"
+        "scheduler_decision" | "message_admitted" | "message_processing_started" | "turn_started"
     )
 }
 
