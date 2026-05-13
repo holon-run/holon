@@ -460,7 +460,9 @@ anchor.
 
 Other open WorkItems should be summarized compactly by id, objective, state,
 plan artifact preview, readiness, current todo, and blocker. Completed
-WorkItems should not be injected by default.
+WorkItems should not replay raw transcript by default. They may appear as
+bounded recent completed summaries only when they have an explicit promoted
+completion report (`result_summary` or matching `DeliverySummaryRecord`).
 
 If the agent changes focus during a turn, the tool result must return the new
 current WorkItem snapshot and state that subsequent tool calls in the turn are
