@@ -24,6 +24,8 @@ mod waiting;
 mod workspace;
 mod worktree;
 
+pub use tasks::{PickedWorkItem, WorkItemFocusTransition, WorkItemFocusTransitionWarning};
+
 use std::{
     collections::HashMap,
     fs,

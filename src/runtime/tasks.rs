@@ -7,9 +7,10 @@ use crate::types::{
     FailureArtifact, FailureArtifactCategory, SpawnAgentResult, TaskHandle, TaskInputResult,
     TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot,
     TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+    WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
     CHILD_AGENT_TASK_KIND,
 };
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 const TASK_OUTPUT_POLL_INTERVAL_MS: u64 = 100;
@@ -21,6 +22,32 @@ const SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET: usize = 120;
 struct TaskMessageSnapshot {
     state: TaskStatus,
     text: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WorkItemFocusTransitionWarning {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WorkItemFocusTransition {
+    pub previous_work_item_id: Option<String>,
+    pub current_work_item_id: String,
+    pub reason: Option<String>,
+    pub previous_readiness: Option<WorkItemReadiness>,
+    pub current_readiness: WorkItemReadiness,
+    pub switch_kind: String,
+    pub current_focus_mode: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<WorkItemFocusTransitionWarning>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PickedWorkItem {
+    pub previous_work_item: Option<WorkItemRecord>,
+    pub current_work_item: WorkItemRecord,
+    pub transition: WorkItemFocusTransition,
 }
 
 fn child_agent_task_detail(workspace_mode: ChildAgentWorkspaceMode) -> serde_json::Value {
@@ -1921,6 +1948,15 @@ impl RuntimeHandle {
         &self,
         work_item_id: String,
     ) -> Result<(Option<WorkItemRecord>, WorkItemRecord)> {
+        let picked = self.pick_work_item_with_reason(work_item_id, None).await?;
+        Ok((picked.previous_work_item, picked.current_work_item))
+    }
+
+    pub async fn pick_work_item_with_reason(
+        &self,
+        work_item_id: String,
+        reason: Option<String>,
+    ) -> Result<PickedWorkItem> {
         let agent_id = self.agent_id().await?;
         let current_id = self.agent_state().await?.current_work_item_id;
         let previous = match current_id.as_deref() {
@@ -1931,7 +1967,38 @@ impl RuntimeHandle {
         if record.state == WorkItemState::Completed {
             return Err(anyhow!("cannot pick completed work item {}", work_item_id));
         }
-        if current_id.as_deref().is_some_and(|id| id != record.id) {
+        let switching = current_id.as_deref().is_some_and(|id| id != record.id);
+        let normalized_reason = reason.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
+        let previous_readiness = previous.as_ref().map(WorkItemRecord::readiness);
+        let current_readiness = record.readiness();
+        let mut warnings = Vec::new();
+        if switching
+            && previous.as_ref().is_some_and(WorkItemRecord::is_runnable)
+            && normalized_reason.is_none()
+        {
+            warnings.push(WorkItemFocusTransitionWarning {
+                code: "missing_pick_reason_for_runnable_focus_switch".into(),
+                message: "PickWorkItem switched away from a runnable current work item without a reason; include reason on future explicit focus overrides.".into(),
+            });
+        }
+        let switch_kind = if !switching {
+            "same_work_item"
+        } else if previous.as_ref().is_some_and(WorkItemRecord::is_runnable) {
+            "explicit_focus_override"
+        } else {
+            "explicit_focus_pick"
+        }
+        .to_string();
+        let current_focus_mode = if record.is_runnable() {
+            "runnable"
+        } else {
+            "inspection"
+        }
+        .to_string();
+        if switching {
             if let Some(previous_id) = current_id.as_deref() {
                 self.cancel_work_item_waiting_intents(previous_id, "active_work_item_switched")
                     .await?;
@@ -1943,15 +2010,35 @@ impl RuntimeHandle {
             guard.state.current_turn_work_item_id = Some(record.id.clone());
             self.inner.storage.write_agent(&guard.state)?;
         }
+        let transition = WorkItemFocusTransition {
+            previous_work_item_id: current_id.clone(),
+            current_work_item_id: record.id.clone(),
+            reason: normalized_reason,
+            previous_readiness,
+            current_readiness,
+            switch_kind,
+            current_focus_mode,
+            warnings,
+        };
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_picked",
             serde_json::json!({
                 "agent_id": agent_id,
-                "previous_work_item_id": current_id,
-                "current_work_item_id": record.id,
+                "previous_work_item_id": transition.previous_work_item_id.clone(),
+                "current_work_item_id": transition.current_work_item_id.clone(),
+                "reason": transition.reason.clone(),
+                "previous_readiness": transition.previous_readiness,
+                "current_readiness": transition.current_readiness,
+                "switch_kind": transition.switch_kind.clone(),
+                "current_focus_mode": transition.current_focus_mode.clone(),
+                "warnings": transition.warnings.clone(),
             }),
         ))?;
-        Ok((previous, record))
+        Ok(PickedWorkItem {
+            previous_work_item: previous,
+            current_work_item: record,
+            transition,
+        })
     }
 
     pub async fn update_work_item_fields(
@@ -1974,6 +2061,13 @@ impl RuntimeHandle {
         let mut record = existing.clone();
         let mut wrote_item = false;
         let previous_objective = record.objective.clone();
+        let focus_release_reason = if blocked_by.as_ref().is_some_and(Option::is_some) {
+            Some("work_item_blocked")
+        } else if plan_status == Some(WorkItemPlanStatus::NeedsInput) {
+            Some("work_item_needs_input")
+        } else {
+            None
+        };
         if let Some(objective) = objective {
             record.objective = objective;
             record.updated_at = Utc::now();
@@ -2020,6 +2114,10 @@ impl RuntimeHandle {
                     "objective_changed": previous_objective != record.objective,
                 }),
             ))?;
+            if let Some(reason) = focus_release_reason {
+                self.release_current_work_item_if_matches(&agent_id, &record, reason)
+                    .await?;
+            }
         }
         if wrote_item {
             self.inner.notify.notify_one();
@@ -2074,14 +2172,8 @@ impl RuntimeHandle {
         self.cancel_work_item_waiting_intents(&record.id, "work_item_completed")
             .await?;
         {
-            let mut guard = self.inner.agent.lock().await;
-            if guard.state.current_work_item_id.as_deref() == Some(record.id.as_str()) {
-                guard.state.current_work_item_id = None;
-            }
-            if guard.state.current_turn_work_item_id.as_deref() == Some(record.id.as_str()) {
-                guard.state.current_turn_work_item_id = None;
-            }
-            self.inner.storage.write_agent(&guard.state)?;
+            self.release_current_work_item_if_matches(&agent_id, &record, "work_item_completed")
+                .await?;
         }
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_written",
@@ -2111,6 +2203,45 @@ impl RuntimeHandle {
             ));
         }
         Ok(record)
+    }
+
+    async fn release_current_work_item_if_matches(
+        &self,
+        agent_id: &str,
+        record: &WorkItemRecord,
+        reason: &str,
+    ) -> Result<bool> {
+        let released = {
+            let mut guard = self.inner.agent.lock().await;
+            let release_current =
+                guard.state.current_work_item_id.as_deref() == Some(record.id.as_str());
+            let release_turn =
+                guard.state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
+            if !release_current && !release_turn {
+                return Ok(false);
+            }
+            if release_current {
+                guard.state.current_work_item_id = None;
+            }
+            if release_turn {
+                guard.state.current_turn_work_item_id = None;
+            }
+            self.inner.storage.write_agent(&guard.state)?;
+            release_current || release_turn
+        };
+        if released {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_focus_released",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": record.id.as_str(),
+                    "reason": reason,
+                    "readiness": record.readiness(),
+                    "revision": record.revision,
+                }),
+            ))?;
+        }
+        Ok(released)
     }
 }
 

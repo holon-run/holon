@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use crate::types::WorkItemPlanStatus;
+use crate::types::{WorkItemPlanStatus, WorkItemReadiness};
 
 fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> TaskRecord {
     TaskRecord {
@@ -2804,4 +2804,279 @@ async fn queued_notification_keeps_working_memory_unfocused_before_pick() {
         .is_none());
 
     runtime_task.abort();
+}
+
+#[tokio::test]
+async fn blocking_current_work_item_releases_focus_and_unblock_does_not_repick() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("wait for dependency".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+
+    let blocked = runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("blocked on review".into())),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(blocked.readiness(), WorkItemReadiness::Blocked);
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.current_work_item_id.is_none());
+    assert!(state.current_turn_work_item_id.is_none());
+    let events = runtime.storage().read_recent_events(10).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_focus_released"
+            && event.data["reason"] == "work_item_blocked"
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+    }));
+
+    let unblocked = runtime
+        .update_work_item_fields(work.id.clone(), None, None, None, None, Some(None))
+        .await
+        .unwrap();
+
+    assert_eq!(unblocked.readiness(), WorkItemReadiness::Runnable);
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.current_work_item_id.is_none());
+    assert!(state.current_turn_work_item_id.is_none());
+}
+
+#[tokio::test]
+async fn update_tool_result_reports_released_blocked_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("block through tool".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "block".into(),
+                name: "UpdateWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": work.id,
+                    "blocked_by": "blocked through tool result",
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+    let payload = result.envelope.result.unwrap();
+    assert_eq!(payload["work_item"]["readiness"].as_str(), Some("blocked"));
+    assert_eq!(payload["work_item"]["is_current"].as_bool(), Some(false));
+    assert_eq!(payload["work_item"]["focus"].as_str(), Some("blocked"));
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.current_work_item_id.is_none());
+}
+
+#[tokio::test]
+async fn needs_input_current_work_item_releases_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("ask operator".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+
+    let waiting = runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            None,
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(waiting.readiness(), WorkItemReadiness::WaitingForOperator);
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.current_work_item_id.is_none());
+    assert!(state.current_turn_work_item_id.is_none());
+    let events = runtime.storage().read_recent_events(10).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_focus_released"
+            && event.data["reason"] == "work_item_needs_input"
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn pick_blocked_work_item_reports_inspection_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("inspect blocker".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("blocked on external signal".into())),
+        )
+        .await
+        .unwrap();
+
+    let picked = runtime
+        .pick_work_item_with_reason(work.id.clone(), Some("inspect blocker details".into()))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        picked.current_work_item.readiness(),
+        WorkItemReadiness::Blocked
+    );
+    assert_eq!(
+        picked.transition.current_readiness,
+        WorkItemReadiness::Blocked
+    );
+    assert_eq!(picked.transition.current_focus_mode, "inspection");
+    assert!(picked.transition.warnings.is_empty());
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(work.id.as_str())
+    );
+
+    runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            None,
+            None,
+            None,
+            Some(vec![crate::types::TodoItem {
+                text: "inspect blocker evidence".into(),
+                state: crate::types::TodoItemState::InProgress,
+            }]),
+            None,
+        )
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(work.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn pick_without_reason_warns_when_switching_from_runnable_current_work() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let current = runtime
+        .create_work_item("current runnable".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let next = runtime
+        .create_work_item("next runnable".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(current.id.clone()).await.unwrap();
+
+    let picked = runtime
+        .pick_work_item_with_reason(next.id.clone(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(picked.transition.previous_work_item_id, Some(current.id));
+    assert_eq!(
+        picked.transition.previous_readiness,
+        Some(WorkItemReadiness::Runnable)
+    );
+    assert_eq!(picked.transition.switch_kind, "explicit_focus_override");
+    assert_eq!(picked.transition.warnings.len(), 1);
+    assert_eq!(
+        picked.transition.warnings[0].code,
+        "missing_pick_reason_for_runnable_focus_switch"
+    );
+    let events = runtime.storage().read_recent_events(10).unwrap();
+    let event = events
+        .iter()
+        .find(|event| {
+            event.kind == "work_item_picked"
+                && event.data["current_work_item_id"].as_str() == Some(next.id.as_str())
+        })
+        .expect("work_item_picked event");
+    assert_eq!(
+        event.data["warnings"][0]["code"].as_str(),
+        Some("missing_pick_reason_for_runnable_focus_switch")
+    );
 }
