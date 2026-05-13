@@ -1995,9 +1995,7 @@ impl RuntimeHandle {
             wrote_item = true;
         }
         if wrote_item {
-            let plan_path =
-                crate::work_item_plan::plan_path(self.agent_home().as_path(), &record.id);
-            if record.plan.is_some() || plan_path.exists() {
+            if record.plan.is_some() {
                 crate::work_item_plan::ensure_plan_artifact(
                     self.agent_home().as_path(),
                     &record,
