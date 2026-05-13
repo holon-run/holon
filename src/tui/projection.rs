@@ -145,13 +145,7 @@ impl TuiProjection {
                 DURABLE_CONVERSATION_LOG_LIMIT,
             );
         }
-        let timed_items = self
-            .presentation_reducer
-            .reduce(std::slice::from_ref(&record));
-        if let Err(error) = log_writer
-            .write_event(&record)
-            .and_then(|_| log_writer.write_presentation_items(&[&record], &timed_items))
-        {
+        if let Err(error) = log_writer.write_event(&record) {
             if !TUI_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
                 tracing::warn!("failed to persist TUI log event: {error}");
             }

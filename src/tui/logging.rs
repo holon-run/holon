@@ -2,7 +2,7 @@
 use std::sync::Arc;
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
 };
 
@@ -58,15 +58,25 @@ impl TuiLogWriter {
 
     pub(crate) fn write_presentation_items(
         &self,
-        source_events: &[&ProjectionEventRecord],
+        reducer_events: &[ProjectionEventRecord],
         items: &[TimedItem],
     ) -> Result<()> {
+        let path = self.root.join("presentation.jsonl");
+        let mut writer = BufWriter::new(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .with_context(|| format!("failed to open {}", path.display()))?,
+        );
         for item in items {
-            append_jsonl(
-                &self.root.join("presentation.jsonl"),
-                &PersistedPresentationLogRecord::from_timed_item(source_events, item),
-            )?;
+            let line = serde_json::to_string(&PersistedPresentationLogRecord::from_timed_item(
+                reducer_events,
+                item,
+            ))?;
+            writeln!(writer, "{line}")?;
         }
+        writer.flush()?;
 
         Ok(())
     }
@@ -100,29 +110,29 @@ struct PersistedPresentationLogRecord<'a> {
     ts: DateTime<Utc>,
     item_kind: &'static str,
     min_display_level: u8,
-    source_event_ids: Vec<&'a str>,
-    source_event_kinds: Vec<&'a str>,
-    source_event_seqs: Vec<u64>,
-    source_event_summaries: Vec<&'a str>,
+    reducer_event_ids: Vec<&'a str>,
+    reducer_event_kinds: Vec<&'a str>,
+    reducer_event_seqs: Vec<u64>,
+    reducer_event_summaries: Vec<&'a str>,
     displays: Vec<PersistedDisplayRecord>,
 }
 
 impl<'a> PersistedPresentationLogRecord<'a> {
-    fn from_timed_item(source_events: &[&'a ProjectionEventRecord], item: &TimedItem) -> Self {
+    fn from_timed_item(reducer_events: &'a [ProjectionEventRecord], item: &TimedItem) -> Self {
         Self {
             ts: item.ts,
             item_kind: presentation_item_kind(&item.item),
             min_display_level: item.item.min_display_level(),
-            source_event_ids: source_events
+            reducer_event_ids: reducer_events
                 .iter()
                 .map(|event| event.id.as_str())
                 .collect(),
-            source_event_kinds: source_events
+            reducer_event_kinds: reducer_events
                 .iter()
                 .map(|event| event.kind.as_str())
                 .collect(),
-            source_event_seqs: source_events.iter().map(|event| event.seq).collect(),
-            source_event_summaries: source_events
+            reducer_event_seqs: reducer_events.iter().map(|event| event.seq).collect(),
+            reducer_event_summaries: reducer_events
                 .iter()
                 .map(|event| event.summary.as_str())
                 .collect(),
@@ -158,8 +168,9 @@ impl PersistedDisplayRecord {
 #[derive(Debug, Serialize)]
 struct PersistedRenderedCell {
     speaker: String,
-    body: String,
-    body_lines: Vec<String>,
+    body_preview: String,
+    body_char_count: usize,
+    body_line_count: usize,
     is_live: bool,
     indent_level: u8,
 }
@@ -168,12 +179,25 @@ impl PersistedRenderedCell {
     fn from_rendered_cell(cell: &RenderedCell) -> Self {
         Self {
             speaker: cell.speaker.clone(),
-            body: cell.body.clone(),
-            body_lines: cell.body_lines.clone(),
+            body_preview: preview_text(&cell.body, 512),
+            body_char_count: cell.body.chars().count(),
+            body_line_count: cell.body_lines.len(),
             is_live: cell.is_live,
             indent_level: cell.indent_level,
         }
     }
+}
+
+fn preview_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut preview = text
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    preview.push('…');
+    preview
 }
 
 fn presentation_item_kind(item: &PresentationItem) -> &'static str {
@@ -255,7 +279,7 @@ mod tests {
 
         writer
             .write_event(&event)
-            .and_then(|_| writer.write_presentation_items(&[&event], &[item]))
+            .and_then(|_| writer.write_presentation_items(std::slice::from_ref(&event), &[item]))
             .unwrap();
 
         let presentation_path = writer.root.join("presentation.jsonl");
@@ -263,10 +287,14 @@ mod tests {
         let record: Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(record["item_kind"], "assistant_result");
         assert_eq!(record["min_display_level"], 3);
-        assert_eq!(record["source_event_ids"], json!(["evt_1"]));
+        assert_eq!(record["reducer_event_ids"], json!(["evt_1"]));
         assert_eq!(record["displays"][0]["display_level"], 3);
         assert_eq!(record["displays"][0]["decision"], "shown");
         assert_eq!(record["displays"][0]["cells"][0]["speaker"], "Holon");
+        assert_eq!(
+            record["displays"][0]["cells"][0]["body_preview"],
+            "✓ completed work"
+        );
         assert!(
             !writer.root.join("conversation.jsonl").exists(),
             "TUI should not duplicate raw conversation events"
@@ -301,7 +329,9 @@ mod tests {
             },
         };
 
-        writer.write_presentation_items(&[&event], &[item]).unwrap();
+        writer
+            .write_presentation_items(std::slice::from_ref(&event), &[item])
+            .unwrap();
 
         let line = fs::read_to_string(writer.root.join("presentation.jsonl")).unwrap();
         let record: Value = serde_json::from_str(line.trim()).unwrap();

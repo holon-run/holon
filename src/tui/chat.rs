@@ -190,21 +190,15 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             .collect();
 
         let mut reducer = PresentationReducer::new();
-        let timed_items = reducer.reduce(events.as_slice());
+        let mut timed_items = reducer.reduce(events.as_slice());
+        timed_items.extend(reducer.flush());
+        log_presentation_decisions(app, events.as_slice(), timed_items.as_slice());
 
         for timed in &timed_items {
             if timed.item.is_visible_at(level) {
                 for rendered in timed.item.render(level) {
                     cells.push(rendered_to_conversation_cell(&rendered, timed.ts));
                 }
-            }
-        }
-
-        // Also flush any pending items
-        let flushed = reducer.flush();
-        for timed in &flushed {
-            for rendered in timed.item.render(level) {
-                cells.push(rendered_to_conversation_cell(&rendered, timed.ts));
             }
         }
     }
@@ -221,6 +215,30 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         cells.push(active_item);
     }
     cells
+}
+
+fn log_presentation_decisions(
+    app: &TuiApp,
+    events: &[ProjectionEventRecord],
+    timed_items: &[crate::presentation::TimedItem],
+) {
+    if events.is_empty() || timed_items.is_empty() {
+        return;
+    }
+    let signature = events
+        .last()
+        .map(|event| format!("{}:{}", events.len(), event.id))
+        .unwrap_or_default();
+    {
+        let mut logged = app.presentation_log_signature.borrow_mut();
+        if logged.as_deref() == Some(signature.as_str()) {
+            return;
+        }
+        *logged = Some(signature);
+    }
+    if let Err(error) = app.log_writer.write_presentation_items(events, timed_items) {
+        tracing::warn!("failed to persist TUI presentation log: {error}");
+    }
 }
 
 fn projection_brief_ids(app: &TuiApp) -> std::collections::BTreeSet<String> {
