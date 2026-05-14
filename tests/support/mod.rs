@@ -74,7 +74,7 @@ pub async fn test_work_item(
     }
     if state == WorkItemState::Completed {
         record = runtime
-            .complete_work_item(record.id.clone(), None, Vec::new())
+            .complete_work_item(record.id.clone(), Vec::new())
             .await?;
     }
     Ok(record)
