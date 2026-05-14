@@ -17,6 +17,11 @@ Start here if you want to see what Holon can do with minimal setup.
 - **[Local runtime](/guides/local-runtime/)** — conservative workflow for
   running and inspecting Holon from source.
 
+## Automate GitHub work
+
+- **[holon solve](/guides/solve/)** — headless automation for GitHub issues and
+  pull requests with automatic skill dispatch.
+
 ## Operate and configure
 
 Keep a running Holon instance healthy and configured.
@@ -53,6 +58,10 @@ Edit and build the Holon documentation website.
 
 - [Local runtime](./local-runtime.md)
   A conservative workflow for running and inspecting Holon locally.
+  <!-- mdorigin:index kind=article -->
+
+- [holon solve](./solve.md)
+  Use holon solve to automate GitHub issues and pull requests in headless mode.
   <!-- mdorigin:index kind=article -->
 
 - [Quick examples](./quick-examples.md)
