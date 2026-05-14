@@ -1824,7 +1824,9 @@ Work item read surfaces return `plan_artifact` instead of full inline plan
 text. The descriptor includes the absolute `path`, `hash`, `bytes`,
 `updated_at`, a bounded `preview`, and `preview_complete`. Agents should read,
 grep, or edit `plan_artifact.path` directly when the preview is incomplete or
-the plan body needs changes.
+the plan body needs changes. For completed work items, read surfaces also
+return `completion_report` when an explicit promoted report exists; this is the
+same canonical report used for result briefs and completion delivery summaries.
 
 `PickWorkItem` sets `AgentState.current_work_item_id` to an existing open work
 item owned by the agent.
@@ -1840,7 +1842,9 @@ item owned by the agent.
 `CompleteWorkItem` marks an existing work item completed:
 
 - `work_item_id` is required
-- `result_summary` is optional completion metadata
+- it accepts no `result_summary` or completion-report argument
+- the operator-facing completion report must be assistant text emitted in the
+  same assistant round as the successful `CompleteWorkItem` call
 - completion is an explicit agent assertion; it is not blocked by generic
   active task `wait_policy`
 - completion clears `blocked_by` and cancels work-item-scoped waiting intents

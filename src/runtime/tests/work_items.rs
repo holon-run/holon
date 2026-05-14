@@ -128,7 +128,17 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .await
         .unwrap();
     let completed = runtime
-        .complete_work_item(completed.id.clone(), None, Vec::new())
+        .complete_work_item(completed.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let completed = runtime
+        .promote_work_item_completion_report(
+            completed.id.clone(),
+            "Completed delivery report.".into(),
+            Some(7),
+            Some(0),
+            Vec::new(),
+        )
         .await
         .unwrap();
     bind_turn_to_work_item(&runtime, &active.id).await;
@@ -224,6 +234,18 @@ async fn work_item_query_tools_return_current_open_done_views() {
         completed_payload["work_item"]["readiness"].as_str(),
         Some("completed")
     );
+    assert_eq!(
+        completed_payload["work_item"]["completion_report"]["text"].as_str(),
+        Some("Completed delivery report.")
+    );
+    assert_eq!(
+        completed_payload["work_item"]["completion_report"]["source"].as_str(),
+        Some("work_item_result_summary")
+    );
+    assert_eq!(
+        completed_payload["work_item"]["completion_report"]["source_turn_index"].as_u64(),
+        Some(7)
+    );
 
     bind_turn_to_work_item(&runtime, completed.id.as_str()).await;
     let (fallback_result, _) = registry
@@ -248,6 +270,72 @@ async fn work_item_query_tools_return_current_open_done_views() {
         fallback_payload["work_items"][0]["id"].as_str(),
         Some(active.id.as_str())
     );
+}
+
+#[tokio::test]
+async fn work_item_query_tools_fall_back_to_delivery_summary_report() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item(
+            "legacy delivery summary fallback".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let completed = runtime
+        .complete_work_item(work.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let summary = DeliverySummaryRecord::new(
+        "default",
+        completed.id.clone(),
+        "Legacy delivery summary report.",
+        Some(11),
+        None,
+    );
+    let summary_id = summary.id.clone();
+    runtime.storage().append_delivery_summary(&summary).unwrap();
+
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "completed".into(),
+                name: "GetWorkItem".into(),
+                input: serde_json::json!({"work_item_id": completed.id}),
+            },
+        )
+        .await
+        .unwrap();
+    let payload = result.envelope.result.unwrap();
+    let report = &payload["work_item"]["completion_report"];
+    assert_eq!(
+        report["text"].as_str(),
+        Some("Legacy delivery summary report.")
+    );
+    assert_eq!(report["source"].as_str(), Some("delivery_summary"));
+    assert_eq!(
+        report["delivery_summary_id"].as_str(),
+        Some(summary_id.as_str())
+    );
+    assert_eq!(report["source_turn_index"].as_u64(), Some(11));
 }
 
 #[tokio::test]
@@ -285,7 +373,7 @@ async fn work_item_revision_increments_on_updates_and_completion() {
     assert_eq!(updated.revision, 2);
 
     let completed = runtime
-        .complete_work_item(updated.id.clone(), Some("done".into()), Vec::new())
+        .complete_work_item(updated.id.clone(), Vec::new())
         .await
         .unwrap();
     assert_eq!(completed.revision, 3);
@@ -322,11 +410,11 @@ async fn work_item_completion_ignores_running_tasks_and_clears_explicit_waits() 
     runtime.storage().append_task(&unscoped_task).unwrap();
 
     let completed = runtime
-        .complete_work_item(target.id.clone(), Some("target done".into()), Vec::new())
+        .complete_work_item(target.id.clone(), Vec::new())
         .await
         .unwrap();
     assert_eq!(completed.id, target.id);
-    assert_eq!(completed.result_summary.as_deref(), Some("target done"));
+    assert_eq!(completed.result_summary, None);
 
     let explicit_wait = runtime
         .create_work_item("explicit wait".into(), None, None, Vec::new())
@@ -345,11 +433,7 @@ async fn work_item_completion_ignores_running_tasks_and_clears_explicit_waits() 
         .unwrap();
 
     let completed_wait = runtime
-        .complete_work_item(
-            explicit_wait.id.clone(),
-            Some("confirmed done".into()),
-            Vec::new(),
-        )
+        .complete_work_item(explicit_wait.id.clone(), Vec::new())
         .await
         .unwrap();
     assert_eq!(completed_wait.state, WorkItemState::Completed);
@@ -830,7 +914,7 @@ async fn complete_work_item_refreshes_latest_plan_artifact_snapshot() {
     let expected = crate::work_item_plan::describe_plan_artifact(&plan_path).unwrap();
 
     let completed = runtime
-        .complete_work_item(work.id.clone(), Some("done".into()), Vec::new())
+        .complete_work_item(work.id.clone(), Vec::new())
         .await
         .unwrap();
 
@@ -1565,10 +1649,16 @@ async fn repeated_complete_work_item_does_not_overwrite_existing_report() {
         .create_work_item("already completed".into(), None, None, Vec::new())
         .await
         .unwrap();
+    let completed = seed_runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
     seed_runtime
-        .complete_work_item(
-            work_item.id.clone(),
-            Some("Original completion report".into()),
+        .promote_work_item_completion_report(
+            completed.id.clone(),
+            "Original completion report".into(),
+            None,
+            None,
             Vec::new(),
         )
         .await
@@ -2371,11 +2461,7 @@ async fn triggered_work_item_waiting_intent_preserves_explicit_work_item_state_u
     }));
 
     let completed = runtime
-        .complete_work_item(
-            work.id.clone(),
-            Some("CI confirmed success".into()),
-            Vec::new(),
-        )
+        .complete_work_item(work.id.clone(), Vec::new())
         .await
         .unwrap();
     assert_eq!(completed.state, WorkItemState::Completed);
@@ -2421,11 +2507,7 @@ async fn completing_work_item_cancels_work_item_scoped_external_trigger() {
         .unwrap();
 
     runtime
-        .complete_work_item(
-            work.id.clone(),
-            Some("review no longer needed".into()),
-            Vec::new(),
-        )
+        .complete_work_item(work.id.clone(), Vec::new())
         .await
         .unwrap();
 
@@ -2654,11 +2736,7 @@ async fn reconcile_waiting_contract_cancels_old_waits_after_active_work_switch()
         .created_at;
 
     runtime
-        .complete_work_item(
-            old_work.id.clone(),
-            Some("old work done".into()),
-            Vec::new(),
-        )
+        .complete_work_item(old_work.id.clone(), Vec::new())
         .await
         .unwrap();
     let new_work = runtime
@@ -2747,11 +2825,7 @@ async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_s
         .created_at;
 
     runtime
-        .complete_work_item(
-            old_work.id.clone(),
-            Some("old work done".into()),
-            Vec::new(),
-        )
+        .complete_work_item(old_work.id.clone(), Vec::new())
         .await
         .unwrap();
     let new_work = runtime

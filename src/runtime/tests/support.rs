@@ -25,12 +25,12 @@ pub(crate) use crate::{
         ActiveWorkspaceEntry, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
         AgentRegistryStatus, AgentState, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
         BriefRecord, CallbackDeliveryMode, ClosureDecision, ClosureOutcome, ContinuationClass,
-        ContinuationTriggerKind, LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageKind,
-        MessageOrigin, PendingWakeHint, Priority, QueueEntryStatus, TaskKind,
-        TaskOutputRetrievalStatus, TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord,
-        TimerStatus, TodoItem, TodoItemState, TokenUsage, TrustLevel, TurnTerminalKind,
-        TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord, WorkItemState,
-        WorkReactivationMode, WorkspaceEntry,
+        ContinuationTriggerKind, DeliverySummaryRecord, LoadedAgentsMd, MessageBody,
+        MessageDeliverySurface, MessageKind, MessageOrigin, PendingWakeHint, Priority,
+        QueueEntryStatus, TaskKind, TaskOutputRetrievalStatus, TaskRecord, TaskRecoverySpec,
+        TaskStatus, TimerRecord, TimerStatus, TodoItem, TodoItemState, TokenUsage, TrustLevel,
+        TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord,
+        WorkItemState, WorkReactivationMode, WorkspaceEntry,
     },
 };
 
@@ -176,9 +176,21 @@ pub(crate) async fn seed_bound_work_item(
     }
     if state == WorkItemState::Completed {
         record = runtime
-            .complete_work_item(record.id.clone(), summary.map(str::to_string), Vec::new())
+            .complete_work_item(record.id.clone(), Vec::new())
             .await
             .unwrap();
+        if let Some(summary) = summary {
+            record = runtime
+                .promote_work_item_completion_report(
+                    record.id.clone(),
+                    summary.to_string(),
+                    None,
+                    None,
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+        }
     }
     bind_turn_to_work_item(runtime, &record.id).await;
     record.id

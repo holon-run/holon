@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     runtime::RuntimeHandle,
     types::{
-        TodoItem, WorkItemPlanArtifact, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord,
-        WorkItemState,
+        DeliverySummaryRecord, TodoItem, WorkItemPlanArtifact, WorkItemPlanStatus,
+        WorkItemReadiness, WorkItemRecord, WorkItemState,
     },
 };
 
@@ -27,6 +27,25 @@ pub(crate) enum WorkItemFocusView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkItemCompletionReportSource {
+    WorkItemResultSummary,
+    DeliverySummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct WorkItemCompletionReportView {
+    pub(crate) text: String,
+    pub(crate) source: WorkItemCompletionReportSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery_summary_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_turn_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct WorkItemView {
     pub(crate) id: String,
     pub(crate) agent_id: String,
@@ -43,6 +62,8 @@ pub(crate) struct WorkItemView {
     pub(crate) todo_list: Vec<TodoItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) blocked_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) completion_report: Option<WorkItemCompletionReportView>,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) updated_at: DateTime<Utc>,
 }
@@ -102,6 +123,7 @@ pub(crate) async fn view_for_record(
     let state = lifecycle_view(&record.state);
     let focus = focus_view(&record, is_current);
     let readiness = record.readiness();
+    let completion_report = completion_report_for_record(runtime, &record)?;
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
@@ -116,9 +138,56 @@ pub(crate) async fn view_for_record(
         plan_artifact,
         todo_list,
         blocked_by: record.blocked_by,
+        completion_report,
         created_at: record.created_at,
         updated_at: record.updated_at,
     })
+}
+
+fn completion_report_for_record(
+    runtime: &RuntimeHandle,
+    record: &WorkItemRecord,
+) -> Result<Option<WorkItemCompletionReportView>> {
+    if record.state != WorkItemState::Completed {
+        return Ok(None);
+    }
+    let latest_delivery_summary = runtime.storage().latest_delivery_summary(&record.id)?;
+    if let Some(text) = record
+        .result_summary
+        .as_ref()
+        .filter(|text| !text.is_empty())
+    {
+        return Ok(Some(completion_report_view(
+            text.clone(),
+            WorkItemCompletionReportSource::WorkItemResultSummary,
+            latest_delivery_summary
+                .filter(|summary| summary.text == *text)
+                .as_ref(),
+        )));
+    }
+    Ok(latest_delivery_summary
+        .filter(|summary| !summary.text.is_empty())
+        .map(|summary| {
+            completion_report_view(
+                summary.text.clone(),
+                WorkItemCompletionReportSource::DeliverySummary,
+                Some(&summary),
+            )
+        }))
+}
+
+fn completion_report_view(
+    text: String,
+    source: WorkItemCompletionReportSource,
+    delivery_summary: Option<&DeliverySummaryRecord>,
+) -> WorkItemCompletionReportView {
+    WorkItemCompletionReportView {
+        text,
+        source,
+        delivery_summary_id: delivery_summary.map(|summary| summary.id.clone()),
+        source_turn_index: delivery_summary.and_then(|summary| summary.source_turn_index),
+        created_at: delivery_summary.map(|summary| summary.created_at),
+    }
 }
 
 pub(crate) fn lifecycle_view(state: &WorkItemState) -> WorkItemLifecycleView {

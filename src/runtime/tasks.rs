@@ -2128,7 +2128,6 @@ impl RuntimeHandle {
     pub async fn complete_work_item(
         &self,
         work_item_id: String,
-        result_summary: Option<String>,
         warnings: Vec<serde_json::Value>,
     ) -> Result<WorkItemRecord> {
         let agent_id = self.agent_id().await?;
@@ -2140,7 +2139,7 @@ impl RuntimeHandle {
             revision: existing.revision + 1,
             state: WorkItemState::Completed,
             blocked_by: None,
-            result_summary: result_summary.clone(),
+            result_summary: existing.result_summary.clone(),
             updated_at: Utc::now(),
             ..existing
         };
@@ -2158,17 +2157,6 @@ impl RuntimeHandle {
                     "plan_artifact": record.plan_artifact.clone(),
                 }),
             ))?;
-        }
-        if let Some(result_summary) = result_summary {
-            self.inner
-                .storage
-                .append_delivery_summary(&DeliverySummaryRecord::new(
-                    agent_id.clone(),
-                    record.id.clone(),
-                    result_summary,
-                    None,
-                    None,
-                ))?;
         }
         self.cancel_work_item_waiting_intents(&record.id, "work_item_completed")
             .await?;
