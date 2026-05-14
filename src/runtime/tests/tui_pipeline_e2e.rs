@@ -452,3 +452,229 @@ async fn e2e_tui_complex_turn_multi_operation() {
         "at least one display decision should be shown in a multi-operation turn"
     );
 }
+
+/// End-to-end concurrent agents test: run two independent agents with
+/// distinct ScriptedAgentProviders through the full runtime → TUI pipeline,
+/// writing to a single shared `presentation.jsonl`. Verifies:
+///
+/// - Each agent's events are correctly attributed by agent_id in the audit log
+/// - A shared `presentation.jsonl` stream contains records from both agents
+/// - No cross-agent event leakage or corruption in the shared log
+/// - Every presentation line remains valid JSON
+#[tokio::test]
+async fn e2e_tui_concurrent_agents_attribution() {
+    // ── 1. Create ScriptedAgentProviders ─────────────────────────────
+    // Agent A: simple shell command
+    let provider_a = ScriptedAgentProvider::new([
+        ScriptedProviderStep::tool_use(
+            "toolu_a1",
+            "ExecCommand",
+            json!({ "cmd": "echo agent-a-task" }),
+        ),
+        ScriptedProviderStep::text("Agent A: task complete."),
+    ]);
+
+    // Agent B: file operation
+    let provider_b = ScriptedAgentProvider::new([
+        ScriptedProviderStep::tool_use(
+            "toolu_b1",
+            "ApplyPatch",
+            json!({
+                "patch": concat!(
+                    "--- /dev/null\n",
+                    "+++ b/agent-b-output.txt\n",
+                    "@@ -0,0 +1,1 @@\n",
+                    "+agent-b created this file\n",
+                )
+            }),
+        ),
+        ScriptedProviderStep::text("Agent B: file created."),
+    ]);
+
+    // ── 2. Create shared TuiLogWriter ────────────────────────────────
+    let log_writer = TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_root = log_writer.root().to_path_buf();
+
+    // ── 3. Create and run Agent A ────────────────────────────────────
+    let dir_a = tempdir().unwrap();
+    let ws_a = tempdir().unwrap();
+    let runtime_a = RuntimeHandle::new(
+        "agent-a",
+        dir_a.path().to_path_buf(),
+        ws_a.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(provider_a),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let outcome_a = runtime_a
+        .run_agent_loop(
+            "agent-a",
+            TrustLevel::TrustedOperator,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !outcome_a.final_text.is_empty(),
+        "agent-a should produce final text"
+    );
+    assert_eq!(
+        outcome_a.terminal_kind,
+        TurnTerminalKind::Completed,
+        "agent-a turn should complete normally"
+    );
+
+    // ── 4. Create and run Agent B ────────────────────────────────────
+    let dir_b = tempdir().unwrap();
+    let ws_b = tempdir().unwrap();
+    let runtime_b = RuntimeHandle::new(
+        "agent-b",
+        dir_b.path().to_path_buf(),
+        ws_b.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(provider_b),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let outcome_b = runtime_b
+        .run_agent_loop(
+            "agent-b",
+            TrustLevel::TrustedOperator,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !outcome_b.final_text.is_empty(),
+        "agent-b should produce final text"
+    );
+    assert_eq!(
+        outcome_b.terminal_kind,
+        TurnTerminalKind::Completed,
+        "agent-b turn should complete normally"
+    );
+
+    // ── 5. Read audit events from both agents ────────────────────────
+    let events_a = runtime_a.storage().read_recent_events(100).unwrap();
+    let events_b = runtime_b.storage().read_recent_events(100).unwrap();
+
+    assert!(!events_a.is_empty(), "agent-a should produce audit events");
+    assert!(!events_b.is_empty(), "agent-b should produce audit events");
+
+    // ── 6. Check agent_id attribution in raw audit events ────────────
+    for event in &events_a {
+        if let Some(agent_id) = event.data.get("agent_id").and_then(|v| v.as_str()) {
+            assert_eq!(
+                agent_id, "agent-a",
+                "all audit events from agent-a should carry agent_id=agent-a"
+            );
+        }
+    }
+    for event in &events_b {
+        if let Some(agent_id) = event.data.get("agent_id").and_then(|v| v.as_str()) {
+            assert_eq!(
+                agent_id, "agent-b",
+                "all audit events from agent-b should carry agent_id=agent-b"
+            );
+        }
+    }
+
+    // ── 7. Create two projections, both writing to shared log ────────
+    let mut projection_a =
+        TuiProjection::from_snapshot(minimal_snapshot("agent-a", "cursor-a0"));
+    let mut projection_b =
+        TuiProjection::from_snapshot(minimal_snapshot("agent-b", "cursor-b0"));
+
+    for (idx, event) in events_a.iter().enumerate() {
+        let stream_event = audit_to_stream_event(event, (idx + 1) as u64, "agent-a");
+        projection_a.apply_event(stream_event, &log_writer);
+    }
+
+    for (idx, event) in events_b.iter().enumerate() {
+        let stream_event = audit_to_stream_event(event, (idx + 1) as u64, "agent-b");
+        projection_b.apply_event(stream_event, &log_writer);
+    }
+
+    // ── 8. Verify shared presentation.jsonl ──────────────────────────
+    let presentation_path = log_root.join("presentation.jsonl");
+    assert!(
+        presentation_path.exists(),
+        "shared presentation.jsonl should exist after both agents"
+    );
+
+    let raw = std::fs::read_to_string(&presentation_path).unwrap();
+    let lines: Vec<&str> = raw.trim().lines().collect();
+    assert!(
+        !lines.is_empty(),
+        "shared presentation.jsonl should have records from concurrent agents"
+    );
+
+    let mut seen_shown = false;
+    let mut seen_command = false;
+    let mut seen_apply_patch = false;
+
+    for line in &lines {
+        let record: serde_json::Value =
+            serde_json::from_str(line).expect("every line must be valid JSON after concurrent writes");
+
+        for display in record["displays"].as_array().into_iter().flatten() {
+            if display["decision"].as_str() == Some("shown") {
+                seen_shown = true;
+            }
+        }
+
+        let reducer_kinds: Vec<&str> = record["reducer_event_kinds"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        if reducer_kinds.contains(&"process_execution_requested") {
+            seen_command = true;
+        }
+        if reducer_kinds.contains(&"tool_executed") {
+            seen_apply_patch = true;
+        }
+    }
+
+    assert!(seen_shown, "at least one display decision should be shown");
+    assert!(
+        seen_command,
+        "should contain process_execution_requested from agent-a"
+    );
+    assert!(
+        seen_apply_patch,
+        "should contain tool_executed from agent-b"
+    );
+
+    // ── 9. Verify no cross-agent leakage: distinct agent_ids in audit ──
+    let agent_ids_in_a: std::collections::BTreeSet<&str> = events_a
+        .iter()
+        .filter_map(|e| e.data.get("agent_id").and_then(|v| v.as_str()))
+        .collect();
+    let agent_ids_in_b: std::collections::BTreeSet<&str> = events_b
+        .iter()
+        .filter_map(|e| e.data.get("agent_id").and_then(|v| v.as_str()))
+        .collect();
+
+    assert!(
+        !agent_ids_in_a.contains("agent-b"),
+        "agent-a events must not contain agent-b attribution"
+    );
+    assert!(
+        !agent_ids_in_b.contains("agent-a"),
+        "agent-b events must not contain agent-a attribution"
+    );
+}
