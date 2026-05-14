@@ -152,7 +152,6 @@ holon solve <REF> [OPTIONS]
 | `--json` | flag | false | Print output as JSON instead of text |
 | `--home` | path | `~/.holon` | Holon home directory |
 | `--workspace` | path | — | Working directory for the agent |
-| `--workspace-root` | path | — | Workspace root for the agent |
 | `--cwd` | path | — | Current working directory for the agent |
 | `--input` | path | — | Directory for input context (overrides default) |
 | `--output` | path | — | Directory for output artifacts (overrides default) |
@@ -165,7 +164,7 @@ serve different purposes:
 | | `holon run` | `holon solve` |
 |---|---|---|
 | Use case | General headless tasks | GitHub issues and PRs |
-| Input | Free-text prompt or file | GitHub target ref |
+| Input | Free-text prompt | GitHub target ref |
 | Agent template | `holon-default` | `holon-github-solve` (GitHub skills pre-loaded) |
 | Output | Text or JSON to stdout | Structured artifacts in output directory |
 | GitHub integration | Manual (`gh` CLI) | Automatic context collection and skill dispatch |
@@ -181,16 +180,17 @@ skill selection.
 
 ```bash
 holon solve holon-run/holon#42 --json | jq '.final_status'
-# "Completed"
+# "completed"
 ```
 
 ### Custom output directory
 
 ```bash
 holon solve holon-run/holon#42 --output ./solve-results/
-cat ./solve-results/manifest.json
+cat ./solve-results/run.json
 # { "provider": "holon-solve", "status": "completed", ... }
 ```
+
 
 ### CI integration sketch
 
@@ -202,7 +202,7 @@ OUTPUT=$(mktemp -d)
 holon solve "$ISSUE_URL" --output "$OUTPUT" --json
 
 STATUS=$(jq -r '.final_status' "$OUTPUT/run.json")
-if [ "$STATUS" != "Completed" ]; then
+if [ "$STATUS" != "completed" ]; then
   echo "Solve did not complete: $STATUS"
   exit 1
 fi
