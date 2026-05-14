@@ -113,8 +113,9 @@ Returns recent runtime events (turn entries, system events). Query parameters:
 
 **`GET /agents/:id/events/stream`** — Server-sent events
 
-SSE stream of agent events. Supports `limit` and `window` query params. Emits
-`turn`, `system`, and `state` event types with JSON data.
+SSE stream of agent events. Supports `limit` and `window` query params. The
+SSE `type` field is set to the raw audit event kind (e.g. `turn_entry`,
+`wake_requested`, `task_create_requested`), not a limited set of names.
 
 **`GET /agents/:id/transcript`** — Turn transcript
 
@@ -128,15 +129,18 @@ Returns managed worktree entries for the agent's workspace.
 
 **`POST /agents/:id/enqueue`** — Enqueue a message
 
-Accepts any caller on the public HTTP surface. The runtime classifies origin,
-trust, and priority; public callers may not override trust or use `interject`
-priority.
+Accepts external callers on the public HTTP surface. When the server is in
+**bearer mode**, this route calls `authorize_remote_access` and requires the
+control token just like read-only routes. In **local mode** no auth header is
+needed.
 
+The runtime classifies origin, trust, and priority; public callers may not
+override trust or use `interject` priority.
 Request shape:
 
 ```json
 {
-  "kind": "operator_prompt | channel_event | webhook_event",
+  "kind": "channel_event | webhook_event",
   "priority": "next | normal | background",
   "text": "plain text body",
   "json": { "structured": "body" },
@@ -258,15 +262,47 @@ Creates a timer that will deliver a `TimerTick` to the agent.
 
 **`POST /control/agents/:id/debug-prompt`** — Debug prompt
 
-Sends a debug-mode prompt (runtime-internal classification).
+Sends a debug-mode prompt (runtime-internal classification). Request body:
+
+```json
+{ "text": "debug instruction", "trust": "trusted_operator" }
+```
 
 **`POST /control/agents/:id/operator-bindings`** — Create operator transport binding
 
 Sets up a callback URL or transport binding for operator notifications.
+Request body:
+
+```json
+{
+  "binding_id": "my-binding",
+  "transport": "http-callback",
+  "operator_actor_id": "operator-1",
+  "default_route_id": "default",
+  "delivery_callback_url": "https://example.com/callback",
+  "delivery_auth": { "type": "bearer", "token": "secret" },
+  "capabilities": { "send_prompt": true },
+  "provider": "anthropic",
+  "provider_identity_ref": "user-123",
+  "metadata": {}
+}
+```
 
 **`POST /control/agents/:id/operator-ingress`** — Operator ingress
 
 Direct ingress path for operator-origin messages through the control plane.
+Request body:
+
+```json
+{
+  "text": "operator message",
+  "actor_id": "operator-1",
+  "binding_id": "my-binding",
+  "reply_route_id": "route-1",
+  "provider": "anthropic",
+  "correlation_id": "corr-123"
+}
+```
 
 **`POST /control/agents/:id/workspace/attach`** — Attach workspace
 
@@ -276,11 +312,19 @@ Direct ingress path for operator-origin messages through the control plane.
 
 **`POST /control/agents/:id/workspace/exit`** — Exit current workspace
 
-Returns to the agent home workspace.
+Returns to the agent home workspace. Accepts an optional body:
+
+```json
+{ "trust": "trusted_operator" }
+```
 
 **`POST /control/agents/:id/workspace/detach`** — Detach workspace
 
-Removes a workspace registration without switching.
+Removes a workspace registration without switching. Request body:
+
+```json
+{ "workspace_id": "ws-abc123", "trust": "trusted_operator" }
+```
 
 **`POST /control/agents/:id/model`** — Set agent model
 
@@ -290,7 +334,11 @@ Removes a workspace registration without switching.
 
 **`POST /control/agents/:id/model/clear`** — Clear model override
 
-Reverts to the default model.
+Reverts to the default model. Accepts an optional body:
+
+```json
+{ "trust": "trusted_operator" }
+```
 
 ### Runtime management
 
@@ -323,9 +371,10 @@ Receives wake callbacks from registered callback URLs.
 
 ### MessageKind
 
-Valid enqueue kinds for external callers: `operator_prompt`, `channel_event`,
-`webhook_event`. Runtime-owned kinds (`system_tick`, `callback_event`,
-`task_result`, `task_status`, `control`, `internal_followup`) are rejected from
+Valid enqueue kinds for external callers: `channel_event`, `webhook_event`.
+The policy only allows `operator_prompt` with an operator origin; public
+enqueue rejects it. Runtime-owned kinds (`system_tick`, `task_result`,
+`task_status`, `control`, `internal_followup`) are rejected from
 external enqueue.
 
 ### Priority
@@ -401,7 +450,7 @@ curl http://127.0.0.1:9101/agents/main/state
 curl -X POST http://127.0.0.1:9101/control/agents/main/prompt \
   -H "Authorization: Bearer $HOLON_CONTROL_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"text": "Run cargo check", "priority": "next"}'
+  -d '{"text": "Run cargo check"}'
 
 # Enqueue via webhook (public)
 curl -X POST http://127.0.0.1:9101/webhooks/generic/main \
