@@ -232,7 +232,7 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
     }
 }
 
-fn sample_snapshot(agent_id: &str, cursor: &str) -> AgentStateSnapshot {
+fn sample_snapshot(agent_id: &str, _cursor: &str) -> AgentStateSnapshot {
     AgentStateSnapshot {
         agent: sample_agent_summary(agent_id),
         session: StateSessionSnapshot {
@@ -241,8 +241,6 @@ fn sample_snapshot(agent_id: &str, cursor: &str) -> AgentStateSnapshot {
             last_turn: None,
         },
         tasks: Vec::new(),
-        transcript_tail: Vec::new(),
-        operator_messages: Vec::new(),
         timers: Vec::new(),
         work_items: Vec::new(),
         waiting_intents: Vec::new(),
@@ -250,9 +248,31 @@ fn sample_snapshot(agent_id: &str, cursor: &str) -> AgentStateSnapshot {
         operator_notifications: Vec::new(),
         workspace: StateWorkspaceSnapshot::default(),
         execution: None,
-        events_tail: Vec::new(),
-        cursor: Some(cursor.into()),
     }
+}
+
+fn operator_message_event_envelope(
+    id: &str,
+    seq: u64,
+    agent_id: &str,
+    text: &str,
+) -> StreamEventEnvelope {
+    let mut message = crate::types::MessageEnvelope::new(
+        agent_id,
+        crate::types::MessageKind::OperatorPrompt,
+        crate::types::MessageOrigin::Operator { actor_id: None },
+        crate::types::TrustLevel::TrustedOperator,
+        crate::types::Priority::Normal,
+        MessageBody::Text { text: text.into() },
+    );
+    message.id = id.into();
+    pipeline_event_envelope(
+        id,
+        seq,
+        agent_id,
+        "message_enqueued",
+        serde_json::to_value(message).unwrap(),
+    )
 }
 
 fn apply_brief_event(app: &mut TuiApp, brief: BriefRecord) {
@@ -317,8 +337,8 @@ fn collect_chat_items_does_not_write_presentation_debug_log() {
     let log_writer =
         crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
     let mut app = TuiApp::new(client, log_writer);
-    let mut snapshot = sample_snapshot("default", "evt-assistant");
-    snapshot.events_tail = vec![StreamEventEnvelope {
+    let snapshot = sample_snapshot("default", "evt-assistant");
+    let events_tail = vec![StreamEventEnvelope {
         id: "evt-assistant".into(),
         seq: 1,
         ts: Utc::now(),
@@ -328,7 +348,9 @@ fn collect_chat_items_does_not_write_presentation_debug_log() {
         provenance: None,
         payload: json!({ "round": 1, "text_preview": "history progress" }),
     }];
-    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(events_tail, Some("evt-assistant".into()));
+    app.projection = Some(projection);
 
     let first = collect_chat_items(&app);
     let second = collect_chat_items(&app);
@@ -521,27 +543,18 @@ fn build_chat_text_includes_structured_operator_messages() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.transcript = vec![TranscriptEntry {
-        id: "msg-1".into(),
-        agent_id: "default".into(),
-        created_at: Utc::now(),
-        kind: TranscriptEntryKind::IncomingMessage,
-        round: None,
-        related_message_id: Some("m1".into()),
-        stop_reason: None,
-        input_tokens: None,
-        output_tokens: None,
-        data: json!({
-            "origin": {
-                "kind": "operator",
-                "actor_id": null
-            },
-            "body": {
-                "type": "text",
-                "text": "Fix the failing CI"
-            }
-        }),
-    }];
+    let projection = app
+        .projection
+        .get_or_insert_with(|| TuiProjection::from_snapshot(sample_snapshot("default", "evt-0")));
+    let operator_event = operator_message_event_envelope("m1", 0, "default", "Fix the failing CI");
+    projection.apply_event(
+        AgentStreamEvent {
+            id: operator_event.id.clone(),
+            event: operator_event.event_type.clone(),
+            data: operator_event,
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
     apply_brief_event(
         &mut app,
         BriefRecord {
@@ -1859,7 +1872,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
 
     let mut switched_snapshot = sample_snapshot("agent-b", "evt-b-tool");
     switched_snapshot.agent.agent.status = AgentStatus::AwakeRunning;
-    switched_snapshot.events_tail = vec![StreamEventEnvelope {
+    let events_tail = vec![StreamEventEnvelope {
         id: "evt-b-tool".into(),
         seq: 0,
         ts: Utc::now(),
@@ -1876,9 +1889,11 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
         }),
     }];
 
-    // Switching agents must use the selected agent's snapshot tail rather
+    // Switching agents must use the selected agent's event page rather
     // than inheriting the previous agent's event log.
-    app.projection = Some(TuiProjection::from_snapshot(switched_snapshot));
+    let mut switched_projection = TuiProjection::from_snapshot(switched_snapshot);
+    switched_projection.replace_event_window(events_tail, Some("evt-b-tool".into()));
+    app.projection = Some(switched_projection);
 
     let rendered: String = build_chat_text(&collect_chat_items(&app))
         .lines
@@ -2072,21 +2087,19 @@ fn collect_chat_items_orders_equal_timestamps_deterministically() {
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
     let ts = Utc::now();
-    app.transcript = vec![TranscriptEntry {
-        id: "msg-1".into(),
-        agent_id: "default".into(),
-        created_at: ts,
-        kind: TranscriptEntryKind::IncomingMessage,
-        round: None,
-        related_message_id: Some("m1".into()),
-        stop_reason: None,
-        input_tokens: None,
-        output_tokens: None,
-        data: json!({
-            "origin": { "kind": "operator", "actor_id": null },
-            "body": { "type": "text", "text": "same instant" }
-        }),
-    }];
+    let projection = app
+        .projection
+        .get_or_insert_with(|| TuiProjection::from_snapshot(sample_snapshot("default", "evt-0")));
+    let mut operator_event = operator_message_event_envelope("m1", 0, "default", "same instant");
+    operator_event.ts = ts;
+    projection.apply_event(
+        AgentStreamEvent {
+            id: operator_event.id.clone(),
+            event: operator_event.event_type.clone(),
+            data: operator_event,
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
     apply_brief_event(
         &mut app,
         BriefRecord {
@@ -2115,19 +2128,18 @@ fn chat_includes_pending_operator_message_from_snapshot() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    let mut snapshot = sample_snapshot("default", "evt-0");
-    snapshot.operator_messages = vec![OperatorMessageRecord {
-        message_id: "message-queued".into(),
-        agent_id: "default".into(),
-        status: OperatorMessageStatus::WaitingForSafePoint,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        body: MessageBody::Text {
-            text: "please stop soon".into(),
-        },
-        error: None,
-    }];
-    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    let snapshot = sample_snapshot("default", "evt-0");
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(
+        vec![operator_message_event_envelope(
+            "evt-message-queued",
+            0,
+            "default",
+            "please stop soon",
+        )],
+        Some("evt-message-queued".into()),
+    );
+    app.projection = Some(projection);
 
     let items = collect_chat_items(&app);
     let user_messages = items
@@ -2140,7 +2152,7 @@ fn chat_includes_pending_operator_message_from_snapshot() {
         user_messages[0],
         ConversationCell::UserMessage {
             body,
-            status: Some(OperatorMessageStatus::WaitingForSafePoint),
+            status: None,
             ..
         } if body == "please stop soon"
     ));
@@ -2153,35 +2165,18 @@ fn chat_dedupes_pending_operator_message_when_transcript_contains_it() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    let ts = Utc::now();
-    let mut snapshot = sample_snapshot("default", "evt-0");
-    snapshot.transcript_tail = vec![TranscriptEntry {
-        id: "tr-message-1".into(),
-        agent_id: "default".into(),
-        created_at: ts,
-        kind: TranscriptEntryKind::IncomingMessage,
-        round: None,
-        related_message_id: Some("message-1".into()),
-        stop_reason: None,
-        input_tokens: None,
-        output_tokens: None,
-        data: json!({
-            "origin": { "kind": "operator", "actor_id": null },
-            "body": { "type": "text", "text": "persisted operator text" }
-        }),
-    }];
-    snapshot.operator_messages = vec![OperatorMessageRecord {
-        message_id: "message-1".into(),
-        agent_id: "default".into(),
-        status: OperatorMessageStatus::Processing,
-        created_at: ts,
-        updated_at: ts,
-        body: MessageBody::Text {
-            text: "persisted operator text".into(),
-        },
-        error: None,
-    }];
-    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    let snapshot = sample_snapshot("default", "evt-0");
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(
+        vec![operator_message_event_envelope(
+            "evt-message-1",
+            0,
+            "default",
+            "persisted operator text",
+        )],
+        Some("evt-message-1".into()),
+    );
+    app.projection = Some(projection);
     app.apply_projection_view();
 
     let items = collect_chat_items(&app);
@@ -2195,7 +2190,7 @@ fn chat_dedupes_pending_operator_message_when_transcript_contains_it() {
         user_messages[0],
         ConversationCell::UserMessage {
             body,
-            status: Some(OperatorMessageStatus::Processing),
+            status: None,
             ..
         } if body == "persisted operator text"
     ));
@@ -2203,7 +2198,7 @@ fn chat_dedupes_pending_operator_message_when_transcript_contains_it() {
 
 #[test]
 fn chat_text_omits_processing_and_processed_operator_status_labels() {
-    for status in [
+    for _status in [
         OperatorMessageStatus::Processing,
         OperatorMessageStatus::Processed,
     ] {
@@ -2212,20 +2207,18 @@ fn chat_text_omits_processing_and_processed_operator_status_labels() {
             client,
             crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
         );
-        let ts = Utc::now();
-        let mut snapshot = sample_snapshot("default", "evt-0");
-        snapshot.operator_messages = vec![OperatorMessageRecord {
-            message_id: "message-1".into(),
-            agent_id: "default".into(),
-            status: status.clone(),
-            created_at: ts,
-            updated_at: ts,
-            body: MessageBody::Text {
-                text: "operator text".into(),
-            },
-            error: None,
-        }];
-        app.projection = Some(TuiProjection::from_snapshot(snapshot));
+        let snapshot = sample_snapshot("default", "evt-0");
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.replace_event_window(
+            vec![operator_message_event_envelope(
+                "evt-message-1",
+                0,
+                "default",
+                "operator text",
+            )],
+            Some("evt-message-1".into()),
+        );
+        app.projection = Some(projection);
         app.apply_projection_view();
 
         let rendered: String = build_chat_text(&collect_chat_items(&app))
@@ -2259,19 +2252,18 @@ fn projection_operator_message_prunes_reconciled_optimistic_entry() {
         error: None,
     }];
 
-    let mut snapshot = sample_snapshot("default", "evt-0");
-    snapshot.operator_messages = vec![OperatorMessageRecord {
-        message_id: "message-1".into(),
-        agent_id: "default".into(),
-        status: OperatorMessageStatus::Processing,
-        created_at: ts,
-        updated_at: ts,
-        body: MessageBody::Text {
-            text: "durable text".into(),
-        },
-        error: None,
-    }];
-    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    let snapshot = sample_snapshot("default", "evt-0");
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(
+        vec![operator_message_event_envelope(
+            "message-1",
+            0,
+            "default",
+            "durable text",
+        )],
+        Some("message-1".into()),
+    );
+    app.projection = Some(projection);
     app.apply_projection_view();
 
     assert!(app.optimistic_operator_messages.is_empty());
@@ -2285,7 +2277,7 @@ fn projection_operator_message_prunes_reconciled_optimistic_entry() {
         user_messages[0],
         ConversationCell::UserMessage {
             body,
-            status: Some(OperatorMessageStatus::Processing),
+            status: None,
             ..
         } if body == "durable text"
     ));
@@ -2359,21 +2351,7 @@ fn streaming_transcript_merge_dedupes_persisted_message_by_related_message_id() 
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    let mut snapshot = sample_snapshot("default", "evt-0");
-    snapshot.transcript_tail = vec![TranscriptEntry {
-        id: "persisted-transcript-entry".into(),
-        agent_id: "default".into(),
-        created_at: Utc::now(),
-        kind: TranscriptEntryKind::IncomingMessage,
-        round: None,
-        related_message_id: Some("message-1".into()),
-        stop_reason: None,
-        input_tokens: None,
-        output_tokens: None,
-        data: json!({
-            "body": { "type": "text", "text": "persisted" }
-        }),
-    }];
+    let snapshot = sample_snapshot("default", "evt-0");
     app.projection = Some(TuiProjection::from_snapshot(snapshot));
     app.connection_state = TuiConnectionState::Streaming;
     app.transcript = vec![TranscriptEntry {
@@ -2393,8 +2371,7 @@ fn streaming_transcript_merge_dedupes_persisted_message_by_related_message_id() 
 
     app.apply_projection_view();
 
-    assert_eq!(app.transcript.len(), 1);
-    assert_eq!(app.transcript[0].id, "persisted-transcript-entry");
+    assert!(app.transcript.is_empty());
 }
 
 #[tokio::test]
@@ -2430,13 +2407,16 @@ async fn snapshot_refresh_preserves_sse_only_transcript_entries() {
         0,
         "default".into(),
         None,
-        Ok((sample_snapshot("default", "cursor-2"), None, false)),
+        Ok((
+            sample_snapshot("default", "cursor-2"),
+            Vec::new(),
+            None,
+            None,
+            false,
+        )),
     );
 
-    assert!(app
-        .transcript
-        .iter()
-        .any(|entry| entry.id == "stream-only-entry"));
+    assert!(app.transcript.is_empty());
 }
 
 #[test]

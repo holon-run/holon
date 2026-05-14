@@ -90,7 +90,7 @@ fn minimal_agent_summary(agent_id: &str) -> AgentSummary {
 }
 
 /// Construct a minimal `AgentStateSnapshot` for bootstrapping a TuiProjection.
-fn minimal_snapshot(agent_id: &str, cursor: &str) -> AgentStateSnapshot {
+fn minimal_snapshot(agent_id: &str, _cursor: &str) -> AgentStateSnapshot {
     AgentStateSnapshot {
         agent: minimal_agent_summary(agent_id),
         session: StateSessionSnapshot {
@@ -99,8 +99,6 @@ fn minimal_snapshot(agent_id: &str, cursor: &str) -> AgentStateSnapshot {
             last_turn: None,
         },
         tasks: Vec::new(),
-        transcript_tail: Vec::new(),
-        operator_messages: Vec::new(),
         timers: Vec::new(),
         work_items: Vec::new(),
         waiting_intents: Vec::new(),
@@ -108,8 +106,6 @@ fn minimal_snapshot(agent_id: &str, cursor: &str) -> AgentStateSnapshot {
         operator_notifications: Vec::new(),
         workspace: crate::client::StateWorkspaceSnapshot::default(),
         execution: None,
-        events_tail: Vec::new(),
-        cursor: Some(cursor.into()),
     }
 }
 

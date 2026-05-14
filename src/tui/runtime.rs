@@ -3,14 +3,13 @@ use super::state::TuiClientState;
 use super::*;
 use crate::client::{
     AgentStateSnapshot, AgentStreamEvent, EventPageRequest, EventPageResponse, EventStreamRequest,
-    LocalEventStream, LocalHttpError,
+    LocalEventStream, LocalHttpError, StreamEventEnvelope,
 };
 use tokio::sync::mpsc;
 
 const STREAM_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const REFRESH_RETRY_DELAY: Duration = Duration::from_secs(1);
 const AGENT_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
-const TRANSCRIPT_LIMIT: usize = 40;
 const TASK_LIMIT: usize = 40;
 const OPTIMISTIC_OPERATOR_MESSAGE_LIMIT: usize = 64;
 const EVENT_HISTORY_PAGE_LIMIT: usize = 128;
@@ -51,7 +50,13 @@ pub(super) enum TuiRuntimeMessage {
     },
 }
 
-type SnapshotBootstrapResult = (AgentStateSnapshot, Option<String>, bool);
+type SnapshotBootstrapResult = (
+    AgentStateSnapshot,
+    Vec<StreamEventEnvelope>,
+    Option<String>,
+    Option<String>,
+    bool,
+);
 
 pub(super) struct EventStreamOpenError {
     message: String,
@@ -310,16 +315,7 @@ impl TuiApp {
             return;
         };
 
-        let mut durable_message_ids = projection
-            .operator_messages
-            .iter()
-            .map(|message| message.message_id.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        durable_message_ids.extend(
-            self.transcript
-                .iter()
-                .filter_map(|entry| entry.related_message_id.clone()),
-        );
+        let durable_message_ids = projection.durable_operator_message_ids();
 
         self.optimistic_operator_messages
             .retain(|message| !durable_message_ids.contains(&message.message_id));
@@ -385,7 +381,7 @@ impl TuiApp {
             let agent_id = agent_id.clone();
             async move {
                 let result = async {
-                    let mut snapshot = client.agent_state_snapshot(&agent_id).await?;
+                    let snapshot = client.agent_state_snapshot(&agent_id).await?;
                     let mut events_page = client
                         .agent_events_page(
                             &agent_id,
@@ -396,12 +392,17 @@ impl TuiApp {
                             },
                         )
                         .await?;
+                    let newest_cursor = events_page.newest_cursor.clone();
                     events_page.events.reverse();
                     let oldest_cursor = events_page.oldest_cursor;
                     let has_older = events_page.has_older;
-                    snapshot.events_tail = events_page.events;
-                    snapshot.cursor = events_page.newest_cursor.or(snapshot.cursor);
-                    anyhow::Ok((snapshot, oldest_cursor, has_older))
+                    anyhow::Ok((
+                        snapshot,
+                        events_page.events,
+                        newest_cursor,
+                        oldest_cursor,
+                        has_older,
+                    ))
                 }
                 .await
                 .map_err(|err| err.to_string());
@@ -428,7 +429,7 @@ impl TuiApp {
             return;
         }
         self.snapshot_refresh_in_flight = false;
-        let (snapshot, oldest_cursor, has_older) = match result {
+        let (snapshot, events_tail, newest_cursor, oldest_cursor, has_older) = match result {
             Ok(result) => result,
             Err(err) => {
                 if let Some(checkpoint) = checkpoint {
@@ -442,15 +443,9 @@ impl TuiApp {
                 return;
             }
         };
-        let switching_agents = target_index != self.selected_agent;
         let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.replace_event_window(events_tail, newest_cursor);
         projection.set_event_history_state(oldest_cursor, has_older);
-        if !switching_agents {
-            if let Some(previous) = self.projection.as_mut() {
-                projection.inherit_recent_event_logs_from(previous);
-            }
-            merge_transcript_tail(&mut projection.transcript_tail, &self.transcript);
-        }
         let cursor = projection.cursor.clone();
 
         self.stop_stream_task();
@@ -778,27 +773,7 @@ impl TuiApp {
             return;
         };
 
-        // When streaming, merge the HTTP response with existing transcript data
-        // to avoid losing messages that arrived via SSE but haven't been persisted yet
-        let is_streaming = matches!(self.connection_state, TuiConnectionState::Streaming);
-
-        // Create a merged transcript view if streaming
-        let merged_transcript = if is_streaming && !self.transcript.is_empty() {
-            // Start with HTTP response, then add any SSE-only messages not yet in HTTP response
-            let mut merged = projection.transcript_tail.clone();
-            merge_transcript_tail(&mut merged, &self.transcript);
-            merged
-        } else {
-            projection.transcript_tail.clone()
-        };
-
-        self.transcript = merged_transcript
-            .iter()
-            .cloned()
-            .rev()
-            .take(TRANSCRIPT_LIMIT)
-            .collect::<Vec<_>>();
-        self.transcript.reverse();
+        self.transcript.clear();
 
         self.tasks = projection
             .tasks
@@ -958,25 +933,6 @@ impl TuiApp {
             })
             .collect::<Vec<_>>();
         Some(labels.join(", "))
-    }
-}
-
-fn transcript_merge_key(entry: &TranscriptEntry) -> &str {
-    entry
-        .related_message_id
-        .as_deref()
-        .unwrap_or(entry.id.as_str())
-}
-
-fn merge_transcript_tail(persisted: &mut Vec<TranscriptEntry>, streamed: &[TranscriptEntry]) {
-    for entry in streamed {
-        let key = transcript_merge_key(entry);
-        if !persisted
-            .iter()
-            .any(|persisted| transcript_merge_key(persisted) == key)
-        {
-            persisted.push(entry.clone());
-        }
     }
 }
 

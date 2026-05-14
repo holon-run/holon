@@ -17,10 +17,9 @@ use crate::{
     system::ExecutionSnapshot,
     types::{
         ActiveWorkspaceEntry, AgentListEntry, AgentSummary, BriefRecord,
-        ExternalTriggerStateSnapshot, OperatorMessageRecord, OperatorNotificationRecord,
-        ResolvedModelAvailability, TaskRecord, TimerRecord, TranscriptEntry, TrustLevel,
-        TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord,
-        WorktreeSession,
+        ExternalTriggerStateSnapshot, OperatorNotificationRecord, ResolvedModelAvailability,
+        TaskRecord, TimerRecord, TranscriptEntry, TrustLevel, TurnTerminalRecord,
+        WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -103,9 +102,6 @@ pub struct AgentStateSnapshot {
     pub agent: AgentSummary,
     pub session: StateSessionSnapshot,
     pub tasks: Vec<TaskRecord>,
-    pub transcript_tail: Vec<TranscriptEntry>,
-    #[serde(default)]
-    pub operator_messages: Vec<OperatorMessageRecord>,
     #[serde(default)]
     pub timers: Vec<TimerRecord>,
     #[serde(default)]
@@ -120,9 +116,6 @@ pub struct AgentStateSnapshot {
     pub workspace: StateWorkspaceSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionSnapshot>,
-    #[serde(default)]
-    pub events_tail: Vec<StreamEventEnvelope>,
-    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

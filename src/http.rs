@@ -57,18 +57,17 @@ use crate::{
         ActiveWorkspaceEntry, AdmissionContext, AgentRegistryStatus, AgentSummary, AgentVisibility,
         AuditEvent, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
         ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageKind,
-        MessageOrigin, OperatorMessageRecord, OperatorNotificationRecord, OperatorTransportBinding,
+        MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
-        TimerRecord, TranscriptEntry, TrustLevel, TurnTerminalRecord, WaitingIntentRecord,
-        WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
+        TimerRecord, TrustLevel, TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord,
+        WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
 const STATE_BOOTSTRAP_TASK_LIMIT: usize = 40;
-const STATE_BOOTSTRAP_TRANSCRIPT_LIMIT: usize = 20;
-const STATE_BOOTSTRAP_OPERATOR_MESSAGE_LIMIT: usize = 40;
 const STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT: usize = 2048;
+#[cfg(test)]
 const STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT: usize = 8192;
 const STATE_BOOTSTRAP_JSON_ARRAY_LIMIT: usize = 64;
 
@@ -82,7 +81,6 @@ pub struct AppState {
 
 const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
 const DEFAULT_EVENT_STREAM_WINDOW: usize = 128;
-const DEFAULT_STATE_EVENTS_TAIL_LIMIT: usize = 32;
 const MAX_EVENT_STREAM_WINDOW: usize = 512;
 const EVENT_STREAM_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -430,8 +428,6 @@ struct AgentStateSnapshot {
     agent: AgentSummary,
     session: StateSessionSnapshot,
     tasks: Vec<TaskRecord>,
-    transcript_tail: Vec<TranscriptEntry>,
-    operator_messages: Vec<OperatorMessageRecord>,
     timers: Vec<TimerRecord>,
     work_items: Vec<WorkItemRecord>,
     waiting_intents: Vec<WaitingIntentRecord>,
@@ -440,8 +436,6 @@ struct AgentStateSnapshot {
     workspace: StateWorkspaceSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<ExecutionSnapshot>,
-    events_tail: Vec<StreamEventEnvelope>,
-    cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -903,23 +897,6 @@ pub async fn agent_state(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let events_tail_raw = runtime
-        .recent_events(DEFAULT_STATE_EVENTS_TAIL_LIMIT)
-        .await
-        .map_err(error_response)?;
-    let cursor = events_tail_raw.last().map(|event| event.id.clone());
-    let events_tail = events_tail_raw
-        .iter()
-        .enumerate()
-        .map(|(seq, event)| {
-            stream_event_envelope(
-                seq as u64,
-                &agent_id,
-                event,
-                EventReplayProjection::Operator,
-            )
-        })
-        .collect();
     let agent = runtime.agent_summary().await.map_err(error_response)?;
     let tasks = runtime
         .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
@@ -928,17 +905,6 @@ pub async fn agent_state(
         .into_iter()
         .map(slim_state_task_record)
         .collect();
-    let transcript_tail = runtime
-        .recent_transcript(STATE_BOOTSTRAP_TRANSCRIPT_LIMIT)
-        .await
-        .map_err(error_response)?
-        .into_iter()
-        .map(slim_state_transcript_entry)
-        .collect();
-    let operator_messages = runtime
-        .recent_operator_messages(STATE_BOOTSTRAP_OPERATOR_MESSAGE_LIMIT)
-        .await
-        .map_err(error_response)?;
     let timers = runtime.recent_timers(50).await.map_err(error_response)?;
     let mut work_items = runtime.latest_work_items().await.map_err(error_response)?;
     sort_state_work_items(&mut work_items);
@@ -968,8 +934,6 @@ pub async fn agent_state(
         agent,
         session,
         tasks,
-        transcript_tail,
-        operator_messages,
         timers,
         work_items,
         waiting_intents,
@@ -977,8 +941,6 @@ pub async fn agent_state(
         operator_notifications,
         execution: Some(execution),
         workspace,
-        events_tail,
-        cursor,
     }))
 }
 
@@ -1012,7 +974,10 @@ fn slim_state_task_record(mut task: TaskRecord) -> TaskRecord {
     task
 }
 
-fn slim_state_transcript_entry(mut entry: TranscriptEntry) -> TranscriptEntry {
+#[cfg(test)]
+fn slim_state_transcript_entry(
+    mut entry: crate::types::TranscriptEntry,
+) -> crate::types::TranscriptEntry {
     entry.data = slim_state_json_value(entry.data, STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT);
     entry
 }
