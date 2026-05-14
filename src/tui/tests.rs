@@ -3249,9 +3249,7 @@ fn pipeline_display_level_filtering() {
                 "display_level must be 3, 4, or 5, got {dl}"
             );
             let decision = display["decision"].as_str().unwrap();
-            let cells = display["cells"]
-                .as_array()
-                .expect("cells must be an array");
+            let cells = display["cells"].as_array().expect("cells must be an array");
 
             if min_level <= dl {
                 assert_eq!(
@@ -3295,10 +3293,22 @@ fn pipeline_display_level_filtering() {
         );
     }
 
-    assert!(seen_notify, "should contain operator_notification_requested (visibility 1)");
-    assert!(seen_work_done, "should contain work_item_written (visibility 2)");
+    assert!(
+        seen_notify,
+        "should contain operator_notification_requested (visibility 1)"
+    );
+    assert!(
+        seen_work_done,
+        "should contain work_item_written (visibility 2)"
+    );
     assert!(seen_brief, "should contain brief_created (visibility 3)");
-    assert!(seen_assistant, "should contain assistant_round_recorded (visibility 4)");
-    assert!(seen_command, "should contain process_execution_requested (visibility 5)");
+    assert!(
+        seen_assistant,
+        "should contain assistant_round_recorded (visibility 4)"
+    );
+    assert!(
+        seen_command,
+        "should contain process_execution_requested (visibility 5)"
+    );
     assert!(seen_tool, "should contain tool_executed (visibility 5)");
 }
