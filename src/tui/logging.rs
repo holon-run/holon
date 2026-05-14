@@ -18,6 +18,9 @@ use crate::presentation::{PresentationItem, Renderable, RenderedCell, TimedItem}
 const PRESENTATION_LOG_ENV: &str = "HOLON_TUI_PRESENTATION_LOG";
 const PRESENTATION_LOG_MAX_BYTES_ENV: &str = "HOLON_TUI_PRESENTATION_LOG_MAX_BYTES";
 const DEFAULT_PRESENTATION_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+/// Maximum number of reducer event summaries to include in a single
+/// `presentation.jsonl` record before truncation.
+const MAX_REDUCER_EVENT_SUMMARIES: usize = 100;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TuiLogWriter {
@@ -143,6 +146,8 @@ struct PersistedPresentationLogRecord<'a> {
     reducer_event_seqs: Vec<u64>,
     reducer_event_summaries: Vec<&'a str>,
     displays: Vec<PersistedDisplayRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reducer_event_summaries_truncated: Option<String>,
 }
 
 impl<'a> PersistedPresentationLogRecord<'a> {
@@ -151,19 +156,52 @@ impl<'a> PersistedPresentationLogRecord<'a> {
             ts: item.ts,
             item_kind: presentation_item_kind(&item.item),
             min_display_level: item.item.min_display_level(),
-            reducer_event_ids: reducer_events
-                .iter()
-                .map(|event| event.id.as_str())
-                .collect(),
-            reducer_event_kinds: reducer_events
-                .iter()
-                .map(|event| event.kind.as_str())
-                .collect(),
-            reducer_event_seqs: reducer_events.iter().map(|event| event.seq).collect(),
-            reducer_event_summaries: reducer_events
-                .iter()
-                .map(|event| event.summary.as_str())
-                .collect(),
+            reducer_event_ids: if MAX_REDUCER_EVENT_SUMMARIES == 0 {
+                Vec::new()
+            } else {
+                reducer_events
+                    .iter()
+                    .take(MAX_REDUCER_EVENT_SUMMARIES)
+                    .map(|e| e.id.as_str())
+                    .collect()
+            },
+            reducer_event_kinds: if MAX_REDUCER_EVENT_SUMMARIES == 0 {
+                Vec::new()
+            } else {
+                reducer_events
+                    .iter()
+                    .take(MAX_REDUCER_EVENT_SUMMARIES)
+                    .map(|e| e.kind.as_str())
+                    .collect()
+            },
+            reducer_event_seqs: if MAX_REDUCER_EVENT_SUMMARIES == 0 {
+                Vec::new()
+            } else {
+                reducer_events
+                    .iter()
+                    .take(MAX_REDUCER_EVENT_SUMMARIES)
+                    .map(|e| e.seq)
+                    .collect()
+            },
+            reducer_event_summaries: if MAX_REDUCER_EVENT_SUMMARIES == 0 {
+                Vec::new()
+            } else {
+                reducer_events
+                    .iter()
+                    .take(MAX_REDUCER_EVENT_SUMMARIES)
+                    .map(|e| e.summary.as_str())
+                    .collect()
+            },
+            reducer_event_summaries_truncated: if MAX_REDUCER_EVENT_SUMMARIES > 0
+                && reducer_events.len() > MAX_REDUCER_EVENT_SUMMARIES
+            {
+                Some(format!(
+                    "...and {} more",
+                    reducer_events.len() - MAX_REDUCER_EVENT_SUMMARIES
+                ))
+            } else {
+                None
+            },
             displays: [3, 4, 5]
                 .into_iter()
                 .map(|display_level| PersistedDisplayRecord::from_item(display_level, &item.item))
