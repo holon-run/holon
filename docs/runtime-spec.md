@@ -1824,9 +1824,9 @@ Work item read surfaces return `plan_artifact` instead of full inline plan
 text. The descriptor includes the absolute `path`, `hash`, `bytes`,
 `updated_at`, a bounded `preview`, and `preview_complete`. Agents should read,
 grep, or edit `plan_artifact.path` directly when the preview is incomplete or
-the plan body needs changes. For completed work items, read surfaces also
-return `completion_report` when an explicit promoted report exists; this is the
-same canonical report used for result briefs and completion delivery summaries.
+the plan body needs changes. For completed work items, read surfaces return
+`completion_report` populated from promoted same-round reports when available,
+with fallback to legacy delivery summaries for older records.
 
 `PickWorkItem` sets `AgentState.current_work_item_id` to an existing open work
 item owned by the agent.

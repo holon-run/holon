@@ -12,8 +12,8 @@ use crate::{
 use super::{
     serialize_success,
     work_item_query::{
-        lifecycle_view, query_context, view_for_record, WorkItemFocusView, WorkItemLifecycleView,
-        WorkItemQueryContext, WorkItemView,
+        latest_delivery_summaries_by_work_item, lifecycle_view, query_context, view_for_record,
+        WorkItemFocusView, WorkItemLifecycleView, WorkItemQueryContext, WorkItemView,
     },
     BuiltinToolDefinition,
 };
@@ -86,9 +86,26 @@ pub(crate) async fn execute(
         .collect::<Vec<_>>();
     let total_matching = matching.len();
     let selected = matching.into_iter().take(limit).collect::<Vec<_>>();
+    let delivery_summaries = if selected
+        .iter()
+        .any(|record| record.state == WorkItemState::Completed)
+    {
+        Some(latest_delivery_summaries_by_work_item(runtime)?)
+    } else {
+        None
+    };
     let mut work_items = Vec::with_capacity(selected.len());
     for record in selected {
-        work_items.push(view_for_record(runtime, &context, record, args.include_todo_list).await?);
+        work_items.push(
+            view_for_record(
+                runtime,
+                &context,
+                record,
+                args.include_todo_list,
+                delivery_summaries.as_ref(),
+            )
+            .await?,
+        );
     }
     serialize_success(
         NAME,

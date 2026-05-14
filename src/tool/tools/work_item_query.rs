@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -74,6 +76,8 @@ pub(crate) struct WorkItemQueryContext {
     pub(crate) current_work_item_id: Option<String>,
 }
 
+pub(crate) type WorkItemDeliverySummaryMap = BTreeMap<String, DeliverySummaryRecord>;
+
 pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQueryContext> {
     let state = runtime.agent_state().await?;
     if let Some(bound_id) = state.current_turn_work_item_id.as_deref() {
@@ -103,6 +107,7 @@ pub(crate) async fn view_for_record(
     context: &WorkItemQueryContext,
     record: WorkItemRecord,
     include_todo_list: bool,
+    delivery_summaries: Option<&WorkItemDeliverySummaryMap>,
 ) -> Result<WorkItemView> {
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
         && record.state == WorkItemState::Open;
@@ -123,7 +128,7 @@ pub(crate) async fn view_for_record(
     let state = lifecycle_view(&record.state);
     let focus = focus_view(&record, is_current);
     let readiness = record.readiness();
-    let completion_report = completion_report_for_record(runtime, &record)?;
+    let completion_report = completion_report_for_record(runtime, &record, delivery_summaries)?;
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
@@ -144,14 +149,40 @@ pub(crate) async fn view_for_record(
     })
 }
 
+pub(crate) fn latest_delivery_summaries_by_work_item(
+    runtime: &RuntimeHandle,
+) -> Result<WorkItemDeliverySummaryMap> {
+    let mut summaries = BTreeMap::new();
+    for summary in runtime
+        .storage()
+        .read_recent_delivery_summaries(usize::MAX)?
+        .into_iter()
+        .rev()
+        .filter(|summary| !summary.text.is_empty())
+    {
+        summaries
+            .entry(summary.work_item_id.clone())
+            .or_insert(summary);
+    }
+    Ok(summaries)
+}
+
 fn completion_report_for_record(
     runtime: &RuntimeHandle,
     record: &WorkItemRecord,
+    delivery_summaries: Option<&WorkItemDeliverySummaryMap>,
 ) -> Result<Option<WorkItemCompletionReportView>> {
     if record.state != WorkItemState::Completed {
         return Ok(None);
     }
-    let latest_delivery_summary = runtime.storage().latest_delivery_summary(&record.id)?;
+    let cached_delivery_summary = delivery_summaries
+        .and_then(|summaries| summaries.get(&record.id))
+        .cloned();
+    let latest_delivery_summary = match (delivery_summaries.is_some(), cached_delivery_summary) {
+        (_, Some(summary)) => Some(summary),
+        (true, None) => None,
+        (false, None) => runtime.storage().latest_delivery_summary(&record.id)?,
+    };
     if let Some(text) = record
         .result_summary
         .as_ref()
