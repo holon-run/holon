@@ -611,6 +611,10 @@ impl AppConfig {
         self.data_dir.join("agents")
     }
 
+    pub fn log_root_dir(&self) -> PathBuf {
+        self.data_dir.join("logs")
+    }
+
     pub fn control_token_required(&self, transport: ControlTransportKind) -> bool {
         match self.control_auth_mode {
             ControlAuthMode::Disabled => false,

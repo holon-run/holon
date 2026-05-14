@@ -29,8 +29,8 @@ pub(crate) struct TuiLogWriter {
 }
 
 impl TuiLogWriter {
-    pub(crate) fn new(agent_home: impl Into<PathBuf>) -> Result<Self> {
-        let root = agent_home.into().join("logs").join("tui");
+    pub(crate) fn new(log_root: impl Into<PathBuf>) -> Result<Self> {
+        let root = log_root.into().join("tui");
         fs::create_dir_all(&root)
             .with_context(|| format!("failed to create {}", root.display()))?;
         Ok(Self {
@@ -349,6 +349,26 @@ mod tests {
     use crate::presentation::Outcome;
     use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
     use serde_json::json;
+
+    #[test]
+    fn new_uses_log_root_not_agent_root() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let log_root = tempdir.path().join("logs");
+
+        let writer = TuiLogWriter::new(&log_root).unwrap();
+
+        assert_eq!(writer.root, log_root.join("tui"));
+        assert!(writer.root.exists());
+        assert!(
+            !tempdir
+                .path()
+                .join("agents")
+                .join("logs")
+                .join("tui")
+                .exists(),
+            "TUI diagnostics must not create a pseudo agent under agents/logs"
+        );
+    }
 
     #[test]
     fn presentation_log_is_disabled_by_default() {

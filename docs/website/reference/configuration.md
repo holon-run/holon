@@ -181,7 +181,7 @@ TUI debug instrumentation is controlled by environment variables:
 
 | Environment variable | Values | Default | Description |
 |----------------------|--------|---------|-------------|
-| `HOLON_TUI_PRESENTATION_LOG` | `1`, `true`, `yes`, `on`, `debug` | unset | Enable `logs/tui/presentation.jsonl` debug logging for stream-driven presentation decisions |
+| `HOLON_TUI_PRESENTATION_LOG` | `1`, `true`, `yes`, `on`, `debug` | unset | Enable `<HOLON_HOME>/logs/tui/presentation.jsonl` debug logging for stream-driven presentation decisions |
 | `HOLON_TUI_PRESENTATION_LOG_MAX_BYTES` | positive integer bytes | `5242880` | Rotate the presentation debug log when it reaches this size |
 
 ## Web Fetch/Search Settings
