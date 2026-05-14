@@ -23,7 +23,7 @@ use holon::{
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
         OperatorDeliveryStatus, TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState,
-        TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus, WorkItemState,
+        TrustLevel, WaitingIntentStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -55,6 +55,19 @@ async fn next_sse_event_kind(
         }
     })
     .await?
+}
+
+async fn newest_event_cursor(base: &str, client: &Client) -> Result<String> {
+    let page: serde_json::Value = client
+        .get(format!("{base}/agents/default/events?limit=1&order=desc"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    page["newest_cursor"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("newest_cursor should be present"))
 }
 
 pub async fn events_route_supports_cursor_pagination() -> Result<()> {
@@ -150,16 +163,7 @@ pub async fn events_route_supports_cursor_replay() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let bootstrap: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let cursor = bootstrap["cursor"]
-        .as_str()
-        .expect("cursor should be present")
-        .to_string();
+    let cursor = newest_event_cursor(&base, &client).await?;
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
@@ -192,16 +196,7 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let bootstrap: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let cursor = bootstrap["cursor"]
-        .as_str()
-        .expect("cursor should be present")
-        .to_string();
+    let cursor = newest_event_cursor(&base, &client).await?;
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
@@ -239,16 +234,7 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let bootstrap: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let cursor = bootstrap["cursor"]
-        .as_str()
-        .expect("cursor should be present")
-        .to_string();
+    let cursor = newest_event_cursor(&base, &client).await?;
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
@@ -300,16 +286,7 @@ pub async fn events_route_operator_projection_preserves_tool_payload() -> Result
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let bootstrap: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let cursor = bootstrap["cursor"]
-        .as_str()
-        .expect("cursor should be present")
-        .to_string();
+    let cursor = newest_event_cursor(&base, &client).await?;
 
     runtime.storage().append_event(&AuditEvent::new(
         "tool_executed",
@@ -330,8 +307,7 @@ pub async fn events_route_operator_projection_preserves_tool_payload() -> Result
         ))
         .send()
         .await?;
-    let replayed =
-        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    let replayed = next_sse_event_kind(&mut stream, "tool_executed").await?;
     assert_eq!(replayed.event, "tool_executed");
     assert_eq!(replayed.data["type"], "tool_executed");
     assert_eq!(replayed.data["projection"]["name"], "operator");
@@ -371,16 +347,7 @@ pub async fn events_route_operator_projection_preserves_assistant_round_payload(
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let bootstrap: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let cursor = bootstrap["cursor"]
-        .as_str()
-        .expect("cursor should be present")
-        .to_string();
+    let cursor = newest_event_cursor(&base, &client).await?;
 
     runtime.storage().append_event(&AuditEvent::new(
         "assistant_round_recorded",
@@ -408,8 +375,7 @@ pub async fn events_route_operator_projection_preserves_assistant_round_payload(
         ))
         .send()
         .await?;
-    let replayed =
-        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    let replayed = next_sse_event_kind(&mut stream, "assistant_round_recorded").await?;
 
     assert_eq!(replayed.event, "assistant_round_recorded");
     assert_eq!(replayed.data["type"], "assistant_round_recorded");
@@ -461,16 +427,7 @@ pub async fn events_route_operator_projection_preserves_workspace_payload() -> R
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let bootstrap: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let cursor = bootstrap["cursor"]
-        .as_str()
-        .expect("cursor should be present")
-        .to_string();
+    let cursor = newest_event_cursor(&base, &client).await?;
 
     runtime.storage().append_event(&AuditEvent::new(
         "workspace_used",
@@ -491,8 +448,7 @@ pub async fn events_route_operator_projection_preserves_workspace_payload() -> R
         ))
         .send()
         .await?;
-    let replayed =
-        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    let replayed = next_sse_event_kind(&mut stream, "workspace_used").await?;
 
     assert_eq!(replayed.event, "workspace_used");
     assert_eq!(replayed.data["type"], "workspace_used");
@@ -535,24 +491,25 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
         }),
     ))?;
 
-    let snapshot: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
+    let page: serde_json::Value = client
+        .get(format!(
+            "{base}/agents/default/events?limit=10&order=desc&projection=operator"
+        ))
         .send()
         .await?
         .json()
         .await?;
-    let events_tail = snapshot["events_tail"]
+    let events_tail = page["events"]
         .as_array()
-        .expect("events_tail should be an array");
-    let tail_cursor = events_tail
-        .last()
-        .and_then(|event| event["id"].as_str())
-        .expect("events_tail should include at least one event");
-    assert_eq!(snapshot["cursor"], tail_cursor);
+        .expect("events page should include an events array");
     let assistant_tail = events_tail
         .iter()
         .find(|event| event["type"] == "assistant_round_recorded")
-        .expect("events_tail should include the appended assistant round");
+        .expect("events page should include the appended assistant round");
+    let cursor = assistant_tail["id"]
+        .as_str()
+        .expect("assistant round cursor should be present")
+        .to_string();
     assert_eq!(assistant_tail["projection"]["name"], "operator");
     assert_eq!(
         assistant_tail["projection"]["raw_payload_included"],
@@ -568,10 +525,6 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
         "debug-only assistant body"
     );
 
-    let cursor = snapshot["cursor"]
-        .as_str()
-        .expect("cursor should be present")
-        .to_string();
     runtime.storage().append_event(&AuditEvent::new(
         "tool_executed",
         serde_json::json!({
@@ -587,8 +540,7 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
         ))
         .send()
         .await?;
-    let replayed =
-        tokio::time::timeout(Duration::from_secs(5), read_next_sse_event(&mut stream)).await??;
+    let replayed = next_sse_event_kind(&mut stream, "tool_executed").await?;
     assert_eq!(replayed.event, "tool_executed");
     assert_ne!(replayed._id, cursor);
 
@@ -640,16 +592,6 @@ pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
         })),
         recovery: None,
     })?;
-    runtime
-        .storage()
-        .append_transcript_entry(&TranscriptEntry::new(
-            "default",
-            TranscriptEntryKind::ToolResults,
-            Some(1),
-            None,
-            serde_json::json!({ "content": "y".repeat(20_000) }),
-        ))?;
-
     let snapshot: serde_json::Value = reqwest::Client::new()
         .get(format!("{base}/agents/default/state"))
         .send()
@@ -671,23 +613,6 @@ pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
             <= 2048
     );
     assert_eq!(task["detail"]["lines"].as_array().expect("lines").len(), 64);
-
-    let transcript = snapshot["transcript_tail"]
-        .as_array()
-        .and_then(|entries| {
-            entries
-                .iter()
-                .find(|entry| entry["data"]["content"].as_str().is_some())
-        })
-        .expect("large transcript should be present");
-    assert!(
-        transcript["data"]["content"]
-            .as_str()
-            .expect("transcript content")
-            .chars()
-            .count()
-            <= 8192
-    );
 
     server.abort();
     Ok(())

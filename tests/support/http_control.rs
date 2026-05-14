@@ -21,7 +21,7 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
-        CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
+        CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction, MessageBody,
         MessageDeliverySurface, MessageKind, MessageOrigin, Priority, TodoItem, TodoItemState,
         TrustLevel, WorkItemState,
     },
@@ -91,7 +91,9 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     assert!(state_payload["agent"].is_object());
     assert!(state_payload["session"].is_object());
     assert!(state_payload["tasks"].is_array());
-    assert!(state_payload["transcript_tail"].is_array());
+    assert!(state_payload.get("transcript_tail").is_none());
+    assert!(state_payload.get("operator_messages").is_none());
+    assert!(state_payload.get("events_tail").is_none());
     assert!(state_payload.get("briefs_tail").is_none());
     assert!(state_payload.get("brief").is_none());
     assert!(state_payload["timers"].is_array());
@@ -100,7 +102,7 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     assert!(state_payload["waiting_intents"].is_array());
     assert!(state_payload["external_triggers"].is_array());
     assert!(state_payload["workspace"].is_object());
-    assert!(state_payload["cursor"].is_string());
+    assert!(state_payload.get("cursor").is_none());
 
     server.abort();
     Ok(())
@@ -240,7 +242,6 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
             .map(|e| e.workspace_id.clone())
     );
     assert!(snapshot.workspace.active_workspace_entry.is_some());
-    assert!(snapshot.cursor.is_some());
 
     server.abort();
     Ok(())
@@ -626,6 +627,11 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
         let events = runtime.storage().read_recent_events(200)?;
         Ok(messages.iter().any(|message| {
             message.kind == MessageKind::OperatorPrompt
+                && message.id == message_id
+                && message.body
+                    == MessageBody::Text {
+                        text: "hello".into(),
+                    }
                 && message.delivery_surface == Some(MessageDeliverySurface::HttpControlPrompt)
                 && message.admission_context == Some(AdmissionContext::LocalProcess)
                 && message.authority_class == AuthorityClass::OperatorInstruction
@@ -645,14 +651,7 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
         .await?;
     assert!(state_response.status().is_success());
     let state_payload: serde_json::Value = state_response.json().await?;
-    let operator_messages = state_payload["operator_messages"]
-        .as_array()
-        .expect("state snapshot should include operator_messages");
-    assert!(operator_messages.iter().any(|message| {
-        message["message_id"] == message_id
-            && message["body"]["type"] == "text"
-            && message["body"]["text"] == "hello"
-    }));
+    assert!(state_payload.get("operator_messages").is_none());
 
     server.abort();
     Ok(())

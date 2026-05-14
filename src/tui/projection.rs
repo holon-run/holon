@@ -101,23 +101,22 @@ impl TuiProjection {
         let presentation_reducer = crate::presentation::PresentationReducer::new();
         let external_triggers = snapshot.external_triggers;
         let operator_notifications = snapshot.operator_notifications;
-        let events_tail = snapshot.events_tail;
         let tasks = active_tasks_for_projection(snapshot.tasks);
 
-        let mut projection = Self {
+        let projection = Self {
             agent: snapshot.agent,
             session: snapshot.session,
             presentation_reducer,
             tasks,
-            transcript_tail: snapshot.transcript_tail,
-            operator_messages: snapshot.operator_messages,
+            transcript_tail: Vec::new(),
+            operator_messages: Vec::new(),
             timers: snapshot.timers,
             work_items: snapshot.work_items,
             waiting_intents: snapshot.waiting_intents,
             external_triggers,
             operator_notifications,
             workspace: snapshot.workspace,
-            cursor: snapshot.cursor,
+            cursor: None,
             history_oldest_cursor: None,
             history_has_older: false,
             history_paging_active: false,
@@ -125,7 +124,6 @@ impl TuiProjection {
             event_log: Vec::new(),
             durable_conversation_log: Vec::new(),
         };
-        projection.seed_event_log(events_tail);
         projection
     }
 
@@ -133,15 +131,15 @@ impl TuiProjection {
         *self = Self::from_snapshot(snapshot);
     }
 
-    pub(crate) fn inherit_recent_event_logs_from(&mut self, previous: &mut Self) {
-        self.event_log = mem::take(&mut previous.event_log);
-        self.durable_conversation_log = mem::take(&mut previous.durable_conversation_log);
-        self.history_oldest_cursor = previous.history_oldest_cursor.take();
-        self.history_has_older = previous.history_has_older;
-        self.history_paging_active = previous.history_paging_active;
-        if let Some(last_event) = self.event_log.last() {
-            self.cursor = Some(last_event.id.clone());
-        }
+    pub(crate) fn replace_event_window(
+        &mut self,
+        events_tail: Vec<StreamEventEnvelope>,
+        cursor: Option<String>,
+    ) {
+        self.event_log.clear();
+        self.durable_conversation_log.clear();
+        self.cursor = cursor;
+        self.seed_event_log(events_tail);
     }
 
     pub(crate) fn set_event_history_state(
@@ -481,6 +479,7 @@ impl TuiProjection {
             let record = self.projection_event_record_from_envelope(envelope);
             push_limited(&mut self.event_log, record, EVENT_LOG_LIMIT);
         }
+        self.rebuild_durable_conversation_log();
         if let Some(last_event) = self.event_log.last() {
             if self.cursor.is_none() {
                 self.cursor = Some(last_event.id.clone());
@@ -533,6 +532,46 @@ impl TuiProjection {
         &self,
     ) -> impl Iterator<Item = &ProjectionEventRecord> {
         self.durable_conversation_log.iter()
+    }
+
+    pub(crate) fn presentation_events(
+        &self,
+        display_mode: OperatorDisplayMode,
+    ) -> Vec<ProjectionEventRecord> {
+        let mut events = Vec::new();
+        let mut seen = BTreeSet::new();
+        for event in &self.durable_conversation_log {
+            if seen.insert(event.id.clone()) {
+                events.push(event.clone());
+            }
+        }
+        if display_mode.display_level() > OperatorDisplayMode::Info.display_level() {
+            for event in &self.event_log {
+                if seen.insert(event.id.clone()) {
+                    events.push(event.clone());
+                }
+            }
+        }
+        events.sort_by(|left, right| {
+            left.ts
+                .cmp(&right.ts)
+                .then_with(|| left.seq.cmp(&right.seq))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        events
+    }
+
+    pub(crate) fn durable_operator_message_ids(&self) -> BTreeSet<String> {
+        self.durable_conversation_log
+            .iter()
+            .filter(|event| event.kind == "message_enqueued")
+            .filter_map(|event| {
+                serde_json::from_value::<MessageEnvelope>(event.payload.clone())
+                    .ok()
+                    .filter(|message| matches!(message.origin, MessageOrigin::Operator { .. }))
+                    .map(|message| message.id)
+            })
+            .collect()
     }
 
     pub(crate) fn recent_activity_events(&self) -> Vec<&ProjectionEventRecord> {
@@ -1161,11 +1200,10 @@ fn operator_message_from_enqueued(message: &MessageEnvelope) -> OperatorMessageR
 }
 
 pub(crate) fn is_presentation_reducer_event(event: &ProjectionEventRecord) -> bool {
-    event.kind != "message_enqueued"
-        && !matches!(
-            event.presentation.category,
-            OperatorEventCategory::StateSync
-        )
+    !matches!(
+        event.presentation.category,
+        OperatorEventCategory::StateSync
+    )
 }
 
 pub(crate) fn is_durable_conversation_kind(kind: &str) -> bool {
@@ -1460,10 +1498,9 @@ mod tests {
             ExternalTriggerStateSnapshot, ExternalTriggerStatus, LoadedAgentsMdView, MessageBody,
             MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
             RuntimePosture, SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus,
-            TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-            TurnTerminalKind, TurnTerminalRecord, WaitingIntentRecord, WaitingIntentStatus,
-            WaitingIntentSummary, WaitingReason, WorkItemRecord, WorkItemState,
-            WorkspaceOccupancyRecord, WorktreeSession,
+            TodoItem, TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord,
+            WaitingIntentRecord, WaitingIntentStatus, WaitingIntentSummary, WaitingReason,
+            WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
         },
     };
     use chrono::Utc;
@@ -1480,16 +1517,13 @@ mod tests {
         let projection = TuiProjection::from_snapshot(snapshot.clone());
 
         assert_eq!(projection.agent.identity.agent_id, "default");
-        assert_eq!(
-            projection.transcript_tail.len(),
-            snapshot.transcript_tail.len()
-        );
+        assert!(projection.transcript_tail.is_empty());
         assert_eq!(
             projection.external_triggers.len(),
             snapshot.external_triggers.len()
         );
         assert!(projection.stale_slices.is_empty());
-        assert_eq!(projection.cursor, snapshot.cursor);
+        assert!(projection.cursor.is_none());
     }
 
     #[test]
@@ -1506,8 +1540,8 @@ mod tests {
 
     #[test]
     fn projection_bootstrap_seeds_raw_event_log_from_snapshot_tail() {
-        let mut snapshot = sample_snapshot();
-        snapshot.events_tail = vec![StreamEventEnvelope {
+        let snapshot = sample_snapshot();
+        let events_tail = vec![StreamEventEnvelope {
             id: "evt-tail-1".into(),
             seq: 0,
             ts: Utc::now(),
@@ -1527,9 +1561,8 @@ mod tests {
                 "raw_text": "debug assistant body",
             }),
         }];
-        snapshot.cursor = Some("evt-tail-1".into());
-
-        let projection = TuiProjection::from_snapshot(snapshot);
+        let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.replace_event_window(events_tail, Some("evt-tail-1".into()));
 
         assert_eq!(projection.event_log().len(), 1);
         assert_eq!(
@@ -1540,10 +1573,7 @@ mod tests {
             Some("Assistant requested tools: ExecCommand")
         );
         assert_eq!(projection.cursor.as_deref(), Some("evt-tail-1"));
-        assert!(
-            projection.durable_conversation_events().next().is_none(),
-            "events_tail should seed the raw inspector, not durable conversation history"
-        );
+        assert!(projection.durable_conversation_events().next().is_none());
     }
 
     #[test]
@@ -1623,9 +1653,10 @@ mod tests {
 
     #[test]
     fn projection_prepends_older_event_page_and_updates_history_cursor() {
-        let mut snapshot = sample_snapshot();
-        snapshot.events_tail = vec![sample_event_envelope("evt-newer", 3)];
+        let snapshot = sample_snapshot();
+        let events_tail = vec![sample_event_envelope("evt-newer", 3)];
         let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.replace_event_window(events_tail, Some("evt-newer".into()));
 
         let added = projection.prepend_event_history_page(
             vec![
@@ -1652,9 +1683,10 @@ mod tests {
 
     #[test]
     fn projection_caps_prepended_history_and_keeps_cursor_on_retained_oldest() {
-        let mut snapshot = sample_snapshot();
-        snapshot.events_tail = vec![sample_event_envelope("evt-live", 5000)];
+        let snapshot = sample_snapshot();
+        let events_tail = vec![sample_event_envelope("evt-live", 5000)];
         let mut projection = TuiProjection::from_snapshot(snapshot);
+        projection.replace_event_window(events_tail, Some("evt-live".into()));
 
         let first_page = (0..4090)
             .rev()
@@ -2058,46 +2090,6 @@ mod tests {
         assert!(projection
             .stale_slices
             .contains(&ProjectionSlice::TranscriptTail));
-    }
-
-    #[test]
-    fn projection_refresh_moves_inherited_logs_and_advances_cursor() {
-        let mut previous = TuiProjection::from_snapshot(sample_snapshot());
-        previous.apply_event(
-            sample_event(
-                "provider_round_completed",
-                json!({ "round": 1, "text_preview": "partial" }),
-            ),
-            &test_log_writer(),
-        );
-        previous.apply_event(
-            sample_event(
-                "operator_notification_requested",
-                json!({
-                    "id": "notification-1",
-                    "summary": "needs review",
-                    "message": "needs review",
-                    "created_at": Utc::now(),
-                }),
-            ),
-            &test_log_writer(),
-        );
-        previous.apply_event(
-            sample_event(
-                "tool_executed",
-                json!({ "tool_name": "ExecCommand", "exec_command_cmd": "cargo test tui" }),
-            ),
-            &test_log_writer(),
-        );
-
-        let mut refreshed = TuiProjection::from_snapshot(sample_snapshot());
-        refreshed.inherit_recent_event_logs_from(&mut previous);
-
-        assert_eq!(refreshed.cursor.as_deref(), Some("evt-tool_executed"));
-        assert_eq!(refreshed.event_log().len(), 3);
-        assert_eq!(refreshed.durable_conversation_events().count(), 1);
-        assert!(previous.event_log().is_empty());
-        assert_eq!(previous.durable_conversation_events().count(), 0);
     }
 
     #[test]
@@ -2610,19 +2602,6 @@ mod tests {
                 }),
             },
             tasks: vec![sample_task()],
-            transcript_tail: vec![TranscriptEntry {
-                id: "tr-1".into(),
-                agent_id: "default".into(),
-                created_at: Utc::now(),
-                kind: TranscriptEntryKind::IncomingMessage,
-                round: None,
-                related_message_id: Some("msg-1".into()),
-                stop_reason: None,
-                input_tokens: None,
-                output_tokens: None,
-                data: json!({ "body": { "type": "text", "text": "hi" } }),
-            }],
-            operator_messages: Vec::new(),
             timers: vec![TimerRecord {
                 id: "timer-1".into(),
                 agent_id: "default".into(),
@@ -2707,8 +2686,6 @@ mod tests {
                 }),
             },
             execution: None,
-            events_tail: Vec::new(),
-            cursor: Some("evt-bootstrap".into()),
         }
     }
 

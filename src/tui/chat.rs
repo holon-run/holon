@@ -138,57 +138,23 @@ pub(super) struct CachedChatText {
 pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     let mut cells = Vec::new();
     let mut visible_operator_message_ids = std::collections::BTreeSet::new();
-    let operator_message_statuses = operator_message_statuses(app);
-
-    for entry in &app.transcript {
-        if entry.kind != TranscriptEntryKind::IncomingMessage {
-            continue;
-        }
-        if !entry
-            .data
-            .get("origin")
-            .is_some_and(is_operator_origin_value)
-        {
-            continue;
-        }
-        let body = entry
-            .data
-            .get("body")
-            .and_then(render_message_body_value)
-            .unwrap_or_else(|| compact_json(&entry.data));
-        let status = if let Some(message_id) = entry.related_message_id.as_deref() {
-            visible_operator_message_ids.insert(message_id.to_string());
-            operator_message_statuses.get(message_id).cloned()
-        } else {
-            None
-        };
-        cells.push(ConversationCell::UserMessage {
-            created_at: entry.created_at,
-            body,
-            status,
-        });
-    }
-
-    if let Some(projection) = app.projection.as_ref() {
-        for message in &projection.operator_messages {
-            push_pending_operator_message_cell(
-                &mut cells,
-                &mut visible_operator_message_ids,
-                message,
-            );
-        }
-    }
+    let durable_operator_message_ids = app
+        .projection
+        .as_ref()
+        .map(|projection| projection.durable_operator_message_ids())
+        .unwrap_or_default();
     for message in &app.optimistic_operator_messages {
+        if durable_operator_message_ids.contains(&message.message_id) {
+            continue;
+        }
         push_pending_operator_message_cell(&mut cells, &mut visible_operator_message_ids, message);
     }
 
     if let Some(projection) = app.projection.as_ref() {
-        // New pipeline: events → PresentationItems → RenderedCells → ConversationCells
         let level = app.display_mode.display_level();
         let events: Vec<ProjectionEventRecord> = projection
-            .event_log()
-            .iter()
-            .cloned()
+            .presentation_events(app.display_mode)
+            .into_iter()
             .filter(is_presentation_reducer_event)
             .collect();
 
@@ -217,21 +183,6 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         cells.push(active_item);
     }
     cells
-}
-
-fn operator_message_statuses(
-    app: &TuiApp,
-) -> std::collections::BTreeMap<String, OperatorMessageStatus> {
-    let mut statuses = std::collections::BTreeMap::new();
-    for message in &app.optimistic_operator_messages {
-        statuses.insert(message.message_id.clone(), message.status.clone());
-    }
-    if let Some(projection) = app.projection.as_ref() {
-        for message in &projection.operator_messages {
-            statuses.insert(message.message_id.clone(), message.status.clone());
-        }
-    }
-    statuses
 }
 
 fn push_pending_operator_message_cell(
@@ -742,23 +693,12 @@ fn paragraph_max_scroll_for_size(text: &Text<'_>, width: u16, height: u16) -> u1
         .min(u16::MAX as usize) as u16
 }
 
+#[cfg(test)]
 pub(super) fn is_operator_origin_value(value: &Value) -> bool {
     value
         .get("kind")
         .and_then(Value::as_str)
         .is_some_and(|kind| kind == "operator")
-}
-
-fn render_message_body_value(value: &Value) -> Option<String> {
-    let body_type = value.get("type").and_then(Value::as_str)?;
-    match body_type {
-        "text" | "brief" => value
-            .get("text")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        "json" => value.get("value").map(compact_json),
-        _ => None,
-    }
 }
 
 fn render_operator_message_body(body: &MessageBody) -> Option<String> {
@@ -963,6 +903,12 @@ pub(super) fn rendered_to_conversation_cell(
             created_at: ts,
             speaker: cell.speaker.clone(),
             body: cell.body.clone(),
+        }
+    } else if cell.speaker == "You" {
+        ConversationCell::UserMessage {
+            created_at: ts,
+            body: cell.body.clone(),
+            status: None,
         }
     } else {
         ConversationCell::SystemNotice {

@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::operator_event::OperatorEventCategory;
 use crate::tui::projection::ProjectionEventRecord;
-use crate::types::{BriefKind, BriefRecord};
+use crate::types::{BriefKind, BriefRecord, MessageBody, MessageEnvelope, MessageOrigin};
 
 // ── Supporting types ───────────────────────────────────────────────────────
 
@@ -620,6 +620,15 @@ impl PresentationReducer {
                     }
                 }
 
+                "message_enqueued" => {
+                    if let Some(text) = operator_message_text(event) {
+                        items.push(TimedItem {
+                            item: PresentationItem::UserMessage { text },
+                            ts: event.ts,
+                        });
+                    }
+                }
+
                 "brief_created" => {
                     if let Some(item) = brief_result_item(event) {
                         items.push(TimedItem { item, ts: event.ts });
@@ -897,6 +906,17 @@ fn brief_result_item(event: &ProjectionEventRecord) -> Option<PresentationItem> 
             body: event.summary.clone(),
             outcome: Outcome::Neutral,
         }),
+    }
+}
+
+fn operator_message_text(event: &ProjectionEventRecord) -> Option<String> {
+    let message = serde_json::from_value::<MessageEnvelope>(event.payload.clone()).ok()?;
+    if !matches!(message.origin, MessageOrigin::Operator { .. }) {
+        return None;
+    }
+    match message.body {
+        MessageBody::Text { text } | MessageBody::Brief { text, .. } => Some(text),
+        MessageBody::Json { value } => serde_json::to_string(&value).ok(),
     }
 }
 

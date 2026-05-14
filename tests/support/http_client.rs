@@ -12,7 +12,9 @@ use std::{
 use anyhow::Result;
 use async_trait::async_trait;
 use holon::{
-    client::{AgentStreamEvent, EventStreamRequest, LocalClient, LocalEventStream},
+    client::{
+        AgentStreamEvent, EventPageRequest, EventStreamRequest, LocalClient, LocalEventStream,
+    },
     config::{AppConfig, ControlAuthMode},
     daemon::RuntimeServiceHandle,
     host::RuntimeHost,
@@ -202,7 +204,17 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         .operator_notifications
         .iter()
         .any(|notification| notification.summary == "HTTP state visible operator note"));
-    assert!(snapshot.cursor.is_some());
+    let events_page = client
+        .agent_events_page(
+            "default",
+            EventPageRequest {
+                limit: Some(1),
+                order: Some("desc".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(events_page.newest_cursor.is_some());
 
     let raw_state: serde_json::Value = reqwest::Client::new()
         .get(format!("{base}/agents/default/state"))
@@ -216,6 +228,13 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
     assert!(
         !raw_agent.contains_key("model_availability"),
         "/agents/{{agent_id}}/state must not embed runtime-global model availability"
+    );
+    assert!(
+        !raw_state
+            .as_object()
+            .expect("state snapshot should be an object")
+            .contains_key("cursor"),
+        "/agents/{{agent_id}}/state must not expose chat event cursors"
     );
 
     server.abort();
@@ -234,9 +253,16 @@ pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Res
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
     let cursor = client
-        .agent_state_snapshot("default")
+        .agent_events_page(
+            "default",
+            EventPageRequest {
+                limit: Some(1),
+                order: Some("desc".into()),
+                ..Default::default()
+            },
+        )
         .await?
-        .cursor
+        .newest_cursor
         .expect("cursor should be present");
 
     client
@@ -327,9 +353,16 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_cursor_query()
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
     let cursor = client
-        .agent_state_snapshot("default")
+        .agent_events_page(
+            "default",
+            EventPageRequest {
+                limit: Some(1),
+                order: Some("desc".into()),
+                ..Default::default()
+            },
+        )
         .await?
-        .cursor
+        .newest_cursor
         .expect("cursor should be present");
 
     client

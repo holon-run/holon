@@ -4,7 +4,7 @@ use super::view_model::render_header_line;
 use super::view_model::{render_model_detail, HeaderViewModel, StatusbarViewModel};
 use super::*;
 use crate::tui::input::{slash_menu_specs, SlashArgHint, SlashCommandSpec};
-use crate::types::{TaskKind, TaskStatus};
+use crate::types::{TaskKind, TaskStatus, TranscriptEntry};
 use ratatui::style::Color;
 use unicode_width::UnicodeWidthChar;
 
