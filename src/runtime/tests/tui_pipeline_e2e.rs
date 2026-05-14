@@ -593,10 +593,8 @@ async fn e2e_tui_concurrent_agents_attribution() {
     }
 
     // ── 7. Create two projections, both writing to shared log ────────
-    let mut projection_a =
-        TuiProjection::from_snapshot(minimal_snapshot("agent-a", "cursor-a0"));
-    let mut projection_b =
-        TuiProjection::from_snapshot(minimal_snapshot("agent-b", "cursor-b0"));
+    let mut projection_a = TuiProjection::from_snapshot(minimal_snapshot("agent-a", "cursor-a0"));
+    let mut projection_b = TuiProjection::from_snapshot(minimal_snapshot("agent-b", "cursor-b0"));
 
     for (idx, event) in events_a.iter().enumerate() {
         let stream_event = audit_to_stream_event(event, (idx + 1) as u64, "agent-a");
@@ -627,8 +625,8 @@ async fn e2e_tui_concurrent_agents_attribution() {
     let mut seen_apply_patch = false;
 
     for line in &lines {
-        let record: serde_json::Value =
-            serde_json::from_str(line).expect("every line must be valid JSON after concurrent writes");
+        let record: serde_json::Value = serde_json::from_str(line)
+            .expect("every line must be valid JSON after concurrent writes");
 
         for display in record["displays"].as_array().into_iter().flatten() {
             if display["decision"].as_str() == Some("shown") {
