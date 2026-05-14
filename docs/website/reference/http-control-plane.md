@@ -10,6 +10,409 @@ Holon is designed to be headless. HTTP and event-driven integration surfaces
 should preserve the same runtime concepts as the CLI: origin, trust, priority,
 work items, tasks, queues, wakeups, and user-facing delivery.
 
+## Authentication
+
+When a control token is configured (e.g. `--token`, `--token-file`, or the
+`control_token` config key), the HTTP server operates in **bearer mode**.
+All `/control/*` routes require an `Authorization: Bearer <token>` header,
+and read-only routes (agent state, events, tasks) require it for remote
+access as well. Without a control token, the server runs in **local mode**
+and trusts the local process boundary.
+
+```
+GET /handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }
+```
+
+## Endpoint reference
+
+### Discovery
+
+**`GET /`** — Root
+
+Returns the default agent ID.
+
+```json
+{ "ok": true, "default_agent": "main" }
+```
+
+**`GET /handshake`** — Protocol handshake
+
+Returns auth mode, capabilities, and runtime info.
+
+```json
+{
+  "ok": true,
+  "protocol": { "name": "holon-control", "version": 1 },
+  "auth": { "mode": "bearer", "required": true },
+  "capabilities": ["agents.list", "agents.state", "agents.events", "agents.control", "tui.remote"],
+  "runtime": {
+    "default_agent": "main",
+    "workspace_dir": "/path/to/workspace",
+    "home_dir": "/path/to/holon/home",
+    "listen": "127.0.0.1:9101",
+    "advertise_url": null
+  }
+}
+```
+
+**`GET /models`** — Available models
+
+Returns model catalog and runtime availability.
+
+```json
+{
+  "available_models": [
+    { "id": "claude-sonnet-4-20250514", "display_name": "Claude Sonnet 4", … }
+  ],
+  "model_availability": { "claude-sonnet-4-20250514": true, … }
+}
+```
+
+### Agents
+
+**`GET /agents`** — List agent summaries
+
+Returns a compact summary for each registered agent: id, visibility, profile, current
+work item, waiting state, and latest execution snapshot.
+
+**`GET /agents/list`** — List agent entries (detailed)
+
+Returns full `AgentRegistryStatus` entries including registered-at timestamps and
+workspace occupancies.
+
+**`GET /agents/:id/status`** — Single agent status
+
+Returns the same `AgentSummary` shape for the named agent.
+
+**`GET /agents/:id/state`** — Full agent state snapshot
+
+Returns a combined state page: agent summary, session info (current run, pending
+count), active tasks, recent timers, work items, waiting intents, external
+triggers, operator notifications, execution snapshot, and workspace occupancy.
+
+**`GET /agents/:id/briefs`** — Recent briefs
+
+Returns recent briefs (acknowledgements and results) for the agent.
+
+**`GET /agents/:id/tasks`** — Active tasks
+
+Returns active and recent tasks with status, kind, and timing metadata.
+
+**`GET /agents/:id/timers`** — Recent timers
+
+Returns recent timer records.
+
+**`GET /agents/:id/events`** — Event log
+
+Returns recent runtime events (turn entries, system events). Query parameters:
+
+| Param | Description |
+|-------|-------------|
+| `cursor` | Cursor for pagination |
+| `limit` | Max events to return (default 128) |
+| `order` | `asc` or `desc` (default) |
+| `projection` | `local_debug` (control token required) or `operator` (default) |
+
+**`GET /agents/:id/events/stream`** — Server-sent events
+
+SSE stream of agent events. Supports `cursor`, `limit`, and `projection` query params. The
+SSE `type` field is set to the raw audit event kind (e.g. `turn_entry`,
+`wake_requested`, `task_create_requested`), not a limited set of names.
+
+**`GET /agents/:id/transcript`** — Turn transcript
+
+Returns the current turn transcript entries.
+
+**`GET /agents/:id/worktree-summary`** — Worktree summary
+
+Returns managed worktree entries for the agent's workspace.
+
+### Enqueue (public ingress)
+
+**`POST /agents/:id/enqueue`** — Enqueue a message
+
+Accepts external callers on the public HTTP surface. When the server is in
+**bearer mode**, this route calls `authorize_remote_access` and requires the
+control token just like read-only routes. In **local mode** no auth header is
+needed.
+
+The runtime classifies origin, trust, and priority; public callers may not
+override trust or use `interject` priority.
+Request shape:
+
+```json
+{
+  "kind": "channel_event | webhook_event",
+  "priority": "next | normal | background",
+  "text": "plain text body",
+  "json": { "structured": "body" },
+  "body": { "type": "text", "text": "…" },
+  "origin": {
+    "kind": "channel",
+    "channel_id": "slack-general",
+    "sender_id": "U123"
+  },
+  "metadata": {},
+  "correlation_id": "optional-correlation",
+  "causation_id": "optional-causation"
+}
+```
+
+Response:
+
+```json
+{ "ok": true, "agent_id": "main", "message_id": "msg-abc123" }
+```
+
+**`POST /enqueue`** (no agent in path) — Enqueue to default agent.
+
+
+### Control plane (authenticated)
+
+All `/control/*` routes require a control token when the server is in bearer
+mode.
+
+**`POST /control/agents/:id/prompt`** — Send an operator prompt
+
+Sends a prompt that enters the agent queue as an operator message with
+`trusted_operator` classification.
+
+```json
+{ "text": "What is the current status?" }
+```
+
+**`POST /control/agents/:id/wake`** — Explicit wake
+
+Wakes a sleeping agent with a control-plane wake hint.
+
+```json
+{ "reason": "manual-wake", "source": "operator" }
+```
+
+Response:
+
+```json
+{ "ok": true, "agent_id": "main", "disposition": "woken" }
+```
+
+**`POST /control/agents/:id/control`** — Control action
+
+Sends a control action (pause, resume, or other lifecycle actions). Request body:
+
+```json
+{ "action": "pause", "trust": "trusted_operator" }
+```
+
+**`POST /control/agents/:id/current-run/abort`** — Abort current run
+
+Aborts the current agent run loop. Only `mode: "pause_after_abort"` is
+supported:
+
+```json
+{ "mode": "pause_after_abort" }
+```
+
+**`POST /control/agents/:id/create`** — Create agent
+
+Creates a new agent managed by the host. The agent id comes from the URL path.
+
+```json
+{ "template": null, "trust": "trusted_operator" }
+```
+
+**`POST /control/agents/:id/tasks`** — Create command task
+
+Starts a background command task for the agent.
+
+```json
+{
+  "summary": "Build project",
+  "cmd": "cargo build",
+  "workdir": null,
+  "shell": null,
+  "login": false
+}
+```
+
+**`POST /control/agents/:id/work-items`** — Create work item
+
+Creates a durable work item for the agent. Only `objective` is accepted.
+
+```json
+{
+  "objective": "Fix the build",
+  "trust": "trusted_operator"
+}
+```
+
+**`POST /control/agents/:id/timers`** — Create timer
+
+Creates a timer that will deliver a `TimerTick` to the agent.
+
+```json
+{
+  "duration_ms": 60000,
+  "interval_ms": null,
+  "summary": "reminder",
+  "trust": "trusted_operator"
+}
+```
+
+**`POST /control/agents/:id/debug-prompt`** — Debug prompt
+
+Sends a debug-mode prompt (runtime-internal classification). Request body:
+
+```json
+{ "text": "debug instruction", "trust": "trusted_operator" }
+```
+
+**`POST /control/agents/:id/operator-bindings`** — Create operator transport binding
+
+Sets up a callback URL or transport binding for operator notifications.
+Request body:
+
+```json
+{
+  "binding_id": "my-binding",
+  "transport": "http-callback",
+  "operator_actor_id": "operator-1",
+  "default_route_id": "default",
+  "delivery_callback_url": "https://example.com/callback",
+  "delivery_auth": { "type": "bearer", "token": "secret" },
+  "capabilities": { "send_prompt": true },
+  "provider": "anthropic",
+  "provider_identity_ref": "user-123",
+  "metadata": {}
+}
+```
+
+**`POST /control/agents/:id/operator-ingress`** — Operator ingress
+
+Direct ingress path for operator-origin messages through the control plane.
+Request body:
+
+```json
+{
+  "text": "operator message",
+  "actor_id": "operator-1",
+  "binding_id": "my-binding",
+  "reply_route_id": "route-1",
+  "provider": "anthropic",
+  "correlation_id": "corr-123"
+}
+```
+
+**`POST /control/agents/:id/workspace/attach`** — Attach workspace
+
+```json
+{ "path": "/path/to/workspace" }
+```
+
+**`POST /control/agents/:id/workspace/exit`** — Exit current workspace
+
+Returns to the agent home workspace. Accepts an optional body:
+
+```json
+{ "trust": "trusted_operator" }
+```
+
+**`POST /control/agents/:id/workspace/detach`** — Detach workspace
+
+Removes a workspace registration without switching. Request body:
+
+```json
+{ "workspace_id": "ws-abc123", "trust": "trusted_operator" }
+```
+
+**`POST /control/agents/:id/model`** — Set agent model
+
+```json
+{ "model": "claude-sonnet-4-20250514" }
+```
+
+**`POST /control/agents/:id/model/clear`** — Clear model override
+
+Reverts to the default model. Accepts an optional body:
+
+```json
+{ "trust": "trusted_operator" }
+```
+
+### Runtime management
+
+**`GET /control/runtime/status`** — Runtime status
+
+Returns daemon and runtime health info including configured models, control
+token status, and activity markers.
+
+**`POST /control/runtime/shutdown`** — Graceful shutdown
+
+Shuts down the runtime and daemon gracefully.
+
+### Webhooks & callbacks
+
+**`POST /webhooks/generic/:agent_id`** — Generic webhook
+
+Accepts arbitrary JSON payloads and enqueues them as `WebhookEvent` messages
+to the named agent. Useful for GitHub webhooks, CI notifications, and external
+service integrations.
+
+**`POST /callbacks/enqueue/:callback_token`** — Callback enqueue
+
+Receives enqueue callbacks from registered callback URLs. Body limit: 256 KB.
+
+**`POST /callbacks/wake/:callback_token`** — Callback wake
+
+Receives wake callbacks from registered callback URLs.
+
+## Message shapes
+
+### MessageKind
+
+Valid enqueue kinds for external callers: `channel_event`, `webhook_event`.
+The policy only allows `operator_prompt` with an operator origin; public
+enqueue rejects it. Runtime-owned kinds (`system_tick`, `task_result`,
+`task_status`, `control`, `internal_followup`) are rejected from
+external enqueue.
+
+### Priority
+
+| Value | Behavior |
+|-------|----------|
+| `interject` | Preempts normal queue; control-plane only |
+| `next` | After current turn, before queued |
+| `normal` | Standard queue position |
+| `background` | Low urgency, processed when idle |
+
+### TrustLevel
+
+| Value | Default origin | Meaning |
+|-------|----------------|---------|
+| `trusted_operator` | `operator` | Direct operator action |
+| `trusted_system` | `system`, `task`, `timer` | Runtime-internal action |
+| `trusted_integration` | `webhook`, `callback` | Known integration with explicit trust |
+| `untrusted_external` | `channel` | Public channel / unauthenticated caller |
+
+### MessageOrigin
+
+| Kind | Fields |
+|------|--------|
+| `operator` | `actor_id` (optional) |
+| `channel` | `channel_id`, `sender_id` (optional) |
+| `webhook` | `source`, `event_type` (optional) |
+| `callback` | `descriptor_id`, `source` (optional) |
+| `timer` | `timer_id` |
+| `system` | `subsystem` |
+| `task` | `task_id` |
+
+### MessageBody
+
+| Type | Fields |
+|------|--------|
+| `text` | `text: string` |
+| `json` | `value: object` |
+| `brief` | `title`, `text`, `attachments` |
+
 ## Design goals
 
 - Keep transport details outside the core runtime model.
@@ -29,4 +432,42 @@ endpoint. A good integration should be able to ask:
 - Which output is safe to show to a user?
 - Which evidence is internal runtime detail?
 
-The exact API shape should follow the repository runtime specs as they mature.
+### Routes not yet documented
+
+The following routes exist in `src/http.rs` but are not yet fully documented
+on this reference page:
+
+- `GET /agents/:id/skills`
+- `POST /control/agents/:id/skills/install`
+- `POST /control/agents/:id/skills/uninstall`
+- Default-agent aliases: `/status`, `/briefs`, `/state`, `/transcript`,
+  `/worktree-summary`
+
+These will be added as the surface stabilizes.
+
+## Common curl examples
+
+```bash
+# Check server health
+curl http://127.0.0.1:9101/handshake
+
+# List agents
+curl http://127.0.0.1:9101/agents
+
+# Get agent state
+curl http://127.0.0.1:9101/agents/main/state
+
+# Send a prompt (control token required)
+curl -X POST http://127.0.0.1:9101/control/agents/main/prompt \
+  -H "Authorization: Bearer $HOLON_CONTROL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Run cargo check"}'
+
+# Enqueue via webhook (public)
+curl -X POST http://127.0.0.1:9101/webhooks/generic/main \
+  -H "Content-Type: application/json" \
+  -d '{"event": "ci-complete", "status": "success"}'
+
+# Stream agent events
+curl -N http://127.0.0.1:9101/agents/main/events/stream
+```
