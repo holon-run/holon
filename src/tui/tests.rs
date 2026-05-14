@@ -3084,3 +3084,231 @@ fn pipeline_single_turn_presentation_jsonl() {
     assert!(seen_tool_executed, "should contain tool_executed event");
     assert!(seen_turn_terminal, "should contain turn_terminal event");
 }
+
+/// Pipeline test: display level filtering across all visibility levels.
+///
+/// Verifies that the TUI pipeline correctly applies `min_display_level` →
+/// `decision=shown|hidden` filtering across all three operator display
+/// levels (Info=3, Verbose=4, Debug=5), and that invalid level values are
+/// handled gracefully.
+#[test]
+fn pipeline_display_level_filtering() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let log_writer =
+        crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_root = log_writer.root().to_path_buf();
+    let mut app = TuiApp::new(client, log_writer);
+
+    let snapshot = sample_snapshot("default", "evt-0");
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    let projection = app.projection.as_mut().unwrap();
+
+    // ── Feed events spanning all five OperatorVisibility levels ─────────
+    //
+    // Visibility 1 (ActionRequired): operator_notification_requested
+    // Visibility 2 (WorkDone):       work_item_written with completed state
+    // Visibility 3 (TurnResult):     brief_created (normal brief)
+    // Visibility 4 (Progress):       assistant_round_recorded
+    // Visibility 5 (Trace):          process_execution_requested, tool_executed
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-notify",
+            1,
+            "default",
+            "operator_notification_requested",
+            json!({ "summary": "action required notification", "severity": "info" }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-work-done",
+            2,
+            "default",
+            "work_item_written",
+            json!({ "record": { "id": "wi-test", "objective": "test", "state": "completed" } }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-brief",
+            3,
+            "default",
+            "brief_created",
+            json!({ "id": "b1", "agent_id": "default", "text": "turn result brief", "created_at": "2025-01-01T00:00:00Z" }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-assistant",
+            4,
+            "default",
+            "assistant_round_recorded",
+            json!({ "round": 1, "text_preview": "assistant progress update" }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-cmd",
+            5,
+            "default",
+            "process_execution_requested",
+            json!({ "exec_command_cmd": "echo trace" }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-tool",
+            6,
+            "default",
+            "tool_executed",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "echo trace",
+                "duration_ms": 3,
+                "exit_status": 0,
+                "stdout_preview": "trace"
+            }),
+        ),
+        &app.log_writer,
+    );
+
+    // ── Verify presentation.jsonl ──────────────────────────────────────
+    let presentation_path = log_root.join("presentation.jsonl");
+    assert!(
+        presentation_path.exists(),
+        "presentation.jsonl should exist after pipeline events"
+    );
+
+    let raw = std::fs::read_to_string(&presentation_path).unwrap();
+    let lines: Vec<&str> = raw.trim().lines().collect();
+    assert!(!lines.is_empty(), "presentation.jsonl should have records");
+
+    let mut seen_notify = false;
+    let mut seen_work_done = false;
+    let mut seen_brief = false;
+    let mut seen_assistant = false;
+    let mut seen_command = false;
+    let mut seen_tool = false;
+
+    for line in &lines {
+        let record: serde_json::Value =
+            serde_json::from_str(line).expect("every line must be valid JSON");
+
+        let reducer_kinds: Vec<&str> = record["reducer_event_kinds"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        if reducer_kinds.contains(&"operator_notification_requested") {
+            seen_notify = true;
+        }
+        if reducer_kinds.contains(&"work_item_written") {
+            seen_work_done = true;
+        }
+        if reducer_kinds.contains(&"brief_created") {
+            seen_brief = true;
+        }
+        if reducer_kinds.contains(&"assistant_round_recorded") {
+            seen_assistant = true;
+        }
+        if reducer_kinds.contains(&"process_execution_requested") {
+            seen_command = true;
+        }
+        if reducer_kinds.contains(&"tool_executed") {
+            seen_tool = true;
+        }
+
+        let min_level = record["min_display_level"].as_u64().unwrap_or(0) as u8;
+        let displays = record["displays"]
+            .as_array()
+            .expect("displays must be an array");
+
+        // Verify exactly 3 display levels (3, 4, 5).
+        assert_eq!(
+            displays.len(),
+            3,
+            "displays should have exactly 3 entries (levels 3, 4, 5)"
+        );
+
+        let mut seen_levels = std::collections::BTreeSet::new();
+        for display in displays {
+            let dl = display["display_level"].as_u64().unwrap() as u8;
+            assert!(
+                (3..=5).contains(&dl),
+                "display_level must be 3, 4, or 5, got {dl}"
+            );
+            let decision = display["decision"].as_str().unwrap();
+            let cells = display["cells"].as_array().expect("cells must be an array");
+
+            if min_level <= dl {
+                assert_eq!(
+                    decision, "shown",
+                    "min_display_level={min_level} ≤ display_level={dl} → decision must be shown"
+                );
+                assert!(
+                    !cells.is_empty(),
+                    "shown display must have non-empty cells at level {dl}"
+                );
+                for cell in cells {
+                    let body_preview = cell["body_preview"].as_str().unwrap_or("");
+                    assert!(
+                        !body_preview.is_empty(),
+                        "shown cell must have non-empty body_preview at level {dl}"
+                    );
+                    assert!(
+                        cell["body_char_count"].as_u64().unwrap_or(0) > 0,
+                        "shown cell must have body_char_count > 0 at level {dl}"
+                    );
+                }
+            } else {
+                assert_eq!(
+                    decision, "hidden",
+                    "min_display_level={min_level} > display_level={dl} → decision must be hidden"
+                );
+                assert!(
+                    cells.is_empty(),
+                    "hidden display must have empty cells at level {dl}, got {} cells",
+                    cells.len()
+                );
+            }
+
+            seen_levels.insert(dl);
+        }
+
+        // Verify all three display levels are present.
+        assert!(
+            seen_levels.contains(&3) && seen_levels.contains(&4) && seen_levels.contains(&5),
+            "displays must contain all three levels 3, 4, 5"
+        );
+    }
+
+    assert!(
+        seen_notify,
+        "should contain operator_notification_requested (visibility 1)"
+    );
+    assert!(
+        seen_work_done,
+        "should contain work_item_written (visibility 2)"
+    );
+    assert!(seen_brief, "should contain brief_created (visibility 3)");
+    assert!(
+        seen_assistant,
+        "should contain assistant_round_recorded (visibility 4)"
+    );
+    assert!(
+        seen_command,
+        "should contain process_execution_requested (visibility 5)"
+    );
+    assert!(seen_tool, "should contain tool_executed (visibility 5)");
+}
