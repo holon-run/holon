@@ -681,6 +681,9 @@ fn presentation_activity_text(event: &ProjectionEventRecord) -> Option<String> {
 
 fn action_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
     if event.kind == "tool_executed" || event.kind == "tool_execution_failed" {
+        if is_sleep_tool_event(event) {
+            return String::new();
+        }
         progress_event_body(event)
     } else if is_progress_event(event) {
         assistant_message_from_event(event).unwrap_or_default()
@@ -796,6 +799,10 @@ pub(super) fn conversation_event_body(
     format!("{prefix}{}", event.summary)
 }
 
+fn is_sleep_tool_event(event: &crate::tui::projection::ProjectionEventRecord) -> bool {
+    event.payload.get("tool_name").and_then(Value::as_str) == Some("Sleep")
+}
+
 fn progress_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
     if matches!(
         event.presentation.category,
@@ -824,7 +831,9 @@ fn trim_preview(input: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{assistant_message_from_event, latest_action_event, progress_event_body};
+    use super::{
+        action_event_body, assistant_message_from_event, latest_action_event, progress_event_body,
+    };
     use crate::operator_event::{present_operator_event, OperatorPresentationContext};
     use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
     use chrono::Utc;
@@ -892,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn progress_event_body_uses_summary_for_non_command_tools() {
+    fn sleep_tool_is_not_activity_content() {
         let event = event(
             "tool_executed",
             "tool executed: Sleep",
@@ -900,8 +909,7 @@ mod tests {
                 "tool_name": "Sleep"
             }),
         );
-        let rendered = progress_event_body(&event);
-        assert_eq!(rendered, "Slept");
+        assert!(action_event_body(&event).is_empty());
     }
 
     #[test]

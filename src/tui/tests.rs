@@ -1439,7 +1439,7 @@ fn chat_text_renders_brief_events_from_projection() {
 }
 
 #[test]
-fn chat_text_renders_ack_and_result_brief_events() {
+fn chat_text_filters_operator_queue_ack_but_keeps_result_brief_events() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -1481,7 +1481,7 @@ fn chat_text_renders_ack_and_result_brief_events() {
         .into_iter()
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(rendered.contains("Queued work: duplicate"));
+    assert!(!rendered.contains("Queued work: duplicate"));
     assert!(rendered.contains("Real response"));
 }
 
@@ -2498,7 +2498,7 @@ fn chat_text_uses_presentation_summary_for_long_brief_events() {
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
     assert!(rendered.contains("intro"));
-    assert!(!rendered.contains("tail marker that used to be trimmed away"));
+    assert!(rendered.contains("tail marker that used to be trimmed away"));
 }
 
 #[test]

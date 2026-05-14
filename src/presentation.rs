@@ -5,6 +5,8 @@
 //!
 //! See `docs/rfcs/presentation-item-model-and-renderer.md`.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
@@ -345,14 +347,9 @@ impl Renderable for PresentationItem {
             }
 
             PresentationItem::AssistantResult { body, outcome, .. } => {
-                let display_body = if level >= 5 {
-                    body.clone()
-                } else {
-                    truncate_text(body, 500)
-                };
                 vec![RenderedCell::new(
                     "Holon",
-                    format!("{} {}", outcome.symbol(), display_body),
+                    format!("{} {}", outcome.symbol(), body),
                 )]
             }
 
@@ -578,6 +575,8 @@ impl PresentationReducer {
 
     pub(crate) fn reduce(&mut self, events: &[ProjectionEventRecord]) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
+        let final_brief_texts = final_brief_texts(events);
+        let mut observed_assistant_text_keys = HashSet::new();
 
         let mut i = 0;
         while i < events.len() {
@@ -622,13 +621,24 @@ impl PresentationReducer {
                 }
 
                 "brief_created" => {
-                    items.push(TimedItem {
-                        item: brief_result_item(event),
-                        ts: event.ts,
-                    });
+                    if let Some(item) = brief_result_item(event) {
+                        items.push(TimedItem { item, ts: event.ts });
+                    }
                 }
 
                 "tool_executed" | "tool_execution_failed" => {
+                    if is_sleep_tool_event(event) {
+                        items.push(TimedItem {
+                            item: PresentationItem::InternalTransition {
+                                what: "Sleep".into(),
+                                from: "tool".into(),
+                                to: event.summary.clone(),
+                            },
+                            ts: event.ts,
+                        });
+                        i += 1;
+                        continue;
+                    }
                     let cmd_preview =
                         exec_command_preview(event).unwrap_or_else(|| event.summary.clone());
                     let exit_code = tool_exit_code(event).or_else(|| match event.kind.as_str() {
@@ -654,7 +664,11 @@ impl PresentationReducer {
 
                 "assistant_round_recorded" | "text_only_round_observed" => {
                     if let Some(text) = round_text_preview(event) {
-                        if !text.trim().is_empty() {
+                        let text_key = normalized_event_text_key(event, &text);
+                        if !text.trim().is_empty()
+                            && !matches_final_brief_text(event, &text, &final_brief_texts)
+                            && observed_assistant_text_keys.insert(text_key)
+                        {
                             items.push(TimedItem {
                                 item: PresentationItem::AssistantProgress {
                                     text,
@@ -866,9 +880,10 @@ impl PresentationReducer {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn brief_result_item(event: &ProjectionEventRecord) -> PresentationItem {
+fn brief_result_item(event: &ProjectionEventRecord) -> Option<PresentationItem> {
     match serde_json::from_value::<BriefRecord>(event.payload.clone()) {
-        Ok(brief) => PresentationItem::AssistantResult {
+        Ok(brief) if is_operator_queue_ack(&brief) => None,
+        Ok(brief) => Some(PresentationItem::AssistantResult {
             brief_id: Some(brief.id),
             body: brief.text,
             outcome: match brief.kind {
@@ -876,13 +891,77 @@ fn brief_result_item(event: &ProjectionEventRecord) -> PresentationItem {
                 BriefKind::Result => Outcome::Success,
                 BriefKind::Ack => Outcome::Neutral,
             },
-        },
-        Err(_) => PresentationItem::AssistantResult {
+        }),
+        Err(_) => Some(PresentationItem::AssistantResult {
             brief_id: None,
             body: event.summary.clone(),
             outcome: Outcome::Neutral,
-        },
+        }),
     }
+}
+
+fn is_operator_queue_ack(brief: &BriefRecord) -> bool {
+    brief.kind == BriefKind::Ack
+        && brief.related_message_id.is_some()
+        && brief.text.trim_start().starts_with("Queued work:")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FinalBriefText {
+    agent_id: String,
+    text: String,
+}
+
+fn final_brief_texts(events: &[ProjectionEventRecord]) -> Vec<FinalBriefText> {
+    events
+        .iter()
+        .filter(|event| event.kind == "brief_created")
+        .filter_map(|event| serde_json::from_value::<BriefRecord>(event.payload.clone()).ok())
+        .filter(|brief| !is_operator_queue_ack(brief))
+        .filter(|brief| !brief.text.trim().is_empty())
+        .map(|brief| FinalBriefText {
+            agent_id: brief.agent_id,
+            text: normalized_text(brief.text.as_str()),
+        })
+        .collect()
+}
+
+fn matches_final_brief_text(
+    event: &ProjectionEventRecord,
+    text: &str,
+    final_brief_texts: &[FinalBriefText],
+) -> bool {
+    let Some(agent_id) = event.payload.get("agent_id").and_then(Value::as_str) else {
+        return false;
+    };
+    let observed = normalized_text(text)
+        .trim_end_matches('\u{2026}')
+        .trim()
+        .to_string();
+    if observed.is_empty() {
+        return false;
+    }
+    final_brief_texts
+        .iter()
+        .filter(|brief| brief.agent_id == agent_id)
+        .any(|brief| brief.text == observed || brief.text.starts_with(&observed))
+}
+
+fn normalized_event_text_key(event: &ProjectionEventRecord, text: &str) -> String {
+    let agent_id = event.payload.get("agent_id").and_then(Value::as_str);
+    normalized_text_key(agent_id, text)
+}
+
+fn normalized_text_key(agent_id: Option<&str>, text: &str) -> String {
+    format!("{}::{}", agent_id.unwrap_or(""), normalized_text(text))
+}
+
+fn normalized_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_sleep_tool_event(event: &ProjectionEventRecord) -> bool {
+    event.payload.get("tool_name").and_then(Value::as_str) == Some("Sleep")
 }
 
 fn is_suppressed_known_runtime_event(kind: &str) -> bool {
@@ -1271,6 +1350,122 @@ mod tests {
                 assert!(!body.contains("Brief:"));
             }
             other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_filters_operator_queue_ack_briefs() {
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Ack,
+            "Queued work: duplicate operator input",
+            Some("msg-1".into()),
+            None,
+        );
+        let event = make_event("brief_created", "Queued work: duplicate", json!(brief));
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn reducer_deduplicates_assistant_observations_against_final_brief() {
+        let assistant = make_event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({
+                "agent_id": "default",
+                "text_preview": "Issue recorded: #1128\u{2026}"
+            }),
+        );
+        let text_only = make_event(
+            "text_only_round_observed",
+            "text only round",
+            json!({
+                "agent_id": "default",
+                "text_preview": "Issue recorded: #1128\u{2026}"
+            }),
+        );
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Issue recorded: #1128 with complete details",
+            None,
+            None,
+        );
+        let brief_event = make_event(
+            "brief_created",
+            "Issue recorded: #1128 with complete details",
+            json!(brief),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[assistant, text_only, brief_event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantResult { body, .. } => {
+                assert_eq!(body, "Issue recorded: #1128 with complete details");
+            }
+            other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_deduplicates_repeated_assistant_text_observations() {
+        let assistant = make_event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({
+                "agent_id": "default",
+                "text_preview": "Analyzing the issue"
+            }),
+        );
+        let text_only = make_event(
+            "text_only_round_observed",
+            "text only round",
+            json!({
+                "agent_id": "default",
+                "text_preview": "Analyzing   the issue"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[assistant, text_only]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantProgress { text, .. } => {
+                assert_eq!(text, "Analyzing the issue");
+            }
+            other => panic!("expected AssistantProgress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_downgrades_sleep_tool_to_debug_internal_transition() {
+        let event = make_event(
+            "tool_executed",
+            "Slept: sleep requested",
+            json!({
+                "tool_name": "Sleep"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::InternalTransition { what, .. } => {
+                assert_eq!(what, "Sleep");
+                assert_eq!(items[0].item.min_display_level(), 5);
+                assert!(items[0].item.render(4).is_empty());
+                assert!(!items[0].item.render(5).is_empty());
+            }
+            other => panic!("expected InternalTransition, got {:?}", other),
         }
     }
 
