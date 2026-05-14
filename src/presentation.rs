@@ -901,9 +901,14 @@ fn brief_result_item(event: &ProjectionEventRecord) -> Option<PresentationItem> 
 }
 
 fn is_operator_queue_ack(brief: &BriefRecord) -> bool {
+    // This matches the canonical operator-input acknowledgement from
+    // `brief::make_ack`; arbitrary Ack briefs should still render normally.
     brief.kind == BriefKind::Ack
         && brief.related_message_id.is_some()
-        && brief.text.trim_start().starts_with("Queued work:")
+        && brief
+            .text
+            .trim_start()
+            .starts_with(crate::brief::QUEUED_WORK_ACK_PREFIX)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -934,10 +939,7 @@ fn matches_final_brief_text(
     let Some(agent_id) = event.payload.get("agent_id").and_then(Value::as_str) else {
         return false;
     };
-    let observed = normalized_text(text)
-        .trim_end_matches('\u{2026}')
-        .trim()
-        .to_string();
+    let observed = strip_preview_ellipsis(normalized_text(text).as_str());
     if observed.is_empty() {
         return false;
     }
@@ -958,6 +960,22 @@ fn normalized_text_key(agent_id: Option<&str>, text: &str) -> String {
 
 fn normalized_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_preview_ellipsis(text: &str) -> String {
+    let mut observed = text.trim().to_string();
+    loop {
+        let trimmed = observed.trim_end();
+        if let Some(stripped) = trimmed.strip_suffix("...") {
+            observed = stripped.trim_end().to_string();
+            continue;
+        }
+        if let Some(stripped) = trimmed.strip_suffix('\u{2026}') {
+            observed = stripped.trim_end().to_string();
+            continue;
+        }
+        return trimmed.to_string();
+    }
 }
 
 fn is_sleep_tool_event(event: &ProjectionEventRecord) -> bool {
@@ -1354,14 +1372,19 @@ mod tests {
     }
 
     #[test]
-    fn reducer_filters_operator_queue_ack_briefs() {
-        let brief = BriefRecord::new(
+    fn reducer_filters_canonical_operator_queue_ack_briefs() {
+        let message = crate::types::MessageEnvelope::new(
             "default",
-            BriefKind::Ack,
-            "Queued work: duplicate operator input",
-            Some("msg-1".into()),
-            None,
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::TrustLevel::TrustedOperator,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "duplicate operator input".into(),
+            },
         );
+        let brief = crate::brief::make_ack("default", &message);
+        assert!(brief.text.starts_with(crate::brief::QUEUED_WORK_ACK_PREFIX));
         let event = make_event("brief_created", "Queued work: duplicate", json!(brief));
 
         let mut reducer = PresentationReducer::new();
@@ -1377,7 +1400,7 @@ mod tests {
             "assistant round",
             json!({
                 "agent_id": "default",
-                "text_preview": "Issue recorded: #1128\u{2026}"
+                "text_preview": "Issue recorded: #1128..."
             }),
         );
         let text_only = make_event(
@@ -1385,7 +1408,7 @@ mod tests {
             "text only round",
             json!({
                 "agent_id": "default",
-                "text_preview": "Issue recorded: #1128\u{2026}"
+                "text_preview": "Issue recorded: #1128..."
             }),
         );
         let brief = BriefRecord::new(
