@@ -3977,3 +3977,125 @@ fn pipeline_multi_turn_continuity() {
         }
     }
 }
+
+/// Stress test: drive 50+ tool calls through the TUI pipeline in a single
+/// turn and verify performance boundaries — JSON record size, JSONL
+/// validity, reducer completeness, and bounded execution time.
+#[test]
+fn pipeline_stress_50_tool_calls() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let log_writer =
+        crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_root = log_writer.root().to_path_buf();
+    let mut app = TuiApp::new(client, log_writer);
+
+    let snapshot = sample_snapshot("default", "evt-0");
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    let projection = app.projection.as_mut().unwrap();
+
+    const TOOL_COUNT: usize = 55;
+
+    let start = std::time::Instant::now();
+
+    // Feed 55 pairs of process_execution_requested + tool_executed.
+    let mut seq: u64 = 0;
+    for step in 1..=TOOL_COUNT {
+        seq += 1;
+        let cmd = format!("echo step {step}");
+        let stdout = format!("step {step}");
+        let req_id = format!("evt-req-{step}");
+        let tool_id = format!("evt-tool-{step}");
+
+        projection.apply_event(
+            pipeline_event(
+                &req_id,
+                seq,
+                "default",
+                "process_execution_requested",
+                json!({ "exec_command_cmd": cmd }),
+            ),
+            &app.log_writer,
+        );
+
+        seq += 1;
+        projection.apply_event(
+            pipeline_event(
+                &tool_id,
+                seq,
+                "default",
+                "tool_executed",
+                json!({
+                    "tool_name": "ExecCommand",
+                    "exec_command_cmd": cmd,
+                    "duration_ms": 1,
+                    "exit_status": 0,
+                    "stdout_preview": stdout
+                }),
+            ),
+            &app.log_writer,
+        );
+    }
+
+    // End the turn.
+    seq += 1;
+    projection.apply_event(
+        pipeline_event(
+            "evt-assistant",
+            seq,
+            "default",
+            "assistant_round_recorded",
+            json!({ "round": 1, "text_preview": "All 55 steps completed." }),
+        ),
+        &app.log_writer,
+    );
+
+    let elapsed = start.elapsed();
+
+    // ── Verify presentation.jsonl ──────────────────────────────────────
+    let presentation_path = log_root.join("presentation.jsonl");
+    assert!(
+        presentation_path.exists(),
+        "presentation.jsonl should exist after pipeline events"
+    );
+
+    let raw = std::fs::read_to_string(&presentation_path).unwrap();
+    let lines: Vec<&str> = raw.trim().lines().collect();
+    assert!(
+        lines.len() >= TOOL_COUNT,
+        "presentation.jsonl should have at least {TOOL_COUNT} records (one per command pair), got {}",
+        lines.len()
+    );
+
+    for line in &lines {
+        // Verify valid JSON.
+        let record: serde_json::Value =
+            serde_json::from_str(line).expect("every line must be valid JSON");
+
+        // Verify record size < 100 KB (serialized JSON bytes).
+        let line_bytes = line.len();
+        assert!(
+            line_bytes < 100 * 1024,
+            "each presentation record must be < 100 KB, got {line_bytes} bytes"
+        );
+
+        // Verify display decisions structure.
+        let displays = record["displays"].as_array();
+        assert!(displays.is_some(), "record must have displays array");
+        let displays = displays.unwrap();
+        assert_eq!(displays.len(), 3, "displays must have exactly 3 entries");
+
+        for display in displays {
+            let dl = display["display_level"].as_u64().unwrap() as u8;
+            assert!((3..=5).contains(&dl), "display_level must be 3, 4, or 5");
+            let decision = display["decision"].as_str().unwrap();
+            assert!(decision == "shown" || decision == "hidden");
+        }
+    }
+
+    // Performance boundary: 55 tool calls must complete in under 5 seconds.
+    assert!(
+        elapsed.as_secs() < 5,
+        "stress test must complete in under 5 seconds, took {} ms",
+        elapsed.as_millis()
+    );
+}
