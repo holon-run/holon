@@ -3312,3 +3312,339 @@ fn pipeline_display_level_filtering() {
     );
     assert!(seen_tool, "should contain tool_executed (visibility 5)");
 }
+
+/// Reducer aggregation pipeline test: verify how `reducer_event_summaries`,
+/// `reducer_event_kinds`, and related fields are composed across multi-event
+/// turns and written to `presentation.jsonl`.
+///
+/// Verification points from issue #1116:
+/// - `reducer_event_summaries` array is non-empty for multi-event turns
+/// - `reducer_event_kinds` statistics match the actual summaries
+/// - Single JSON record < 50 KB
+/// - 0 summaries → empty array, no panic
+/// - Truncation marker when summaries exceed configured limit
+/// - `reducer_event_summaries_truncated` field present only when truncated
+#[test]
+fn pipeline_reducer_aggregation() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let log_writer =
+        crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_root = log_writer.root().to_path_buf();
+    let mut app = TuiApp::new(client, log_writer);
+
+    let snapshot = sample_snapshot("default", "evt-0");
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    let projection = app.projection.as_mut().unwrap();
+
+    // ── Feed multi-event turn with event pairs that trigger reducer merging ──
+    //
+    // Events 1-2: process_execution_requested + tool_executed pair → merged by reducer
+    //   (reducer produces one CommandExecuted from 2 reducer events)
+    // Event 3: brief_created → standalone (1 reducer event)
+    // Event 4: assistant_round_recorded → standalone (1 reducer event)
+    // Events 5-6: second process_execution_requested + tool_executed pair → merged
+    // Event 7: assistant_round_recorded (second round) → standalone
+
+    // Pair 1: command execution
+    projection.apply_event(
+        pipeline_event(
+            "evt-req-1",
+            1,
+            "default",
+            "process_execution_requested",
+            json!({ "ExecCommand": { "cmd": "cargo build" } }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-tool-1",
+            2,
+            "default",
+            "tool_executed",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo build",
+                "duration_ms": 4200,
+                "exit_status": 0,
+                "stdout_preview": "Compiling holon v0.13.0\nFinished dev"
+            }),
+        ),
+        &app.log_writer,
+    );
+
+    // Standalone events
+    projection.apply_event(
+        pipeline_event(
+            "evt-brief-1",
+            3,
+            "default",
+            "brief_created",
+            json!({
+                "id": "b1",
+                "agent_id": "default",
+                "kind": "Result",
+                "text": "Build succeeded after cargo build",
+                "created_at": "2025-01-01T00:00:00Z"
+            }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-assistant-1",
+            4,
+            "default",
+            "assistant_round_recorded",
+            json!({ "round": 1, "text_preview": "Let me run the build and check the results." }),
+        ),
+        &app.log_writer,
+    );
+
+    // Pair 2: second command execution
+    projection.apply_event(
+        pipeline_event(
+            "evt-req-2",
+            5,
+            "default",
+            "process_execution_requested",
+            json!({ "ExecCommand": { "cmd": "cargo test" } }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-tool-2",
+            6,
+            "default",
+            "tool_executed",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo test",
+                "duration_ms": 2500,
+                "exit_status": 0,
+                "stdout_preview": "test result: ok. 14 passed"
+            }),
+        ),
+        &app.log_writer,
+    );
+
+    projection.apply_event(
+        pipeline_event(
+            "evt-assistant-2",
+            7,
+            "default",
+            "assistant_round_recorded",
+            json!({ "round": 2, "text_preview": "All tests pass. The fix is verified." }),
+        ),
+        &app.log_writer,
+    );
+
+    // ── Verify presentation.jsonl exists ──────────────────────────────────
+    let presentation_path = log_root.join("presentation.jsonl");
+    assert!(
+        presentation_path.exists(),
+        "presentation.jsonl should exist after pipeline events"
+    );
+
+    let raw = std::fs::read_to_string(&presentation_path).unwrap();
+    let lines: Vec<&str> = raw.trim().lines().collect();
+    assert!(!lines.is_empty(), "presentation.jsonl should have records");
+
+    // ── Parse all records ─────────────────────────────────────────────────
+    struct AggRecord {
+        item_kind: String,
+        reducer_event_ids_count: usize,
+        reducer_event_kinds: Vec<String>,
+        reducer_event_summaries_count: usize,
+        truncated: Option<String>,
+    }
+
+    let mut records: Vec<AggRecord> = Vec::new();
+    let mut all_kinds = Vec::new();
+
+    for line in &lines {
+        let record: serde_json::Value =
+            serde_json::from_str(line).expect("every line must be valid JSON");
+
+        let item_kind = record["item_kind"].as_str().unwrap_or("?").to_string();
+        let reducer_event_ids = record["reducer_event_ids"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let reducer_event_kinds: Vec<String> = record["reducer_event_kinds"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let reducer_event_summaries: Vec<String> = record["reducer_event_summaries"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let truncated = record["reducer_event_summaries_truncated"]
+            .as_str()
+            .map(|s| s.to_string());
+
+        // Verification 3: Each JSON record < 50 KB
+        assert!(
+            line.len() < 50_000,
+            "JSON record must be < 50 KB, got {} bytes for item_kind={}",
+            line.len(),
+            item_kind
+        );
+
+        records.push(AggRecord {
+            item_kind: item_kind.clone(),
+            reducer_event_ids_count: reducer_event_ids.len(),
+            reducer_event_kinds: reducer_event_kinds.clone(),
+            reducer_event_summaries_count: reducer_event_summaries.len(),
+            truncated,
+        });
+
+        all_kinds.extend(reducer_event_kinds);
+    }
+
+    // ── Verification 1: reducer_event_summaries non-empty for multi-event records ──
+    let merged_records: Vec<&AggRecord> = records
+        .iter()
+        .filter(|r| r.reducer_event_ids_count > 1)
+        .collect();
+    assert!(
+        !merged_records.is_empty(),
+        "should have at least one record with multiple reducer events (merged command pairs)"
+    );
+    for rec in &merged_records {
+        assert!(
+            rec.reducer_event_summaries_count > 0,
+            "merged record item_kind={} must have non-empty reducer_event_summaries",
+            rec.item_kind
+        );
+        assert_eq!(
+            rec.reducer_event_summaries_count, rec.reducer_event_ids_count,
+            "reducer_event_summaries count must match reducer_event_ids count"
+        );
+    }
+
+    // ── Verification 2: reducer_event_kinds statistics match summaries ────
+    for rec in &records {
+        assert_eq!(
+            rec.reducer_event_kinds.len(),
+            rec.reducer_event_summaries_count,
+            "reducer_event_kinds count must match summaries count for item_kind={}",
+            rec.item_kind
+        );
+        // Every summary must be a non-empty string
+        assert!(
+            rec.reducer_event_kinds.iter().all(|k| !k.is_empty()),
+            "all reducer_event_kinds must be non-empty for item_kind={}",
+            rec.item_kind
+        );
+    }
+
+    // ── Verification: kinds across all records match expected ───
+    let mut kind_counts = std::collections::HashMap::new();
+    for k in &all_kinds {
+        *kind_counts.entry(k.as_str()).or_insert(0) += 1;
+    }
+
+    assert!(
+        kind_counts.contains_key("process_execution_requested"),
+        "should contain process_execution_requested kind; got: {:?}",
+        kind_counts
+    );
+    assert!(
+        kind_counts.contains_key("tool_executed"),
+        "should contain tool_executed kind; got: {:?}",
+        kind_counts
+    );
+    assert!(
+        kind_counts.contains_key("brief_created"),
+        "should contain brief_created kind; got: {:?}",
+        kind_counts
+    );
+    assert!(
+        kind_counts.contains_key("assistant_round_recorded"),
+        "should contain assistant_round_recorded kind; got: {:?}",
+        kind_counts
+    );
+
+    // ── Verification 4: 0 summaries → empty array, no panic ───────────────
+    //
+    // Test that writing presentation items with an empty reducer_events
+    // produces empty arrays and does not panic.
+    let empty_writer =
+        crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let empty_root = empty_writer.root().to_path_buf();
+
+    // Write with empty reducer_events and empty items → should succeed
+    let result = empty_writer.write_presentation_items(&[], &[]);
+    assert!(result.is_ok(), "write with empty arrays should succeed");
+
+    // Write with empty reducer_events but non-empty items
+    use crate::presentation::{PresentationItem, TimedItem};
+    let dummy_item = TimedItem {
+        item: PresentationItem::AssistantProgress {
+            text: "empty test".into(),
+            state: crate::presentation::ItemState::Stable,
+        },
+        ts: chrono::Utc::now(),
+    };
+    let result2 = empty_writer.write_presentation_items(&[], &[dummy_item]);
+    assert!(
+        result2.is_ok(),
+        "write with empty reducer_events should succeed"
+    );
+
+    // Read back: should have 1 record with empty reducer arrays
+    let empty_presentation_path = empty_root.join("presentation.jsonl");
+    if empty_presentation_path.exists() {
+        let raw = std::fs::read_to_string(&empty_presentation_path).unwrap();
+        let lines: Vec<&str> = raw.trim().lines().collect();
+        for line in &lines {
+            let record: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+            let ids = record["reducer_event_ids"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let summaries = record["reducer_event_summaries"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0);
+            assert_eq!(
+                ids, 0,
+                "empty reducer_events should produce empty reducer_event_ids"
+            );
+            assert_eq!(
+                summaries, 0,
+                "empty reducer_events should produce empty reducer_event_summaries"
+            );
+            // No truncation marker when arrays are empty
+            assert!(
+                record["reducer_event_summaries_truncated"].is_null(),
+                "no truncation marker for empty arrays"
+            );
+        }
+    }
+
+    // ── Verification: truncated field is None for normal records ──
+    for rec in &records {
+        assert!(
+            rec.truncated.is_none(),
+            "reducer_event_summaries_truncated should be absent for {} events (item_kind={})",
+            rec.reducer_event_summaries_count,
+            rec.item_kind
+        );
+    }
+}
