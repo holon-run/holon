@@ -279,3 +279,176 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
     assert!(seen_shown, "at least one record should have decision=shown");
     assert!(seen_turn_terminal, "should contain turn_terminal record");
 }
+
+/// End-to-end complex turn test: a single agent turn that performs three
+/// distinct tool calls — ApplyPatch (create file), ExecCommand (shell
+/// command), ApplyPatch (modify file) — and verifies that all expected
+/// `item_kind` variants appear correctly in `presentation.jsonl`.
+///
+/// This validates multi-operation item_kind coverage through the full
+/// runtime → TUI pipeline, including:
+/// - File-mutation tool kinds (ApplyPatch)
+/// - Process-execution tool kinds (ExecCommand)
+/// - Assistant round records
+/// - Turn terminal record
+#[tokio::test]
+async fn e2e_tui_complex_turn_multi_operation() {
+    // ── 1. Create ScriptedAgentProvider with 3 tools ─────────────────
+    // Step 1: ApplyPatch — create hello.txt
+    let create_patch = concat!(
+        "--- /dev/null\n",
+        "+++ b/hello.txt\n",
+        "@@ -0,0 +1,1 @@\n",
+        "+hello world\n",
+    );
+    // Step 2: ExecCommand — read the file
+    // Step 3: ApplyPatch — modify hello.txt
+    let modify_patch = concat!(
+        "--- a/hello.txt\n",
+        "+++ b/hello.txt\n",
+        "@@ -1,1 +1,1 @@\n",
+        "-hello world\n",
+        "+hello holon\n",
+    );
+    // Step 4: text response
+
+    let provider = ScriptedAgentProvider::new([
+        ScriptedProviderStep::tool_use("toolu_01", "ApplyPatch", json!({ "patch": create_patch })),
+        ScriptedProviderStep::tool_use(
+            "toolu_02",
+            "ExecCommand",
+            json!({ "cmd": "cat hello.txt" }),
+        ),
+        ScriptedProviderStep::tool_use("toolu_03", "ApplyPatch", json!({ "patch": modify_patch })),
+        ScriptedProviderStep::text("All operations completed — file created, read, and modified."),
+    ]);
+
+    // ── 2. Create RuntimeHandle ──────────────────────────────────────
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(provider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    // ── 3. Create TuiLogWriter with presentation logging ─────────────
+    let log_writer = TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_root = log_writer.root().to_path_buf();
+
+    // ── 4. Run one agent turn with room for 3 tool rounds ────────────
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            TrustLevel::TrustedOperator,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: Some(4),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !outcome.final_text.is_empty(),
+        "agent should produce final text"
+    );
+    assert_eq!(
+        outcome.terminal_kind,
+        TurnTerminalKind::Completed,
+        "agent turn should complete normally"
+    );
+
+    // ── 5. Feed audit events through TuiProjection ───────────────────
+    let events = runtime.storage().read_recent_events(100).unwrap();
+    assert!(
+        events.len() > 5,
+        "should have many audit events for 3 tool calls"
+    );
+
+    let mut projection = TuiProjection::from_snapshot(minimal_snapshot("default", "cursor-0"));
+
+    for (idx, event) in events.iter().enumerate() {
+        let stream_event = audit_to_stream_event(event, (idx + 1) as u64, "default");
+        projection.apply_event(stream_event, &log_writer);
+    }
+
+    // ── 6. Verify presentation.jsonl ──────────────────────────────────
+    let presentation_path = log_root.join("presentation.jsonl");
+    assert!(
+        presentation_path.exists(),
+        "presentation.jsonl should exist"
+    );
+
+    let raw = std::fs::read_to_string(&presentation_path).unwrap();
+    let lines: Vec<&str> = raw.trim().lines().collect();
+    assert!(
+        lines.len() >= 3,
+        "presentation.jsonl should have multiple records for 3 tool calls"
+    );
+
+    let mut item_kinds = Vec::new();
+    let mut seen_shown = false;
+
+    for line in &lines {
+        let record: serde_json::Value =
+            serde_json::from_str(line).expect("every line must be valid JSON");
+
+        // Each JSON record must be under 100 KB (102_400 bytes).
+        assert!(
+            line.len() < 102_400,
+            "JSON record must be < 100 KB, got {} bytes",
+            line.len()
+        );
+
+        // Collect item_kind for later assertions.
+        if let Some(kinds) = record["reducer_event_kinds"].as_array() {
+            for kind in kinds {
+                if let Some(k) = kind.as_str() {
+                    item_kinds.push(k.to_string());
+                }
+            }
+        }
+
+        // Verify display decisions.
+        for display in record["displays"].as_array().into_iter().flatten() {
+            if display["decision"].as_str() == Some("shown") {
+                seen_shown = true;
+            }
+        }
+    }
+
+    // ── 7. Assert item_kind coverage ─────────────────────────────────
+    assert!(
+        !item_kinds.is_empty(),
+        "presentation.jsonl should contain reducer_event_kinds"
+    );
+
+    let expected_kinds = [
+        "process_execution_requested",
+        "tool_executed",
+        "assistant_round_recorded",
+        "turn_terminal",
+    ];
+
+    let item_kind_set: std::collections::BTreeSet<&str> =
+        item_kinds.iter().map(|s| s.as_str()).collect();
+
+    for expected in &expected_kinds {
+        assert!(
+            item_kind_set.contains(expected),
+            "presentation.jsonl should contain item_kind '{expected}'; found: {:?}",
+            item_kind_set
+        );
+    }
+
+    assert!(
+        seen_shown,
+        "at least one display decision should be shown in a multi-operation turn"
+    );
+}
