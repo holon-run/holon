@@ -12,7 +12,7 @@ work items, tasks, queues, wakeups, and user-facing delivery.
 
 ## Authentication
 
-When a control token is configured (e.g. `--control-token` or the
+When a control token is configured (e.g. `--token`, `--token-file`, or the
 `control_token` config key), the HTTP server operates in **bearer mode**.
 All `/control/*` routes require an `Authorization: Bearer <token>` header,
 and read-only routes (agent state, events, tasks) require it for remote
@@ -108,12 +108,14 @@ Returns recent runtime events (turn entries, system events). Query parameters:
 
 | Param | Description |
 |-------|-------------|
+| `cursor` | Cursor for pagination |
 | `limit` | Max events to return (default 128) |
-| `projection` | `local-debug` (control token required) or `operator` (default) |
+| `order` | `asc` or `desc` (default) |
+| `projection` | `local_debug` (control token required) or `operator` (default) |
 
 **`GET /agents/:id/events/stream`** — Server-sent events
 
-SSE stream of agent events. Supports `limit` and `window` query params. The
+SSE stream of agent events. Supports `cursor`, `limit`, and `projection` query params. The
 SSE `type` field is set to the raw audit event kind (e.g. `turn_entry`,
 `wake_requested`, `task_create_requested`), not a limited set of names.
 
@@ -164,6 +166,7 @@ Response:
 
 **`POST /enqueue`** (no agent in path) — Enqueue to default agent.
 
+
 ### Control plane (authenticated)
 
 All `/control/*` routes require a control token when the server is in bearer
@@ -175,12 +178,8 @@ Sends a prompt that enters the agent queue as an operator message with
 `trusted_operator` classification.
 
 ```json
-{ "text": "What is the current status?", "priority": "next" }
+{ "text": "What is the current status?" }
 ```
-
-**`POST /control/agents/:id/enqueue`** — Trusted enqueue
-
-Same shape as public enqueue, but allows overriding trust and origin.
 
 **`POST /control/agents/:id/wake`** — Explicit wake
 
@@ -198,29 +197,27 @@ Response:
 
 **`POST /control/agents/:id/control`** — Control action
 
-Sends a `Control` message kind to the agent (pause, resume, or other lifecycle
-actions).
+Sends a control action (pause, resume, or other lifecycle actions). Request body:
+
+```json
+{ "action": "pause", "trust": "trusted_operator" }
+```
 
 **`POST /control/agents/:id/current-run/abort`** — Abort current run
 
-Aborts the current agent run loop. Supports `mode: "graceful"` (default) or
-`mode: "force"`.
+Aborts the current agent run loop. Only `mode: "pause_after_abort"` is
+supported:
 
 ```json
-{ "mode": "graceful" }
+{ "mode": "pause_after_abort" }
 ```
 
 **`POST /control/agents/:id/create`** — Create agent
 
-Creates a new agent managed by the host.
+Creates a new agent managed by the host. The agent id comes from the URL path.
 
 ```json
-{
-  "agent_id": "new-agent",
-  "visibility": "private",
-  "profile": "full",
-  "template": null
-}
+{ "template": null, "trust": "trusted_operator" }
 ```
 
 **`POST /control/agents/:id/tasks`** — Create command task
@@ -229,22 +226,22 @@ Starts a background command task for the agent.
 
 ```json
 {
+  "summary": "Build project",
   "cmd": "cargo build",
   "workdir": null,
   "shell": null,
-  "continue_on_result": false
+  "login": false
 }
 ```
 
 **`POST /control/agents/:id/work-items`** — Create work item
 
-Creates a durable work item for the agent.
+Creates a durable work item for the agent. Only `objective` is accepted.
 
 ```json
 {
   "objective": "Fix the build",
-  "plan": "optional plan text",
-  "plan_status": "draft"
+  "trust": "trusted_operator"
 }
 ```
 
@@ -254,9 +251,10 @@ Creates a timer that will deliver a `TimerTick` to the agent.
 
 ```json
 {
-  "label": "reminder",
   "duration_ms": 60000,
-  "repeat": false
+  "interval_ms": null,
+  "summary": "reminder",
+  "trust": "trusted_operator"
 }
 ```
 
@@ -329,7 +327,7 @@ Removes a workspace registration without switching. Request body:
 **`POST /control/agents/:id/model`** — Set agent model
 
 ```json
-{ "model_id": "claude-sonnet-4-20250514" }
+{ "model": "claude-sonnet-4-20250514" }
 ```
 
 **`POST /control/agents/:id/model/clear`** — Clear model override
@@ -388,12 +386,12 @@ external enqueue.
 
 ### TrustLevel
 
-| Value | Meaning |
-|-------|---------|
-| `trusted_operator` | Direct operator action |
-| `trusted_system` | Runtime-internal action |
-| `trusted_integration` | Known integration with explicit trust |
-| `untrusted_external` | Public webhook / unauthenticated caller |
+| Value | Default origin | Meaning |
+|-------|----------------|---------|
+| `trusted_operator` | `operator` | Direct operator action |
+| `trusted_system` | `system`, `task`, `timer` | Runtime-internal action |
+| `trusted_integration` | `webhook`, `callback` | Known integration with explicit trust |
+| `untrusted_external` | `channel` | Public channel / unauthenticated caller |
 
 ### MessageOrigin
 
@@ -433,6 +431,19 @@ endpoint. A good integration should be able to ask:
 - What event woke the agent?
 - Which output is safe to show to a user?
 - Which evidence is internal runtime detail?
+
+### Routes not yet documented
+
+The following routes exist in `src/http.rs` but are not yet fully documented
+on this reference page:
+
+- `GET /agents/:id/skills`
+- `POST /control/agents/:id/skills/install`
+- `POST /control/agents/:id/skills/uninstall`
+- Default-agent aliases: `/status`, `/briefs`, `/state`, `/transcript`,
+  `/worktree-summary`
+
+These will be added as the surface stabilizes.
 
 ## Common curl examples
 
