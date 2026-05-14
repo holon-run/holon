@@ -1,11 +1,13 @@
 use crate::types::{BriefKind, BriefRecord, MessageEnvelope};
 
+pub const QUEUED_WORK_ACK_PREFIX: &str = "Queued work: ";
+
 pub fn make_ack(agent_id: &str, message: &MessageEnvelope) -> BriefRecord {
     let preview = preview_message(message);
     BriefRecord::new(
         agent_id,
         BriefKind::Ack,
-        format!("Queued work: {preview}"),
+        format!("{QUEUED_WORK_ACK_PREFIX}{preview}"),
         Some(message.id.clone()),
         None,
     )
