@@ -67,7 +67,7 @@ pub async fn run_tui(
         Some(client) => client,
         None => LocalClient::new(config.clone())?,
     };
-    let log_writer = TuiLogWriter::new(config.agent_root_dir())?;
+    let log_writer = TuiLogWriter::new(config.log_root_dir())?;
     let mut app = TuiApp::new(client, log_writer);
     app.initialize().await;
 

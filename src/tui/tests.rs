@@ -1439,27 +1439,25 @@ fn chat_text_renders_brief_events_from_projection() {
 }
 
 #[test]
-fn chat_text_renders_ack_and_result_brief_events() {
+fn chat_text_filters_operator_queue_ack_but_keeps_result_brief_events() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    apply_brief_event(
-        &mut app,
-        BriefRecord {
-            id: "brief-ack".into(),
-            agent_id: "default".into(),
-            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-            work_item_id: None,
-            kind: BriefKind::Ack,
-            created_at: Utc::now(),
-            text: "Queued work: duplicate".into(),
-            attachments: None,
-            related_message_id: Some("msg-1".into()),
-            related_task_id: None,
+    let message = crate::types::MessageEnvelope::new(
+        "default",
+        crate::types::MessageKind::OperatorPrompt,
+        crate::types::MessageOrigin::Operator { actor_id: None },
+        crate::types::TrustLevel::TrustedOperator,
+        crate::types::Priority::Normal,
+        crate::types::MessageBody::Text {
+            text: "duplicate".into(),
         },
     );
+    let ack = crate::brief::make_ack("default", &message);
+    assert!(ack.text.starts_with(crate::brief::QUEUED_WORK_ACK_PREFIX));
+    apply_brief_event(&mut app, ack);
     apply_brief_event(
         &mut app,
         BriefRecord {
@@ -1481,7 +1479,7 @@ fn chat_text_renders_ack_and_result_brief_events() {
         .into_iter()
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(rendered.contains("Queued work: duplicate"));
+    assert!(!rendered.contains("Queued work: duplicate"));
     assert!(rendered.contains("Real response"));
 }
 
@@ -2465,7 +2463,7 @@ fn snapshot_refresh_failure_updates_status_line() {
 }
 
 #[test]
-fn chat_text_uses_presentation_summary_for_long_brief_events() {
+fn chat_text_renders_full_long_brief_events() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -2498,7 +2496,7 @@ fn chat_text_uses_presentation_summary_for_long_brief_events() {
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
     assert!(rendered.contains("intro"));
-    assert!(!rendered.contains("tail marker that used to be trimmed away"));
+    assert!(rendered.contains("tail marker that used to be trimmed away"));
 }
 
 #[test]
