@@ -2110,6 +2110,39 @@ fn active_activity_cells_stay_stable_without_new_events() {
 }
 
 #[test]
+fn sleeping_agent_activity_cell_does_not_display_working() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let mut snapshot = sample_snapshot("default", "evt-0");
+    snapshot.agent.agent.status = AgentStatus::Asleep;
+    snapshot.agent.agent.pending = 0;
+    snapshot.agent.active_task_count = 1;
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+    let items = collect_chat_items(&app);
+    let active_item = items.last().expect("active activity item");
+    match active_item {
+        ConversationCell::ActiveActivity { speaker, .. } => {
+            assert!(speaker.starts_with("Holon (sleeping)"));
+            assert!(!speaker.starts_with("Holon (working)"));
+        }
+        other => panic!("expected active activity item, got {other:?}"),
+    }
+
+    let rendered: String = build_chat_text(&items)
+        .lines
+        .into_iter()
+        .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+        .collect();
+
+    assert!(rendered.contains("Sleeping"));
+    assert!(!rendered.contains("Working"));
+}
+
+#[test]
 fn collect_chat_items_orders_equal_timestamps_deterministically() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(

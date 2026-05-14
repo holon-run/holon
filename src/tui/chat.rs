@@ -463,6 +463,14 @@ fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
         Some("Waiting")
     } else if speaker.starts_with("Holon (delegating)") {
         Some("Delegating")
+    } else if speaker.starts_with("Holon (sleeping)") {
+        Some("Sleeping")
+    } else if speaker.starts_with("Holon (idle)") {
+        Some("Idle")
+    } else if speaker.starts_with("Holon (paused)") {
+        Some("Paused")
+    } else if speaker.starts_with("Holon (stopped)") {
+        Some("Stopped")
     } else {
         None
     }
@@ -586,7 +594,10 @@ fn active_activity_speaker(agent: &AgentSummary) -> String {
         crate::types::AgentStatus::AwakeRunning => "Holon (working)".into(),
         crate::types::AgentStatus::AwakeIdle if agent.agent.pending > 0 => "Holon (queued)".into(),
         _ if !agent.active_children.is_empty() => "Holon (delegating)".into(),
-        _ => "Holon (working)".into(),
+        crate::types::AgentStatus::AwakeIdle => "Holon (idle)".into(),
+        crate::types::AgentStatus::Asleep => "Holon (sleeping)".into(),
+        crate::types::AgentStatus::Paused => "Holon (paused)".into(),
+        crate::types::AgentStatus::Stopped => "Holon (stopped)".into(),
     }
 }
 
