@@ -3646,3 +3646,334 @@ fn pipeline_reducer_aggregation() {
         );
     }
 }
+
+/// Multi-turn continuity pipeline test: verify turn boundaries, event
+/// ordering, and log completeness across 3 consecutive turns.
+///
+/// Verification points from issue #1117:
+/// - Each turn produces a presentation record with `turn_terminal` in
+///   `reducer_event_kinds`
+/// - Events across turns are ordered by timestamp (monotonic `ts`)
+/// - No turns are dropped (turn count matches)
+/// - `presentation.jsonl` is append-only with no corruption at boundaries
+#[test]
+fn pipeline_multi_turn_continuity() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let log_writer =
+        crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_root = log_writer.root().to_path_buf();
+    let mut app = TuiApp::new(client, log_writer);
+
+    let snapshot = sample_snapshot("default", "evt-0");
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    let projection = app.projection.as_mut().unwrap();
+
+    // ── Turn 1: cargo build ────────────────────────────────────────────
+    projection.apply_event(
+        pipeline_event(
+            "t1-req",
+            1,
+            "default",
+            "process_execution_requested",
+            json!({ "ExecCommand": { "cmd": "cargo build" } }),
+        ),
+        &app.log_writer,
+    );
+    projection.apply_event(
+        pipeline_event(
+            "t1-tool",
+            2,
+            "default",
+            "tool_executed",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo build",
+                "duration_ms": 3500,
+                "exit_status": 0,
+                "stdout_preview": "Compiling holon v0.13.0"
+            }),
+        ),
+        &app.log_writer,
+    );
+    projection.apply_event(
+        pipeline_event(
+            "t1-asst",
+            3,
+            "default",
+            "assistant_round_recorded",
+            json!({ "round": 1, "text_preview": "Build succeeded." }),
+        ),
+        &app.log_writer,
+    );
+    projection.apply_event(
+        pipeline_event(
+            "t1-term",
+            4,
+            "default",
+            "turn_terminal",
+            json!({ "kind": "completed", "turn_number": 1 }),
+        ),
+        &app.log_writer,
+    );
+
+    // ── Turn 2: cargo test ─────────────────────────────────────────────
+    projection.apply_event(
+        pipeline_event(
+            "t2-req",
+            5,
+            "default",
+            "process_execution_requested",
+            json!({ "ExecCommand": { "cmd": "cargo test" } }),
+        ),
+        &app.log_writer,
+    );
+    projection.apply_event(
+        pipeline_event(
+            "t2-tool",
+            6,
+            "default",
+            "tool_executed",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo test",
+                "duration_ms": 8200,
+                "exit_status": 0,
+                "stdout_preview": "test result: ok. 14 passed"
+            }),
+        ),
+        &app.log_writer,
+    );
+    projection.apply_event(
+        pipeline_event(
+            "t2-asst",
+            7,
+            "default",
+            "assistant_round_recorded",
+            json!({ "round": 2, "text_preview": "All tests pass." }),
+        ),
+        &app.log_writer,
+    );
+    projection.apply_event(
+        pipeline_event(
+            "t2-term",
+            8,
+            "default",
+            "turn_terminal",
+            json!({ "kind": "completed", "turn_number": 2 }),
+        ),
+        &app.log_writer,
+    );
+
+    // ── Turn 3: echo done ──────────────────────────────────────────────
+    projection.apply_event(
+        pipeline_event(
+            "t3-req",
+            9,
+            "default",
+            "process_execution_requested",
+            json!({ "ExecCommand": { "cmd": "echo done" } }),
+        ),
+        &app.log_writer,
+    );
+    projection.apply_event(
+        pipeline_event(
+            "t3-tool",
+            10,
+            "default",
+            "tool_executed",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "echo done",
+                "duration_ms": 5,
+                "exit_status": 0,
+                "stdout_preview": "done"
+            }),
+        ),
+        &app.log_writer,
+    );
+    projection.apply_event(
+        pipeline_event(
+            "t3-asst",
+            11,
+            "default",
+            "assistant_round_recorded",
+            json!({ "round": 3, "text_preview": "Done." }),
+        ),
+        &app.log_writer,
+    );
+    projection.apply_event(
+        pipeline_event(
+            "t3-term",
+            12,
+            "default",
+            "turn_terminal",
+            json!({ "kind": "completed", "turn_number": 3 }),
+        ),
+        &app.log_writer,
+    );
+
+    // ── Verify presentation.jsonl ──────────────────────────────────────
+    let presentation_path = log_root.join("presentation.jsonl");
+    assert!(
+        presentation_path.exists(),
+        "presentation.jsonl should exist after multi-turn pipeline events"
+    );
+
+    let raw = std::fs::read_to_string(&presentation_path).unwrap();
+    let lines: Vec<&str> = raw.trim().lines().collect();
+    assert!(!lines.is_empty(), "presentation.jsonl should have records");
+
+    // ── Parse all records ──────────────────────────────────────────────
+    struct TurnRecord {
+        ts: String,
+        reducer_event_ids: Vec<String>,
+        reducer_event_kinds: Vec<String>,
+    }
+
+    let mut records: Vec<TurnRecord> = Vec::new();
+    let mut turn_terminal_count: usize = 0;
+
+    for line in &lines {
+        let record: serde_json::Value =
+            serde_json::from_str(line).expect("every line must be valid JSON");
+
+        let ts = record["ts"].as_str().unwrap_or("").to_string();
+        let reducer_event_ids: Vec<String> = record["reducer_event_ids"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let reducer_event_kinds: Vec<String> = record["reducer_event_kinds"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if reducer_event_kinds.contains(&"turn_terminal".to_string()) {
+            turn_terminal_count += 1;
+        }
+
+        records.push(TurnRecord {
+            ts,
+            reducer_event_ids,
+            reducer_event_kinds,
+        });
+    }
+
+    // ── Verification 1: Exactly 3 turn_terminal records ────────────────
+    assert_eq!(
+        turn_terminal_count, 3,
+        "should have exactly 3 presentation records containing turn_terminal reducer event, got {turn_terminal_count}"
+    );
+
+    // ── Verification 2: Events ordered by timestamp (monotonic ts) ─────
+    for i in 1..records.len() {
+        assert!(
+            records[i].ts >= records[i - 1].ts,
+            "presentation.jsonl records must be ordered by timestamp; record {} ts={} < previous ts={}",
+            i,
+            records[i].ts,
+            records[i - 1].ts
+        );
+    }
+
+    // ── Verification 3: Every line is valid JSON (no corruption) ──────
+    for (i, line) in lines.iter().enumerate() {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(line).is_ok(),
+            "line {} in presentation.jsonl must be valid JSON",
+            i
+        );
+    }
+
+    // ── Verification 4: Each turn has expected reduer event kinds ────
+    let mut seen_turn_1 = false;
+    let mut seen_turn_2 = false;
+    let mut seen_turn_3 = false;
+    let mut seen_command = false;
+    let mut seen_assistant = false;
+
+    for rec in &records {
+        if rec.reducer_event_ids.contains(&"t1-term".to_string()) {
+            seen_turn_1 = true;
+        }
+        if rec
+            .reducer_event_kinds
+            .contains(&"process_execution_requested".to_string())
+            && rec
+                .reducer_event_kinds
+                .contains(&"tool_executed".to_string())
+        {
+            seen_command = true;
+            // command_executed records should have reducer event ids from some turn
+            let has_turn_event = rec
+                .reducer_event_ids
+                .iter()
+                .any(|id| id == "t1-req" || id == "t2-req" || id == "t3-req");
+            assert!(
+                has_turn_event,
+                "command_executed record should reference a turn's request event"
+            );
+        }
+        if rec
+            .reducer_event_kinds
+            .contains(&"assistant_round_recorded".to_string())
+        {
+            seen_assistant = true;
+        }
+        if rec.reducer_event_ids.contains(&"t2-term".to_string()) {
+            seen_turn_2 = true;
+        }
+        if rec.reducer_event_ids.contains(&"t3-term".to_string()) {
+            seen_turn_3 = true;
+        }
+    }
+
+    assert!(
+        seen_turn_1,
+        "should have a record with turn 1 terminal event"
+    );
+    assert!(
+        seen_turn_2,
+        "should have a record with turn 2 terminal event"
+    );
+    assert!(
+        seen_turn_3,
+        "should have a record with turn 3 terminal event"
+    );
+    assert!(seen_command, "should have command_executed records");
+    assert!(seen_assistant, "should have assistant_progress records");
+
+    // ── Verification 5: No state leak between turns ───────────────────
+    // Turn 2 record should NOT contain turn 1 event ids
+    for rec in &records {
+        if rec.reducer_event_ids.contains(&"t2-term".to_string()) {
+            assert!(
+                !rec.reducer_event_ids.contains(&"t1-req".to_string()),
+                "turn 2 record should not contain turn 1 event ids"
+            );
+            assert!(
+                !rec.reducer_event_ids.contains(&"t1-tool".to_string()),
+                "turn 2 record should not contain turn 1 tool event"
+            );
+        }
+        if rec.reducer_event_ids.contains(&"t3-term".to_string()) {
+            assert!(
+                !rec.reducer_event_ids.contains(&"t1-req".to_string()),
+                "turn 3 record should not contain turn 1 event ids"
+            );
+            assert!(
+                !rec.reducer_event_ids.contains(&"t2-req".to_string()),
+                "turn 3 record should not contain turn 2 event ids"
+            );
+        }
+    }
+}
