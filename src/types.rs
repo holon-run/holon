@@ -2463,7 +2463,6 @@ pub struct UseWorkspaceResult {
     pub cwd: PathBuf,
     pub mode: String,
     pub projection_kind: String,
-    pub access_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
 }

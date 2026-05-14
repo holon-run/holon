@@ -33,7 +33,6 @@ async fn use_workspace_path_activates_project_workspace() {
             name: "UseWorkspace".into(),
             input: serde_json::json!({
                 "path": workspace.path().display().to_string(),
-                "access_mode": "exclusive_write",
             }),
         },
     )

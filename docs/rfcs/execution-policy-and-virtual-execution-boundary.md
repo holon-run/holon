@@ -59,7 +59,7 @@ Today Holon can be explicit about:
 - whether process execution is exposed
 - whether background tasks are available
 - whether managed worktree projection or artifact creation is available
-- which workspace projection and access mode are active
+- which workspace projection is active and whether runtime-internal occupancy is tracked
 
 Today Holon cannot honestly claim full confinement for:
 
@@ -75,10 +75,10 @@ Execution policy should use the workspace RFC vocabulary:
 - `workspace_anchor`
 - `execution_root`
 - `projection_kind`
-- `access_mode`
+- runtime-internal occupancy state, when present
 
-This keeps execution policy aligned with runtime state that Holon already
-understands.
+This keeps execution policy aligned with runtime state without making
+occupancy a stable model-facing workspace contract.
 
 Policy should distinguish worktree authority from worktree lifecycle
 ownership.

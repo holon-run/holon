@@ -1423,7 +1423,6 @@ type ExecutionSnapshot = {
   cwd: string
   executionRootId?: string
   projectionKind?: 'canonical_root' | 'git_worktree_root'
-  accessMode?: 'shared_read' | 'exclusive_write'
 }
 ```
 
@@ -1440,7 +1439,8 @@ Rules:
 - `executionRoot` is the concrete filesystem projection for file and shell tools.
 - `cwd` must remain inside `executionRoot`.
 - managed worktree changes `executionRoot`, not `workspaceAnchor`.
-- `exclusive_write` means only one writer is coordinated for a root; readers may still enter.
+- runtime-internal occupancy may coordinate direct-root and isolated-root use,
+  but it is not a stable model-facing workspace contract.
 - under `host_local`, process execution is projected and attributed, but path,
   write, network, secret, and child-process confinement are not hard guarantees.
 - operator-visible runtime projections should render these limitations
@@ -2561,7 +2561,8 @@ With `path`, it:
 1. Detects the workspace anchor and concrete execution root from the path
 2. Attaches or adopts the workspace binding when policy allows it
 3. Selects direct or isolated execution
-4. Selects an access mode such as `shared_read` or `exclusive_write`
+4. Derives runtime-internal occupancy from the selected projection without
+   exposing it as stable tool input or result data
 5. Binds `workspace_id`, `execution_root`, `execution_root_id`, and `cwd`
 6. Persists the active workspace state for recovery across restarts
 

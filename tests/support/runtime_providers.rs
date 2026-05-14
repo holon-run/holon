@@ -853,7 +853,6 @@ impl AgentProvider for UseWorkspaceProvider {
                     input: json!({
                         "path": self.workspace_path,
                         "mode": "isolated",
-                        "access_mode": "exclusive_write",
                         "isolation_label": self.branch_name,
                     }),
                 }],
@@ -881,7 +880,7 @@ impl AgentProvider for UseWorkspaceProvider {
             .unwrap_or_default();
         assert!(tool_result_text.contains("\"mode\": \"isolated\""));
         assert!(tool_result_text.contains("\"projection_kind\": \"git_worktree_root\""));
-        assert!(tool_result_text.contains("\"access_mode\": \"exclusive_write\""));
+        assert!(!tool_result_text.contains("\"access_mode\""));
         Ok(ProviderTurnResponse {
             blocks: vec![ModelBlock::Text {
                 text: "entered worktree successfully".into(),
@@ -934,7 +933,6 @@ impl AgentProvider for WorktreeLifecycleProvider {
                         input: json!({
                             "path": self.workspace_path,
                             "mode": "isolated",
-                            "access_mode": "exclusive_write",
                             "isolation_label": self.branch_name,
                         }),
                     }],
