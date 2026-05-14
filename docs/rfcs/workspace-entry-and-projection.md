@@ -113,15 +113,14 @@ projection vocabulary may include:
 - `git_worktree_root`
 - future non-git isolated roots
 
-### Access Modes
+### Internal Occupancy
 
-Phase-1 access vocabulary:
+Phase-1 may keep runtime-internal occupancy state for coordinating direct-root
+and isolated-root use. That state is derived from the selected projection and is
+not part of the stable model-facing `UseWorkspace` input or result contract.
 
-- `shared_read`
-- `exclusive_write`
-
-The runtime should be explicit about which access mode is active instead of
-inferring mutation intent from shell or patch tool usage.
+The runtime should not ask agents to choose or manage workspace write-lock
+state until Holon has a stable lease/sandbox lifecycle.
 
 ### Path And Workspace Detection
 
@@ -231,7 +230,7 @@ vocabulary.
 ## Relationship To Other RFCs
 
 - workspace binding defines `workspace_anchor` and `execution_root`
-- execution policy uses `projection_kind` and `access_mode`
+- execution policy uses `projection_kind` and runtime-internal occupancy state
 - agent delegation defines worktree-isolated child execution
 - task surface narrowing defines task-owned worktree cleanup responsibility
 - tool surface layering should list `UseWorkspace` as the model-facing local

@@ -6,10 +6,7 @@ use std::path::PathBuf;
 
 use crate::{
     runtime::RuntimeHandle,
-    system::{
-        workspace_access_mode_kind_label, workspace_projection_kind_label, WorkspaceAccessMode,
-        WorkspaceProjectionKind,
-    },
+    system::{workspace_projection_kind_label, WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::spec::typed_spec,
     types::{ToolCapabilityFamily, TrustLevel, UseWorkspaceResult, AGENT_HOME_WORKSPACE_ID},
 };
@@ -30,20 +27,11 @@ pub(crate) enum UseWorkspaceModeArgs {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
-pub(crate) enum UseWorkspaceAccessModeArgs {
-    SharedRead,
-    ExclusiveWrite,
-}
-
-#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UseWorkspaceArgs {
     pub(crate) path: Option<String>,
     pub(crate) workspace_id: Option<String>,
     pub(crate) mode: Option<UseWorkspaceModeArgs>,
-    pub(crate) access_mode: Option<UseWorkspaceAccessModeArgs>,
     pub(crate) cwd: Option<String>,
     pub(crate) isolation_label: Option<String>,
 }
@@ -91,12 +79,9 @@ pub(crate) async fn execute(
         UseWorkspaceModeArgs::Direct => WorkspaceProjectionKind::CanonicalRoot,
         UseWorkspaceModeArgs::Isolated => WorkspaceProjectionKind::GitWorktreeRoot,
     };
-    let access_mode = match args
-        .access_mode
-        .unwrap_or(UseWorkspaceAccessModeArgs::SharedRead)
-    {
-        UseWorkspaceAccessModeArgs::SharedRead => WorkspaceAccessMode::SharedRead,
-        UseWorkspaceAccessModeArgs::ExclusiveWrite => WorkspaceAccessMode::ExclusiveWrite,
+    let access_mode = match projection_kind {
+        WorkspaceProjectionKind::CanonicalRoot => WorkspaceAccessMode::SharedRead,
+        WorkspaceProjectionKind::GitWorktreeRoot => WorkspaceAccessMode::ExclusiveWrite,
     };
     let cwd = normalize_optional_non_empty(args.cwd).map(PathBuf::from);
     let branch_name = match projection_kind {
@@ -165,7 +150,6 @@ pub(crate) async fn execute(
                         .projection_kind
                         .unwrap_or(WorkspaceProjectionKind::GitWorktreeRoot),
                 );
-                let access_mode_label = workspace_access_mode_kind_label(access_mode);
                 let isolation_label = existing_worktree
                     .suggested_isolation_label
                     .unwrap_or_else(|| "worktree".into());
@@ -180,7 +164,6 @@ pub(crate) async fn execute(
                         cwd: snapshot.cwd,
                         mode: mode_arg_label(mode).to_string(),
                         projection_kind: projection_kind_label.to_string(),
-                        access_mode: access_mode_label.to_string(),
                         summary_text: Some(format!(
                             "detected an existing git worktree for workspace {}; using it as an external execution root. Prefer UseWorkspace with {{\"workspace_id\":\"{}\",\"mode\":\"isolated\",\"isolation_label\":\"{}\"}} so the runtime manages lifecycle.",
                             existing_worktree.workspace.workspace_id,
@@ -201,7 +184,6 @@ pub(crate) async fn execute(
     let snapshot = runtime.execution_snapshot().await?;
     let mode_label = mode_arg_label(mode);
     let projection_kind_label = workspace_projection_kind_label(projection_kind);
-    let access_mode_label = workspace_access_mode_kind_label(access_mode);
     serialize_success(
         NAME,
         &UseWorkspaceResult {
@@ -213,9 +195,8 @@ pub(crate) async fn execute(
             cwd: snapshot.cwd,
             mode: mode_label.to_string(),
             projection_kind: projection_kind_label.to_string(),
-            access_mode: access_mode_label.to_string(),
             summary_text: Some(format!(
-                "using workspace with {mode_label} mode, {projection_kind_label} projection, and {access_mode_label}"
+                "using workspace with {mode_label} mode and {projection_kind_label} projection"
             )),
         },
     )
@@ -255,7 +236,9 @@ mod tests {
     #[test]
     fn use_workspace_schema_exposes_path_and_workspace_id() {
         let spec = definition().unwrap().spec;
-        assert!(spec.input_schema["properties"]["path"].is_object());
-        assert!(spec.input_schema["properties"]["workspace_id"].is_object());
+        let properties = spec.input_schema["properties"].as_object().unwrap();
+        assert!(properties["path"].is_object());
+        assert!(properties["workspace_id"].is_object());
+        assert!(!properties.contains_key("access_mode"));
     }
 }

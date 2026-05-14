@@ -2,9 +2,9 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
 use super::types::{
-    execution_backend_label, execution_guarantee_label, workspace_access_mode_label,
-    workspace_projection_label, ExecutionBackendKind, ExecutionProfile, ExecutionSnapshot,
-    WorkspaceAccessMode, WorkspaceProjectionKind,
+    execution_backend_label, execution_guarantee_label, workspace_projection_label,
+    ExecutionBackendKind, ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode,
+    WorkspaceProjectionKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,10 +116,6 @@ pub fn execution_policy_summary_lines(execution: &ExecutionSnapshot) -> Vec<Stri
         format!(
             "Projection kind: {}",
             workspace_projection_label(execution.projection_kind)
-        ),
-        format!(
-            "Access mode: {}",
-            workspace_access_mode_label(execution.access_mode)
         ),
     ];
 

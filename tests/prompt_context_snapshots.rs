@@ -25,7 +25,6 @@ Process execution exposed: true
 Background tasks supported: true
 Managed worktrees supported: true
 Projection kind: canonical_root
-Access mode: shared_read
 Workspace id: none
 Workspace anchor: /workspace
 Execution root: /workspace
