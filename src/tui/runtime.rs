@@ -334,7 +334,6 @@ impl TuiApp {
 
     pub(super) fn clear_projection_view(&mut self) {
         self.stop_stream_task();
-        self.transcript.clear();
         self.optimistic_operator_messages.clear();
         self.tasks.clear();
         self.projection = None;
@@ -772,8 +771,6 @@ impl TuiApp {
         let Some(projection) = self.projection.as_ref() else {
             return;
         };
-
-        self.transcript.clear();
 
         self.tasks = projection
             .tasks

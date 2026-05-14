@@ -138,8 +138,15 @@ pub(super) struct CachedChatText {
 pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     let mut cells = Vec::new();
     let mut visible_operator_message_ids = std::collections::BTreeSet::new();
-    let mut visible_presentation_keys = std::collections::BTreeSet::new();
+    let durable_operator_message_ids = app
+        .projection
+        .as_ref()
+        .map(|projection| projection.durable_operator_message_ids())
+        .unwrap_or_default();
     for message in &app.optimistic_operator_messages {
+        if durable_operator_message_ids.contains(&message.message_id) {
+            continue;
+        }
         push_pending_operator_message_cell(&mut cells, &mut visible_operator_message_ids, message);
     }
 
@@ -158,10 +165,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         for timed in &timed_items {
             if timed.item.is_visible_at(level) {
                 for rendered in timed.item.render(level) {
-                    let cell = rendered_to_conversation_cell(&rendered, timed.ts);
-                    if visible_presentation_keys.insert(presentation_cell_key(&cell)) {
-                        cells.push(cell);
-                    }
+                    cells.push(rendered_to_conversation_cell(&rendered, timed.ts));
                 }
             }
         }
@@ -196,24 +200,6 @@ fn push_pending_operator_message_cell(
         body,
         status: Some(message.status.clone()),
     });
-}
-
-fn presentation_cell_key(cell: &ConversationCell) -> String {
-    match cell {
-        ConversationCell::UserMessage {
-            created_at, body, ..
-        } => format!("user:{}:{body}", created_at.timestamp_millis()),
-        ConversationCell::ActiveActivity {
-            created_at,
-            speaker,
-            body,
-        }
-        | ConversationCell::SystemNotice {
-            created_at,
-            speaker,
-            body,
-        } => format!("{speaker}:{}:{body}", created_at.timestamp_millis()),
-    }
 }
 
 impl ConversationCell {

@@ -26,7 +26,7 @@ use crate::{
         AgentSummary, AgentTokenUsageSummary, AgentVisibility, BriefKind, BriefRecord,
         ChildAgentSummary, ClosureDecision, ClosureOutcome, LoadedAgentsMdView, MessageBody,
         OperatorMessageRecord, OperatorMessageStatus, RuntimePosture, SkillsRuntimeView,
-        TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingIntentSummary,
+        TokenUsage, WaitingIntentSummary,
     },
 };
 use chrono::Utc;
@@ -1798,8 +1798,8 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
             work_summary: Some("Keep the active action stable".into()),
             ..Default::default()
         };
-    let mut previous_projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
-    previous_projection.apply_event(
+    let mut refreshed_projection = TuiProjection::from_snapshot(snapshot);
+    refreshed_projection.apply_event(
         AgentStreamEvent {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
@@ -1819,8 +1819,6 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    let mut refreshed_projection = TuiProjection::from_snapshot(snapshot);
-    refreshed_projection.inherit_recent_event_logs_from(&mut previous_projection);
     app.projection = Some(refreshed_projection);
 
     let rendered: String = build_chat_text(&collect_chat_items(&app))
@@ -1995,10 +1993,8 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
             related_task_id: None,
         },
     );
-    let mut snapshot = sample_snapshot("default", "evt-0");
-    snapshot.agent.agent.status = AgentStatus::AwakeRunning;
-    let mut projection = TuiProjection::from_snapshot(snapshot);
-    projection.inherit_recent_event_logs_from(app.projection.as_mut().unwrap());
+    let projection = app.projection.as_mut().expect("projection");
+    projection.agent.agent.status = AgentStatus::AwakeRunning;
     projection.apply_event(
         AgentStreamEvent {
             id: "evt-tool".into(),
@@ -2019,7 +2015,6 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.projection = Some(projection);
 
     let items = collect_chat_items(&app);
     let active_item = items.last().expect("active activity item");
@@ -2038,6 +2033,41 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
         }
         other => panic!("expected active activity item, got {other:?}"),
     }
+}
+
+#[test]
+fn chat_keeps_distinct_operator_messages_with_same_timestamp_and_body() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let ts = Utc::now();
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+    for id in ["message-a", "message-b"] {
+        let mut envelope = operator_message_event_envelope(id, 0, "default", "repeat");
+        envelope.ts = ts;
+        projection.apply_event(
+            AgentStreamEvent {
+                id: envelope.id.clone(),
+                event: envelope.event_type.clone(),
+                data: envelope,
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+    }
+    app.projection = Some(projection);
+
+    let matching_messages = collect_chat_items(&app)
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ConversationCell::UserMessage { body, .. } if body == "repeat"
+            )
+        })
+        .count();
+    assert_eq!(matching_messages, 2);
 }
 
 #[test]
@@ -2342,81 +2372,6 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
             detail_scroll: 0
         }
     );
-}
-
-#[test]
-fn streaming_transcript_merge_dedupes_persisted_message_by_related_message_id() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    let snapshot = sample_snapshot("default", "evt-0");
-    app.projection = Some(TuiProjection::from_snapshot(snapshot));
-    app.connection_state = TuiConnectionState::Streaming;
-    app.transcript = vec![TranscriptEntry {
-        id: "stream-message-1".into(),
-        agent_id: "default".into(),
-        created_at: Utc::now(),
-        kind: TranscriptEntryKind::IncomingMessage,
-        round: None,
-        related_message_id: Some("message-1".into()),
-        stop_reason: None,
-        input_tokens: None,
-        output_tokens: None,
-        data: json!({
-            "body": { "type": "text", "text": "streamed" }
-        }),
-    }];
-
-    app.apply_projection_view();
-
-    assert!(app.transcript.is_empty());
-}
-
-#[tokio::test]
-async fn snapshot_refresh_preserves_sse_only_transcript_entries() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.agents = vec![sample_agent_summary("default")];
-    app.selected_agent = 0;
-    app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
-        "default", "cursor-1",
-    )));
-    app.transcript = vec![TranscriptEntry {
-        id: "stream-only-entry".into(),
-        agent_id: "default".into(),
-        created_at: Utc::now(),
-        kind: TranscriptEntryKind::AssistantRound,
-        round: Some(1),
-        related_message_id: None,
-        stop_reason: None,
-        input_tokens: None,
-        output_tokens: None,
-        data: json!({
-            "body": { "type": "text", "text": "streamed only" }
-        }),
-    }];
-    app.snapshot_refresh_request_id = 1;
-
-    app.apply_snapshot_result(
-        1,
-        0,
-        "default".into(),
-        None,
-        Ok((
-            sample_snapshot("default", "cursor-2"),
-            Vec::new(),
-            None,
-            None,
-            false,
-        )),
-    );
-
-    assert!(app.transcript.is_empty());
 }
 
 #[test]

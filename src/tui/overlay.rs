@@ -220,7 +220,10 @@ fn draw_transcript_overlay(frame: &mut Frame<'_>, app: &TuiApp, scroll: u16) {
     let popup = centered_rect(92, 82, frame.area());
     frame.render_widget(Clear, popup);
     let lines = app
-        .transcript
+        .projection
+        .as_ref()
+        .map(|projection| projection.transcript_tail.as_slice())
+        .unwrap_or_default()
         .iter()
         .rev()
         .map(render::render_transcript_entry)
