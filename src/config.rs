@@ -1485,6 +1485,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "web.providers.<name>.capabilities",
+            kind: "json_object",
+            description: "Derived WebSearch provider capability metadata used for routing diagnostics.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "web.providers.<name>.credential_profile",
             kind: "string",
             description: "Named credential profile to load the API key from. The profile must be of kind api_key.",
@@ -1670,6 +1677,12 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
                     .map(|v| Value::String(v.clone()))
                     .unwrap_or(Value::Null));
             }
+            if let Some(provider_name) = name.strip_suffix(".capabilities") {
+                return match config.web.providers.get(provider_name) {
+                    Some(provider) => Ok(serde_json::to_value(provider.kind.capabilities())?),
+                    None => Ok(Value::Null),
+                };
+            }
             if let Some(provider_name) = name.strip_suffix(".credential_profile") {
                 return Ok(config
                     .web
@@ -1832,6 +1845,9 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 })
                 .kind = kind;
         }
+        key if key.starts_with("web.providers.") && key.ends_with(".capabilities") => {
+            return Err(read_only_web_provider_capabilities_key_error(key));
+        }
         key if key.starts_with("web.providers.") && key.ends_with(".base_url") => {
             let rest = key.strip_prefix("web.providers.").unwrap();
             let name = rest.strip_suffix(".base_url").unwrap();
@@ -1933,6 +1949,9 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             } else {
                 return Err(anyhow!("web provider {name} not found"));
             }
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".capabilities") => {
+            return Err(read_only_web_provider_capabilities_key_error(key));
         }
         key if key.starts_with("web.providers.") && key.ends_with(".base_url") => {
             let rest = key.strip_prefix("web.providers.").unwrap();
@@ -3299,7 +3318,7 @@ fn unknown_config_key(key: &str) -> anyhow::Error {
         return startup_only_config_key_error(key);
     }
     if key.starts_with("web.providers.") {
-        return anyhow!("unknown web providers config key {key}; supported fields: .kind, .base_url, .credential_profile; use web.providers.<name>.kind to create a provider first");
+        return anyhow!("unknown web providers config key {key}; mutable fields: .kind, .base_url, .credential_profile; .capabilities is derived read-only metadata; use web.providers.<name>.kind to create a provider first");
     }
     let supported = config_schema()
         .into_iter()
@@ -3321,6 +3340,12 @@ fn unknown_config_key(key: &str) -> anyhow::Error {
             suggestions.join(", ")
         )
     }
+}
+
+fn read_only_web_provider_capabilities_key_error(key: &str) -> anyhow::Error {
+    anyhow!(
+        "{key} is derived read-only capability metadata; configure web.providers.<name>.kind instead"
+    )
 }
 
 #[cfg(test)]
@@ -3738,6 +3763,7 @@ mod tests {
         set_config_key(&mut config, "web.search.mode", "aggregate").unwrap();
         set_config_key(&mut config, "web.search.providers", "searx,brave").unwrap();
         set_config_key(&mut config, "web.search.max_provider_attempts", "2").unwrap();
+        set_config_key(&mut config, "web.providers.brave.kind", "brave").unwrap();
         set_config_key(&mut config, "web.fetch.max_response_bytes", "12345").unwrap();
         set_config_key(&mut config, "web.fetch.timeout_seconds", "7").unwrap();
         set_config_key(&mut config, "web.fetch.max_redirects", "2").unwrap();
@@ -3771,6 +3797,40 @@ mod tests {
             json!(2)
         );
         assert_eq!(
+            get_config_key(&config, "web.providers.searx.capabilities").unwrap(),
+            Value::Null
+        );
+        let capabilities = get_config_key(&config, "web.providers.brave.capabilities").unwrap();
+        assert_eq!(capabilities["auth"], json!("api_key"));
+        assert_eq!(capabilities["status"], json!("supported"));
+        assert_eq!(capabilities["default_priority"], json!(80));
+        let read_only_capabilities_error =
+            "web.providers.brave.capabilities is derived read-only capability metadata; configure web.providers.<name>.kind instead";
+        assert_eq!(
+            set_config_key(
+                &mut config,
+                "web.providers.brave.capabilities",
+                r#"{"status":"supported"}"#
+            )
+            .unwrap_err()
+            .to_string(),
+            read_only_capabilities_error
+        );
+        assert_eq!(
+            unset_config_key(&mut config, "web.providers.brave.capabilities")
+                .unwrap_err()
+                .to_string(),
+            read_only_capabilities_error
+        );
+        assert_eq!(
+            get_config_key(&config, "web.providers.brave.kind").unwrap(),
+            json!("brave")
+        );
+        assert_eq!(
+            get_config_key(&config, "web.providers.brave.base_url").unwrap(),
+            Value::Null
+        );
+        assert_eq!(
             get_config_key(&config, "web.fetch.max_response_bytes").unwrap(),
             json!(12_345)
         );
@@ -3788,6 +3848,7 @@ mod tests {
         unset_config_key(&mut config, "web.search.mode").unwrap();
         unset_config_key(&mut config, "web.search.providers").unwrap();
         unset_config_key(&mut config, "web.search.max_provider_attempts").unwrap();
+        unset_config_key(&mut config, "web.providers.brave").unwrap();
         unset_config_key(&mut config, "web.fetch.max_response_bytes").unwrap();
         unset_config_key(&mut config, "web.fetch.timeout_seconds").unwrap();
         unset_config_key(&mut config, "web.fetch.max_redirects").unwrap();
@@ -4764,6 +4825,7 @@ mod tests {
         assert!(keys.contains(&"web.fetch.timeout_seconds"));
         assert!(keys.contains(&"web.fetch.max_redirects"));
         assert!(keys.contains(&"web.search.provider"));
+        assert!(keys.contains(&"web.providers.<name>.capabilities"));
     }
 
     #[test]
